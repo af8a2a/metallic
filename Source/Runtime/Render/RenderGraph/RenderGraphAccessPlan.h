@@ -51,6 +51,8 @@ struct GraphAccessPlan {
 };
 
 struct GraphAccessBinding {
+    // Owned allocation required; borrowed images need an external lifetime
+    // contract and cannot be encoded through this planner yet.
     Texture* texture = nullptr;
     uint32_t mipCount = 1;
     uint32_t layerCount = 1;
@@ -58,8 +60,8 @@ struct GraphAccessBinding {
 };
 
 Result<GraphAccessBinding> bindGraphAccessResource(const RenderGraphResource& resource);
-// Shared by whole graph passes and internal stages. Buffer slices retain their
-// allocation through submission even when their first access needs no barrier.
+// Shared by whole graph passes and internal stages. Texture and buffer uses retain
+// their allocation through submission even when their first access needs no barrier.
 Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPassPlan& pass,
     std::span<const GraphAccessBinding> bindings);
 

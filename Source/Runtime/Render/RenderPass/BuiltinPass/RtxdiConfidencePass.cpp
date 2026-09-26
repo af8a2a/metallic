@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/RenderFrameContext.h"
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -16,12 +17,14 @@ struct ConfidenceHistoryViews {
     TextureView* current = nullptr;
     TextureView* previous = nullptr;
     bool previousValid = false;
+    HistoryTextureRef currentResource;
+    HistoryTextureRef previousResource;
 };
 
 struct ConfidenceGradientTexture {
     std::unique_ptr<Texture> texture;
     std::unique_ptr<TextureView> view;
-    ResourceState state = ResourceState::Undefined;
+    std::shared_ptr<ResourceState> state = std::make_shared<ResourceState>(ResourceState::Undefined);
 };
 
 class RtxdiConfidencePass final : public ComputePass {
@@ -30,22 +33,22 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureInput("noisyDiffuse", "RTXDI diffuse radiance and hit distance")
-            .storageReadWrite()
+            .storageRead()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureInput("noisySpecular", "RTXDI specular radiance and hit distance")
-            .storageReadWrite()
+            .storageRead()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureInput("baseColorMetalness", "Base color and metalness")
-            .storageReadWrite()
+            .storageRead()
             .format = Format::Rgba8Unorm;
         reflection.addTextureInput("motionVectors", "Previous-minus-current UV motion")
-            .storageReadWrite()
+            .storageRead()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureOutput("diffuseConfidence", "NRD diffuse history confidence")
-            .storageReadWrite()
+            .storageWrite()
             .format = Format::R8Unorm;
         reflection.addTextureOutput("specularConfidence", "NRD specular history confidence")
-            .storageReadWrite()
+            .storageWrite()
             .format = Format::R8Unorm;
         return reflection;
     }
@@ -222,8 +225,6 @@ public:
             return result;
         }
 
-        transitionGradientTextures(context.commandBuffer());
-
         RtxdiConfidencePush push;
         push.width = context.width();
         push.height = context.height();
@@ -272,14 +273,17 @@ public:
             {.binding = 12, .textureView = diffuseConfidenceHistory.current},
             {.binding = 13, .textureView = specularConfidenceHistory.current},
         };
-        auto dispatch = [&](uint32_t mode, uint32_t resourceTableIndex, uint32_t width, uint32_t height) {
-            push.mode = mode;
+        auto dispatch = [&](CommandBuffer& commands, uint32_t mode, uint32_t resourceTableIndex,
+                            uint32_t width, uint32_t height, uint32_t filterStep = 0u) {
+            auto stagePush = push;
+            stagePush.mode = mode;
+            stagePush.filterStep = filterStep;
             return program_.dispatch(ComputeDispatchDesc{
-                .commandBuffer = &context.commandBuffer(),
+                .commandBuffer = &commands,
                 .bindings = bindings,
                 .bindingCount = static_cast<uint32_t>(std::size(bindings)),
-                .pushData = &push,
-                .pushDataSize = sizeof(push),
+                .pushData = &stagePush,
+                .pushDataSize = sizeof(stagePush),
                 .groupCountX = (width + 7u) / 8u,
                 .groupCountY = (height + 7u) / 8u,
                 .groupCountZ = 1,
@@ -287,48 +291,110 @@ public:
             });
         };
 
-        result = dispatch(kComputeGradient, 0u, gradientWidth_, gradientHeight_);
-        if (!result) {
-            return result;
-        }
-        synchronizeGradientTexture(context.commandBuffer(), gradientA_);
-
         const uint32_t filterPassCount = uintProperty(
             context.properties(),
             "gradientFilterPasses",
             4,
             0,
             kMaximumFilterPasses);
+        const bool finalGradientIsA = (filterPassCount & 1u) == 0u;
+        using Access = RenderGraphResourceAccess;
+        // Every mode uses the same statically bound storage-image descriptors.
+        // Establish their layouts before the first dispatch, even with zero
+        // filter passes or invalid history; content validity is independent.
+        const RenderGraphStageUse prepareUses[] = {
+            {"luminanceCurrent", Access::TextureStorageReadWrite},
+            {"luminancePrevious", Access::TextureStorageReadWrite},
+            {"diffuseCurrent", Access::TextureStorageReadWrite},
+            {"diffusePrevious", Access::TextureStorageReadWrite},
+            {"specularCurrent", Access::TextureStorageReadWrite},
+            {"specularPrevious", Access::TextureStorageReadWrite},
+            {"gradientA", Access::TextureStorageReadWrite},
+            {"gradientB", Access::TextureStorageReadWrite},
+        };
+        const RenderGraphStageUse gradientUses[] = {
+            {"noisyDiffuse", Access::TextureStorageRead},
+            {"noisySpecular", Access::TextureStorageRead},
+            {"baseColorMetalness", Access::TextureStorageRead},
+            {"motionVectors", Access::TextureStorageRead},
+            {"luminancePrevious", Access::TextureStorageRead},
+            {"luminanceCurrent", Access::TextureStorageWrite},
+            {"gradientA", Access::TextureStorageWrite},
+        };
+        const RenderGraphStageUse filterAToB[] = {
+            {"gradientA", Access::TextureStorageRead}, {"gradientB", Access::TextureStorageWrite},
+        };
+        const RenderGraphStageUse filterBToA[] = {
+            {"gradientB", Access::TextureStorageRead}, {"gradientA", Access::TextureStorageWrite},
+        };
+        const RenderGraphStageUse resolveUses[] = {
+            {finalGradientIsA ? "gradientA" : "gradientB", Access::TextureStorageRead},
+            {"motionVectors", Access::TextureStorageRead},
+            {"diffusePrevious", Access::TextureStorageRead},
+            {"specularPrevious", Access::TextureStorageRead},
+            {"diffuseCurrent", Access::TextureStorageWrite},
+            {"specularCurrent", Access::TextureStorageWrite},
+            {"diffuseConfidence", Access::TextureStorageWrite},
+            {"specularConfidence", Access::TextureStorageWrite},
+        };
+        const auto import = [](std::string_view name, const HistoryTextureRef& texture) {
+            return RenderGraphTextureImport{name, texture.texture, texture.view,
+                texture.state, ResourceState::General};
+        };
+        const RenderGraphTextureImport textures[] = {
+            import("luminanceCurrent", luminanceHistory.currentResource),
+            import("luminancePrevious", luminanceHistory.previousResource),
+            import("diffuseCurrent", diffuseConfidenceHistory.currentResource),
+            import("diffusePrevious", diffuseConfidenceHistory.previousResource),
+            import("specularCurrent", specularConfidenceHistory.currentResource),
+            import("specularPrevious", specularConfidenceHistory.previousResource),
+            {"gradientA", gradientA_.texture.get(), gradientA_.view.get(),
+                *gradientA_.state, ResourceState::General},
+            {"gradientB", gradientB_.texture.get(), gradientB_.view.get(),
+                *gradientB_.state, ResourceState::General},
+        };
+        std::vector<RenderGraphStage> stages;
+        stages.reserve(filterPassCount + 3u);
+        stages.push_back({"PrepareDescriptors", prepareUses, [](CommandBuffer&) -> Result<> { return {}; }});
+        stages.push_back({"Gradient", gradientUses, [&](CommandBuffer& commands) {
+            return dispatch(commands, kComputeGradient, 0u, gradientWidth_, gradientHeight_);
+        }});
         for (uint32_t passIndex = 0; passIndex < filterPassCount; ++passIndex) {
             const bool sourceA = (passIndex & 1u) == 0u;
-            push.filterStep = 1u << passIndex;
-            result = dispatch(
-                sourceA ? kFilterAToB : kFilterBToA,
-                passIndex + 1u,
-                gradientWidth_,
-                gradientHeight_);
-            if (!result) {
-                return result;
-            }
-            synchronizeGradientTexture(
-                context.commandBuffer(),
-                sourceA ? gradientB_ : gradientA_);
+            stages.push_back({sourceA ? "FilterAToB" : "FilterBToA",
+                sourceA ? std::span<const RenderGraphStageUse>(filterAToB)
+                        : std::span<const RenderGraphStageUse>(filterBToA),
+                [&, passIndex, sourceA](CommandBuffer& commands) {
+                    return dispatch(commands, sourceA ? kFilterAToB : kFilterBToA,
+                        passIndex + 1u, gradientWidth_, gradientHeight_, 1u << passIndex);
+                }});
         }
-
-        const bool finalGradientIsA = (filterPassCount & 1u) == 0u;
-        result = dispatch(
-            finalGradientIsA ? kResolveA : kResolveB,
-            kMaximumFilterPasses + 1u,
-            context.width(),
-            context.height());
+        stages.push_back({"Resolve", resolveUses, [&](CommandBuffer& commands) {
+            return dispatch(commands, finalGradientIsA ? kResolveA : kResolveB,
+                kMaximumFilterPasses + 1u, context.width(), context.height());
+        }});
+        result = context.executeStages(stages, {}, textures);
         if (!result) {
             return result;
         }
 
         HistoryResourceManager& history = *context.historyResources();
-        history.markWritten(historyNameForContext(context, "luminance"));
-        history.markWritten(historyNameForContext(context, "diffuseConfidence"));
-        history.markWritten(historyNameForContext(context, "specularConfidence"));
+        for (const auto suffix : {"luminance", "diffuseConfidence", "specularConfidence"}) {
+            const auto name = historyNameForContext(context, suffix);
+            result = history.publishTextureState(context.commandBuffer(), name,
+                HistorySlot::Current, ResourceState::General, true);
+            if (!result) { return result; }
+            result = history.publishTextureState(context.commandBuffer(), name,
+                HistorySlot::Previous, ResourceState::General);
+            if (!result) { return result; }
+        }
+        for (const auto& state : {gradientA_.state, gradientB_.state}) {
+            const auto before = *state;
+            result = context.commandBuffer().addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
+                [] {}, [state, before] { *state = before; }));
+            if (!result) { return result; }
+            *state = ResourceState::General;
+        }
         resetHistory_ = false;
         return {};
     }
@@ -444,52 +510,6 @@ private:
         return {};
     }
 
-    void transitionGradientTextures(CommandBuffer& commandBuffer)
-    {
-        TextureBarrierDesc barriers[] = {
-            TextureBarrierDesc{
-                .texture = gradientA_.texture.get(),
-                .before = gradientA_.state,
-                .after = ResourceState::General,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            },
-            TextureBarrierDesc{
-                .texture = gradientB_.texture.get(),
-                .before = gradientB_.state,
-                .after = ResourceState::General,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            },
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = barriers,
-            .textureCount = static_cast<uint32_t>(std::size(barriers)),
-        });
-        gradientA_.state = ResourceState::General;
-        gradientB_.state = ResourceState::General;
-    }
-
-    static void synchronizeGradientTexture(
-        CommandBuffer& commandBuffer,
-        ConfidenceGradientTexture& texture)
-    {
-        TextureBarrierDesc barrier{
-            .texture = texture.texture.get(),
-            .before = ResourceState::General,
-            .after = ResourceState::General,
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
-        };
-        commandBuffer.barrier(BarrierDesc{.textures = &barrier, .textureCount = 1});
-    }
-
     static Result<> prepareHistoryTexture(
         RenderGraphExecutionContext& context,
         std::string_view suffix,
@@ -523,25 +543,11 @@ private:
             previous.texture == nullptr || previous.view == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        result = history->transitionTexture(
-            context.commandBuffer(),
-            name,
-            HistorySlot::Current,
-            ResourceState::General);
-        if (!result) {
-            return result;
-        }
-        result = history->transitionTexture(
-            context.commandBuffer(),
-            name,
-            HistorySlot::Previous,
-            ResourceState::General);
-        if (!result) {
-            return result;
-        }
         outViews.current = current.view;
         outViews.previous = previous.view;
         outViews.previousValid = previous.valid;
+        outViews.currentResource = current;
+        outViews.previousResource = previous;
         return {};
     }
 

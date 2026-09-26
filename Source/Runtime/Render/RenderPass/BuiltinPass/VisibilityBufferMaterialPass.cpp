@@ -29,7 +29,7 @@ public:
         reflection.addBufferInput("rasterInfo", "Raster scene, view and frame identity")
             .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
         reflection.addTextureOutput("color", "Scalar materials with geometric normals and directional lighting")
-            .storageReadWrite().format = Format::Rgba8Unorm;
+            .storageWrite().format = Format::Rgba8Unorm;
         return reflection;
     }
 

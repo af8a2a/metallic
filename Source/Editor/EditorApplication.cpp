@@ -1633,6 +1633,8 @@ const char* renderGraphResourceAccessName(render::RenderGraphResourceAccess acce
         return "None";
     case render::RenderGraphResourceAccess::TextureSampleRead:
         return "SampleRead";
+    case render::RenderGraphResourceAccess::TextureSampleReadGeneral:
+        return "SampleReadGeneral";
     case render::RenderGraphResourceAccess::TextureColorWrite:
         return "ColorWrite";
     case render::RenderGraphResourceAccess::TextureDepthStencilWrite:
@@ -1661,6 +1663,8 @@ const char* renderGraphResourceAccessName(render::RenderGraphResourceAccess acce
         return "TransferWrite";
     case render::RenderGraphResourceAccess::BufferConstantRead:
         return "ConstantRead";
+    case render::RenderGraphResourceAccess::BufferIndirectRead:
+        return "IndirectRead";
     }
 
     return "Unknown";

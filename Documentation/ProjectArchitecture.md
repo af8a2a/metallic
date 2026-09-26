@@ -235,7 +235,9 @@ sequenceDiagram
 
 每个节点执行前只编码已生成的 barrier，再构造 `RenderGraphExecutionContext`、绑定图级 Bindless heap 并执行 Pass。计划不依赖 worker 的完成顺序；GPU 分支的资源依赖指向该 Pass 的汇合提交。当前计划以整资源为粒度。
 
-单队列 Compute Pass 可以通过 `executeComputeStages()` 声明内部阶段，复用同一 planner 和 barrier 编码器。阶段访问必须位于反射权限内且不能改变图像的外层 layout；全部声明先验证，再录制回调。私有 buffer 通过带 allocation identity 的 `BufferSlice` 与边界访问契约导入。AutoExposure 已把 Histogram → Reduce → Apply 及 history 同步迁入此路径；未迁移的 Pass 和私有资源仍保留原有同步契约。
+Pass 通过 `executeStages()` 声明 compute、raster、transfer 或 Unsafe 内部阶段，复用跨 pass 的 planner 和 barrier 编码器。反射的 `stageAccess()` 聚合内部权限、usage 和真实读写；内部改变 layout 的字段按独占访问参与外层依赖，序列结束恢复反射边界。全部声明先验证，再录制回调；同名输入/输出用 `input.field` / `output.field` 区分。原 `executeComputeStages()` 保留更严格的单 compute/layout 不变契约。
+
+私有 buffer 通过 `BufferSlice`、纹理通过 allocation identity 与真实初态导入；共享编码器保留分配直到 GPU completion，包括省略了 barrier 的访问。History 的 `publishTextureState()` 只事务性发布状态，不再重复发 barrier。AutoExposure、VisibilityBuffer/StreamAsset、PathTrace/SHaRC/NRC、RTXDI/Confidence、DLSS、NRD 与 shadow 的阶段边界已使用统一计划。Unsafe 可显式声明完整 join 的既有 `parallelCompute` 操作，保留 Visibility 软件/硬件光栅并行；SDK、GPUScene、streaming 等 opaque 操作仍负责内部同步。此接口不推断未声明的 BDA/bindless 访问，不自动调度内部多队列，也尚不跟踪精确 mip/slice 范围。
 
 提供两种执行入口：
 

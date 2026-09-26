@@ -1,6 +1,10 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDlssNr.h"
+#include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
+
+#include <array>
+#include <vector>
 
 namespace metallic::render::builtin_pass {
 namespace {
@@ -26,6 +30,8 @@ public:
         const Format colorFormat = hdr ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
         input.format = colorFormat;
         input.usage = input.usage | TextureUsageBits::TransferSource | TextureUsageBits::Sampled;
+        input.stageAccess(RenderGraphResourceAccess::TextureTransferRead)
+            .stageAccess(RenderGraphResourceAccess::TextureSampleRead);
         auto& motion = reflection.addTextureInput("motionVectors", "Current-to-previous UV motion, without jitter")
             .texture2D(context.width, context.height).storageReadWrite();
         motion.format = Format::Rg16Sfloat;
@@ -39,6 +45,7 @@ public:
         output.format = colorFormat;
         output.colorEncoding = hdr ? DisplayColorEncoding::ExposedLinear : DisplayColorEncoding::Srgb;
         output.usage = output.usage | TextureUsageBits::TransferDestination;
+        output.stageAccess(RenderGraphResourceAccess::TextureTransferWrite);
         return reflection;
     }
 
@@ -112,8 +119,7 @@ public:
             if (properties.value("enabled", true) && !properties.value("fallbackToInput", true)) {
                 return makeError(Error::Unsupported);
             }
-            copyColor(context.commandBuffer(), input, output);
-            return {};
+            return executeCopy(context, input, output);
         }
         // Enabling a bypassed NR node can reuse the compiled pass. Initialize
         // lazily here so the toggle actually activates the feature.
@@ -155,8 +161,7 @@ public:
         if (!result) { spdlog::error("[DLSS-NR] {}", log); return result; }
         if (runtime_ == nullptr || failed_ || !properties.value("enabled", true) || settings.intensity == 0.0f) {
             hasHistory_ = false;
-            copyColor(context.commandBuffer(), input, output);
-            return {};
+            return executeCopy(context, input, output);
         }
         const auto* view = context.viewConstants();
         const uint64_t revision = context.historyResources() != nullptr
@@ -182,27 +187,46 @@ public:
         // NGX feature 18 takes pixels: unlike Unity, do not negate them.
         settings.motionVectorScaleX = static_cast<float>(input.desc().width);
         settings.motionVectorScaleY = static_cast<float>(input.desc().height);
-        result = runtime_->evaluate(context.commandBuffer(), desc, log);
-        if (!result) {
+        using Access = RenderGraphResourceAccess;
+        const std::array sdkUses{RenderGraphStageUse{"inputColor", Access::TextureStorageReadWrite},
+            RenderGraphStageUse{"motionVectors", Access::TextureStorageReadWrite},
+            RenderGraphStageUse{"depth", Access::TextureStorageReadWrite},
+            RenderGraphStageUse{"color", Access::TextureStorageReadWrite}};
+        const std::array sliderUses{RenderGraphStageUse{"inputColor", Access::TextureSampleRead},
+            RenderGraphStageUse{"color", Access::TextureStorageReadWrite}};
+        bool fallback = false;
+        std::vector<RenderGraphStage> stages;
+        stages.push_back({"DLSS NR evaluate", sdkUses, [&](CommandBuffer& command) -> Result<> {
+            auto evaluated = runtime_->evaluate(command, desc, log);
+            if (evaluated) { return {}; }
             hasHistory_ = false;
-            if (!properties.value("fallbackToInput", true) || hasError(result, Error::InvalidArgument) ||
-                hasError(result, Error::DeviceLost)) {
+            if (!properties.value("fallbackToInput", true) || hasError(evaluated, Error::InvalidArgument) ||
+                hasError(evaluated, Error::DeviceLost)) {
                 spdlog::error("[DLSS-NR] {}", log);
-                return result;
+                return evaluated;
             }
             spdlog::warn("[DLSS-NR] {}; passing through until the pass is recompiled", log);
-            // Keep the context alive: failed create/evaluate may have recorded
-            // commands that reference its resources in the current submission.
+            // The SDK may already have recorded resource accesses on failure.
+            // Keep it alive. The local fallback plan restores the opaque SDK
+            // stage's General boundary; successful frames never enter transfer
+            // layouts. Reflection includes the fallback's transfer accesses.
             failed_ = true;
-            copyColor(context.commandBuffer(), input, output);
-            return {};
+            fallback = true;
+            return copyColorAfterSdkFailure(command, input, output);
+        }, RenderGraphPassKind::Unsafe});
+        if (sliderDebug) {
+            stages.push_back({"DLSS NR slider", sliderUses, [&](CommandBuffer&) -> Result<> {
+                return fallback ? Result<>{} : drawSliderDebug(context, input, output);
+            }});
         }
+        result = context.executeStages(stages);
+        if (!result || fallback) { return result; }
         hasHistory_ = true;
         lastFrame_ = context.frameIndex();
         lastRevision_ = revision;
         lastScene_ = scene;
         lastProperties_ = std::move(historyProperties);
-        return sliderDebug ? drawSliderDebug(context, input, output) : Result<>{};
+        return {};
     }
 
 private:
@@ -232,36 +256,65 @@ private:
             properties.value("swapSides", false) ? 1u : 0u,
         };
         auto& command = context.commandBuffer();
-        const TextureBarrierDesc barriers[] = {
-            {.texture = input.texture(), .before = ResourceState::General, .after = ResourceState::ShaderRead},
-            {.texture = output.texture(), .before = ResourceState::General, .after = ResourceState::General},
-        };
-        command.barrier({.textures = barriers, .textureCount = 2});
         auto* source = input.view();
         const ComputeDispatchBinding bindings[] = {
             {.binding = 0, .textureViews = &source, .textureViewCount = 1},
             {.binding = 2, .textureView = output.view()},
         };
-        auto result = sliderProgram_.dispatch({.commandBuffer = &command,
+        return sliderProgram_.dispatch({.commandBuffer = &command,
             .bindings = bindings, .bindingCount = 2, .pushData = &push, .pushDataSize = sizeof(push),
             .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
-        const TextureBarrierDesc restore{
-            .texture = input.texture(), .before = ResourceState::ShaderRead, .after = ResourceState::General};
-        command.barrier({.textures = &restore, .textureCount = 1});
-        return result;
     }
 
     static void copyColor(CommandBuffer& command, TextureHandle input, TextureHandle output)
     {
-        TextureBarrierDesc barriers[] = {
-            {.texture = input.texture(), .before = ResourceState::General, .after = ResourceState::TransferSource},
-            {.texture = output.texture(), .before = ResourceState::General, .after = ResourceState::TransferDestination},
-        };
-        command.barrier({.textures = barriers, .textureCount = 2});
         command.copyTexture({.source = input.texture(), .destination = output.texture(),
             .width = output.desc().width, .height = output.desc().height, .depth = 1});
-        for (auto& barrier : barriers) { barrier.before = barrier.after; barrier.after = ResourceState::General; }
-        command.barrier({.textures = barriers, .textureCount = 2});
+    }
+
+    static Result<> copyColorAfterSdkFailure(CommandBuffer& command, TextureHandle input, TextureHandle output)
+    {
+        using namespace detail;
+        const SyncScope externalScope{PipelineStageBits::AllCommands,
+            AccessBits::MemoryRead | AccessBits::MemoryWrite};
+        // An SDK failure can follow partial GPU recording. Preserve the existing
+        // NGX General-layout contract and conservatively synchronize its work.
+        if (input.texture()->retainAllocation() == output.texture()->retainAllocation()) {
+            return makeError(Error::InvalidArgument);
+        }
+        const GraphAccessResource resources[] = {
+            {RenderGraphResourceType::Texture2D, ResourceState::General, externalScope},
+            {RenderGraphResourceType::Texture2D, ResourceState::General, externalScope},
+        };
+        const GraphAccessBinding bindings[] = {
+            {.texture = input.texture(), .mipCount = input.desc().mipCount, .layerCount = input.desc().layerCount},
+            {.texture = output.texture(), .mipCount = output.desc().mipCount, .layerCount = output.desc().layerCount},
+        };
+        const GraphAccessPass accesses[] = {
+            {.uses = {
+                {0, ResourceState::TransferSource, {PipelineStageBits::Transfer, AccessBits::TransferRead}, false},
+                {1, ResourceState::TransferDestination, {PipelineStageBits::Transfer, AccessBits::TransferWrite}, true},
+            }},
+            {.uses = {
+                {0, ResourceState::General, externalScope, false},
+                {1, ResourceState::General, externalScope, false},
+            }},
+        };
+        auto plan = buildGraphAccessPlan(resources, accesses);
+        if (!plan) { return makeError(plan.error()); }
+        auto result = recordGraphAccessBarriers(command, plan->passes.front(), bindings);
+        if (!result) { return result; }
+        copyColor(command, input, output);
+        return recordGraphAccessBarriers(command, plan->passes.back(), bindings);
+    }
+
+    static Result<> executeCopy(RenderGraphExecutionContext& context, TextureHandle input, TextureHandle output)
+    {
+        const std::array uses{RenderGraphStageUse{"inputColor", RenderGraphResourceAccess::TextureTransferRead},
+            RenderGraphStageUse{"color", RenderGraphResourceAccess::TextureTransferWrite}};
+        const std::array stages{RenderGraphStage{"DLSS NR pass through", uses,
+            [&](CommandBuffer& command) -> Result<> { copyColor(command, input, output); return {}; }}};
+        return context.executeStages(stages);
     }
 
     Device* device_ = nullptr;

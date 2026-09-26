@@ -1759,6 +1759,9 @@ public:
 
     const TextureDesc& desc() const;
     uint64_t allocationSize() const;
+    // Owns the image allocation; borrowed swapchain images return empty.
+    std::shared_ptr<void> retainAllocation() const;
+    const void* deviceIdentity() const;
 
 private:
     explicit Texture(std::unique_ptr<detail::TextureImpl> impl);

@@ -320,5 +320,103 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(CancelledGpuProfilingTest);
 
+class ExternalGpuProfilingCompletionTest final : public RhiTest {
+public:
+    ExternalGpuProfilingCompletionTest()
+    {
+        type = RhiTestType::Command;
+        name = "gpu_profiling_external_requires_completion";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        if (!context.device.capabilities().timestampQueries) {
+            return RhiTestResult::skip("timestamp queries unavailable");
+        }
+        render::registerRenderGraphPassType("ProfileBudgetPass", "Profiling scope budget test",
+            [] { return std::make_unique<ProfileBudgetPass>(); });
+        render::RenderGraph graph;
+        graph.addNode("ProfileBudgetPass", "Profile", {{"scopes", 2u}});
+        graph.markOutput("Profile.data");
+        render::RenderGraphExecutor executor;
+        std::string log;
+        if (!executor.compile(context.device, graph, 1, 1, log)) { return RhiTestResult::fail(log); }
+        std::unique_ptr<render::CommandPool> pool;
+        std::unique_ptr<render::CommandBuffer> commands;
+        std::unique_ptr<render::Fence> fence;
+        if (!context.device.createCommandPool(context.graphicsQueue).transform([&](auto value) { pool = std::move(value); }) ||
+            !pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }) ||
+            !context.device.createFence(false).transform([&](auto value) { fence = std::move(value); })) {
+            return RhiTestResult::fail("external profiling setup failed");
+        }
+        const auto validSample = [](const render::RenderGraphExecutionStats& stats, uint64_t execution) {
+            return stats.executionId == execution && stats.gpuTimingAvailable && std::isfinite(stats.gpuMilliseconds) &&
+                stats.gpuMilliseconds >= 0.0 && stats.nodes.size() == 1 && stats.nodes.front().gpuTimingAvailable;
+        };
+        // Wrap the query ring while alternating accepted frames and discarded
+        // raw recordings. Frame-associated cancellation has a separate test.
+        for (uint32_t index = 0; index < 6; ++index) {
+            if (!executor.execute({.graphicsQueue = &context.graphicsQueue}) ||
+                !executor.waitForSubmittedWork(5'000'000'000ull)) {
+                return RhiTestResult::fail("self-submitted profiling frame failed");
+            }
+            std::vector<render::RenderGraphExecutionStats> completed;
+            if (!executor.collectCompletedGpuExecutionStats(completed) || completed.size() != 1 ||
+                !validSample(completed.front(), executor.executionStats().executionId)) {
+                return RhiTestResult::fail("query ring lost the self-submitted sample after an external recording");
+            }
+            if (!pool->reset() || !commands->begin() || !executor.execute(*commands) || !commands->end()) {
+                return RhiTestResult::fail("raw external profiling recording failed");
+            }
+            const auto& rawStats = executor.executionStats();
+            if (rawStats.gpuTimingAvailable || rawStats.nodes.size() != 1 ||
+                rawStats.nodes.front().gpuTimingAvailable || rawStats.nodes.front().sections.empty() ||
+                !std::isfinite(rawStats.cpuMilliseconds) || rawStats.cpuMilliseconds < 0.0) {
+                return RhiTestResult::fail("raw external recording lost CPU scopes or advertised GPU timing without completion");
+            }
+            completed.clear();
+            if (!executor.collectCompletedGpuExecutionStats(completed) || !completed.empty()) {
+                return RhiTestResult::fail("unsubmitted timestamps were queried or published");
+            }
+            if (index % 3u != 0u) {
+                if (!pool->reset() || !executor.collectCompletedGpuExecutionStats(completed) || !completed.empty()) {
+                    return RhiTestResult::fail("cancelled raw timestamps were queried or published");
+                }
+                continue;
+            }
+            std::unique_ptr<render::Semaphore> gate;
+            if (!context.device.createSemaphore().transform([&](auto value) { gate = std::move(value); })) {
+                return RhiTestResult::fail("external completion gate creation failed");
+            }
+            const render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
+            render::CommandBuffer* submitted[] = {commands.get()};
+            if (!fence->reset() || !context.graphicsQueue.submit({.waitSemaphores = &wait,
+                    .waitSemaphoreCount = 1, .commandBuffers = submitted,
+                    .commandBufferCount = 1, .signalFence = fence.get()})) {
+                return RhiTestResult::fail("raw profiling submission failed");
+            }
+            // Queue acceptance is observable while the unsignaled host gate
+            // keeps execution incomplete. Never infer completion from query
+            // availability, which can still belong to a prior reset generation.
+            const bool incomplete = !fence->isSignaled();
+            const auto collected = executor.collectCompletedGpuExecutionStats(completed);
+            const auto released = gate->signal(1);
+            if (!released || !fence->wait(5'000'000'000ull)) {
+                (void)context.graphicsQueue.waitIdle();
+                return RhiTestResult::fail("accepted raw profiling completion failed");
+            }
+            if (!incomplete || !collected || !completed.empty()) {
+                return RhiTestResult::fail("accepted but incomplete raw recording published GPU timestamps");
+            }
+            if (!executor.collectCompletedGpuExecutionStats(completed) || !completed.empty()) {
+                return RhiTestResult::fail("raw recording without an exposed completion published GPU timestamps");
+            }
+        }
+        return RhiTestResult::pass("raw recordings retain CPU scopes; framed execution owns GPU timing completion");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(ExternalGpuProfilingCompletionTest);
+
 } // namespace
 } // namespace metallic::tests

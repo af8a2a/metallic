@@ -1,4 +1,5 @@
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
+#include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 
 #include <algorithm>
 #include <functional>
@@ -67,20 +68,54 @@ bool accessWrites(RenderGraphResourceAccess access)
         return true;
     case RenderGraphResourceAccess::None:
     case RenderGraphResourceAccess::TextureSampleRead:
+    case RenderGraphResourceAccess::TextureSampleReadGeneral:
     case RenderGraphResourceAccess::TextureTransferRead:
     case RenderGraphResourceAccess::TextureStorageRead:
     case RenderGraphResourceAccess::BufferShaderRead:
     case RenderGraphResourceAccess::BufferStorageRead:
     case RenderGraphResourceAccess::BufferTransferRead:
     case RenderGraphResourceAccess::BufferConstantRead:
+    case RenderGraphResourceAccess::BufferIndirectRead:
         return false;
     }
     return false;
 }
 
+bool fieldChangesLayout(const RenderGraphField& field)
+{
+    return isTextureField(field) && std::any_of(field.internalAccesses.begin(), field.internalAccesses.end(),
+        [&](const auto& internal) { return stateForAccess(internal.access) != stateForAccess(field.access); });
+}
+
+SyncScope fieldAccessScope(const RenderGraphField& field, RenderGraphPassKind kind)
+{
+    auto scope = scopeForGraphAccess(field.access, kind);
+    for (const auto& internal : field.internalAccesses) {
+        const auto extra = scopeForGraphAccess(internal.access, internal.kind);
+        scope.stages = scope.stages | extra.stages;
+        scope.access = scope.access | extra.access;
+    }
+    // Transitions inside a pass also write image memory, even if every shader
+    // access is a read. Export that hazard and serialize competing consumers.
+    if (fieldChangesLayout(field)) {
+        scope.stages = scope.stages | PipelineStageBits::AllCommands;
+        scope.access = scope.access | AccessBits::MemoryWrite;
+    }
+    return scope;
+}
+
+bool fieldAccessWrites(const RenderGraphField& field)
+{
+    return accessWrites(field.access) || fieldChangesLayout(field) ||
+        std::any_of(field.internalAccesses.begin(), field.internalAccesses.end(),
+            [](const auto& internal) { return accessWrites(internal.access); });
+}
+
 ResourceState stateForAccess(RenderGraphResourceAccess access)
 {
     switch (access) {
+    case RenderGraphResourceAccess::BufferIndirectRead:
+        return ResourceState::IndirectArgument;
     case RenderGraphResourceAccess::TextureSampleRead:
     case RenderGraphResourceAccess::BufferShaderRead:
     case RenderGraphResourceAccess::BufferConstantRead:
@@ -102,6 +137,8 @@ ResourceState stateForAccess(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::BufferStorageWrite:
     case RenderGraphResourceAccess::BufferStorageReadWrite:
         return ResourceState::General;
+    case RenderGraphResourceAccess::TextureSampleReadGeneral:
+        return ResourceState::General;
     case RenderGraphResourceAccess::None:
         return ResourceState::Undefined;
     }
@@ -112,6 +149,7 @@ TextureUsageBits textureUsageForAccess(RenderGraphResourceAccess access)
 {
     switch (access) {
     case RenderGraphResourceAccess::TextureSampleRead:
+    case RenderGraphResourceAccess::TextureSampleReadGeneral:
         return TextureUsageBits::Sampled;
     case RenderGraphResourceAccess::TextureColorWrite:
         return TextureUsageBits::ColorAttachment;
@@ -133,6 +171,7 @@ TextureUsageBits textureUsageForAccess(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::BufferTransferRead:
     case RenderGraphResourceAccess::BufferTransferWrite:
     case RenderGraphResourceAccess::BufferConstantRead:
+    case RenderGraphResourceAccess::BufferIndirectRead:
         return TextureUsageBits::None;
     }
     return TextureUsageBits::None;
@@ -141,6 +180,8 @@ TextureUsageBits textureUsageForAccess(RenderGraphResourceAccess access)
 BufferUsageBits bufferUsageForAccess(RenderGraphResourceAccess access)
 {
     switch (access) {
+    case RenderGraphResourceAccess::BufferIndirectRead:
+        return BufferUsageBits::Indirect;
     case RenderGraphResourceAccess::BufferShaderRead:
     case RenderGraphResourceAccess::BufferStorageRead:
     case RenderGraphResourceAccess::BufferStorageWrite:
@@ -161,6 +202,7 @@ BufferUsageBits bufferUsageForAccess(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::TextureStorageRead:
     case RenderGraphResourceAccess::TextureStorageWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
+    case RenderGraphResourceAccess::TextureSampleReadGeneral:
         return BufferUsageBits::None;
     }
     return BufferUsageBits::None;
@@ -188,6 +230,8 @@ BufferViewType bufferViewTypeForField(const RenderGraphField& field)
     case RenderGraphResourceAccess::TextureStorageReadWrite:
     case RenderGraphResourceAccess::BufferTransferRead:
     case RenderGraphResourceAccess::BufferTransferWrite:
+    case RenderGraphResourceAccess::BufferIndirectRead:
+    case RenderGraphResourceAccess::TextureSampleReadGeneral:
         return field.bufferViewType;
     }
     return field.bufferViewType;
@@ -206,6 +250,7 @@ bool accessMatchesResourceType(RenderGraphResourceAccess access, RenderGraphReso
     case RenderGraphResourceAccess::TextureStorageRead:
     case RenderGraphResourceAccess::TextureStorageWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
+    case RenderGraphResourceAccess::TextureSampleReadGeneral:
         return resourceType == RenderGraphResourceType::Texture2D;
     case RenderGraphResourceAccess::BufferShaderRead:
     case RenderGraphResourceAccess::BufferStorageRead:
@@ -214,6 +259,7 @@ bool accessMatchesResourceType(RenderGraphResourceAccess access, RenderGraphReso
     case RenderGraphResourceAccess::BufferTransferRead:
     case RenderGraphResourceAccess::BufferTransferWrite:
     case RenderGraphResourceAccess::BufferConstantRead:
+    case RenderGraphResourceAccess::BufferIndirectRead:
         return resourceType == RenderGraphResourceType::Buffer;
     }
     return false;
@@ -222,6 +268,9 @@ bool accessMatchesResourceType(RenderGraphResourceAccess access, RenderGraphReso
 TextureUsageBits textureUsageForField(const RenderGraphField& field)
 {
     TextureUsageBits usage = textureUsageForAccess(field.access);
+    for (const auto& internal : field.internalAccesses) {
+        usage = addTextureUsage(usage, textureUsageForAccess(internal.access));
+    }
     if (field.usage != TextureUsageBits::None) {
         usage = addTextureUsage(usage, field.usage);
     }
@@ -234,6 +283,9 @@ TextureUsageBits textureUsageForField(const RenderGraphField& field)
 BufferUsageBits bufferUsageForField(const RenderGraphField& field)
 {
     BufferUsageBits usage = bufferUsageForAccess(field.access);
+    for (const auto& internal : field.internalAccesses) {
+        usage = addBufferUsage(usage, bufferUsageForAccess(internal.access));
+    }
     if (field.bufferUsage != BufferUsageBits::None) {
         usage = addBufferUsage(usage, field.bufferUsage);
     }

@@ -194,6 +194,14 @@ RenderGraphField& RenderGraphField::depthStencilWrite()
     return *this;
 }
 
+RenderGraphField& RenderGraphField::stageAccess(RenderGraphResourceAccess access, RenderGraphPassKind kind)
+{
+    internalAccesses.push_back({access, kind});
+    usage = addTextureUsage(usage, textureUsageForAccess(access));
+    bufferUsage = addBufferUsage(bufferUsage, bufferUsageForAccess(access));
+    return *this;
+}
+
 RenderGraphField& RenderGraphField::storageRead()
 {
     access = resourceType == RenderGraphResourceType::Buffer
@@ -469,7 +477,9 @@ QueueType UnsafePass::queueType() const
 
 Result<> RenderGraphExecutionContext::parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics)
 {
-    if (computeStagesActive_ || !compute || !graphics) { return makeError(Error::InvalidArgument); }
+    if ((computeStagesActive_ && !stagesAllowParallel_) || !compute || !graphics) {
+        return makeError(Error::InvalidArgument);
+    }
     if (parallelRecorder_) { return parallelRecorder_(*this, compute, graphics); }
     Result<> result = compute(commandBuffer());
     return result ? graphics(commandBuffer()) : result;
@@ -1207,7 +1217,11 @@ bool RenderGraph::validate(std::string& log) const
                 }
                 presentationOutput = fullName;
             }
-            if (!accessMatchesResourceType(field.access, field.resourceType)) {
+            if (!accessMatchesResourceType(field.access, field.resourceType) ||
+                std::any_of(field.internalAccesses.begin(), field.internalAccesses.end(), [&](const auto& internal) {
+                    return internal.access == RenderGraphResourceAccess::None ||
+                        !accessMatchesResourceType(internal.access, field.resourceType);
+                })) {
                 log = validationPrefix(
                     std::string("field access does not match resource type '") +
                     makeRenderGraphFieldName(node.name, field.name) +

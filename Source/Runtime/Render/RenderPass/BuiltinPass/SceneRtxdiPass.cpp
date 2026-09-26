@@ -28,6 +28,8 @@ struct SceneRtxdiHistoryViews {
     TextureView* current = nullptr;
     TextureView* previous = nullptr;
     bool previousValid = false;
+    HistoryTextureRef currentResource;
+    HistoryTextureRef previousResource;
 };
 
 class SceneRtxdiPass final : public ComputePass {
@@ -54,28 +56,28 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "ReSTIR DI many-light direct illumination")
-            .storageReadWrite()
+            .storageWrite()
             .format = boolProperty(&properties(), "outputLinear", false) ? Format::Rgba32Sfloat : Format::Rgba8Unorm;
         reflection.addTextureOutput("noisyDiffuse", "RELAX diffuse radiance and hit distance")
-            .storageReadWrite()
+            .storageWrite()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureOutput("noisySpecular", "RELAX specular radiance and hit distance")
-            .storageReadWrite()
+            .storageWrite()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureOutput("normalRoughness", "NRD packed world normal and roughness")
-            .storageReadWrite()
+            .storageWrite()
             .format = nrdNormalRoughnessFormat();
         reflection.addTextureOutput("motionVectors", "NRD previous-minus-current UV motion")
-            .storageReadWrite()
+            .storageWrite()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureOutput("viewZ", "NRD linear view depth")
-            .storageReadWrite()
+            .storageWrite()
             .format = Format::R16Sfloat;
         reflection.addTextureOutput("baseColorMetalness", "NRD base color and metalness")
-            .storageReadWrite()
+            .storageWrite()
             .format = Format::Rgba8Unorm;
         reflection.addTextureOutput("emissive", "Emissive and background radiance")
-            .storageReadWrite()
+            .storageWrite()
             .format = Format::Rgba16Sfloat;
         return reflection;
     }
@@ -600,24 +602,64 @@ public:
                 .sampler = &neuralTextures.latentSampler(),
             });
         }
-        result = rayQueryProgram_.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = bindings.data(),
-            .bindingCount = static_cast<uint32_t>(bindings.size()),
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-            .groupCountZ = 1,
-        });
+        using Access = RenderGraphResourceAccess;
+        const RenderGraphStageUse uses[] = {
+            {"color", Access::TextureStorageWrite},
+            {"noisyDiffuse", Access::TextureStorageWrite},
+            {"noisySpecular", Access::TextureStorageWrite},
+            {"normalRoughness", Access::TextureStorageWrite},
+            {"motionVectors", Access::TextureStorageWrite},
+            {"viewZ", Access::TextureStorageWrite},
+            {"baseColorMetalness", Access::TextureStorageWrite},
+            {"emissive", Access::TextureStorageWrite},
+            {"reservoirCurrent", Access::TextureStorageWrite},
+            {"reservoirPrevious", Access::TextureStorageRead},
+            {"positionCurrent", Access::TextureStorageWrite},
+            {"positionPrevious", Access::TextureStorageRead},
+            {"normalCurrent", Access::TextureStorageWrite},
+            {"normalPrevious", Access::TextureStorageRead},
+        };
+        const auto import = [](std::string_view name, const HistoryTextureRef& texture) {
+            return RenderGraphTextureImport{name, texture.texture, texture.view,
+                texture.state, ResourceState::General};
+        };
+        const RenderGraphTextureImport textures[] = {
+            import("reservoirCurrent", reservoirHistory.currentResource),
+            import("reservoirPrevious", reservoirHistory.previousResource),
+            import("positionCurrent", positionHistory.currentResource),
+            import("positionPrevious", positionHistory.previousResource),
+            import("normalCurrent", normalHistory.currentResource),
+            import("normalPrevious", normalHistory.previousResource),
+        };
+        const RenderGraphStage stages[] = {
+            {"ReSTIR", uses, [&](CommandBuffer& commands) {
+                return rayQueryProgram_.dispatch(ComputeDispatchDesc{
+                    .commandBuffer = &commands,
+                    .bindings = bindings.data(),
+                    .bindingCount = static_cast<uint32_t>(bindings.size()),
+                    .pushData = &push,
+                    .pushDataSize = sizeof(push),
+                    .groupCountX = (context.width() + 7) / 8,
+                    .groupCountY = (context.height() + 7) / 8,
+                    .groupCountZ = 1,
+                });
+            }},
+        };
+        result = context.executeStages(stages, {}, textures);
         if (!result) {
             return result;
         }
 
         HistoryResourceManager& history = *context.historyResources();
-        history.markWritten(historyNameForContext(context, "reservoir"));
-        history.markWritten(historyNameForContext(context, "position"));
-        history.markWritten(historyNameForContext(context, "normal"));
+        for (const auto suffix : {"reservoir", "position", "normal"}) {
+            const auto name = historyNameForContext(context, suffix);
+            result = history.publishTextureState(context.commandBuffer(), name,
+                HistorySlot::Current, ResourceState::General, true);
+            if (!result) { return result; }
+            result = history.publishTextureState(context.commandBuffer(), name,
+                HistorySlot::Previous, ResourceState::General);
+            if (!result) { return result; }
+        }
         previousCamera_ = currentCamera;
         previousCameraWidth_ = context.width();
         previousCameraHeight_ = context.height();
@@ -705,25 +747,11 @@ private:
             previous.texture == nullptr || previous.view == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        result = history->transitionTexture(
-            context.commandBuffer(),
-            name,
-            HistorySlot::Current,
-            ResourceState::General);
-        if (!result) {
-            return result;
-        }
-        result = history->transitionTexture(
-            context.commandBuffer(),
-            name,
-            HistorySlot::Previous,
-            ResourceState::General);
-        if (!result) {
-            return result;
-        }
         outViews.current = current.view;
         outViews.previous = previous.view;
         outViews.previousValid = previous.valid;
+        outViews.currentResource = current;
+        outViews.previousResource = previous;
         return {};
     }
 

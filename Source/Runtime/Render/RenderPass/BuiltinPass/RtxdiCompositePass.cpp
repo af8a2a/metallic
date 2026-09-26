@@ -10,19 +10,19 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureInput("denoisedDiffuse", "RELAX denoised diffuse radiance")
-            .storageReadWrite()
+            .storageRead()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureInput("denoisedSpecular", "RELAX denoised specular radiance")
-            .storageReadWrite()
+            .storageRead()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureInput("baseColorMetalness", "Base color and metalness")
-            .storageReadWrite()
+            .storageRead()
             .format = Format::Rgba8Unorm;
         reflection.addTextureInput("emissive", "Emissive and background radiance")
-            .storageReadWrite()
+            .storageRead()
             .format = Format::Rgba16Sfloat;
         reflection.addTextureOutput("color", "Composited RELAX-denoised RTXDI color")
-            .storageReadWrite()
+            .storageWrite()
             .format = properties().value("outputLinear", false) ? Format::Rgba32Sfloat : Format::Rgba8Unorm;
         return reflection;
     }

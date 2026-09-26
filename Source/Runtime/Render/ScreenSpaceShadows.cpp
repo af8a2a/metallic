@@ -1,4 +1,5 @@
 #include "Runtime/Render/ScreenSpaceShadows.h"
+#include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/NrdRuntime.h"
@@ -244,22 +245,39 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
     state->parameters->unmap();
     commands.hostWriteBarrier();
 
-    profile.next("Record image transitions");
-    std::array<TextureBarrierDesc, 5> barriers;
-    for (size_t i = 0; i < barriers.size(); ++i) {
-        barriers[i] = {.texture = state->textures[i].get(),
-            .before = state->initialized ? (i == 4 ? ResourceState::ShaderRead : ResourceState::General) : ResourceState::Undefined,
-            .after = state->initialized ? ResourceState::General : ResourceState::TransferDestination,
-            .mipCount = 1, .layerCount = 1};
-    }
-    commands.barrier({.textures = barriers.data(), .textureCount = 5});
-    if (!state->initialized) {
-        for (size_t i = 0; i < barriers.size(); ++i) {
-            commands.clearColorTexture(*state->textures[i], ResourceState::TransferDestination, {1, 1, 1, 1});
-            barriers[i].before = ResourceState::TransferDestination;
-            barriers[i].after = ResourceState::General;
+    profile.next("Plan shadow accesses");
+    std::array<detail::GraphAccessResource, 5> accessResources;
+    std::array<detail::GraphAccessBinding, 5> accessBindings;
+    std::array<detail::GraphAccessPass, 4> accessStages;
+    for (size_t i = 0; i < accessResources.size(); ++i) {
+        accessResources[i] = {.type = RenderGraphResourceType::Texture2D,
+            .state = state->initialized ? (i == 4 ? ResourceState::ShaderRead : ResourceState::General) : ResourceState::Undefined,
+            .scope = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
+        accessBindings[i] = {.texture = state->textures[i].get()};
+        if (!state->initialized) {
+            accessStages[0].uses.push_back({i, ResourceState::TransferDestination,
+                {PipelineStageBits::Transfer, AccessBits::TransferWrite}, true});
         }
-        commands.barrier({.textures = barriers.data(), .textureCount = 5});
+        accessStages[1].uses.push_back({i, ResourceState::General,
+            {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}, true});
+        if (denoise) {
+            accessStages[2].uses.push_back({i, ResourceState::General,
+                {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}, true});
+        }
+    }
+    accessStages[3].uses.push_back({4, ResourceState::ShaderRead,
+        {PipelineStageBits::AllCommands, AccessBits::ShaderRead}, false});
+    auto accessPlan = detail::buildGraphAccessPlan(accessResources, accessStages);
+    if (!accessPlan) { return makeError(accessPlan.error()); }
+    const auto enterStage = [&](size_t index) {
+        return detail::recordGraphAccessBarriers(commands, accessPlan->passes[index], accessBindings);
+    };
+    if (!state->initialized) {
+        result = enterStage(0);
+        if (!result) { return result; }
+        for (size_t i = 0; i < accessResources.size(); ++i) {
+            commands.clearColorTexture(*state->textures[i], ResourceState::TransferDestination, {1, 1, 1, 1});
+        }
     }
     profile.next("Prepare dispatch bindings");
     TextureView* depthView = &depth;
@@ -308,6 +326,8 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
         bindings.push_back({.binding = kNeuralTextureSamplerBinding, .sampler = &neural->latentSampler()});
     }
     profile.next("Record trace dispatch");
+    result = enterStage(1);
+    if (!result) { return result; }
     commands.beginDebugLabel({.name = "Ray-traced shadows"});
     result = trace.dispatch({.commandBuffer = &commands, .bindings = bindings.data(), .bindingCount = uint32_t(bindings.size()),
         .pushData = geometryPush, .pushDataSize = sizeof(geometryPush),
@@ -317,6 +337,8 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
     profile.next("Record denoising");
 #if METALLIC_HAS_NRD
     if (denoise) {
+        result = enterStage(2);
+        if (!result) { return result; }
         if (!state->sigma.valid()) {
             NrdUserTexturePool pool{};
             const denoising::ResourceType resources[] = {denoising::ResourceType::IN_PENUMBRA,
@@ -358,9 +380,8 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
     }
 #endif
     profile.next("Finalize shadow state");
-    const TextureBarrierDesc shadowReady{.texture = state->textures[4].get(),
-        .before = ResourceState::General, .after = ResourceState::ShaderRead, .mipCount = 1, .layerCount = 1};
-    commands.barrier({.textures = &shadowReady, .textureCount = 1});
+    result = enterStage(3);
+    if (!result) { return result; }
     state->initialized = true;
     state->sceneRevision = sceneRevision;
     state->transformRevision = transformRevision;

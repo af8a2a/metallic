@@ -31,7 +31,7 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "glTF material diagnostic visualization")
-            .storageReadWrite()
+            .storageWrite()
             .format = Format::Rgba8Unorm;
         return reflection;
     }

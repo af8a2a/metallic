@@ -96,18 +96,29 @@ SyncScope scopeForGraphAccess(RenderGraphResourceAccess access, RenderGraphPassK
             : PipelineStageBits::AllCommands;
     switch (access) {
     case RenderGraphResourceAccess::TextureSampleRead:
-    case RenderGraphResourceAccess::TextureStorageRead:
+    case RenderGraphResourceAccess::TextureSampleReadGeneral:
     case RenderGraphResourceAccess::BufferShaderRead:
-    case RenderGraphResourceAccess::BufferStorageRead:
         return {shaderStages, AccessBits::ShaderRead};
+    case RenderGraphResourceAccess::TextureStorageRead:
+    case RenderGraphResourceAccess::BufferStorageRead:
+        return {shaderStages, kind == RenderGraphPassKind::Unsafe
+            ? AccessBits::ShaderRead | AccessBits::MemoryRead : AccessBits::ShaderRead};
     case RenderGraphResourceAccess::TextureStorageWrite:
     case RenderGraphResourceAccess::BufferStorageWrite:
-        return {shaderStages, AccessBits::ShaderWrite};
+        return {shaderStages, kind == RenderGraphPassKind::Unsafe
+            ? AccessBits::ShaderWrite | AccessBits::MemoryWrite : AccessBits::ShaderWrite};
     case RenderGraphResourceAccess::TextureStorageReadWrite:
     case RenderGraphResourceAccess::BufferStorageReadWrite:
-        return {shaderStages, AccessBits::ShaderRead | AccessBits::ShaderWrite};
+        // Opaque SDK operations may also copy, fill or consume indirect data.
+        // Keep explicit shader bits for permission subsets and conservatively
+        // cover those hidden operations at the declared General boundary.
+        return {shaderStages, kind == RenderGraphPassKind::Unsafe
+            ? AccessBits::ShaderRead | AccessBits::ShaderWrite | AccessBits::MemoryRead | AccessBits::MemoryWrite
+            : AccessBits::ShaderRead | AccessBits::ShaderWrite};
     case RenderGraphResourceAccess::BufferConstantRead:
         return {shaderStages, AccessBits::UniformRead};
+    case RenderGraphResourceAccess::BufferIndirectRead:
+        return {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead};
     case RenderGraphResourceAccess::TextureColorWrite:
         return {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite};
     case RenderGraphResourceAccess::TextureDepthStencilWrite:
@@ -152,6 +163,8 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
         const auto& binding = bindings[resource];
         if (binding.texture) {
             return !binding.buffer.valid() && binding.mipCount != 0 && binding.layerCount != 0 &&
+                binding.texture->deviceIdentity() == commands.deviceIdentity() &&
+                binding.texture->retainAllocation() &&
                 binding.mipCount <= binding.texture->desc().mipCount &&
                 binding.layerCount <= binding.texture->desc().layerCount;
         }
@@ -183,6 +196,9 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
         const auto& binding = bindings[use.resource];
         if (binding.buffer.valid()) {
             auto retained = commands.retainResource(binding.buffer.retainAllocation());
+            if (!retained) { return retained; }
+        } else {
+            auto retained = commands.retainResource(binding.texture->retainAllocation());
             if (!retained) { return retained; }
         }
     }

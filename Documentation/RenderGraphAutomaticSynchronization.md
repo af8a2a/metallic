@@ -230,7 +230,7 @@ Metallic 适合借鉴其声明与编译分离，不需要照搬宏系统、另�
 
 ### 当前边界
 
-本阶段覆盖**图拥有资源的跨 pass、整资源访问**。随后第 10 节加入了单队列 compute 内部阶段与私有 buffer 导入，并迁移 AutoExposure。buffer slice 精确区间、texture mip/layer/aspect、通用 HistoryManager/import/export、NRD、动态 bindless/BDA 可达集合，以及 exclusive ownership transfer 尚未纳入；未迁移的内部 barrier 和 opaque 边界继续承担这些责任。
+本阶段覆盖**图拥有资源的跨 pass、整资源访问**。随后第 10 节加入单队列 compute 阶段，第 12 节推广到混合内部阶段、私有纹理和 History/NRD。buffer slice 精确区间、texture mip/layer/aspect、动态 bindless/BDA 可达集合以及 exclusive ownership transfer 尚未纳入；opaque 子系统内部同步继续承担这些责任。
 
 跨帧和外部命令边界暂时使用现有 completion waits，加保守的 `AllCommands / MemoryRead|MemoryWrite` 初始范围。第 11 节已加入同一计划内按 queue/stage/access 的可见性覆盖，消除重复 RAW barrier。不同逻辑 texture state 仍可能保守生成 layout 依赖，即使后端采用 GENERAL policy；不宣称全局最优或 GPU 性能提升。
 
@@ -322,3 +322,55 @@ Histogram 使用外层已经同步好的图资源边界。Reduce 前的计划合
 所有上述测试均未跳过，日志未发现 VUID / SYNC-HAZARD。MiniZorah 本身不含 AutoExposure，曝光行为由专项 GPU 用例验证。本轮没有端到端性能 A/B，也未完成长路线时序及全场景视觉验收，不能由 barrier 数量推导帧率收益。
 
 本地构建和运行日志为 `build-scheduling-release/raw-visibility-{build,tests,regression,optimal,minizorah}.log`；场景报告为 `raw-visibility-minizorah/Baseline.json`，均留在 build 输出目录。
+
+## 12. 已实现：推广到 RenderPass 内部阶段
+
+新增 `RenderGraphExecutionContext::executeStages()`，将 compute、raster、transfer 与 opaque SDK 操作编译为同一 `GraphAccessPlan`。旧 `executeComputeStages()` 的严格校验保持不变。Pass 声明访问及操作回调，跨 pass 和内部阶段的 RAW/WAR/WAW、layout 转换与重复 RAW 消除都使用共享 planner；不再在各 BuiltinPass 中维护一套原生 barrier。
+
+### 反射边界与私有资源
+
+- `RenderGraphField::stageAccess(access, kind)` 声明内部用途并扩展原生 usage；字段原有 `access/state` 是固定的外层边界。外层计划聚合所有内部 scope/写入。内部发生 layout 转换的只读字段也作为独占访问，避免与跨队列读分叉竞态。序列结束统一恢复边界。
+- 出口仅恢复实际改变的纹理 layout；buffer 和已处于返回 layout 的纹理不额外生成 scope-only barrier。后续消费者的可见性由外层计划或下一次 import 保证，避免刚消除的 RAW 又在序列出口重复出现。
+- `input.name` / `output.name` 可区分同名字段；短名仅在唯一时有效。完整序列预验证包括名称、权限、usage、设备与 allocation/view 一致性，非法后续阶段不会先执行有效前缀。
+- `RenderGraphTextureImport` 提供真实初态与可选最终状态；`RenderGraphBufferImport` 使用现有 `BufferSlice`。别名按 allocation 合并，不能通过私有导入绕过图字段权限。当前按整 allocation 同步，导入不引入跨队列等待，调用方仍负责排序先前外部工作。
+- buffer 与 texture 在共享编码器中保留到 completion，首个访问没有 barrier 也保留。`HistoryResourceManager::publishTextureState()` 只发布已规划状态及内容有效性，事务绑定物理槽位和 allocation generation，取消会回滚并使历史内容失效。
+- Unsafe storage 访问包含 `AllCommands` 与对应 `MemoryRead/MemoryWrite`，覆盖 SDK 内隐藏的 copy/fill/indirect 操作。普通 Compute/Raster 保持精确 shader scope。`TextureSampleReadGeneral` 表达 GENERAL 中的 sampled 访问，不会为 DLSS 的 D32 输入误加 Storage usage。
+
+### 已迁移路径
+
+| 路径 | 计划负责的内部依赖 |
+| --- | --- |
+| VisibilityBuffer | Init/LOD/Cull、Raster、HZB、Composite；冻结相机私有纹理；统计与诊断私有 buffer 的局部阶段 |
+| GPUDrivenStreamAsset | early/late Cull、Raster、HZB、Deferred、Composite 及私有颜色 buffer |
+| PathTrace | LUT 上传、普通/间接 shading、history、SHaRC clear/update/resolve/query、NRC BeginFrame/update/query/train/resolve/tonemap |
+| RTXDI / Confidence | ReSTIR history；gradient/filter ping-pong/resolve；首次描述符可达纹理初始化 |
+| DLSS NR / Streamline | bypass/fallback copy、SDK 边界、SR 私有 depth、alpha/guide/slider；失败才执行 fallback 的 transfer 计划 |
+| NRD / shadow | clear、逐 dispatch 的真实纹理访问；shadow trace/denoise/output/copy 边界 |
+
+另外收窄了 FinalBlit、LightGridDebug、SliderDebug、材质/法线可视化、RTXCR、VisibilityBufferMaterial、RTXDI/Composite 的 graph 读写反射，去除无实际用途的 StorageReadWrite 声明。原生 layout policy 保持不变。
+
+### 并行、取消和保留边界
+
+Visibility 的 Raster 阶段显式使用 `Unsafe + allowParallelCompute` 保留原软件/硬件光栅 fork/join。只有原本已保证分支独立且完整 join 的 opaque 操作可以选择它；阶段结束重新获取 join command buffer，并在最终 segment 保留资源。这不是新的内部多队列自动调度器。
+
+私有 history、冻结相机纹理、LUT 上传和缓存有效性通过现有 submission transaction 处理取消。NRC 的 EndFrame pending 在提交接受后发布，遵守 SDK 已提交要求；NRD 在 schedule 后准备失败也强制历史失效，防止槽位已轮转却沿用旧历史。未改变提交策略、缓存容量或上传预算。
+
+GPUScene、ResidentLOD、HybridRasterizer、streaming、MaterialBinning 和 SDK 仍是具有自身内部同步契约的 opaque 操作。推导覆盖它们的声明边界，不猜测动态 BDA/bindless 使用集；shader workgroup barrier 仍属于算法。当前模型不宣称全局最少 barrier、精确 subresource 跟踪或自动 queue ownership transfer，也不能仅由 barrier 数量推断帧率收益。
+
+### 验证入口
+
+新增混合阶段 GPU 测试覆盖 transfer copy/像素回读、纹理 allocation 别名、同名 input/output、最终状态恢复、非法声明全序列拒绝和显式 Unsafe fork/join；History 专项覆盖多次发布、取消、槽位轮转与 resize。构建/运行证据保存在 `build-scheduling-release/pass-stages-*.log`，NRD 使用独立 `build-pass-stages-nrd` 配置，保持现有 SDK 配置不变。
+
+本轮启用 `VK_LAYER_VALIDATE_SYNC=1`，通过了 27 项访问计划/阶段/曝光专项、22 项图执行/提交/像素回归、10 项 NRD CPU/GPU 测试（含 preflight 失败后的真实历史输出）、RTXDI/Confidence 与 SIGMA 的 2 项图测试、DLSS-NR 原生运行/slider/支持 shader 的 3 项测试，以及 TaskTests。MiniZorah 600 帧固定机位与 streaming 首帧检查通过，使用 4 recording workers、CLAS、1080p 和已有 cook/OS/PSO 缓存；未启动 ZorahFull。检查了输出图像，没有进行性能 A/B 或长路线视觉验收。
+
+验证仍有明确限制：
+
+- `render_graph_final_blit_pipelines` 的静态目录清单漏掉仓库已有的 `gpu_driven_realtime.metallic_graph.json`；该清单和 pipeline 本轮未修改，单独记录此失败。
+- NRC 缓存阶段的像素/history/取消重录断言通过，但设备销毁时报告 112 个 Vulkan 对象残留。临时诊断确认同一 context 的 Create/Configure/EndFrame/Destroy 均返回成功，且 Shutdown 已完成，仍不能宣称该 SDK 生命周期完整通过。新增 gated 测试将设备销毁也纳入验证计数。
+- DLSS-SR realtime 图的相机运动、guide、NR 开关、resize 断言通过；进程 teardown 出现 Streamline exception 与一个 semaphore 残留，退出码 `0xC0000005`。这是失败的完整运行，不能仅按 GoogleTest 的帧内 PASS 报告成功。证据为 `pass-stages-realtime.log`。
+
+缓存取消回归还发现无 `RenderFrameContext` 的 external 录制没有可用 GPU completion，却会查询尚未执行 reset 的 timestamp。此路径改为仅保留 CPU scope；需要 GPU timing 的调用者必须使用带 frame completion 的录制。队列接受回执不等价于 GPU 完成，query availability 也不能区分尚未 reset 的旧 generation。
+
+修复后的 5 项 profiling 测试与 SHaRC 小缓存取消重录测试通过；新增的 timeline gate 验证已接受但 GPU 未完成时不会发布无依据的时间戳。NRC gated 用例在包含 device teardown 后如实报告失败，原始日志保留于 `pass-stages-lifecycle.log`。仅初始化/关闭 Streamline 的反射对照正常退出（`pass-stages-streamline-control.log`）；因此尚未证明 realtime 退出异常是既有问题，也未把它归因于 barrier 推导。
+
+出口去重后的最终验证选择共 65 项：64 项在 `pass-stages-final-tests.log` 通过，bindless workflow 迁移到真实 frame/receipt 后在 `pass-stages-bindless-final.log` 单独复测通过，原有时间戳和像素断言保持。NRD 10 项、NRD 图 2 项、DLSS-NR 3 项与 MiniZorah 2 项均在 `pass-stages-*-final*.log` 复测通过；NRC 的最终 gated 运行仍因上述退出泄漏失败（`pass-stages-nrc-final.log`），帧内未发现同步验证错误。

@@ -307,6 +307,7 @@ public:
             "Meshlet streamasset deferred color");
         if (boolProperty(properties(), "rtasVisualization", false)) {
             color.texture2D().storageReadWrite().format = Format::Rgba8Unorm;
+            color.stageAccess(RenderGraphResourceAccess::TextureStorageWrite);
         } else {
             color.texture2D().colorWrite();
         }
@@ -315,12 +316,12 @@ public:
             "Stream mesh shader visibility IDs");
         visibility.colorWrite();
         visibility.format = Format::R32Uint;
-        visibility.usage = visibility.usage | TextureUsageBits::Sampled;
+        visibility.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
         RenderGraphField& depth = reflection.addTextureOutput(
             "depth",
             "Meshlet streamasset visibility depth and HZB source");
         depth.texture2D().depthStencilWrite();
-        depth.usage = depth.usage | TextureUsageBits::Sampled;
+        depth.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
         return reflection;
     }
 
@@ -696,8 +697,6 @@ public:
             log = "GPUDrivenStreamAssetPass failed to publish raster bindings";
             return result;
         }
-        deferredColorState_ = ResourceState::Undefined;
-
         if (rtasVisualization_) {
             result = initializeRayQuery(*context.device, log);
             if (!result) {
@@ -841,103 +840,66 @@ public:
         result = registry.bind(context.commandBuffer());
         if (!result) { return result; }
 
+        using Access = RenderGraphResourceAccess;
         if (rtasVisualization_) {
-            {
-                auto profile = context.profileScope("Ray query");
-                result = drawRayQuery(context, color, frame);
-            }
+            const RenderGraphStageUse rayQueryUses[] = {{"color", Access::TextureStorageWrite}};
+            const RenderGraphStage stages[] = {{"Ray query", rayQueryUses,
+                [&](CommandBuffer&) { return drawRayQuery(context, color, frame); }}};
+            result = context.executeStages(stages);
         } else {
-            {
-                auto profile = context.profileScope("Early Instance cull");
-                result = dispatchInstanceCull(
-                    context.commandBuffer(),
-                    GPUSceneCullPhase::Early);
-            }
-            if (!result) {
-                return result;
-            }
-            gpuDrivenDebugCheckpoint(context, "AfterEarlyCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), 0);
-            result = streamRuntime_->cmdPrepareVisibility(context.commandBuffer());
-            if (result) {
-                {
-                    auto profile = context.profileScope("Early Hardware raster");
-                    result = draw(
-                        context,
-                        *visibility.view(),
-                        depth,
-                        GPUSceneCullPhase::Early,
-                        LoadOp::Clear,
-                        frame.camera.reversedZ);
-                }
-            }
-            if (result) {
-                transitionTexture(
-                    context.commandBuffer(),
-                    *depth.texture(),
-                    ResourceState::DepthStencilAttachment,
-                    ResourceState::ShaderRead);
-                {
-                    auto profile = context.profileScope("Early HZB");
-                    result = buildHzb(context.commandBuffer());
-                }
-            }
-            if (result) {
-                transitionTexture(
-                    context.commandBuffer(),
-                    *depth.texture(),
-                    ResourceState::ShaderRead,
-                    ResourceState::DepthStencilAttachment);
-                {
-                    auto profile = context.profileScope("Late Instance cull");
-                    result = dispatchInstanceCull(
-                        context.commandBuffer(),
-                        GPUSceneCullPhase::Late);
-                }
-            }
-            if (result) {
-                gpuDrivenDebugCheckpoint(context, "AfterLateCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), 1);
-                result = streamRuntime_->cmdPrepareVisibility(context.commandBuffer());
-            }
-            if (result) {
-                {
-                    auto profile = context.profileScope("Late Hardware raster");
-                    result = draw(
-                        context,
-                        *visibility.view(),
-                        depth,
-                        GPUSceneCullPhase::Late,
-                        LoadOp::Load,
-                        frame.camera.reversedZ);
-                }
-            }
-            if (result) {
-                transitionTexture(
-                    context.commandBuffer(),
-                    *depth.texture(),
-                    ResourceState::DepthStencilAttachment,
-                    ResourceState::ShaderRead);
-                {
-                    auto profile = context.profileScope("Late HZB");
-                    result = buildHzb(context.commandBuffer());
-                }
-            }
-            if (result) {
-                {
-                    auto profile = context.profileScope("Deferred shading");
-                    result = dispatchDeferred(context, visibility);
-                }
-            }
-            if (result) {
-                transitionTexture(
-                    context.commandBuffer(),
-                    *depth.texture(),
-                    ResourceState::ShaderRead,
-                    ResourceState::DepthStencilAttachment);
-                {
-                    auto profile = context.profileScope("Composite");
-                    result = drawComposite(context, color);
-                }
-            }
+            const RenderGraphStageUse rasterUses[] = {
+                {"visibility", Access::TextureColorWrite},
+                {"depth", Access::TextureDepthStencilWrite},
+            };
+            const RenderGraphStageUse hzbUses[] = {{"depth", Access::TextureSampleRead}};
+            const RenderGraphStageUse deferredUses[] = {
+                {"visibility", Access::TextureSampleRead},
+                {"deferredColor", Access::BufferStorageWrite},
+            };
+            const RenderGraphStageUse compositeUses[] = {
+                {"deferredColor", Access::BufferShaderRead},
+                {"color", Access::TextureColorWrite},
+            };
+            // GPUScene and streaming recorders retain their private-resource
+            // synchronization contracts. This sequence owns graph image layouts
+            // and the pass-owned deferred buffer across their opaque operations.
+            const auto cull = [&](CommandBuffer& commands, GPUSceneCullPhase phase) -> Result<> {
+                auto cullResult = dispatchInstanceCull(commands, phase);
+                if (!cullResult) { return cullResult; }
+                gpuDrivenDebugCheckpoint(context,
+                    phase == GPUSceneCullPhase::Early ? "AfterEarlyCull" : "AfterLateCull",
+                    gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(),
+                    phase == GPUSceneCullPhase::Early ? 0u : 1u);
+                return streamRuntime_->cmdPrepareVisibility(commands);
+            };
+            const RenderGraphStage stages[] = {
+                {"Early Instance cull", {}, [&](CommandBuffer& commands) {
+                    return cull(commands, GPUSceneCullPhase::Early);
+                }},
+                {"Early Hardware raster", rasterUses, [&](CommandBuffer&) {
+                    return draw(context, *visibility.view(), depth, GPUSceneCullPhase::Early,
+                        LoadOp::Clear, frame.camera.reversedZ);
+                }, RenderGraphPassKind::Raster},
+                {"Early HZB", hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands); }},
+                {"Late Instance cull", {}, [&](CommandBuffer& commands) {
+                    return cull(commands, GPUSceneCullPhase::Late);
+                }},
+                {"Late Hardware raster", rasterUses, [&](CommandBuffer&) {
+                    return draw(context, *visibility.view(), depth, GPUSceneCullPhase::Late,
+                        LoadOp::Load, frame.camera.reversedZ);
+                }, RenderGraphPassKind::Raster},
+                {"Late HZB", hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands); }},
+                {"Deferred shading", deferredUses, [&](CommandBuffer&) { return dispatchDeferred(context); }},
+                {"Composite", compositeUses, [&](CommandBuffer&) {
+                    return drawComposite(context, color);
+                }, RenderGraphPassKind::Raster},
+            };
+            auto deferredColor = deferredColorBuffer_->slice();
+            if (!deferredColor) { return makeError(deferredColor.error()); }
+            const RenderGraphBufferImport imports[] = {
+                {"deferredColor", *deferredColor, Access::BufferStorageReadWrite},
+            };
+            result = context.executeStages(stages, imports);
             if (result) {
                 hzbValid_ = true;
                 if (!gpuSceneSubsystem->markViewHzbValid(
@@ -1081,26 +1043,8 @@ private:
         frameHeight_ = height;
         hzbMipCount_ = mipCount;
         hzbElementCount_ = elementCount;
-        deferredColorState_ = ResourceState::Undefined;
         hzbValid_ = false;
         return {};
-    }
-
-    static void transitionTexture(
-        CommandBuffer& commandBuffer,
-        Texture& texture,
-        ResourceState before,
-        ResourceState after)
-    {
-        const TextureBarrierDesc barrier{
-            .texture = &texture,
-            .before = before,
-            .after = after,
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = &barrier,
-            .textureCount = 1,
-        });
     }
 
     Result<> prepareGPUSceneView(
@@ -1475,29 +1419,8 @@ private:
         return {};
     }
 
-    Result<> dispatchDeferred(
-        RenderGraphExecutionContext& context,
-        TextureHandle visibility)
+    Result<> dispatchDeferred(RenderGraphExecutionContext& context)
     {
-        TextureBarrierDesc visibilityBarrier{
-            .texture = visibility.texture(),
-            .before = ResourceState::ColorAttachment,
-            .after = ResourceState::ShaderRead,
-        };
-        context.commandBuffer().barrier(BarrierDesc{
-            .textures = &visibilityBarrier,
-            .textureCount = 1,
-        });
-        BufferBarrierDesc colorBarrier{
-            .buffer = deferredColorBuffer_.get(),
-            .before = deferredColorState_,
-            .after = ResourceState::General,
-        };
-        context.commandBuffer().barrier(BarrierDesc{
-            .buffers = &colorBarrier,
-            .bufferCount = 1,
-        });
-        deferredColorState_ = ResourceState::General;
         Result<> result = streamRuntime_->cmdPrepareDeferred(context.commandBuffer());
         if (!result) {
             return result;
@@ -1510,27 +1433,11 @@ private:
             (frameWidth_ + 7u) / 8u,
             (frameHeight_ + 7u) / 8u,
             1u);
-        visibilityBarrier.before = ResourceState::ShaderRead;
-        visibilityBarrier.after = ResourceState::ColorAttachment;
-        context.commandBuffer().barrier(BarrierDesc{
-            .textures = &visibilityBarrier,
-            .textureCount = 1,
-        });
         return {};
     }
 
     Result<> drawComposite(RenderGraphExecutionContext& context, TextureHandle color)
     {
-        BufferBarrierDesc colorBarrier{
-            .buffer = deferredColorBuffer_.get(),
-            .before = deferredColorState_,
-            .after = ResourceState::ShaderRead,
-        };
-        context.commandBuffer().barrier(BarrierDesc{
-            .buffers = &colorBarrier,
-            .bufferCount = 1,
-        });
-        deferredColorState_ = ResourceState::ShaderRead;
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -1650,7 +1557,6 @@ private:
     ResourceLease visibleInstanceIdsHandle_;
     ResourceLease visibleInstanceCounterHandle_;
     std::array<ResourceLease, 2> hzbHandles_{};
-    ResourceState deferredColorState_ = ResourceState::Undefined;
     uint32_t frameWidth_ = 1;
     uint32_t frameHeight_ = 1;
     uint32_t hzbMipCount_ = 1;

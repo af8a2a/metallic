@@ -5163,6 +5163,16 @@ uint64_t Texture::allocationSize() const
     return impl_ ? impl_->allocationSize : 0;
 }
 
+std::shared_ptr<void> Texture::retainAllocation() const
+{
+    return impl_ && impl_->ownsImage ? impl_ : nullptr;
+}
+
+const void* Texture::deviceIdentity() const
+{
+    return impl_ ? impl_->device : nullptr;
+}
+
 TextureView::TextureView(std::unique_ptr<detail::TextureViewImpl> impl)
     : impl_(std::move(impl))
 {

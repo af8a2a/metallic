@@ -193,7 +193,11 @@ Result<> NrcIntegration::initialize(Device& device, std::string& log)
 void NrcIntegration::clear()
 {
     if (context_ != nullptr) {
-        nrc::vulkan::Context::Destroy(*context_);
+        const nrc::Status destroyStatus = nrc::vulkan::Context::Destroy(*context_);
+        if (destroyStatus != nrc::Status::OK) {
+            spdlog::error("[NRC] Context::Destroy context={} status={}",
+                static_cast<const void*>(context_), static_cast<uint32_t>(destroyStatus));
+        }
         context_ = nullptr;
     }
     for (std::unique_ptr<Buffer>& buffer : buffers_) {

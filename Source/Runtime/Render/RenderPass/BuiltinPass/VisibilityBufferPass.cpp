@@ -1,6 +1,8 @@
 #include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
+#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
 #include "Runtime/Render/ResidentMeshletLod.h"
@@ -23,6 +25,44 @@ namespace metallic::render::builtin_pass {
 namespace {
 
 using GPUDrivenCompileClock = std::chrono::steady_clock;
+
+struct PrivateBufferComputeStage {
+    RenderGraphResourceAccess access;
+    std::function<Result<>()> record;
+};
+
+// A private helper operation can still describe its local dispatch dependencies
+// with the graph planner. Other inputs retain the enclosing helper's contract.
+Result<> recordPrivateBufferComputeStages(CommandBuffer& commands, Buffer& buffer,
+    std::span<const PrivateBufferComputeStage> stages)
+{
+    auto slice = buffer.slice();
+    if (!slice) { return makeError(slice.error()); }
+    const detail::GraphAccessResource resources[] = {{
+        .type = RenderGraphResourceType::Buffer,
+        .state = ResourceState::General,
+        .scope = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}}};
+    const detail::GraphAccessBinding bindings[] = {{.buffer = *slice}};
+    std::vector<detail::GraphAccessPass> accesses;
+    accesses.reserve(stages.size());
+    for (const auto& stage : stages) {
+        if (!stage.record || (stage.access != RenderGraphResourceAccess::BufferStorageWrite &&
+            stage.access != RenderGraphResourceAccess::BufferStorageReadWrite)) {
+            return makeError(Error::InvalidArgument);
+        }
+        accesses.push_back({.uses = {{0, ResourceState::General,
+            detail::scopeForGraphAccess(stage.access, RenderGraphPassKind::Compute), true}}});
+    }
+    auto plan = detail::buildGraphAccessPlan(resources, accesses);
+    if (!plan) { return makeError(plan.error()); }
+    for (size_t index = 0; index < stages.size(); ++index) {
+        auto result = detail::recordGraphAccessBarriers(commands, plan->passes[index], bindings);
+        if (!result) { return result; }
+        result = stages[index].record();
+        if (!result) { return result; }
+    }
+    return {};
+}
 
 void logGPUDrivenCompileStage(
     std::string_view stage,
@@ -193,12 +233,13 @@ public:
             "Hybrid hardware / software visibility buffer");
         visibility.colorWrite();
         visibility.format = Format::R32Uint;
-        visibility.usage = visibility.usage | TextureUsageBits::Sampled;
+        visibility.stageAccess(RenderGraphResourceAccess::TextureSampleRead, RenderGraphPassKind::Raster);
         RenderGraphField& depth = reflection.addTextureOutput(
             "depth",
             "Visibility pass depth and HZB source");
         depth.depthStencilWrite();
-        depth.usage = depth.usage | TextureUsageBits::Sampled;
+        depth.stageAccess(RenderGraphResourceAccess::TextureSampleRead)
+            .stageAccess(RenderGraphResourceAccess::TextureSampleRead, RenderGraphPassKind::Raster);
         auto& domain = reflection.addTextureOutput("domain", "Displaced domain barycentrics and geometric normal");
         domain.colorWrite();
         // Inactive consumers are gated by rasterInfo; keep the graph port cheap
@@ -505,7 +546,7 @@ public:
         frameIndex_ = 0;
         invalidateHzbHistory();
         previousCameraValid_ = false;
-        cullingTargetsInitialized_ = false;
+        cullingTargetsInitialized_ = std::make_shared<bool>(false);
         freezeCullingCamera_ = false;
         frozenCullingCameraValid_ = false;
         frameSlotCount_ = requestedFrameSlotCount;
@@ -896,14 +937,6 @@ public:
         result = context.commandBuffer().retainResource(std::const_pointer_cast<PreparedBindings>(preparedBindings_));
         if (result) { result = preparedBindings_->registry->bind(context.commandBuffer()); }
         if (!result) { return result; }
-        {
-            auto profile = context.profileScope("Initialize / light grid");
-            result = initializeInternalBuffers(context.commandBuffer());
-        }
-        if (!result) {
-            return result;
-        }
-
         MeshletLodView lodView;
         std::copy_n(previousParams_.eye, 4, lodView.eye.begin());
         lodView.eye[3] = previousParams_.clipOrtho[0];
@@ -916,182 +949,131 @@ public:
         lodView.projection = {previousParams_.viewport[2], std::tan(previousParams_.viewport[3] * 0.5f),
             previousParams_.clipOrtho[2], error * std::exp2(bias)};
         const auto& slot = activeFrameResources();
-        {
-            auto profile = context.profileScope("Resident LOD");
-            result = residentLods_[activeFrameSlot_]->record(context.commandBuffer(), *registry_,
+        using Access = RenderGraphResourceAccess;
+        std::vector<RenderGraphStageUse> rasterUses{
+            {"visibility", Access::TextureColorWrite}, {"depth", Access::TextureDepthStencilWrite}};
+        if (tessellationEnabled()) {
+            rasterUses.push_back({"domain", Access::TextureColorWrite});
+            rasterUses.push_back({"color", Access::TextureColorWrite});
+        }
+        const RenderGraphStageUse frozenRasterUses[] = {
+            {"cullingVisibility", Access::TextureColorWrite}, {"cullingDepth", Access::TextureDepthStencilWrite}};
+        const RenderGraphStageUse hzbUses[] = {
+            {freezeCullingCamera_ ? "cullingDepth" : "depth", Access::TextureSampleRead}};
+        const RenderGraphStageUse compositeUses[] = {
+            {"visibility", Access::TextureSampleRead}, {"depth", Access::TextureSampleRead},
+            {"color", Access::TextureColorWrite}};
+        std::vector<RenderGraphStage> stages;
+        stages.reserve(16);
+        stages.push_back({"Initialize / light grid", {}, [&](CommandBuffer& commands) {
+            return initializeInternalBuffers(commands);
+        }});
+        stages.push_back({"Resident LOD", {}, [&](CommandBuffer& commands) -> Result<> {
+            auto lodResult = residentLods_[activeFrameSlot_]->record(commands, *registry_,
                 gpuSceneBindings_, lodView, adaptiveMeshletRange_, instanceCount_, lodGroupCount_,
                 slot.lodSelectionHandle, slot.lodArgumentsHandle, slot.lodScratchHandle,
                 autoLodFromProperties(properties()) ? UINT32_MAX : lodLevelFromProperties(properties()));
+            if (!lodResult) { return lodResult; }
+            if (context.debugEnabled()) {
+                const std::string prefix = "lod." + context.passName() + ".";
+                auto& selection = *residentLods_[activeFrameSlot_];
+                const DebugResourceBinding resources[] = {
+                    {.id = prefix + "header", .buffer = &selection.selections(), .state = ResourceState::ShaderRead,
+                        .size = 16, .layout = "MeshletLodSelectionHeader"},
+                    {.id = prefix + "selections", .buffer = &selection.selections(), .state = ResourceState::ShaderRead,
+                        .offset = 16, .size = uint64_t(selection.capacity()) * sizeof(MeshletLodSelection),
+                        .layout = "MeshletLodSelection", .metadata = {{"validity", "First header.count entries are live; stable original record order"}}},
+                    {.id = prefix + "arguments", .buffer = &selection.arguments(), .state = ResourceState::IndirectArgument,
+                        .size = selection.arguments().desc().size}};
+                context.debugCheckpoint("AfterResidentLod", resources, {{"lod", {{"frameSlot", activeFrameSlot_},
+                    {"targetPixels", lodView.projection[3]}, {"candidateCount", adaptiveMeshletRange_.count}}}});
+            }
+            return {};
+        }});
+        const auto addHzb = [&](std::string_view name) {
+            stages.push_back({name, hzbUses, [&](CommandBuffer& commands) { return buildHzb(commands); }});
+        };
+        const auto addResidentRaster = [&](uint32_t passIndex, bool frozen) {
+            // The compound operation owns private hybrid resources and keeps its
+            // software/hardware fork and complete join. Only graph attachments
+            // cross this stage boundary; helper-internal synchronization remains.
+            stages.push_back({frozen ? (passIndex == 0 ? "Frozen resident early" : "Frozen resident late")
+                : (passIndex == 0 ? "Resident early" : "Resident late"),
+                frozen ? std::span<const RenderGraphStageUse>(frozenRasterUses)
+                       : std::span<const RenderGraphStageUse>(rasterUses),
+                [&, passIndex, frozen](CommandBuffer&) {
+                    return frozen
+                        ? drawVisibility(context, *cullingTargets_.visibility, *cullingTargets_.visibilityView,
+                            *cullingTargets_.depth, *cullingTargets_.depthView, passIndex,
+                            passIndex == 0 ? LoadOp::Clear : LoadOp::Load, true)
+                        : drawVisibility(context, *visibility.texture(), *visibility.view(),
+                            *depth.texture(), *depth.view(), passIndex,
+                            passIndex == 0 ? LoadOp::Clear : LoadOp::Load);
+                }, RenderGraphPassKind::Unsafe, true});
+        };
+        for (uint32_t passIndex = 0; passIndex < 2; ++passIndex) {
+            stages.push_back({passIndex == 0 ? "Early instance cull" : "Late instance cull", {},
+                [&, passIndex](CommandBuffer& commands) -> Result<> {
+                    auto cullResult = dispatchCulling(commands, passIndex);
+                    if (cullResult && streamEnabled_) {
+                        cullResult = dispatchStreamCulling(commands,
+                            passIndex == 0 ? GPUSceneCullPhase::Early : GPUSceneCullPhase::Late);
+                    }
+                    if (!cullResult) { return cullResult; }
+                    gpuDrivenDebugCheckpoint(context, passIndex == 0 ? "AfterEarlyCull" : "AfterLateCull",
+                        gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_,
+                        streamEnabled_ ? streamRuntime_.get() : nullptr, passIndex, residentRecordCapacity_);
+                    return {};
+                }});
+            if (freezeCullingCamera_) {
+                addResidentRaster(passIndex, true);
+                if (passIndex == 0) { addHzb("Early HZB"); }
+            }
+            addResidentRaster(passIndex, false);
+            if (streamEnabled_) {
+                stages.push_back({passIndex == 0 ? "Stream early" : "Stream late", rasterUses,
+                    [&, passIndex](CommandBuffer&) {
+                        return drawStreamVisibility(context, *visibility.texture(), *visibility.view(),
+                            *depth.texture(), *depth.view(),
+                            passIndex == 0 ? GPUSceneCullPhase::Early : GPUSceneCullPhase::Late, LoadOp::Load);
+                    }, RenderGraphPassKind::Unsafe, true});
+            }
+            if (passIndex == 0 && !freezeCullingCamera_) { addHzb("Early HZB"); }
         }
+        // The early HZB remains immutable through both late raster views. Only
+        // their completed visibility/depth becomes next frame's HZB history.
+        addHzb("Late HZB");
+        stages.push_back({"Debug composite", compositeUses, [&](CommandBuffer& commands) -> Result<> {
+            if (streamEnabled_) {
+                auto deferredResult = streamRuntime_->cmdPrepareDeferred(commands);
+                if (!deferredResult) { return deferredResult; }
+            }
+            return drawComposite(commands, color);
+        }, RenderGraphPassKind::Raster});
+        std::vector<RenderGraphTextureImport> imports;
+        std::shared_ptr<SubmissionTransaction> cullingTransaction;
+        if (freezeCullingCamera_) {
+            imports = {
+                {"cullingVisibility", cullingTargets_.visibility.get(), cullingTargets_.visibilityView.get(),
+                    *cullingTargetsInitialized_ ? ResourceState::ColorAttachment : ResourceState::Undefined,
+                    ResourceState::ColorAttachment},
+                {"cullingDepth", cullingTargets_.depth.get(), cullingTargets_.depthView.get(),
+                    *cullingTargetsInitialized_ ? ResourceState::DepthStencilAttachment : ResourceState::Undefined,
+                    ResourceState::DepthStencilAttachment},
+            };
+            // Cancellation can leave a submitted prefix in a temporary layout.
+            // The graph failure lifecycle orders that work before reuse; discard
+            // these private targets on retry. Old allocations own distinct tokens.
+            cullingTransaction = std::make_shared<SubmissionTransaction>(std::function<void()>{},
+                [initialized = cullingTargetsInitialized_] { *initialized = false; });
+        }
+        result = context.executeStages(stages, {}, imports);
         if (!result) { return result; }
-        if (context.debugEnabled()) {
-            const std::string prefix = "lod." + context.passName() + ".";
-            auto& selection = *residentLods_[activeFrameSlot_];
-            const DebugResourceBinding resources[] = {
-                {.id = prefix + "header", .buffer = &selection.selections(), .state = ResourceState::ShaderRead,
-                    .size = 16, .layout = "MeshletLodSelectionHeader"},
-                {.id = prefix + "selections", .buffer = &selection.selections(), .state = ResourceState::ShaderRead,
-                    .offset = 16, .size = uint64_t(selection.capacity()) * sizeof(MeshletLodSelection),
-                    .layout = "MeshletLodSelection", .metadata = {{"validity", "First header.count entries are live; stable original record order"}}},
-                {.id = prefix + "arguments", .buffer = &selection.arguments(), .state = ResourceState::IndirectArgument,
-                    .size = selection.arguments().desc().size}};
-            context.debugCheckpoint("AfterResidentLod", resources, {{"lod", {{"frameSlot", activeFrameSlot_},
-                {"targetPixels", lodView.projection[3]}, {"candidateCount", adaptiveMeshletRange_.count}}}});
-        }
-
-        auto earlyCullProfile = context.profileScope("Early instance cull");
-        result = dispatchCulling(context.commandBuffer(), 0);
-        if (!result) {
-            return result;
-        }
-        if (streamEnabled_) {
-            result = dispatchStreamCulling(
-                context.commandBuffer(),
-                GPUSceneCullPhase::Early);
-            if (!result) {
-                return result;
-            }
-        }
-        earlyCullProfile.end();
-        gpuDrivenDebugCheckpoint(context, "AfterEarlyCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? streamRuntime_.get() : nullptr, 0, residentRecordCapacity_);
-        if (freezeCullingCamera_) {
-            result = drawVisibility(
-                context,
-                *cullingTargets_.visibility, *cullingTargets_.visibilityView,
-                *cullingTargets_.depth, *cullingTargets_.depthView,
-                0,
-                LoadOp::Clear,
-                true);
+        if (cullingTransaction) {
+            result = context.commandBuffer().addSubmissionTransaction(cullingTransaction);
             if (!result) { return result; }
-            transitionTexture(
-                context.commandBuffer(),
-                *cullingTargets_.depth,
-                ResourceState::DepthStencilAttachment,
-                ResourceState::ShaderRead);
-            { auto profile = context.profileScope("Early HZB"); result = buildHzb(context.commandBuffer()); }
-            if (!result) {
-                return result;
-            }
-            transitionTexture(
-                context.commandBuffer(),
-                *cullingTargets_.depth,
-                ResourceState::ShaderRead,
-                ResourceState::DepthStencilAttachment);
-            result = drawVisibility(context, *visibility.texture(), *visibility.view(), *depth.texture(), *depth.view(), 0, LoadOp::Clear);
-            if (!result) { return result; }
-            if (streamEnabled_) {
-                result = drawStreamVisibility(
-                    context,
-                    *visibility.texture(), *visibility.view(),
-                    *depth.texture(), *depth.view(),
-                    GPUSceneCullPhase::Early,
-                    LoadOp::Load);
-                if (!result) {
-                    return result;
-                }
-            }
-        } else {
-            result = drawVisibility(context, *visibility.texture(), *visibility.view(), *depth.texture(), *depth.view(), 0, LoadOp::Clear);
-            if (!result) { return result; }
-            if (streamEnabled_) {
-                result = drawStreamVisibility(
-                    context,
-                    *visibility.texture(), *visibility.view(),
-                    *depth.texture(), *depth.view(),
-                    GPUSceneCullPhase::Early,
-                    LoadOp::Load);
-                if (!result) {
-                    return result;
-                }
-            }
-            transitionTexture(context.commandBuffer(), *depth.texture(), ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
-            { auto profile = context.profileScope("Early HZB"); result = buildHzb(context.commandBuffer()); }
-            if (!result) {
-                return result;
-            }
-            transitionTexture(context.commandBuffer(), *depth.texture(), ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
+            *cullingTargetsInitialized_ = true;
         }
-
-        auto lateCullProfile = context.profileScope("Late instance cull");
-        result = dispatchCulling(context.commandBuffer(), 1);
-        if (!result) {
-            return result;
-        }
-        if (streamEnabled_) {
-            result = dispatchStreamCulling(
-                context.commandBuffer(),
-                GPUSceneCullPhase::Late);
-            if (!result) {
-                return result;
-            }
-        }
-        lateCullProfile.end();
-        gpuDrivenDebugCheckpoint(context, "AfterLateCull", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamEnabled_ ? streamRuntime_.get() : nullptr, 1, residentRecordCapacity_);
-        if (freezeCullingCamera_) {
-            result = drawVisibility(
-                context,
-                *cullingTargets_.visibility, *cullingTargets_.visibilityView,
-                *cullingTargets_.depth, *cullingTargets_.depthView,
-                1,
-                LoadOp::Load,
-                true);
-            if (!result) { return result; }
-            result = drawVisibility(context, *visibility.texture(), *visibility.view(), *depth.texture(), *depth.view(), 1, LoadOp::Load);
-            if (!result) { return result; }
-            if (streamEnabled_) {
-                result = drawStreamVisibility(
-                    context,
-                    *visibility.texture(), *visibility.view(),
-                    *depth.texture(), *depth.view(),
-                    GPUSceneCullPhase::Late,
-                    LoadOp::Load);
-                if (!result) {
-                    return result;
-                }
-            }
-        } else {
-            result = drawVisibility(context, *visibility.texture(), *visibility.view(), *depth.texture(), *depth.view(), 1, LoadOp::Load);
-            if (!result) { return result; }
-            if (streamEnabled_) {
-                result = drawStreamVisibility(
-                    context,
-                    *visibility.texture(), *visibility.view(),
-                    *depth.texture(), *depth.view(),
-                    GPUSceneCullPhase::Late,
-                    LoadOp::Load);
-                if (!result) {
-                    return result;
-                }
-            }
-        }
-
-        transitionTexture(context.commandBuffer(), *visibility.texture(), ResourceState::ColorAttachment, ResourceState::ShaderRead);
-        transitionTexture(context.commandBuffer(), *depth.texture(), ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
-        // Keep the early HZB immutable until both late raster views have consumed
-        // it. Only the completed visibility/depth becomes next frame's history.
-        if (freezeCullingCamera_) {
-            transitionTexture(context.commandBuffer(), *cullingTargets_.depth,
-                ResourceState::DepthStencilAttachment, ResourceState::ShaderRead);
-        }
-        { auto profile = context.profileScope("Late HZB"); result = buildHzb(context.commandBuffer()); }
-        if (!result) { return result; }
-        if (freezeCullingCamera_) {
-            transitionTexture(context.commandBuffer(), *cullingTargets_.depth,
-                ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
-        }
-        // Debug colors now consume the records written by stream rasterization.
-        if (streamEnabled_) {
-            result = streamRuntime_->cmdPrepareDeferred(context.commandBuffer());
-            if (!result) { return result; }
-        }
-        // Display the final IDs/depth while the images are shader-readable.
-        {
-            auto profile = context.profileScope("Debug composite");
-            result = drawComposite(context.commandBuffer(), color);
-            if (!result) { return result; }
-        }
-        transitionTexture(context.commandBuffer(), *visibility.texture(), ResourceState::ShaderRead, ResourceState::ColorAttachment);
-        transitionTexture(context.commandBuffer(), *depth.texture(), ResourceState::ShaderRead, ResourceState::DepthStencilAttachment);
         hzbValid_ = true;
         if (!gpuSceneSubsystem->markViewHzbValid(
                 gpuSceneView_,
@@ -2043,40 +2025,6 @@ private:
         };
     }
 
-    static void transitionTexture(
-        CommandBuffer& commandBuffer,
-        Texture& texture,
-        ResourceState before,
-        ResourceState after)
-    {
-        const TextureBarrierDesc barrier{
-            .texture = &texture,
-            .before = before,
-            .after = after,
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = &barrier,
-            .textureCount = 1,
-        });
-    }
-
-    static void barrierBuffer(
-        CommandBuffer& commandBuffer,
-        Buffer& buffer,
-        ResourceState before,
-        ResourceState after)
-    {
-        const BufferBarrierDesc barrier{
-            .buffer = &buffer,
-            .before = before,
-            .after = after,
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .buffers = &barrier,
-            .bufferCount = 1,
-        });
-    }
-
     Result<> initializeInternalBuffers(CommandBuffer& commandBuffer)
     {
         if (gpuSceneSubsystem_ == nullptr || !gpuSceneView_.valid()) {
@@ -2106,25 +2054,6 @@ private:
             return result;
         }
 
-        if (!cullingTargetsInitialized_) {
-            const std::array<TextureBarrierDesc, 2> barriers{
-                TextureBarrierDesc{
-                    .texture = cullingTargets_.visibility.get(),
-                    .before = ResourceState::Undefined,
-                    .after = ResourceState::ColorAttachment,
-                },
-                TextureBarrierDesc{
-                    .texture = cullingTargets_.depth.get(),
-                    .before = ResourceState::Undefined,
-                    .after = ResourceState::DepthStencilAttachment,
-                },
-            };
-            commandBuffer.barrier(BarrierDesc{
-                .textures = barriers.data(),
-                .textureCount = static_cast<uint32_t>(barriers.size()),
-            });
-            cullingTargetsInitialized_ = true;
-        }
         return {};
     }
 
@@ -2179,8 +2108,6 @@ private:
             : projectWithCullingCamera ? (passIndex == 0 ? "Frozen resident early" : "Frozen resident late")
             : (passIndex == 0 ? "Resident early" : "Resident late"));
         CommandBuffer& commandBuffer = context.commandBuffer();
-        transitionTexture(commandBuffer, visibilityTexture, ResourceState::ColorAttachment, ResourceState::ColorAttachment);
-        transitionTexture(commandBuffer, depthTexture, ResourceState::DepthStencilAttachment, ResourceState::DepthStencilAttachment);
         const bool reversedZ = (projectWithCullingCamera ? previousParams_.clipOrtho[3] : previousParams_.renderClipOrtho[3]) > 0.5f;
         const Rect renderArea{
             .x = 0,
@@ -2197,10 +2124,6 @@ private:
         };
         TextureHandle domain = context.outputTexture("domain");
         TextureHandle debugColor = context.outputTexture("color");
-        if (tessellationEnabled()) {
-            transitionTexture(commandBuffer, *domain.texture(), ResourceState::ColorAttachment, ResourceState::ColorAttachment);
-            transitionTexture(commandBuffer, *debugColor.texture(), ResourceState::ColorAttachment, ResourceState::ColorAttachment);
-        }
         const RenderingAttachmentDesc colors[] = {visibilityAttachment, {
             .view = domain.view(), .state = ResourceState::ColorAttachment,
             .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}, {
@@ -2232,15 +2155,20 @@ private:
             commandBuffer.bindBindlessHeap(*registry_->heap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify resident clusters"});
             const auto push = makePush(passIndex, 0, projectWithCullingCamera);
-            commandBuffer.bindComputePipeline(*clusterCountPipeline_);
-            commandBuffer.pushBindlessData(&push, sizeof(push));
-            commandBuffer.dispatch(1);
-            const BufferBarrierDesc countReady{.buffer = &hybridRasterizer_->clusterBuffer(),
-                .before = ResourceState::General, .after = ResourceState::General};
-            commandBuffer.barrier({.buffers = &countReady, .bufferCount = 1});
-            commandBuffer.bindComputePipeline(*clusterBinPipeline_);
-            commandBuffer.pushBindlessData(&push, sizeof(push));
-            result = commandBuffer.dispatchIndirect(residentLods_[activeFrameSlot_]->arguments());
+            const PrivateBufferComputeStage classification[] = {
+                {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() -> Result<> {
+                    commandBuffer.bindComputePipeline(*clusterCountPipeline_);
+                    commandBuffer.pushBindlessData(&push, sizeof(push));
+                    commandBuffer.dispatch(1);
+                    return {};
+                }},
+                {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
+                    commandBuffer.bindComputePipeline(*clusterBinPipeline_);
+                    commandBuffer.pushBindlessData(&push, sizeof(push));
+                    return commandBuffer.dispatchIndirect(residentLods_[activeFrameSlot_]->arguments());
+                }},
+            };
+            result = recordPrivateBufferComputeStages(commandBuffer, hybridRasterizer_->clusterBuffer(), classification);
             if (!result) { commandBuffer.endDebugLabel(); return result; }
             commandBuffer.endDebugLabel();
             binProfile.next("Stable bins");
@@ -2257,14 +2185,8 @@ private:
         const auto software = [&](CommandBuffer& commands) -> Result<> {
             if (!prebin || tessellationEnabled()) { return {}; }
             auto profile = context.profileScope(commands, "Software raster");
-            const BufferBarrierDesc acquires[] = {
-                {.buffer = &hybridRasterizer_->clusterBuffer(), .before = ResourceState::ShaderRead,
-                    .after = ResourceState::ShaderRead, .acquireFromQueue = true},
-                {.buffer = &hybridRasterizer_->clusterArguments(), .before = ResourceState::IndirectArgument,
-                    .after = ResourceState::IndirectArgument, .acquireFromQueue = true},
-                {.buffer = &hybridRasterizer_->pixelBuffer(), .before = ResourceState::General,
-                    .after = ResourceState::General, .acquireFromQueue = true}};
-            if (async) { commands.barrier({.buffers = acquires, .bufferCount = 3}); }
+            // The fork semaphore makes the producer's private cluster/argument
+            // and pixel writes visible to this compute branch.
             commands.beginDebugLabel({.name = "Hybrid raster: resident software clusters"});
             commands.bindBindlessHeap(*registry_->heap());
             commands.bindComputePipeline(*clusterRasterPipeline_);
@@ -2827,8 +2749,6 @@ private:
         if (!result) {
             return result;
         }
-        transitionTexture(commandBuffer, visibilityTexture, ResourceState::ColorAttachment, ResourceState::ColorAttachment);
-        transitionTexture(commandBuffer, depthTexture, ResourceState::DepthStencilAttachment, ResourceState::DepthStencilAttachment);
         const bool reversedZ = previousParams_.renderClipOrtho[3] > 0.5f;
         const Rect renderArea{
             .x = 0,
@@ -2845,10 +2765,6 @@ private:
         };
         TextureHandle domain = context.outputTexture("domain");
         TextureHandle debugColor = context.outputTexture("color");
-        if (tessellationEnabled()) {
-            transitionTexture(commandBuffer, *domain.texture(), ResourceState::ColorAttachment, ResourceState::ColorAttachment);
-            transitionTexture(commandBuffer, *debugColor.texture(), ResourceState::ColorAttachment, ResourceState::ColorAttachment);
-        }
         const RenderingAttachmentDesc colors[] = {visibilityAttachment, {
             .view = domain.view(), .state = ResourceState::ColorAttachment,
             .loadOp = loadOp, .storeOp = StoreOp::Store, .clearColor = ColorValue{-1.0f, -1.0f, 0.0f, 0.0f}}, {
@@ -2917,16 +2833,20 @@ private:
                 commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
                 auto counterPush = push;
                 counterPush.hybridQueueBuffer = streamWorkloadHandle_.shaderIndex();
-                BufferBarrierDesc barrier{.buffer = &hybridRasterizer_->workloadBuffer(),
-                    .before = ResourceState::General, .after = ResourceState::General};
-                commandBuffer.barrier({.buffers = &barrier, .bufferCount = 1});
-                commandBuffer.bindComputePipeline(*streamWorkloadPipelines_[0]);
-                commandBuffer.pushBindlessData(&counterPush, sizeof(counterPush));
-                commandBuffer.dispatch(1, 1, 1);
-                commandBuffer.barrier({.buffers = &barrier, .bufferCount = 1});
-                commandBuffer.bindComputePipeline(*streamWorkloadPipelines_[1]);
-                result = commandBuffer.dispatchIndirect(hybridRasterizer_->clusterArguments(),
-                    VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
+                const PrivateBufferComputeStage workload[] = {
+                    {RenderGraphResourceAccess::BufferStorageWrite, [&]() -> Result<> {
+                        commandBuffer.bindComputePipeline(*streamWorkloadPipelines_[0]);
+                        commandBuffer.pushBindlessData(&counterPush, sizeof(counterPush));
+                        commandBuffer.dispatch(1, 1, 1);
+                        return {};
+                    }},
+                    {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
+                        commandBuffer.bindComputePipeline(*streamWorkloadPipelines_[1]);
+                        return commandBuffer.dispatchIndirect(hybridRasterizer_->clusterArguments(),
+                            VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
+                    }},
+                };
+                result = recordPrivateBufferComputeStages(commandBuffer, hybridRasterizer_->workloadBuffer(), workload);
                 if (!result) { return result; }
                 const DebugResourceBinding resource{.id = "hybrid." + context.passName() + ".workload",
                     .buffer = &hybridRasterizer_->workloadBuffer(), .state = ResourceState::General, .size = 128};
@@ -2946,14 +2866,8 @@ private:
         const auto software = [&](CommandBuffer& commands) -> Result<> {
             if (!prebin || tessellationEnabled() || forceHardware) { return {}; }
             auto profile = context.profileScope(commands, "Software raster");
-            const BufferBarrierDesc acquires[] = {
-                {.buffer = &hybridRasterizer_->clusterBuffer(), .before = ResourceState::ShaderRead,
-                    .after = ResourceState::ShaderRead, .acquireFromQueue = true},
-                {.buffer = &hybridRasterizer_->clusterArguments(), .before = ResourceState::IndirectArgument,
-                    .after = ResourceState::IndirectArgument, .acquireFromQueue = true},
-                {.buffer = &hybridRasterizer_->pixelBuffer(), .before = ResourceState::General,
-                    .after = ResourceState::General, .acquireFromQueue = true}};
-            if (async) { commands.barrier({.buffers = acquires, .bufferCount = 3}); }
+            // The fork semaphore supplies availability and visibility for the
+            // producer's private cluster/argument and pixel resources.
             commands.beginDebugLabel({.name = "Hybrid raster: stream software clusters"});
             commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             // Cooperative loading with shared screen vertices is the measured default.
@@ -3589,7 +3503,7 @@ private:
         // Recapture a frozen camera at the new viewport dimensions so resident
         // and streamed LOD use the same aspect ratio and pixel-error scale.
         frozenCullingCameraValid_ = false;
-        cullingTargetsInitialized_ = false;
+        cullingTargetsInitialized_ = std::make_shared<bool>(false);
         return {};
     }
 
@@ -4606,7 +4520,7 @@ private:
     uint32_t activeFrameSlot_ = 0;
     bool hzbValid_ = false;
     bool previousCameraValid_ = false;
-    bool cullingTargetsInitialized_ = false;
+    std::shared_ptr<bool> cullingTargetsInitialized_ = std::make_shared<bool>(false);
     bool freezeCullingCamera_ = false;
     bool frozenCullingCameraValid_ = false;
     bool streamEnabled_ = false;

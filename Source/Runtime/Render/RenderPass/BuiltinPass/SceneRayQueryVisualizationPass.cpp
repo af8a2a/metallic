@@ -27,7 +27,7 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "RayQuery acceleration-structure visualization")
-            .storageReadWrite()
+            .storageWrite()
             .format = Format::Rgba8Unorm;
         return reflection;
     }

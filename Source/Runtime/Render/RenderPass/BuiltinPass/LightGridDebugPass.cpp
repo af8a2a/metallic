@@ -82,7 +82,7 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "Cluster light coverage heatmap")
-            .storageReadWrite().format = Format::Rgba8Unorm;
+            .storageWrite().format = Format::Rgba8Unorm;
         return reflection;
     }
 

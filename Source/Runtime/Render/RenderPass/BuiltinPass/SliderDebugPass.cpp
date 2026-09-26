@@ -43,7 +43,7 @@ public:
         reflection.addTextureInput("sourceA", "A: left / top; same extent and color space as B").sampledRead();
         reflection.addTextureInput("sourceB", "B: right / bottom; same extent and color space as A").sampledRead();
         reflection.addTextureOutput("color", "Pixel-aligned comparison; preserves HDR and alpha")
-            .storageReadWrite().format = Format::Rgba32Sfloat;
+            .storageWrite().format = Format::Rgba32Sfloat;
         return reflection;
     }
 

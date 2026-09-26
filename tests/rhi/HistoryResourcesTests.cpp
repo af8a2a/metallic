@@ -404,6 +404,88 @@ public:
     }
 };
 
+class HistoryTexturePlannedStateTest : public RhiTest {
+public:
+    HistoryTexturePlannedStateTest()
+    {
+        type = RhiTestType::Command;
+        name = "history_texture_planned_state_transactions";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        HistoryResourceManager manager;
+        std::unique_ptr<CommandPool> pool;
+        std::unique_ptr<CommandBuffer> commands;
+        std::unique_ptr<Fence> fence;
+        if (!manager.initialize(context.device) ||
+            !manager.ensureTexture("color", makeHistoryTextureDesc(8, 8)) ||
+            !context.device.createCommandPool(context.graphicsQueue).transform(
+                [&](auto value) { pool = std::move(value); }) ||
+            !pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }) ||
+            !context.device.createFence(false).transform([&](auto value) { fence = std::move(value); })) {
+            return RhiTestResult::fail("planned history setup failed");
+        }
+        const auto record = [&](ResourceState after, bool written) {
+            const auto texture = manager.texture("color", HistorySlot::Current);
+            const TextureBarrierDesc barrier{.texture = texture.texture,
+                .before = texture.state, .after = after, .mipCount = 1, .layerCount = 1};
+            commands->barrier({.textures = &barrier, .textureCount = 1});
+            return manager.publishTextureState(*commands, "color", HistorySlot::Current, after, written);
+        };
+        manager.beginFrame(0);
+        if (!commands->begin() || !record(ResourceState::General, true) ||
+            !record(ResourceState::ShaderRead, false) || !commands->end()) {
+            return RhiTestResult::fail("could not record planned history states");
+        }
+        auto texture = manager.texture("color", HistorySlot::Current);
+        if (texture.state != ResourceState::ShaderRead || !texture.valid) {
+            return RhiTestResult::fail("planned state was not visible to subsequent recordings");
+        }
+        // Cancellation must address the captured physical slot, after a frame
+        // flip, and undo publications in reverse recording order.
+        manager.beginFrame(1);
+        if (!pool->reset()) { return RhiTestResult::fail("planned history cancellation failed"); }
+        texture = manager.texture("color", HistorySlot::Previous);
+        if (texture.state != ResourceState::Undefined || texture.valid) {
+            return RhiTestResult::fail("cancel did not restore the original slot layout and invalidate history");
+        }
+        if (!commands->begin() || !record(ResourceState::General, true) || !commands->end()) {
+            return RhiTestResult::fail("could not record accepted history state");
+        }
+        CommandBuffer* submitted[] = {commands.get()};
+        if (!context.graphicsQueue.submit({.commandBuffers = submitted, .commandBufferCount = 1,
+                .signalFence = fence.get()}) || !fence->wait(5'000'000'000ull) || !pool->reset()) {
+            (void)context.graphicsQueue.waitIdle();
+            return RhiTestResult::fail("accepted history submission failed");
+        }
+        texture = manager.texture("color", HistorySlot::Current);
+        if (texture.state != ResourceState::General || !texture.valid) {
+            return RhiTestResult::fail("reset rolled back an accepted history publication");
+        }
+        if (!commands->begin() || !record(ResourceState::ShaderRead, false) ||
+            !commands->end() || !pool->reset()) {
+            return RhiTestResult::fail("could not cancel a history layout update");
+        }
+        texture = manager.texture("color", HistorySlot::Current);
+        if (texture.state != ResourceState::General || texture.valid) {
+            return RhiTestResult::fail("cancel lost the last accepted layout or retained speculative contents");
+        }
+        if (!commands->begin() || !record(ResourceState::ShaderRead, true) ||
+            !manager.ensureTexture("color", makeHistoryTextureDesc(16, 8)) ||
+            !commands->end() || !pool->reset()) {
+            return RhiTestResult::fail("could not replace pending history storage");
+        }
+        texture = manager.texture("color", HistorySlot::Current);
+        if (texture.state != ResourceState::Undefined || texture.valid || texture.desc->width != 16) {
+            return RhiTestResult::fail("old transaction modified the replacement history allocation");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(HistoryTexturePlannedStateTest);
 METALLIC_REGISTER_RHI_TEST(HistoryTextureLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(HistoryBufferLifecycleTest);
 METALLIC_REGISTER_RHI_TEST(HistoryBufferViewLifecycleTest);

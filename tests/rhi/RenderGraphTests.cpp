@@ -1,6 +1,8 @@
 #include "RhiTest.h"
 #include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/HistoryResources.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
@@ -14,6 +16,7 @@
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
+#include "Runtime/Render/Subsystem/RenderWorld.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include <algorithm>
@@ -3160,6 +3163,181 @@ public:
         }
 
         return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+    }
+};
+
+class PathTraceCacheReadbackPass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureInput("color").transferRead().format = render::Format::Rgba8Unorm;
+        reflection.addBufferOutput("data").buffer(uint64_t(context.width) * context.height * 4)
+            .transferWrite().hostReadback();
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
+            .buffer = context.outputBuffer("data").buffer(), .width = context.width(), .height = context.height()});
+        return {};
+    }
+};
+
+RhiTestResult runPathTraceCacheStages(RhiTestContext& context, bool nrc)
+{
+    constexpr uint32_t kWidth = 64, kHeight = 48;
+    const char* mode = nrc ? "nrc" : "sharc";
+    std::atomic_uint validationErrors{0};
+    std::unique_ptr<render::Device> device;
+    auto result = render::createDevice({.applicationName = "Path trace cache stages",
+        .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+        .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
+        .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
+            if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+                ++*static_cast<std::atomic_uint*>(target);
+            }
+        }, &validationErrors}, .preferUnifiedImageLayouts = false})
+        .transform([&](auto value) { device = std::move(value); });
+    if (render::hasError(result, render::Error::Unsupported)) {
+        return RhiTestResult::skip("cache stages require ray query and bindless resources");
+    }
+    if (!result) { return RhiTestResult::fail("cache-stage device creation failed"); }
+    const auto outcome = [&]() -> RhiTestResult {
+        auto* queue = device->getQueue(render::QueueType::Graphics);
+        if (!queue) { return RhiTestResult::fail("cache-stage graphics queue missing"); }
+        render::registerRenderGraphPassType("PathTraceCacheReadbackPass", "Cache-stage pixel consumer",
+            [] { return std::make_unique<PathTraceCacheReadbackPass>(); });
+        render::RenderGraph graph;
+        graph.addNode("ScenePathTracePass", "PathTrace", {
+            {"path", "Asset/meet_mat.glb"}, {"bsdf", "standard"}, {"cacheMode", mode},
+            {"maxDepth", 2}, {"samples", 1}, {"accumulate", true},
+            {"sharc.entriesLog2", 16}, {"sharc.updateStride", 1},
+            {"camera", {{"eye", {0.0, 0.25, 3.0}}, {"center", {0.0, 0.15, 0.0}}, {"fovDegrees", 50.0}}},
+        });
+        graph.addNode("PathTraceCacheReadbackPass", "Readback");
+        graph.addEdge("PathTrace.color", "Readback.color");
+        graph.markOutput("Readback.data");
+        render::RenderWorld world;
+        world.setEnvironment({.enabled = false, .visible = false});
+        scene::LightingSettings lighting;
+        lighting.exposureEV100 = 8;
+        auto& light = lighting.lights.emplace_back();
+        light.properties.type = "directional";
+        light.properties.intensityUnit = scene::LightUnit::Lux;
+        light.properties.intensity = 1000;
+        light.direction = float3(0.0f, -0.2f, -1.0f);
+        if (!world.setLighting(lighting)) { return RhiTestResult::fail("cache-stage lighting setup failed"); }
+        render::HistoryResourceManager history;
+        render::RenderGraphExecutor executor;
+        executor.bindRenderWorld(&world);
+        std::string log;
+        if (!history.initialize(*device) || !executor.compile(*device, graph, kWidth, kHeight, log)) {
+            return RhiTestResult::fail(std::string(mode) + " cache graph compile: " + log);
+        }
+        if (log.find("cache disabled") != std::string::npos) {
+            return RhiTestResult::fail(std::string(mode) + " test silently disabled its cache: " + log);
+        }
+        const std::string historyName = std::string("ScenePathTracePass.PathTrace.accumulation") + (nrc ? ".hdr" : "");
+        const auto hasStage = [&](std::string_view stage) {
+            for (const auto& node : executor.executionStats().nodes) {
+                if (node.name != "PathTrace") { continue; }
+                for (const auto& section : node.sections) {
+                    if (section.name == stage) { return true; }
+                }
+            }
+            return false;
+        };
+        const auto checkFrame = [&]() -> std::string {
+            for (const char* stage : nrc ? std::initializer_list<const char*>{"NRC begin frame", "NRC update", "NRC query",
+                     "NRC train", "NRC resolve", "NRC tonemap"}
+                     : std::initializer_list<const char*>{"SHaRC update", "SHaRC resolve", "SHaRC query"}) {
+                if (!hasStage(stage)) { return std::string("cache did not execute stage ") + stage; }
+            }
+            const auto current = history.texture(historyName, render::HistorySlot::Current);
+            if (!current.valid || current.state != render::ResourceState::General) {
+                return "accepted cache frame did not publish General history";
+            }
+            auto* output = executor.outputResource("Readback.data");
+            if (!output || !output->buffer) { return "cache readback output missing"; }
+            std::array<uint32_t, kWidth * kHeight> pixels{};
+            if (!readHostBuffer(*output->buffer, pixels.data(), sizeof(pixels))) { return "cache readback map failed"; }
+            bool visible = false;
+            for (uint32_t pixel : pixels) {
+                if ((pixel >> 24u) != 255u) { return "cache stages left unwritten output pixels"; }
+                visible = visible || (pixel & 0x00ffffffu) != 0;
+            }
+            return visible ? std::string{} : "cache output contains no visible light";
+        };
+        for (uint32_t frame = 0; frame < 2; ++frame) {
+            result = executor.execute({.graphicsQueue = queue, .historyResources = &history, .recordingWorkerLimit = 1,
+                .submissionMode = render::FrameSubmissionMode::Joined});
+            if (!result) {
+                if (nrc && render::hasError(result, render::Error::Unsupported)) {
+                    return RhiTestResult::skip("NRC SDK/runtime unsupported on this device");
+                }
+                return RhiTestResult::fail(std::string(mode) + " cache frame " + std::to_string(frame) + ": " + toString(result));
+            }
+            if (!executor.waitForSubmittedWork(5'000'000'000ull)) { return RhiTestResult::fail("cache frame did not complete"); }
+            const auto failure = checkFrame();
+            if (!failure.empty()) { return RhiTestResult::fail(std::string(mode) + ": " + failure); }
+            if (!nrc && frame == 0 && !hasStage("SHaRC clear")) { return RhiTestResult::fail("first cache frame omitted SHaRC clear"); }
+        }
+        std::unique_ptr<render::CommandPool> pool;
+        std::unique_ptr<render::CommandBuffer> commands;
+        if (!device->createCommandPool(*queue).transform([&](auto value) { pool = std::move(value); }) ||
+            !pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); })) {
+            return RhiTestResult::fail("cache cancellation command setup failed");
+        }
+        history.beginFrame(2);
+        const auto beforeCurrent = history.texture(historyName, render::HistorySlot::Current).state;
+        const auto beforePrevious = history.texture(historyName, render::HistorySlot::Previous).state;
+        if (!commands->begin() || !executor.execute(*commands, &history) || !commands->end() || !pool->reset()) {
+            return RhiTestResult::fail(std::string(mode) + " could not cancel recorded cache stages");
+        }
+        const auto cancelledCurrent = history.texture(historyName, render::HistorySlot::Current);
+        const auto cancelledPrevious = history.texture(historyName, render::HistorySlot::Previous);
+        if (cancelledCurrent.valid || cancelledPrevious.valid || cancelledCurrent.state != beforeCurrent ||
+            cancelledPrevious.state != beforePrevious) {
+            return RhiTestResult::fail("cancelled cache frame retained contents or changed accepted history layouts");
+        }
+        if (!executor.execute({.graphicsQueue = queue, .historyResources = &history, .recordingWorkerLimit = 1,
+                .submissionMode = render::FrameSubmissionMode::Joined}) || !executor.waitForSubmittedWork(5'000'000'000ull)) {
+            return RhiTestResult::fail(std::string(mode) + " cache retry after cancellation failed");
+        }
+        const auto failure = checkFrame();
+        if (!failure.empty()) { return RhiTestResult::fail(std::string(mode) + " cancelled retry: " + failure); }
+        if (!nrc && !hasStage("SHaRC clear")) { return RhiTestResult::fail("cancelled SHaRC cache was not reset on retry"); }
+        return RhiTestResult::pass(std::string(mode) + ": 64x48, two accepted frames, cancel and retry with history/pixel checks");
+    }();
+    // Include executor, SDK context and device destruction in validation.
+    device.reset();
+    if (validationErrors != 0) {
+        return RhiTestResult::fail(std::string(mode) + " cache lifecycle emitted " +
+            std::to_string(validationErrors.load()) + " Vulkan validation errors: " + outcome.message);
+    }
+    return outcome;
+}
+
+class RenderGraphSharcStagesTest final : public RhiTest {
+public:
+    RenderGraphSharcStagesTest() { type = RhiTestType::Rendering; name = "render_graph_sharc_stages_history_and_cancel"; }
+    RhiTestResult run(RhiTestContext& context) override { return runPathTraceCacheStages(context, false); }
+};
+
+class RenderGraphNrcStagesTest final : public RhiTest {
+public:
+    RenderGraphNrcStagesTest() { type = RhiTestType::Rendering; name = "render_graph_nrc_stages_history_and_cancel"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+#if METALLIC_HAS_NRC
+        const char* enabled = std::getenv("METALLIC_TEST_NRC_CACHE");
+        if (!enabled || std::string_view(enabled) != "1") { return RhiTestResult::skip("set METALLIC_TEST_NRC_CACHE=1 for NRC SDK cache stages"); }
+        return runPathTraceCacheStages(context, true);
+#else
+        (void)context;
+        return RhiTestResult::skip("built without the NRC SDK");
+#endif
     }
 };
 
@@ -6971,12 +7149,6 @@ public:
             return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
 
-        std::unique_ptr<render::Fence> fence;
-        result = device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
-        if (!result || fence == nullptr) {
-            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
-        }
-
         std::unique_ptr<render::Buffer> readbackBuffer;
         result = device->createBuffer(render::BufferDesc{
                 .size = kReadbackByteSize,
@@ -6987,7 +7159,17 @@ public:
             return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
 
-        result = commandBuffer->begin();
+        render::RenderFrameContext frame;
+        render::QueueSubmissionTracker submissions;
+        result = submissions.initialize(*device, *graphicsQueue);
+        if (!result) {
+            return RhiTestResult::fail(std::string("QueueSubmissionTracker::initialize returned ") + toString(result));
+        }
+        result = frame.begin(0);
+        if (!result) {
+            return RhiTestResult::fail(std::string("RenderFrameContext::begin returned ") + toString(result));
+        }
+        result = commandBuffer->begin(&frame);
         if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
@@ -7022,18 +7204,23 @@ public:
         }
 
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
-        result = graphicsQueue->submit(render::QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
-            .signalFence = fence.get(),
-        });
+        render::RecordedBatch batch;
+        result = batch.seal(frame, commandBuffers);
         if (!result) {
-            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+            return RhiTestResult::fail(std::string("RecordedBatch::seal returned ") + toString(result));
         }
-
-        result = fence->wait(5'000'000'000ull);
+        render::SubmissionReceipt receipt;
+        result = submissions.submitBatch(batch, {}, frame, receipt);
+        if (!result || !receipt.accepted()) {
+            return RhiTestResult::fail(std::string("QueueSubmissionTracker::submitBatch returned ") + toString(result));
+        }
+        result = frame.finishSubmission();
         if (!result) {
-            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+            return RhiTestResult::fail(std::string("RenderFrameContext::finishSubmission returned ") + toString(result));
+        }
+        result = frame.wait(5'000'000'000ull);
+        if (!result) {
+            return RhiTestResult::fail(std::string("RenderFrameContext::wait returned ") + toString(result));
         }
 
         if (device->capabilities().timestampQueries) {
@@ -9873,6 +10060,8 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphBunnyCameraSyncTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneMaterialVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphSharcStagesTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphNrcStagesTest);
 METALLIC_REGISTER_RHI_TEST(SlangShaderDiskCacheTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
 #if defined(METALLIC_HAS_RTXCR) && METALLIC_HAS_RTXCR

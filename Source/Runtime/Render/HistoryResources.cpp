@@ -449,6 +449,7 @@ HistoryTextureRef HistoryResourceManager::texture(std::string_view name, History
         .view = textureSlot.view.get(),
         .desc = &record->textureDesc,
         .valid = impl_->slotDataValid(textureSlot, *record),
+        .state = textureSlot.state,
     };
 }
 
@@ -501,6 +502,40 @@ void HistoryResourceManager::markWritten(std::string_view name)
         slot.valid = true;
         slot.generation = record->generation;
     }
+}
+
+Result<> HistoryResourceManager::publishTextureState(
+    CommandBuffer& commandBuffer,
+    std::string_view name,
+    HistorySlot slot,
+    ResourceState state,
+    bool written)
+{
+    const auto found = impl_->records.find(std::string(name));
+    if (found == impl_->records.end() || found->second->kind != Impl::ResourceKind::Texture ||
+        state == ResourceState::Undefined) {
+        return makeError(Error::InvalidArgument);
+    }
+    const auto record = found->second;
+    const uint32_t index = impl_->slotIndex(slot);
+    auto& textureSlot = record->textureSlots[index];
+    if (textureSlot.texture == nullptr) { return makeError(Error::InvalidArgument); }
+    auto result = commandBuffer.retainResource(record);
+    if (!result) { return result; }
+    const ResourceState before = textureSlot.state;
+    result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
+        [] {}, [record, index, before] {
+            auto& cancelledSlot = record->textureSlots[index];
+            cancelledSlot.state = before;
+            cancelledSlot.valid = false;
+        }));
+    if (!result) { return result; }
+    textureSlot.state = state;
+    if (written) {
+        textureSlot.valid = true;
+        textureSlot.generation = record->generation;
+    }
+    return {};
 }
 
 Result<> HistoryResourceManager::transitionTexture(

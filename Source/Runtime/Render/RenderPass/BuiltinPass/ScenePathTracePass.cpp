@@ -8,6 +8,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
@@ -180,14 +181,17 @@ static_assert(std::size(kOpenPBRIdealMetalAverageEnergyComplement) == kOpenPBRLu
 static_assert(std::size(kOpenPBRLtc) == kOpenPBRLtcSize * kOpenPBRLtcSize);
 
 struct OpenPBRLutTexture {
+    struct UploadState {
+        ResourceState state = ResourceState::Undefined;
+        bool uploaded = false;
+    };
     std::unique_ptr<Buffer> uploadBuffer;
     std::unique_ptr<Texture> texture;
     std::unique_ptr<TextureView> view;
-    ResourceState state = ResourceState::Undefined;
+    std::shared_ptr<UploadState> uploadState = std::make_shared<UploadState>();
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t depth = 1;
-    bool uploaded = false;
 };
 
 class OpenPBRLutResources final {
@@ -495,27 +499,40 @@ private:
 
     static Result<> uploadTexture(CommandBuffer& commandBuffer, OpenPBRLutTexture& texture)
     {
-        if (texture.uploaded) {
+        if (texture.uploadState->uploaded) {
             return {};
         }
         if (texture.uploadBuffer == nullptr || texture.texture == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
-        TextureBarrierDesc toTransfer{
-            .texture = texture.texture.get(),
-            .before = texture.state,
-            .after = ResourceState::TransferDestination,
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = &toTransfer,
-            .textureCount = 1,
-        });
-        texture.state = ResourceState::TransferDestination;
+        using namespace detail;
+        auto upload = texture.uploadBuffer->slice(0, texture.uploadBuffer->desc().size);
+        if (!upload) { return makeError(upload.error()); }
+        const std::array resources{
+            GraphAccessResource{RenderGraphResourceType::Texture2D, texture.uploadState->state},
+            GraphAccessResource{RenderGraphResourceType::Buffer, ResourceState::General,
+                {PipelineStageBits::Host, AccessBits::HostWrite}}};
+        const std::array bindings{GraphAccessBinding{.texture = texture.texture.get()},
+            GraphAccessBinding{.buffer = *upload}};
+        const std::array accesses{
+            GraphAccessPass{.uses = {{0, ResourceState::TransferDestination,
+                {PipelineStageBits::Transfer, AccessBits::TransferWrite}, true},
+                {1, ResourceState::TransferSource, {PipelineStageBits::Transfer, AccessBits::TransferRead}, false}}},
+            GraphAccessPass{.uses = {{0, ResourceState::ShaderRead,
+                {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}, false}}}};
+        auto plan = buildGraphAccessPlan(resources, accesses);
+        if (!plan) { return makeError(plan.error()); }
+        auto result = commandBuffer.retainResource(texture.view->retainTexture());
+        if (!result) { return result; }
+        const auto state = texture.uploadState;
+        result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>([] {}, [state] {
+            state->state = ResourceState::Undefined;
+            state->uploaded = false;
+        }));
+        if (!result) { return result; }
+        result = recordGraphAccessBarriers(commandBuffer, plan->passes[0], bindings);
+        if (!result) { return result; }
 
         commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
             .buffer = texture.uploadBuffer.get(),
@@ -527,21 +544,10 @@ private:
             .baseLayer = 0,
         });
 
-        TextureBarrierDesc toShaderRead{
-            .texture = texture.texture.get(),
-            .before = texture.state,
-            .after = ResourceState::ShaderRead,
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = &toShaderRead,
-            .textureCount = 1,
-        });
-        texture.state = ResourceState::ShaderRead;
-        texture.uploaded = true;
+        result = recordGraphAccessBarriers(commandBuffer, plan->passes[1], bindings);
+        if (!result) { return result; }
+        state->state = ResourceState::ShaderRead;
+        state->uploaded = true;
         return {};
     }
 
@@ -590,7 +596,7 @@ public:
     {
 #if METALLIC_HAS_NRC
         // The final submitted frame has no following execute() to finish it.
-        if (nrcEndFramePending_ && graphicsQueue_ != nullptr) {
+        if (*nrcEndFramePending_ && graphicsQueue_ != nullptr) {
             (void)nrc_.endFrame(*graphicsQueue_);
             if (device_ != nullptr) {
                 (void)device_->waitIdle();
@@ -629,11 +635,14 @@ public:
                     .buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).shaderRead().setOptional();
             }
         }
-        reflection.addTextureOutput("color", visibilityDeferred_ ? "OpenPBR deferred physical HDR" :
+        auto& color = reflection.addTextureOutput("color", visibilityDeferred_ ? "OpenPBR deferred physical HDR" :
             (realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene"))
-            .storageReadWrite()
-            .format = (exportGuides || (visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false))) ? Format::Rgba16Sfloat :
+            .storageReadWrite();
+        color.format = (exportGuides || (visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false))) ? Format::Rgba16Sfloat :
                 ((visibilityDeferred_ || boolProperty(properties(), "outputLinear", false)) ? Format::Rgba32Sfloat : Format::Rgba8Unorm);
+        if (cacheModeFromProperties(properties()) == kScenePathTraceCacheModeNrc) {
+            color.stageAccess(RenderGraphResourceAccess::TextureStorageReadWrite, RenderGraphPassKind::Unsafe);
+        }
         if (visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false)) {
             reflection.addTextureOutput("motionVectors", "Unjittered current-to-previous UV motion")
                 .storageReadWrite().format = Format::Rg16Sfloat;
@@ -2161,42 +2170,60 @@ public:
                 return result;
             }
 #endif
-        } else if (materialBins.arguments != nullptr) {
-            // Mixed tiles carry disjoint masks. Permutations share one immutable
-            // descriptor table, avoiding repeated scene texture writes per class.
-            std::array<ScenePathTracePush, kMaterialClassCount> binPushes;
-            std::array<ComputeIndirectDispatch, kMaterialClassCount> dispatches;
-            for (uint32_t bin = 0; bin < materialBins.binCount; ++bin) {
-                binPushes[bin] = push;
-                binPushes[bin].deferredSettings = (push.deferredSettings & 0xffff0000u) | bin;
-                dispatches[bin] = {.pushData = &binPushes[bin], .argumentOffset = uint64_t(bin) * 12,
-                    .program = bin < classifiedPrograms_.size() ? &classifiedPrograms_[bin] : renderProgram};
-            }
-            result = renderProgram->dispatchIndirectBatch({.commandBuffer = &context.commandBuffer(),
-                .bindings = bindings.data(), .bindingCount = static_cast<uint32_t>(bindings.size()),
-                .pushDataSize = sizeof(push), .indirectArguments = materialBins.arguments,
-                .profiler = profiler}, dispatches);
-            if (!result) { return result; }
         } else {
-            result = renderProgram->dispatch(ComputeDispatchDesc{
-                .commandBuffer = &context.commandBuffer(),
-                .bindings = bindings.data(),
-                .bindingCount = static_cast<uint32_t>(bindings.size()),
-                .pushData = &push,
-                .pushDataSize = sizeof(push),
-                .groupCountX = (context.width() + 7) / 8,
-                .groupCountY = (context.height() + 7) / 8,
-                .groupCountZ = 1,
-                .profiler = profiler,
-            });
-            if (!result) {
-                return result;
+            auto resources = stageResources(context, push);
+            if (materialBins.arguments != nullptr) {
+                const std::array buffers{materialBins.bins, materialBins.tiles, materialBins.arguments};
+                const std::array names{"materialBins", "materialTiles", "materialArguments"};
+                for (size_t i = 0; i < buffers.size(); ++i) {
+                    result = importBuffer(resources, names[i], buffers[i]);
+                    if (!result) { return result; }
+                    resources.uses.push_back({names[i], i == 2 ? RenderGraphResourceAccess::BufferIndirectRead
+                        : RenderGraphResourceAccess::BufferShaderRead});
+                }
             }
+            const std::array stages{RenderGraphStage{"Path trace shading", resources.uses,
+                [&](CommandBuffer& commands) -> Result<> {
+                    if (materialBins.arguments != nullptr) {
+                        // Mixed tiles carry disjoint masks. Permutations share one immutable
+                        // descriptor table, avoiding repeated scene texture writes per class.
+                        std::array<ScenePathTracePush, kMaterialClassCount> binPushes;
+                        std::array<ComputeIndirectDispatch, kMaterialClassCount> dispatches;
+                        for (uint32_t bin = 0; bin < materialBins.binCount; ++bin) {
+                            binPushes[bin] = push;
+                            binPushes[bin].deferredSettings = (push.deferredSettings & 0xffff0000u) | bin;
+                            dispatches[bin] = {.pushData = &binPushes[bin], .argumentOffset = uint64_t(bin) * 12,
+                                .program = bin < classifiedPrograms_.size() ? &classifiedPrograms_[bin] : renderProgram};
+                        }
+                        return renderProgram->dispatchIndirectBatch({.commandBuffer = &commands,
+                            .bindings = bindings.data(), .bindingCount = static_cast<uint32_t>(bindings.size()),
+                            .pushDataSize = sizeof(push), .indirectArguments = materialBins.arguments,
+                            .profiler = profiler}, dispatches);
+                    }
+                    return renderProgram->dispatch({
+                        .commandBuffer = &commands,
+                        .bindings = bindings.data(),
+                        .bindingCount = static_cast<uint32_t>(bindings.size()),
+                        .pushData = &push,
+                        .pushDataSize = sizeof(push),
+                        .groupCountX = (context.width() + 7) / 8,
+                        .groupCountY = (context.height() + 7) / 8,
+                        .groupCountZ = 1,
+                        .profiler = profiler,
+                    });
+                }}};
+            result = context.executeStages(stages, resources.buffers, resources.textures);
+            if (!result) { return result; }
         }
 
         profile.next("Publish shading history");
         if (push.enableAccumulation != 0 && context.historyResources() != nullptr) {
-            context.historyResources()->markWritten(historyNameForContext(context, push.cacheMode));
+            const auto name = historyNameForContext(context, push.cacheMode);
+            result = context.historyResources()->publishTextureState(context.commandBuffer(), name,
+                HistorySlot::Current, ResourceState::General, true);
+            if (result) { result = context.historyResources()->publishTextureState(context.commandBuffer(), name,
+                HistorySlot::Previous, ResourceState::General); }
+            if (!result) { return result; }
         }
         previousCamera_ = currentCamera;
         previousCameraWidth_ = context.width();
@@ -2207,6 +2234,59 @@ public:
 
 private:
     std::vector<std::shared_ptr<Buffer>> deferredFrameInfoPool_;
+
+    struct StageResources {
+        std::vector<RenderGraphStageUse> uses;
+        std::vector<RenderGraphTextureImport> textures;
+        std::vector<RenderGraphBufferImport> buffers;
+    };
+
+    StageResources stageResources(RenderGraphExecutionContext& context, const ScenePathTracePush& push) const
+    {
+        using Access = RenderGraphResourceAccess;
+        StageResources resources;
+        resources.uses.push_back({"output.color", Access::TextureStorageReadWrite});
+        if (visibilityDeferred_) {
+            for (const char* name : {"visibility", "depth", "domain", "shadow"}) {
+                if (context.inputTexture(name).valid()) { resources.uses.push_back({name, Access::TextureSampleRead}); }
+            }
+            if (context.inputBuffer("shadowParameters").valid()) {
+                resources.uses.push_back({"shadowParameters", Access::BufferShaderRead});
+            }
+            if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
+                resources.uses.push_back({"output.motionVectors", Access::TextureStorageWrite});
+                resources.uses.push_back({"deviceDepth", Access::TextureStorageWrite});
+            }
+        }
+        if (exportDenoiserGuides(context.properties())) {
+            for (const char* name : {"albedo", "specularAlbedo", "normalRoughness", "motionVectors",
+                "linearDepth", "specularHitDistance", "depth"}) {
+                resources.uses.push_back({name, Access::TextureStorageWrite});
+            }
+        }
+        if (push.enableAccumulation != 0) {
+            const auto name = historyNameForContext(context, push.cacheMode);
+            const auto current = context.historyResources()->texture(name, HistorySlot::Current);
+            const auto previous = context.historyResources()->texture(name, HistorySlot::Previous);
+            resources.textures.push_back({"historyCurrent", current.texture, current.view, current.state, ResourceState::General});
+            resources.textures.push_back({"historyPrevious", previous.texture, previous.view, previous.state, ResourceState::General});
+            resources.uses.push_back({"historyCurrent", Access::TextureStorageReadWrite});
+            resources.uses.push_back({"historyPrevious", Access::TextureStorageRead});
+        }
+        // With accumulation disabled both shader history bindings alias color.
+        // Its graph declaration already covers them; a private import would
+        // incorrectly grant a second ownership contract to the same allocation.
+        return resources;
+    }
+
+    static Result<> importBuffer(StageResources& resources, std::string_view name, Buffer* buffer)
+    {
+        if (!buffer) { return makeError(Error::InvalidArgument); }
+        auto slice = buffer->slice(0, buffer->desc().size);
+        if (!slice) { return makeError(slice.error()); }
+        resources.buffers.push_back({name, *slice});
+        return {};
+    }
 
     static bool validTexture(TextureHandle texture)
     {
@@ -2279,26 +2359,8 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        result = history->transitionTexture(
-            context.commandBuffer(),
-            historyName,
-            HistorySlot::Current,
-            ResourceState::General);
-        if (!result) {
-            return result;
-        }
-        result = history->transitionTexture(
-            context.commandBuffer(),
-            historyName,
-            HistorySlot::Previous,
-            ResourceState::General);
-        if (!result) {
-            return result;
-        }
-
         outCurrentView = current.view;
         outPreviousView = previous.view;
-        historyCurrentTexture_ = current.texture;
 
         if (previous.valid && !resetAccumulation_) {
             ++accumulationFrame_;
@@ -2357,12 +2419,13 @@ private:
         return {};
     }
 
-    Result<> writeCacheParamsBuffer(CommandBuffer& commandBuffer, const ScenePathTraceCacheParams& params)
+    Result<> writeCacheParamsBuffer(CommandBuffer& commandBuffer, const ScenePathTraceCacheParams& params,
+        bool acquireAllocation = true)
     {
         if (cacheParamsBuffer_ == nullptr) {
             return makeError(Error::Failure);
         }
-        if (RenderFrameContext* frame = commandBuffer.frameContext()) {
+        if (RenderFrameContext* frame = commandBuffer.frameContext(); frame && acquireAllocation) {
             auto allocation = std::find_if(cacheParamsAllocations_.begin(), cacheParamsAllocations_.end(),
                 [](const auto& candidate) { return candidate.completion.isComplete(); });
             if (allocation == cacheParamsAllocations_.end()) {
@@ -2477,21 +2540,6 @@ private:
         params.sharcUpdateStride = uintProperty(
             context.properties(), "sharc.updateStride", kSharcDefaultUpdateStride, 1, 16);
 
-        if (sharcClearPending_) {
-            sharcClearPending_ = false;
-            SceneSharcMaintenancePush clearPush;
-            clearPush.entriesNum = sharcEntryCount_;
-            result = dispatchSharcMaintenance(
-                commandBuffer,
-                sharcClearProgram_,
-                clearPush,
-                (sharcEntryCount_ + kSharcMaintenanceBlockSize - 1u) / kSharcMaintenanceBlockSize);
-            if (!result) {
-                return result;
-            }
-            barrierBuffers(commandBuffer, {sharcHashEntriesBuffer_.get(), sharcAccumulationBuffer_.get(), sharcResolvedBuffer_.get()});
-        }
-
         result = writeCacheParamsBuffer(commandBuffer, params);
         if (!result) {
             return result;
@@ -2503,21 +2551,6 @@ private:
         const uint32_t stride = std::max(params.sharcUpdateStride, 1u);
         const uint32_t updateWidth = (push.width + stride - 1u) / stride;
         const uint32_t updateHeight = (push.height + stride - 1u) / stride;
-        result = updateProgram.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &commandBuffer,
-            .bindings = updateBindings.data(),
-            .bindingCount = static_cast<uint32_t>(updateBindings.size()),
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (updateWidth + 7) / 8,
-            .groupCountY = (updateHeight + 7) / 8,
-            .groupCountZ = 1,
-        });
-        if (!result) {
-            return result;
-        }
-        barrierBuffers(commandBuffer, {sharcHashEntriesBuffer_.get(), sharcAccumulationBuffer_.get(), sharcResolvedBuffer_.get()});
-
         // SHaRC resolve: combine per-frame accumulation with previous data.
         SceneSharcMaintenancePush resolvePush;
         copyFloat4(push.eye, resolvePush.cameraPosition);
@@ -2537,29 +2570,54 @@ private:
             8,
             1024);
         resolvePush.frameIndex = push.accumulationFrame;
-        result = dispatchSharcMaintenance(
-            commandBuffer,
-            sharcResolveProgram_,
-            resolvePush,
-            (sharcEntryCount_ + kSharcMaintenanceBlockSize - 1u) / kSharcMaintenanceBlockSize);
-        if (!result) {
-            return result;
-        }
-        barrierBuffers(commandBuffer, {sharcHashEntriesBuffer_.get(), sharcAccumulationBuffer_.get(), sharcResolvedBuffer_.get()});
-
         // SHaRC render/query at full resolution with early termination.
         std::vector<ComputeDispatchBinding> queryBindings = baseBindings;
         appendSharcDispatchBindings(queryBindings);
-        return queryProgram.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &commandBuffer,
-            .bindings = queryBindings.data(),
-            .bindingCount = static_cast<uint32_t>(queryBindings.size()),
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (push.width + 7) / 8,
-            .groupCountY = (push.height + 7) / 8,
-            .groupCountZ = 1,
-        });
+        auto resources = stageResources(context, push);
+        const std::array buffers{cacheParamsBuffer_.get(), sharcHashEntriesBuffer_.get(),
+            sharcAccumulationBuffer_.get(), sharcResolvedBuffer_.get()};
+        const std::array names{"cacheParams", "sharcHash", "sharcAccumulation", "sharcResolved"};
+        std::vector<RenderGraphStageUse> maintenanceUses;
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            result = importBuffer(resources, names[i], buffers[i]);
+            if (!result) { return result; }
+            const auto access = i == 0 ? RenderGraphResourceAccess::BufferShaderRead
+                : RenderGraphResourceAccess::BufferStorageReadWrite;
+            maintenanceUses.push_back({names[i], access});
+            resources.uses.push_back({names[i], access});
+        }
+        SceneSharcMaintenancePush clearPush;
+        clearPush.entriesNum = sharcEntryCount_;
+        const uint32_t maintenanceGroups = (sharcEntryCount_ + kSharcMaintenanceBlockSize - 1u) / kSharcMaintenanceBlockSize;
+        std::vector<RenderGraphStage> stages;
+        const bool clearCache = sharcClearPending_ || *sharcDiscarded_;
+        if (clearCache) {
+            stages.push_back({"SHaRC clear", maintenanceUses, [&](CommandBuffer& commands) {
+                return dispatchSharcMaintenance(commands, sharcClearProgram_, clearPush, maintenanceGroups);
+            }});
+        }
+        stages.push_back({"SHaRC update", resources.uses, [&](CommandBuffer& commands) {
+            return updateProgram.dispatch({.commandBuffer = &commands,
+                .bindings = updateBindings.data(), .bindingCount = static_cast<uint32_t>(updateBindings.size()),
+                .pushData = &push, .pushDataSize = sizeof(push),
+                .groupCountX = (updateWidth + 7) / 8, .groupCountY = (updateHeight + 7) / 8, .groupCountZ = 1});
+        }});
+        stages.push_back({"SHaRC resolve", maintenanceUses, [&](CommandBuffer& commands) {
+            return dispatchSharcMaintenance(commands, sharcResolveProgram_, resolvePush, maintenanceGroups);
+        }});
+        stages.push_back({"SHaRC query", resources.uses, [&](CommandBuffer& commands) {
+            return queryProgram.dispatch({.commandBuffer = &commands,
+                .bindings = queryBindings.data(), .bindingCount = static_cast<uint32_t>(queryBindings.size()),
+                .pushData = &push, .pushDataSize = sizeof(push),
+                .groupCountX = (push.width + 7) / 8, .groupCountY = (push.height + 7) / 8, .groupCountZ = 1});
+        }});
+        const auto discarded = sharcDiscarded_;
+        result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>([] {},
+            [discarded] { *discarded = true; }));
+        if (!result) { return result; }
+        result = context.executeStages(stages, resources.buffers, resources.textures);
+        if (result) { sharcClearPending_ = false; *sharcDiscarded_ = false; }
+        return result;
     }
 
     Result<> dispatchSharcMaintenance(
@@ -2606,30 +2664,6 @@ private:
         });
     }
 
-    static void barrierBuffers(
-        CommandBuffer& commandBuffer,
-        std::initializer_list<Buffer*> buffers)
-    {
-        std::vector<BufferBarrierDesc> barriers;
-        barriers.reserve(buffers.size());
-        for (Buffer* buffer : buffers) {
-            if (buffer == nullptr) {
-                continue;
-            }
-            barriers.push_back(BufferBarrierDesc{
-                .buffer = buffer,
-                .before = ResourceState::General,
-                .after = ResourceState::General,
-            });
-        }
-        if (!barriers.empty()) {
-            commandBuffer.barrier(BarrierDesc{
-                .buffers = barriers.data(),
-                .bufferCount = static_cast<uint32_t>(barriers.size()),
-            });
-        }
-    }
-
 #if METALLIC_HAS_NRC
     static NrcResolveMode nrcResolveModeFromProperties(const RenderGraphProperties& properties)
     {
@@ -2666,8 +2700,8 @@ private:
 
         // NRC requires EndFrame after submission; defer it to the next frame's
         // execute, when the previous command buffer is guaranteed submitted.
-        if (nrcEndFramePending_) {
-            nrcEndFramePending_ = false;
+        if (*nrcEndFramePending_) {
+            *nrcEndFramePending_ = false;
             Result<> endResult = nrc_.endFrame(*graphicsQueue_);
             if (!endResult) {
                 return endResult;
@@ -2687,6 +2721,7 @@ private:
         settings.learnIrradiance = false;
         settings.includeDirectLighting = false;
         settings.requestReset =
+            *nrcDiscarded_ ||
             sceneResourceRevision_ != nrcSceneRevision_ ||
             environmentResourceRevision_ != nrcEnvironmentRevision_;
         settings.sceneBoundsMin = nrc_float3{bounds.min.x, bounds.min.y, bounds.min.z};
@@ -2720,52 +2755,50 @@ private:
         frameSettings.maxExpectedAverageRadianceValue =
             floatProperty(context.properties(), "nrc.maxExpectedRadiance", 1.0f);
         frameSettings.resolveMode = nrcResolveModeFromProperties(context.properties());
-        Result<> result = nrc_.beginFrame(commandBuffer, frameSettings);
-        if (!result) {
-            return result;
-        }
-
-        const auto constants = nrc_.populateShaderConstants();
-        if (!constants) {
-            return makeError(constants.error());
-        }
-        const auto& nrcConstants = *constants;
-
+        // Select the retained per-frame allocation before compiling stage
+        // identities. BeginFrame provides constants later, without replacing it.
         ScenePathTraceCacheParams params;
-        copyFloat4(push.eye, params.sharcCameraPosition);
-        copyFloat4(push.previousEye, params.sharcCameraPositionPrev);
-        params.sharcEntriesNum = 0;
-        params.frameIndex = push.accumulationFrame;
-        params.cacheMode = kScenePathTraceCacheModeNrc;
-        params.width = push.width;
-        params.height = push.height;
-        params.trainingWidth = nrcContextSettings_.trainingDimensions.x;
-        params.trainingHeight = nrcContextSettings_.trainingDimensions.y;
-        params.nrcFrameDimensions[0] = nrcConstants.frameDimensions.x;
-        params.nrcFrameDimensions[1] = nrcConstants.frameDimensions.y;
-        params.nrcTrainingDimensions[0] = nrcConstants.trainingDimensions.x;
-        params.nrcTrainingDimensions[1] = nrcConstants.trainingDimensions.y;
-        params.nrcScenePosScale[0] = nrcConstants.scenePosScale.x;
-        params.nrcScenePosScale[1] = nrcConstants.scenePosScale.y;
-        params.nrcScenePosScale[2] = nrcConstants.scenePosScale.z;
-        params.nrcSamplesPerPixel = nrcConstants.samplesPerPixel;
-        params.nrcScenePosBias[0] = nrcConstants.scenePosBias.x;
-        params.nrcScenePosBias[1] = nrcConstants.scenePosBias.y;
-        params.nrcScenePosBias[2] = nrcConstants.scenePosBias.z;
-        params.nrcMaxPathVertices = nrcConstants.maxPathVertices;
-        params.nrcLearnIrradiance = nrcConstants.learnIrradiance;
-        params.nrcRadianceCacheDirect = nrcConstants.radianceCacheDirect;
-        params.nrcRadianceUnpackMultiplier = nrcConstants.radianceUnpackMultiplier;
-        params.nrcResolveMode = static_cast<int32_t>(nrcConstants.resolveMode);
-        params.nrcEnableTerminationHeuristic = nrcConstants.enableTerminationHeuristic;
-        params.nrcSkipDeltaVertices = nrcConstants.skipDeltaVertices;
-        params.nrcTerminationHeuristicThreshold = nrcConstants.terminationHeuristicThreshold;
-        params.nrcTrainingTerminationHeuristicThreshold = nrcConstants.trainingTerminationHeuristicThreshold;
-        params.nrcProportionUnbiased = nrcConstants.proportionUnbiased;
-        result = writeCacheParamsBuffer(commandBuffer, params);
-        if (!result) {
-            return result;
-        }
+        Result<> result = writeCacheParamsBuffer(commandBuffer, params);
+        if (!result) { return result; }
+        auto prepareParams = [&]() -> Result<> {
+            const auto constants = nrc_.populateShaderConstants();
+            if (!constants) {
+                return makeError(constants.error());
+            }
+            const auto& nrcConstants = *constants;
+
+            copyFloat4(push.eye, params.sharcCameraPosition);
+            copyFloat4(push.previousEye, params.sharcCameraPositionPrev);
+            params.sharcEntriesNum = 0;
+            params.frameIndex = push.accumulationFrame;
+            params.cacheMode = kScenePathTraceCacheModeNrc;
+            params.width = push.width;
+            params.height = push.height;
+            params.trainingWidth = nrcContextSettings_.trainingDimensions.x;
+            params.trainingHeight = nrcContextSettings_.trainingDimensions.y;
+            params.nrcFrameDimensions[0] = nrcConstants.frameDimensions.x;
+            params.nrcFrameDimensions[1] = nrcConstants.frameDimensions.y;
+            params.nrcTrainingDimensions[0] = nrcConstants.trainingDimensions.x;
+            params.nrcTrainingDimensions[1] = nrcConstants.trainingDimensions.y;
+            params.nrcScenePosScale[0] = nrcConstants.scenePosScale.x;
+            params.nrcScenePosScale[1] = nrcConstants.scenePosScale.y;
+            params.nrcScenePosScale[2] = nrcConstants.scenePosScale.z;
+            params.nrcSamplesPerPixel = nrcConstants.samplesPerPixel;
+            params.nrcScenePosBias[0] = nrcConstants.scenePosBias.x;
+            params.nrcScenePosBias[1] = nrcConstants.scenePosBias.y;
+            params.nrcScenePosBias[2] = nrcConstants.scenePosBias.z;
+            params.nrcMaxPathVertices = nrcConstants.maxPathVertices;
+            params.nrcLearnIrradiance = nrcConstants.learnIrradiance;
+            params.nrcRadianceCacheDirect = nrcConstants.radianceCacheDirect;
+            params.nrcRadianceUnpackMultiplier = nrcConstants.radianceUnpackMultiplier;
+            params.nrcResolveMode = static_cast<int32_t>(nrcConstants.resolveMode);
+            params.nrcEnableTerminationHeuristic = nrcConstants.enableTerminationHeuristic;
+            params.nrcSkipDeltaVertices = nrcConstants.skipDeltaVertices;
+            params.nrcTerminationHeuristicThreshold = nrcConstants.terminationHeuristicThreshold;
+            params.nrcTrainingTerminationHeuristicThreshold = nrcConstants.trainingTerminationHeuristicThreshold;
+            params.nrcProportionUnbiased = nrcConstants.proportionUnbiased;
+            return writeCacheParamsBuffer(commandBuffer, params, false);
+        };
 
         std::vector<ComputeDispatchBinding> traceBindings = baseBindings;
         traceBindings.push_back(ComputeDispatchBinding{
@@ -2793,72 +2826,8 @@ private:
             });
         }
 
-        // NRC update pass at training resolution writes training data only.
-        const uint32_t trainingWidth = std::max(params.trainingWidth, 1u);
-        const uint32_t trainingHeight = std::max(params.trainingHeight, 1u);
-        result = updateProgram.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &commandBuffer,
-            .bindings = traceBindings.data(),
-            .bindingCount = static_cast<uint32_t>(traceBindings.size()),
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (trainingWidth + 7) / 8,
-            .groupCountY = (trainingHeight + 7) / 8,
-            .groupCountZ = 1,
-        });
-        if (!result) {
-            return result;
-        }
-
-        // NRC query pass at full resolution; linear HDR output into history.
-        result = queryProgram.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &commandBuffer,
-            .bindings = traceBindings.data(),
-            .bindingCount = static_cast<uint32_t>(traceBindings.size()),
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (push.width + 7) / 8,
-            .groupCountY = (push.height + 7) / 8,
-            .groupCountZ = 1,
-        });
-        if (!result) {
-            return result;
-        }
-
-        // The path tracer wrote the training/query records; make them visible
-        // to the NRC library kernels.
-        barrierBuffers(commandBuffer, {cacheParamsBuffer_.get()});
-        for (size_t index = 0; index < std::size(kTraceBuffers); ++index) {
-            Buffer* buffer = nrc_.buffer(static_cast<uint32_t>(kTraceBuffers[index]));
-            if (buffer != nullptr) {
-                barrierBuffers(commandBuffer, {buffer});
-            }
-        }
-
-        result = nrc_.queryAndTrain(commandBuffer, nullptr);
-        if (!result) {
-            return result;
-        }
-        result = nrc_.resolve(commandBuffer, *historyCurrentView);
-        if (!result) {
-            return result;
-        }
-        nrcEndFramePending_ = true;
-
-        // Resolve wrote linear HDR into the history texture; tonemap it into
-        // the displayable color output.
-        Texture* historyTexture = historyCurrentTexture_;
-        if (historyTexture != nullptr) {
-            TextureBarrierDesc historyBarrier{
-                .texture = historyTexture,
-                .before = ResourceState::General,
-                .after = ResourceState::General,
-            };
-            commandBuffer.barrier(BarrierDesc{
-                .textures = &historyBarrier,
-                .textureCount = 1,
-            });
-        }
+        const uint32_t trainingWidth = std::max(nrcContextSettings_.trainingDimensions.x, 1u);
+        const uint32_t trainingHeight = std::max(nrcContextSettings_.trainingDimensions.y, 1u);
         ScenePathTraceTonemapPush tonemapPush{
             .width = push.width,
             .height = push.height,
@@ -2872,16 +2841,68 @@ private:
             ComputeDispatchBinding{.binding = 1, .textureView = context.outputTexture("color").view()},
             ComputeDispatchBinding{.binding = 2, .textureView = historyPreviousView},
         };
-        return tonemapProgram_.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &commandBuffer,
-            .bindings = tonemapBindings.data(),
-            .bindingCount = static_cast<uint32_t>(tonemapBindings.size()),
-            .pushData = &tonemapPush,
-            .pushDataSize = sizeof(tonemapPush),
-            .groupCountX = (push.width + 7) / 8,
-            .groupCountY = (push.height + 7) / 8,
-            .groupCountZ = 1,
-        });
+        using Access = RenderGraphResourceAccess;
+        auto resources = stageResources(context, push);
+        result = importBuffer(resources, "cacheParams", cacheParamsBuffer_.get());
+        if (!result) { return result; }
+        resources.uses.push_back({"cacheParams", Access::BufferShaderRead});
+        std::array<std::string, vulkan::NrcIntegration::kBufferCount> names;
+        std::vector<RenderGraphStageUse> sdkUses;
+        for (uint32_t i = 0; i < names.size(); ++i) {
+            auto* buffer = nrc_.buffer(i);
+            if (!buffer) { continue; }
+            names[i] = "nrcBuffer" + std::to_string(i);
+            result = importBuffer(resources, names[i], buffer);
+            if (!result) { return result; }
+            sdkUses.push_back({names[i], Access::BufferStorageReadWrite});
+        }
+        for (const auto buffer : kTraceBuffers) {
+            const auto i = static_cast<size_t>(buffer);
+            if (names[i].empty()) { return makeError(Error::InvalidArgument); }
+            resources.uses.push_back({names[i], Access::BufferStorageReadWrite});
+        }
+        auto resolveUses = sdkUses;
+        const char* currentHistory = push.enableAccumulation ? "historyCurrent" : "output.color";
+        const char* previousHistory = push.enableAccumulation ? "historyPrevious" : "output.color";
+        resolveUses.push_back({currentHistory, Access::TextureStorageReadWrite});
+        const std::array tonemapUses{RenderGraphStageUse{currentHistory, Access::TextureStorageReadWrite},
+            RenderGraphStageUse{previousHistory, Access::TextureStorageRead},
+            RenderGraphStageUse{"output.color", Access::TextureStorageWrite}};
+        const std::array stages{
+            RenderGraphStage{"NRC begin frame", sdkUses, [&](CommandBuffer& commands) -> Result<> {
+                auto begun = nrc_.beginFrame(commands, frameSettings);
+                return begun ? prepareParams() : begun;
+            }, RenderGraphPassKind::Unsafe},
+            RenderGraphStage{"NRC update", resources.uses, [&](CommandBuffer& commands) {
+                return updateProgram.dispatch({.commandBuffer = &commands,
+                    .bindings = traceBindings.data(), .bindingCount = static_cast<uint32_t>(traceBindings.size()),
+                    .pushData = &push, .pushDataSize = sizeof(push),
+                    .groupCountX = (trainingWidth + 7) / 8, .groupCountY = (trainingHeight + 7) / 8, .groupCountZ = 1});
+            }},
+            RenderGraphStage{"NRC query", resources.uses, [&](CommandBuffer& commands) {
+                return queryProgram.dispatch({.commandBuffer = &commands,
+                    .bindings = traceBindings.data(), .bindingCount = static_cast<uint32_t>(traceBindings.size()),
+                    .pushData = &push, .pushDataSize = sizeof(push),
+                    .groupCountX = (push.width + 7) / 8, .groupCountY = (push.height + 7) / 8, .groupCountZ = 1});
+            }},
+            RenderGraphStage{"NRC train", sdkUses,
+                [&](CommandBuffer& commands) { return nrc_.queryAndTrain(commands, nullptr); }, RenderGraphPassKind::Unsafe},
+            RenderGraphStage{"NRC resolve", resolveUses,
+                [&](CommandBuffer& commands) { return nrc_.resolve(commands, *historyCurrentView); }, RenderGraphPassKind::Unsafe},
+            RenderGraphStage{"NRC tonemap", tonemapUses, [&](CommandBuffer& commands) {
+                return tonemapProgram_.dispatch({.commandBuffer = &commands,
+                    .bindings = tonemapBindings.data(), .bindingCount = static_cast<uint32_t>(tonemapBindings.size()),
+                    .pushData = &tonemapPush, .pushDataSize = sizeof(tonemapPush),
+                    .groupCountX = (push.width + 7) / 8, .groupCountY = (push.height + 7) / 8, .groupCountZ = 1});
+            }}};
+        const auto pending = nrcEndFramePending_;
+        const auto discarded = nrcDiscarded_;
+        result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
+            [pending] { *pending = true; }, [discarded] { *discarded = true; }));
+        if (!result) { return result; }
+        result = context.executeStages(stages, resources.buffers, resources.textures);
+        if (result) { *nrcDiscarded_ = false; }
+        return result;
     }
 #endif
 
@@ -3248,15 +3269,16 @@ private:
     uint32_t sharcEntryCount_ = 0;
     uint64_t sharcResourcesRevision_ = 0;
     bool sharcClearPending_ = false;
+    std::shared_ptr<bool> sharcDiscarded_ = std::make_shared<bool>(false);
 #if METALLIC_HAS_NRC
     vulkan::NrcIntegration nrc_;
     nrc::ContextSettings nrcContextSettings_{};
     bool nrcConfigured_ = false;
-    bool nrcEndFramePending_ = false;
+    std::shared_ptr<bool> nrcEndFramePending_ = std::make_shared<bool>(false);
+    std::shared_ptr<bool> nrcDiscarded_ = std::make_shared<bool>(false);
     uint64_t nrcSceneRevision_ = 0;
     uint64_t nrcEnvironmentRevision_ = 0;
 #endif
-    Texture* historyCurrentTexture_ = nullptr;
     uint64_t sceneResourceRevision_ = 0;
     uint64_t environmentResourceRevision_ = 0;
     uint64_t environmentSettingsRevision_ = 0;

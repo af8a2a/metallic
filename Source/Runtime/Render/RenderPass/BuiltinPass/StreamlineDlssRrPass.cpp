@@ -2,7 +2,10 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
+#include "Runtime/Render/RenderFrameContext.h"
 
+#include <array>
+#include <vector>
 #include <spdlog/spdlog.h>
 
 namespace metallic::render::builtin_pass {
@@ -66,6 +69,7 @@ public:
             .storageReadWrite();
         inputColor.format = Format::Rgba16Sfloat;
         inputColor.usage = inputColor.usage | TextureUsageBits::TransferSource | TextureUsageBits::Sampled;
+        inputColor.stageAccess(RenderGraphResourceAccess::TextureTransferRead);
 
         if (rayReconstruction) {
             const auto addGuide = [&](const char* name, const char* description, Format format) {
@@ -86,6 +90,7 @@ public:
             .storageReadWrite();
         motion.format = Format::Rg16Sfloat;
         motion.usage = motion.usage | TextureUsageBits::Sampled;
+        motion.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
         const char* depthFieldName = rayReconstruction ? "linearDepth" : "depth";
         RenderGraphField& depth = reflection.addTextureInput(
             depthFieldName,
@@ -94,6 +99,8 @@ public:
             .storageReadWrite();
         depth.format = Format::R32Sfloat;
         depth.usage = depth.usage | TextureUsageBits::Sampled;
+        depth.stageAccess(RenderGraphResourceAccess::TextureSampleRead)
+            .stageAccess(RenderGraphResourceAccess::TextureSampleRead, RenderGraphPassKind::Raster);
 
         RenderGraphField& outputColor = reflection.addTextureOutput(
             "color",
@@ -102,6 +109,7 @@ public:
             .storageReadWrite();
         outputColor.format = Format::Rgba16Sfloat;
         outputColor.usage = outputColor.usage | TextureUsageBits::TransferDestination;
+        outputColor.stageAccess(RenderGraphResourceAccess::TextureTransferWrite);
         if (boolProperty(&properties(), "useRasterCamera", false)) {
             reflection.addBufferInput("rasterInfo", "Authoritative raster camera and jitter")
                 .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
@@ -305,7 +313,22 @@ public:
             if (renderWidth != outputWidth || renderHeight != outputHeight) {
                 return makeError(Error::InvalidArgument);
             }
-            copyInputToOutput(context.commandBuffer(), inputColor, outputColor);
+            const std::array copyUses{
+                RenderGraphStageUse{"inputColor", RenderGraphResourceAccess::TextureTransferRead},
+                RenderGraphStageUse{"color", RenderGraphResourceAccess::TextureTransferWrite}};
+            const std::array guideUses{
+                RenderGraphStageUse{"input.motionVectors", RenderGraphResourceAccess::TextureSampleRead},
+                RenderGraphStageUse{rayReconstruction ? "linearDepth" : "input.depth", RenderGraphResourceAccess::TextureSampleRead},
+                RenderGraphStageUse{"output.motionVectors", RenderGraphResourceAccess::TextureStorageWrite},
+                RenderGraphStageUse{"output.depth", RenderGraphResourceAccess::TextureStorageWrite}};
+            std::vector<RenderGraphStage> stages{{"DLSS pass through", copyUses,
+                [&](CommandBuffer& command) -> Result<> { copyInputToOutput(command, inputColor, outputColor); return {}; }}};
+            if (boolProperty(&properties(), "exportOutputGuides", false)) {
+                stages.push_back({"DLSS output guides", guideUses,
+                    [&](CommandBuffer&) { return resolveOutputGuides(context, motionVectors, depth, {}); }});
+            }
+            auto result = context.executeStages(stages);
+            if (!result) { return result; }
             lastMode_ = vulkan::StreamlineDlssRrMode::Off;
             lastRenderWidth_ = renderWidth;
             lastRenderHeight_ = renderHeight;
@@ -313,7 +336,7 @@ public:
             lastOutputHeight_ = outputHeight;
             hasPreviousCamera_ = false;
             forceReset_ = false;
-            return resolveOutputGuides(context, motionVectors, depth, {});
+            return {};
         }
 
         const uint32_t resetSerial = uintProperty(
@@ -385,69 +408,90 @@ public:
         camera.previousValid = previousCameraValid;
 
         std::string log;
-        Result<> result;
+        using Access = RenderGraphResourceAccess;
+        std::vector<RenderGraphStageUse> sdkUses{
+            {"inputColor", Access::TextureStorageReadWrite},
+            {"color", Access::TextureStorageReadWrite},
+            {"input.motionVectors", Access::TextureStorageReadWrite}};
+        const std::array depthUses{RenderGraphStageUse{"input.depth", Access::TextureSampleRead},
+            RenderGraphStageUse{"dlssDepth", Access::TextureDepthStencilWrite}};
+        const std::array alphaUses{RenderGraphStageUse{"color", Access::TextureStorageReadWrite}};
+        const std::array guideUses{RenderGraphStageUse{"input.motionVectors", Access::TextureSampleRead},
+            RenderGraphStageUse{rayReconstruction ? "linearDepth" : "input.depth", Access::TextureSampleRead},
+            RenderGraphStageUse{"output.motionVectors", Access::TextureStorageWrite},
+            RenderGraphStageUse{"output.depth", Access::TextureStorageWrite}};
+        std::vector<RenderGraphStage> stages;
+        std::vector<RenderGraphTextureImport> imports;
         if (rayReconstruction) {
-            result = vulkan::evaluateStreamlineDlssRr(
-                context.commandBuffer(),
-                vulkan::StreamlineDlssRrDesc{
-                    .inputColor = textureRef(inputColor),
-                    .outputColor = textureRef(outputColor),
-                    .albedo = textureRef(albedo),
-                    .specularAlbedo = textureRef(specularAlbedo),
-                    .normalRoughness = textureRef(normalRoughness),
-                    .motionVectors = textureRef(motionVectors),
-                    .linearDepth = textureRef(depth),
-                    .specularHitDistance = textureRef(specularHitDistance),
-                    .renderWidth = renderWidth,
-                    .renderHeight = renderHeight,
-                    .outputWidth = outputWidth,
-                    .outputHeight = outputHeight,
-                    .camera = camera,
-                    .mode = mode,
-                    .reset = reset || !previousCameraValid,
-                },
-                log);
+            for (const char* name : {"albedo", "specularAlbedo", "normalRoughness", "linearDepth", "specularHitDistance"}) {
+                sdkUses.push_back({name, Access::TextureStorageReadWrite});
+            }
+            stages.push_back({"DLSS ray reconstruction", sdkUses, [&](CommandBuffer& command) {
+                return vulkan::evaluateStreamlineDlssRr(command,
+                    vulkan::StreamlineDlssRrDesc{
+                        .inputColor = textureRef(inputColor),
+                        .outputColor = textureRef(outputColor),
+                        .albedo = textureRef(albedo),
+                        .specularAlbedo = textureRef(specularAlbedo),
+                        .normalRoughness = textureRef(normalRoughness),
+                        .motionVectors = textureRef(motionVectors),
+                        .linearDepth = textureRef(depth),
+                        .specularHitDistance = textureRef(specularHitDistance),
+                        .renderWidth = renderWidth,
+                        .renderHeight = renderHeight,
+                        .outputWidth = outputWidth,
+                        .outputHeight = outputHeight,
+                        .camera = camera,
+                        .mode = mode,
+                        .reset = reset || !previousCameraValid,
+                    }, log);
+            }, RenderGraphPassKind::Unsafe});
         } else {
-            Result<> depthResult = exportSuperResolutionDepth(
-                context.commandBuffer(),
-                depth,
-                renderWidth,
-                renderHeight);
-            if (!depthResult) {
-                return depthResult;
-            }
-            result = vulkan::evaluateStreamlineDlssSr(
-                context.commandBuffer(),
-                vulkan::StreamlineDlssSrDesc{
-                    .inputColor = textureRef(inputColor),
-                    .outputColor = textureRef(outputColor),
-                    .motionVectors = textureRef(motionVectors),
-                    .depth = vulkan::StreamlineDlssSrTextureRef{
-                        .texture = dlssDepth_.get(),
-                        .view = dlssDepthView_.get(),
-                    },
-                    .renderWidth = renderWidth,
-                    .renderHeight = renderHeight,
-                    .outputWidth = outputWidth,
-                    .outputHeight = outputHeight,
-                    .camera = camera,
-                    .mode = mode,
-                    .reset = reset || !previousCameraValid,
-                },
-                log);
-            if (result) {
-                result = resolveSuperResolutionAlpha(
-                    context.commandBuffer(),
-                    outputColor);
-                if (!result) {
-                    log = "DLSS-SR alpha resolve failed";
-                }
-            }
+            if (!dlssDepth_ || !dlssDepthView_ || !dlssDepthState_) { return makeError(Error::InvalidArgument); }
+            imports.push_back({"dlssDepth", dlssDepth_.get(), dlssDepthView_.get(), *dlssDepthState_, ResourceState::General});
+            auto state = dlssDepthState_;
+            auto transaction = context.commandBuffer().addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
+                [] {}, [state] { *state = ResourceState::Undefined; }));
+            if (!transaction) { return transaction; }
+            stages.push_back({"DLSS depth export", depthUses, [&](CommandBuffer& command) {
+                return exportSuperResolutionDepth(command, depth, renderWidth, renderHeight);
+            }, RenderGraphPassKind::Raster});
+            sdkUses.push_back({"dlssDepth", Access::TextureSampleReadGeneral});
+            stages.push_back({"DLSS super resolution", sdkUses, [&](CommandBuffer& command) {
+                return vulkan::evaluateStreamlineDlssSr(command,
+                    vulkan::StreamlineDlssSrDesc{
+                        .inputColor = textureRef(inputColor),
+                        .outputColor = textureRef(outputColor),
+                        .motionVectors = textureRef(motionVectors),
+                        .depth = vulkan::StreamlineDlssSrTextureRef{
+                            .texture = dlssDepth_.get(),
+                            .view = dlssDepthView_.get(),
+                        },
+                        .renderWidth = renderWidth,
+                        .renderHeight = renderHeight,
+                        .outputWidth = outputWidth,
+                        .outputHeight = outputHeight,
+                        .camera = camera,
+                        .mode = mode,
+                        .reset = reset || !previousCameraValid,
+                    }, log);
+            }, RenderGraphPassKind::Unsafe});
+            stages.push_back({"DLSS alpha resolve", alphaUses, [&](CommandBuffer& command) {
+                auto result = resolveSuperResolutionAlpha(command, outputColor);
+                if (!result) { log = "DLSS-SR alpha resolve failed"; }
+                return result;
+            }});
         }
+        if (boolProperty(&properties(), "exportOutputGuides", false)) {
+            stages.push_back({"DLSS output guides", guideUses,
+                [&](CommandBuffer&) { return resolveOutputGuides(context, motionVectors, depth, jitter); }});
+        }
+        auto result = context.executeStages(stages, {}, imports);
         if (!result && !log.empty()) {
             spdlog::error("[Streamline] {} evaluate failed: {}", featureName(), log);
         }
         if (result) {
+            if (!rayReconstruction) { *dlssDepthState_ = ResourceState::General; }
             lastMode_ = mode;
             lastResetSerial_ = resetSerial;
             lastRenderWidth_ = renderWidth;
@@ -461,7 +505,6 @@ public:
             forceReset_ = false;
             lastFrame_ = context.frameIndex();
             lastHistoryRevision_ = historyRevision;
-            result = resolveOutputGuides(context, motionVectors, depth, jitter);
         }
         return result;
     }
@@ -472,11 +515,6 @@ private:
     {
         if (!boolProperty(&properties(), "exportOutputGuides", false)) { return {}; }
         auto& command = context.commandBuffer();
-        TextureBarrierDesc barriers[] = {
-            {.texture = motion.texture(), .before = ResourceState::General, .after = ResourceState::ShaderRead},
-            {.texture = depth.texture(), .before = ResourceState::General, .after = ResourceState::ShaderRead},
-        };
-        command.barrier({.textures = barriers, .textureCount = 2});
         auto* mv = motion.view();
         auto* z = depth.view();
         const ComputeDispatchBinding bindings[] = {
@@ -485,12 +523,9 @@ private:
             {.binding = 2, .textureView = context.outputTexture("motionVectors").view()},
             {.binding = 3, .textureView = context.outputTexture("depth").view()},
         };
-        auto result = guideResolve_.dispatch({.commandBuffer = &command,
+        return guideResolve_.dispatch({.commandBuffer = &command,
             .bindings = bindings, .bindingCount = 4, .pushData = jitter.data(), .pushDataSize = 8,
             .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
-        for (auto& barrier : barriers) { std::swap(barrier.before, barrier.after); }
-        command.barrier({.textures = barriers, .textureCount = 2});
-        return result;
     }
 
     const char* passTypeName() const
@@ -753,30 +788,6 @@ private:
 
     static void copyInputToOutput(CommandBuffer& commandBuffer, TextureHandle inputColor, TextureHandle outputColor)
     {
-        TextureBarrierDesc toTransfer[] = {
-            TextureBarrierDesc{
-                .texture = inputColor.texture(),
-                .before = ResourceState::General,
-                .after = ResourceState::TransferSource,
-                .baseMip = 0,
-                .mipCount = inputColor.desc().mipCount,
-                .baseLayer = 0,
-                .layerCount = inputColor.desc().layerCount,
-            },
-            TextureBarrierDesc{
-                .texture = outputColor.texture(),
-                .before = ResourceState::General,
-                .after = ResourceState::TransferDestination,
-                .baseMip = 0,
-                .mipCount = outputColor.desc().mipCount,
-                .baseLayer = 0,
-                .layerCount = outputColor.desc().layerCount,
-            },
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = toTransfer,
-            .textureCount = static_cast<uint32_t>(std::size(toTransfer)),
-        });
         commandBuffer.copyTexture(TextureCopyDesc{
             .source = inputColor.texture(),
             .destination = outputColor.texture(),
@@ -787,30 +798,6 @@ private:
             .sourceBaseLayer = 0,
             .destinationMipLevel = 0,
             .destinationBaseLayer = 0,
-        });
-        TextureBarrierDesc toGeneral[] = {
-            TextureBarrierDesc{
-                .texture = inputColor.texture(),
-                .before = ResourceState::TransferSource,
-                .after = ResourceState::General,
-                .baseMip = 0,
-                .mipCount = inputColor.desc().mipCount,
-                .baseLayer = 0,
-                .layerCount = inputColor.desc().layerCount,
-            },
-            TextureBarrierDesc{
-                .texture = outputColor.texture(),
-                .before = ResourceState::TransferDestination,
-                .after = ResourceState::General,
-                .baseMip = 0,
-                .mipCount = outputColor.desc().mipCount,
-                .baseLayer = 0,
-                .layerCount = outputColor.desc().layerCount,
-            },
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = toGeneral,
-            .textureCount = static_cast<uint32_t>(std::size(toGeneral)),
         });
     }
 
@@ -916,7 +903,7 @@ private:
 
         dlssDepthView_.reset();
         dlssDepth_.reset();
-        dlssDepthState_ = ResourceState::Undefined;
+        dlssDepthState_ = std::make_shared<ResourceState>(ResourceState::Undefined);
         result = device.createTexture(TextureDesc{
                 .type = TextureType::Texture2D,
                 .usage = TextureUsageBits::DepthStencilAttachment | TextureUsageBits::Sampled,
@@ -975,32 +962,6 @@ private:
             return result;
         }
 
-        TextureBarrierDesc toDepthExport[] = {
-            TextureBarrierDesc{
-                .texture = depthGuide.texture(),
-                .before = ResourceState::General,
-                .after = ResourceState::ShaderRead,
-                .baseMip = 0,
-                .mipCount = depthGuide.desc().mipCount,
-                .baseLayer = 0,
-                .layerCount = depthGuide.desc().layerCount,
-            },
-            TextureBarrierDesc{
-                .texture = dlssDepth_.get(),
-                .before = dlssDepthState_,
-                .after = ResourceState::DepthStencilAttachment,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            },
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = toDepthExport,
-            .textureCount = static_cast<uint32_t>(std::size(toDepthExport)),
-        });
-        dlssDepthState_ = ResourceState::DepthStencilAttachment;
-
         const Rect renderArea{
             .x = 0,
             .y = 0,
@@ -1033,31 +994,6 @@ private:
         commandBuffer.draw(3);
         commandBuffer.endRendering();
 
-        TextureBarrierDesc toStreamline[] = {
-            TextureBarrierDesc{
-                .texture = depthGuide.texture(),
-                .before = ResourceState::ShaderRead,
-                .after = ResourceState::General,
-                .baseMip = 0,
-                .mipCount = depthGuide.desc().mipCount,
-                .baseLayer = 0,
-                .layerCount = depthGuide.desc().layerCount,
-            },
-            TextureBarrierDesc{
-                .texture = dlssDepth_.get(),
-                .before = dlssDepthState_,
-                .after = ResourceState::General,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
-            },
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = toStreamline,
-            .textureCount = static_cast<uint32_t>(std::size(toStreamline)),
-        });
-        dlssDepthState_ = ResourceState::General;
         return {};
     }
 
@@ -1078,19 +1014,6 @@ private:
             return result;
         }
 
-        TextureBarrierDesc outputBarrier{
-            .texture = outputColor.texture(),
-            .before = ResourceState::General,
-            .after = ResourceState::General,
-            .baseMip = 0,
-            .mipCount = outputColor.desc().mipCount,
-            .baseLayer = 0,
-            .layerCount = outputColor.desc().layerCount,
-        };
-        commandBuffer.barrier(BarrierDesc{
-            .textures = &outputBarrier,
-            .textureCount = 1,
-        });
         commandBuffer.bindBindlessHeap(*auxiliaryHeap_);
         const StreamlineDlssAlphaUserPush push{
             .outputImage = outputColorHandle_.shaderIndex,
@@ -1138,7 +1061,7 @@ private:
     std::unique_ptr<TextureView> dlssDepthView_;
     uint32_t dlssDepthWidth_ = 0;
     uint32_t dlssDepthHeight_ = 0;
-    ResourceState dlssDepthState_ = ResourceState::Undefined;
+    std::shared_ptr<ResourceState> dlssDepthState_;
 };
 
 } // namespace

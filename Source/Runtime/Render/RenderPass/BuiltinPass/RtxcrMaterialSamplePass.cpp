@@ -81,7 +81,7 @@ public:
         reflection.addTextureOutput(
                 "color",
                 "RTXCR Chiang hair, far-field hair, and Burley subsurface showcase")
-            .storageReadWrite()
+            .storageWrite()
             .format = Format::Rgba8Unorm;
         return reflection;
     }

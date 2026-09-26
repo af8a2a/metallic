@@ -59,7 +59,7 @@ public:
         source.sampledRead().setOptional();
         source.matchOutputExtent = false;
         auto& color = reflection.addTextureOutput("color", "Final image presented by the viewport to the swapchain");
-        color.storageReadWrite();
+        color.storageWrite();
         const bool hdr = context.displayOutput.mode == DisplayOutputMode::HdrScRgb;
         color.format = hdr ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
         color.colorEncoding = hdr ? DisplayColorEncoding::ScRgb : DisplayColorEncoding::Srgb;

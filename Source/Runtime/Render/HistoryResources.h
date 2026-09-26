@@ -23,6 +23,7 @@ struct HistoryTextureRef {
     TextureView* view = nullptr;
     const TextureDesc* desc = nullptr;
     bool valid = false;
+    ResourceState state = ResourceState::Undefined;
 };
 
 struct HistoryBufferRef {
@@ -69,6 +70,15 @@ public:
     bool hasPrevious(std::string_view name) const;
 
     void markWritten(std::string_view name);
+
+    // Publish the state produced by an external access plan without recording a
+    // barrier. Cancellation restores the prior layout and invalidates contents.
+    Result<> publishTextureState(
+        CommandBuffer& commandBuffer,
+        std::string_view name,
+        HistorySlot slot,
+        ResourceState state,
+        bool written = false);
 
     Result<> transitionTexture(
         CommandBuffer& commandBuffer,

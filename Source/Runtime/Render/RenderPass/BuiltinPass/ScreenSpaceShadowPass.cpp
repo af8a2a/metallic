@@ -156,14 +156,18 @@ public:
 
         profile.next("Publish shadow image");
         // Keep SIGMA's private output for the next history copy; publish a graph-owned snapshot.
-        TextureBarrierDesc barrier{.texture = shadow.texture, .before = ResourceState::ShaderRead,
-            .after = ResourceState::TransferSource, .mipCount = 1, .layerCount = 1};
-        commands.barrier({.textures = &barrier, .textureCount = 1});
-        commands.copyTexture({.source = shadow.texture, .destination = output.texture(),
-            .width = context.width(), .height = context.height(), .depth = 1});
-        barrier.before = ResourceState::TransferSource;
-        barrier.after = ResourceState::ShaderRead;
-        commands.barrier({.textures = &barrier, .textureCount = 1});
+        const std::array imports{RenderGraphTextureImport{"privateShadow", shadow.texture, shadow.shadow,
+            ResourceState::ShaderRead, ResourceState::ShaderRead}};
+        const std::array uses{
+            RenderGraphStageUse{"privateShadow", RenderGraphResourceAccess::TextureTransferRead},
+            RenderGraphStageUse{"shadow", RenderGraphResourceAccess::TextureTransferWrite}};
+        const std::array stages{RenderGraphStage{"Publish shadow", uses, [&](CommandBuffer& stageCommands) -> Result<> {
+            stageCommands.copyTexture({.source = shadow.texture, .destination = output.texture(),
+                .width = context.width(), .height = context.height(), .depth = 1});
+            return {};
+        }}};
+        result = context.executeStages(stages, {}, imports);
+        if (!result) { return result; }
         profile.next("Publish shadow parameters");
         mapped = shadow.parameters->map();
         if (mapped == nullptr) { return makeError(Error::Failure); }

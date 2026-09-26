@@ -263,6 +263,11 @@ public:
         ACCESS_CHECK(read.stages == PipelineStageBits::ComputeShader && read.access == AccessBits::ShaderRead);
         ACCESS_CHECK(write.access == AccessBits::ShaderWrite);
         ACCESS_CHECK(constant.access == AccessBits::UniformRead && containsBits(constant.stages, PipelineStageBits::FragmentShader));
+        const auto opaque = render::detail::scopeForGraphAccess(
+            RenderGraphResourceAccess::BufferStorageReadWrite, RenderGraphPassKind::Unsafe);
+        ACCESS_CHECK(opaque.stages == PipelineStageBits::AllCommands);
+        ACCESS_CHECK(containsBits(opaque.access, AccessBits::MemoryRead | AccessBits::MemoryWrite |
+            AccessBits::ShaderRead | AccessBits::ShaderWrite));
         return RhiTestResult::pass();
     }
 };

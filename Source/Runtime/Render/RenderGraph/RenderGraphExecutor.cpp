@@ -1583,7 +1583,7 @@ struct RenderGraphExecutor::Impl {
             if (slot.completion.isCancelled()) {
                 slot.pending = false; slot.stats = {}; slot.profile = {}; continue;
             }
-            if (slot.completion.valid() && !slot.completion.isComplete()) { break; }
+            if (!slot.completion.valid() || !slot.completion.isComplete()) { break; }
             std::array<std::vector<TimestampQueryResult>, 3> values;
             bool ready = true;
             for (uint32_t q = 0; q < values.size(); ++q) {
@@ -1650,7 +1650,11 @@ struct RenderGraphExecutor::Impl {
     void beginGpuTiming(CommandBuffer& commands)
     {
         activeGpuTimingSlot = nullptr; activeGpuTimingValid = false;
-        if (!gpuTimestampQueryPools[0]) { return; }
+        // Raw external recording exposes no GPU completion. Queue acceptance
+        // and query availability cannot distinguish an unexecuted reset from
+        // a previous query generation, so retain CPU scopes without timestamps.
+        if (!gpuTimestampQueryPools[0] || !commands.frameContext() ||
+            !commands.frameContext()->completion().valid()) { return; }
         const auto resolved = resolveGpuTimings();
         if (!resolved) { return; }
         for (uint32_t offset = 0; offset < kGpuTimingSlotCount; ++offset) {
@@ -1660,7 +1664,7 @@ struct RenderGraphExecutor::Impl {
             slot.stats = {}; slot.profile = {}; slot.used = {};
             slot.nodeTimers.clear(); slot.sectionTimers.clear();
             activeGpuTimingSlot = &slot; activeGpuTimingValid = true;
-            slot.completion = commands.frameContext() ? commands.frameContext()->completion() : GpuCompletionPoint{};
+            slot.completion = commands.frameContext()->completion();
             // vkCmdResetQueryPool cannot run on a transfer-only queue. Reset every
             // queue's range in this graphics prologue; all branches depend on it.
             for (const auto& pool : gpuTimestampQueryPools) {
@@ -1746,7 +1750,7 @@ struct RenderGraphExecutor::Impl {
                     initial.push_back(accessInitialState(*allocation));
                 }
                 pass.uses.push_back({entry->second, stateForAccess(field.access),
-                    scopeForGraphAccess(field.access, node.kind), accessWrites(field.access)});
+                    fieldAccessScope(field, node.kind), fieldAccessWrites(field)});
             }
         }
         auto planned = buildGraphAccessPlan(initial, passes);
@@ -1828,7 +1832,8 @@ struct RenderGraphExecutor::Impl {
                 .resource = resource,
                 .visibility = field.visibility,
                 .bindlessAccess = field.bindlessAccess,
-                .scope = scopeForGraphAccess(field.access, node.kind),
+                .scope = fieldAccessScope(field, node.kind),
+                .internalLayouts = fieldChangesLayout(field),
                 .bindlessHandle = resource != nullptr
                     ? resource->bindlessHandle
                     : BindlessHandle{},

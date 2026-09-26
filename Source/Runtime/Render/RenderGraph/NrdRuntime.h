@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 
 #ifndef METALLIC_HAS_NRD
@@ -38,7 +39,9 @@ using NrdUserTexturePool = std::array<NrdTextureRef, static_cast<size_t>(denoisi
 
 // Vendored NRD kernels, scheduled and bound by Metallic. The caller must wait
 // for the previous frame before reusing this temporal instance (the render graph
-// enforces this through NrdDenoisePass::supportsFrameOverlap = false).
+// enforces this through NrdDenoisePass::supportsFrameOverlap = false). User
+// textures enter and leave in General; the complete clear/dispatch sequence
+// derives its dependencies through the shared render graph access planner.
 class NrdRuntime {
 public:
     NrdRuntime();
@@ -68,7 +71,8 @@ public:
 
 private:
     Result<> record(uint32_t index, CommandBuffer& commandBuffer);
-    Result<> dispatch(CommandBuffer& commandBuffer, const denoising::DispatchDesc& stage);
+    Result<> dispatch(CommandBuffer& commandBuffer, const denoising::DispatchDesc& stage,
+        std::span<const NrdTextureRef> textures);
 
     struct Impl;
     std::shared_ptr<Impl> impl_;

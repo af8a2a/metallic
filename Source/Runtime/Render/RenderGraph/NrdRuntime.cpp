@@ -4,12 +4,12 @@
 #include "Runtime/Render/RenderFrameContext.h"
 #if METALLIC_HAS_NRD
 #include "Runtime/Render/Denoising/NrdPlan.h"
+#include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #endif
 #include <spdlog/spdlog.h>
 #include <algorithm>
 #include <limits>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 namespace metallic::render {
@@ -352,7 +352,145 @@ Result<> NrdRuntime::record(uint32_t index, CommandBuffer& commands)
         return makeError(Error::InvalidArgument);
     if (index == 0 && !impl_->device->capabilities().shaderImageGatherExtended)
         return makeError(Error::Unsupported);
+    using namespace detail;
+    struct RecordingGuard {
+        Impl& state;
+        bool complete = false;
+        ~RecordingGuard()
+        {
+            if (!complete) {
+                // schedule() rotates history before resource validation and
+                // lazy pipeline preparation. Even a failure that records no
+                // GPU commands must restart accumulation on the next frame.
+                state.historyInvalid = true;
+                state.clearPending = true;
+            }
+        }
+    } recordingGuard{*impl_};
+    // schedule() rotates NRD history slots. A failed preparation must not let
+    // this same frame schedule the denoiser a second time and rotate again.
     impl_->scheduled[index] = true;
+    const auto dispatches = impl_->plan.schedule(index);
+    const bool clearPending = impl_->clearPending;
+    std::vector<GraphAccessResource> resources;
+    std::vector<GraphAccessBinding> bindings;
+    std::vector<std::shared_ptr<void>> owners;
+    std::vector<std::vector<ResourceState*>> trackedStates;
+    std::unordered_map<const void*, size_t> identities;
+    std::vector<GraphAccessPass> accesses;
+    std::vector<std::vector<NrdTextureRef>> dispatchTextures;
+    dispatchTextures.reserve(dispatches.size());
+    accesses.reserve(dispatches.size() + (clearPending ? 1u : 0u));
+
+    const auto importTexture = [&](NrdTextureRef texture, ResourceState* state) -> Result<size_t> {
+        if (!texture.texture || !texture.view ||
+            texture.view->deviceIdentity() != commands.deviceIdentity() ||
+            texture.texture->desc().mipCount == 0 || texture.texture->desc().layerCount == 0) {
+            return makeError(Error::InvalidArgument);
+        }
+        auto owner = texture.view->retainTexture();
+        if (!owner || texture.texture->retainAllocation() != owner) { return makeError(Error::InvalidArgument); }
+        const ResourceState initial = state ? *state : ResourceState::General;
+        const SyncScope scope = !state
+            ? SyncScope{PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}
+            : initial == ResourceState::TransferDestination
+                ? SyncScope{PipelineStageBits::Transfer, AccessBits::TransferWrite}
+                : SyncScope{PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite};
+        const auto [entry, inserted] = identities.try_emplace(owner.get(), resources.size());
+        const size_t resource = entry->second;
+        if (inserted) {
+            resources.push_back({.type = RenderGraphResourceType::Texture2D, .state = initial, .scope = scope});
+            bindings.push_back({.texture = texture.texture, .mipCount = texture.texture->desc().mipCount,
+                .layerCount = texture.texture->desc().layerCount});
+            owners.push_back(std::move(owner));
+            trackedStates.emplace_back();
+        } else {
+            if (resources[resource].state != initial) { return makeError(Error::InvalidArgument); }
+            resources[resource].scope.stages = resources[resource].scope.stages | scope.stages;
+            resources[resource].scope.access = resources[resource].scope.access | scope.access;
+        }
+        if (state && std::find(trackedStates[resource].begin(), trackedStates[resource].end(), state) ==
+            trackedStates[resource].end()) {
+            trackedStates[resource].push_back(state);
+        }
+        return resource;
+    };
+
+    // Validate every resource and compile the complete sequence before emitting
+    // commands. Aliased NRD slots refer to one allocation in the access plan.
+    if (clearPending) {
+        auto& clear = accesses.emplace_back();
+        const auto appendPool = [&](auto& pool) -> Result<> {
+            for (auto& texture : pool) {
+                auto resource = importTexture({texture.texture.get(), texture.view.get()}, &texture.state);
+                if (!resource) { return makeError(resource.error()); }
+                clear.uses.push_back({*resource, ResourceState::TransferDestination,
+                    {PipelineStageBits::Transfer, AccessBits::TransferWrite}, true});
+            }
+            return {};
+        };
+        auto result = appendPool(impl_->permanentTextures);
+        if (result) { result = appendPool(impl_->transientTextures); }
+        if (!result) { return result; }
+    }
+    for (const auto& stage : dispatches) {
+        if (stage.pipelineIndex >= impl_->pipelines.size() || !stage.name || !stage.gridWidth || !stage.gridHeight ||
+            (stage.resourcesNum && !stage.resources) || (stage.constantBufferDataSize && !stage.constantBufferData)) {
+            return makeError(Error::InvalidArgument);
+        }
+        auto& access = accesses.emplace_back();
+        auto& textures = dispatchTextures.emplace_back();
+        textures.reserve(stage.resourcesNum);
+        uint32_t sampled = 0, storage = 0;
+        for (uint32_t i = 0; i < stage.resourcesNum; ++i) {
+            const auto& resource = stage.resources[i];
+            if (resource.descriptorType != denoising::DescriptorType::TEXTURE &&
+                resource.descriptorType != denoising::DescriptorType::STORAGE_TEXTURE) {
+                return makeError(Error::InvalidArgument);
+            }
+            const bool output = resource.descriptorType == denoising::DescriptorType::STORAGE_TEXTURE;
+            if ((output && ++storage > 16) || (!output && ++sampled > 32)) {
+                return makeError(Error::InvalidArgument);
+            }
+            NrdTextureRef texture;
+            ResourceState* state = nullptr;
+            if (resource.type == denoising::ResourceType::PERMANENT_POOL ||
+                resource.type == denoising::ResourceType::TRANSIENT_POOL) {
+                auto& pool = resource.type == denoising::ResourceType::PERMANENT_POOL
+                    ? impl_->permanentTextures : impl_->transientTextures;
+                if (resource.indexInPool >= pool.size()) { return makeError(Error::InvalidArgument); }
+                auto& internal = pool[resource.indexInPool];
+                texture = {internal.texture.get(), internal.view.get()};
+                state = &internal.state;
+            } else {
+                const auto slot = static_cast<size_t>(resource.type);
+                if (slot >= impl_->userTexturePool.size()) { return makeError(Error::InvalidArgument); }
+                texture = impl_->userTexturePool[slot];
+            }
+            const auto usage = output ? TextureUsageBits::Storage : TextureUsageBits::Sampled;
+            if (!texture.texture || !hasFlag(texture.texture->desc().usage, usage)) {
+                return makeError(Error::InvalidArgument);
+            }
+            auto canonical = importTexture(texture, state);
+            if (!canonical) { return makeError(canonical.error()); }
+            textures.push_back(texture);
+            // NRD samples in General. Storage descriptors may both load and
+            // store; never reduce them to write-only from descriptor type alone.
+            access.uses.push_back({*canonical, ResourceState::General,
+                {PipelineStageBits::ComputeShader,
+                    output ? AccessBits::ShaderRead | AccessBits::ShaderWrite : AccessBits::ShaderRead}, output});
+        }
+    }
+    auto accessPlan = buildGraphAccessPlan(resources, accesses);
+    if (!accessPlan) { return makeError(accessPlan.error()); }
+    for (const auto& stage : dispatches) {
+        auto result = impl_->pipeline(stage.pipelineIndex);
+        if (!result) { return result; }
+    }
+    for (auto& owner : owners) {
+        auto result = commands.retainResource(std::move(owner));
+        if (!result) { return result; }
+    }
     // A discarded recording must not become valid temporal history. Keep the
     // resources alive with the transaction until submission/cancellation.
     auto state = impl_;
@@ -371,40 +509,41 @@ Result<> NrdRuntime::record(uint32_t index, CommandBuffer& commands)
                                                 }));
     if (!result)
         return result;
-    if (impl_->clearPending) {
-        auto clearPool = [&](auto& pool) {
-            for (auto& texture : pool) {
-                TextureBarrierDesc barrier{.texture = texture.texture.get(),
-                                           .before = texture.state,
-                                           .after = ResourceState::TransferDestination,
-                                           .mipCount = 1,
-                                           .layerCount = 1};
-                commands.barrier({.textures = &barrier, .textureCount = 1});
-                texture.state = ResourceState::TransferDestination;
-                commands.clearColorTexture(*texture.texture, texture.state, {0, 0, 0, 0});
-            }
-        };
-        clearPool(impl_->permanentTextures);
-        clearPool(impl_->transientTextures);
+    const auto recordBoundary = [&](size_t stage) -> Result<> {
+        const auto& planned = accessPlan->passes[stage];
+        auto recorded = recordGraphAccessBarriers(commands, planned, bindings);
+        if (!recorded) { return recorded; }
+        for (const auto& use : planned.uses) {
+            for (auto* state : trackedStates[use.resource]) { *state = use.state; }
+        }
+        return {};
+    };
+    if (clearPending) {
+        result = recordBoundary(0);
+        if (!result) { return result; }
+        for (const auto& use : accessPlan->passes.front().uses) {
+            commands.clearColorTexture(*bindings[use.resource].texture, ResourceState::TransferDestination, {0, 0, 0, 0});
+        }
         impl_->clearPending = false;
     }
-    const auto dispatches = impl_->plan.schedule(index);
     result = commands.retainResource(impl_);
     if (!result) { return result; }
-    for (const auto& stage : dispatches) {
-        result = impl_->pipeline(stage.pipelineIndex);
-        if (!result)
-            return result;
+    for (size_t stageIndex = 0; stageIndex < dispatches.size(); ++stageIndex) {
+        const auto& stage = dispatches[stageIndex];
+        result = recordBoundary(stageIndex + (clearPending ? 1u : 0u));
+        if (!result) { return result; }
         commands.beginDebugLabel({.name = stage.name, .color = {0.2f, 0.8f, 0.25f, 1.0f}});
-        result = dispatch(commands, stage);
+        result = dispatch(commands, stage, dispatchTextures[stageIndex]);
         commands.endDebugLabel();
         if (!result)
             return result;
     }
+    recordingGuard.complete = true;
     return {};
 }
 
-Result<> NrdRuntime::dispatch(CommandBuffer& commands, const denoising::DispatchDesc& stage)
+Result<> NrdRuntime::dispatch(CommandBuffer& commands, const denoising::DispatchDesc& stage,
+    std::span<const NrdTextureRef> textures)
 {
     ParameterWriter writer(*impl_->device, *commands.frameContext(), *impl_->registry);
     NrdResourceIndices indices;
@@ -415,48 +554,16 @@ Result<> NrdRuntime::dispatch(CommandBuffer& commands, const denoising::Dispatch
             .addressV = SamplerAddressMode::ClampToEdge, .addressW = SamplerAddressMode::ClampToEdge}).value);
     }
     uint32_t sampled = 0, storage = 0;
-    std::vector<TextureBarrierDesc> barriers;
-    std::unordered_set<Texture*> transitioned;
     for (uint32_t i = 0; i < stage.resourcesNum; ++i) {
         const auto& resource = stage.resources[i];
-        NrdTextureRef texture;
-        ResourceState* state = nullptr;
-        if (resource.type == denoising::ResourceType::PERMANENT_POOL ||
-            resource.type == denoising::ResourceType::TRANSIENT_POOL) {
-            auto& pool = resource.type == denoising::ResourceType::PERMANENT_POOL ? impl_->permanentTextures
-                                                                                  : impl_->transientTextures;
-            if (resource.indexInPool >= pool.size())
-                return makeError(Error::InvalidArgument);
-            auto& internal = pool[resource.indexInPool];
-            texture = {internal.texture.get(), internal.view.get()};
-            state = &internal.state;
-        } else {
-            const auto slot = static_cast<size_t>(resource.type);
-            if (slot >= impl_->userTexturePool.size())
-                return makeError(Error::InvalidArgument);
-            texture = impl_->userTexturePool[slot];
-        }
-        if (!texture.texture || !texture.view)
-            return makeError(Error::InvalidArgument);
+        const auto& texture = textures[i];
         const bool output = resource.descriptorType == denoising::DescriptorType::STORAGE_TEXTURE;
-        if ((output && storage >= 16) || (!output && sampled >= 32))
-            return makeError(Error::InvalidArgument);
         if (output)
             indices.storage[storage++] = static_cast<uint32_t>(writer.storageImage(texture.view).value);
         else
             indices.sampled[sampled++] = static_cast<uint32_t>(writer.sampledImage(texture.view, ResourceState::General).value);
-        if (transitioned.insert(texture.texture).second) {
-            barriers.push_back({.texture = texture.texture,
-                                .before = state ? *state : ResourceState::General,
-                                .after = ResourceState::General,
-                                .mipCount = 1,
-                                .layerCount = 1});
-        }
-        if (state)
-            *state = ResourceState::General;
     }
     if (!writer.status()) { return writer.status(); }
-    commands.barrier({.textures = barriers.data(), .textureCount = static_cast<uint32_t>(barriers.size())});
     const NrdPushData params{stage.constantBufferDataSize ? writer.data(stage.constantBufferData, stage.constantBufferDataSize) : 0,
         writer.data(&indices, sizeof(indices))};
     EncodedParameters encoded;

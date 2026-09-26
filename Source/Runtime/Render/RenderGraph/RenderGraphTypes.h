@@ -70,6 +70,8 @@ enum class RenderGraphResourceAccess : uint8_t {
     TextureStorageWrite,
     BufferStorageRead,
     BufferStorageWrite,
+    BufferIndirectRead,
+    TextureSampleReadGeneral,
 };
 
 enum class RenderGraphBindlessAccess : uint8_t {
@@ -82,6 +84,12 @@ enum class RenderGraphPassKind : uint8_t {
     Raster,
     Compute,
     Unsafe,
+};
+
+struct RenderGraphInternalAccess {
+    RenderGraphResourceAccess access = RenderGraphResourceAccess::None;
+    RenderGraphPassKind kind = RenderGraphPassKind::Compute;
+    bool operator==(const RenderGraphInternalAccess&) const = default;
 };
 
 enum class RenderGraphRuntimeSettingType : uint8_t {
@@ -134,6 +142,8 @@ struct RenderGraphField {
     uint64_t size = 0;
     uint32_t structureStride = 0;
     MemoryLocation memoryLocation = MemoryLocation::Device;
+    // Aggregate internal operations; access/state remain the stable pass boundary.
+    std::vector<RenderGraphInternalAccess> internalAccesses;
 
     bool operator==(const RenderGraphField&) const = default;
 
@@ -153,6 +163,8 @@ struct RenderGraphField {
     RenderGraphField& bindlessSampledImage();
     RenderGraphField& bindlessBuffer();
     RenderGraphField& hostReadback();
+    RenderGraphField& stageAccess(RenderGraphResourceAccess access,
+        RenderGraphPassKind kind = RenderGraphPassKind::Compute);
 };
 
 class RenderPassReflection {
@@ -260,24 +272,42 @@ struct RenderPreparationTask {
 };
 
 struct RenderGraphStageUse {
-    // Reflected field or named private buffer import. Access is for this stage.
+    // Reflected field or named private import. Use input.field / output.field
+    // when a short field name is ambiguous. Access is for this stage.
     std::string_view resource;
     RenderGraphResourceAccess access = RenderGraphResourceAccess::None;
 };
 
-struct RenderGraphComputeStage {
+struct RenderGraphStage {
     std::string_view name;
     std::span<const RenderGraphStageUse> uses;
     std::function<Result<>(CommandBuffer&)> record;
+    RenderGraphPassKind kind = RenderGraphPassKind::Compute;
+    // An opaque operation may retain an existing disjoint GPU fork/join. Its
+    // callback must join completely and fulfill the declared boundary accesses.
+    bool allowParallelCompute = false;
 };
+
+using RenderGraphComputeStage = RenderGraphStage;
 
 struct RenderGraphBufferImport {
     std::string_view name;
     BufferSlice buffer;
-    // Conservative incoming and outgoing access contract on this queue. Content
-    // invalidation/reset does not discard prior GPU hazards. The caller orders
+    // Incoming access contract on this queue. executeComputeStages also limits
+    // stage permissions to this contract; executeStages uses allocation usage.
+    // Content invalidation/reset does not discard prior GPU hazards. The caller orders
     // prior external work before this sequence; imports do not introduce waits.
     RenderGraphResourceAccess access = RenderGraphResourceAccess::BufferStorageReadWrite;
+};
+
+struct RenderGraphTextureImport {
+    std::string_view name;
+    Texture* texture = nullptr;
+    TextureView* view = nullptr;
+    ResourceState initialState = ResourceState::Undefined;
+    // Undefined means leave the last declared layout. The owner must track it
+    // transactionally or retire the allocation if recording is cancelled.
+    ResourceState finalState = ResourceState::Undefined;
 };
 
 class RenderGraphExecutionContext {
@@ -327,6 +357,11 @@ public:
     // allocations. Keep all pass GPU resource accesses inside these stages.
     Result<> executeComputeStages(std::span<const RenderGraphComputeStage> stages,
         std::span<const RenderGraphBufferImport> imports = {});
+    // General single-queue stages. Reflected stageAccess declarations authorize
+    // internal uses; graph image layouts are restored to the pass boundary.
+    Result<> executeStages(std::span<const RenderGraphStage> stages,
+        std::span<const RenderGraphBufferImport> buffers = {},
+        std::span<const RenderGraphTextureImport> textures = {});
     // Join independent CPU jobs before returning, including on failure. Capture
     // frozen inputs and distinct output slots; never capture this context or
     // mutate frame/history/subsystems, issue commands, or publish from a job.
@@ -377,6 +412,7 @@ private:
         RenderGraphFieldVisibility visibility = RenderGraphFieldVisibility::Output;
         RenderGraphBindlessAccess bindlessAccess = RenderGraphBindlessAccess::None;
         SyncScope scope;
+        bool internalLayouts = false;
         BindlessHandle bindlessHandle;
         BindlessHandle sampledImageBindlessHandle;
     };
@@ -424,6 +460,10 @@ private:
     bool debugAfterPassPublished_ = false;
     bool computeStagesExecuted_ = false;
     bool computeStagesActive_ = false;
+    bool stagesAllowParallel_ = false;
+    Result<> executeStagesImpl(std::span<const RenderGraphStage> stages,
+        std::span<const RenderGraphBufferImport> buffers,
+        std::span<const RenderGraphTextureImport> textures, bool computeOnly);
 
     friend class RenderGraphExecutor;
 };

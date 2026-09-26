@@ -402,6 +402,47 @@ TEST_F(NrdGpu, ReferenceIndependentSignalsResetResizeAndDiscard)
     EXPECT_FLOAT_EQ(values[1], 14);
 }
 
+TEST_F(NrdGpu, ReferencePreflightFailureRestartsHistory)
+{
+    const auto first = frame(render::NrdDenoiserMode::Reference, 2, 10);
+    ASSERT_FLOAT_EQ(first[0], 2);
+    ASSERT_FLOAT_EQ(first[1], 10);
+
+    require(recording.begin(frameIndex));
+    require(command->begin(&recording));
+    auto settings = commonSettings(w, h);
+    settings.frameIndex = frameIndex++;
+    require(runtime.setCommonSettings(settings));
+    const auto input = pool[static_cast<size_t>(rd::ResourceType::IN_DIFF_RADIANCE_HITDIST)];
+    const auto otherInput = pool[static_cast<size_t>(rd::ResourceType::IN_SPEC_RADIANCE_HITDIST)];
+    const auto output = pool[static_cast<size_t>(rd::ResourceType::OUT_DIFF_RADIANCE_HITDIST)];
+    // Both handles are valid, but the view belongs to another allocation.
+    // Validation fails after scheduling advances Reference's history, before
+    // any commands or submission cancellation callbacks have been registered.
+    runtime.setUserPoolTexture(rd::ResourceType::IN_SIGNAL, *input.texture, *otherInput.view);
+    runtime.setUserPoolTexture(rd::ResourceType::OUT_SIGNAL, *output.texture, *output.view);
+    const auto failed = runtime.denoiseReference(false, *command);
+    EXPECT_TRUE(render::hasError(failed, render::Error::InvalidArgument));
+    require(command->end());
+    recording.cancel();
+    command.reset();
+    require(commands->createCommandBuffer().transform([&](auto rhiValue) { command = std::move(rhiValue); }));
+    streamer->endFrame();
+
+    // Changing both signals makes stale accumulation observable in the GPU
+    // output. Recovery must match a separately requested clean reset without
+    // the caller explicitly resetting the failed frame's history.
+    const auto recovered = frame(render::NrdDenoiserMode::Reference, 8, 30);
+    const auto accumulated = frame(render::NrdDenoiserMode::Reference, 16, 50);
+    EXPECT_FLOAT_EQ(accumulated[0], 12);
+    EXPECT_FLOAT_EQ(accumulated[1], 40);
+    const auto restarted = frame(render::NrdDenoiserMode::Reference, 8, 30, true);
+    EXPECT_FLOAT_EQ(restarted[0], 8);
+    EXPECT_FLOAT_EQ(restarted[1], 30);
+    EXPECT_FLOAT_EQ(recovered[0], restarted[0]);
+    EXPECT_FLOAT_EQ(recovered[1], restarted[1]);
+}
+
 TEST_F(NrdGpu, SharedRegistryAndRetiredRuntimeSubmission)
 {
     const auto first = frame(render::NrdDenoiserMode::Reference, 2, 10);
