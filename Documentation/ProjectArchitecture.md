@@ -229,14 +229,16 @@ sequenceDiagram
 
 ### 6.4 执行阶段
 
-每个节点执行前，执行器根据反射访问类型把资源转换到目标状态；同为 `General` 且存在写 hazard 时也会发出 barrier。随后构造 `RenderGraphExecutionContext`，绑定图级 Bindless heap，执行 Pass，并在成功后 flush Streamer。执行器同时收集每个节点与整图的 CPU 时间。
+录制开始前，执行器将反射字段解析为图资源的规范身份与实际队列，由 [`RenderGraphAccessPlan`](../Source/Runtime/Render/RenderGraph/RenderGraphAccessPlan.h) 一次性生成跨 Pass 的 barrier 和提交依赖。计划保留最后写入者、读取者集合和图像 layout 转换点，避免只记最近一次访问而漏掉后续 shader stage 的可见性。`storageRead()`、`storageWrite()` 与 `storageReadWrite()` 分别声明访问语义，字段 Input/Output 仍只表示图连线方向。
+
+每个节点执行前只编码已生成的 barrier，再构造 `RenderGraphExecutionContext`、绑定图级 Bindless heap 并执行 Pass。计划不依赖 worker 的完成顺序；GPU 分支的资源依赖指向该 Pass 的汇合提交。当前计划以整资源为粒度，Pass 内部阶段和私有资源仍保留原有同步契约。
 
 提供两种执行入口：
 
-- `execute(CommandBuffer&, HistoryResourceManager*)`：由调用者提供命令缓冲；编辑器使用此路径，整图位于图形命令缓冲中；
+- `execute(CommandBuffer&, HistoryResourceManager*)`：由调用者提供命令缓冲，整图在该命令缓冲中录制；
 - `execute(RenderGraphSubmitDesc)`：执行器管理各队列命令池、命令缓冲与 timeline semaphore。
 
-多队列接口当前不支持跨队列资源边；遇到此类依赖会返回 `Unsupported`。因此新增队列类型时不能假设已有自动 queue ownership transfer。
+多队列入口把同一计划的前驱关系转为 timeline semaphore 等待，并按 `sameQueue()` 合并实际队列身份。图资源允许 Graphics/Compute/Copy 共享；这里没有实现 exclusive queue-family ownership transfer。未声明 async 安全的 Pass、场景/SDK 边界、frame completion 和分批提交的接收回执仍沿用既有契约。`transitionOutput()` 也使用同一 planner，但跨帧与外部边界暂时保守导入访问范围。实现范围与验证见 [自动同步方案](RenderGraphAutomaticSynchronization.md#9-已实现跨-pass-统一访问计划)。
 
 ### 6.5 跨帧资源与上传
 

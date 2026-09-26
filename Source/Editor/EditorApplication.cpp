@@ -1641,10 +1641,18 @@ const char* renderGraphResourceAccessName(render::RenderGraphResourceAccess acce
         return "TransferRead";
     case render::RenderGraphResourceAccess::TextureTransferWrite:
         return "TransferWrite";
+    case render::RenderGraphResourceAccess::TextureStorageRead:
+        return "StorageRead";
+    case render::RenderGraphResourceAccess::TextureStorageWrite:
+        return "StorageWrite";
     case render::RenderGraphResourceAccess::TextureStorageReadWrite:
         return "StorageReadWrite";
     case render::RenderGraphResourceAccess::BufferShaderRead:
         return "ShaderRead";
+    case render::RenderGraphResourceAccess::BufferStorageRead:
+        return "StorageRead";
+    case render::RenderGraphResourceAccess::BufferStorageWrite:
+        return "StorageWrite";
     case render::RenderGraphResourceAccess::BufferStorageReadWrite:
         return "StorageReadWrite";
     case render::RenderGraphResourceAccess::BufferTransferRead:

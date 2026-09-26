@@ -59,14 +59,18 @@ bool accessWrites(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::TextureColorWrite:
     case RenderGraphResourceAccess::TextureDepthStencilWrite:
     case RenderGraphResourceAccess::TextureTransferWrite:
+    case RenderGraphResourceAccess::TextureStorageWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
+    case RenderGraphResourceAccess::BufferStorageWrite:
     case RenderGraphResourceAccess::BufferStorageReadWrite:
     case RenderGraphResourceAccess::BufferTransferWrite:
         return true;
     case RenderGraphResourceAccess::None:
     case RenderGraphResourceAccess::TextureSampleRead:
     case RenderGraphResourceAccess::TextureTransferRead:
+    case RenderGraphResourceAccess::TextureStorageRead:
     case RenderGraphResourceAccess::BufferShaderRead:
+    case RenderGraphResourceAccess::BufferStorageRead:
     case RenderGraphResourceAccess::BufferTransferRead:
     case RenderGraphResourceAccess::BufferConstantRead:
         return false;
@@ -91,7 +95,11 @@ ResourceState stateForAccess(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::TextureTransferWrite:
     case RenderGraphResourceAccess::BufferTransferWrite:
         return ResourceState::TransferDestination;
+    case RenderGraphResourceAccess::TextureStorageRead:
+    case RenderGraphResourceAccess::TextureStorageWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
+    case RenderGraphResourceAccess::BufferStorageRead:
+    case RenderGraphResourceAccess::BufferStorageWrite:
     case RenderGraphResourceAccess::BufferStorageReadWrite:
         return ResourceState::General;
     case RenderGraphResourceAccess::None:
@@ -113,10 +121,14 @@ TextureUsageBits textureUsageForAccess(RenderGraphResourceAccess access)
         return TextureUsageBits::TransferSource;
     case RenderGraphResourceAccess::TextureTransferWrite:
         return TextureUsageBits::TransferDestination;
+    case RenderGraphResourceAccess::TextureStorageRead:
+    case RenderGraphResourceAccess::TextureStorageWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
         return TextureUsageBits::Storage;
     case RenderGraphResourceAccess::None:
     case RenderGraphResourceAccess::BufferShaderRead:
+    case RenderGraphResourceAccess::BufferStorageRead:
+    case RenderGraphResourceAccess::BufferStorageWrite:
     case RenderGraphResourceAccess::BufferStorageReadWrite:
     case RenderGraphResourceAccess::BufferTransferRead:
     case RenderGraphResourceAccess::BufferTransferWrite:
@@ -130,6 +142,8 @@ BufferUsageBits bufferUsageForAccess(RenderGraphResourceAccess access)
 {
     switch (access) {
     case RenderGraphResourceAccess::BufferShaderRead:
+    case RenderGraphResourceAccess::BufferStorageRead:
+    case RenderGraphResourceAccess::BufferStorageWrite:
     case RenderGraphResourceAccess::BufferStorageReadWrite:
         return BufferUsageBits::Storage;
     case RenderGraphResourceAccess::BufferTransferRead:
@@ -144,6 +158,8 @@ BufferUsageBits bufferUsageForAccess(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::TextureDepthStencilWrite:
     case RenderGraphResourceAccess::TextureTransferRead:
     case RenderGraphResourceAccess::TextureTransferWrite:
+    case RenderGraphResourceAccess::TextureStorageRead:
+    case RenderGraphResourceAccess::TextureStorageWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
         return BufferUsageBits::None;
     }
@@ -156,7 +172,9 @@ BufferViewType bufferViewTypeForField(const RenderGraphField& field)
     case RenderGraphResourceAccess::BufferConstantRead:
         return BufferViewType::Constant;
     case RenderGraphResourceAccess::BufferShaderRead:
+    case RenderGraphResourceAccess::BufferStorageRead:
         return field.structureStride == 0 ? BufferViewType::Raw : BufferViewType::Structured;
+    case RenderGraphResourceAccess::BufferStorageWrite:
     case RenderGraphResourceAccess::BufferStorageReadWrite:
         return field.structureStride == 0 ? BufferViewType::ReadWriteRaw : BufferViewType::ReadWriteStructured;
     case RenderGraphResourceAccess::None:
@@ -165,6 +183,8 @@ BufferViewType bufferViewTypeForField(const RenderGraphField& field)
     case RenderGraphResourceAccess::TextureDepthStencilWrite:
     case RenderGraphResourceAccess::TextureTransferRead:
     case RenderGraphResourceAccess::TextureTransferWrite:
+    case RenderGraphResourceAccess::TextureStorageRead:
+    case RenderGraphResourceAccess::TextureStorageWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
     case RenderGraphResourceAccess::BufferTransferRead:
     case RenderGraphResourceAccess::BufferTransferWrite:
@@ -183,9 +203,13 @@ bool accessMatchesResourceType(RenderGraphResourceAccess access, RenderGraphReso
     case RenderGraphResourceAccess::TextureDepthStencilWrite:
     case RenderGraphResourceAccess::TextureTransferRead:
     case RenderGraphResourceAccess::TextureTransferWrite:
+    case RenderGraphResourceAccess::TextureStorageRead:
+    case RenderGraphResourceAccess::TextureStorageWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
         return resourceType == RenderGraphResourceType::Texture2D;
     case RenderGraphResourceAccess::BufferShaderRead:
+    case RenderGraphResourceAccess::BufferStorageRead:
+    case RenderGraphResourceAccess::BufferStorageWrite:
     case RenderGraphResourceAccess::BufferStorageReadWrite:
     case RenderGraphResourceAccess::BufferTransferRead:
     case RenderGraphResourceAccess::BufferTransferWrite:

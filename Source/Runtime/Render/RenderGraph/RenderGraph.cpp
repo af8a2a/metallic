@@ -194,6 +194,24 @@ RenderGraphField& RenderGraphField::depthStencilWrite()
     return *this;
 }
 
+RenderGraphField& RenderGraphField::storageRead()
+{
+    access = resourceType == RenderGraphResourceType::Buffer
+        ? RenderGraphResourceAccess::BufferStorageRead
+        : RenderGraphResourceAccess::TextureStorageRead;
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::storageWrite()
+{
+    access = resourceType == RenderGraphResourceType::Buffer
+        ? RenderGraphResourceAccess::BufferStorageWrite
+        : RenderGraphResourceAccess::TextureStorageWrite;
+    applyAccessDefaults(*this);
+    return *this;
+}
+
 RenderGraphField& RenderGraphField::storageReadWrite()
 {
     access = resourceType == RenderGraphResourceType::Buffer

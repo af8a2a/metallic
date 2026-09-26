@@ -4,6 +4,7 @@
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
+#include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/RenderGraph/RenderGraphGpuLabels.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
 #include "Runtime/Render/HistoryResources.h"
@@ -407,7 +408,8 @@ struct RenderGraphExecutor::Impl {
     std::unordered_map<Queue*, std::unique_ptr<QueueSubmissionTracker>> submissionTrackers;
     GpuCompletionPoint lastSubmittedCompletion;
     Queue* recordingQueue = nullptr;
-    std::unordered_map<RenderGraphResource*, Queue*> resourceQueues;
+    GraphAccessPlan accessPlan;
+    std::vector<RenderGraphResource*> accessResources;
     std::array<std::unique_ptr<TimestampQueryPool>, 3> gpuTimestampQueryPools;
     std::array<GpuTimingSlot, kGpuTimingSlotCount> gpuTimingSlots;
     std::vector<RenderGraphExecutionStats> completedGpuExecutionStats;
@@ -1290,7 +1292,8 @@ struct RenderGraphExecutor::Impl {
                             continue;
                         }
                         usage = addBufferUsage(usage, bufferUsageForField(*dstField));
-                        if (dstField->access == RenderGraphResourceAccess::BufferStorageReadWrite) {
+                        if (dstField->access == RenderGraphResourceAccess::BufferStorageReadWrite ||
+                            dstField->access == RenderGraphResourceAccess::BufferStorageWrite) {
                             viewType = dstField->structureStride == 0
                                 ? BufferViewType::ReadWriteRaw
                                 : BufferViewType::ReadWriteStructured;
@@ -1698,89 +1701,119 @@ struct RenderGraphExecutor::Impl {
         return out != nullptr ? Result<>{} : makeError(Error::Failure);
     }
 
-    Result<> transition(
-        CommandBuffer& commandBuffer,
-        RenderGraphResource& resource,
-        ResourceState state,
-        RenderGraphResourceAccess access, RenderGraphPassKind kind = RenderGraphPassKind::Unsafe,
-        std::vector<TextureBarrierDesc>* pendingTextures = nullptr, std::vector<BufferBarrierDesc>* pendingBuffers = nullptr)
+    RenderGraphResource* fieldResource(const CompiledNode& node, const RenderGraphField& field)
     {
-        SyncScope scope;
-        if (kind != RenderGraphPassKind::Unsafe && (state == ResourceState::ShaderRead || state == ResourceState::General)) {
-            scope.stages = kind == RenderGraphPassKind::Compute ? PipelineStageBits::ComputeShader
-                : PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader;
-            scope.access = state == ResourceState::General ? AccessBits::ShaderRead | AccessBits::ShaderWrite
-                : access == RenderGraphResourceAccess::BufferConstantRead ? AccessBits::UniformRead : AccessBits::ShaderRead;
-        }
-        // Keep ordered transitions if a pass aliases multiple fields to one resource.
-        if (pendingTextures && pendingBuffers &&
-            (std::any_of(pendingTextures->begin(), pendingTextures->end(), [&](const auto& b) { return b.texture == resource.texture; }) ||
-             std::any_of(pendingBuffers->begin(), pendingBuffers->end(), [&](const auto& b) { return b.buffer == resource.buffer; }))) {
-            auto result = commandBuffer.synchronize({.textures = pendingTextures->data(), .textureCount = uint32_t(pendingTextures->size()),
-                .buffers = pendingBuffers->data(), .bufferCount = uint32_t(pendingBuffers->size())});
-            if (!result) { return result; }
-            pendingTextures->clear(); pendingBuffers->clear();
-        }
-        Queue*& previousQueue = resourceQueues[&resource];
-        const bool acquireFromQueue = previousQueue != recordingQueue && resource.state != ResourceState::Undefined;
-        previousQueue = recordingQueue;
-        const bool needsSameStateWriteBarrier =
-            resource.state == state &&
-            (accessWrites(resource.lastAccess) || accessWrites(access));
-        if (resource.state == state && !needsSameStateWriteBarrier && !acquireFromQueue) {
-            resource.lastAccess = access;
-            // Multiple read stages must all finish before a following write.
-            if (scope.stages == PipelineStageBits::None || resource.lastScope.stages == PipelineStageBits::None) { resource.lastScope = {}; }
-            else { resource.lastScope.stages = resource.lastScope.stages | scope.stages; resource.lastScope.access = resource.lastScope.access | scope.access; }
-            return {};
-        }
+        const std::string name = makeRenderGraphFieldName(node.name, field.name);
+        if (field.visibility == RenderGraphFieldVisibility::Output) { return resource(name); }
+        const auto alias = inputAliases.find(name);
+        return alias == inputAliases.end() ? nullptr : resource(alias->second);
+    }
 
-        if (resource.type == RenderGraphResourceType::Texture2D) {
-            if (resource.texture == nullptr) {
-                return {};
-            }
-            TextureBarrierDesc barrier{
-                .texture = resource.texture,
-                .before = resource.state,
-                .after = state,
-                .baseMip = 0,
-                .mipCount = resource.desc.mipCount,
-                .baseLayer = 0,
-                .layerCount = resource.desc.layerCount,
-                .acquireFromQueue = acquireFromQueue,
-                .beforeScope = resource.state == ResourceState::Undefined ? SyncScope{} : resource.lastScope,
-                .afterScope = scope,
-            };
-            if (pendingTextures) { pendingTextures->push_back(barrier); }
-            else {
-                auto result = commandBuffer.synchronize({.textures = &barrier, .textureCount = 1});
-                if (!result) { return result; }
-            }
-        } else {
-            if (resource.buffer == nullptr) {
-                return {};
-            }
-            BufferBarrierDesc barrier{
-                .buffer = resource.buffer,
-                .before = resource.state,
-                .after = state,
-                .offset = 0,
-                .size = resource.bufferDesc.size,
-                .acquireFromQueue = acquireFromQueue,
-                .beforeScope = resource.state == ResourceState::Undefined ? SyncScope{} : resource.lastScope,
-                .afterScope = scope,
-            };
-            if (pendingBuffers) { pendingBuffers->push_back(barrier); }
-            else {
-                auto result = commandBuffer.synchronize({.buffers = &barrier, .bufferCount = 1});
-                if (!result) { return result; }
+    static GraphAccessResource accessInitialState(const RenderGraphResource& resource)
+    {
+        // Incoming completion waits cover prior queues. Keep a conservative local
+        // scope as well: the external-command API does not expose queue identity,
+        // and the last reader alone does not describe visibility of earlier writes.
+        return {resource.type, resource.state,
+            {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
+    }
+
+    Result<> buildAccessPlan(std::span<const uint32_t> queues)
+    {
+        if (queues.size() != executionList.size()) { return makeError(Error::InvalidArgument); }
+        std::vector<GraphAccessResource> initial;
+        std::vector<RenderGraphResource*> resolved;
+        std::unordered_map<RenderGraphResource*, size_t> identities;
+        std::vector<GraphAccessPass> passes;
+        passes.reserve(executionList.size());
+        for (size_t i = 0; i < executionList.size(); ++i) {
+            const auto& node = executionList[i];
+            auto& pass = passes.emplace_back();
+            pass.queue = queues[i];
+            for (const auto& field : node.reflection.fields()) {
+                auto* allocation = fieldResource(node, field);
+                if (!allocation) { continue; }
+                // Graph-owned slots are canonical allocation identities for this
+                // compile generation. Every input alias resolves to the same slot.
+                const auto [entry, inserted] = identities.try_emplace(allocation, resolved.size());
+                if (inserted) {
+                    resolved.push_back(allocation);
+                    initial.push_back(accessInitialState(*allocation));
+                }
+                pass.uses.push_back({entry->second, stateForAccess(field.access),
+                    scopeForGraphAccess(field.access, node.kind), accessWrites(field.access)});
             }
         }
-
-        resource.state = state;
-        resource.lastAccess = access;
-        resource.lastScope = scope;
+        auto planned = buildGraphAccessPlan(initial, passes);
+        if (!planned) {
+            spdlog::error("[RenderGraph] Conflicting or invalid pass resource access declarations");
+            return makeError(planned.error());
+        }
+        accessPlan = std::move(*planned);
+        accessResources = std::move(resolved);
         return {};
+    }
+
+    static Result<> applyAccessPlan(CommandBuffer& commands, const GraphAccessPassPlan& pass,
+        std::span<RenderGraphResource* const> resolved)
+    {
+        std::vector<TextureBarrierDesc> textures;
+        std::vector<BufferBarrierDesc> buffers;
+        std::vector<MemoryBarrierDesc> memory;
+        for (const auto& barrier : pass.barriers) {
+            auto& resource = *resolved[barrier.resource];
+            if (barrier.executionOnly) {
+                memory.push_back({barrier.beforeScope, barrier.afterScope});
+            } else if (resource.type == RenderGraphResourceType::Texture2D) {
+                if (resource.texture) {
+                    textures.push_back({.texture = resource.texture, .before = barrier.before, .after = barrier.after,
+                        .baseMip = 0, .mipCount = resource.desc.mipCount, .baseLayer = 0, .layerCount = resource.desc.layerCount,
+                        .beforeScope = barrier.beforeScope, .afterScope = barrier.afterScope});
+                }
+            } else if (resource.buffer) {
+                buffers.push_back({.buffer = resource.buffer, .before = barrier.before, .after = barrier.after,
+                    .offset = 0, .size = resource.bufferDesc.size,
+                    .beforeScope = barrier.beforeScope, .afterScope = barrier.afterScope});
+            }
+        }
+        auto result = commands.synchronize({.textures = textures.data(), .textureCount = uint32_t(textures.size()),
+            .buffers = buffers.data(), .bufferCount = uint32_t(buffers.size()),
+            .memory = memory.data(), .memoryCount = uint32_t(memory.size())});
+        if (!result) { return result; }
+        for (const auto& use : pass.uses) {
+            auto& resource = *resolved[use.resource];
+            resource.state = use.state;
+        }
+        return {};
+    }
+
+    Result<> transition(CommandBuffer& commands, RenderGraphResource& resource,
+        ResourceState state, RenderGraphResourceAccess access)
+    {
+        SyncScope scope = scopeForGraphAccess(access, RenderGraphPassKind::Unsafe);
+        bool writes = accessWrites(access);
+        // External consumers also use states that have no graph field spelling.
+        // Preserve their destination access instead of treating None as a read.
+        switch (state) {
+        case ResourceState::IndirectArgument:
+            scope = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead};
+            break;
+        case ResourceState::DecompressionSource:
+            scope = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionRead};
+            break;
+        case ResourceState::DecompressionDestination:
+            scope = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionWrite};
+            writes = true;
+            break;
+        default:
+            break;
+        }
+        const std::array initial{accessInitialState(resource)};
+        const std::array passes{GraphAccessPass{.uses = {{0, state, scope, writes}}}};
+        auto planned = buildGraphAccessPlan(initial, passes);
+        if (!planned) { return makeError(planned.error()); }
+        const std::array resolved{&resource};
+        return applyAccessPlan(commands, planned->passes.front(), resolved);
     }
 
     Result<> prepareNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
@@ -1789,42 +1822,13 @@ struct RenderGraphExecutor::Impl {
     {
         profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::prepareNs);
         std::vector<RenderGraphExecutionContext::Binding> bindings;
-        std::vector<TextureBarrierDesc> pendingTextures;
-        std::vector<BufferBarrierDesc> pendingBuffers;
+        const size_t passIndex = size_t(&node - executionList.data());
+        auto synchronized = applyAccessPlan(commandBuffer, accessPlan.passes[passIndex], accessResources);
+        if (!synchronized) { return synchronized; }
 
         for (const RenderGraphField& field : node.reflection.fields()) {
             const std::string localName = field.name;
-            const std::string fullName = makeRenderGraphFieldName(node.name, field.name);
-            RenderGraphResource* resource = nullptr;
-
-            if (field.visibility == RenderGraphFieldVisibility::Output) {
-                resource = this->resource(fullName);
-                if (resource != nullptr) {
-                    Result<> result = transition(
-                        commandBuffer,
-                        *resource,
-                        stateForAccess(field.access),
-                        field.access, node.kind, &pendingTextures, &pendingBuffers);
-                    if (!result) {
-                        return result;
-                    }
-                }
-            } else {
-                const auto alias = inputAliases.find(fullName);
-                if (alias != inputAliases.end()) {
-                    resource = this->resource(alias->second);
-                    if (resource != nullptr) {
-                        Result<> result = transition(
-                            commandBuffer,
-                            *resource,
-                            stateForAccess(field.access),
-                            field.access, node.kind, &pendingTextures, &pendingBuffers);
-                        if (!result) {
-                            return result;
-                        }
-                    }
-                }
-            }
+            RenderGraphResource* resource = fieldResource(node, field);
 
             bindings.push_back(RenderGraphExecutionContext::Binding{
                 .fieldName = localName,
@@ -1839,10 +1843,6 @@ struct RenderGraphExecutor::Impl {
                     : BindlessHandle{},
             });
         }
-
-        auto synchronized = commandBuffer.synchronize({.textures = pendingTextures.data(), .textureCount = uint32_t(pendingTextures.size()),
-            .buffers = pendingBuffers.data(), .bufferCount = uint32_t(pendingBuffers.size())});
-        if (!synchronized) { return synchronized; }
 
         if (bindlessHeap != nullptr && usesBindlessResource(node)) {
             commandBuffer.bindBindlessHeap(*bindlessHeap);
@@ -2279,7 +2279,8 @@ Result<> RenderGraphExecutor::compile(
         impl_->hasPreviousView = false;
         if (hadView != (impl_->renderView() != nullptr)) { impl_->isCompiled = false; }
     }
-    impl_->resourceQueues.clear();
+    impl_->accessPlan = {};
+    impl_->accessResources.clear();
     if (!registerBuiltInRenderSubsystems(*impl_->subsystemHost, log)) {
         impl_->isCompiled = false;
         return makeError(Error::InvalidArgument);
@@ -2711,6 +2712,9 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
     }
     Result<> dependencyResult = commandBuffer.addDependency(impl_->lastSubmittedCompletion);
     if (!dependencyResult) { return dependencyResult; }
+    const std::vector<uint32_t> queues(impl_->executionList.size(), 0);
+    Result<> planned = impl_->buildAccessPlan(queues);
+    if (!planned) { return planned; }
     impl_->historyResources = historyResources;
     std::string subsystemLog;
     const uint64_t frameIndex = impl_->executionFrameIndex++;
@@ -2788,6 +2792,7 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
     }
 
     debugScope.success = graphResult.has_value() && postResult.has_value();
+    if (!debugScope.success) { impl_->isCompiled = false; }
     impl_->historyResources = nullptr;
     return graphResult ? postResult : graphResult;
 }
@@ -2960,6 +2965,19 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             return makeError(Error::InvalidArgument);
         }
     }
+    preflightDetail.next("Compile resource access plan");
+    std::vector<Queue*> nativeQueues;
+    std::vector<uint32_t> accessQueues;
+    for (const auto& node : impl_->executionList) {
+        Queue* queue = selectedQueue(selectedType(node));
+        const auto found = std::find_if(nativeQueues.begin(), nativeQueues.end(),
+            [&](Queue* previous) { return previous->sameQueue(*queue); });
+        const uint32_t identity = uint32_t(found - nativeQueues.begin());
+        if (found == nativeQueues.end()) { nativeQueues.push_back(queue); }
+        accessQueues.push_back(identity);
+    }
+    Result<> planned = impl_->buildAccessPlan(accessQueues);
+    if (!planned) { return planned; }
     preflightDetail.next("Append incoming waits");
     std::vector<SemaphoreSubmitDesc> initialWaits;
     for (const auto& point : desc.waitCompletions) {
@@ -3291,7 +3309,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (result) { result = segments.back().commandBuffer->end(); }
         if (!result) { return abort(result); }
     }
-    std::unordered_map<std::string, size_t> lastResourceUse;
+    std::vector<size_t> passCompletions(impl_->executionList.size(), SIZE_MAX);
     result = sealRange(0, segments.size());
     if (result && pipelined) { result = submitReady(); }
     if (!result) { return abort(result); }
@@ -3421,6 +3439,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         return makeError(Error::Failure);
     };
     for (auto& node : impl_->executionList) {
+        const size_t passIndex = size_t(&node - impl_->executionList.data());
         const QueueType type = selectedType(node);
         const bool recordOnWorker = workerLimit > 1 &&
             node.pass->cpuRecordingPolicy() == CpuRecordingPolicy::ParallelJoined &&
@@ -3466,19 +3485,12 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             for (size_t previous = 0; previous < index; ++previous) { addDependency(index, previous); }
             orderingBoundary = index;
         }
-        // Conservatively order every use, including readers: image layout
-        // transitions themselves can write memory. Disjoint branches stay independent.
-        for (const auto& field : node.reflection.fields()) {
-            std::string name = makeRenderGraphFieldName(node.name, field.name);
-            if (field.visibility != RenderGraphFieldVisibility::Output) {
-                const auto alias = impl_->inputAliases.find(name);
-                if (alias == impl_->inputAliases.end()) { continue; }
-                name = alias->second;
-            }
-            const auto previous = lastResourceUse.find(name);
-            if (previous != lastResourceUse.end()) { addDependency(index, previous->second); }
-            lastResourceUse[name] = index;
+        // The same access plan supplies both barriers and queue dependencies.
+        // A pass with GPU branches completes at its join, not its producer.
+        for (const size_t predecessor : impl_->accessPlan.passes[passIndex].predecessors) {
+            addDependency(index, passCompletions[predecessor]);
         }
+        passCompletions[passIndex] = index;
         if (batch) {
             auto recording = std::make_unique<Impl::NodeRecording>();
             result = invokePass([&] { return impl_->prepareRecording(*recording, *segments[index].commandBuffer, node, frameIndex); });
@@ -3498,7 +3510,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         }
         const size_t completedIndex = segments.size() - 1;
         if (opaque) { orderingBoundary = completedIndex; }
-        for (auto& [name, last] : lastResourceUse) { if (last == index) { last = completedIndex; } }
+        passCompletions[passIndex] = completedIndex;
         result = segments[completedIndex].commandBuffer->end();
         if (!result) { return abort(result); }
         result = sealRange(index, completedIndex + 1);

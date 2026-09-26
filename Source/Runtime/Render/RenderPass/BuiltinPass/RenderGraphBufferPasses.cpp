@@ -15,7 +15,7 @@ public:
         RenderPassReflection reflection;
         reflection.addBufferOutput("data", "Known test byte pattern")
             .buffer(kRenderGraphBufferByteSize)
-            .storageReadWrite()
+            .storageWrite()
             .bindlessBuffer();
         return reflection;
     }
@@ -91,11 +91,11 @@ public:
         RenderPassReflection reflection;
         reflection.addBufferInput("source", "Source byte buffer")
             .buffer(kRenderGraphBufferByteSize)
-            .storageReadWrite()
+            .storageRead()
             .bindlessBuffer();
         reflection.addBufferOutput("data", "Copied byte buffer")
             .buffer(kRenderGraphBufferByteSize)
-            .storageReadWrite()
+            .storageWrite()
             .bindlessBuffer();
         return reflection;
     }

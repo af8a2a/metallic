@@ -65,6 +65,10 @@ enum class RenderGraphResourceAccess : uint8_t {
     BufferTransferRead,
     BufferTransferWrite,
     BufferConstantRead,
+    TextureStorageRead,
+    TextureStorageWrite,
+    BufferStorageRead,
+    BufferStorageWrite,
 };
 
 enum class RenderGraphBindlessAccess : uint8_t {
@@ -138,6 +142,8 @@ struct RenderGraphField {
     RenderGraphField& sampledRead();
     RenderGraphField& colorWrite();
     RenderGraphField& depthStencilWrite();
+    RenderGraphField& storageRead();
+    RenderGraphField& storageWrite();
     RenderGraphField& storageReadWrite();
     RenderGraphField& transferRead();
     RenderGraphField& transferWrite();
@@ -203,9 +209,8 @@ struct RenderGraphResource {
     BufferView* bufferView = nullptr;
     BufferDesc bufferDesc;
     BufferViewDesc bufferViewDesc;
+    // Scheduled boundary state; GPU completion is tracked by the frame context.
     ResourceState state = ResourceState::Undefined;
-    RenderGraphResourceAccess lastAccess = RenderGraphResourceAccess::None;
-    SyncScope lastScope;
     BindlessHandle bindlessHandle;
     BindlessHandle sampledImageBindlessHandle;
 };
