@@ -82,6 +82,7 @@ ShaderBindingType shaderBindingType(ComputeResourceBindingKind kind)
         return ShaderBindingType::PartitionedAccelerationStructure;
     case ComputeResourceBindingKind::StorageImage:
         return ShaderBindingType::StorageImage;
+    case ComputeResourceBindingKind::DataBuffer:
     case ComputeResourceBindingKind::StorageBuffer:
         return ShaderBindingType::StorageBuffer;
     case ComputeResourceBindingKind::SampledImage:
@@ -149,6 +150,7 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
             const auto& b = other.bindings[i];
             if (a.desc.binding != b.desc.binding || a.desc.kind != b.desc.kind ||
                 a.desc.descriptorCount != b.desc.descriptorCount || a.heapIndexOffset != b.heapIndexOffset ||
+                a.desc.dataStride != b.desc.dataStride || a.desc.dataAlignment != b.desc.dataAlignment ||
                 a.handles.size() != b.handles.size()) { return false; }
             for (size_t j = 0; j < a.handles.size(); ++j) {
                 if (a.handles[j].shaderIndex != b.handles[j].shaderIndex) { return false; }
@@ -194,6 +196,8 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
                 for (uint32_t index = 0; index < count; ++index) {
                     BindlessHandle handle;
                     switch (binding.desc.kind) {
+                    case ComputeResourceBindingKind::DataBuffer:
+                        return makeError(Error::InvalidArgument);
                     case ComputeResourceBindingKind::Sampler:
                         result = tables->heap->allocateSampler(handle); break;
                     case ComputeResourceBindingKind::AccelerationStructure:
@@ -311,6 +315,14 @@ Result ComputeProgram::initialize(
     impl_->bindings.reserve(desc.bindingCount);
     for (uint32_t bindingIndex = 0; bindingIndex < desc.bindingCount; ++bindingIndex) {
         const ComputeProgramBindingDesc& binding = desc.bindings[bindingIndex];
+        if (binding.kind == ComputeResourceBindingKind::DataBuffer &&
+            (!desc.usesResourceTable || binding.descriptorCount != 1 || binding.dataStride == 0 ||
+             binding.dataAlignment == 0 || (binding.dataAlignment & (binding.dataAlignment - 1)) != 0 ||
+             binding.dataStride % binding.dataAlignment != 0)) {
+            log = "DataBuffer requires a shared resource table and a valid element stride/alignment";
+            clear();
+            return makeError(Error::InvalidArgument);
+        }
         if (desc.usesResourceTable) {
             if (binding.binding >= kMaxComputeResourceSlots) {
                 log = "ComputeProgram resource slot exceeds the native table limit";
@@ -332,6 +344,8 @@ Result ComputeProgram::initialize(
         const uint64_t slotCount =
             static_cast<uint64_t>(descriptorCount) * desc.resourceTableCount;
         switch (binding.kind) {
+        case ComputeResourceBindingKind::DataBuffer:
+            break;
         case ComputeResourceBindingKind::Sampler:
             samplerCount += slotCount;
             break;
@@ -439,6 +453,8 @@ Result ComputeProgram::initialize(
                      ++descriptorIndex) {
                     BindlessHandle handle;
                     switch (binding.desc.kind) {
+                    case ComputeResourceBindingKind::DataBuffer:
+                        return makeError(Error::InvalidArgument);
                     case ComputeResourceBindingKind::Sampler:
                         result = impl_->heap->allocateSampler(handle);
                         break;
@@ -689,6 +705,8 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         }
         Result result;
         switch (expectedBinding.desc.kind) {
+        case ComputeResourceBindingKind::DataBuffer:
+            return makeError(Error::InvalidArgument);
         case ComputeResourceBindingKind::Sampler: {
             if (binding->sampler == nullptr) {
                 spdlog::error(
@@ -918,12 +936,34 @@ Result ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
     };
     // Matches Core.ComputeResourceSlot: direct access stays scalar, arrays carry
     // explicit handles so unrelated consumers never need contiguous descriptors.
-    struct ResourceSlot { uint64_t handle = UINT64_MAX; uint64_t array = 0; };
+    // Ordinary data uses the same payload words for element count and stride.
+    struct ResourceSlot { uint64_t handle = UINT64_MAX; uint64_t payload = 0; };
     static_assert(sizeof(ResourceSlot) == 16);
     std::vector<ResourceSlot> slots(impl_->resourceSlotCount);
     for (const auto& expected : impl_->bindings) {
         const auto* binding = findDispatchBinding(desc, expected.desc.binding);
         if (!binding) { return makeError(Error::InvalidArgument); }
+        if (expected.desc.kind == ComputeResourceBindingKind::DataBuffer) {
+            BufferSlice slice = binding->data;
+            if (slice.valid()) {
+                if (binding->buffer || binding->offset != 0 || binding->size != UINT64_MAX) {
+                    return makeError(Error::InvalidArgument);
+                }
+            } else {
+                if (!binding->buffer) { return makeError(Error::InvalidArgument); }
+                result = binding->buffer->slice(slice, binding->offset, binding->size);
+                if (!result) { return result; }
+            }
+            result = slice.validateData(commands.deviceIdentity(), expected.desc.dataStride, expected.desc.dataAlignment);
+            if (!result) { return result; }
+            result = commands.retainResource(slice.retainAllocation());
+            if (!result) { return result; }
+            auto& slot = slots[expected.desc.binding];
+            slot.handle = slice.deviceAddress();
+            slot.payload = (uint64_t(expected.desc.dataStride) << 32) | uint32_t(slice.size() / expected.desc.dataStride);
+            continue;
+        }
+        if (binding->data.valid()) { return makeError(Error::InvalidArgument); }
         if (binding->sampledImages) {
             result = commands.retainResource(std::const_pointer_cast<ComputeSampledImageSnapshot>(binding->sampledImages));
             if (!result) { return result; }
@@ -934,6 +974,8 @@ Result ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
         for (uint32_t i = 0; i < count; ++i) {
             ResourceLease lease;
             switch (expected.desc.kind) {
+            case ComputeResourceBindingKind::DataBuffer:
+                return makeError(Error::InvalidArgument);
             case ComputeResourceBindingKind::StorageBuffer:
                 if (!binding->buffer || binding->offset != 0 ||
                     (binding->size != UINT64_MAX && binding->size != binding->buffer->desc().size)) {
@@ -980,7 +1022,7 @@ Result ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
         }
         auto& slot = slots[expected.desc.binding];
         slot.handle = handles.front();
-        if (usesImageHeap(expected.desc.kind)) { slot.array = upload(handles.data(), handles.size() * sizeof(uint64_t)); }
+        if (usesImageHeap(expected.desc.kind)) { slot.payload = upload(handles.data(), handles.size() * sizeof(uint64_t)); }
         if (!result) { return result; }
     }
     ComputeResourcePush push;

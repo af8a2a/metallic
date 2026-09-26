@@ -8,7 +8,8 @@ namespace Metallic
 public struct ComputeResourceSlot
 {
     public uint2 handle;
-    public uint2* array;
+    // Descriptor-array address, or ordinary-data element count and stride.
+    public uint2 payload;
 };
 public struct ComputeResourcePush
 {
@@ -28,7 +29,16 @@ public T getResource<T : IOpaqueDescriptor>(uint slot)
 
 public T getResourceArray<T : IOpaqueDescriptor>(uint slot, uint index)
 {
-    return resolveDescriptor(nonuniform(DescriptorHandle<T>(gComputeResources.resources[slot].array[index])));
+    uint2 payload = gComputeResources.resources[slot].payload;
+    uint2* handles = (uint2*)(uint64_t(payload.x) | (uint64_t(payload.y) << 32));
+    return resolveDescriptor(nonuniform(DescriptorHandle<T>(handles[index])));
+}
+
+public DataSpan<T> getData<T>(uint slot)
+{
+    ComputeResourceSlot resource = gComputeResources.resources[slot];
+    return {(T*)(uint64_t(resource.handle.x) | (uint64_t(resource.handle.y) << 32)),
+        resource.payload.x, resource.payload.y};
 }
 
 public T getConstants<T>()

@@ -14,12 +14,12 @@ namespace {
 
 constexpr uint32_t kBinCount = render::kMaterialClassCount;
 constexpr uint32_t kProbeHeader = kBinCount * 5 + 2;
-constexpr uint64_t kProbeAbi = 0x4d42505200000001ull;
+constexpr uint64_t kProbeAbi = 0x4d42505200000002ull;
 struct MaterialProbeParams {
-    render::ShaderBuffer bins, tiles, arguments, output;
+    render::ShaderDataSpan bins, tiles, arguments, output;
     uint32_t width, height, binCount, bin;
 };
-static_assert(sizeof(MaterialProbeParams) == 48);
+static_assert(sizeof(MaterialProbeParams) == 80);
 
 class MaterialBinningProbePass final : public render::UnsafePass {
 public:
@@ -172,11 +172,11 @@ private:
         if (!result) { return result; }
         const auto writes = registry->stats().descriptorWrites;
         render::ParameterWriter writer(*device_, *commands.frameContext(), *registry);
-        MaterialProbeParams params{writer.buffer(bins.bins), writer.buffer(bins.tiles),
-            writer.buffer(bins.arguments), writer.buffer(context.outputBuffer("data").buffer()),
+        MaterialProbeParams params{writer.dataBuffer(bins.bins, 8, 8), writer.dataBuffer(bins.tiles, 8, 8),
+            writer.dataBuffer(bins.arguments, 4, 4), writer.dataBuffer(context.outputBuffer("data").buffer(), 4, 4),
             push[0], push[1], push[2], push[3]};
-        // The producer's three buffers must reuse their entries in another kernel.
-        if (registry->stats().descriptorWrites > writes + 1) { return render::makeError(render::Error::Failure); }
+        // Ordinary data, including the output, never allocates descriptors.
+        if (registry->stats().descriptorWrites != writes) { return render::makeError(render::Error::Failure); }
         render::EncodedParameters encoded;
         result = writer.encode(params, kProbeAbi, encoded);
         if (!result) { return result; }

@@ -1082,8 +1082,8 @@ public:
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
             if (boolProperty(properties(), "materialBinning", true)) {
-                baseBindings.push_back({.binding = 70, .kind = ComputeResourceBindingKind::StorageBuffer});
-                baseBindings.push_back({.binding = 71, .kind = ComputeResourceBindingKind::StorageBuffer});
+                baseBindings.push_back({.binding = 70, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
+                baseBindings.push_back({.binding = 71, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
             }
         }
         if (useOpenPBR) {

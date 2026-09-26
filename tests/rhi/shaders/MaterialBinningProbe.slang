@@ -13,16 +13,16 @@ using Metallic.Material;
 #if defined(PROBE_TYPED)
 import ParameterRoot;
 struct MaterialProbeParams {
-    DescriptorHandle<StructuredBuffer<MaterialBin>> bins;
-    DescriptorHandle<StructuredBuffer<MaterialTile>> tiles;
-    DescriptorHandle<StructuredBuffer<uint>> arguments;
-    DescriptorHandle<RWStructuredBuffer<uint>> output;
+    DataSpan<MaterialBin> bins;
+    DataSpan<MaterialTile> tiles;
+    DataSpan<uint> arguments;
+    DataSpan<uint> output;
     uint width; uint height; uint binCount; uint bin;
 };
-#define gBins resolveDescriptor(getParameters<MaterialProbeParams>().bins)
-#define gTiles resolveDescriptor(getParameters<MaterialProbeParams>().tiles)
-#define gArguments resolveDescriptor(getParameters<MaterialProbeParams>().arguments)
-#define gResult resolveDescriptor(getParameters<MaterialProbeParams>().output)
+#define gBins getParameters<MaterialProbeParams>().bins.data
+#define gTiles getParameters<MaterialProbeParams>().tiles.data
+#define gArguments getParameters<MaterialProbeParams>().arguments.data
+#define gResult getParameters<MaterialProbeParams>().output.data
 #else
 #define gBins getResource<StructuredBuffer<MaterialBin>>(5)
 #define gTiles getResource<StructuredBuffer<MaterialTile>>(6)

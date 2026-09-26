@@ -1,5 +1,6 @@
 #include "RhiTest.h"
 #include "Runtime/Render/ComputeKernel.h"
+#include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 #include <array>
@@ -429,6 +430,210 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(RegistryTextureSubmissionTest);
+// Native provenance and narrowing are checked without creating descriptors.
+class BufferSliceValidationTest final : public RhiTest {
+public:
+    BufferSliceValidationTest() { type = RhiTestType::Resource; name = "buffer_slice_range_and_provenance"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device, other;
+        REG_REQUIRE(render::createDevice({.applicationName = "Buffer slice ranges",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device));
+        REG_REQUIRE(render::createDevice({.applicationName = "Buffer slice foreign source",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, other));
+        std::unique_ptr<render::Buffer> buffer;
+        REG_REQUIRE(makeBuffer(*device, buffer));
+        render::BufferSlice parent, child, invalid, empty;
+        REG_REQUIRE(buffer->slice(parent, 16, 32));
+        REG_REQUIRE(parent.subslice(child, 8, 8));
+        REG_CHECK(child.offset() == 24 && child.size() == 8);
+        REG_CHECK(child.deviceAddress() == buffer->deviceAddress() + 24);
+        REG_CHECK(child.deviceIdentity() == device->identity());
+        REG_CHECK(child.allocationIdentity() == buffer->retainAllocation().get());
+        REG_REQUIRE(child.validateData(device->identity(), 4, 4));
+        REG_CHECK(render::hasError(child.validateData(other->identity(), 4, 4), render::Error::InvalidArgument));
+        REG_REQUIRE(parent.subslice(empty, 32));
+        REG_CHECK(empty.valid() && empty.size() == 0);
+        REG_CHECK(!empty.validateData(device->identity(), 4, 4));
+        for (uint64_t offset : {uint64_t(33), UINT64_MAX}) {
+            invalid = child;
+            REG_CHECK(!parent.subslice(invalid, offset) && !invalid.valid());
+        }
+        REG_CHECK(!parent.subslice(invalid, 0, 33) && !invalid.valid());
+        REG_CHECK(!parent.subslice(invalid, 31, UINT64_MAX - 1));
+        REG_REQUIRE(parent.subslice(invalid, 1, 8));
+        REG_CHECK(!invalid.validateData(device->identity(), 4, 4));
+        REG_REQUIRE(parent.subslice(invalid, 0, 12));
+        REG_CHECK(!invalid.validateData(device->identity(), 8, 4));
+        REG_CHECK(!child.validateData(device->identity(), 0, 4));
+        REG_CHECK(!child.validateData(device->identity(), 4, 0));
+        REG_CHECK(!child.validateData(device->identity(), 4, 3));
+        REG_CHECK(!child.validateData(device->identity(), 3, 4));
+        REG_CHECK(!child.validate(device->identity(), render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource));
+        REG_REQUIRE(parent.subslice(parent, 8, 8));
+        REG_CHECK(parent.offset() == child.offset() && parent.size() == child.size());
+
+        std::weak_ptr<void> allocation = buffer->retainAllocation();
+        const auto address = child.deviceAddress();
+        render::Buffer moved = std::move(*buffer);
+        REG_CHECK(!buffer->retainAllocation());
+        REG_REQUIRE(makeBuffer(*device, buffer, 99));
+        moved = {};
+        REG_CHECK(!allocation.expired() && child.deviceAddress() == address);
+        parent = {}; invalid = {}; empty = {};
+        std::shared_ptr<render::ResourceRegistry> registry;
+        REG_REQUIRE(device->resourceRegistry(registry));
+        render::RenderFrameContext frame;
+        REG_REQUIRE(frame.begin(0));
+        render::EncodedParameters packet;
+        {
+            render::ParameterWriter invalidWriter(*other, frame, *registry);
+            invalidWriter.dataBuffer<uint32_t>(child);
+            REG_CHECK(!invalidWriter.status());
+            REG_CHECK(!invalidWriter.encode(render::ShaderDataSpan{}, kAbi + 4, packet) && !packet.valid());
+            render::ParameterWriter writer(*device, frame, *registry);
+            const auto data = writer.dataBuffer<uint32_t>(child);
+            REG_CHECK(data.address == address && data.count == 2 && data.stride == 4);
+            REG_REQUIRE(writer.encode(data, kAbi + 4, packet));
+        }
+        child = {};
+        REG_CHECK(!allocation.expired());
+        packet = {};
+        frame.cancel();
+        REG_REQUIRE(frame.reset());
+        REG_CHECK(allocation.expired());
+        REG_CHECK(registry->stats().descriptorWrites == 0);
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(BufferSliceValidationTest);
+
+class BufferSliceSubmissionTest final : public RhiTest {
+public:
+    BufferSliceSubmissionTest() { type = RhiTestType::Rendering; name = "buffer_slice_bda_copy_compute_indirect_lifetime"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        REG_REQUIRE(render::createDevice({.applicationName = "Buffer slice data chain",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device));
+        auto& queue = *device->getQueue(render::QueueType::Graphics);
+        std::shared_ptr<render::ResourceRegistry> registry;
+        REG_REQUIRE(device->resourceRegistry(registry));
+        struct Params { render::ShaderDataSpan source, output, arguments; uint32_t add; };
+        static_assert(sizeof(Params) == 56 && offsetof(Params, add) == 48);
+        std::array<render::ComputeKernel, 2> kernels;
+        const char* entries[] = {"dataProduceMain", "dataIndirectMain"};
+        std::string log;
+        for (size_t i = 0; i < kernels.size(); ++i) {
+            render::ShaderCompileResult shader;
+            auto result = render::compileSlangShaderToSpirv({.moduleName = "DataSliceProbe",
+                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+            if (!result) { return RhiTestResult::fail(shader.diagnostics); }
+            REG_REQUIRE(kernels[i].initialize(*device, {.spirv = shader.spirv,
+                .parameters = render::parameterAbi<Params>(kAbi + 5)}, log));
+        }
+        render::ShaderCompileResult shader;
+        REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "DataSliceProbe",
+            .entryPointName = "dataAdapterMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader));
+        render::ComputeProgram adapter;
+        const render::ComputeProgramBindingDesc layout{.binding = 0,
+            .kind = render::ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4};
+        REG_REQUIRE(adapter.initialize(*device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
+            .bindings = &layout, .bindingCount = 1, .requiresRayQuery = false}, log));
+        std::unique_ptr<render::Buffer> source, work, output;
+        REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::TransferSource,
+            .memoryLocation = render::MemoryLocation::HostUpload}, source));
+        REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::ShaderDeviceAddress |
+            render::BufferUsageBits::TransferDestination | render::BufferUsageBits::Indirect}, work));
+        REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::ShaderDeviceAddress |
+            render::BufferUsageBits::TransferSource | render::BufferUsageBits::TransferDestination,
+            .memoryLocation = render::MemoryLocation::HostReadback}, output));
+        auto* sourceWords = static_cast<uint32_t*>(source->map());
+        REG_CHECK(sourceWords);
+        for (uint32_t i = 0; i < 16; ++i) { sourceWords[i] = 100 + i; }
+        source->flush(); source->unmap();
+        auto* outputWords = static_cast<uint32_t*>(output->map());
+        REG_CHECK(outputWords);
+        for (uint32_t i = 0; i < 16; ++i) { outputWords[i] = 0xdeadbeef; }
+        output->flush(); output->unmap();
+        std::weak_ptr<void> sourceAllocation = source->retainAllocation(), workAllocation = work->retainAllocation();
+        render::QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(*device, queue));
+        Commands recording;
+        REG_REQUIRE(recording.initialize(*device, queue));
+        std::unique_ptr<render::Semaphore> gate;
+        REG_REQUIRE(device->createSemaphore(gate));
+        Drain drain{queue, *gate};
+        REG_REQUIRE(recording.begin(0));
+        {
+            render::BufferSlice from, data, to, arguments, invalid;
+            REG_REQUIRE(source->slice(from, 8, 16));
+            REG_REQUIRE(work->slice(data, 16, 16));
+            REG_REQUIRE(work->slice(arguments, 48, 12));
+            REG_REQUIRE(output->slice(to, 20, 16));
+            // Transfer-only memory is not a shader data buffer.
+            REG_CHECK(!from.validateData(device->identity(), 4, 4));
+            REG_REQUIRE(to.subslice(invalid, 0, 12));
+            REG_CHECK(!recording.commands->copyBuffer(from, invalid));
+            REG_CHECK(!recording.commands->copyBuffer(to, to));
+            REG_CHECK(!recording.commands->dispatchIndirect(to));
+            REG_REQUIRE(arguments.subslice(invalid, 1, 8));
+            REG_CHECK(!recording.commands->dispatchIndirect(invalid));
+            render::BufferBarrierDesc workBarrier{.buffer = work.get(),
+                .before = render::ResourceState::Undefined, .after = render::ResourceState::TransferDestination};
+            recording.commands->barrier({.buffers = &workBarrier, .bufferCount = 1});
+            REG_REQUIRE(recording.commands->copyBuffer(from, data));
+            workBarrier.before = render::ResourceState::TransferDestination; workBarrier.after = render::ResourceState::General;
+            recording.commands->barrier({.buffers = &workBarrier, .bufferCount = 1});
+            render::BufferBarrierDesc outputBarrier{.buffer = output.get(),
+                .before = render::ResourceState::Undefined, .after = render::ResourceState::General};
+            recording.commands->barrier({.buffers = &outputBarrier, .bufferCount = 1});
+            render::ParameterWriter writer(*device, recording.frame, *registry);
+            const Params params{writer.dataBuffer<uint32_t>(data), writer.dataBuffer<uint32_t>(to),
+                writer.dataBuffer<uint32_t>(arguments), 7};
+            render::EncodedParameters encoded;
+            REG_REQUIRE(writer.encode(params, kAbi + 5, encoded));
+            REG_REQUIRE(kernels[0].dispatch(*recording.commands, encoded, 1));
+            outputBarrier.before = render::ResourceState::General;
+            workBarrier.before = render::ResourceState::General; workBarrier.after = render::ResourceState::IndirectArgument;
+            const render::BufferBarrierDesc barriers[] = {outputBarrier, workBarrier};
+            recording.commands->barrier({.buffers = barriers, .bufferCount = 2});
+            REG_REQUIRE(kernels[1].dispatchIndirect(*recording.commands, encoded, arguments));
+            recording.commands->barrier({.buffers = &outputBarrier, .bufferCount = 1});
+            render::ComputeDispatchBinding binding{.binding = 0, .data = to};
+            render::ComputeDispatchDesc dispatch{.commandBuffer = recording.commands.get(), .bindings = &binding, .bindingCount = 1};
+            binding.offset = 4;
+            REG_CHECK(render::hasError(adapter.dispatch(dispatch), render::Error::InvalidArgument));
+            binding.offset = 0;
+            REG_REQUIRE(adapter.dispatch(dispatch));
+        }
+        source.reset(); work.reset();
+        REG_CHECK(!sourceAllocation.expired() && !workAllocation.expired());
+        REG_CHECK(registry->stats().descriptorWrites == 0 && registry->stats().liveDescriptors == 0);
+        REG_REQUIRE(recording.submit(tracker, *gate));
+        kernels = {}; adapter.clear();
+        REG_CHECK(!recording.frame.completion().isComplete());
+        REG_CHECK(!sourceAllocation.expired() && !workAllocation.expired());
+        REG_REQUIRE(gate->signal(1));
+        REG_REQUIRE(recording.frame.wait(5'000'000'000ull));
+        output->invalidate();
+        outputWords = static_cast<uint32_t*>(output->map());
+        REG_CHECK(outputWords);
+        std::array<uint32_t, 16> values;
+        std::memcpy(values.data(), outputWords, sizeof(values));
+        output->unmap();
+        for (uint32_t i = 0; i < values.size(); ++i) {
+            const auto expected = i >= 5 && i < 9 ? 221 + (i - 5) * 2 : 0xdeadbeef;
+            REG_CHECK(values[i] == expected);
+        }
+        REG_REQUIRE(recording.pool->reset());
+        REG_REQUIRE(recording.frame.reset());
+        REG_CHECK(sourceAllocation.expired() && workAllocation.expired());
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(BufferSliceSubmissionTest);
+
 #undef REG_REQUIRE
 #undef REG_CHECK
 } // namespace

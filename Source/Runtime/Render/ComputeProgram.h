@@ -15,6 +15,7 @@ enum class ComputeResourceBindingKind : uint8_t {
     PartitionedAccelerationStructure,
     StorageImage,
     StorageBuffer,
+    DataBuffer,
     SampledImage,
     Sampler,
 };
@@ -24,6 +25,9 @@ struct ComputeProgramBindingDesc {
     uint32_t binding = 0;
     ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
     uint32_t descriptorCount = 1;
+    // DataBuffer only: explicit GPU element ABI; no descriptor is allocated.
+    uint32_t dataStride = 0;
+    uint32_t dataAlignment = 0;
 };
 
 struct ComputeProgramDesc {
@@ -69,6 +73,8 @@ struct ComputeDispatchBinding {
     Buffer* buffer = nullptr;
     uint64_t offset = 0;
     uint64_t size = UINT64_MAX;
+    // DataBuffer only. Supply either a slice or buffer/offset/size, never both.
+    BufferSlice data;
     // Optional immutable sampled-image array; takes precedence over textureViews.
     // The shared registry also deduplicates individual resource registrations.
     std::shared_ptr<const ComputeSampledImageSnapshot> sampledImages;

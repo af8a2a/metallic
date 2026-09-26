@@ -60,16 +60,20 @@ Result ComputeKernel::dispatch(CommandBuffer& commands, const EncodedParameters&
 Result ComputeKernel::dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
     Buffer& arguments, uint64_t offset) const
 {
-    if (arguments.deviceIdentity() != commands.deviceIdentity() ||
-        (uint32_t(arguments.desc().usage) & uint32_t(BufferUsageBits::Indirect)) == 0 ||
-        (offset & 3u) || offset > arguments.desc().size || 12 > arguments.desc().size - offset ||
+    BufferSlice slice;
+    auto result = arguments.slice(slice, offset, 12);
+    return result ? dispatchIndirect(commands, params, slice) : result;
+}
+
+Result ComputeKernel::dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
+    const BufferSlice& arguments) const
+{
+    if (!arguments.validate(commands.deviceIdentity(), BufferUsageBits::Indirect, 4, 12) ||
         (uint32_t(commands.queueCapabilities()) & uint32_t(QueueAccessBits::Compute)) == 0) {
         return makeError(Error::InvalidArgument);
     }
     auto result = bind(commands, params);
-    if (!result) { return result; }
-    commands.frameContext()->retain(arguments.retainAllocation());
-    return commands.dispatchIndirect(arguments, offset);
+    return result ? commands.dispatchIndirect(arguments) : result;
 }
 
 } // namespace metallic::render

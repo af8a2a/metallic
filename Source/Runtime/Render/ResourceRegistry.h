@@ -24,6 +24,14 @@ using ShaderStorageImage = ShaderResourceHandle<ShaderResourceKind::StorageImage
 using ShaderSampler = ShaderResourceHandle<ShaderResourceKind::Sampler>;
 using ShaderAccelerationStructure = ShaderResourceHandle<ShaderResourceKind::AccelerationStructure>;
 
+// Matches Slang DataSpan<T>. No descriptor is allocated for ordinary data.
+struct ShaderDataSpan {
+    uint64_t address = 0;
+    uint32_t count = 0;
+    uint32_t stride = 0;
+};
+static_assert(sizeof(ShaderDataSpan) == 16);
+
 struct ParameterAbi {
     uint64_t id = 0;
     uint32_t size = 0;
@@ -106,6 +114,14 @@ class ParameterWriter {
 public:
     ParameterWriter(Device& device, RenderFrameContext& frame, ResourceRegistry& registry);
     ShaderBuffer buffer(Buffer* buffer);
+    ShaderDataSpan dataBuffer(const BufferSlice& slice, uint32_t stride, uint32_t alignment);
+    ShaderDataSpan dataBuffer(Buffer* buffer, uint32_t stride, uint32_t alignment);
+    template<typename T>
+    ShaderDataSpan dataBuffer(const BufferSlice& slice)
+    {
+        static_assert(std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>);
+        return dataBuffer(slice, sizeof(T), alignof(T));
+    }
     ShaderSampledImage sampledImage(TextureView* view, ResourceState layout = ResourceState::ShaderRead);
     ShaderStorageImage storageImage(TextureView* view);
     ShaderSampler sampler(const SamplerDesc& sampler);

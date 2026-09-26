@@ -61,7 +61,7 @@ TLAS lease 只持有 TLAS 分配，不会自动发现其引用的 BLAS/场景资
 
 正常 cache hit 只查询相应 key；不会在每个资源注册时扫描整张 cache。显式 `collect()` 或容量不足时回收。相同 sampler 描述一直缓存到 registry 销毁，其容量也固定。
 
-`stats()` 暴露 descriptor 写入次数、cache hits、live descriptors、参数累计上传字节和 arena 保留容量。新测试断言跨 kernel 引用分桶结果只允许为新 output 增加一个 descriptor。这是减少重复 descriptor 写入的机制证据，不是 CPU/GPU 帧时间提升测量。
+`stats()` 暴露 descriptor 写入次数、cache hits、live descriptors、参数累计上传字节和 arena 保留容量。第一批测试断言跨 kernel 引用分桶结果只允许为新 output 增加一个 descriptor；第三批 BDA 迁移后，该消费者不再增加 buffer descriptor。这是减少重复 descriptor 写入的机制证据，不是 CPU/GPU 帧时间提升测量。
 
 ## 回归入口
 
@@ -103,3 +103,52 @@ Raster 捕获实际使用的 leases，NRD 捕获 packet 和 kernel 实现。场�
 表中未写目录的日志均在 `.cache/registry-stage2/`。这些回归之间存在用例重叠，不能相加作为独立用例数量。所跑验证未报告 Vulkan VUID。
 
 `frame_self_submit_two_slots` 根据第一批已有基线记录排除，本轮没有重新构建其基线。Zorah probes 因缺少 `METALLIC_ZORAH_Z4_PROBES` 指定的 cooked fixture 跳过。实时 streaming 测试使用 compact Bunny fixture，会关闭 DLSS 节点；不代表完整 DLSS/NRD/NRC 编辑器场景切换验证。未进行 CPU/GPU 帧时间 A/B 测量。
+
+## 第三批：CPU slice 与普通数据 BDA
+
+`BufferSlice` 只从 `Buffer::slice()` 或父 slice 的 `subslice()` 创建。它保存原生分配的强引用、分配内字节偏移及长度，设备 identity、usage 和地址均取自同一分配，不能用裸地址伪造来源。子范围只能缩小，`UINT64_MAX` 表示父范围余量；失败会清空输出，也支持原地缩小。零长度 slice 可用于 CPU 范围计算，但 GPU 数据/命令入口拒绝它。Buffer 包装对象移动、销毁或替换不会改变旧 slice 的来源。
+
+```cpp
+BufferSlice records;
+auto result = buffer.slice(records, byteOffset, byteSize);
+if (!result) { return result; }
+ParameterWriter writer(device, frame, *registry);
+MyParams params{.records = writer.dataBuffer<MyGpuRecord>(records)};
+EncodedParameters packet;
+result = writer.encode(params, kMyAbi, packet);
+if (!result) { return result; }
+return kernel.dispatch(commands, packet, groupCount);
+```
+
+`ShaderDataSpan` 是 16 字节的 `{uint64 address; uint32 count; uint32 stride;}`，对应 Slang `DataSpan<T>`。它不分配、不写入 buffer descriptor。`dataBuffer(slice, stride, alignment)` 校验来源设备、非空范围、绝对地址对齐、步长整除、元素数量上限及 Storage/ShaderDeviceAddress usage；显式 `ShaderDeviceAddress` 数据分配不要求 Storage usage。模板入口从 CPU GPU-layout 类型取得 `sizeof/alignof`，仍要求该布局与 shader 一致。不能把其他 writer 的裸 wire 值复制进 packet 并期待自动获得所有权；必须经过当前 writer 的 `dataBuffer()`。
+
+Slang 的 `.data` 是普通 GPU 指针，`.length()` 在 stride 与 `sizeof(T)` 不一致时返回零；消费端先检查 `.contains(index)` 或完整的派生范围，再访问内存。CPU 范围校验与 shader 索引校验缺一不可；BDA 指针访问不自动继承 SSBO robust bounds。参见 [Vulkan BDA 示例](https://docs.vulkan.org/samples/latest/samples/extensions/buffer_device_address/README.html) 和 [BDA 对齐说明](https://docs.vulkan.org/guide/latest/buffer_device_address_alignment.html)。这不是强制检查所有指针解引用的语言包装，也不是自动推断 C++/Slang ABI 的反射系统。
+
+`CommandBuffer::copyBuffer(sourceSlice, destinationSlice)` 返回 Result，要求等长非空范围、正确设备/transfer usage，拒绝同一分配内重叠复制。`dispatchIndirect(slice)` 要求 Indirect usage、4 字节对齐及至少 12 字节；只读取开头三个 dispatch 计数。`ComputeKernel` 同样提供 slice 间接入口。旧 Buffer+offset 入口转交给这些校验，保留原签名。复制和间接命令在录制时保留实际分配，typed packet 和 Core 数据槽也保留同一分配，延续 frame 完成/取消/部分提交回收契约。Device 仍须晚于所有 slice、packet、command 和 GPU 工作销毁。保留解决存活期，不负责 barrier、队列依赖或阻止 CPU 提前覆盖正在使用的字节。
+
+原生 BDA 在分配创建时查询一次；当前 VMA 路径不重定位存活的 buffer。CPU slice 不承担长期资产身份。Streaming 的 ResourceId/PageId、generation、resident 映射仍保留，解析到当前分配后再形成 slice，避免把可迁移页永久表示为裸地址。slice 保留的是原生 allocation，页内范围的复用与 residency pinning 仍由 streaming 原有协议负责。
+
+### 生产接入与兼容边界
+
+- 材质分桶的 records、instances、materials、shadingMaterials、bins、tiles、arguments、streamRecords 全部使用 DataSpan；图像继续使用共享 descriptor。`MaterialBinningParams` ABI 升至版本 2，152 字节，标量起始偏移 136。
+- 分类、分桶、间接参数生成及 deferred 的 bins/tiles 消费形成完整 BDA 路径。shader 对场景索引、tile 派生索引和参数范围进行显式检查。
+- `ComputeProgramBindingDesc::DataBuffer` 要求明确的 `dataStride/dataAlignment`，dispatch 可传拥有型 `data` slice，或由 Buffer+offset+size 构造 slice；两种来源不能混用。Core slot 仍为 16 字节，第二个 64 位 payload 对 descriptor 数组表示数组地址，对 DataBuffer 表示 count/stride。`getData<T>(slot)` 与 descriptor accessor 共存，不改变 Native descriptor 正规化策略。
+- 数字 slot、未迁移的 StructuredBuffer、纹理/采样器/AS 与 SDK 接口继续使用共享 registry。未强制改写全部 shader 或 streaming 页表；后续普通数据迁移可沿相同入口逐项进行。没有改变同步模型，也未宣称 CPU/GPU 帧时间收益。
+
+第三批回归覆盖父范围收窄/原地切片、溢出和对齐拒绝、错误来源设备/usage、包装对象替换、取消保留，以及非零偏移的复制 → BDA compute → GPU 间接调度 → Core 数据槽消费。后者使用没有 Storage usage 的数据分配，检查范围外哨兵不变，并断言 descriptor 写入与 live descriptor 均为零。材质分桶的 typed consumer 同样不增加 descriptor 写入。
+
+### 第三批验证（2026-09-26）
+
+配置沿用第二批 `build-full`；最终 `Metallic`、`MetallicRhiTests`、`MetallicNrdTests` Debug 构建通过。结果日志均在 `.cache/registry-stage3/`：
+
+| 验证 | 结果 | 日志 |
+| --- | --- | --- |
+| Mapped registry / GPUScene / frame / streaming 上传 | 34 通过 | `core-mapped.log` |
+| Mapped deferred / 场景材质 / streaming / CLAS | 19 通过 | `scene-mapped.log` |
+| Native slice / registry / GPUScene / 材质分桶 / deferred / streaming | 30 通过 | `native.log` |
+| 最终版本 slice/BDA 数据链与材质分桶复验 | Mapped / Native 各 4 通过 | `final-mapped.log`、`final-native.log` |
+| NRD | Mapped / Native 各 10 通过 | `nrd-mapped.log`、`nrd-native.log` |
+| Native 实时 streaming 管线 | 1 通过，显式开启 `--rhi-realtime` | `realtime.log` |
+| Native 编辑器 smoke | 退出码 0，提交并呈现一帧 | `smoke.log` |
+
+用例有重叠，表中数量不能相加为独立用例总数；所跑验证未报告 Vulkan VUID。仍排除前述已记录基线失败的 `frame_self_submit_two_slots`，本轮未重建该基线。实时管线为 compact Bunny fixture，关闭 DLSS 节点；这不是完整 DLSS 编辑器场景切换验证。没有帧时间 A/B 结果。测试改写的 `meet_mat.glb.meshlets.bin` 已按 HEAD 匹配的原备份恢复。

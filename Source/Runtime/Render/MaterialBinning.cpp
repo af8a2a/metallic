@@ -93,11 +93,11 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
     ParameterWriter writer(device, *frame, *registry);
     const MaterialBinningParams params{
         .visibility = writer.sampledImage(desc.visibility),
-        .records = writer.buffer(desc.records), .instances = writer.buffer(desc.instances),
-        .materials = writer.buffer(desc.materials), .shadingMaterials = writer.buffer(desc.shadingMaterials),
-        .bins = writer.buffer(buffers[0].get()), .tiles = writer.buffer(buffers[1].get()),
-        .arguments = writer.buffer(buffers[2].get()),
-        .streamRecords = writer.buffer(desc.streamRecords ? desc.streamRecords : desc.records),
+        .records = writer.dataBuffer(desc.records, 16, 16), .instances = writer.dataBuffer(desc.instances, 160, 16),
+        .materials = writer.dataBuffer(desc.materials, 560, 16), .shadingMaterials = writer.dataBuffer(desc.shadingMaterials, 720, 16),
+        .bins = writer.dataBuffer(buffers[0].get(), 8, 8), .tiles = writer.dataBuffer(buffers[1].get(), 8, 8),
+        .arguments = writer.dataBuffer(buffers[2].get(), 4, 4),
+        .streamRecords = writer.dataBuffer(desc.streamRecords ? desc.streamRecords : desc.records, 16, 16),
         .width = desc.width, .height = desc.height, .tileCount = static_cast<uint32_t>(tileCount),
         .residentRecordCount = desc.residentRecordCount,
     };

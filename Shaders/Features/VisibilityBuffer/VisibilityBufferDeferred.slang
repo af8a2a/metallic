@@ -73,8 +73,8 @@ float rasterRayDistance(uint2 pixel, Ray ray, ScenePathTracePush push)
     float3 forward = cameraForwardFrom(push.eye, push.center);
     return (viewDepth - dot(ray.origin - push.eye.xyz, forward)) / max(dot(ray.direction, forward), 1e-6);
 }
-#define gMaterialBins getResource<StructuredBuffer<MaterialBin>>(70)
-#define gMaterialTiles getResource<StructuredBuffer<MaterialTile>>(71)
+#define gMaterialBins getData<MaterialBin>(70).data
+#define gMaterialTiles getData<MaterialTile>(71).data
 #if METALLIC_DEFERRED_UPSCALER_GUIDES
 #define gUpscalerMotion getResource<RWTexture2D<float2>>(72)
 #define gUpscalerDepth getResource<RWTexture2D<float>>(73)
@@ -346,9 +346,12 @@ void visibilityBufferDeferredMain(uint3 dispatchId : SV_DispatchThreadID)
 void visibilityBufferDeferredBinnedMain(uint3 group : SV_GroupID)
 {
     ScenePathTracePush push = deferredViewPush();
-    MaterialBin bin = gMaterialBins[push.deferredSettings & 0xffffu];
+    uint binIndex = push.deferredSettings & 0xffffu;
+    if (!getData<MaterialBin>(70).contains(binIndex)) { return; }
+    MaterialBin bin = gMaterialBins[binIndex];
     uint index = group.y * kMaterialBinMaxGroupsX + group.x;
-    if (index >= bin.count) { return; }
+    uint tileCount = getData<MaterialTile>(71).length();
+    if (index >= bin.count || bin.offset >= tileCount || index >= tileCount - bin.offset) { return; }
     MaterialTile tile = gMaterialTiles[bin.offset + index];
     uint lane = WaveGetLaneIndex();
     if ((tile.laneMask & (1u << lane)) == 0u) { return; }

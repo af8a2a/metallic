@@ -1494,6 +1494,32 @@ private:
     friend struct detail::VulkanNativeAccess;
 };
 
+// CPU range with allocation provenance. It owns the native allocation, not the
+// movable Buffer wrapper; no constructor accepts an arbitrary GPU address.
+// Device must outlive all slices and GPU work. Ownership does not imply synchronization.
+class BufferSlice {
+public:
+    bool valid() const { return allocation_ != nullptr; }
+    uint64_t offset() const { return offset_; }
+    uint64_t size() const { return size_; }
+    const BufferDesc& allocationDesc() const;
+    const void* allocationIdentity() const { return allocation_.get(); }
+    const void* deviceIdentity() const;
+    uint64_t deviceAddress() const;
+    std::shared_ptr<void> retainAllocation() const;
+    // UINT64_MAX takes the remainder; failure clears out. Empty CPU slices are valid.
+    Result subslice(BufferSlice& out, uint64_t offset = 0, uint64_t size = UINT64_MAX) const;
+    // Requires a nonempty addressed range, all usage bits, and absolute alignment.
+    Result validate(const void* device, BufferUsageBits usage, uint64_t alignment = 1,
+        uint64_t minimumSize = 1) const;
+    Result validateData(const void* device, uint32_t stride, uint32_t alignment) const;
+private:
+    std::shared_ptr<detail::BufferImpl> allocation_;
+    uint64_t offset_ = 0;
+    uint64_t size_ = 0;
+    friend class Buffer;
+};
+
 class Buffer {
 public:
     Buffer() = default;
@@ -1506,6 +1532,7 @@ public:
 
     const BufferDesc& desc() const;
     uint64_t deviceAddress() const;
+    Result slice(BufferSlice& out, uint64_t offset = 0, uint64_t size = UINT64_MAX) const;
     // Retains this allocation, not the movable public wrapper. Device must outlive it.
     std::shared_ptr<void> retainAllocation() const;
     const void* deviceIdentity() const;
@@ -1965,6 +1992,7 @@ public:
     void barrier(const BarrierDesc& desc);
     void hostWriteBarrier();
     void copyBuffer(const BufferCopyDesc& desc);
+    Result copyBuffer(const BufferSlice& source, const BufferSlice& destination);
     Result decompressBuffers(std::span<const BufferDecompressionDesc> regions);
     Result validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const;
     void copyTexture(const TextureCopyDesc& desc);
@@ -1995,6 +2023,7 @@ public:
     void dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     // Three GPU-written uint32 group counts; offset is 4-byte aligned.
     Result dispatchIndirect(Buffer& buffer, uint64_t offset = 0);
+    Result dispatchIndirect(const BufferSlice& arguments);
     Result buildClusterAccelerationStructureTriangles(
         const ClusterAccelerationStructureTriangleBuildDesc& desc);
     Result moveClusterAccelerationStructures(const ClusterAccelerationStructureMoveDesc& desc);

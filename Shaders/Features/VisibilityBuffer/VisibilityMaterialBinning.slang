@@ -10,14 +10,14 @@ using Metallic.Material;
 struct MaterialBinningParams
 {
     DescriptorHandle<Texture2D<uint>> visibility;
-    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> records;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances;
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materials;
-    DescriptorHandle<StructuredBuffer<PathTraceMaterial>> shadingMaterials;
-    DescriptorHandle<RWStructuredBuffer<MaterialBin>> bins;
-    DescriptorHandle<RWStructuredBuffer<MaterialTile>> tiles;
-    DescriptorHandle<RWStructuredBuffer<uint>> arguments;
-    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> streamRecords;
+    DataSpan<VisibleClusterRecord> records;
+    DataSpan<GPUDrivenPreviewInstance> instances;
+    DataSpan<GPUDrivenPreviewMaterial> materials;
+    DataSpan<PathTraceMaterial> shadingMaterials;
+    DataSpan<MaterialBin> bins;
+    DataSpan<MaterialTile> tiles;
+    DataSpan<uint> arguments;
+    DataSpan<VisibleClusterRecord> streamRecords;
     uint width;
     uint height;
     uint tileCount;
@@ -25,41 +25,42 @@ struct MaterialBinningParams
 };
 
 #define gVisibility resolveDescriptor(getParameters<MaterialBinningParams>().visibility)
-#define gRecords resolveDescriptor(getParameters<MaterialBinningParams>().records)
-#define gInstances resolveDescriptor(getParameters<MaterialBinningParams>().instances)
-#define gMaterials resolveDescriptor(getParameters<MaterialBinningParams>().materials)
-#define gShadingMaterials resolveDescriptor(getParameters<MaterialBinningParams>().shadingMaterials)
-#define gBins resolveDescriptor(getParameters<MaterialBinningParams>().bins)
-#define gTiles resolveDescriptor(getParameters<MaterialBinningParams>().tiles)
-#define gIndirect resolveDescriptor(getParameters<MaterialBinningParams>().arguments)
-#define gStreamRecords resolveDescriptor(getParameters<MaterialBinningParams>().streamRecords)
+#define gRecords getParameters<MaterialBinningParams>().records.data
+#define gInstances getParameters<MaterialBinningParams>().instances.data
+#define gMaterials getParameters<MaterialBinningParams>().materials.data
+#define gShadingMaterials getParameters<MaterialBinningParams>().shadingMaterials.data
+#define gBins getParameters<MaterialBinningParams>().bins.data
+#define gTiles getParameters<MaterialBinningParams>().tiles.data
+#define gIndirect getParameters<MaterialBinningParams>().arguments.data
+#define gStreamRecords getParameters<MaterialBinningParams>().streamRecords.data
 
 uint materialClassForPixel(uint2 pixel)
 {
     uint recordIndex, triangleIndex;
     if (!unpackVisibilityId(gVisibility.Load(int3(pixel, 0)), recordIndex, triangleIndex)) { return kMaterialClassBackground; }
-    uint count, stride;
+    uint count;
     MaterialBinningParams push = getParameters<MaterialBinningParams>();
     VisibleClusterRecord record;
     if (recordIndex < push.residentRecordCount) {
-        gRecords.GetDimensions(count, stride);
+        count = push.records.length();
         if (recordIndex >= count) { return kMaterialClassBackground; }
         record = gRecords[recordIndex];
         if (visibleClusterSource(record) != kVisibleClusterSourceResident) { return kMaterialClassBackground; }
     } else {
         recordIndex -= push.residentRecordCount;
-        gStreamRecords.GetDimensions(count, stride);
+        count = push.streamRecords.length();
         if (recordIndex >= count) { return kMaterialClassBackground; }
         record = gStreamRecords[recordIndex];
         if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) { return kMaterialClassBackground; }
     }
-    gInstances.GetDimensions(count, stride);
+    count = push.instances.length();
     if (record.instanceIndex >= count) { return kMaterialClassBackground; }
     uint material = gInstances[record.instanceIndex].identity.y;
-    gMaterials.GetDimensions(count, stride);
+    count = push.materials.length();
     if (material >= count) { return kMaterialClassBackground; }
     uint sourceMaterial = gMaterials[material].identity.z;
-    gShadingMaterials.GetDimensions(count, stride);
+    count = push.shadingMaterials.length();
+    if (count == 0u) { return kMaterialClassBackground; }
     // Match the deferred reconstruction's fallback material exactly.
     return classifyDeferredMaterial(gShadingMaterials[sourceMaterial < count ? sourceMaterial : 0u]);
 }
@@ -69,7 +70,7 @@ uint materialClassForPixel(uint2 pixel)
 void materialBinningResetMain(uint lane : SV_GroupIndex)
 {
     MaterialBinningParams push = getParameters<MaterialBinningParams>();
-    if (lane < kMaterialClassCount) {
+    if (lane < kMaterialClassCount && push.bins.contains(lane)) {
         MaterialBin bin = {lane * push.tileCount, 0u};
         gBins[lane] = bin;
     }
@@ -91,11 +92,14 @@ void materialBinningClassifyMain(uint3 group : SV_GroupID)
     [unroll]
     for (uint type = 0u; type < kMaterialClassCount; ++type) {
         uint mask = WaveActiveBallot(valid && materialClass == type).x;
-        if (WaveIsFirstLane() && mask != 0u) {
+        if (WaveIsFirstLane() && mask != 0u && push.bins.contains(type)) {
             uint slot;
             InterlockedAdd(gBins[type].count, 1u, slot);
             tile.laneMask = mask;
-            gTiles[gBins[type].offset + slot] = tile;
+            uint offset = gBins[type].offset;
+            if (offset < push.tiles.length() && slot < push.tiles.length() - offset) {
+                gTiles[offset + slot] = tile;
+            }
         }
     }
 }
@@ -105,8 +109,10 @@ void materialBinningClassifyMain(uint3 group : SV_GroupID)
 void materialBinningArgumentsMain(uint lane : SV_GroupIndex)
 {
     MaterialBinningParams push = getParameters<MaterialBinningParams>();
-    if (lane < kMaterialClassCount) {
-        uint count = gBins[lane].count;
+    if (lane < kMaterialClassCount && push.bins.contains(lane)) {
+        if (push.arguments.length() < (lane + 1u) * 3u) { return; }
+        uint offset = gBins[lane].offset;
+        uint count = offset < push.tiles.length() ? min(gBins[lane].count, push.tiles.length() - offset) : 0u;
         gIndirect[lane * 3u] = min(count, kMaterialBinMaxGroupsX);
         gIndirect[lane * 3u + 1u] = count / kMaterialBinMaxGroupsX + uint(count % kMaterialBinMaxGroupsX != 0u);
         gIndirect[lane * 3u + 2u] = 1u;

@@ -313,6 +313,23 @@ ShaderBuffer ParameterWriter::buffer(Buffer* buffer)
     return {append(result, std::move(lease))};
 }
 
+ShaderDataSpan ParameterWriter::dataBuffer(const BufferSlice& slice, uint32_t stride, uint32_t alignment)
+{
+    if (!result_) { return {}; }
+    result_ = slice.validateData(device_.identity(), stride, alignment);
+    if (!result_) { return {}; }
+    arrays_.push_back(slice.retainAllocation());
+    return {slice.deviceAddress(), static_cast<uint32_t>(slice.size() / stride), stride};
+}
+
+ShaderDataSpan ParameterWriter::dataBuffer(Buffer* buffer, uint32_t stride, uint32_t alignment)
+{
+    if (!result_) { return {}; }
+    BufferSlice slice;
+    result_ = buffer ? buffer->slice(slice) : makeError(Error::InvalidArgument);
+    return result_ ? dataBuffer(slice, stride, alignment) : ShaderDataSpan{};
+}
+
 ShaderSampledImage ParameterWriter::sampledImage(TextureView* view, ResourceState layout)
 {
     ResourceRegistry registry; registry.state_ = registry_;

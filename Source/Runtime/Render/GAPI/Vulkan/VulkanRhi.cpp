@@ -511,12 +511,17 @@ VkBufferUsageFlags2 toVkBufferUsage(BufferUsageBits usage)
     return flags != 0 ? flags : VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 }
 
-VkAddressCommandFlagsKHR addressCommandFlags(const Buffer& buffer)
+VkAddressCommandFlagsKHR addressCommandFlags(BufferUsageBits usage)
 {
     // VMA buffers are fully bound and do not alias other live allocations.
     return VK_ADDRESS_COMMAND_FULLY_BOUND_BIT_KHR |
-        (hasFlag(buffer.desc().usage, BufferUsageBits::Storage)
+        (hasFlag(usage, BufferUsageBits::Storage)
             ? VK_ADDRESS_COMMAND_STORAGE_BUFFER_USAGE_BIT_KHR : 0);
+}
+
+VkAddressCommandFlagsKHR addressCommandFlags(const Buffer& buffer)
+{
+    return addressCommandFlags(buffer.desc().usage);
 }
 
 VkImageUsageFlags toVkImageUsage(TextureUsageBits usage)
@@ -3158,6 +3163,7 @@ struct BufferImpl {
     DeviceImpl* device = nullptr;
     BufferDesc desc;
     VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceAddress address = 0;
     VmaAllocation allocation = VK_NULL_HANDLE;
     void* mapped = nullptr;
     uint64_t allocationBytes = 0;
@@ -4805,14 +4811,74 @@ const BufferDesc& Buffer::desc() const
 
 uint64_t Buffer::deviceAddress() const
 {
-    if (impl_ == nullptr || impl_->device == nullptr || impl_->buffer == VK_NULL_HANDLE) {
-        return 0;
+    return impl_ ? impl_->address : 0;
+}
+
+Result Buffer::slice(BufferSlice& out, uint64_t offset, uint64_t size) const
+{
+    BufferSlice whole;
+    whole.allocation_ = impl_;
+    whole.size_ = desc().size;
+    return whole.subslice(out, offset, size);
+}
+
+const BufferDesc& BufferSlice::allocationDesc() const
+{
+    static const BufferDesc empty;
+    return allocation_ ? allocation_->desc : empty;
+}
+
+const void* BufferSlice::deviceIdentity() const
+{
+    return allocation_ ? allocation_->device : nullptr;
+}
+
+uint64_t BufferSlice::deviceAddress() const
+{
+    return allocation_ && allocation_->address && offset_ <= UINT64_MAX - allocation_->address
+        ? allocation_->address + offset_ : 0;
+}
+
+std::shared_ptr<void> BufferSlice::retainAllocation() const
+{
+    return allocation_;
+}
+
+Result BufferSlice::subslice(BufferSlice& out, uint64_t offset, uint64_t size) const
+{
+    // Build the result before assigning, including when out aliases *this.
+    BufferSlice next;
+    if (!allocation_ || offset > size_ || (size != UINT64_MAX && size > size_ - offset)) {
+        out = {}; return makeError(Error::InvalidArgument);
     }
-    VkBufferDeviceAddressInfo addressInfo{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = impl_->buffer,
-    };
-    return vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
+    next.allocation_ = allocation_;
+    next.offset_ = offset_ + offset;
+    next.size_ = size == UINT64_MAX ? size_ - offset : size;
+    out = std::move(next);
+    return {};
+}
+
+Result BufferSlice::validate(const void* device, BufferUsageBits usage, uint64_t alignment, uint64_t minimumSize) const
+{
+    const auto address = deviceAddress();
+    if (!allocation_ || !device || deviceIdentity() != device || size_ == 0 || size_ < minimumSize ||
+        alignment == 0 || (alignment & (alignment - 1)) || !address || (address & (alignment - 1)) ||
+        size_ - 1 > UINT64_MAX - address ||
+        (uint32_t(allocationDesc().usage) & uint32_t(usage)) != uint32_t(usage)) {
+        return makeError(Error::InvalidArgument);
+    }
+    return {};
+}
+
+Result BufferSlice::validateData(const void* device, uint32_t stride, uint32_t alignment) const
+{
+    auto result = validate(device, BufferUsageBits::None, alignment);
+    if (!result) { return result; }
+    if (!hasFlag(allocationDesc().usage, BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress) ||
+        stride == 0 || stride % alignment || size_ % stride || size_ / stride > UINT32_MAX) {
+        return makeError(Error::InvalidArgument);
+    }
+    return {};
 }
 
 RayTracingAccelerationStructure::RayTracingAccelerationStructure(
@@ -5818,34 +5884,35 @@ void CommandBuffer::barrier(const BarrierDesc& desc)
 
 void CommandBuffer::copyBuffer(const BufferCopyDesc& desc)
 {
-    if (impl_ == nullptr ||
-        desc.source == nullptr ||
-        desc.source->impl_ == nullptr ||
-        desc.destination == nullptr ||
-        desc.destination->impl_ == nullptr ||
-        desc.size == 0) {
-        return;
-    }
+    if (!desc.source || !desc.destination || !desc.size) { return; }
+    BufferSlice source, destination;
+    if (!desc.source->slice(source, desc.sourceOffset, desc.size) ||
+        !desc.destination->slice(destination, desc.destinationOffset, desc.size)) { return; }
+    (void)copyBuffer(source, destination);
+}
 
-    if (desc.sourceOffset > desc.source->desc().size ||
-        desc.size > desc.source->desc().size - desc.sourceOffset ||
-        desc.destinationOffset > desc.destination->desc().size ||
-        desc.size > desc.destination->desc().size - desc.destinationOffset) {
-        return;
+Result CommandBuffer::copyBuffer(const BufferSlice& source, const BufferSlice& destination)
+{
+    if (!impl_ || !recording_ || !(impl_->queueFlags & (VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ||
+        !source.validate(deviceIdentity(), BufferUsageBits::TransferSource) ||
+        !destination.validate(deviceIdentity(), BufferUsageBits::TransferDestination) || source.size() != destination.size()) {
+        return makeError(Error::InvalidArgument);
     }
+    if (source.allocationIdentity() == destination.allocationIdentity() &&
+        source.offset() < destination.offset() + destination.size() &&
+        destination.offset() < source.offset() + source.size()) { return makeError(Error::InvalidArgument); }
+    auto result = retainResource(source.retainAllocation());
+    if (result) { result = retainResource(destination.retainAllocation()); }
+    if (!result) { return result; }
     const VkDeviceMemoryCopyKHR copyRegion{
         .sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_COPY_KHR,
-        .srcRange = {desc.source->deviceAddress() + desc.sourceOffset, desc.size},
-        .srcFlags = addressCommandFlags(*desc.source),
-        .dstRange = {desc.destination->deviceAddress() + desc.destinationOffset, desc.size},
-        .dstFlags = addressCommandFlags(*desc.destination),
+        .srcRange = {source.deviceAddress(), source.size()}, .srcFlags = addressCommandFlags(source.allocationDesc().usage),
+        .dstRange = {destination.deviceAddress(), destination.size()}, .dstFlags = addressCommandFlags(destination.allocationDesc().usage),
     };
-    const VkCopyDeviceMemoryInfoKHR copyInfo{
-        .sType = VK_STRUCTURE_TYPE_COPY_DEVICE_MEMORY_INFO_KHR,
-        .regionCount = 1,
-        .pRegions = &copyRegion,
-    };
+    const VkCopyDeviceMemoryInfoKHR copyInfo{.sType = VK_STRUCTURE_TYPE_COPY_DEVICE_MEMORY_INFO_KHR,
+        .regionCount = 1, .pRegions = &copyRegion};
     vkCmdCopyMemoryKHR(impl_->commandBuffer, &copyInfo);
+    return {};
 }
 
 Result CommandBuffer::decompressBuffers(std::span<const BufferDecompressionDesc> regions)
@@ -6650,18 +6717,23 @@ void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_
 
 Result CommandBuffer::dispatchIndirect(Buffer& buffer, uint64_t offset)
 {
-    if (impl_ == nullptr || buffer.impl_ == nullptr ||
-        buffer.impl_->device != impl_->device ||
-        (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
-        !hasFlag(buffer.desc().usage, BufferUsageBits::Indirect) ||
-        (offset & 3u) != 0 || offset > buffer.desc().size ||
-        sizeof(VkDispatchIndirectCommand) > buffer.desc().size - offset) {
+    BufferSlice arguments;
+    auto result = buffer.slice(arguments, offset, sizeof(VkDispatchIndirectCommand));
+    return result ? dispatchIndirect(arguments) : result;
+}
+
+Result CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
+{
+    if (!impl_ || !recording_ || (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+        !arguments.validate(deviceIdentity(), BufferUsageBits::Indirect, 4, sizeof(VkDispatchIndirectCommand))) {
         return makeError(Error::InvalidArgument);
     }
+    auto result = retainResource(arguments.retainAllocation());
+    if (!result) { return result; }
     const VkDispatchIndirect2InfoKHR info{
         .sType = VK_STRUCTURE_TYPE_DISPATCH_INDIRECT_2_INFO_KHR,
-        .addressRange = {buffer.deviceAddress() + offset, sizeof(VkDispatchIndirectCommand)},
-        .addressFlags = addressCommandFlags(buffer),
+        .addressRange = {arguments.deviceAddress(), sizeof(VkDispatchIndirectCommand)},
+        .addressFlags = addressCommandFlags(arguments.allocationDesc().usage),
     };
     vkCmdDispatchIndirect2KHR(impl_->commandBuffer, &info);
     return {};
@@ -9212,6 +9284,10 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
     bufferImpl->desc = desc;
     bufferImpl->desc.memoryDomain = domain;
     bufferImpl->buffer = buffer;
+    if ((usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
+        const VkBufferDeviceAddressInfo addressInfo{.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = buffer};
+        bufferImpl->address = vkGetBufferDeviceAddress(impl_->device, &addressInfo);
+    }
     bufferImpl->allocation = allocation;
     bufferImpl->allocationBytes = allocatedInfo.size;
     bufferImpl->deviceLocal = (impl_->memoryProperties.memoryHeaps[impl_->memoryProperties.memoryTypes[allocatedInfo.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
