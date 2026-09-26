@@ -99,6 +99,20 @@ struct ComputeDispatchDesc {
 };
 
 class ComputeProgram;
+class RenderFrameContext;
+
+// Immutable, frame-scoped dispatch packet. Owns constants, executable state and
+// allocation leases; input wrappers and the originating program may be released
+// after preparation. Copies may be recorded on distinct exclusive contexts.
+class PreparedComputeDispatch {
+public:
+    bool valid() const { return impl_ != nullptr; }
+    Result<> record(CommandBuffer& commands, const BarrierDesc& betweenDispatches = {}) const;
+private:
+    struct Impl;
+    std::shared_ptr<const Impl> impl_;
+    friend class ComputeProgram;
+};
 
 struct ComputeIndirectDispatch {
     const void* pushData = nullptr;
@@ -122,6 +136,13 @@ public:
     void clear();
     bool valid() const;
     Result<> dispatch(const ComputeDispatchDesc& desc);
+    // No command buffer access. Concurrent preparations require stable program,
+    // input wrappers and frame generation until all jobs join. On failure out is
+    // empty. Legacy usesResourceTable=false shaders remain a serial adapter.
+    Result<> prepareDispatch(RenderFrameContext& frame, const ComputeDispatchDesc& desc,
+        PreparedComputeDispatch& out) const;
+    Result<> prepareIndirectBatch(RenderFrameContext& frame, const ComputeDispatchDesc& desc,
+        std::span<const ComputeIndirectDispatch> dispatches, PreparedComputeDispatch& out) const;
     // Bind one immutable descriptor table for the batch. Every item supplies
     // pushDataSize bytes and an offset into desc.indirectArguments. Optional
     // barriers separate dispatches sharing writable resources. Compatible per-item
@@ -130,6 +151,10 @@ public:
         std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches = {});
 
 private:
+    Result<> validateDispatch(const ComputeDispatchDesc& desc,
+        std::span<const ComputeIndirectDispatch> dispatches) const;
+    Result<> prepareShared(RenderFrameContext* frame, const ComputeDispatchDesc& desc,
+        std::span<const ComputeIndirectDispatch> dispatches, PreparedComputeDispatch& out) const;
     Result<> dispatchImpl(const ComputeDispatchDesc& desc,
         std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches);
     Result<> dispatchShared(const ComputeDispatchDesc& desc,

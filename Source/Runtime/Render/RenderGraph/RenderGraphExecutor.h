@@ -19,6 +19,8 @@ struct RenderGraphSubmitDesc {
     // always starts after every batch has joined. A queue change starts a batch.
     uint32_t recordingWorkerLimit = 0;
     uint32_t recordingBatchWorkload = 8;
+    // Pure preparation uses the same worker limit, with independent CPU batches.
+    uint32_t preparationBatchWorkload = 1;
 };
 
 struct RenderGraphCompileOptions {
@@ -55,6 +57,7 @@ struct RenderGraphExecutionStats {
     uint32_t recordingBatchCount = 0;
     uint32_t parallelRecordedPassCount = 0;
     uint32_t recordingTaskCount = 0;
+    uint32_t preparationTaskCount = 0;
 };
 
 class RenderGraphExecutor {
@@ -154,6 +157,8 @@ public:
     // Update a live camera without recompiling the graph or clearing HZB history.
     // The view must outlive the preview renderer.
     void bindRenderView(RenderView* view);
+    // Same policy as RenderGraphSubmitDesc; useful for reproducible CPU comparisons.
+    void setRecordingWorkerLimit(uint32_t limit);
     void setEnvironment(EnvironmentSettings environment);
     bool setLighting(scene::LightingSettings lighting);
     RenderSubsystemHost* subsystemHost();

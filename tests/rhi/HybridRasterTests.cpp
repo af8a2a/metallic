@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "Runtime/Task/TaskSystem.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -487,5 +488,65 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(HybridRasterSceneTest);
+class VisibilityPreparationTest final : public RhiTest {
+public:
+    VisibilityPreparationTest() { type = RhiTestType::Rendering; name = "visibility_preparation_serial_parallel_pixels"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        auto* tasks = task::tryGetTaskSystem();
+        if (!tasks || tasks->workerCount() < 2) { return RhiTestResult::skip("two preparation workers required"); }
+        render::RenderGraphPreviewRenderer preview;
+        auto initialized = preview.initialize(context.enableValidation, false, false);
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("mesh shaders required"); }
+        if (!initialized) { return RhiTestResult::fail(preview.lastLog()); }
+        render::RenderGraph graph;
+        graph.addNode("VisibilityBufferPass", "VBuffer", {{"path", "Asset/StandfordBunny/scene.gltf"},
+            {"visualization", "triangle"}, {"camera", {{"eye", {-.0168404f, .110154f, .22f}},
+                {"center", {-.0168404f, .110154f, -.00153695f}}, {"znear", .001f}, {"zfar", 10.f}, {"orthoHeight", .24f}}}});
+        graph.addNode("VisibilityBufferMaterialPass", "Material", {{"visualization", "normal"}});
+        graph.addEdge("VBuffer.visibility", "Material.visibility");
+        graph.addEdge("VBuffer.rasterInfo", "Material.rasterInfo");
+        graph.markOutput("Material.color");
+        const auto node = graph.findNode("VBuffer")->id;
+        double serialCpu = 0, parallelCpu = 0;
+        for (uint32_t mode = 0; mode < 16; ++mode) {
+            graph.setNodeRuntimeProperty(node, "camera.projection", (mode & 1) ? "orthographic" : "perspective");
+            graph.setNodeRuntimeProperty(node, "camera.reversedZ", bool(mode & 2));
+            graph.setNodeRuntimeProperty(node, "freezeCullingCamera", bool(mode & 4));
+            graph.setNodeRuntimeProperty(node, "hzbSpd", bool(mode & 8));
+            std::vector<uint32_t> reference;
+            uint32_t branches = 0;
+            for (const uint32_t workers : {1u, 4u}) {
+                preview.setRecordingWorkerLimit(workers);
+                for (uint32_t frame = 0; frame < 3; ++frame) {
+                    if (!preview.render(graph, 193, 157)) { return RhiTestResult::fail(preview.lastLog()); }
+                    const auto& stats = preview.executionStats();
+                    if (stats.preparationTaskCount != (workers == 1 ? 0u : 2u)) {
+                        return RhiTestResult::fail("VisibilityBuffer did not use the requested CPU preparation policy");
+                    }
+                    if (frame == 2) {
+                        if (workers == 1) { reference = preview.pixels(); branches = stats.asyncComputeBranches; serialCpu += stats.cpuMilliseconds; }
+                        else {
+                            parallelCpu += stats.cpuMilliseconds;
+                            if (preview.pixels() != reference || stats.asyncComputeBranches != branches) {
+                                return RhiTestResult::fail("Serial/parallel VisibilityBuffer camera/material output or GPU topology differs, mode=" + std::to_string(mode));
+                            }
+                        }
+                    }
+                }
+            }
+            if (std::count_if(reference.begin(), reference.end(), [](uint32_t pixel) { return (pixel & 0xffffffu) != 0; }) < 1000) {
+                return RhiTestResult::fail("Visibility material output was empty");
+            }
+        }
+        std::string log;
+        if (!saveRgba8Png(context.outputDirectory / "VisibilityPreparedMaterial.png", reinterpret_cast<const uint8_t*>(preview.pixels().data()),
+            preview.width(), preview.height(), log)) { return RhiTestResult::fail(log); }
+        return RhiTestResult::pass("16 configurations / 96 frames, exact material pixels and GPU branch topology; validation-build sampled CPU totals (ms), serial=" +
+            std::to_string(serialCpu) + ", parallel=" + std::to_string(parallelCpu));
+    }
+};
+METALLIC_REGISTER_RHI_TEST(VisibilityPreparationTest);
+
 } // namespace
 } // namespace metallic::tests

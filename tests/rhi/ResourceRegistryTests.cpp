@@ -135,8 +135,11 @@ public:
         REG_REQUIRE(device->createTextureView(*texture, {}).transform([&](auto rhiValue) { first = std::move(rhiValue); }));
         REG_REQUIRE(device->createTextureView(*texture, {.format = render::Format::Rgba8Unorm}).transform([&](auto rhiValue) { second = std::move(rhiValue); }));
         render::ResourceLease imageA, imageB, generalImage, storageImage;
-        REG_REQUIRE(registry.sampledImage(*first, imageA));
-        REG_REQUIRE(registry.sampledImage(*second, imageB));
+        bool written = false;
+        REG_REQUIRE(registry.sampledImage(*first, imageA, render::ResourceState::ShaderRead, &written));
+        REG_CHECK(written);
+        REG_REQUIRE(registry.sampledImage(*second, imageB, render::ResourceState::ShaderRead, &written));
+        REG_CHECK(!written);
         REG_CHECK(imageA.shaderValue() == imageB.shaderValue());
         REG_REQUIRE(registry.sampledImage(*second, generalImage, render::ResourceState::General));
         REG_CHECK(generalImage.shaderValue() != imageA.shaderValue());
@@ -158,6 +161,7 @@ public:
         render::ResourceRegistry other;
         REG_REQUIRE(other.initialize(*device, {.maxSamplers = 1, .maxSampledImages = 1,
             .maxStorageImages = 1, .maxBuffers = 1}));
+        REG_CHECK(registry.owns(bLease) && !other.owns(bLease) && !registry.owns({}));
         render::RenderFrameContext frame;
         REG_REQUIRE(frame.begin(0));
         render::ParameterWriter writer(*device, frame, other);
@@ -903,6 +907,108 @@ private:
     }
 };
 METALLIC_REGISTER_RHI_TEST(ParallelRegistryTest);
+
+class PreparedDispatchParallelTest final : public RhiTest {
+public:
+    PreparedDispatchParallelTest() { type = RhiTestType::Rendering; name = "prepared_dispatch_parallel_snapshot_lifetime"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        for (const auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
+            std::unique_ptr<render::Device> device;
+            REG_REQUIRE(render::createDevice({.applicationName = "Prepared dispatch snapshot",
+                .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
+            auto& queue = *device->getQueue(render::QueueType::Graphics);
+            render::ShaderCompileResult shader;
+            REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "FrameResourceProbe", .entryPointName = "copyValue",
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader));
+            render::ComputeProgram programs[2];
+            const render::ComputeProgramBindingDesc layout[] = {
+                {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
+                {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
+            std::string log;
+            for (auto& program : programs) {
+                REG_REQUIRE(program.initialize(*device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
+                    .pushConstantSize = 4, .bindings = layout, .bindingCount = 2, .requiresRayQuery = false}, log));
+            }
+            std::unique_ptr<render::Buffer> input, output, arguments;
+            REG_REQUIRE(makeBuffer(*device, input, 137));
+            REG_REQUIRE(makeBuffer(*device, output));
+            REG_REQUIRE(makeBuffer(*device, arguments, 1));
+            auto* counts = static_cast<uint32_t*>(arguments->map());
+            REG_CHECK(counts);
+            for (uint32_t i = 0; i < 6; ++i) { counts[i] = 1; }
+            arguments->flush(); arguments->unmap();
+            std::weak_ptr<void> inputLife = input->retainAllocation(), argumentLife = arguments->retainAllocation();
+            render::RenderFrameContext frame;
+            render::CommandRecordingContext contexts[2];
+            render::QueueSubmissionTracker tracker;
+            REG_REQUIRE(tracker.initialize(*device, queue));
+            std::unique_ptr<render::Semaphore> gate;
+            REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+            Drain drain{queue, *gate};
+            REG_REQUIRE(frame.begin(0));
+            render::PreparedComputeDispatch packets[2];
+            render::Result<> outcomes[2];
+            uint32_t indices[] = {0, 1, 2};
+            const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = input.get()}, {.binding = 1, .buffer = output.get()}};
+            std::jthread first([&] {
+                outcomes[0] = programs[0].prepareDispatch(frame, {.bindings = bindings, .bindingCount = 2,
+                    .pushData = &indices[0], .pushDataSize = 4}, packets[0]);
+            });
+            std::jthread second([&] {
+                const render::ComputeIndirectDispatch items[] = {
+                    {.pushData = &indices[1]}, {.pushData = &indices[2], .argumentOffset = 12, .program = &programs[1]}};
+                outcomes[1] = programs[0].prepareIndirectBatch(frame, {.bindings = bindings, .bindingCount = 2,
+                    .pushDataSize = 4, .indirectArguments = arguments.get()}, items, packets[1]);
+            });
+            first.join(); second.join();
+            for (const auto& outcome : outcomes) { REG_REQUIRE(outcome); }
+            render::PreparedComputeDispatch failed = packets[0];
+            REG_CHECK(!programs[0].prepareDispatch(frame, {.bindings = bindings, .bindingCount = 2,
+                .pushData = &indices[0], .pushDataSize = 3}, failed) && !failed.valid());
+            // Preparation owns constant bytes, permutations, descriptors and argument ranges.
+            indices[0] = indices[1] = indices[2] = 15;
+            input.reset(); arguments.reset(); programs[0].clear(); programs[1].clear();
+            REG_CHECK(!inputLife.expired() && !argumentLife.expired());
+            render::CommandBuffer* commands[2]{};
+            for (uint32_t i = 0; i < 2; ++i) {
+                REG_REQUIRE(contexts[i].initialize(*device, queue));
+                REG_REQUIRE(contexts[i].prepare(frame).transform([&](auto value) { commands[i] = value; }));
+            }
+            const render::BufferBarrierDesc barrier{.buffer = output.get(), .before = render::ResourceState::Undefined,
+                .after = render::ResourceState::General};
+            commands[0]->barrier({.buffers = &barrier, .bufferCount = 1});
+            std::jthread recordA([&] { outcomes[0] = contexts[0].record([&]() -> render::Result<> {
+                auto recorded = packets[0].record(*commands[0]); return recorded ? commands[0]->end() : recorded; }); });
+            std::jthread recordB([&] { outcomes[1] = contexts[1].record([&]() -> render::Result<> {
+                auto recorded = packets[1].record(*commands[1]); return recorded ? commands[1]->end() : recorded; }); });
+            recordA.join(); recordB.join();
+            for (const auto& outcome : outcomes) { REG_REQUIRE(outcome); }
+            auto stale = packets[0];
+            packets[0] = {}; packets[1] = {};
+            const render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
+            REG_REQUIRE(tracker.submit({.waitSemaphores = &wait, .waitSemaphoreCount = 1,
+                .commandBuffers = commands, .commandBufferCount = 2}, frame));
+            REG_CHECK(!inputLife.expired() && !argumentLife.expired());
+            REG_REQUIRE(gate->signal(1)); REG_REQUIRE(frame.wait());
+            output->invalidate();
+            auto* values = static_cast<uint32_t*>(output->map());
+            REG_CHECK(values);
+            const bool correct = values[0] == 137 && values[1] == 137 && values[2] == 137 && values[15] == 0;
+            output->unmap(); REG_CHECK(correct);
+            for (auto& recording : contexts) { REG_REQUIRE(recording.reset()); }
+            REG_REQUIRE(frame.reset()); REG_REQUIRE(frame.begin(1));
+            REG_REQUIRE(contexts[0].prepare(frame).transform([&](auto value) { commands[0] = value; }));
+            REG_CHECK(!stale.record(*commands[0]));
+            stale = {};
+            REG_CHECK(inputLife.expired() && argumentLife.expired());
+            frame.cancel();
+            REG_REQUIRE(contexts[0].reset()); REG_REQUIRE(frame.reset());
+        }
+        return RhiTestResult::pass("Mapped/native: concurrent preparation and recording, frozen constants, indirect permutations, lifetime and stale generation");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(PreparedDispatchParallelTest);
 
 #undef REG_REQUIRE
 #undef REG_CHECK

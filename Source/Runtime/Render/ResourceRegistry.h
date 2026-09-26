@@ -66,8 +66,10 @@ public:
     ParameterAbi abi() const;
     uint64_t address() const;
     bool compatible(const CommandBuffer& commands, ParameterAbi abi) const;
-private:
+    // Also usable by raw bindless raster/compute paths: retain this immutable
+    // packet locally and bind its registry without changing execution state.
     Result<> bindResources(CommandBuffer& commands) const;
+private:
     std::shared_ptr<detail::ParameterPacket> packet_;
     friend class ParameterWriter;
     friend class ComputeKernel;
@@ -90,7 +92,8 @@ public:
     Result<> initialize(Device& device, const BindlessHeapDesc& capacity = {
         .maxSamplers = 64, .maxSampledImages = 8192, .maxStorageImages = 1024, .maxBuffers = 8192});
     Result<> storageBuffer(Buffer& buffer, ResourceLease& out);
-    Result<> sampledImage(TextureView& view, ResourceLease& out, ResourceState layout = ResourceState::ShaderRead);
+    Result<> sampledImage(TextureView& view, ResourceLease& out, ResourceState layout = ResourceState::ShaderRead,
+        bool* descriptorWritten = nullptr);
     Result<> storageImage(TextureView& view, ResourceLease& out);
     Result<> sampler(const SamplerDesc& sampler, ResourceLease& out);
     Result<> accelerationStructure(RayTracingAccelerationStructure& structure, ResourceLease& out);
@@ -99,10 +102,13 @@ public:
     ResourceRegistryStats stats() const;
     // Borrowed heap for prepared raster/SDK pipelines. Only registry registration writes descriptors.
     BindlessHeap* heap() const;
+    // Immutable provenance check for assembling packets without a command buffer.
+    bool owns(const ResourceLease& lease) const;
     Result<> bind(CommandBuffer& commands) const;
     Result<> retain(CommandBuffer& commands, const ResourceLease& lease) const;
 private:
-    Result<> image(TextureView& view, ResourceLease& out, ShaderResourceKind kind, ResourceState layout);
+    Result<> image(TextureView& view, ResourceLease& out, ShaderResourceKind kind, ResourceState layout,
+        bool* descriptorWritten = nullptr);
     std::shared_ptr<detail::RegistryState> state_;
     friend class ParameterWriter;
 };

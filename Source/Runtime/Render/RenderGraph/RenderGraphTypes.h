@@ -247,6 +247,12 @@ private:
     friend class RenderGraphExecutionContext;
 };
 
+struct RenderPreparationTask {
+    std::string name;
+    uint32_t workload = 1;
+    std::function<Result<>()> prepare;
+};
+
 class RenderGraphExecutionContext {
 public:
     CommandBuffer& commandBuffer() const { return *commandBuffer_; }
@@ -287,6 +293,11 @@ public:
     // join before subsequent commands. Reacquire commandBuffer() after this call.
     // Only declared shared resources may cross queues. No submission occurs here.
     Result<> parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics);
+    // Join independent CPU jobs before returning, including on failure. Capture
+    // frozen inputs and distinct output slots; never capture this context or
+    // mutate frame/history/subsystems, issue commands, or publish from a job.
+    // Thread-safe registry encoding is allowed. Apply outputs only on success.
+    Result<> prepareJoined(std::span<const RenderPreparationTask> tasks);
     // GPU intervals use the command buffer's actual queue. Outer scopes follow
     // commandBuffer() across a fork/join; branch scopes bind their explicit buffer.
     // GPU scopes also emit nested debug labels, balanced per recording across a
@@ -351,6 +362,9 @@ private:
 
     using ParallelRecorder = std::function<Result<>(RenderGraphExecutionContext&, const CommandRecorder&, const CommandRecorder&)>;
     ParallelRecorder parallelRecorder_;
+    uint32_t preparationWorkerLimit_ = 1;
+    uint32_t preparationBatchWorkload_ = 1;
+    uint32_t preparationTaskCount_ = 0;
     std::function<uint32_t(CommandBuffer&, std::string_view, uint32_t)> beginProfile_;
     std::function<void(CommandBuffer&, uint32_t, double)> endProfile_;
     std::function<void(std::span<const RenderGraphProfileSection>, uint32_t)> cpuProfile_;

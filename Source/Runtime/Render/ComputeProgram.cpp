@@ -591,24 +591,21 @@ Result<> ComputeProgram::dispatchIndirectBatch(const ComputeDispatchDesc& desc,
     return dispatchImpl(first, dispatches, betweenDispatches);
 }
 
-Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
-    std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches)
+Result<> ComputeProgram::validateDispatch(const ComputeDispatchDesc& desc,
+    std::span<const ComputeIndirectDispatch> dispatches) const
 {
-    CpuProfileScope profile(desc.profiler, "Acquire dispatch tables");
     if (desc.stats) { *desc.stats = {}; }
     if (!valid() ||
-        desc.commandBuffer == nullptr ||
         (desc.indirectArguments == nullptr &&
          (desc.groupCountX == 0 || desc.groupCountY == 0 || desc.groupCountZ == 0)) ||
         desc.resourceTableIndex >= impl_->resourceTableCount ||
         (impl_->pushConstantSize > 0 &&
          (desc.pushData == nullptr || desc.pushDataSize != impl_->pushConstantSize)) ||
         (impl_->pushConstantSize == 0 && desc.pushDataSize != 0)) {
-        spdlog::error("[ComputeProgram:{}] invalid dispatch description", impl_->debugName);
+        spdlog::error("[ComputeProgram:{}] invalid dispatch description", impl_ ? impl_->debugName : "uninitialized");
         return makeError(Error::InvalidArgument);
     }
 
-    std::shared_ptr<ComputeDescriptorTables> retainedTables;
     if (desc.indirectArguments != nullptr &&
         ((static_cast<uint32_t>(desc.indirectArguments->desc().usage) &
           static_cast<uint32_t>(BufferUsageBits::Indirect)) == 0 ||
@@ -617,7 +614,7 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
          3 * sizeof(uint32_t) > desc.indirectArguments->desc().size - desc.indirectOffset)) {
         return makeError(Error::InvalidArgument);
     }
-    ComputeDescriptorTables* tables = impl_.get();
+    if (!dispatches.empty() && !desc.indirectArguments) { return makeError(Error::InvalidArgument); }
     for (const auto& item : dispatches) {
         if (item.program != nullptr &&
             (!item.program->valid() || !impl_->hasCompatibleBindings(*item.program->impl_))) {
@@ -629,6 +626,18 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
             return makeError(Error::InvalidArgument);
         }
     }
+    return {};
+}
+
+Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
+    std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches)
+{
+    CpuProfileScope profile(desc.profiler, "Acquire dispatch tables");
+    if (!desc.commandBuffer) { return makeError(Error::InvalidArgument); }
+    auto validated = validateDispatch(desc, dispatches);
+    if (!validated) { return validated; }
+    std::shared_ptr<ComputeDescriptorTables> retainedTables;
+    ComputeDescriptorTables* tables = impl_.get();
     if (impl_->usesResourceTable) { return dispatchShared(desc, dispatches, betweenDispatches); }
     if (RenderFrameContext* frame = desc.commandBuffer->frameContext()) {
         if (!frame->recording()) {
@@ -898,26 +907,104 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
     return {};
 }
 
+struct PreparedComputeDispatch::Impl {
+    struct Item {
+        PreparedExecution execution;
+        ComputeResourcePush push;
+        BufferSlice arguments;
+    };
+    std::shared_ptr<ResourceRegistry> registry;
+    EncodedParameters parameters;
+    std::vector<ResourceLease> leases;
+    std::vector<std::shared_ptr<void>> owners;
+    std::vector<Item> items;
+    uint32_t x = 1, y = 1, z = 1;
+};
+
+Result<> PreparedComputeDispatch::record(CommandBuffer& commands, const BarrierDesc& betweenDispatches) const
+{
+    if (!impl_ || !commands.recording() || impl_->items.empty() ||
+        commands.deviceIdentity() != impl_->items.front().execution.deviceIdentity() ||
+        (impl_->parameters.valid() && !impl_->parameters.compatible(commands, impl_->parameters.abi()))) {
+        return makeError(Error::InvalidArgument);
+    }
+    auto result = commands.retainResource(std::const_pointer_cast<Impl>(impl_));
+    if (result) { result = impl_->parameters.valid() ? impl_->parameters.bindResources(commands) : impl_->registry->bind(commands); }
+    if (!result) { return result; }
+    for (size_t i = 0; i < impl_->items.size(); ++i) {
+        const auto& item = impl_->items[i];
+        result = commands.bindExecution(item.execution);
+        if (!result) { return result; }
+        commands.pushBindlessData(&item.push, sizeof(item.push));
+        if (item.arguments.valid()) { result = commands.dispatchIndirect(item.arguments); }
+        else { commands.dispatch(impl_->x, impl_->y, impl_->z); }
+        if (!result) { return result; }
+        if (i + 1 < impl_->items.size() && (betweenDispatches.bufferCount || betweenDispatches.textureCount)) {
+            commands.barrier(betweenDispatches);
+        }
+    }
+    return {};
+}
+
+Result<> ComputeProgram::prepareDispatch(RenderFrameContext& frame, const ComputeDispatchDesc& desc,
+    PreparedComputeDispatch& out) const
+{
+    out = {};
+    if (desc.commandBuffer || !frame.recording()) { return makeError(Error::InvalidArgument); }
+    return prepareShared(&frame, desc, {}, out);
+}
+
+Result<> ComputeProgram::prepareIndirectBatch(RenderFrameContext& frame, const ComputeDispatchDesc& desc,
+    std::span<const ComputeIndirectDispatch> dispatches, PreparedComputeDispatch& out) const
+{
+    out = {};
+    if (desc.commandBuffer || !frame.recording() || !desc.indirectArguments || dispatches.empty()) {
+        return makeError(Error::InvalidArgument);
+    }
+    auto first = desc;
+    first.pushData = dispatches.front().pushData;
+    first.indirectOffset = dispatches.front().argumentOffset;
+    return prepareShared(&frame, first, dispatches, out);
+}
+
 Result<> ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
     std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches)
 {
-    auto& commands = *desc.commandBuffer;
-    auto& registry = *impl_->registry;
-    auto result = commands.retainResource(impl_);
-    if (!result || commands.deviceIdentity() != impl_->device->identity()) { return makeError(Error::InvalidArgument); }
-    for (const auto& item : dispatches) {
-        if (item.program) {
-            result = commands.retainResource(item.program->impl_);
+    if (!desc.commandBuffer->recording() || desc.commandBuffer->deviceIdentity() != impl_->device->identity()) {
+        return makeError(Error::InvalidArgument);
+    }
+    PreparedComputeDispatch prepared;
+    auto result = prepareShared(desc.commandBuffer->frameContext(), desc, dispatches, prepared);
+    return result ? prepared.record(*desc.commandBuffer, betweenDispatches) : result;
+}
+
+Result<> ComputeProgram::prepareShared(RenderFrameContext* frame, const ComputeDispatchDesc& desc,
+    std::span<const ComputeIndirectDispatch> dispatches, PreparedComputeDispatch& out) const
+{
+    out = {};
+    auto result = validateDispatch(desc, dispatches);
+    if (!result) { return result; }
+    if (!impl_->usesResourceTable) { return makeError(Error::Unsupported); }
+    auto prepared = std::make_shared<PreparedComputeDispatch::Impl>();
+    prepared->registry = impl_->registry;
+    prepared->owners.push_back(impl_);
+    prepared->x = desc.groupCountX; prepared->y = desc.groupCountY; prepared->z = desc.groupCountZ;
+    const size_t itemCount = std::max<size_t>(1, dispatches.size());
+    prepared->items.resize(itemCount);
+    for (size_t i = 0; i < itemCount; ++i) {
+        const auto program = !dispatches.empty() && dispatches[i].program ? dispatches[i].program->impl_ : impl_;
+        prepared->items[i].execution = program->execution;
+        prepared->owners.push_back(program);
+        if (desc.indirectArguments) {
+            result = desc.indirectArguments->slice(dispatches.empty() ? desc.indirectOffset : dispatches[i].argumentOffset,
+                3 * sizeof(uint32_t)).transform([&](auto slice) { prepared->items[i].arguments = std::move(slice); });
+            if (result) { result = prepared->items[i].arguments.validate(impl_->device->identity(), BufferUsageBits::Indirect, 4, 12); }
             if (!result) { return result; }
         }
     }
-    if (desc.indirectArguments) {
-        if (desc.indirectArguments->deviceIdentity() != commands.deviceIdentity()) { return makeError(Error::InvalidArgument); }
-        result = commands.retainResource(desc.indirectArguments->retainAllocation());
-        if (!result) { return result; }
-    }
+    auto& registry = *impl_->registry;
     std::unique_ptr<ParameterWriter> writer;
-    if (auto* frame = commands.frameContext()) {
+    if (frame) {
         writer = std::make_unique<ParameterWriter>(*impl_->device, *frame, registry);
     }
     auto upload = [&](const void* bytes, uint64_t size) -> uint64_t {
@@ -938,7 +1025,7 @@ Result<> ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
         std::memcpy(mapped, bytes, size);
         packet->flush(); packet->unmap();
         const auto address = packet->deviceAddress();
-        result = commands.retainResource(packet->retainAllocation());
+        prepared->owners.push_back(packet->retainAllocation());
         return address;
     };
     // Matches Core.ComputeResourceSlot: direct access stays scalar, arrays carry
@@ -961,10 +1048,9 @@ Result<> ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
                 result = binding->buffer->slice(binding->offset, binding->size).transform([&](auto rhiValue) { slice = std::move(rhiValue); });
                 if (!result) { return result; }
             }
-            result = slice.validateData(commands.deviceIdentity(), expected.desc.dataStride, expected.desc.dataAlignment);
+            result = slice.validateData(impl_->device->identity(), expected.desc.dataStride, expected.desc.dataAlignment);
             if (!result) { return result; }
-            result = commands.retainResource(slice.retainAllocation());
-            if (!result) { return result; }
+            prepared->owners.push_back(slice.retainAllocation());
             auto& slot = slots[expected.desc.binding];
             slot.handle = slice.deviceAddress();
             slot.payload = (uint64_t(expected.desc.dataStride) << 32) | uint32_t(slice.size() / expected.desc.dataStride);
@@ -972,8 +1058,7 @@ Result<> ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
         }
         if (binding->data.valid()) { return makeError(Error::InvalidArgument); }
         if (binding->sampledImages) {
-            result = commands.retainResource(std::const_pointer_cast<ComputeSampledImageSnapshot>(binding->sampledImages));
-            if (!result) { return result; }
+            prepared->owners.push_back(std::const_pointer_cast<ComputeSampledImageSnapshot>(binding->sampledImages));
         }
         const uint32_t count = std::max(expected.desc.descriptorCount, 1u);
         std::vector<uint64_t> handles;
@@ -1012,19 +1097,18 @@ Result<> ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
                     view = binding->textureViews[i];
                 } else if (count == 1) { view = binding->textureView; }
                 if (!view) { return makeError(Error::InvalidArgument); }
-                const auto before = desc.stats ? registry.stats().descriptorWrites : 0;
+                bool written = false;
                 result = expected.desc.kind == ComputeResourceBindingKind::SampledImage
-                    ? registry.sampledImage(*view, lease) : registry.storageImage(*view, lease);
+                    ? registry.sampledImage(*view, lease, ResourceState::ShaderRead, &written) : registry.storageImage(*view, lease);
                 if (result && desc.stats && expected.desc.kind == ComputeResourceBindingKind::SampledImage) {
-                    if (registry.stats().descriptorWrites != before) { ++desc.stats->sampledImageWrites; }
+                    if (written) { ++desc.stats->sampledImageWrites; }
                     else { ++desc.stats->sampledImageCacheHits; }
                 }
                 break;
             }
             }
             if (!result) { return result; }
-            result = registry.retain(commands, lease);
-            if (!result) { return result; }
+            prepared->leases.push_back(lease);
             handles.push_back(lease.shaderValue());
         }
         auto& slot = slots[expected.desc.binding];
@@ -1047,32 +1131,13 @@ Result<> ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
     }
     if (!result) { return result; }
     if (writer) {
-        EncodedParameters packet;
-        result = writer->encode(push, 0x434f4d5055544502ull, packet);
-        if (result) { result = packet.bindResources(commands); }
-    } else { result = registry.bind(commands); }
-    if (!result) { return result; }
-    result = commands.bindExecution(impl_->execution);
-    if (!result) { return result; }
-    if (dispatches.empty()) {
-        commands.pushBindlessData(&push, sizeof(push));
-        if (desc.indirectArguments) { return commands.dispatchIndirect(*desc.indirectArguments, desc.indirectOffset); }
-        commands.dispatch(desc.groupCountX, desc.groupCountY, desc.groupCountZ);
-        return {};
-    }
-    const uint64_t base = push.constants;
-    for (size_t i = 0; i < dispatches.size(); ++i) {
-        const auto* program = dispatches[i].program ? dispatches[i].program->impl_.get() : impl_.get();
-        result = commands.bindExecution(program->execution);
+        result = writer->encode(push, 0x434f4d5055544502ull, prepared->parameters);
         if (!result) { return result; }
-        push.constants = base + stride * i;
-        commands.pushBindlessData(&push, sizeof(push));
-        result = commands.dispatchIndirect(*desc.indirectArguments, dispatches[i].argumentOffset);
-        if (!result) { return result; }
-        if (i + 1 < dispatches.size() && (betweenDispatches.bufferCount || betweenDispatches.textureCount)) {
-            commands.barrier(betweenDispatches);
-        }
     }
+    for (size_t i = 0; i < itemCount; ++i) {
+        prepared->items[i].push = {push.resources, push.constants ? push.constants + stride * i : 0};
+    }
+    out.impl_ = std::move(prepared);
     return {};
 }
 

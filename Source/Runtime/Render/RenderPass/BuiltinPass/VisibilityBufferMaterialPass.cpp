@@ -68,7 +68,19 @@ public:
             .debugName = "VisibilityBufferMaterial", .requiresRayQuery = false}, log);
     }
 
+    Result<> prepareExecution(RenderGraphExecutionContext& context) override
+    {
+        prepared_ = {};
+        return context.commandBuffer().frameContext() ? prepareMaterial(context, true) : Result<>{};
+    }
+
     Result<> execute(RenderGraphExecutionContext& context) override
+    {
+        return context.commandBuffer().frameContext() ? prepared_.record(context.commandBuffer()) : prepareMaterial(context, false);
+    }
+
+private:
+    Result<> prepareMaterial(RenderGraphExecutionContext& context, bool prepare)
     {
         const auto visibility = context.inputTexture("visibility");
         const auto infoBuffer = context.inputBuffer("rasterInfo");
@@ -118,12 +130,15 @@ public:
         const Push push{info.width, info.height, info.residentRecordCount, stream ? stream->visibleRecordCapacity : 0u,
             mode == "baseColor" ? 1u : mode == "normal" ? 2u : mode == "instance" ? 3u : 0u,
             {info.eye[0], info.eye[1], info.eye[2]}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,
+        ComputeDispatchDesc desc{.bindings = bindings,
             .bindingCount = uint32_t(std::size(bindings)), .pushData = &push, .pushDataSize = sizeof(push),
-            .groupCountX = (info.width + 7) / 8, .groupCountY = (info.height + 7) / 8});
+            .groupCountX = (info.width + 7) / 8, .groupCountY = (info.height + 7) / 8};
+        if (prepare) { return program_.prepareDispatch(*context.commandBuffer().frameContext(), desc, prepared_); }
+        desc.commandBuffer = &context.commandBuffer();
+        return program_.dispatch(desc);
     }
 
-private:
+    PreparedComputeDispatch prepared_;
     ComputeProgram program_;
 };
 } // namespace

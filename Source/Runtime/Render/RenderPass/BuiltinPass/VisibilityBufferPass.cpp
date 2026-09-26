@@ -682,9 +682,7 @@ public:
     Result<> prepareExecution(RenderGraphExecutionContext& context) override
     {
         auto profile = context.profileScope("Visibility prepare");
-        if (streamRuntime_) {
-            if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(streamRuntime_); }
-        }
+        preparedBindings_.reset();
         if (const auto* prepared = context.preparedScene(); prepared && prepared->snapshot) {
             sharedTextureResources_ = prepared->snapshot->pathTraceResources;
         }
@@ -775,13 +773,11 @@ public:
             spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
             return result;
         }
-        result = updateParamsBuffer(
-            context.width(),
-            context.height(),
-            context.properties(), context.frameIndex(), context.viewConstants());
-        if (!result) {
-            return result;
-        }
+        result = registry_->sampledImage(*depth.view(), depthImageHandle_, ResourceState::ShaderRead);
+        if (result) { result = registry_->sampledImage(*visibility.view(), visibilityImageHandle_, ResourceState::ShaderRead); }
+        std::shared_ptr<PreparedBindings> bindings;
+        if (result) { result = prepareFrame(context, bindings); }
+        if (!result) { return result; }
         const auto rasterInfo = context.outputBuffer("rasterInfo");
         if (!rasterInfo.valid()) { return makeError(Error::InvalidArgument); }
         VisibilityBufferFrameInfo info;
@@ -808,14 +804,6 @@ public:
         std::memcpy(mappedInfo, &info, sizeof(info));
         rasterInfo.buffer()->flush(0, sizeof(info));
         rasterInfo.buffer()->unmap();
-        result = registry_->sampledImage(*depth.view(), depthImageHandle_, ResourceState::ShaderRead);
-        if (!result) {
-            return result;
-        }
-        result = registry_->sampledImage(*visibility.view(), visibilityImageHandle_, ResourceState::ShaderRead);
-        if (!result) {
-            return result;
-        }
         if (streamEnabled_) {
             result = bindStreamViewResources(
                 *gpuSceneSubsystem,
@@ -825,6 +813,17 @@ public:
                 return result;
             }
         }
+        for (const auto& lease : {streamWorkloadHandle_, streamHybridClusterHandle_, streamHybridPixelHandle_,
+             streamCandidateArgumentsHandle_, streamHybridQueueHandle_, streamTessellationHandle_,
+             streamGPUSceneInstanceHandle_, streamMaterialHandle_, streamMaterialTextureRemapHandle_,
+             streamVisibilityImageHandle_, streamDepthImageHandle_, streamInstanceVisibilityHandle_,
+             streamVisibleInstanceIdsHandle_, streamVisibleInstanceCounterHandle_, streamHzbHandles_[0], streamHzbHandles_[1]}) {
+            if (lease.valid()) {
+                if (!bindings->registry->owns(lease)) { return makeError(Error::InvalidArgument); }
+                bindings->leases.push_back(lease);
+            }
+        }
+        preparedBindings_ = std::move(bindings);
         return {};
     }
 
@@ -839,50 +838,48 @@ public:
             streamRuntime_.get(), UINT32_MAX, residentRecordCapacity_);
     }
 
-    Result<> retainBindings(CommandBuffer& commands) const
+    struct PreparedBindings {
+        std::shared_ptr<ResourceRegistry> registry;
+        std::vector<ResourceLease> leases;
+        std::vector<std::shared_ptr<void>> owners;
+    };
+    Result<> prepareBindings(PreparedBindings& packet) const
     {
         if (!registry_) { return makeError(Error::InvalidArgument); }
+        packet.registry = registry_;
+        packet.owners.push_back(streamRuntime_);
+        packet.owners.push_back(hybridRasterizer_);
+        for (const auto& lod : residentLods_) { packet.owners.push_back(lod); }
         auto retain = [&](const ResourceLease& lease) {
-            return lease.valid() ? registry_->retain(commands, lease) : Result<>{};
+            if (lease.valid()) { packet.leases.push_back(lease); }
         };
         for (const auto& lease : {
             hybridQueueHandle_, hybridClusterHandle_, hybridPixelHandle_,
-            streamWorkloadHandle_, streamHybridClusterHandle_, streamHybridPixelHandle_,
-            streamCandidateArgumentsHandle_, streamHybridQueueHandle_, tessellationHandle_,
-            streamTessellationHandle_, hzbSpdCounterHandle_, materialTextureRemapHandle_,
+            tessellationHandle_, hzbSpdCounterHandle_, materialTextureRemapHandle_,
             depthImageHandle_, visibilityImageHandle_, cullingDepthImageHandle_,
-            streamOwnerMaskHandle_, streamDebugRecordsHandle_, streamDebugGroupsHandle_,
-            streamGPUSceneInstanceHandle_, streamMaterialHandle_, streamMaterialTextureRemapHandle_,
-            streamVisibilityImageHandle_, streamDepthImageHandle_, streamInstanceVisibilityHandle_,
-            streamVisibleInstanceIdsHandle_, streamVisibleInstanceCounterHandle_}) {
-            auto result = retain(lease);
-            if (!result) { return result; }
+            streamOwnerMaskHandle_, streamDebugRecordsHandle_, streamDebugGroupsHandle_}) {
+            retain(lease);
         }
         for (const auto& lease : hzbHandles_) {
-            auto result = retain(lease);
-            if (!result) { return result; }
-        }
-        for (const auto& lease : streamHzbHandles_) {
-            auto result = retain(lease);
-            if (!result) { return result; }
+            retain(lease);
         }
         for (const auto& lease : materialTextureHandles_) {
-            auto result = retain(lease);
-            if (!result) { return result; }
+            retain(lease);
         }
         for (const auto& lease : gpuSceneBindings_.buffers) {
-            auto result = retain(lease);
-            if (!result) { return result; }
+            retain(lease);
         }
         const auto& slot = frameSlotResources_[activeFrameSlot_];
         for (const auto& lease : {slot.paramsHandle, slot.lodSelectionHandle, slot.lodArgumentsHandle,
              slot.lodScratchHandle, slot.instanceVisibilityHandle, slot.visibleInstanceIdsHandle,
              slot.visibleInstanceCounterHandle, slot.visibleMeshletHandles[0], slot.visibleMeshletHandles[1],
              slot.indirectHandles[0], slot.indirectHandles[1]}) {
-            auto result = retain(lease);
-            if (!result) { return result; }
+            retain(lease);
         }
-        return registry_->bind(commands);
+        for (const auto& lease : packet.leases) {
+            if (!packet.registry->owns(lease)) { return makeError(Error::InvalidArgument); }
+        }
+        return {};
     }
 
     Result<> execute(RenderGraphExecutionContext& context) override
@@ -895,7 +892,9 @@ public:
         const auto visibility = context.outputTexture("visibility");
         const auto depth = context.outputTexture("depth");
         Result<> result;
-        result = retainBindings(context.commandBuffer());
+        if (!preparedBindings_) { return makeError(Error::InvalidArgument); }
+        result = context.commandBuffer().retainResource(std::const_pointer_cast<PreparedBindings>(preparedBindings_));
+        if (result) { result = preparedBindings_->registry->bind(context.commandBuffer()); }
         if (!result) { return result; }
         {
             auto profile = context.profileScope("Initialize / light grid");
@@ -4326,96 +4325,131 @@ private:
         std::memcpy(outParams.previousClipOrtho, previous.clipOrtho, sizeof(outParams.previousClipOrtho));
     }
 
-    Result<> updateParamsBuffer(
-        uint32_t width,
-        uint32_t height,
-        const RenderGraphProperties& properties,
-        uint64_t temporalFrameIndex,
-        const ViewConstants* view)
+    struct CameraPreparationInput {
+        RenderGraphProperties properties;
+        ViewConstants view;
+        scene::Bounds bounds;
+        GPUDrivenPreviewMeshletRange baseRange;
+        GPUSceneRasterDrawRange adaptiveRange;
+        GPUDrivenPreviewGpuParams previous, frozen;
+        uint64_t temporalFrameIndex = 0;
+        uint32_t width = 1, height = 1, instanceCount = 0, hzbMipCount = 1, frameIndex = 0;
+        uint32_t textureCount = 1, materialCount = 1, lodSelection = UINT32_MAX, tessellation = UINT32_MAX;
+        float displacementBound = 0;
+        bool hasView = false, hzbValid = false, previousValid = false, frozenValid = false;
+        bool freeze = false, freezeChanged = false;
+    };
+    struct CameraPreparationOutput {
+        GPUDrivenPreviewGpuParams params, frozen;
+        bool frozenValid = false;
+    };
+    static Result<> prepareCamera(const CameraPreparationInput& input, CameraPreparationOutput& output)
     {
-        GPUDrivenPreviewFrameSlotResources& slot = activeFrameResources();
-        if (slot.paramsBuffer == nullptr || !drawBounds_.valid) {
-            return makeError(Error::InvalidArgument);
-        }
-
-        const bool freezeCullingCamera = boolProperty(
-            &properties,
-            "freezeCullingCamera",
-            false);
-        const bool freezeStateChanged = freezeCullingCamera != freezeCullingCamera_;
-        if (freezeStateChanged) {
-            // Keep the HZB write index already published by prepareGPUSceneView.
-            // Invalidating history is sufficient; resetting parity here would
-            // also disagree with the Stream producer's frame index.
-            invalidateHzbHistory();
-            previousCameraValid_ = false;
-            if (!freezeCullingCamera) {
-                frozenCullingCameraValid_ = false;
-            }
-        }
-
+        const ViewConstants* view = input.hasView ? &input.view : nullptr;
+        output.frozen = input.frozen;
+        output.frozenValid = input.frozenValid;
         GPUDrivenPreviewGpuParams params;
         buildParams(
-            width,
-            height,
-            properties,
-            drawBounds_,
-            baseMeshletRange_,
-            instanceCount_,
-            hzbMipCount_,
-            frameIndex_,
-            hzbValid_,
-            previousCameraValid_ ? &previousParams_ : nullptr,
-            materialTextureCount_,
-            materialCount_,
+            input.width,
+            input.height,
+            input.properties,
+            input.bounds,
+            input.baseRange,
+            input.instanceCount,
+            input.hzbMipCount,
+            input.frameIndex,
+            input.hzbValid,
+            input.previousValid ? &input.previous : nullptr,
+            input.textureCount,
+            input.materialCount,
             params);
 
         if (view != nullptr) {
             applyViewCamera(view->current, params);
             copyCullingCameraToRender(params);
-            if (view->frame[1] == 0) { invalidateHzbHistory(); params.hzbValid = 0; }
+            if (view->frame[1] == 0) { params.hzbValid = 0; }
         }
 
-        if (freezeCullingCamera &&
-            (!frozenCullingCameraValid_ || freezeStateChanged)) {
-            frozenCullingCamera_ = params;
-            frozenCullingCameraValid_ = true;
+        if (input.freeze &&
+            (!output.frozenValid || input.freezeChanged)) {
+            output.frozen = params;
+            output.frozenValid = true;
         }
-        if (freezeCullingCamera) {
-            copyCullingCamera(frozenCullingCamera_, params);
+        if (input.freeze) {
+            copyCullingCamera(output.frozen, params);
         }
 
         const GPUDrivenPreviewGpuParams& previousCullingCamera =
-            previousCameraValid_ ? previousParams_ : params;
+            input.previousValid ? input.previous : params;
         copyCullingCameraToPrevious(previousCullingCamera, params);
 
         // The unused render camera w components carry pixel jitter. Culling and
         // HZB cameras remain unjittered; consumers receive the same sample offset.
         const auto jitter = view != nullptr ? std::array<float, 2>{view->jitter[0], view->jitter[1]} :
-            boolProperty(&properties, "temporalJitter", false) ? dlssTemporalJitter(temporalFrameIndex) : std::array<float, 2>{};
+            boolProperty(&input.properties, "temporalJitter", false) ? dlssTemporalJitter(input.temporalFrameIndex) : std::array<float, 2>{};
         params.renderEye[3] = jitter[0];
         params.renderCenter[3] = jitter[1];
 
-        params.meshletOffset = adaptiveMeshletRange_.offset;
-        params.meshletCount = adaptiveMeshletRange_.count;
-        params.lodSelectionBuffer = slot.lodSelectionHandle.shaderIndex();
+        params.meshletOffset = input.adaptiveRange.offset;
+        params.meshletCount = input.adaptiveRange.count;
+        params.lodSelectionBuffer = input.lodSelection;
         params.lodSelectionEnabled = 1u;
-        params.tessellationBuffer = tessellationEnabled() ? tessellationHandle_.shaderIndex() : UINT32_MAX;
-        params.displacementBound = tessellationEnabled() && gpuSceneSource_ ? tessellationDisplacementBound(gpuSceneSource_->materials()) : 0.0f;
-        void* mapped = slot.paramsBuffer->map();
-        if (mapped == nullptr) {
-            return makeError(Error::Failure);
-        }
-        std::memcpy(mapped, &params, sizeof(params));
-        slot.paramsBuffer->flush(0, sizeof(params));
-        slot.paramsBuffer->unmap();
-        activeMeshletCount_ = params.meshletCount;
-        previousParams_ = params;
-        previousCameraValid_ = true;
-        freezeCullingCamera_ = freezeCullingCamera;
+        params.tessellationBuffer = input.tessellation;
+        params.displacementBound = input.displacementBound;
+        output.params = params;
         return {};
     }
 
+    Result<> prepareFrame(RenderGraphExecutionContext& context, std::shared_ptr<PreparedBindings>& outBindings)
+    {
+        auto& slot = activeFrameResources();
+        if (!slot.paramsBuffer || !drawBounds_.valid) { return makeError(Error::InvalidArgument); }
+        CameraPreparationInput input;
+        input.properties = context.properties();
+        input.hasView = context.viewConstants() != nullptr;
+        if (input.hasView) { input.view = *context.viewConstants(); }
+        input.width = context.width(); input.height = context.height();
+        input.temporalFrameIndex = context.frameIndex();
+        input.bounds = drawBounds_; input.baseRange = baseMeshletRange_; input.adaptiveRange = adaptiveMeshletRange_;
+        input.instanceCount = instanceCount_; input.hzbMipCount = hzbMipCount_; input.frameIndex = frameIndex_;
+        input.textureCount = materialTextureCount_; input.materialCount = materialCount_;
+        input.previous = previousParams_; input.frozen = frozenCullingCamera_;
+        input.freeze = boolProperty(&input.properties, "freezeCullingCamera", false);
+        input.freezeChanged = input.freeze != freezeCullingCamera_;
+        input.hzbValid = hzbValid_ && !input.freezeChanged;
+        input.previousValid = previousCameraValid_ && !input.freezeChanged;
+        input.frozenValid = frozenCullingCameraValid_ && !(input.freezeChanged && !input.freeze);
+        input.lodSelection = slot.lodSelectionHandle.shaderIndex();
+        input.tessellation = tessellationEnabled() ? tessellationHandle_.shaderIndex() : UINT32_MAX;
+        input.displacementBound = tessellationEnabled() && gpuSceneSource_
+            ? tessellationDisplacementBound(gpuSceneSource_->materials()) : 0.0f;
+        CameraPreparationOutput camera;
+        auto bindings = std::make_shared<PreparedBindings>();
+        // Lease sources are frozen until the joined call returns. Jobs read them
+        // but never mutate the pass, frame, GPUScene or the streaming runtime.
+        const VisibilityBufferPass& frozen = *this;
+        const RenderPreparationTask tasks[] = {
+            {.name = "Visibility camera parameters", .prepare = [&input, &camera] { return prepareCamera(input, camera); }},
+            {.name = "Visibility resource packet", .prepare = [&frozen, &bindings] { return frozen.prepareBindings(*bindings); }},
+        };
+        auto result = context.prepareJoined(tasks);
+        if (!result) { return result; }
+        // Publish only after both independent results succeeded.
+        result = updateHostStorageBuffer(*slot.paramsBuffer, &camera.params, sizeof(camera.params));
+        if (!result) { return result; }
+        if (input.freezeChanged) { invalidateHzbHistory(); }
+        if (input.hasView && input.view.frame[1] == 0) { invalidateHzbHistory(); }
+        previousParams_ = camera.params;
+        previousCameraValid_ = true;
+        activeMeshletCount_ = camera.params.meshletCount;
+        frozenCullingCamera_ = camera.frozen;
+        frozenCullingCameraValid_ = camera.frozenValid;
+        freezeCullingCamera_ = input.freeze;
+        outBindings = std::move(bindings);
+        return {};
+    }
+
+    std::shared_ptr<const PreparedBindings> preparedBindings_;
     std::vector<std::shared_ptr<ResidentMeshletLod>> residentLods_;
     GPUSceneRasterDrawRange adaptiveMeshletRange_;
     uint32_t lodGroupCount_ = 0;

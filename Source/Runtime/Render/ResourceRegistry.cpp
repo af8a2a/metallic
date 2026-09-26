@@ -175,9 +175,11 @@ Result<> ResourceRegistry::storageBuffer(Buffer& buffer, ResourceLease& out)
         }, out.state_);
 }
 
-Result<> ResourceRegistry::image(TextureView& view, ResourceLease& out, ShaderResourceKind kind, ResourceState layout)
+Result<> ResourceRegistry::image(TextureView& view, ResourceLease& out, ShaderResourceKind kind, ResourceState layout,
+    bool* descriptorWritten)
 {
     out = {};
+    if (descriptorWritten) { *descriptorWritten = false; }
     if (!state_ || view.deviceIdentity() != state_->device) { return makeError(Error::InvalidArgument); }
     auto allocation = view.retainTexture();
     auto key = keyFor(kind, allocation);
@@ -190,17 +192,20 @@ Result<> ResourceRegistry::image(TextureView& view, ResourceLease& out, ShaderRe
             ? state_->heap->allocateSampledImage().transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); }) : state_->heap->allocateStorageImage().transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); });
         if (!result) { return result; }
         entry.value = entry.handle.shaderIndex;
-        return kind == ShaderResourceKind::SampledImage ? state_->heap->writeSampledImage(entry.handle, view, layout)
+        result = kind == ShaderResourceKind::SampledImage ? state_->heap->writeSampledImage(entry.handle, view, layout)
             : state_->heap->writeStorageImage(entry.handle, view);
+        if (descriptorWritten) { *descriptorWritten = bool(result); }
+        return result;
     }, out.state_);
 }
 
-Result<> ResourceRegistry::sampledImage(TextureView& view, ResourceLease& out, ResourceState layout)
+Result<> ResourceRegistry::sampledImage(TextureView& view, ResourceLease& out, ResourceState layout, bool* descriptorWritten)
 {
+    if (descriptorWritten) { *descriptorWritten = false; }
     if (layout != ResourceState::ShaderRead && layout != ResourceState::General) {
         out = {}; return makeError(Error::InvalidArgument);
     }
-    return image(view, out, ShaderResourceKind::SampledImage, layout);
+    return image(view, out, ShaderResourceKind::SampledImage, layout, descriptorWritten);
 }
 
 Result<> ResourceRegistry::storageImage(TextureView& view, ResourceLease& out)
@@ -277,9 +282,14 @@ Result<> ResourceRegistry::bind(CommandBuffer& commands) const
     return result;
 }
 
+bool ResourceRegistry::owns(const ResourceLease& lease) const
+{
+    return state_ && lease.state_ && lease.state_->registry == state_;
+}
+
 Result<> ResourceRegistry::retain(CommandBuffer& commands, const ResourceLease& lease) const
 {
-    if (!state_ || !lease.state_ || lease.state_->registry != state_ || commands.deviceIdentity() != state_->device) {
+    if (!owns(lease) || commands.deviceIdentity() != state_->device) {
         return makeError(Error::InvalidArgument);
     }
     return commands.retainResource(lease.state_);

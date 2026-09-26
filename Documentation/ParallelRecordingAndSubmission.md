@@ -337,3 +337,45 @@ ctest --test-dir build-full -R '^Metallic(Task|Nrd)Tests$' --output-on-failure
 TaskSystem 和 NRD 两个 CTest 目标通过。主程序 smoke 完成 `ABeautifulGameMaterialVisualization` 图的单帧录制、提交和 present。完整日志在本地 `build-full/parallel-recording-regression-final.log`、`parallel-recording-existing-baseline.log`、`parallel-recording-cpu-tests.log` 和 `parallel-recording-smoke.log`。
 
 这些结果证明首阶段的并发与寿命契约，不代表生产场景已有帧率收益，也不替代长时间视觉/时序验证。生产 pass 拆分、lane 参数 arena、命令缓冲区复用、提交合批和消除计时 prologue 的额外 GPU 依赖仍按后续阶段评估。
+
+
+## 15. 纯准备任务、VisibilityBuffer 与 prepared dispatch
+
+在首阶段的整帧录制汇合与本地资源保留基础上，增加 `RenderGraphExecutionContext::prepareJoined()`。调用者先固定输入，提交若干独立的 `RenderPreparationTask`，等待所有已启动任务结束，再由原调用者应用结果。任务只计算独立 CPU 输出、复制 lease 或通过线程安全的 registry 编码参数；不得捕获可变 execution context、录命令、发布 GPUScene/streaming/history 状态、取消帧或提交。
+
+准备批次与录制批次独立。两者使用 `recordingWorkerLimit`；`preparationBatchWorkload` 默认 1，按任务权重合并连续准备项，每轮最多使用该数量的 worker，单批内联。外部 command buffer、单 worker、debug observer、嵌套 TaskSystem callback 和无 TaskSystem 时均内联。Result 失败或异常不会提前返回并留下正在访问输入的任务；结果按声明顺序检查，失败不进入调用者的发布阶段。CPU profile 先写本地槽，汇合后发布为 CPU-only section；`preparationTaskCount` 统计实际派发的批次数，不代表加速比。
+
+### VisibilityBuffer 的实际迁移
+
+GPUScene 同步/扩容、view 发布、image descriptor 注册仍由 coordinator 执行。随后形成两个独立准备任务：
+
+- 相机任务读取按值保存的属性、view、边界、帧号、HZB 与冻结相机状态，生成完整 GPU 参数及新的冻结相机状态。任务不 map buffer，也不修改历史有效性。
+- 资源任务读取在汇合前保持不变的 lease 来源，构造资源保留包。包持有同一个 registry 中的 lease、resident LOD、hybrid rasterizer 和 streaming owner，不新增另一套场景或资源 ID。
+
+两项成功后 coordinator 写入已完成等待的帧槽、应用相机/HZB 状态、写 rasterInfo，再发布依赖新相机的 streaming bindings。最后补齐其 lease 并发布 `shared_ptr<const PreparedBindings>`。录制只把整个包交给 command-local retention 并绑定 registry，省去原先逐项 `retain` 的循环。prepare 入口会清除上次的包，失败不会执行旧包。
+
+这不是把整个 VisibilityBuffer pass 标为 ParallelJoined：GPUScene、streaming 和 history 的可变操作仍有原来的串行 owner，software/hardware raster 保留现有 GPU fork/join，所有原生命令仍全部录完后提交。准备任务目前只在单个调用内汇合，不跨 pass 或跨帧悬挂。
+
+### PreparedComputeDispatch
+
+`ComputeProgram::prepareDispatch(frame, desc, out)` 和 `prepareIndirectBatch(frame, desc, items, out)` 不访问 command buffer，要求 `desc.commandBuffer == nullptr`。完成前调用者保持 program、输入 wrapper、frame generation 和各自 profiler/stats 输出稳定；多个任务可共享同一个只读 program 和 registry，但各写自己的结果。
+
+返回的不可变包持有 executable、按值复制的 constants、descriptor lease、普通数据 BDA allocation、sampled-image snapshot owner，以及带范围的 indirect argument slice。输入 wrapper、pushData 和 program 可以在准备后销毁；indirect batch 的兼容 permutation 也被保留。批次间需要的 barrier 由 `record(commands, betweenDispatches)` 的调用者在录制期传入，包不保存指向临时 barrier 数组的指针。
+
+`record()` 先验证 device、recording 与 frame generation，再把包保留到本地 command，绑定 registry/execution 并派发。它不查询或改写 program 的 descriptor cache，也不依赖原始资源 wrapper。旧帧、已取消帧和错误目标均不能使用已有包；准备失败清空输出。共享 resource-table 路径的原有 dispatch/dispatchIndirectBatch 也统一通过该编码器；无 frame 的即时调用仍有直接适配。`usesResourceTable=false` 的旧诊断 shader 保留原串行适配，显式准备返回 Unsupported。
+
+VisibilityBufferMaterialPass 已拆为准备期捕获/验证 scene、rasterInfo、GPUScene 与 stream 输入，生成 prepared dispatch，execute 只录制包。外部无 frame 的旧调用继续即时适配。该 pass 尚未启用跨 pass 的并行录制，因为它仍需要串行 scene/subsystem 协调。sampled-image 写入/命中统计改为登记操作返回本次是否写入，避免并行时用全局计数差误归因。
+
+### 验证与边界
+
+复用 `build-full` 的 MSVC Debug 配置，构建 Metallic、MetallicRhiTests、MetallicTaskTests、MetallicNrdTests。新增测试：
+
+- `parallel_preparation_join_failure_and_batching`：权重 `[3,1,2,2,1]`、目标 4 形成三批，带超时的会合证明三批同时运行；覆盖串行、失败、异常、嵌套回退与大目标合批。所有输出完成前不会发布，失败不提交。
+- `prepared_dispatch_parallel_snapshot_lifetime`：Mapped/Native 各自并行准备和录制同一 program；冻结 constants，保留 direct/indirect permutation，提前销毁 wrapper/program 后输出正确；GPU gate 保护寿命，下一代帧拒绝旧包，失败清空输出。
+- `visibility_preparation_serial_parallel_pixels`：Stanford Bunny + VisibilityBufferMaterialPass，16 组透视/正交、标准/反向 Z、相机冻结和 SPD 设置，共 96 帧；1/4 worker 逐像素一致，GPU branch 拓扑相同，准备批次统计分别为 0/2。检查了输出图 `build-full/rhi-prepare-output/VisibilityPreparedMaterial.png`。
+
+最终扩大回归 44 项，43 通过、1 个已知基线失败，无跳过和 Vulkan 验证层错误。失败仍是第 14 节已用改动前二进制复现的 `frame_self_submit_two_slots`。通过项包括原有 frame/registry/提交/范围/BDA 测试、stream_metadata_vbuffer、hybrid raster 深度/覆盖/溢出、稳定 bins 与 108 帧场景等价测试。日志位于 `build-full/parallel-prepare-regression-final.log`。TaskSystem/NRD CTest 与编辑器 smoke 通过，日志为 `parallel-prepare-cpu-tests.log`、`parallel-prepare-smoke.log`。
+
+其中还通过 `visibility_buffer_material_edit_refresh` 与 `visibility_buffer_async_scene_handoff` 两项真实场景回归，无跳过和验证层错误，日志为 `parallel-prepare-scene-refresh.log`。资源包准备还会检查每个 lease 的 registry 来源，保留旧逐项 retain 的来源验证。
+
+本阶段完成并行准备和寿命契约迁移，没有测量 Release 端到端帧率收益。小场景中两个准备任务的调度成本可能超过计算收益，可用 worker limit 1 或较大的准备批次目标比较。lane 参数 arena、跨 pass 准备流水线、VisibilityBuffer 分支的并行原生录制和提前提交均未在本阶段引入；共享 registry 的参数分配锁、既有 streaming 预算和完成门控保持原策略。

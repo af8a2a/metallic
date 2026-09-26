@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 
 namespace metallic::tests {
@@ -148,6 +149,10 @@ struct RecordingProbe {
     std::array<std::weak_ptr<void>, 5> owners;
     std::array<bool, 5> recorded{};
     std::vector<int> events;
+    uint32_t prepareRendezvous = 0;
+    uint32_t prepareArrived = 0;
+    std::atomic<uint32_t> prepareFinished = 0;
+    bool preparePublished = false;
 };
 RecordingProbe* recordingProbe = nullptr;
 
@@ -177,9 +182,37 @@ public:
         device_ = context.device;
         return {};
     }
-    render::Result<> prepareExecution(render::RenderGraphExecutionContext&) override
+    render::Result<> prepareExecution(render::RenderGraphExecutionContext& context) override
     {
         if (std::this_thread::get_id() != recordingProbe->coordinator) { recordingProbe->wrongThread = true; }
+        if (!properties().value("prepareJobs", false)) { return {}; }
+        auto& probe = *recordingProbe;
+        const uint32_t failure = properties().value("prepareFailure", 0u);
+        std::array<uint32_t, 5> outputs{};
+        const std::array weights{3u, 1u, 2u, 2u, 1u};
+        std::vector<render::RenderPreparationTask> jobs;
+        for (uint32_t i = 0; i < outputs.size(); ++i) {
+            jobs.push_back({.name = "Prepare " + std::to_string(i), .workload = weights[i], .prepare = [&, i]() -> render::Result<> {
+                if (probe.prepareRendezvous && (i == 0 || i == 2 || i == 4)) {
+                    std::unique_lock lock(probe.mutex);
+                    ++probe.prepareArrived;
+                    probe.cv.notify_all();
+                    if (!probe.cv.wait_for(lock, std::chrono::seconds(5), [&] { return probe.prepareArrived == probe.prepareRendezvous; })) {
+                        return render::makeError(render::Error::Failure);
+                    }
+                }
+                outputs[i] = i + 100;
+                ++probe.prepareFinished;
+                if (i == 0 && failure == 1) { return render::makeError(render::Error::InvalidArgument); }
+                if (i == 0 && failure == 2) { throw std::runtime_error("Preparation failure"); }
+                return {};
+            }});
+        }
+        auto result = context.prepareJoined(jobs);
+        if (!result) { return result; }
+        if (probe.prepareFinished != 5 || outputs != std::array<uint32_t, 5>{100, 101, 102, 103, 104} ||
+            std::this_thread::get_id() != probe.coordinator) { return render::makeError(render::Error::Failure); }
+        probe.preparePublished = true;
         return {};
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -470,6 +503,53 @@ public:
         return RhiTestResult::pass();
     }
 };
+
+class PreparationGraphTest final : public RhiTest {
+public:
+    PreparationGraphTest() { type = RhiTestType::Rendering; name = "parallel_preparation_join_failure_and_batching"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        auto* system = task::tryGetTaskSystem();
+        if (!system || system->workerCount() < 3) { return RhiTestResult::skip("three preparation workers required"); }
+        render::registerRenderGraphPassType("PreparationProbePass", "Pure preparation regression",
+            [] { return std::make_unique<RecordingProbePass>(); });
+        // Inline, joined batches, Result failure, exception, nested-worker fallback,
+        // and a target large enough to coalesce all work into one inline batch.
+        for (uint32_t mode = 0; mode < 6; ++mode) {
+            RecordingProbe probe;
+            recordingProbe = &probe;
+            probe.prepareRendezvous = mode >= 1 && mode <= 3 ? 3 : 0;
+            render::RenderGraph graph;
+            graph.addNode("PreparationProbePass", "Probe", {{"index", 0}, {"serial", true}, {"prepareJobs", true},
+                {"prepareFailure", mode == 2 ? 1 : mode == 3 ? 2 : 0}});
+            graph.markOutput("Probe.data");
+            render::RenderGraphExecutor executor;
+            std::string log;
+            RECORD_REQUIRE(executor.compile(context.device, graph, 4, 4, log));
+            render::RenderGraphSubmitDesc desc{.graphicsQueue = &context.graphicsQueue,
+                .recordingWorkerLimit = mode == 0 ? 1u : 3u, .preparationBatchWorkload = mode == 5 ? 32u : 4u};
+            render::Result<> result;
+            if (mode == 4) {
+                task::TaskGraph outer("Nested prepare");
+                outer.addTask({.name = "Execute"}, [&] { probe.coordinator = std::this_thread::get_id(); result = executor.execute(desc); });
+                auto submitted = system->submit(std::move(outer));
+                RECORD_CHECK(submitted && submitted->wait());
+            } else { result = executor.execute(desc); }
+            RECORD_CHECK(probe.prepareFinished == 5 && !probe.wrongThread);
+            if (mode == 2 || mode == 3) {
+                RECORD_CHECK(!result && !probe.preparePublished && probe.finished == 0 &&
+                    !executor.lastSubmittedCompletion().valid() && !executor.compiled());
+            } else {
+                RECORD_REQUIRE(result);
+                RECORD_CHECK(probe.preparePublished);
+                RECORD_REQUIRE(executor.waitForSubmittedWork(kTimeout));
+            }
+            RECORD_CHECK(executor.executionStats().preparationTaskCount == (mode >= 1 && mode <= 3 ? 3u : 0u));
+        }
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(PreparationGraphTest);
 
 METALLIC_REGISTER_RHI_TEST(RecordingContextTest);
 METALLIC_REGISTER_RHI_TEST(RecordingGraphTest);

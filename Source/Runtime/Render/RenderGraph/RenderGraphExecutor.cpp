@@ -412,6 +412,7 @@ struct RenderGraphExecutor::Impl {
     bool activeGpuTimingValid = false;
     profiling::TracyGpuProfiler tracyGpuProfiler;
     RenderGraphExecutionStats lastExecutionStats;
+    uint32_t preparationWorkerLimit = 1, preparationBatchWorkload = 1;
     uint64_t executionFrameIndex = 0;
     uint64_t profilingGeneration = 0;
     inline static std::atomic_uint64_t nextProfilingGeneration{1};
@@ -1879,6 +1880,8 @@ struct RenderGraphExecutor::Impl {
             subsystemHost));
         auto& context = *prepared;
         context.preparedScene_ = node.preparedScene;
+        context.preparationWorkerLimit_ = preparationWorkerLimit;
+        context.preparationBatchWorkload_ = preparationBatchWorkload;
         context.viewConstants_ = usesView ? &frameView : nullptr;
         context.viewConstantsBuffer_ = usesView ? frameViewBuffer : nullptr;
         context.debugObserver_ = debugObserver;
@@ -1967,6 +1970,7 @@ struct RenderGraphExecutor::Impl {
     void mergeRecording(NodeRecording& recording)
     {
         lastExecutionStats.profilingOverflow |= recording.profilingOverflow;
+        if (recording.context) { lastExecutionStats.preparationTaskCount += recording.context->preparationTaskCount_; }
         activeGpuTimingValid &= recording.timingValid;
         if (activeGpuTimingSlot) {
             activeGpuTimingSlot->nodeTimers.push_back(recording.passTimer);
@@ -2108,6 +2112,7 @@ struct RenderGraphExecutor::Impl {
             auto scope = context.profileScope("Upload flush");
             upload->flush(context.commandBuffer());
         }
+        lastExecutionStats.preparationTaskCount += context.preparationTaskCount_;
         lastExecutionStats.nodes[nodeIndex].cpuMilliseconds = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - cpuBegin).count();
         if (activeGpuTimingSlot) { tracyGpuProfiler.endZone(activeGpuTimingSlot->profile); }
@@ -2645,6 +2650,7 @@ Result<> RenderGraphExecutor::reloadShaders(std::string& log)
 
 Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources)
 {
+    impl_->preparationWorkerLimit = 1;
     METALLIC_TRACY_CPU_SCOPE("RenderGraph Record");
     DebugExecutionScope debugScope;
     if (!impl_->isCompiled) {
@@ -3175,6 +3181,8 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     const auto taskSystem = task::detail::tryAcquireTaskSystem();
     const uint32_t workerLimit = taskSystem && !task::isInsideTaskCallback() && !impl_->debugObserver
         ? std::max(1u, std::min(taskSystem->workerCount(), desc.recordingWorkerLimit ? desc.recordingWorkerLimit : 8u)) : 1u;
+    impl_->preparationWorkerLimit = workerLimit;
+    impl_->preparationBatchWorkload = desc.preparationBatchWorkload;
     struct RecordingBatch {
         CommandRecordingContext* context = nullptr;
         uint64_t workload = 0;
@@ -3527,6 +3535,7 @@ struct RenderGraphPreviewRenderer::Impl {
     uint32_t readbackHeight = 0;
     uint32_t readbackTexelByteSize = 0;
     uint64_t historyFrameIndex = 0;
+    uint32_t recordingWorkerLimit = 0;
     std::string lastLog;
 
     Result<> ensureReadback(uint32_t newWidth, uint32_t newHeight, uint32_t texelByteSize)
@@ -3570,6 +3579,11 @@ RenderGraphPreviewRenderer::RenderGraphPreviewRenderer()
 RenderGraphPreviewRenderer::~RenderGraphPreviewRenderer() = default;
 RenderGraphPreviewRenderer::RenderGraphPreviewRenderer(RenderGraphPreviewRenderer&&) noexcept = default;
 RenderGraphPreviewRenderer& RenderGraphPreviewRenderer::operator=(RenderGraphPreviewRenderer&&) noexcept = default;
+
+void RenderGraphPreviewRenderer::setRecordingWorkerLimit(uint32_t limit)
+{
+    impl_->recordingWorkerLimit = limit;
+}
 
 void RenderGraphPreviewRenderer::setEnvironment(EnvironmentSettings environment)
 {
@@ -3751,7 +3765,8 @@ Result<> RenderGraphPreviewRenderer::render(
         ++impl_->historyFrameIndex;
         phase.next("preview.execute");
         result = impl_->executor.execute(RenderGraphSubmitDesc{.graphicsQueue = impl_->graphicsQueue,
-            .computeQueue = impl_->device->getQueue(QueueType::Compute), .historyResources = &impl_->historyResources});
+            .computeQueue = impl_->device->getQueue(QueueType::Compute), .historyResources = &impl_->historyResources,
+            .recordingWorkerLimit = impl_->recordingWorkerLimit});
         phase.next("preview.waitAndCollect");
         if (result) { result = impl_->executor.waitForSubmittedWork(); }
         phase.next("preview.finish");
@@ -3796,7 +3811,8 @@ Result<> RenderGraphPreviewRenderer::render(
     ++impl_->historyFrameIndex;
     phase.next("preview.execute");
     result = impl_->executor.execute(RenderGraphSubmitDesc{.graphicsQueue = impl_->graphicsQueue,
-        .computeQueue = impl_->device->getQueue(QueueType::Compute), .historyResources = &impl_->historyResources});
+        .computeQueue = impl_->device->getQueue(QueueType::Compute), .historyResources = &impl_->historyResources,
+        .recordingWorkerLimit = impl_->recordingWorkerLimit});
     if (!result) {
         return result;
     }

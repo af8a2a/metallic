@@ -1,6 +1,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
+#include "Runtime/Task/TaskSystem.h"
 
 #include <algorithm>
 #include <exception>
@@ -454,6 +455,60 @@ Result<> RenderGraphExecutionContext::parallelCompute(const CommandRecorder& com
     if (parallelRecorder_) { return parallelRecorder_(*this, compute, graphics); }
     Result<> result = compute(commandBuffer());
     return result ? graphics(commandBuffer()) : result;
+}
+
+Result<> RenderGraphExecutionContext::prepareJoined(std::span<const RenderPreparationTask> tasks)
+{
+    for (const auto& item : tasks) {
+        if (!item.prepare) { return makeError(Error::InvalidArgument); }
+    }
+    if (tasks.empty()) { return {}; }
+    const auto system = task::detail::tryAcquireTaskSystem();
+    const uint32_t workers = system && !task::isInsideTaskCallback() && !debugObserver_
+        ? std::max(1u, std::min(system->workerCount(), preparationWorkerLimit_)) : 1u;
+    std::vector<Result<>> results(tasks.size(), makeError(Error::Failure));
+    std::vector<RenderGraphProfileSection> samples(tasks.size());
+    const auto run = [&](size_t begin, size_t end) {
+        for (size_t i = begin; i < end; ++i) {
+            const auto start = std::chrono::steady_clock::now();
+            try { results[i] = tasks[i].prepare(); }
+            catch (...) { results[i] = makeError(Error::Failure); }
+            samples[i].name = tasks[i].name;
+            samples[i].cpuOnly = true;
+            samples[i].cpuMilliseconds = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+        }
+    };
+    bool complete = true;
+    size_t next = 0;
+    while (next < tasks.size()) {
+        std::vector<std::pair<size_t, size_t>> batches;
+        while (next < tasks.size() && batches.size() < workers) {
+            const size_t begin = next++;
+            uint64_t workload = std::max(1u, tasks[begin].workload);
+            while (next < tasks.size() && workload + std::max(1u, tasks[next].workload) <=
+                std::max(1u, preparationBatchWorkload_)) { workload += std::max(1u, tasks[next++].workload); }
+            batches.emplace_back(begin, next);
+        }
+        if (batches.size() == 1) { run(batches.front().first, batches.front().second); }
+        else {
+            task::TaskGraph graph("Prepare " + passName_);
+            for (const auto [begin, end] : batches) {
+                graph.addTask({.name = tasks[begin].name, .category = "Render preparation"},
+                    [&, begin, end] { run(begin, end); });
+            }
+            auto submitted = system->submit(std::move(graph));
+            if (!submitted) { complete = false; break; }
+            preparationTaskCount_ += uint32_t(batches.size());
+            const auto joined = submitted->wait();
+            if (!joined || joined->status != task::TaskGraphStatus::Succeeded) { complete = false; break; }
+        }
+    }
+    // Profiling publication has the same owner as the pass; jobs only fill local slots.
+    publishCpuProfile(samples);
+    if (!complete) { return makeError(Error::Failure); }
+    for (const auto& result : results) { if (!result) { return result; } }
+    return {};
 }
 
 RenderGraphExecutionContext::ProfileScope::ProfileScope(
