@@ -7908,6 +7908,7 @@ void EditorApplication::drawRenderGraphNode(const render::RenderGraphNode& node)
 
 void EditorApplication::drawRenderGraphEditorWindow()
 {
+    if (graphExecutor_) { graphExecutor_->setExecutionCaptureEnabled(false); }
     if (!renderGraphEditorOpen_) {
         return;
     }
@@ -7955,44 +7956,60 @@ void EditorApplication::drawRenderGraphEditorWindow()
 
     ImGui::Separator();
 
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float spacing = style.ItemSpacing.x;
-    const ImVec2 available = ImGui::GetContentRegionAvail();
-    const float bottomHeight = std::min(
-        218.0f * mainScale_,
-        std::max(150.0f * mainScale_, available.y * 0.42f));
-    const float topHeight = std::max(260.0f * mainScale_, available.y - bottomHeight - spacing);
-    const float sideWidth = std::min(420.0f * mainScale_, std::max(1.0f, (available.x - spacing) * 0.38f));
-    const float canvasWidth = std::max(1.0f, available.x - sideWidth - spacing);
+    if (ImGui::BeginTabBar("RenderGraphEditorTabs")) {
+        if (ImGui::BeginTabItem("Editor")) {
+            const ImGuiStyle& style = ImGui::GetStyle();
+            const float spacing = style.ItemSpacing.x;
+            const ImVec2 available = ImGui::GetContentRegionAvail();
+            const float bottomHeight = std::min(
+                218.0f * mainScale_,
+                std::max(150.0f * mainScale_, available.y * 0.42f));
+            const float topHeight = std::max(260.0f * mainScale_, available.y - bottomHeight - spacing);
+            const float sideWidth = std::min(420.0f * mainScale_, std::max(1.0f, (available.x - spacing) * 0.38f));
+            const float canvasWidth = std::max(1.0f, available.x - sideWidth - spacing);
 
-    ImGui::BeginChild("GraphCanvasPanel", ImVec2(canvasWidth, topHeight), true);
-    ImGui::TextUnformatted("Graph Editor");
-    ImGui::Separator();
-    drawRenderGraphPanel();
-    ImGui::EndChild();
+            ImGui::BeginChild("GraphCanvasPanel", ImVec2(canvasWidth, topHeight), true);
+            ImGui::TextUnformatted("Graph Editor");
+            ImGui::Separator();
+            drawRenderGraphPanel();
+            ImGui::EndChild();
 
-    ImGui::SameLine();
+            ImGui::SameLine();
 
-    ImGui::BeginChild("RenderUiPanel", ImVec2(0.0f, topHeight), true);
-    ImGui::TextUnformatted("Render UI");
-    ImGui::Separator();
-    drawRenderGraphRenderUiPanel();
-    ImGui::EndChild();
+            ImGui::BeginChild("RenderUiPanel", ImVec2(0.0f, topHeight), true);
+            ImGui::TextUnformatted("Render UI");
+            ImGui::Separator();
+            drawRenderGraphRenderUiPanel();
+            ImGui::EndChild();
 
-    ImGui::BeginChild("GraphSettingsPanel", ImVec2(sideWidth, 0.0f), true);
-    ImGui::TextUnformatted("Graph Editor Settings");
-    ImGui::Separator();
-    drawRenderGraphSettingsPanel();
-    ImGui::EndChild();
+            ImGui::BeginChild("GraphSettingsPanel", ImVec2(sideWidth, 0.0f), true);
+            ImGui::TextUnformatted("Graph Editor Settings");
+            ImGui::Separator();
+            drawRenderGraphSettingsPanel();
+            ImGui::EndChild();
 
-    ImGui::SameLine();
+            ImGui::SameLine();
 
-    ImGui::BeginChild("RenderPassesPanel", ImVec2(0.0f, 0.0f), true);
-    ImGui::TextUnformatted("Render Passes");
-    ImGui::Separator();
-    drawRenderPassesPanel();
-    ImGui::EndChild();
-
+            ImGui::BeginChild("RenderPassesPanel", ImVec2(0.0f, 0.0f), true);
+            ImGui::TextUnformatted("Render Passes");
+            ImGui::Separator();
+            drawRenderPassesPanel();
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Execution")) {
+            const auto previousSelection = graphExecutionViewer_.selectedPassId();
+            if (graphExecutor_) { graphExecutionViewer_.update(graphExecutor_->executionSnapshot()); }
+            graphExecutionViewer_.draw(mainScale_);
+            if (graphExecutor_) { graphExecutor_->setExecutionCaptureEnabled(graphExecutionViewer_.wantsCapture()); }
+            const auto selectedPass = graphExecutionViewer_.selectedPassId();
+            if (selectedPass != UINT32_MAX && selectedPass != previousSelection && renderGraph_.findNode(selectedPass)) {
+                selectedGraphNodeId_ = static_cast<int>(selectedPass);
+            }
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
     ImGui::End();
 }
 

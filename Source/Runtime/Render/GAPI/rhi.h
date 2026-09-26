@@ -1550,6 +1550,22 @@ private:
     friend struct detail::VulkanNativeAccess;
 };
 
+// Value-only allocation diagnostics: taking a snapshot does not retain GPU memory.
+// allocationId identifies one resource allocation generation for this process.
+// memoryBlockId is an opaque native-memory token, comparable only within one
+// device's live snapshot; a freed block's token can later be reused. Equal blocks
+// with disjoint ranges are suballocations, not memory aliases. Borrowed images
+// have an allocationId but unknown backing (known == false).
+struct ResourceMemoryInfo {
+    uint64_t allocationId = 0;
+    uint64_t memoryBlockId = 0;
+    uint64_t offsetBytes = 0;
+    uint64_t sizeBytes = 0;
+    uint32_t memoryTypeIndex = UINT32_MAX;
+    uint32_t heapIndex = UINT32_MAX;
+    bool known = false;
+};
+
 // CPU range with allocation provenance. It owns the native allocation, not the
 // movable Buffer wrapper; no constructor accepts an arbitrary GPU address.
 // Device must outlive all slices and GPU work. Ownership does not imply synchronization.
@@ -1559,6 +1575,8 @@ public:
     uint64_t offset() const { return offset_; }
     uint64_t size() const { return size_; }
     const BufferDesc& allocationDesc() const;
+    // Describes the complete backing allocation; offset()/size() describe this slice.
+    ResourceMemoryInfo memoryInfo() const;
     const void* allocationIdentity() const { return allocation_.get(); }
     const void* deviceIdentity() const;
     uint64_t deviceAddress() const;
@@ -1587,6 +1605,7 @@ public:
     Buffer& operator=(const Buffer&) = delete;
 
     const BufferDesc& desc() const;
+    ResourceMemoryInfo memoryInfo() const;
     uint64_t deviceAddress() const;
     [[nodiscard]] Result<BufferSlice> slice(uint64_t offset = 0, uint64_t size = UINT64_MAX) const;
     // Retains this allocation, not the movable public wrapper. Device must outlive it.
@@ -1759,6 +1778,7 @@ public:
 
     const TextureDesc& desc() const;
     uint64_t allocationSize() const;
+    ResourceMemoryInfo memoryInfo() const;
     // Owns the image allocation; borrowed swapchain images return empty.
     std::shared_ptr<void> retainAllocation() const;
     const void* deviceIdentity() const;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
+#include "Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h"
 
 #include <cstddef>
 #include <span>
@@ -75,5 +76,12 @@ Result<GraphAccessPlan> buildGraphAccessPlan(
     std::span<const GraphAccessPass> passes);
 
 SyncScope scopeForGraphAccess(RenderGraphResourceAccess access, RenderGraphPassKind kind);
+
+// Diagnostic values only; resource IDs are allocation generations.
+void captureGraphAccessBoundary(const GraphAccessPassPlan& pass, std::span<const uint64_t> resourceIds,
+    std::vector<RenderGraphExecutionUseSnapshot>& uses,
+    std::vector<RenderGraphExecutionBarrierSnapshot>& barriers);
+void captureGraphDeclaredAccess(RenderGraphExecutionUseSnapshot& use, RenderGraphResourceAccess access);
+SynchronizationStats synchronizationDelta(SynchronizationStats before, SynchronizationStats after);
 
 } // namespace metallic::render::detail

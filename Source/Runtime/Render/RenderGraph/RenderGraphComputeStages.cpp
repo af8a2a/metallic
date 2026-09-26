@@ -242,6 +242,51 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
     auto plan = buildGraphAccessPlan(resources, accesses);
     if (!plan) { return makeError(plan.error()); }
 
+    if (executionCapture_ && capturedImports_) {
+        std::vector<uint64_t> ids;
+        ids.reserve(resources.size());
+        for (size_t index = 0; index < resources.size(); ++index) {
+            RenderGraphExecutionResourceSnapshot resource;
+            resource.type = resources[index].type;
+            resource.privateResource = index >= graphResourceCount;
+            if (resource.type == RenderGraphResourceType::Buffer) {
+                resource.memory = resolved[index].buffer.memoryInfo();
+                resource.bufferDesc = resolved[index].buffer.allocationDesc();
+            } else {
+                resource.memory = resolved[index].texture->memoryInfo();
+                resource.textureDesc = resolved[index].texture->desc();
+            }
+            resource.id = resource.memory.allocationId;
+            ids.push_back(resource.id);
+            if (resource.privateResource && used[index]) {
+                for (const auto& [name, namedIndex] : names) {
+                    if (namedIndex == index) { resource.aliases.push_back(passName_ + "." + name); }
+                }
+                std::sort(resource.aliases.begin(), resource.aliases.end());
+                if (!resource.aliases.empty()) { resource.name = resource.aliases.front(); }
+                capturedImports_->push_back(std::move(resource));
+            }
+        }
+        executionCapture_->stages.reserve(plan->passes.size());
+        for (size_t index = 0; index < plan->passes.size(); ++index) {
+            const bool restore = index == stages.size();
+            auto& captured = executionCapture_->stages.emplace_back();
+            captured.name = restore ? "Restore boundary" : std::string(stages[index].name);
+            captured.kind = restore ? RenderGraphPassKind::Unsafe : stages[index].kind;
+            captured.allowParallelCompute = !restore && stages[index].allowParallelCompute;
+            captured.restoreBoundary = restore;
+            captureGraphAccessBoundary(plan->passes[index], ids, captured.uses, captured.barriers);
+            if (!restore) {
+                for (const auto& declared : stages[index].uses) {
+                    const auto id = ids[names.at(std::string(declared.resource))];
+                    for (auto& use : captured.uses) {
+                        if (use.resourceId == id) { captureGraphDeclaredAccess(use, declared.access); }
+                    }
+                }
+            }
+        }
+    }
+
     // Retain the complete sequence before its first callback, including resources
     // whose first access needs no barrier. Scope-local BufferSlices are not enough
     // to keep GPU allocations alive after this recording function returns.
@@ -260,13 +305,18 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
         ~ActiveScope() { active = false; }
     } activeScope{computeStagesActive_};
     for (size_t index = 0; index < stages.size(); ++index) {
+        const auto before = executionCapture_ ? commandBuffer().synchronizationStats() : SynchronizationStats{};
         auto result = recordGraphAccessBarriers(commandBuffer(), plan->passes[index], resolved);
         if (!result) { return result; }
+        if (executionCapture_) {
+            executionCapture_->stages[index].synchronization = synchronizationDelta(before, commandBuffer().synchronizationStats());
+        }
         auto profile = profileScope(stages[index].name);
         stagesAllowParallel_ = stages[index].allowParallelCompute;
         result = stages[index].record(commandBuffer());
         stagesAllowParallel_ = false;
         if (!result) { return result; }
+        if (executionCapture_) { executionCapture_->stages[index].recorded = true; }
         if (stages[index].allowParallelCompute) {
             // A fork may replace the command buffer. Keep the entire opaque
             // operation's resources through its final join, including accesses
@@ -281,8 +331,14 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
         }
     }
     if (!computeOnly) {
+        const auto before = executionCapture_ ? commandBuffer().synchronizationStats() : SynchronizationStats{};
         auto result = recordGraphAccessBarriers(commandBuffer(), plan->passes.back(), resolved);
         if (!result) { return result; }
+        if (executionCapture_) {
+            auto& captured = executionCapture_->stages.back();
+            captured.synchronization = synchronizationDelta(before, commandBuffer().synchronizationStats());
+            captured.recorded = true;
+        }
     }
     // Local phases never publish state into the immutable enclosing pass plan.
     return {};

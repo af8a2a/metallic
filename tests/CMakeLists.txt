@@ -241,12 +241,15 @@ add_executable(MetallicRhiTests
     rhi/ZorahFullFirstFrameTests.cpp
     rhi/MaterialBinningTests.cpp
     rhi/ResourceRegistryTests.cpp
+    rhi/ResourceMemoryInfoTests.cpp
     rhi/DeferredTransmissionTests.cpp
     rhi/ClusterLightGridTests.cpp
     rhi/CommandSubmissionTests.cpp
     rhi/GpuProfilingTests.cpp
     rhi/EditorProfilerTests.cpp
+    rhi/RenderGraphViewerTests.cpp
     "${CMAKE_SOURCE_DIR}/Source/Editor/EditorProfiler.cpp"
+    "${CMAKE_SOURCE_DIR}/Source/Editor/EditorRenderGraphViewer.cpp"
     rhi/FrameContextTests.cpp
     rhi/ParallelRecordingTests.cpp
     rhi/SchedulingBenchmarkTests.cpp

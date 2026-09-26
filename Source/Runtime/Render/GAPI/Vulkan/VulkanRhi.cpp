@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdlib>
@@ -54,6 +55,20 @@ namespace {
 
 constexpr uint32_t kVulkanApiVersion = VK_API_VERSION_1_4;
 constexpr uint64_t kAcquireTimeoutNanoseconds = std::numeric_limits<uint64_t>::max();
+std::atomic_uint64_t nextResourceAllocationId{1};
+
+ResourceMemoryInfo allocationMemoryInfo(const VmaAllocationInfo& allocation,
+    const VkPhysicalDeviceMemoryProperties& properties, uint64_t allocationId)
+{
+    uint64_t blockId = 0;
+    static_assert(sizeof(allocation.deviceMemory) <= sizeof(blockId));
+    std::memcpy(&blockId, &allocation.deviceMemory, sizeof(allocation.deviceMemory));
+    return {.allocationId = allocationId, .memoryBlockId = blockId,
+        .offsetBytes = allocation.offset, .sizeBytes = allocation.size,
+        .memoryTypeIndex = allocation.memoryType,
+        .heapIndex = properties.memoryTypes[allocation.memoryType].heapIndex, .known = true};
+}
+
 // MTV3: native descriptor heaps and untyped pointers change the shader ABI.
 // Reject cached pipelines from the previous mapped-array backend.
 constexpr uint32_t kVulkanPipelineCacheBackendTag = 0x3356544du;
@@ -3226,6 +3241,7 @@ struct MemoryBudgetState {
 
 struct BufferImpl {
     DeviceImpl* device = nullptr;
+    ResourceMemoryInfo memoryInfo{.allocationId = nextResourceAllocationId.fetch_add(1, std::memory_order_relaxed)};
     BufferDesc desc;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceAddress address = 0;
@@ -3281,6 +3297,7 @@ struct BufferViewImpl {
 
 struct TextureImpl {
     DeviceImpl* device = nullptr;
+    ResourceMemoryInfo memoryInfo{.allocationId = nextResourceAllocationId.fetch_add(1, std::memory_order_relaxed)};
     TextureDesc desc;
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -4934,6 +4951,11 @@ const BufferDesc& Buffer::desc() const
     return impl_ != nullptr ? impl_->desc : emptyDesc;
 }
 
+ResourceMemoryInfo Buffer::memoryInfo() const
+{
+    return impl_ ? impl_->memoryInfo : ResourceMemoryInfo{};
+}
+
 uint64_t Buffer::deviceAddress() const
 {
     return impl_ ? impl_->address : 0;
@@ -4951,6 +4973,11 @@ const BufferDesc& BufferSlice::allocationDesc() const
 {
     static const BufferDesc empty;
     return allocation_ ? allocation_->desc : empty;
+}
+
+ResourceMemoryInfo BufferSlice::memoryInfo() const
+{
+    return allocation_ ? allocation_->memoryInfo : ResourceMemoryInfo{};
 }
 
 const void* BufferSlice::deviceIdentity() const
@@ -5161,6 +5188,11 @@ const TextureDesc& Texture::desc() const
 uint64_t Texture::allocationSize() const
 {
     return impl_ ? impl_->allocationSize : 0;
+}
+
+ResourceMemoryInfo Texture::memoryInfo() const
+{
+    return impl_ ? impl_->memoryInfo : ResourceMemoryInfo{};
 }
 
 std::shared_ptr<void> Texture::retainAllocation() const
@@ -9498,6 +9530,8 @@ Result<std::unique_ptr<Buffer>> Device::createBuffer(const BufferDesc& desc)
         bufferImpl->address = vkGetBufferDeviceAddress(impl_->device, &addressInfo);
     }
     bufferImpl->allocation = allocation;
+    bufferImpl->memoryInfo = allocationMemoryInfo(allocatedInfo, impl_->memoryProperties,
+        bufferImpl->memoryInfo.allocationId);
     bufferImpl->allocationBytes = allocatedInfo.size;
     bufferImpl->deviceLocal = (impl_->memoryProperties.memoryHeaps[impl_->memoryProperties.memoryTypes[allocatedInfo.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
     impl_->trackMemoryLocked(domain, allocatedInfo.size, bufferImpl->deviceLocal, true);
@@ -9678,6 +9712,8 @@ Result<std::unique_ptr<Texture>> Device::createTexture(const TextureDesc& desc)
     textureImpl->image = image;
     textureImpl->memory = allocatedInfo.deviceMemory;
     textureImpl->allocation = allocation;
+    textureImpl->memoryInfo = allocationMemoryInfo(allocatedInfo, impl_->memoryProperties,
+        textureImpl->memoryInfo.allocationId);
     textureImpl->flags = imageInfo.flags;
     textureImpl->usage = imageInfo.usage;
     textureImpl->ownsImage = true;

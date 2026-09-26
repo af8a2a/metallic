@@ -354,6 +354,7 @@ set(METALLIC_EDITOR_SOURCES
     Editor/EditorSliderDebug.cpp
     Editor/EditorStreamlineDebug.cpp
     Editor/EditorProfiler.cpp
+    Editor/EditorRenderGraphViewer.cpp
     Editor/NvmlMonitor.cpp
 )
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/RenderGraph/RenderGraphNode.h"
+#include "Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/SchedulingDiagnostics.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
@@ -134,6 +135,10 @@ public:
     RenderGraphResource* outputResource(std::string_view fullName);
     const RenderGraphResource* outputResource(std::string_view fullName) const;
     const RenderGraphExecutionStats& executionStats() const;
+    // Owner-thread control/query. Disabling capture preserves the last snapshot;
+    // returned immutable values can outlive the executor and its GPU resources.
+    void setExecutionCaptureEnabled(bool enabled);
+    std::shared_ptr<const RenderGraphExecutionSnapshot> executionSnapshot() const;
     Result<> collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats);
     const RenderGraphStreamingStats& streamingStats() const;
     bool compiled() const;
@@ -178,6 +183,8 @@ public:
     uint32_t height() const;
     const std::string& lastLog() const;
     const RenderGraphExecutionStats& executionStats() const;
+    void setExecutionCaptureEnabled(bool enabled);
+    std::shared_ptr<const RenderGraphExecutionSnapshot> executionSnapshot() const;
     Result<> collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats);
 
 private:

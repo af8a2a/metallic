@@ -29,6 +29,8 @@ namespace metallic::render {
 
 class IRenderDebugObserver;
 struct DebugResourceBinding;
+struct RenderGraphExecutionPassSnapshot;
+struct RenderGraphExecutionResourceSnapshot;
 
 class HistoryResourceManager;
 struct MeshletStreamFrameDesc;
@@ -456,6 +458,8 @@ private:
     const ViewConstants* viewConstants_ = nullptr;
     Buffer* viewConstantsBuffer_ = nullptr;
     IRenderDebugObserver* debugObserver_ = nullptr;
+    RenderGraphExecutionPassSnapshot* executionCapture_ = nullptr;
+    std::vector<RenderGraphExecutionResourceSnapshot>* capturedImports_ = nullptr;
     uint32_t debugPassId_ = 0;
     bool debugAfterPassPublished_ = false;
     bool computeStagesExecuted_ = false;

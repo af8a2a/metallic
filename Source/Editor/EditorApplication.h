@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Editor/EditorProfiler.h"
+#include "Editor/EditorRenderGraphViewer.h"
 #include "Editor/EditorDisplayRenderer.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Editor/NvmlMonitor.h"
@@ -271,6 +272,7 @@ private:
     render::HistoryResourceManager historyResources_;
     std::unique_ptr<render::SceneAccelerationStructureBuilder> sceneAccelerationStructure_;
     EditorProfiler profiler_;
+    editor::RenderGraphExecutionViewer graphExecutionViewer_;
     NvmlMonitor nvmlMonitor_;
     render::profiling::NsightGraphicsCapture nsightGraphicsCapture_;
     render::RenderGraph renderGraph_;

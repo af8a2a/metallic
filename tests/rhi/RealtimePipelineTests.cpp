@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "RenderGraphViewerTestUi.h"
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
@@ -19,6 +20,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <fstream>
+#include <set>
 #include <thread>
 #include <stdexcept>
 
@@ -29,6 +32,109 @@ RhiTestResult realtimeFailure(std::string message)
 {
     spdlog::error("Realtime regression: {}", message);
     return RhiTestResult::fail(std::move(message));
+}
+
+void saveRealtimeExecutionCapture(render::RenderGraphExecutor& executor, const RhiTestContext& context,
+    bool miniZorah)
+{
+    using namespace render;
+    const auto require = [](bool condition, const char* message) {
+        if (!condition) { throw std::runtime_error(message); }
+    };
+    const auto snapshot = executor.executionSnapshot();
+    require(snapshot && snapshot->success && snapshot->status == RenderGraphExecutionSnapshotStatus::Submitted &&
+        !snapshot->externalRecording, "Production execution capture has no successful managed submission");
+    require(snapshot->passes.size() == executor.executionStats().nodes.size() && !snapshot->resources.empty() &&
+        !snapshot->queues.empty() && !snapshot->batches.empty(), "Production capture omitted executed graph metadata");
+    std::set<uint64_t> resourceIds;
+    uint64_t textures = 0, buffers = 0, privateResources = 0, aliases = 0, stages = 0, uses = 0;
+    uint64_t barriers = 0, memoryBarriers = 0, imageTransitions = 0, nativeCalls = 0, knownAllocations = 0;
+    uint64_t observedAllocationBytes = 0, crossQueueWaits = 0;
+    nlohmann::json resources = nlohmann::json::array(), passes = nlohmann::json::array();
+    for (const auto& resource : snapshot->resources) {
+        require(resource.id && resourceIds.insert(resource.id).second, "Production capture duplicated a canonical allocation");
+        textures += resource.type == RenderGraphResourceType::Texture2D;
+        buffers += resource.type == RenderGraphResourceType::Buffer;
+        privateResources += resource.privateResource;
+        aliases += resource.aliases.size();
+        if (resource.memory.known) {
+            require(resource.memory.allocationId == resource.id && resource.memory.sizeBytes != 0,
+                "Production capture contains invalid native allocation metadata");
+            ++knownAllocations;
+            observedAllocationBytes += resource.memory.sizeBytes;
+        }
+        resources.push_back({{"id", resource.id}, {"name", resource.name}, {"aliases", resource.aliases},
+            {"private", resource.privateResource}, {"type", uint32_t(resource.type)},
+            {"memoryKnown", resource.memory.known}, {"memoryBlockId", std::to_string(resource.memory.memoryBlockId)},
+            {"offsetBytes", resource.memory.offsetBytes}, {"sizeBytes", resource.memory.sizeBytes}});
+    }
+    const auto checkUses = [&](const auto& values) {
+        uses += values.size();
+        for (const auto& use : values) {
+            require(resourceIds.contains(use.resourceId), "Production pass/stage refers to an uncaptured allocation");
+        }
+    };
+    const auto checkBarriers = [&](const auto& values) {
+        barriers += values.size();
+        for (const auto& barrier : values) {
+            require(resourceIds.contains(barrier.resourceId), "Production barrier refers to an uncaptured allocation");
+        }
+    };
+    const auto countNative = [&](const SynchronizationStats& stats) {
+        nativeCalls += stats.calls;
+        memoryBarriers += stats.memoryBarriers;
+        imageTransitions += stats.imageTransitions;
+    };
+    for (const auto& pass : snapshot->passes) {
+        require(pass.recorded && std::any_of(snapshot->queues.begin(), snapshot->queues.end(),
+            [&](const auto& queue) { return queue.id == pass.actualQueueId; }),
+            "Production pass has no actual recorded queue");
+        checkUses(pass.uses);
+        checkBarriers(pass.barriers);
+        countNative(pass.synchronization);
+        nlohmann::json stageNames = nlohmann::json::array();
+        for (const auto& stage : pass.stages) {
+            require(stage.recorded, "Successful production capture has an unrecorded internal stage");
+            ++stages;
+            checkUses(stage.uses);
+            checkBarriers(stage.barriers);
+            countNative(stage.synchronization);
+            stageNames.push_back({{"name", stage.name}, {"uses", stage.uses.size()}, {"barriers", stage.barriers.size()},
+                {"restoreBoundary", stage.restoreBoundary}});
+        }
+        passes.push_back({{"id", pass.id}, {"name", pass.name}, {"type", pass.type}, {"queue", pass.actualQueueId},
+            {"logicalQueue", uint32_t(pass.logicalQueue)}, {"uses", pass.uses.size()}, {"barriers", pass.barriers.size()},
+            {"stages", std::move(stageNames)}});
+    }
+    for (const auto& batch : snapshot->batches) {
+        require(batch.accepted, "Production capture contains an unaccepted submitted batch");
+        crossQueueWaits += batch.waitPredecessors.size();
+    }
+    require(aliases && stages && barriers && knownAllocations, "Production capture lacks resource aliases, stages or synchronization evidence");
+    const auto counts = nlohmann::json{{"passes", snapshot->passes.size()}, {"resources", snapshot->resources.size()},
+        {"textures", textures}, {"buffers", buffers}, {"privateResources", privateResources}, {"aliases", aliases},
+        {"queues", snapshot->queues.size()}, {"segments", snapshot->segments.size()}, {"batches", snapshot->batches.size()},
+        {"crossQueueWaits", crossQueueWaits}, {"stages", stages}, {"uses", uses}, {"plannedBarriers", barriers},
+        {"nativePlannerCalls", nativeCalls}, {"nativeMemoryBarriers", memoryBarriers}, {"nativeImageTransitions", imageTransitions},
+        {"knownAllocations", knownAllocations}, {"observedAllocationBytes", observedAllocationBytes}};
+    const std::string label = miniZorah ? "MiniZorahExecution" : "StreamedExecution";
+    std::filesystem::create_directories(context.outputDirectory);
+    std::ofstream report(context.outputDirectory / (label + ".json"));
+    report << nlohmann::json{{"graph", snapshot->graphName}, {"generation", snapshot->graphGeneration},
+        {"execution", snapshot->executionId}, {"counts", counts}, {"resources", std::move(resources)},
+        {"passes", std::move(passes)}}.dump(2) << '\n';
+    require(report.good(), "Could not save production execution metadata");
+    spdlog::info("[Graph capture] {} {}", label, counts.dump());
+    editor::RenderGraphExecutionViewer viewer;
+    viewer.update(snapshot);
+    viewer.setLive(false);
+    ViewerUiContext ui;
+    using Tab = editor::RenderGraphExecutionViewer::Tab;
+    for (const auto& [tab, name] : std::array{std::pair{Tab::Resources, "resources"},
+            std::pair{Tab::Queues, "queues"}, std::pair{Tab::Memory, "memory"}}) {
+        const auto failure = ui.save(viewer, tab, context.outputDirectory / (label + "-" + name + ".png"));
+        if (!failure.empty()) { throw std::runtime_error(failure); }
+    }
 }
 
 class EnvironmentPrefilterProbePass final : public render::ComputePass {
@@ -614,8 +720,12 @@ public:
                 spdlog::info("Stream preserved across {}x{} rebuild: generation={} frame={} compile={:.3f} ms",
                     width, height, after.generation, after.frameIndex, compileMs);
             };
+            const char* captureSetting = std::getenv("METALLIC_TEST_GRAPH_CAPTURE");
+            const bool captureGraph = captureSetting && std::string_view(captureSetting) == "1";
+            const uint32_t frameCount = miniZorah_ ? 180u : 48u;
             uint32_t sceneReadyFrame = 0;
-            for (uint32_t frame = 0; frame < (miniZorah_ ? 180u : 48u); ++frame) {
+            for (uint32_t frame = 0; frame < frameCount; ++frame) {
+                if (captureGraph && frame + 1 == frameCount) { executor.setExecutionCaptureEnabled(true); }
                 // Dock layout settles after the first visible frames, while pages
                 // are still loading. Exercise that resize, then a resource-only
                 // rebuild (DLSS render dimensions differ from graph dimensions).
@@ -650,6 +760,10 @@ public:
             require(gpuScene->globalBufferViews().vertices.buffer == nullptr, "GPUScene uploaded resident vertices");
             require(saveRgba8Png(context.outputDirectory / (miniZorah_ ? "MiniZorahRealtime.png" : "StreamedRealtime.png"),
                 reinterpret_cast<const uint8_t*>(shaded.data()), width, height, log), log);
+            if (captureGraph) {
+                executor.setExecutionCaptureEnabled(false);
+                saveRealtimeExecutionCapture(executor, context, miniZorah_);
+            }
             if (!miniZorah_) {
                 graph.setNodeRuntimeProperty(graph.findNode("Deferred")->id, "materialBinning", false);
                 require(bool(executor.compile(context.device, graph, width, height, log)), log);

@@ -153,6 +153,8 @@ flowchart LR
 
 编辑器主要面板包含 Viewport、Scene Browser、Inspector、Assets、Console、Profiler、NVML Monitor、Statistics，以及独立 RenderGraph 编辑窗口。场景和 RenderGraph 文件也可通过拖放加载。
 
+RenderGraph 编辑窗口的 Execution 页签通过可选的不可变执行快照展示资源读写与 barrier、实际队列提交和同步点、原生内存分配范围；详见 [RenderGraph 执行视图](RenderGraphExecutionViewer.md)。访问跨度与队列拓扑不等同于 GPU 时间或分配生命周期。
+
 ### 5.3 每帧流程
 
 ```mermaid

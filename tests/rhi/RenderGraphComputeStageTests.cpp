@@ -1,6 +1,7 @@
 #include "RhiTest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <vector>
@@ -60,6 +61,7 @@ public:
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string&) override
     {
+        device_ = context.device;
         auto buffer = context.device->createBuffer({.size = 64, .structureStride = 4,
             .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::Device,
             .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute});
@@ -76,6 +78,7 @@ public:
         const auto mode = scenario();
         std::vector<std::vector<Use>> uses;
         std::vector<render::RenderGraphBufferImport> imports;
+        std::unique_ptr<render::Buffer> unusedPrivateBuffer;
         auto privateSlice = privateBuffer_->slice();
         if (!privateSlice) { return render::makeError(privateSlice.error()); }
         switch (mode) {
@@ -121,6 +124,12 @@ public:
             if (!writeSlice || !readSlice) { return render::makeError(render::Error::Failure); }
             imports.push_back({"privateWrite", *writeSlice, Access::BufferStorageReadWrite});
             imports.push_back({"privateRead", *readSlice, Access::BufferStorageReadWrite});
+            auto unused = device_->createBuffer(privateBuffer_->desc());
+            if (!unused) { return render::makeError(unused.error()); }
+            unusedPrivateBuffer = std::move(*unused);
+            auto unusedSlice = unusedPrivateBuffer->slice();
+            if (!unusedSlice) { return render::makeError(unusedSlice.error()); }
+            imports.push_back({"unused", *unusedSlice, Access::BufferStorageRead});
             uses = {{{"privateWrite", Access::BufferStorageWrite}}, {{"privateRead", Access::BufferStorageRead}}};
             break;
         }
@@ -191,6 +200,7 @@ private:
         return static_cast<StageProbeCase>(properties().value("scenario", uint32_t(0)));
     }
     std::unique_ptr<render::Buffer> privateBuffer_;
+    render::Device* device_ = nullptr;
 };
 
 RhiTestResult runStageProbe(RhiTestContext& context, StageProbeCase mode, uint32_t callbacks, bool succeeds = false)
@@ -207,6 +217,7 @@ RhiTestResult runStageProbe(RhiTestContext& context, StageProbeCase mode, uint32
     graph.addNode("ComputeStageProbePass", "Probe", {{"scenario", static_cast<uint32_t>(mode)}});
     graph.markOutput("Probe.data");
     render::RenderGraphExecutor executor;
+    executor.setExecutionCaptureEnabled(true);
     std::string log;
     auto result = executor.compile(context.device, graph, 4, 4, log);
     if (!result) { return RhiTestResult::fail("compute-stage probe compile: " + log); }
@@ -228,9 +239,32 @@ RhiTestResult runStageProbe(RhiTestContext& context, StageProbeCase mode, uint32
     if (probe.callbacks != callbacks || probe.unexpectedCallbacks != 0) {
         return RhiTestResult::fail(label + ": unexpected callback execution");
     }
+    const auto snapshot = executor.executionSnapshot();
+    if (!snapshot || snapshot->success != succeeds || snapshot->passes.size() != 1 ||
+        snapshot->passes.front().recorded != succeeds) {
+        return RhiTestResult::fail(label + ": execution capture lost recording outcome");
+    }
+    const auto& capturedStages = snapshot->passes.front().stages;
+    if (succeeds && std::any_of(capturedStages.begin(), capturedStages.end(),
+            [](const auto& stage) { return !stage.recorded; })) {
+        return RhiTestResult::fail(label + ": successful internal stages were not captured as recorded");
+    }
     if (mode == StageProbeCase::PrivateAliases && (probe.barriersAtCallbacks.size() != 2 ||
         probe.barriersAtCallbacks[1] <= probe.barriersAtCallbacks[0])) {
         return RhiTestResult::fail(label + ": aliased private write/read stages lacked their memory dependency");
+    }
+    if (mode == StageProbeCase::PrivateAliases) {
+        const auto resource = std::find_if(snapshot->resources.begin(), snapshot->resources.end(),
+            [](const auto& value) { return value.privateResource; });
+        if (resource == snapshot->resources.end() || resource->id == 0 || resource->aliases.size() != 2 ||
+            std::count_if(snapshot->resources.begin(), snapshot->resources.end(),
+                [](const auto& value) { return value.privateResource; }) != 1 ||
+            capturedStages.size() != 2 || capturedStages[0].uses.size() != 1 || capturedStages[1].uses.size() != 1 ||
+            capturedStages[0].uses[0].resourceId != resource->id || capturedStages[1].uses[0].resourceId != resource->id ||
+            !capturedStages[0].uses[0].writes || !capturedStages[1].uses[0].reads ||
+            capturedStages[1].barriers.size() != 1) {
+            return RhiTestResult::fail(label + ": snapshot failed to canonicalize private slice aliases and RAW dependency");
+        }
     }
     const bool generic = mode == StageProbeCase::GenericRepeatedBufferReads ||
         mode == StageProbeCase::GenericRepeatedImageReads;
@@ -239,6 +273,19 @@ RhiTestResult runStageProbe(RhiTestContext& context, StageProbeCase mode, uint32
         // coverage for the new writer. The counters observe native encoding;
         // the callbacks deliberately do not execute a shader workload.
         constexpr std::array<uint64_t, 10> expectedDeltas{0, 1, 1, 1, 1, 1, 1, 2, 3, 3};
+        if (capturedStages.size() != expectedDeltas.size() + size_t(generic)) {
+            return RhiTestResult::fail(label + ": captured stage count disagrees with declared sequence");
+        }
+        for (size_t index = 0; index < expectedDeltas.size(); ++index) {
+            const auto expected = expectedDeltas[index] - (index == 0 ? 0 : expectedDeltas[index - 1]);
+            if (capturedStages[index].barriers.size() != expected ||
+                capturedStages[index].synchronization.memoryBarriers != expected) {
+                return RhiTestResult::fail(label + ": captured RAW plan/native barriers disagree at stage " + std::to_string(index));
+            }
+        }
+        if (generic && (!capturedStages.back().restoreBoundary || !capturedStages.back().barriers.empty())) {
+            return RhiTestResult::fail(label + ": capture invented a same-layout restore barrier");
+        }
         if (probe.barriersAtCallbacks.size() != expectedDeltas.size()) {
             return RhiTestResult::fail(label + ": unexpected synchronization sample count");
         }
@@ -495,7 +542,7 @@ private:
     render::ResourceState privateState_ = render::ResourceState::Undefined;
 };
 
-RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mode, bool succeeds)
+RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mode, bool succeeds, bool enableAsync = true)
 {
     static const bool registered = render::registerRenderGraphPassType("GeneralStageProbePass",
         "Resource access stages across compute and transfer", [] { return std::make_unique<GeneralStageProbePass>(); });
@@ -513,15 +560,17 @@ RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mod
     }
     graph.markOutput("Probe.data");
     render::RenderGraphExecutor executor;
+    executor.setExecutionCaptureEnabled(true);
     std::string log;
     auto result = executor.compile(context.device, graph, 4, 4, log);
     if (!result) { return RhiTestResult::fail("general-stage compile: " + log); }
     const auto label = "general-stage case " + std::to_string(static_cast<uint32_t>(mode));
     const bool fork = mode == GeneralStageCase::UnsafeFork || mode == GeneralStageCase::DeniedFork;
     const uint32_t frameCount = succeeds && !fork ? 2u : 1u;
+    auto* computeQueue = enableAsync ? context.device.getQueue(render::QueueType::Compute) : nullptr;
     for (uint32_t frame = 0; frame < frameCount; ++frame) {
         result = executor.execute({.graphicsQueue = &context.graphicsQueue,
-            .computeQueue = context.device.getQueue(render::QueueType::Compute),
+            .computeQueue = computeQueue,
             .recordingWorkerLimit = 1, .submissionMode = render::FrameSubmissionMode::Joined});
         if (!succeeds) {
             if (result || result.error() != render::Error::InvalidArgument ||
@@ -533,11 +582,62 @@ RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mod
         if (!result || !executor.waitForSubmittedWork(5'000'000'000ull)) {
             return RhiTestResult::fail(label + ": stage execution/submission failed");
         }
+        const auto snapshot = executor.executionSnapshot();
+        if (!snapshot) { return RhiTestResult::fail(label + ": missing stage capture"); }
+        const auto capturedPass = std::find_if(snapshot->passes.begin(), snapshot->passes.end(),
+            [](const auto& pass) { return pass.name == "Probe"; });
+        if (capturedPass == snapshot->passes.end()) { return RhiTestResult::fail(label + ": missing captured pass"); }
+        for (const auto& stage : capturedPass->stages) {
+            if (stage.restoreBoundary && std::any_of(stage.uses.begin(), stage.uses.end(),
+                    [](const auto& use) { return use.reads || use.writes; })) {
+                return RhiTestResult::fail(label + ": layout restoration was misreported as data access");
+            }
+        }
         if (fork) {
             if (probe.callbacks != 1u || probe.branches != 2u) {
                 return RhiTestResult::fail(label + ": declared fork did not join both branches");
             }
+            using Role = render::RenderGraphSegmentRole;
+            const auto compute = std::find_if(snapshot->segments.begin(), snapshot->segments.end(),
+                [](const auto& segment) { return segment.role == Role::ComputeBranch; });
+            const auto graphics = std::find_if(snapshot->segments.begin(), snapshot->segments.end(),
+                [](const auto& segment) { return segment.role == Role::GraphicsBranch; });
+            const auto join = std::find_if(snapshot->segments.begin(), snapshot->segments.end(),
+                [](const auto& segment) { return segment.role == Role::Join; });
+            const bool distinct = computeQueue && computeQueue->type() != render::QueueType::Copy &&
+                !computeQueue->sameQueue(context.graphicsQueue);
+            if (distinct) {
+                if (compute == snapshot->segments.end() || graphics == snapshot->segments.end() || join == snapshot->segments.end() ||
+                    compute->queueId == graphics->queueId || join->queueId != graphics->queueId ||
+                    std::find(join->predecessors.begin(), join->predecessors.end(), compute->id) == join->predecessors.end() ||
+                    std::find(join->predecessors.begin(), join->predecessors.end(), graphics->id) == join->predecessors.end()) {
+                    return RhiTestResult::fail(label + ": capture lost real compute/graphics fork and join dependencies");
+                }
+                const auto batch = std::find_if(snapshot->batches.begin(), snapshot->batches.end(), [&](const auto& value) {
+                    return std::find(value.segmentIds.begin(), value.segmentIds.end(), join->id) != value.segmentIds.end();
+                });
+                if (batch == snapshot->batches.end() ||
+                    std::find(batch->waitPredecessors.begin(), batch->waitPredecessors.end(), compute->id) == batch->waitPredecessors.end() ||
+                    std::find(batch->waitPredecessors.begin(), batch->waitPredecessors.end(), graphics->id) != batch->waitPredecessors.end()) {
+                    return RhiTestResult::fail(label + ": join wait capture does not match actual cross-queue producer");
+                }
+            } else if (compute != snapshot->segments.end() || graphics != snapshot->segments.end() || join != snapshot->segments.end()) {
+                return RhiTestResult::fail(label + ": serial fallback invented parallel queue branches");
+            }
             continue;
+        }
+        if (mode == GeneralStageCase::QualifiedNames) {
+            const auto source = std::find_if(snapshot->resources.begin(), snapshot->resources.end(),
+                [](const auto& resource) { return resource.name == "Source.color"; });
+            if (source == snapshot->resources.end() || std::find(source->aliases.begin(), source->aliases.end(),
+                    "Probe.input.image") == source->aliases.end()) {
+                return RhiTestResult::fail(label + ": capture failed to disambiguate input/output field aliases");
+            }
+            const auto use = std::find_if(capturedPass->uses.begin(), capturedPass->uses.end(),
+                [&](const auto& value) { return value.resourceId == source->id; });
+            if (use == capturedPass->uses.end() || !use->reads || use->writes || !use->exclusive) {
+                return RhiTestResult::fail(label + ": read-only input layout changes were misreported as data writes");
+            }
         }
         const auto* output = executor.outputResource("Probe.data");
         const auto* image = executor.outputResource("Probe.image");
@@ -597,6 +697,8 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         auto result = runGeneralStageProbe(context, GeneralStageCase::UnsafeFork, true);
+        if (!result.passed) { return result; }
+        result = runGeneralStageProbe(context, GeneralStageCase::UnsafeFork, true, false);
         if (!result.passed) { return result; }
         return runGeneralStageProbe(context, GeneralStageCase::DeniedFork, false);
     }

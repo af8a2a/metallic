@@ -135,6 +135,39 @@ SyncScope scopeForGraphAccess(RenderGraphResourceAccess access, RenderGraphPassK
     return {};
 }
 
+void captureGraphAccessBoundary(const GraphAccessPassPlan& pass, std::span<const uint64_t> resourceIds,
+    std::vector<RenderGraphExecutionUseSnapshot>& uses,
+    std::vector<RenderGraphExecutionBarrierSnapshot>& barriers)
+{
+    for (const auto& use : pass.uses) {
+        uses.push_back({.resourceId = resourceIds[use.resource], .state = use.state,
+            .scope = use.scope, .exclusive = use.writes});
+    }
+    for (const auto& barrier : pass.barriers) {
+        barriers.push_back({resourceIds[barrier.resource], barrier.before, barrier.after,
+            barrier.beforeScope, barrier.afterScope, barrier.executionOnly});
+    }
+}
+
+void captureGraphDeclaredAccess(RenderGraphExecutionUseSnapshot& use, RenderGraphResourceAccess access)
+{
+    // Declarations carry data access. Planner scopes additionally include image
+    // layout writes and conservative restore boundaries; those are not data RW.
+    const auto scope = scopeForGraphAccess(access, RenderGraphPassKind::Compute);
+    constexpr auto reads = AccessBits::ShaderRead | AccessBits::UniformRead | AccessBits::TransferRead |
+        AccessBits::ColorRead | AccessBits::DepthStencilRead | AccessBits::IndirectRead;
+    constexpr auto writes = AccessBits::ShaderWrite | AccessBits::TransferWrite | AccessBits::ColorWrite |
+        AccessBits::DepthStencilWrite;
+    use.reads |= (uint64_t(scope.access) & uint64_t(reads)) != 0;
+    use.writes |= (uint64_t(scope.access) & uint64_t(writes)) != 0;
+}
+
+SynchronizationStats synchronizationDelta(SynchronizationStats before, SynchronizationStats after)
+{
+    return {after.calls - before.calls, after.memoryBarriers - before.memoryBarriers,
+        after.imageTransitions - before.imageTransitions, after.coalescedResources - before.coalescedResources};
+}
+
 Result<GraphAccessBinding> bindGraphAccessResource(const RenderGraphResource& resource)
 {
     if (resource.type == RenderGraphResourceType::Texture2D) {

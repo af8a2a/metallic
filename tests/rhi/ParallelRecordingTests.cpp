@@ -3,6 +3,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Task/TaskSystem.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <condition_variable>
@@ -321,6 +322,7 @@ public:
             }
             graph.markOutput("Probe4.data");
             render::RenderGraphExecutor executor;
+            executor.setExecutionCaptureEnabled(true);
             std::string log;
             RECORD_REQUIRE(executor.compile(context.device, graph, 4, 4, log));
             render::RenderGraphSubmitDesc desc{.graphicsQueue = &context.graphicsQueue,
@@ -342,6 +344,10 @@ public:
                 for (int i = 4; i >= 0; --i) { if (probe.recorded[i]) { cancelled.push_back(-(i + 1)); } }
                 RECORD_CHECK(probe.events == cancelled && !cancelled.empty());
                 for (const auto& owner : probe.owners) { RECORD_CHECK(owner.expired()); }
+                const auto capture = executor.executionSnapshot();
+                RECORD_CHECK(capture && !capture->success && capture->status == render::RenderGraphExecutionSnapshotStatus::Failed);
+                RECORD_CHECK(std::none_of(capture->segments.begin(), capture->segments.end(),
+                    [](const auto& segment) { return segment.accepted; }));
                 continue;
             }
             RECORD_REQUIRE(result);
@@ -353,7 +359,16 @@ public:
                 RECORD_CHECK(stats.parallelRecordedPassCount == 5);
             }
             if (mode == 0 || mode == 5) { RECORD_CHECK(stats.recordingTaskCount == 0); }
+            const auto recorded = executor.executionSnapshot();
+            RECORD_CHECK(recorded && recorded->success && recorded->passes.size() == 5);
+            RECORD_CHECK(std::all_of(recorded->passes.begin(), recorded->passes.end(),
+                [](const auto& pass) { return pass.recorded; }));
+            RECORD_CHECK(std::all_of(recorded->segments.begin(), recorded->segments.end(),
+                [](const auto& segment) { return segment.recorded && segment.accepted; }));
             RECORD_REQUIRE(executor.waitForSubmittedWork(kTimeout));
+            const auto completed = executor.executionSnapshot();
+            RECORD_CHECK(std::all_of(completed->segments.begin(), completed->segments.end(),
+                [](const auto& segment) { return segment.completed; }));
             auto* output = executor.outputResource("Probe4.data")->buffer;
             output->invalidate();
             auto* mapped = output->map();

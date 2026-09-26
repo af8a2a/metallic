@@ -419,6 +419,14 @@ struct RenderGraphExecutor::Impl {
     bool activeGpuTimingValid = false;
     profiling::TracyGpuProfiler tracyGpuProfiler;
     RenderGraphExecutionStats lastExecutionStats;
+    bool executionCaptureEnabled = false;
+    std::string captureGraphName;
+    std::shared_ptr<RenderGraphExecutionSnapshot> activeExecutionCapture;
+    mutable std::shared_ptr<const RenderGraphExecutionSnapshot> capturedExecution;
+    std::vector<std::vector<RenderGraphExecutionResourceSnapshot>> capturedImports;
+    std::vector<Queue*> captureQueues;
+    GpuCompletionPoint capturedCompletion;
+    std::shared_ptr<SubmissionTransaction> capturedExternalSubmission;
     uint32_t preparationWorkerLimit = 1, preparationBatchWorkload = 1;
     uint64_t executionFrameIndex = 0;
     uint64_t profilingGeneration = 0;
@@ -1723,6 +1731,124 @@ struct RenderGraphExecutor::Impl {
             {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
     }
 
+    uint32_t captureQueue(Queue* queue)
+    {
+        if (!activeExecutionCapture || !queue) { return UINT32_MAX; }
+        const auto found = std::find_if(captureQueues.begin(), captureQueues.end(),
+            [&](Queue* previous) { return previous->sameQueue(*queue); });
+        const uint32_t id = uint32_t(found - captureQueues.begin());
+        if (found == captureQueues.end()) {
+            captureQueues.push_back(queue);
+            activeExecutionCapture->queues.push_back({id, queue->type()});
+        }
+        return id;
+    }
+
+    void beginExecutionCapture(uint64_t frameIndex, bool external,
+        std::span<Queue* const> queues = {}, std::span<const uint32_t> passQueues = {})
+    {
+        if (!executionCaptureEnabled) { return; }
+        activeExecutionCapture = std::make_shared<RenderGraphExecutionSnapshot>();
+        auto& capture = *activeExecutionCapture;
+        capture.executionId = frameIndex;
+        capture.graphGeneration = profilingGeneration;
+        capture.graphName = captureGraphName;
+        capture.externalRecording = external;
+        capture.status = RenderGraphExecutionSnapshotStatus::Recording;
+        capturedExternalSubmission.reset();
+        capturedImports.clear();
+        capturedImports.resize(executionList.size());
+        captureQueues.clear();
+        for (auto* queue : queues) { captureQueue(queue); }
+        std::vector<uint64_t> ids;
+        ids.reserve(accessResources.size());
+        for (const auto* source : accessResources) {
+            auto& resource = capture.resources.emplace_back();
+            resource.type = source->type;
+            resource.textureDesc = source->desc;
+            resource.bufferDesc = source->bufferDesc;
+            resource.memory = source->type == RenderGraphResourceType::Buffer
+                ? source->buffer->memoryInfo() : source->texture->memoryInfo();
+            resource.id = resource.memory.allocationId;
+            ids.push_back(resource.id);
+            for (const auto& node : executionList) {
+                for (const auto& field : node.reflection.fields()) {
+                    if (fieldResource(node, field) != source) { continue; }
+                    const auto name = makeRenderGraphFieldName(node.name, field.name);
+                    const bool ambiguous = std::count_if(node.reflection.fields().begin(), node.reflection.fields().end(),
+                        [&](const auto& candidate) { return candidate.name == field.name; }) > 1;
+                    resource.aliases.push_back(ambiguous ? makeRenderGraphFieldName(node.name,
+                        (field.visibility == RenderGraphFieldVisibility::Input ? "input." : "output.") + field.name) : name);
+                    if (field.visibility == RenderGraphFieldVisibility::Output) { resource.name = name; }
+                }
+            }
+        }
+        capture.passes.reserve(executionList.size());
+        for (size_t index = 0; index < executionList.size(); ++index) {
+            const auto& node = executionList[index];
+            auto& pass = capture.passes.emplace_back();
+            pass.id = node.id;
+            pass.name = node.name;
+            pass.type = node.type;
+            pass.kind = node.kind;
+            pass.logicalQueue = node.queueType;
+            pass.actualQueueId = external ? UINT32_MAX : passQueues[index];
+            captureGraphAccessBoundary(accessPlan.passes[index], ids, pass.uses, pass.barriers);
+            for (const auto& field : node.reflection.fields()) {
+                const auto* resource = fieldResource(node, field);
+                if (!resource) { continue; }
+                const auto found = std::find(accessResources.begin(), accessResources.end(), resource);
+                if (found == accessResources.end()) { continue; }
+                const auto id = ids[size_t(found - accessResources.begin())];
+                for (auto& use : pass.uses) {
+                    if (use.resourceId != id) { continue; }
+                    captureGraphDeclaredAccess(use, field.access);
+                    for (const auto& internal : field.internalAccesses) { captureGraphDeclaredAccess(use, internal.access); }
+                }
+            }
+            for (size_t predecessor : accessPlan.passes[index].predecessors) {
+                pass.predecessors.push_back(executionList[predecessor].id);
+            }
+        }
+    }
+
+    void finishExecutionCapture(RenderGraphExecutionSnapshotStatus status, bool success,
+        GpuCompletionPoint completion = {})
+    {
+        if (!activeExecutionCapture) { return; }
+        auto& capture = *activeExecutionCapture;
+        for (auto& imports : capturedImports) {
+            for (auto& resource : imports) {
+                const auto found = std::find_if(capture.resources.begin(), capture.resources.end(),
+                    [&](const auto& existing) { return existing.id == resource.id; });
+                if (found == capture.resources.end()) { capture.resources.push_back(std::move(resource)); }
+                else {
+                    for (auto& alias : resource.aliases) {
+                        if (std::find(found->aliases.begin(), found->aliases.end(), alias) == found->aliases.end()) {
+                            found->aliases.push_back(std::move(alias));
+                        }
+                    }
+                }
+            }
+        }
+        capture.status = status;
+        capture.success = success;
+        capturedCompletion = std::move(completion);
+        capturedExecution = std::move(activeExecutionCapture);
+        capturedImports.clear();
+        captureQueues.clear();
+    }
+
+    struct ExecutionCaptureScope {
+        Impl& owner;
+        ~ExecutionCaptureScope()
+        {
+            if (owner.activeExecutionCapture) {
+                owner.finishExecutionCapture(RenderGraphExecutionSnapshotStatus::Failed, false);
+            }
+        }
+    };
+
     Result<> buildAccessPlan(std::span<const uint32_t> queues)
     {
         if (queues.size() != executionList.size()) { return makeError(Error::InvalidArgument); }
@@ -1820,8 +1946,13 @@ struct RenderGraphExecutor::Impl {
         profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::prepareNs);
         std::vector<RenderGraphExecutionContext::Binding> bindings;
         const size_t passIndex = size_t(&node - executionList.data());
+        const auto beforeSync = activeExecutionCapture ? commandBuffer.synchronizationStats() : SynchronizationStats{};
         auto synchronized = applyAccessPlan(commandBuffer, accessPlan.passes[passIndex], accessResources, accessBindings);
         if (!synchronized) { return synchronized; }
+        if (activeExecutionCapture) {
+            activeExecutionCapture->passes[passIndex].synchronization =
+                synchronizationDelta(beforeSync, commandBuffer.synchronizationStats());
+        }
 
         for (const RenderGraphField& field : node.reflection.fields()) {
             const std::string localName = field.name;
@@ -1883,6 +2014,10 @@ struct RenderGraphExecutor::Impl {
             world,
             subsystemHost));
         auto& context = *prepared;
+        if (activeExecutionCapture) {
+            context.executionCapture_ = &activeExecutionCapture->passes[passIndex];
+            context.capturedImports_ = &capturedImports[passIndex];
+        }
         context.preparedScene_ = node.preparedScene;
         context.preparationWorkerLimit_ = preparationWorkerLimit;
         context.preparationBatchWorkload_ = preparationBatchWorkload;
@@ -1974,6 +2109,7 @@ struct RenderGraphExecutor::Impl {
         if (recording.result) { recording.endInterval(commands, recording.passTimer); }
         labels.suspend();
         if (recording.result) { recording.result = commands.end(); }
+        if (context.executionCapture_) { context.executionCapture_->recorded = recording.result.has_value(); }
         return recording.result;
     }
 
@@ -2137,6 +2273,7 @@ struct RenderGraphExecutor::Impl {
         if (result) { endInterval(context.commandBuffer(), passTimer); }
         labels.suspend();
         if (result && debugObserver && !context.debugAfterPassPublished_) { context.debugCheckpoint("AfterPass"); }
+        if (context.executionCapture_) { context.executionCapture_->recorded = result.has_value(); }
         return result;
     }
 };
@@ -2175,6 +2312,10 @@ Result<> RenderGraphExecutor::compile(
     const RenderGraphCompileOptions& options,
     std::string& log)
 {
+    impl_->captureGraphName = graph.name();
+    impl_->capturedExecution.reset();
+    impl_->capturedCompletion = {};
+    impl_->capturedExternalSubmission.reset();
     RenderGraphLogScope compileScope(
         "compile graph '" + graph.name() + "' " + std::to_string(width) + "x" + std::to_string(height));
     spdlog::info(
@@ -2718,6 +2859,8 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
     impl_->historyResources = historyResources;
     std::string subsystemLog;
     const uint64_t frameIndex = impl_->executionFrameIndex++;
+    impl_->beginExecutionCapture(frameIndex, true);
+    Impl::ExecutionCaptureScope captureScope{*impl_};
     const profiling::NsightProfileRange executeMarker(
         profiling::NsightDomain::Render,
         "Render Graph Execute",
@@ -2794,6 +2937,17 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
     debugScope.success = graphResult.has_value() && postResult.has_value();
     if (!debugScope.success) { impl_->isCompiled = false; }
     impl_->historyResources = nullptr;
+    if (impl_->activeExecutionCapture) {
+        // The external owner submits later. Queue acceptance and GPU completion
+        // remain unknown until its existing submission transaction/frame resolves.
+        auto transaction = std::make_shared<SubmissionTransaction>([] {}, [] {});
+        if (debugScope.success && commandBuffer.addSubmissionTransaction(transaction)) {
+            impl_->capturedExternalSubmission = std::move(transaction);
+        }
+        impl_->finishExecutionCapture(debugScope.success ? RenderGraphExecutionSnapshotStatus::Recorded
+            : RenderGraphExecutionSnapshotStatus::Failed, debugScope.success,
+            frameResources ? frameResources->completion() : GpuCompletionPoint{});
+    }
     return graphResult ? postResult : graphResult;
 }
 
@@ -2978,6 +3132,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     }
     Result<> planned = impl_->buildAccessPlan(accessQueues);
     if (!planned) { return planned; }
+    impl_->beginExecutionCapture(impl_->executionFrameIndex, false, nativeQueues, accessQueues);
+    Impl::ExecutionCaptureScope captureScope{*impl_};
+    if (impl_->activeExecutionCapture) { impl_->activeExecutionCapture->pipelinedSubmission = pipelined; }
     preflightDetail.next("Append incoming waits");
     std::vector<SemaphoreSubmitDesc> initialWaits;
     for (const auto& point : desc.waitCompletions) {
@@ -3120,6 +3277,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             (void)desc.historyResources->initialize(*impl_->device);
         }
         updateCpuTime();
+        impl_->finishExecutionCapture(RenderGraphExecutionSnapshotStatus::Failed, false, slot.frame.completion());
         return failure;
     };
 
@@ -3136,8 +3294,10 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     StreamerSubsystem* upload = impl_->streamerSubsystem();
     const auto requiredSubsystems = impl_->requiredSubsystemViews();
     std::vector<Impl::SubmissionSegment> segments;
+    uint32_t capturePassId = UINT32_MAX;
     const bool graphicsTimings = desc.graphicsQueue && impl_->gpuTimestampQueryPools[0];
-    const auto beginSegment = [&](QueueType type, CommandRecordingContext* recording = nullptr) -> Result<> {
+    const auto beginSegment = [&](QueueType type, CommandRecordingContext* recording = nullptr,
+        RenderGraphSegmentRole role = RenderGraphSegmentRole::Pass) -> Result<> {
         Queue* queue = selectedQueue(type);
         Result<> created;
         auto& tracker = impl_->submissionTrackers[queue];
@@ -3162,6 +3322,13 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         }
         if (!created) { return created; }
         segments.push_back({.queue = queue, .commandBuffer = commands});
+        if (impl_->activeExecutionCapture) {
+            const uint32_t queueId = impl_->captureQueue(queue);
+            impl_->activeExecutionCapture->segments.push_back({.id = uint32_t(segments.size() - 1),
+                .passId = capturePassId, .queueId = queueId,
+                .role = role == RenderGraphSegmentRole::Pass && capturePassId == UINT32_MAX
+                    ? RenderGraphSegmentRole::Prologue : role});
+        }
         impl_->recordingQueue = queue;
         if (segments.size() == 1) {
             created = impl_->prepareView(*commands, frameIndex);
@@ -3174,11 +3341,15 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         auto& predecessors = segments[destination].predecessors;
         if (source != destination && std::find(predecessors.begin(), predecessors.end(), source) == predecessors.end()) {
             predecessors.push_back(source);
+            if (impl_->activeExecutionCapture) {
+                impl_->activeExecutionCapture->segments[destination].predecessors.push_back(uint32_t(source));
+            }
         }
     };
     struct PendingBatch {
         size_t end = 0;
         uint64_t readyNs = 0;
+        uint32_t captureId = UINT32_MAX;
         RecordedBatch commands;
     };
     std::map<size_t, PendingBatch> sealedBatches;
@@ -3196,6 +3367,17 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             PendingBatch batch{.end = last, .readyNs = readyNs ? readyNs : schedulingCapture.elapsed()};
             auto sealed = batch.commands.seal(slot.frame, commands);
             if (!sealed) { return sealed; }
+            if (impl_->activeExecutionCapture) {
+                auto& capture = *impl_->activeExecutionCapture;
+                batch.captureId = uint32_t(capture.batches.size());
+                auto& captured = capture.batches.emplace_back();
+                captured.id = batch.captureId;
+                captured.queueId = capture.segments[first].queueId;
+                for (size_t index = first; index < last; ++index) {
+                    captured.segmentIds.push_back(uint32_t(index));
+                    capture.segments[index].recorded = true;
+                }
+            }
             sealedBatches.emplace(first, std::move(batch));
             first = last;
         }
@@ -3209,8 +3391,11 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             if (ready == sealedBatches.end()) { return {}; }
             const size_t end = ready->second.end;
             Queue* queue = segments[nextSubmission].queue;
+            RenderGraphExecutionBatchSnapshot* capturedBatch = impl_->activeExecutionCapture
+                ? &impl_->activeExecutionCapture->batches[ready->second.captureId] : nullptr;
             std::vector<SemaphoreSubmitDesc> waits;
             if (!startedQueues.contains(queue)) { waits = initialWaits; }
+            if (capturedBatch) { capturedBatch->externalWaitCount = uint32_t(waits.size()); }
             for (size_t i = nextSubmission; i < end; ++i) {
                 for (size_t predecessor : segments[i].predecessors) {
                     if (predecessor >= nextSubmission && predecessor < end) { continue; }
@@ -3219,15 +3404,28 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                     if (!producer.queue->sameQueue(*queue)) {
                         auto appended = producer.completion.appendWaits(waits);
                         if (!appended) { return appended; }
+                        if (capturedBatch && std::find(capturedBatch->waitPredecessors.begin(),
+                                capturedBatch->waitPredecessors.end(), uint32_t(predecessor)) == capturedBatch->waitPredecessors.end()) {
+                            capturedBatch->waitPredecessors.push_back(uint32_t(predecessor));
+                        }
                     }
                 }
             }
             SubmissionReceipt receipt;
             const uint64_t submitBegin = schedulingCapture.elapsed();
+            if (capturedBatch) { capturedBatch->semaphoreWaitCount = uint32_t(waits.size()); }
             auto accepted = impl_->submissionTrackers.at(queue)->submitBatch(ready->second.commands, {
                 .waitSemaphores = waits.data(), .waitSemaphoreCount = uint32_t(waits.size()),
             }, slot.frame, receipt);
             if (!accepted) { return accepted; }
+            if (capturedBatch) {
+                capturedBatch->accepted = true;
+                for (size_t index = nextSubmission; index < end; ++index) {
+                    auto& captured = impl_->activeExecutionCapture->segments[index];
+                    captured.accepted = true;
+                    captured.completionKnown = true;
+                }
+            }
             if (scheduling.enabled) {
                 const uint64_t delay = submitBegin - ready->second.readyNs;
                 scheduling.readyDelayNs += delay;
@@ -3255,7 +3453,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                 segments[producer].commandBuffer != &context.commandBuffer()) { return makeError(Error::InvalidArgument); }
             Result<> result = segments[producer].commandBuffer->end();
             if (!result) { return result; }
-            result = beginSegment(QueueType::Compute);
+            result = beginSegment(QueueType::Compute, nullptr, RenderGraphSegmentRole::ComputeBranch);
             if (!result) { return result; }
             const size_t software = segments.size() - 1;
             segments[software].passWork = true;
@@ -3263,7 +3461,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             result = compute(*segments[software].commandBuffer);
             if (result) { result = segments[software].commandBuffer->end(); }
             if (!result) { return result; }
-            result = beginSegment(QueueType::Graphics);
+            result = beginSegment(QueueType::Graphics, nullptr, RenderGraphSegmentRole::GraphicsBranch);
             if (!result) { return result; }
             const size_t hardware = segments.size() - 1;
             segments[hardware].passWork = true;
@@ -3271,7 +3469,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             result = graphics(*segments[hardware].commandBuffer);
             if (result) { result = segments[hardware].commandBuffer->end(); }
             if (!result) { return result; }
-            result = beginSegment(QueueType::Graphics);
+            result = beginSegment(QueueType::Graphics, nullptr, RenderGraphSegmentRole::Join);
             if (!result) { return result; }
             const size_t join = segments.size() - 1;
             segments[join].passWork = true;
@@ -3440,6 +3638,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     };
     for (auto& node : impl_->executionList) {
         const size_t passIndex = size_t(&node - impl_->executionList.data());
+        capturePassId = node.id;
         const QueueType type = selectedType(node);
         const bool recordOnWorker = workerLimit > 1 &&
             node.pass->cpuRecordingPolicy() == CpuRecordingPolicy::ParallelJoined &&
@@ -3520,8 +3719,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     result = flushRecordings();
     if (!result) { return abort(result); }
     const size_t epilogueBegin = segments.size();
+    capturePassId = UINT32_MAX;
     if (subsystemCommands) {
-        result = beginSegment(QueueType::Graphics);
+        result = beginSegment(QueueType::Graphics, nullptr, RenderGraphSegmentRole::Epilogue);
         if (!result) { return abort(result); }
         const size_t index = segments.size() - 1;
         for (size_t previous = 0; previous < index; ++previous) { addDependency(index, previous); }
@@ -3533,7 +3733,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (!result) { return abort(result); }
     }
     if (!subsystemCommands && graphicsTimings) {
-        result = beginSegment(QueueType::Graphics);
+        result = beginSegment(QueueType::Graphics, nullptr, RenderGraphSegmentRole::Epilogue);
         if (!result) { return abort(result); }
         const size_t index = segments.size() - 1;
         for (size_t previous = 0; previous < index; ++previous) { addDependency(index, previous); }
@@ -3559,6 +3759,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     ++impl_->executionFrameIndex;
     updateCpuTime();
     debugScope.success = true;
+    impl_->finishExecutionCapture(RenderGraphExecutionSnapshotStatus::Submitted, true, slot.frame.completion());
     return {};
 }
 
@@ -3655,6 +3856,36 @@ const RenderGraphResource* RenderGraphExecutor::outputResource(std::string_view 
 const RenderGraphExecutionStats& RenderGraphExecutor::executionStats() const
 {
     return impl_->lastExecutionStats;
+}
+
+void RenderGraphExecutor::setExecutionCaptureEnabled(bool enabled)
+{
+    impl_->executionCaptureEnabled = enabled;
+}
+
+std::shared_ptr<const RenderGraphExecutionSnapshot> RenderGraphExecutor::executionSnapshot() const
+{
+    const auto& current = impl_->capturedExecution;
+    if (!current) { return {}; }
+    const bool cancelled = impl_->capturedExternalSubmission && impl_->capturedExternalSubmission->cancelled();
+    const bool accepted = impl_->capturedExternalSubmission && impl_->capturedExternalSubmission->resolved() && !cancelled;
+    const bool completed = impl_->capturedCompletion.valid() && impl_->capturedCompletion.isComplete() &&
+        !impl_->capturedCompletion.isCancelled();
+    const bool completionChanged = completed && std::any_of(current->segments.begin(), current->segments.end(),
+        [](const auto& segment) { return segment.accepted && !segment.completed; });
+    if ((current->externalRecording && current->status == RenderGraphExecutionSnapshotStatus::Recorded && (accepted || cancelled)) ||
+        completionChanged) {
+        auto updated = std::make_shared<RenderGraphExecutionSnapshot>(*current);
+        if (current->externalRecording) {
+            updated->status = cancelled ? RenderGraphExecutionSnapshotStatus::Failed : RenderGraphExecutionSnapshotStatus::Submitted;
+            updated->success = !cancelled;
+        }
+        for (auto& segment : updated->segments) {
+            if (segment.accepted) { segment.completionKnown = true; segment.completed = completed; }
+        }
+        impl_->capturedExecution = std::move(updated);
+    }
+    return impl_->capturedExecution;
 }
 
 Result<> RenderGraphExecutor::collectCompletedGpuExecutionStats(
@@ -4074,6 +4305,16 @@ Result<> RenderGraphPreviewRenderer::render(
 Result<> RenderGraphPreviewRenderer::collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats)
 {
     return impl_->executor.collectCompletedGpuExecutionStats(outStats);
+}
+
+void RenderGraphPreviewRenderer::setExecutionCaptureEnabled(bool enabled)
+{
+    impl_->executor.setExecutionCaptureEnabled(enabled);
+}
+
+std::shared_ptr<const RenderGraphExecutionSnapshot> RenderGraphPreviewRenderer::executionSnapshot() const
+{
+    return impl_->executor.executionSnapshot();
 }
 
 const std::vector<uint32_t>& RenderGraphPreviewRenderer::pixels() const
