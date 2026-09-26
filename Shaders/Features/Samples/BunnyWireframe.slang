@@ -1,7 +1,5 @@
 struct BindlessHeapPush
 {
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
     uint paramsBuffer;
     uint positionBuffer;
     uint transformBuffer;
@@ -92,11 +90,11 @@ float lineCoverage(float3 barycentric, float thickness, float smoothing)
 BunnyWireframeVertexOutput bunnyWireframeVertexMain(uint vertexIndex : SV_VertexID, uniform BindlessHeapPush bindless)
 {
     DescriptorHandle<StructuredBuffer<BunnyWireframeParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<BunnyWireframeParams>>(uint2(bindless.bufferShaderIndexBase + bindless.paramsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<BunnyWireframeParams>>(uint2(bindless.paramsBuffer, 0));
     DescriptorHandle<StructuredBuffer<float4>> positionsHandle =
-        DescriptorHandle<StructuredBuffer<float4>>(uint2(bindless.bufferShaderIndexBase + bindless.positionBuffer, 0));
+        DescriptorHandle<StructuredBuffer<float4>>(uint2(bindless.positionBuffer, 0));
     DescriptorHandle<StructuredBuffer<SceneTransform>> transformsHandle =
-        DescriptorHandle<StructuredBuffer<SceneTransform>>(uint2(bindless.bufferShaderIndexBase + bindless.transformBuffer, 0));
+        DescriptorHandle<StructuredBuffer<SceneTransform>>(uint2(bindless.transformBuffer, 0));
 
     StructuredBuffer<BunnyWireframeParams> paramsBuffer = paramsHandle;
     StructuredBuffer<float4> positions = positionsHandle;
@@ -123,7 +121,7 @@ BunnyWireframeVertexOutput bunnyWireframeVertexMain(uint vertexIndex : SV_Vertex
 float4 bunnyWireframeFragmentMain(BunnyWireframeVertexOutput input, uniform BindlessHeapPush bindless) : SV_Target0
 {
     DescriptorHandle<StructuredBuffer<BunnyWireframeParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<BunnyWireframeParams>>(uint2(bindless.bufferShaderIndexBase + bindless.paramsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<BunnyWireframeParams>>(uint2(bindless.paramsBuffer, 0));
     StructuredBuffer<BunnyWireframeParams> paramsBuffer = paramsHandle;
     BunnyWireframeParams params = paramsBuffer[0];
 

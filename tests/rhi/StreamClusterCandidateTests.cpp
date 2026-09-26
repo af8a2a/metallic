@@ -118,7 +118,7 @@ public:
             expected.resize(std::min(total, capacity));
             MeshletStreamGpuActiveHeader header{.activeGroupCount = test.count, .activeGroupCapacity = groupCapacity,
                 .maxActiveGroupClusters = 32};
-            MeshletStreamGpuRasterBindings bindings{.instanceVisibilityBuffer = handles[3].index};
+            MeshletStreamGpuRasterBindings bindings{.instanceVisibilityBuffer = handles[3].shaderIndex};
             if (!upload(0, &header, sizeof(header)) || !upload(1, groups.data(), groups.size() * sizeof(groups[0])) ||
                 !upload(2, &bindings, sizeof(bindings)) || !upload(3, visibility.data(), sizeof(visibility)) ||
                 !upload(4, retries.data(), retries.size() * sizeof(retries[0]))) {
@@ -129,15 +129,15 @@ public:
             CANDIDATE_REQUIRE(rasterizer.beginClusters(*commands, 8, true, 0, capacity, true, true));
             commands->bindBindlessHeap(*heap);
             commands->bindComputePipeline(*pipelines[1]);
-            const uint32_t seedPush[] = {handles[4].index, handles[5].index, capacity};
+            const uint32_t seedPush[] = {handles[4].shaderIndex, handles[5].shaderIndex, capacity};
             commands->pushBindlessData(seedPush, sizeof(seedPush));
             commands->dispatch((capacity + 127) / 128);
             BufferBarrierDesc ready{.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General,
                 .after = ResourceState::General};
             commands->barrier({.buffers = &ready, .bufferCount = 1});
-            MeshletStreamUserPush push{.activeGroupBuffer = handles[1].index, .activeHeaderBuffer = handles[0].index,
-                .traversalPhase = test.phase, .rasterBindingsBuffer = handles[2].index,
-                .hybridQueueBuffer = handles[6].index, .hybridClusterBuffer = handles[5].index};
+            MeshletStreamUserPush push{.activeGroupBuffer = handles[1].shaderIndex, .activeHeaderBuffer = handles[0].shaderIndex,
+                .traversalPhase = test.phase, .rasterBindingsBuffer = handles[2].shaderIndex,
+                .hybridQueueBuffer = handles[6].shaderIndex, .hybridClusterBuffer = handles[5].shaderIndex};
             CANDIDATE_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, *pipelines[0], push));
             const BufferBarrierDesc copies[] = {
                 {.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General, .after = ResourceState::TransferSource},

@@ -1,4 +1,5 @@
 #include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/NativeDescriptorHeapSpirv.h"
 
 #include <slang-com-ptr.h>
 #include <slang-tag-version.h>
@@ -11,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -19,6 +21,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
@@ -41,7 +44,7 @@ namespace {
 // Versioned independently from Slang so malformed or stale cache files fail closed.
 constexpr std::array<char, 8> kShaderCacheMagic{'M', 'T', 'L', 'S', 'P', 'V', '0', '1'};
 constexpr uint32_t kShaderCacheVersion = 2;
-constexpr uint32_t kShaderCacheRequestVersion = 6;
+constexpr uint32_t kShaderCacheRequestVersion = 23;
 constexpr uint32_t kMaxShaderDependencyCount = 4096;
 constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
@@ -449,11 +452,21 @@ void publishShaderDependencies(
     registerShaderDependencies(dependencies);
 }
 
+bool nativeDescriptorHeapEnabled(const SlangShaderDesc& desc)
+{
+    const char* mode = std::getenv("METALLIC_SLANG_DESCRIPTOR_MODE");
+    if (desc.descriptorHeapMode != SlangDescriptorHeapMode::Default) {
+        return desc.descriptorHeapMode == SlangDescriptorHeapMode::Native;
+    }
+    return mode != nullptr && std::string_view(mode) == "native";
+}
+
 uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode debugMode)
 {
     uint64_t hash = kFnvOffset;
     hash = hashValue(hash, kShaderCacheRequestVersion);
     hash = hashText(hash, SLANG_VERSION_NUMERIC);
+    hash = hashValue(hash, nativeDescriptorHeapEnabled(desc));
     hash = hashText(hash, desc.moduleName);
     hash = hashText(hash, desc.entryPointName);
     hash = hashText(hash, desc.profileName != nullptr ? desc.profileName : kDefaultSlangProfileName);
@@ -928,7 +941,16 @@ Result compileSlangShaderToSpirv(
         searchPaths.push_back(searchPath.c_str());
     }
     std::vector<slang::CompilerOptionEntry> compilerOptions;
-    compilerOptions.reserve(desc.capabilityCount + desc.macroDefineCount + 3u);
+    compilerOptions.reserve(desc.capabilityCount + desc.macroDefineCount + 4u);
+    if (nativeDescriptorHeapEnabled(desc)) {
+        compilerOptions.push_back(slang::CompilerOptionEntry{
+            .name = slang::CompilerOptionName::Capability,
+            .value = slang::CompilerOptionValue{
+                .kind = slang::CompilerOptionValueKind::String,
+                .stringValue0 = "spvDescriptorHeapEXT",
+            },
+        });
+    }
     if (debugMode != SlangShaderDebugMode::Disabled) {
         compilerOptions.push_back(slang::CompilerOptionEntry{
             .name = slang::CompilerOptionName::EmitSpirvDirectly,
@@ -1067,6 +1089,12 @@ Result compileSlangShaderToSpirv(
 
     outResult.spirv.resize(byteSize / sizeof(uint32_t));
     std::memcpy(outResult.spirv.data(), shaderCode->getBufferPointer(), byteSize);
+    std::string normalizationError;
+    if (!normalizeNativeDescriptorHeapSpirv(outResult.spirv, outResult.spirv, normalizationError)) {
+        outResult.spirv.clear();
+        outResult.diagnostics += normalizationError + "\n";
+        return makeError(Error::Failure);
+    }
     if (!shaderDependencySnapshotsMatch(dependencySnapshots)) {
         outResult.spirv.clear();
         outResult.diagnostics +=

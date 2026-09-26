@@ -19,7 +19,7 @@ void streamTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     uint record = candidate;
     bool valid = true;
     if (prebinned) {
-        DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
         valid = hybridBinRecord(bins, 0u, candidate, record);
     }
     if (lane == 0u) {
@@ -33,11 +33,11 @@ void streamTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     StreamRasterCluster c = g_StreamMeshCluster;
     uint count = 0u;
     if (valid) {
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rh = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rh = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
         GPUDrivenStreamAssetRasterBindings bindings = rh[0];
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.bufferShaderIndexBase + bindings.gpuSceneInstanceBuffer, 0));
-        DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + bindings.tessellationBuffer, 0));
-        DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(bindings.gpuSceneInstanceBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(bindings.tessellationBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
         uint material = instances[c.group.gpuSceneInstanceIndex].identity.y;
         bool attributes = (pages[c.pageWord + 14u] & 6u) == 6u && streamNormalStride(pages[c.pageWord + 21u]) != 0u && pages[c.pageWord + 22u] == 1u;
         bool enabled = attributes && tessMaterial(data, material).enabled != 0u;
@@ -101,9 +101,9 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         }
         return;
     }
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rh = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + rh[0].tessellationBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rh = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(rh[0].tessellationBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
     TessMaterial material = tessMaterial(data, payload.material);
     uint source = tessPayloadRoot(payload, group.x);
     uint originalTriangle = payload.first + source;
@@ -146,7 +146,7 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         float3 bary = tessPatchDomain(tessBary(data, g_StreamTessPattern, lane), g_StreamTessRates, patch, g_StreamTessSource);
         float3 p, n; float2 uv;
         tessSourceDomain(bary, g_StreamTessSource, g_StreamTessNormal, g_StreamTessUv, p, n, uv);
-        p += n * tessHeight(material, uv, push.imageShaderIndexBase);
+        p += n * tessHeight(material, uv);
         float4 clip = projectPosition(p, c.params); clip.y = -clip.y;
         vertices[lane].streamInstance = c.group.gpuSceneInstanceIndex;
         vertices[lane].position = clip; vertices[lane].uv = uv;

@@ -23,7 +23,8 @@ public:
         auto& input = reflection.addTextureInput("inputColor", "Tone-mapped sRGB display color (RGBA8 UNORM)")
             .texture2D(context.width, context.height).storageReadWrite();
         const bool hdr = context.displayOutput.mode == DisplayOutputMode::HdrScRgb;
-        input.format = hdr ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
+        const Format colorFormat = hdr ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
+        input.format = colorFormat;
         input.usage = input.usage | TextureUsageBits::TransferSource | TextureUsageBits::Sampled;
         auto& motion = reflection.addTextureInput("motionVectors", "Current-to-previous UV motion, without jitter")
             .texture2D(context.width, context.height).storageReadWrite();
@@ -35,7 +36,7 @@ public:
         depth.usage = depth.usage | TextureUsageBits::Sampled;
         auto& output = reflection.addTextureOutput("color", "Experimental DLSS Neural Rendering output")
             .texture2D(context.width, context.height).storageReadWrite();
-        output.format = input.format;
+        output.format = colorFormat;
         output.colorEncoding = hdr ? DisplayColorEncoding::ExposedLinear : DisplayColorEncoding::Srgb;
         output.usage = output.usage | TextureUsageBits::TransferDestination;
         return reflection;

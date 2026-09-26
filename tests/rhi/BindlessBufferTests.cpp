@@ -348,8 +348,8 @@ public:
         }
 
         const BindlessBufferUserPush push{
-            .inputBuffer = constantHandle.index,
-            .outputBuffer = outputHandle.index,
+            .inputBuffer = constantHandle.shaderIndex,
+            .outputBuffer = outputHandle.shaderIndex,
             .passIndex = 0,
         };
         commandBuffer->bindBindlessHeap(*bindlessHeap);
@@ -545,8 +545,8 @@ public:
         }
 
         const BindlessBufferUserPush push{
-            .inputBuffer = inputHandle.index,
-            .outputBuffer = outputHandle.index,
+            .inputBuffer = inputHandle.shaderIndex,
+            .outputBuffer = outputHandle.shaderIndex,
         };
         commandBuffer->bindComputePipeline(*pipeline);
         commandBuffer->bindBindlessHeap(*bindlessHeap);
@@ -731,8 +731,8 @@ public:
         commandBuffer->bindBindlessHeap(*bindlessHeap);
 
         BindlessBufferUserPush push{
-            .inputBuffer = rwHandle.index,
-            .outputBuffer = outputHandle.index,
+            .inputBuffer = rwHandle.shaderIndex,
+            .outputBuffer = outputHandle.shaderIndex,
             .passIndex = 0,
         };
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -946,8 +946,8 @@ public:
         }
 
         const BindlessBufferUserPush push{
-            .inputBuffer = inputHandle.index,
-            .outputBuffer = outputHandle.index,
+            .inputBuffer = inputHandle.shaderIndex,
+            .outputBuffer = outputHandle.shaderIndex,
         };
         commandBuffer->bindComputePipeline(*pipeline);
         commandBuffer->bindBindlessHeap(*bindlessHeap);
@@ -1135,8 +1135,8 @@ public:
         commandBuffer->bindBindlessHeap(*bindlessHeap);
 
         BindlessBufferUserPush push{
-            .inputBuffer = rwHandle.index,
-            .outputBuffer = outputHandle.index,
+            .inputBuffer = rwHandle.shaderIndex,
+            .outputBuffer = outputHandle.shaderIndex,
             .passIndex = 0,
         };
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -1308,7 +1308,7 @@ public:
         }
 
         const BindlessBufferUserPush push{
-            .outputBuffer = bufferHandle.index,
+            .outputBuffer = bufferHandle.shaderIndex,
         };
         commandBuffer->bindComputePipeline(*pipeline);
         commandBuffer->bindBindlessHeap(*bindlessHeap);

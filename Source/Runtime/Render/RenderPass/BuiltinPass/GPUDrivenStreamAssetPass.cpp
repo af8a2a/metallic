@@ -748,19 +748,19 @@ public:
             }
         }
         result = streamRuntime_->updateRasterBindings(MeshletStreamGpuRasterBindings{
-            .instanceVisibilityBuffer = instanceVisibilityHandle_.index,
-            .hzbBuffer0 = hzbHandles_[0].index,
-            .hzbBuffer1 = hzbHandles_[1].index,
-            .depthImage = depthImageHandle_.index,
-            .visibilityImage = visibilityImageHandle_.index,
-            .deferredColorBuffer = deferredColorHandle_.index,
-            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.index,
+            .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex,
+            .hzbBuffer0 = hzbHandles_[0].shaderIndex,
+            .hzbBuffer1 = hzbHandles_[1].shaderIndex,
+            .depthImage = depthImageHandle_.shaderIndex,
+            .visibilityImage = visibilityImageHandle_.shaderIndex,
+            .deferredColorBuffer = deferredColorHandle_.shaderIndex,
+            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.shaderIndex,
             .hzbMipCount = hzbMipCount_,
             .hzbValid = 0u,
             .cullingFlags = cullingFlagsFromProperties(properties()),
             .width = frameWidth_,
             .height = frameHeight_,
-            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.index,
+            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex,
         });
         if (!result) {
             log = "GPUDrivenStreamAssetPass failed to publish raster bindings";
@@ -1292,19 +1292,19 @@ private:
         }
 
         return streamRuntime_->updateRasterBindings(MeshletStreamGpuRasterBindings{
-            .instanceVisibilityBuffer = instanceVisibilityHandle_.index,
-            .hzbBuffer0 = hzbHandles_[0].index,
-            .hzbBuffer1 = hzbHandles_[1].index,
-            .depthImage = depthImageHandle_.index,
-            .visibilityImage = visibilityImageHandle_.index,
-            .deferredColorBuffer = deferredColorHandle_.index,
-            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.index,
+            .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex,
+            .hzbBuffer0 = hzbHandles_[0].shaderIndex,
+            .hzbBuffer1 = hzbHandles_[1].shaderIndex,
+            .depthImage = depthImageHandle_.shaderIndex,
+            .visibilityImage = visibilityImageHandle_.shaderIndex,
+            .deferredColorBuffer = deferredColorHandle_.shaderIndex,
+            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.shaderIndex,
             .hzbMipCount = hzbMipCount_,
             .hzbValid = hzbValid_ ? 1u : 0u,
             .cullingFlags = cullingFlagsFromProperties(properties()),
             .width = frameWidth_,
             .height = frameHeight_,
-            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.index,
+            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex,
         });
     }
 

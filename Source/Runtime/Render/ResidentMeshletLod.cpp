@@ -6,16 +6,16 @@ namespace metallic::render {
 namespace {
 
 struct LodPush {
-    // The RHI prepends two descriptor-base words. Align the following float4
-    // camera fields to 16 bytes in the complete Vulkan push-constant block.
-    uint32_t padding[2]{};
+    // Camera data starts at push byte zero, matching Slang float4 alignment.
     MeshletLodView view;
     uint32_t clusters, records, instances, groups;
     uint32_t output, arguments, offset, count;
     uint32_t capacity, instanceCount, groupCount, manualLevel;
     uint32_t scratch, padding2;
 };
-static_assert(sizeof(LodPush) == 112);
+static_assert(offsetof(LodPush, view) == 0);
+static_assert(offsetof(LodPush, clusters) == 48);
+static_assert(sizeof(LodPush) == 104);
 
 } // namespace
 
@@ -60,13 +60,13 @@ Result ResidentMeshletLod::record(CommandBuffer& commands, BindlessHeap& heap,
     // Provision for every input record. Selection can never overflow, even when
     // the camera crosses the near plane and requests the finest entire scene.
     if (candidates.count > capacity_) { return makeError(Error::InvalidArgument); }
-    const LodPush push{{}, view,
-        bindings[GPUSceneGlobalBufferKind::Meshlets].index,
-        bindings[GPUSceneGlobalBufferKind::MeshletDraws].index,
-        bindings[GPUSceneGlobalBufferKind::Instances].index,
-        bindings[GPUSceneGlobalBufferKind::LodGroups].index,
-        output.index, arguments.index, candidates.offset, candidates.count,
-        capacity_, instanceCount, groupCount, manualLevel, scratch.index, 0u};
+    const LodPush push{view,
+        bindings[GPUSceneGlobalBufferKind::Meshlets].shaderIndex,
+        bindings[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex,
+        bindings[GPUSceneGlobalBufferKind::Instances].shaderIndex,
+        bindings[GPUSceneGlobalBufferKind::LodGroups].shaderIndex,
+        output.shaderIndex, arguments.shaderIndex, candidates.offset, candidates.count,
+        capacity_, instanceCount, groupCount, manualLevel, scratch.shaderIndex, 0u};
     commands.beginDebugLabel({.name = "Resident adaptive meshlet LOD"});
     BufferBarrierDesc barriers[] = {
         {.buffer = selections_.get(), .before = initialized_ ? ResourceState::ShaderRead : ResourceState::Undefined,

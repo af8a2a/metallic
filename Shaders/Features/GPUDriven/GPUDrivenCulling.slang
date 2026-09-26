@@ -12,7 +12,7 @@ void gpuDrivenPreviewResetMain(
     if (push.passIndex == 0u) {
         DescriptorHandle<RWStructuredBuffer<uint>> visibleInstanceCounterHandle =
             DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-                push.bufferShaderIndexBase + push.visibleInstanceCounterBuffer,
+                push.visibleInstanceCounterBuffer,
                 0));
         visibleInstanceCounterHandle[0] = 0u;
     }
@@ -25,18 +25,18 @@ void gpuDrivenPreviewInstanceCullMain(
     uniform GPUDrivenPreviewPush push)
 {
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.paramsBuffer, 0));
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instanceHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.bufferShaderIndexBase + push.instanceBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.instanceBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<uint>> visibilityHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.instanceVisibilityBuffer, 0));
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.instanceVisibilityBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<uint>> visibleInstanceIdsHandle =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            push.bufferShaderIndexBase + push.visibleInstanceIdsBuffer,
+            push.visibleInstanceIdsBuffer,
             0));
     DescriptorHandle<RWStructuredBuffer<uint>> visibleInstanceCounterHandle =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            push.bufferShaderIndexBase + push.visibleInstanceCounterBuffer,
+            push.visibleInstanceCounterBuffer,
             0));
 
     GPUDrivenPreviewParams params = paramsHandle[0];
@@ -49,7 +49,7 @@ void gpuDrivenPreviewInstanceCullMain(
     if (push.streamOwnerMaskBuffer != kInvalidTextureIndex) {
         DescriptorHandle<StructuredBuffer<uint>> streamOwnerMaskHandle =
             DescriptorHandle<StructuredBuffer<uint>>(uint2(
-                push.bufferShaderIndexBase + push.streamOwnerMaskBuffer,
+                push.streamOwnerMaskBuffer,
                 0));
         StructuredBuffer<uint> streamOwnerMask = streamOwnerMaskHandle;
         if (streamOwnerMask[instanceIndex] != 0u) {
@@ -117,7 +117,7 @@ void gpuDrivenPreviewHzbMain(
     uniform GPUDrivenPreviewPush push)
 {
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.paramsBuffer, 0));
     GPUDrivenPreviewParams params = paramsHandle[0];
     uint mipWidth = mipDimension(params.width, push.mipLevel);
     uint mipHeight = mipDimension(params.height, push.mipLevel);
@@ -128,14 +128,14 @@ void gpuDrivenPreviewHzbMain(
     uint currentHzb = params.frameIndex & 1u;
     uint hzbHandleIndex = currentHzb == 0 ? push.hzbBuffer0 : push.hzbBuffer1;
     DescriptorHandle<RWStructuredBuffer<float>> hzbHandle =
-        DescriptorHandle<RWStructuredBuffer<float>>(uint2(push.bufferShaderIndexBase + hzbHandleIndex, 0));
+        DescriptorHandle<RWStructuredBuffer<float>>(uint2(hzbHandleIndex, 0));
     RWStructuredBuffer<float> hzb = hzbHandle;
     uint destinationIndex = hzbMipOffset(params, push.mipLevel) +
         dispatchThreadId.y * mipWidth + dispatchThreadId.x;
 
     if (push.mipLevel == 0) {
         DescriptorHandle<Texture2D<float>> depthHandle =
-            DescriptorHandle<Texture2D<float>>(uint2(push.imageShaderIndexBase + push.depthImage, 0));
+            DescriptorHandle<Texture2D<float>>(uint2(push.depthImage, 0));
         Texture2D<float> depth = depthHandle;
         hzb[destinationIndex] = depth.Load(int3(dispatchThreadId.xy, 0));
         return;

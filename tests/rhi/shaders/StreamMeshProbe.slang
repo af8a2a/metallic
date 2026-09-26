@@ -20,7 +20,7 @@ void referenceStreamMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupInd
     bool prebinned = push.hybridClusterBuffer != 0xffffffffu;
     if (prebinned) {
         DescriptorHandle<StructuredBuffer<uint>> bins =
-            DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+            DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
         uint item = record;
         if (!hybridBinRecord(bins, 0u, item, record)) { SetMeshOutputCounts(0, 0); return; }
     }
@@ -51,7 +51,7 @@ void referenceStreamMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupInd
         vertices[i * 3u].doubleSided = (c.instanceFlags & 2u) != 0u;
         vertices[i * 3u + 1u].doubleSided = (c.instanceFlags & 2u) != 0u;
         vertices[i * 3u + 2u].doubleSided = (c.instanceFlags & 2u) != 0u;
-        bool queued = !prebinned && hybridEnqueueTriangle(a, b, d, id, (c.instanceFlags & 2u) != 0u, push.hybridQueueBuffer, push.bufferShaderIndexBase);
+        bool queued = !prebinned && hybridEnqueueTriangle(a, b, d, id, (c.instanceFlags & 2u) != 0u, push.hybridQueueBuffer);
         triangles[i] = queued ? uint3(0u) : uint3(i * 3u, i * 3u + 1u, i * 3u + 2u);
     }
 }

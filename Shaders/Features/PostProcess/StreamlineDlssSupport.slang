@@ -4,16 +4,13 @@ struct StreamlineDlssVertexOutput
     float2 uv : TEXCOORD0;
 };
 
-struct BindlessHeapPush
+struct SampledImagePush
 {
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
+    uint sourceImage;
 };
 
 struct StreamlineDlssAlphaPush
 {
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
     uint outputImage;
 };
 
@@ -43,10 +40,10 @@ StreamlineDlssVertexOutput streamlineDlssDepthVertexMain(uint vertexIndex : SV_V
 [shader("fragment")]
 float streamlineDlssDepthFragmentMain(
     StreamlineDlssVertexOutput input,
-    uniform BindlessHeapPush bindless) : SV_Depth
+    uniform SampledImagePush bindless) : SV_Depth
 {
     DescriptorHandle<Texture2D<float>> depthHandle =
-        DescriptorHandle<Texture2D<float>>(uint2(bindless.imageShaderIndexBase, 0));
+        DescriptorHandle<Texture2D<float>>(uint2(bindless.sourceImage, 0));
     Texture2D<float> depthGuide = depthHandle;
 
     uint width = 1;
@@ -65,7 +62,7 @@ void streamlineDlssAlphaMain(
 {
     DescriptorHandle<RWTexture2D<float4>> outputHandle =
         DescriptorHandle<RWTexture2D<float4>>(
-            uint2(push.imageShaderIndexBase + push.outputImage, 0));
+            uint2(push.outputImage, 0));
     RWTexture2D<float4> outputImage = outputHandle;
 
     uint width = 1;

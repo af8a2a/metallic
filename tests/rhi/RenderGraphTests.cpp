@@ -61,38 +61,27 @@ constexpr uint32_t kSpirvRayTracingClusterAccelerationStructureNv = 5437u;
 bool hasNativeComputeResourceInterface(const std::vector<uint32_t>& words)
 {
     if (words.size() < 5 || words[0] != kSpirvMagic) { return false; }
-    std::unordered_map<uint32_t, uint32_t> pointees, bindings, sets;
-    std::unordered_set<uint32_t> runtimeArrays;
-    std::vector<std::pair<uint32_t, uint32_t>> resources;
+    bool heapCapability = false, heapBuiltin = false, deviceAddresses = false;
     uint32_t pushBlocks = 0;
-    bool deviceAddresses = false;
     for (size_t offset = 5; offset < words.size();) {
         const uint32_t count = words[offset] >> 16;
         const uint32_t opcode = words[offset] & 0xffff;
         if (count == 0 || count > words.size() - offset) { return false; }
         const uint32_t* instruction = words.data() + offset;
-        if (opcode == 17 && count == 2 && instruction[1] == 5347) { deviceAddresses = true; }
-        if (opcode == 29 && count == 3) { runtimeArrays.insert(instruction[1]); }
-        if (opcode == 32 && count == 4) { pointees[instruction[1]] = instruction[3]; }
-        if (opcode == 71 && count == 4) {
-            if (instruction[2] == 33) { bindings[instruction[1]] = instruction[3]; }
-            if (instruction[2] == 34) { sets[instruction[1]] = instruction[3]; }
+        if (opcode == 17 && count == 2) {
+            heapCapability |= instruction[1] == 5128; // DescriptorHeapEXT
+            deviceAddresses |= instruction[1] == 5347; // PhysicalStorageBufferAddresses
         }
-        if (opcode == 59 && count >= 4) {
-            const uint32_t storage = instruction[3];
-            if (storage == 9) { ++pushBlocks; }
-            if (storage == 0 || storage == 2 || storage == 12) {
-                resources.emplace_back(instruction[2], instruction[1]);
+        if (opcode == 71 && count >= 4) {
+            if (instruction[2] == 33 || instruction[2] == 34) { return false; }
+            if (instruction[2] == 11 && (instruction[3] == 5122 || instruction[3] == 5123)) {
+                heapBuiltin = true; // SamplerHeapEXT / ResourceHeapEXT
             }
         }
+        if (opcode == 59 && count >= 4 && instruction[3] == 9) { ++pushBlocks; }
         offset += count;
     }
-    for (const auto& [id, type] : resources) {
-        if (!bindings.contains(id) || !sets.contains(id) || sets[id] != 0 ||
-            (bindings[id] != 0 && bindings[id] != 2) || !pointees.contains(type) ||
-            !runtimeArrays.contains(pointees[type])) { return false; }
-    }
-    return deviceAddresses && pushBlocks == 1 && !resources.empty();
+    return heapCapability && heapBuiltin && deviceAddresses && pushBlocks == 1;
 }
 
 render::EnvironmentSettings sampleEnvironmentSettings(const render::RenderSampleDesc& desc)
@@ -443,7 +432,6 @@ public:
         render::TextureHandle color = context.outputTexture("color");
         if (sourceHandle == nullptr ||
             sourceHandle->kind != render::BindlessHandleKind::SampledImage ||
-            sourceHandle->index != 0 ||
             !color.valid() ||
             pipeline_ == nullptr) {
             return render::makeError(render::Error::InvalidArgument);
@@ -477,6 +465,7 @@ public:
         });
         context.commandBuffer().setScissor(renderArea);
         context.commandBuffer().bindGraphicsPipeline(*pipeline_);
+        context.commandBuffer().pushBindlessData(&sourceHandle->shaderIndex, sizeof(sourceHandle->shaderIndex));
         context.commandBuffer().draw(3);
         context.commandBuffer().endRendering();
         return {};
@@ -3463,6 +3452,7 @@ public:
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
+                .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
             },
             compileResult);
         if (!result) {
@@ -4753,21 +4743,21 @@ public:
 
         commandBuffer->bindBindlessHeap(*bindlessHeap);
         render::MeshletStreamUserPush push{
-            .pageBuffer = pageHandle.index,
-            .activeGroupBuffer = activeGroupHandle.index,
-            .pageTableBuffer = pageTableHandle.index,
-            .paramsBuffer = paramsHandle.index,
-            .requestBuffer = requestHandle.index,
-            .residentPageBuffer = residentPageHandle.index,
-            .activeHeaderBuffer = activeHeaderHandle.index,
-            .instanceBuffer = instanceHandle.index,
-            .primitiveBuffer = primitiveHandle.index,
-            .lodLevelBuffer = lodLevelHandle.index,
-            .groupBuffer = groupHandle.index,
-            .nodeBuffer = nodeHandle.index,
-            .drawIndirectBuffer = drawIndirectHandle.index,
-            .traversalHeaderBuffer = traversalHeaderHandle.index,
-            .traversalWorkBuffer = traversalWorkHandle.index,
+            .pageBuffer = pageHandle.shaderIndex,
+            .activeGroupBuffer = activeGroupHandle.shaderIndex,
+            .pageTableBuffer = pageTableHandle.shaderIndex,
+            .paramsBuffer = paramsHandle.shaderIndex,
+            .requestBuffer = requestHandle.shaderIndex,
+            .residentPageBuffer = residentPageHandle.shaderIndex,
+            .activeHeaderBuffer = activeHeaderHandle.shaderIndex,
+            .instanceBuffer = instanceHandle.shaderIndex,
+            .primitiveBuffer = primitiveHandle.shaderIndex,
+            .lodLevelBuffer = lodLevelHandle.shaderIndex,
+            .groupBuffer = groupHandle.shaderIndex,
+            .nodeBuffer = nodeHandle.shaderIndex,
+            .drawIndirectBuffer = drawIndirectHandle.shaderIndex,
+            .traversalHeaderBuffer = traversalHeaderHandle.shaderIndex,
+            .traversalWorkBuffer = traversalWorkHandle.shaderIndex,
             .traversalPhase = render::kMeshletStreamTraversalLoadPhase,
         };
 
@@ -5328,6 +5318,7 @@ public:
                     .capabilityCount = entry.rayQuery
                         ? static_cast<uint32_t>(std::size(capabilities))
                         : 0u,
+                    .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
                 },
                 compileResult);
             if (!result) {
@@ -5381,6 +5372,7 @@ public:
                         .capabilityCount = 1u + positionFetch,
                         .macroDefines = defines,
                         .macroDefineCount = static_cast<uint32_t>(std::size(defines)),
+                        .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
                     },
                     compileResult);
                 if (!result || compileResult.spirv.empty()) {
@@ -8244,11 +8236,15 @@ public:
 };
 
 class RenderGraphGPUDrivenMixedProducerRenderTest : public RhiTest {
+    int rasterMode_ = -1;
 public:
-    RenderGraphGPUDrivenMixedProducerRenderTest()
+    explicit RenderGraphGPUDrivenMixedProducerRenderTest(int rasterMode = -1) : rasterMode_(rasterMode)
     {
         type = RhiTestType::Rendering;
-        name = "render_graph_gpu_driven_mixed_producer_render";
+        static constexpr const char* names[] = {
+            "mixed_producer_raster_prepared", "mixed_producer_raster_legacy", "mixed_producer_raster_plane",
+            "mixed_producer_raster_cooperative", "mixed_producer_raster_work_bins"};
+        name = rasterMode < 0 ? "render_graph_gpu_driven_mixed_producer_render" : names[rasterMode];
     }
 
     RhiTestResult run(RhiTestContext& context) override
@@ -8401,6 +8397,14 @@ public:
                     {"up", {0.0f, 1.0f, 0.0f}},
                 }},
             });
+        if (rasterMode_ >= 0) {
+            const auto node = graph.findNode("GPUDriven")->id;
+            graph.setNodeRuntimeProperty(node, "softwareRasterPreparedVertices", rasterMode_ == 0 || rasterMode_ == 2);
+            graph.setNodeRuntimeProperty(node, "softwareRasterIncrementalDepth", rasterMode_ == 2);
+            graph.setNodeRuntimeProperty(node, "softwareRasterCooperativeLoad", rasterMode_ != 1);
+            graph.setNodeRuntimeProperty(node, "softwareRasterSharedScreenVertices", false);
+            graph.setNodeRuntimeProperty(node, "softwareRasterWorkBins", rasterMode_ == 4);
+        }
         graph.markOutput("GPUDriven.color");
         graph.markOutput("GPUDriven.visibility");
         graph.markOutput("GPUDriven.depth");
@@ -9990,6 +9994,21 @@ public:
 METALLIC_REGISTER_RHI_TEST(StreamSceneOpenRoutingTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphVisibilityBufferPassSmokeTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetPassSmokeTest);
+template<int Mode>
+class MixedProducerRasterVariantTest final : public RenderGraphGPUDrivenMixedProducerRenderTest {
+public:
+    MixedProducerRasterVariantTest() : RenderGraphGPUDrivenMixedProducerRenderTest(Mode) {}
+};
+using MixedProducerPreparedTest = MixedProducerRasterVariantTest<0>;
+using MixedProducerLegacyTest = MixedProducerRasterVariantTest<1>;
+using MixedProducerPlaneTest = MixedProducerRasterVariantTest<2>;
+using MixedProducerCooperativeTest = MixedProducerRasterVariantTest<3>;
+using MixedProducerWorkBinsTest = MixedProducerRasterVariantTest<4>;
+METALLIC_REGISTER_RHI_TEST(MixedProducerPreparedTest);
+METALLIC_REGISTER_RHI_TEST(MixedProducerLegacyTest);
+METALLIC_REGISTER_RHI_TEST(MixedProducerPlaneTest);
+METALLIC_REGISTER_RHI_TEST(MixedProducerCooperativeTest);
+METALLIC_REGISTER_RHI_TEST(MixedProducerWorkBinsTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenMixedProducerRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphVisibilityBufferPassRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenAlphaMaskRenderTest);

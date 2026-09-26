@@ -199,7 +199,9 @@ public:
                     if (expected != 0 && (source == 1 || source == 2)) { expected = 3; }
                     const uint32_t offset = kProbeHeader + pixel * 3;
                     if (values[offset] != expected || values[offset + 1] != 1 || values[offset + 2] != 32u + (((phase & 1u) != 0 && (expected & 1u) != 0) ? 100u : 0u)) {
-                        return RhiTestResult::fail("Pixel missing, duplicated, non-wave32 or in wrong feature class: " + std::to_string(pixel));
+                        return RhiTestResult::fail("Pixel missing, duplicated, non-wave32 or in wrong feature class: " + std::to_string(pixel) +
+                            " expectedClass=" + std::to_string(expected) + " actualClass=" + std::to_string(values[offset]) +
+                            " writes=" + std::to_string(values[offset + 1]) + " wave=" + std::to_string(values[offset + 2]));
                     }
                     tileClasses[(pixel / width / 4) * columns + (pixel % width / 8)] |= 1u << expected;
                 }

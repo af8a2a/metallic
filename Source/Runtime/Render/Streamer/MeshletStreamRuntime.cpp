@@ -409,7 +409,7 @@ public:
             frameIndex % static_cast<uint32_t>(updateBuffers_.size());
         if (slot >= updateBuffers_.size()) { return makeError(Error::InvalidArgument); }
         auto& updateBuffer = *updateBuffers_[slot];
-        push.updateBuffer = updateHandles_[slot].index;
+        push.updateBuffer = updateHandles_[slot].shaderIndex;
         void* mapped = updateBuffer.map();
         if (mapped == nullptr) {
             return makeError(Error::Failure);
@@ -2703,40 +2703,40 @@ Result MeshletStreamRuntime::cmdEndFrame(CommandBuffer& commandBuffer)
 MeshletStreamUserPush MeshletStreamRuntime::userPush() const
 {
     return MeshletStreamUserPush{
-        .pageBuffer = pageHandle_.index,
-        .activeGroupBuffer = activeGroupHandle_.index,
-        .pageTableBuffer = pageTableHandle_.index,
-        .paramsBuffer = paramsHandle_.index,
-        .requestBuffer = requestHandle_.index,
+        .pageBuffer = pageHandle_.shaderIndex,
+        .activeGroupBuffer = activeGroupHandle_.shaderIndex,
+        .pageTableBuffer = pageTableHandle_.shaderIndex,
+        .paramsBuffer = paramsHandle_.shaderIndex,
+        .requestBuffer = requestHandle_.shaderIndex,
         .residentPageBuffer = !residentPageFrames_.empty()
-            ? residentPageFrames_[frameIndex_ % residentPageFrames_.size()].handle.index
+            ? residentPageFrames_[frameIndex_ % residentPageFrames_.size()].handle.shaderIndex
             : 0u,
-        .updateBuffer = updatePass_ != nullptr ? updatePass_->updateHandle().index : 0u,
-        .activeHeaderBuffer = activeHeaderHandle_.index,
-        .instanceBuffer = instanceHandle_.index,
-        .primitiveBuffer = primitiveHandle_.index,
-        .lodLevelBuffer = lodLevelHandle_.index,
-        .groupBuffer = groupHandle_.index,
-        .nodeBuffer = nodeHandle_.index,
-        .drawIndirectBuffer = drawIndirectHandle_.index,
-        .traversalHeaderBuffer = traversalHeaderHandle_.index,
-        .traversalWorkBuffer = traversalWorkHandle_.index,
-        .clasAddressBuffer = clasAddressHandle_.valid() ? clasAddressHandle_.index : 0u,
-        .clasPageTableBuffer = clasPageTableHandle_.valid() ? clasPageTableHandle_.index : 0u,
-        .blasHeaderBuffer = blasHeaderHandle_.valid() ? blasHeaderHandle_.index : 0u,
-        .instanceBlasBuffer = instanceBlasHandle_.valid() ? instanceBlasHandle_.index : 0u,
-        .blasBuildInfoBuffer = blasBuildInfoHandle_.valid() ? blasBuildInfoHandle_.index : 0u,
+        .updateBuffer = updatePass_ != nullptr ? updatePass_->updateHandle().shaderIndex : 0u,
+        .activeHeaderBuffer = activeHeaderHandle_.shaderIndex,
+        .instanceBuffer = instanceHandle_.shaderIndex,
+        .primitiveBuffer = primitiveHandle_.shaderIndex,
+        .lodLevelBuffer = lodLevelHandle_.shaderIndex,
+        .groupBuffer = groupHandle_.shaderIndex,
+        .nodeBuffer = nodeHandle_.shaderIndex,
+        .drawIndirectBuffer = drawIndirectHandle_.shaderIndex,
+        .traversalHeaderBuffer = traversalHeaderHandle_.shaderIndex,
+        .traversalWorkBuffer = traversalWorkHandle_.shaderIndex,
+        .clasAddressBuffer = clasAddressHandle_.valid() ? clasAddressHandle_.shaderIndex : 0u,
+        .clasPageTableBuffer = clasPageTableHandle_.valid() ? clasPageTableHandle_.shaderIndex : 0u,
+        .blasHeaderBuffer = blasHeaderHandle_.valid() ? blasHeaderHandle_.shaderIndex : 0u,
+        .instanceBlasBuffer = instanceBlasHandle_.valid() ? instanceBlasHandle_.shaderIndex : 0u,
+        .blasBuildInfoBuffer = blasBuildInfoHandle_.valid() ? blasBuildInfoHandle_.shaderIndex : 0u,
         .blasClusterReferenceBuffer = blasClusterReferenceHandle_.valid()
-            ? blasClusterReferenceHandle_.index
+            ? blasClusterReferenceHandle_.shaderIndex
             : 0u,
         .fallbackBlasAddressBuffer = fallbackBlasAddressHandle_.valid()
-            ? fallbackBlasAddressHandle_.index
+            ? fallbackBlasAddressHandle_.shaderIndex
             : 0u,
         .dynamicBlasAddressBuffer = dynamicBlasAddressHandle_.valid()
-            ? dynamicBlasAddressHandle_.index
+            ? dynamicBlasAddressHandle_.shaderIndex
             : 0u,
-        .tlasInstanceBuffer = tlasInstanceHandle_.valid() ? tlasInstanceHandle_.index : 0u,
-        .rasterBindingsBuffer = rasterBindingsHandle_.index,
+        .tlasInstanceBuffer = tlasInstanceHandle_.valid() ? tlasInstanceHandle_.shaderIndex : 0u,
+        .rasterBindingsBuffer = rasterBindingsHandle_.shaderIndex,
         .clasPublicationRevision = clasPool_ ? uint32_t(clasPool_->stats().publicationRevision) : 0u,
     };
 }
@@ -2748,7 +2748,7 @@ Result MeshletStreamRuntime::updateRasterBindings(
         return makeError(Error::InvalidArgument);
     }
     MeshletStreamGpuRasterBindings resolved = bindings;
-    resolved.visibleClusterBuffer = visibleClusterHandle_.index;
+    resolved.visibleClusterBuffer = visibleClusterHandle_.shaderIndex;
     return updateHostBuffer(*rasterBindingsBuffer_, &resolved, sizeof(resolved));
 }
 
@@ -3473,14 +3473,14 @@ Result MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& fr
     params.enableGpuLodSelection = frame.enableGpuLodSelection ? 1u : 0u;
     params.lodPixelError = std::clamp(finiteOr(frame.lodPixelError, 1.5f), 0.05f, 16.0f) *
         std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f));
-    params.lodTopologyBuffer = lodTopologyHandle_.index;
-    params.lodStateBuffer = lodStateHandle_.index;
+    params.lodTopologyBuffer = lodTopologyHandle_.shaderIndex;
+    params.lodStateBuffer = lodStateHandle_.shaderIndex;
     const uint64_t threshold = uint64_t(distributedDemandMinGroups_) +
         (currentFrameDistributedDemand_ ? 0u : distributedDemandMinGroups_ / 8u);
     currentFrameDistributedDemand_ = distributedPageDemand_ &&
         (distributedDemandMinGroups_ == 0 || recentDemandGroupTests_ == UINT32_MAX || recentDemandGroupTests_ >= threshold);
-    params.demandBuffer = currentFrameDistributedDemand_ ? demandHandle_.index : UINT32_MAX;
-    params.demandStatsBuffer = distributedPageDemand_ ? demandHandle_.index : UINT32_MAX;
+    params.demandBuffer = currentFrameDistributedDemand_ ? demandHandle_.shaderIndex : UINT32_MAX;
+    params.demandStatsBuffer = distributedPageDemand_ ? demandHandle_.shaderIndex : UINT32_MAX;
     params.demandTaskOffset = demandTaskOffset_;
     params.demandTaskCount = demandTaskCount_;
     params.demandInstanceOffsetsOffset = demandInstanceOffsetsOffset_;

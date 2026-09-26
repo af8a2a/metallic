@@ -5,8 +5,6 @@ using Metallic.Material;
 
 struct ProbePush
 {
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
     uint vertices;
     uint queue;
     uint doubleSided;
@@ -19,12 +17,12 @@ void probeMeshMain(uint3 group : SV_GroupID, out vertices Vertex outputVertices[
     out indices uint3 triangles[1], uniform ProbePush push)
 {
     DescriptorHandle<StructuredBuffer<float4>> input =
-        DescriptorHandle<StructuredBuffer<float4>>(uint2(push.bufferShaderIndexBase + push.vertices, 0));
+        DescriptorHandle<StructuredBuffer<float4>>(uint2(push.vertices, 0));
     float4 a = input[group.x * 3u];
     float4 b = input[group.x * 3u + 1u];
     float4 c = input[group.x * 3u + 2u];
     bool queued = hybridEnqueueTriangle(a, b, c, group.x + 1u, push.doubleSided != 0,
-        push.queue, push.bufferShaderIndexBase);
+        push.queue);
     SetMeshOutputCounts(3, 1);
     outputVertices[0].position = a;
     outputVertices[1].position = b;

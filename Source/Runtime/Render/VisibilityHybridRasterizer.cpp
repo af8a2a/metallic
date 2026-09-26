@@ -38,9 +38,9 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
         result = heap_->allocateBuffer(handle);
         if (result) { result = heap_->writeStorageBuffer(handle, *buffers_[i]); }
         if (!result) { return result; }
-        if (i == 0) { push_.queueBuffer = handle.index; }
-        if (i == 1) { push_.pixelBuffer = handle.index; }
-        if (i == 2) { push_.argumentsBuffer = handle.index; }
+        if (i == 0) { push_.queueBuffer = handle.shaderIndex; }
+        if (i == 1) { push_.pixelBuffer = handle.shaderIndex; }
+        if (i == 2) { push_.argumentsBuffer = handle.shaderIndex; }
     }
     const uint64_t clusterSizes[] = {64ull + uint64_t(clusterCapacity) * 9u * 4u + ((clusterCapacity + 127u) / 128u) * 5ull * 4u, 5u * 12u};
     for (size_t i = 0; i < 2; ++i) {
@@ -54,7 +54,7 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
         result = heap_->allocateBuffer(handle);
         if (result) { result = heap_->writeStorageBuffer(handle, *buffer); }
         if (!result) { return result; }
-        if (i == 0) { push_.clusterBuffer = handle.index; } else { push_.clusterArgumentsBuffer = handle.index; }
+        if (i == 0) { push_.clusterBuffer = handle.shaderIndex; } else { push_.clusterArgumentsBuffer = handle.shaderIndex; }
     }
     const char* clusterEntries[] = {"hybridClusterResetMain", "hybridClusterHistogramMain",
         "hybridClusterArgumentsMain", "hybridClusterScatterMain"};

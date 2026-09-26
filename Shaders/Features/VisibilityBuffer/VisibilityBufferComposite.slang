@@ -6,7 +6,7 @@ using Metallic.Material;
 // Debug consumer ABI; the raster push layout remains unchanged.
 struct VisibilityBufferCompositePush
 {
-    uint imageShaderIndexBase, bufferShaderIndexBase;
+
     uint paramsBuffer, visibilityImage, depthImage;
     uint residentRecords, meshletBuffer, residentRecordCapacity;
     uint streamRecords, streamGroups;
@@ -72,9 +72,9 @@ bool visibilityDebugIdentity(uint index, VisibilityBufferCompositePush push,
     uint count, stride;
     if (index < push.residentRecordCapacity) {
         DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> recordsHandle =
-            DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.bufferShaderIndexBase + push.residentRecords, 0));
+            DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.residentRecords, 0));
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> clustersHandle =
-            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.bufferShaderIndexBase + push.meshletBuffer, 0));
+            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.meshletBuffer, 0));
         StructuredBuffer<VisibleClusterRecord> records = recordsHandle;
         StructuredBuffer<GPUDrivenPreviewMeshlet> clusters = clustersHandle;
         records.GetDimensions(count, stride);
@@ -88,9 +88,9 @@ bool visibilityDebugIdentity(uint index, VisibilityBufferCompositePush push,
     }
     if (push.streamRecords == 0xffffffffu || push.streamGroups == 0xffffffffu) { return false; }
     DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> recordsHandle =
-        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.bufferShaderIndexBase + push.streamRecords, 0));
+        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.streamRecords, 0));
     DescriptorHandle<StructuredBuffer<VisibilityDebugActiveGroup>> groupsHandle =
-        DescriptorHandle<StructuredBuffer<VisibilityDebugActiveGroup>>(uint2(push.bufferShaderIndexBase + push.streamGroups, 0));
+        DescriptorHandle<StructuredBuffer<VisibilityDebugActiveGroup>>(uint2(push.streamGroups, 0));
     StructuredBuffer<VisibleClusterRecord> records = recordsHandle;
     StructuredBuffer<VisibilityDebugActiveGroup> groups = groupsHandle;
     index -= push.residentRecordCapacity;
@@ -186,10 +186,10 @@ float4 visibilityBufferCompositeFragmentMain(
 {
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(
-            push.bufferShaderIndexBase + push.paramsBuffer, 0));
+            push.paramsBuffer, 0));
     DescriptorHandle<Texture2D<uint>> visibilityHandle =
         DescriptorHandle<Texture2D<uint>>(uint2(
-            push.imageShaderIndexBase + push.visibilityImage, 0));
+            push.visibilityImage, 0));
     GPUDrivenPreviewParams params = paramsHandle[0];
     uint2 pixel = min(uint2(input.position.xy), uint2(params.width - 1u, params.height - 1u));
     Texture2D<uint> visibility = visibilityHandle;
@@ -202,7 +202,7 @@ float4 visibilityBufferCompositeFragmentMain(
     if (params.mode == 4u) {
         DescriptorHandle<Texture2D<float>> depthHandle =
             DescriptorHandle<Texture2D<float>>(uint2(
-                push.imageShaderIndexBase + push.depthImage, 0));
+                push.depthImage, 0));
         Texture2D<float> depth = depthHandle;
         float z = saturate(depth.Load(int3(pixel, 0)));
         return float4(z, z, z, 1.0);
@@ -219,7 +219,7 @@ float4 visibilityBufferCompositeFragmentMain(
     float3 color = visibilityHashColor(seed);
     if (push.shadedColors != 0u) {
         DescriptorHandle<Texture2D<float>> depthHandle = DescriptorHandle<Texture2D<float>>(
-            uint2(push.imageShaderIndexBase + push.depthImage, 0));
+            uint2(push.depthImage, 0));
         Texture2D<float> depth = depthHandle;
         color *= debugGeometryLighting(pixel, visibility, depth, params);
     }

@@ -6,8 +6,6 @@ namespace Metallic
 // Shared with ComputeProgram. Slots contain absolute descriptor indices or RTAS addresses.
 public struct ComputeResourcePush
 {
-    public uint imageShaderIndexBase;
-    public uint bufferShaderIndexBase;
     public uint2* resources;
     public uint* constants;
 };
@@ -19,12 +17,12 @@ public struct ComputeResourcePush
 
 public T getResource<T : IOpaqueDescriptor>(uint slot)
 {
-    return *DescriptorHandle<T>(gComputeResources.resources[slot]);
+    return resolveDescriptor(DescriptorHandle<T>(gComputeResources.resources[slot]));
 }
 
 public T getResourceArray<T : IOpaqueDescriptor>(uint slot, uint index)
 {
-    return *nonuniform(DescriptorHandle<T>(uint2(gComputeResources.resources[slot].x + index, 0)));
+    return resolveDescriptor(nonuniform(DescriptorHandle<T>(uint2(gComputeResources.resources[slot].x + index, 0))));
 }
 
 public T getConstants<T>()

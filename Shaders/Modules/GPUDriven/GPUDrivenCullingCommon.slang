@@ -197,7 +197,7 @@ public float loadHzb(
 {
     uint handleIndex = hzbBufferIndex == 0 ? push.hzbBuffer0 : push.hzbBuffer1;
     DescriptorHandle<RWStructuredBuffer<float>> hzbHandle =
-        DescriptorHandle<RWStructuredBuffer<float>>(uint2(push.bufferShaderIndexBase + handleIndex, 0));
+        DescriptorHandle<RWStructuredBuffer<float>>(uint2(handleIndex, 0));
     return hzbHandle[elementIndex];
 }
 

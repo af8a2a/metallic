@@ -4,10 +4,9 @@ struct ImageSampleVertexOutput
     float2 uv : TEXCOORD0;
 };
 
-struct BindlessHeapPush
+struct SampledImagePush
 {
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
+    uint sourceImage;
 };
 
 static const float2 kFullscreenTrianglePositions[3] =
@@ -34,10 +33,10 @@ ImageSampleVertexOutput imageSampleVertexMain(uint vertexIndex : SV_VertexID)
 }
 
 [shader("fragment")]
-float4 imageSampleFragmentMain(ImageSampleVertexOutput input, uniform BindlessHeapPush bindless) : SV_Target0
+float4 imageSampleFragmentMain(ImageSampleVertexOutput input, uniform SampledImagePush bindless) : SV_Target0
 {
     DescriptorHandle<Texture2D<float4>> imageHandle =
-        DescriptorHandle<Texture2D<float4>>(uint2(bindless.imageShaderIndexBase, 0));
+        DescriptorHandle<Texture2D<float4>>(uint2(bindless.sourceImage, 0));
     Texture2D<float4> image = imageHandle;
 
     uint width = 1;

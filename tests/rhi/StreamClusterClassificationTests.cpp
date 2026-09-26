@@ -246,10 +246,10 @@ public:
                 params.renderEye[0] = .2f; params.renderEye[3] = .35f; params.renderCenter[3] = -.2f;
             }
             params.pageBufferBytes = pageBytes; params.drawTaskCount = capacity * 2; params.scenePageCount = 3;
-            MeshletStreamGpuRasterBindings bindings{.visibleClusterBuffer = handles[Records].index,
-                .instanceVisibilityBuffer = handles[Visibility].index, .hzbBuffer0 = handles[Hzb0].index, .hzbBuffer1 = handles[Hzb1].index,
+            MeshletStreamGpuRasterBindings bindings{.visibleClusterBuffer = handles[Records].shaderIndex,
+                .instanceVisibilityBuffer = handles[Visibility].shaderIndex, .hzbBuffer0 = handles[Hzb0].shaderIndex, .hzbBuffer1 = handles[Hzb1].shaderIndex,
                 .visibleRecordBase = 371, .visibleRecordCapacity = capacity, .hzbMipCount = 8, .hzbValid = 1,
-                .cullingFlags = test.culling, .width = 128, .height = 128, .gpuSceneInstanceBuffer = handles[Instances].index,
+                .cullingFlags = test.culling, .width = 128, .height = 128, .gpuSceneInstanceBuffer = handles[Instances].shaderIndex,
                 .tessellationBuffer = test.tessellation ? 0u : UINT32_MAX,
                 .classificationFlags = (test.dense || test.disableMetadata) ? 1u : 0u};
             std::array<uint32_t, instanceCount> visibility;
@@ -287,11 +287,11 @@ public:
                     CLASSIFY_REQUIRE(commands->begin());
                     CLASSIFY_REQUIRE(rasterizer.beginClusters(*commands, test.maxPixels, test.reversed, 0, capacity, true, true));
                     commands->bindBindlessHeap(*heap);
-                    MeshletStreamUserPush push{.pageBuffer = handles[Pages].index, .activeGroupBuffer = handles[Groups].index,
-                        .pageTableBuffer = handles[PageTable].index, .paramsBuffer = handles[Params].index,
-                        .requestBuffer = handles[Requests].index, .activeHeaderBuffer = handles[Header].index,
-                        .traversalPhase = phase, .rasterBindingsBuffer = handles[Bindings].index,
-                        .hybridQueueBuffer = handles[13 + bufferSet * 2].index, .hybridClusterBuffer = handles[12 + bufferSet * 2].index};
+                    MeshletStreamUserPush push{.pageBuffer = handles[Pages].shaderIndex, .activeGroupBuffer = handles[Groups].shaderIndex,
+                        .pageTableBuffer = handles[PageTable].shaderIndex, .paramsBuffer = handles[Params].shaderIndex,
+                        .requestBuffer = handles[Requests].shaderIndex, .activeHeaderBuffer = handles[Header].shaderIndex,
+                        .traversalPhase = phase, .rasterBindingsBuffer = handles[Bindings].shaderIndex,
+                        .hybridQueueBuffer = handles[13 + bufferSet * 2].shaderIndex, .hybridClusterBuffer = handles[12 + bufferSet * 2].shaderIndex};
                     CLASSIFY_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, *pipelines[0], push));
                     if (schedule != 0) {
                         commands->bindComputePipeline(*pipelines[4]);
@@ -342,7 +342,7 @@ public:
                     if (schedule != 0) {
                         commands->bindBindlessHeap(*heap);
                         auto diagnosticPush = push;
-                        diagnosticPush.hybridQueueBuffer = handles[16 + bufferSet].index;
+                        diagnosticPush.hybridQueueBuffer = handles[16 + bufferSet].shaderIndex;
                         BufferBarrierDesc ready{.buffer = &rasterizer.workloadBuffer(), .before = ResourceState::General, .after = ResourceState::General};
                         commands->barrier({.buffers = &ready, .bufferCount = 1});
                         commands->bindComputePipeline(*pipelines[5]);

@@ -154,9 +154,9 @@ public:
                 commands->setViewport({.width = float(width), .height = 1.f, .maxDepth = 1.f});
                 commands->setScissor({.width = width, .height = 1});
                 commands->bindBindlessHeap(*heap); commands->bindGraphicsPipeline(*pipeline);
-                const VisibilityBufferCompositeUserPush push{.paramsBuffer = handles[Params].index, .visibilityImage = images[0].index,
-                    .depthImage = images[1].index, .residentRecords = handles[Resident].index, .meshletBuffer = handles[Clusters].index,
-                    .residentRecordCapacity = base, .streamRecords = handles[Stream].index, .streamGroups = handles[Groups].index};
+                const VisibilityBufferCompositeUserPush push{.paramsBuffer = handles[Params].shaderIndex, .visibilityImage = images[0].shaderIndex,
+                    .depthImage = images[1].shaderIndex, .residentRecords = handles[Resident].shaderIndex, .meshletBuffer = handles[Clusters].shaderIndex,
+                    .residentRecordCapacity = base, .streamRecords = handles[Stream].shaderIndex, .streamGroups = handles[Groups].shaderIndex};
                 commands->pushBindlessData(&push, sizeof(push)); commands->draw(3); commands->endRendering();
                 barrier.before = ResourceState::ColorAttachment; barrier.after = ResourceState::TransferSource;
                 commands->barrier({.textures = &barrier, .textureCount = 1});

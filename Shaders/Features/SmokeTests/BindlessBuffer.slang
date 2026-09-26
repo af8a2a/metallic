@@ -1,7 +1,5 @@
 struct BindlessBufferPush
 {
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
     uint inputBuffer;
     uint outputBuffer;
     uint passIndex;
@@ -27,9 +25,9 @@ struct Element
 void bindlessBufferConstantMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform BindlessBufferPush push)
 {
     DescriptorHandle<ConstantBuffer<ConstantData>> inputHandle =
-        DescriptorHandle<ConstantBuffer<ConstantData>>(uint2(push.bufferShaderIndexBase + push.inputBuffer, 0));
+        DescriptorHandle<ConstantBuffer<ConstantData>>(uint2(push.inputBuffer, 0));
     DescriptorHandle<RWByteAddressBuffer> outputHandle =
-        DescriptorHandle<RWByteAddressBuffer>(uint2(push.bufferShaderIndexBase + push.outputBuffer, 0));
+        DescriptorHandle<RWByteAddressBuffer>(uint2(push.outputBuffer, 0));
 
     outputHandle->Store4(0, uint4((*inputHandle).x, (*inputHandle).y, (*inputHandle).z, (*inputHandle).w));
 }
@@ -39,9 +37,9 @@ void bindlessBufferConstantMain(uint3 dispatchThreadId : SV_DispatchThreadID, un
 void bindlessBufferStructuredMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform BindlessBufferPush push)
 {
     DescriptorHandle<StructuredBuffer<Element>> inputHandle =
-        DescriptorHandle<StructuredBuffer<Element>>(uint2(push.bufferShaderIndexBase + push.inputBuffer, 0));
+        DescriptorHandle<StructuredBuffer<Element>>(uint2(push.inputBuffer, 0));
     DescriptorHandle<RWByteAddressBuffer> outputHandle =
-        DescriptorHandle<RWByteAddressBuffer>(uint2(push.bufferShaderIndexBase + push.outputBuffer, 0));
+        DescriptorHandle<RWByteAddressBuffer>(uint2(push.outputBuffer, 0));
 
     const uint index = dispatchThreadId.x;
     const Element element = (*inputHandle)[index];
@@ -53,9 +51,9 @@ void bindlessBufferStructuredMain(uint3 dispatchThreadId : SV_DispatchThreadID, 
 void bindlessBufferRwStructuredMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform BindlessBufferPush push)
 {
     DescriptorHandle<RWStructuredBuffer<Element>> inputHandle =
-        DescriptorHandle<RWStructuredBuffer<Element>>(uint2(push.bufferShaderIndexBase + push.inputBuffer, 0));
+        DescriptorHandle<RWStructuredBuffer<Element>>(uint2(push.inputBuffer, 0));
     DescriptorHandle<RWByteAddressBuffer> outputHandle =
-        DescriptorHandle<RWByteAddressBuffer>(uint2(push.bufferShaderIndexBase + push.outputBuffer, 0));
+        DescriptorHandle<RWByteAddressBuffer>(uint2(push.outputBuffer, 0));
 
     const uint index = dispatchThreadId.x;
     if (push.passIndex == 0) {
@@ -74,9 +72,9 @@ void bindlessBufferRwStructuredMain(uint3 dispatchThreadId : SV_DispatchThreadID
 void bindlessBufferByteAddressMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform BindlessBufferPush push)
 {
     DescriptorHandle<ByteAddressBuffer> inputHandle =
-        DescriptorHandle<ByteAddressBuffer>(uint2(push.bufferShaderIndexBase + push.inputBuffer, 0));
+        DescriptorHandle<ByteAddressBuffer>(uint2(push.inputBuffer, 0));
     DescriptorHandle<RWByteAddressBuffer> outputHandle =
-        DescriptorHandle<RWByteAddressBuffer>(uint2(push.bufferShaderIndexBase + push.outputBuffer, 0));
+        DescriptorHandle<RWByteAddressBuffer>(uint2(push.outputBuffer, 0));
 
     const uint v0 = inputHandle->Load(0);
     const uint2 v1 = inputHandle->Load2(4);
@@ -91,9 +89,9 @@ void bindlessBufferByteAddressMain(uint3 dispatchThreadId : SV_DispatchThreadID,
 void bindlessBufferRwByteAddressMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform BindlessBufferPush push)
 {
     DescriptorHandle<RWByteAddressBuffer> inputHandle =
-        DescriptorHandle<RWByteAddressBuffer>(uint2(push.bufferShaderIndexBase + push.inputBuffer, 0));
+        DescriptorHandle<RWByteAddressBuffer>(uint2(push.inputBuffer, 0));
     DescriptorHandle<RWByteAddressBuffer> outputHandle =
-        DescriptorHandle<RWByteAddressBuffer>(uint2(push.bufferShaderIndexBase + push.outputBuffer, 0));
+        DescriptorHandle<RWByteAddressBuffer>(uint2(push.outputBuffer, 0));
 
     if (push.passIndex == 0) {
         inputHandle->Store(0, 0xDEADBEEFu);
@@ -114,7 +112,7 @@ void bindlessBufferRwByteAddressMain(uint3 dispatchThreadId : SV_DispatchThreadI
 void bindlessBufferAtomicsMain(uint3 dispatchThreadId : SV_DispatchThreadID, uniform BindlessBufferPush push)
 {
     DescriptorHandle<RWByteAddressBuffer> outputHandle =
-        DescriptorHandle<RWByteAddressBuffer>(uint2(push.bufferShaderIndexBase + push.outputBuffer, 0));
+        DescriptorHandle<RWByteAddressBuffer>(uint2(push.outputBuffer, 0));
 
     const uint threadId = dispatchThreadId.x + dispatchThreadId.y * 8u;
     uint original = 0;

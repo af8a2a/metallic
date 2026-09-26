@@ -85,7 +85,7 @@ public:
             {.buffer = buffers[1].get(), .before = ResourceState::Undefined, .after = ResourceState::General}};
         commands->barrier({.buffers = barriers, .bufferCount = 2});
         commands->bindBindlessHeap(*heap); commands->bindComputePipeline(*pipeline);
-        const uint32_t push[] = {handles[0].index, handles[1].index};
+        const uint32_t push[] = {handles[0].shaderIndex, handles[1].shaderIndex};
         commands->pushBindlessData(push, sizeof(push)); commands->dispatch(count / 16);
         TESS_REQUIRE(commands->end());
         CommandBuffer* list[] = {commands.get()};

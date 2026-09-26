@@ -59,7 +59,7 @@ float4 projectStreamClassifyPosition(float3 worldPosition, StreamClassifyDesc c)
 float4 streamClassifyClip(StreamClassifyDesc c, uint vertex, GPUDrivenStreamAssetPush push)
 {
     DescriptorHandle<StructuredBuffer<uint>> pages =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
     uint word = c.positionWord + vertex * c.positionStrideWords;
     float3 local = float3(asfloat(pages[word]), asfloat(pages[word + 1u]), asfloat(pages[word + 2u]));
     float3 world = c.world0.xyz * local.x + c.world1.xyz * local.y +
@@ -72,7 +72,7 @@ float4 streamClassifyClip(StreamClassifyDesc c, uint vertex, GPUDrivenStreamAsse
 uint3 streamClassifyTriangle(StreamClassifyDesc c, uint triangle, GPUDrivenStreamAssetPush push)
 {
     DescriptorHandle<StructuredBuffer<uint>> pages =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.pageBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
     uint address = c.triangleBaseByte + triangle * 3u;
     uint3 indices = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));
     // Retain the existing malformed-index fallback in the stream HW decoder.
@@ -88,7 +88,7 @@ uint3 streamClassifyTriangle(StreamClassifyDesc c, uint triangle, GPUDrivenStrea
 void classifyStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool checkHardware)
 {
     DescriptorHandle<RWStructuredBuffer<uint>> handle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
     RWStructuredBuffer<uint> bins = handle;
     uint work = hybridFlatGroup(group);
     if (work >= bins[0]) { return; }
@@ -98,11 +98,11 @@ void classifyStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push
     // P1 cull guarantees every queued item is eligible for exact classification.
     // Only the P0 comparison entry retains the dependent bindings/instance loads.
     if (checkHardware) {
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> raster = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.bufferShaderIndexBase + push.rasterBindingsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> raster = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
         bool needsCoverage = false;
         if (raster[0].gpuSceneInstanceBuffer != 0xffffffffu) {
-            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
-            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(push.bufferShaderIndexBase + raster[0].gpuSceneInstanceBuffer, 0));
+            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.activeGroupBuffer, 0));
+            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(raster[0].gpuSceneInstanceBuffer, 0));
             needsCoverage = (instances[groups[record / bins[13]].gpuSceneInstanceIndex].identity.w & 12u) != 0u;
         }
         if (raster[0].tessellationBuffer != 0xffffffffu || needsCoverage) {
@@ -114,9 +114,9 @@ void classifyStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push
     // independent loads; the existing group barrier publishes them to all 128 lanes.
     if (lane < WaveGetLaneCount()) {
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> params =
-            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups =
-            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.bufferShaderIndexBase + push.activeGroupBuffer, 0));
+            DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.activeGroupBuffer, 0));
         bool renderCamera = params[0].renderViewport.y > 0.0;
         uint groupIndex = record / bins[13];
         // Also covers subgroups smaller than the number of descriptor fields.

@@ -1,7 +1,5 @@
 struct MaterialShaderObjectPush
 {
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
     uint positionBuffer;
     uint materialIndexBuffer;
     uint materialBuffer;
@@ -85,13 +83,13 @@ float4 projectPosition(float3 worldPosition, MaterialCameraParams params)
 MaterialVertexOutput materialShaderObjectVertexMain(uint vertexIndex : SV_VertexID, uniform MaterialShaderObjectPush push)
 {
     DescriptorHandle<StructuredBuffer<float4>> positionHandle =
-        DescriptorHandle<StructuredBuffer<float4>>(uint2(push.bufferShaderIndexBase + push.positionBuffer, 0));
+        DescriptorHandle<StructuredBuffer<float4>>(uint2(push.positionBuffer, 0));
     DescriptorHandle<StructuredBuffer<uint>> materialIndexHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.materialIndexBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.materialIndexBuffer, 0));
     DescriptorHandle<StructuredBuffer<MaterialCameraParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<MaterialCameraParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<MaterialCameraParams>>(uint2(push.paramsBuffer, 0));
     DescriptorHandle<StructuredBuffer<SceneTransform>> transformHandle =
-        DescriptorHandle<StructuredBuffer<SceneTransform>>(uint2(push.bufferShaderIndexBase + push.transformBuffer, 0));
+        DescriptorHandle<StructuredBuffer<SceneTransform>>(uint2(push.transformBuffer, 0));
 
     StructuredBuffer<float4> positions = positionHandle;
     StructuredBuffer<uint> materialIndices = materialIndexHandle;
@@ -117,7 +115,7 @@ MaterialVertexOutput materialShaderObjectVertexMain(uint vertexIndex : SV_Vertex
 float4 materialShaderObjectFragmentMain(MaterialVertexOutput input, uniform MaterialShaderObjectPush push) : SV_Target0
 {
     DescriptorHandle<StructuredBuffer<float4>> materialHandle =
-        DescriptorHandle<StructuredBuffer<float4>>(uint2(push.bufferShaderIndexBase + push.materialBuffer, 0));
+        DescriptorHandle<StructuredBuffer<float4>>(uint2(push.materialBuffer, 0));
     StructuredBuffer<float4> materials = materialHandle;
     return materials[input.materialIndex];
 }
@@ -126,7 +124,7 @@ float4 materialShaderObjectFragmentMain(MaterialVertexOutput input, uniform Mate
 float4 materialShaderObjectAlternateFragmentMain(MaterialVertexOutput input, uniform MaterialShaderObjectPush push) : SV_Target0
 {
     DescriptorHandle<StructuredBuffer<float4>> materialHandle =
-        DescriptorHandle<StructuredBuffer<float4>>(uint2(push.bufferShaderIndexBase + push.materialBuffer, 0));
+        DescriptorHandle<StructuredBuffer<float4>>(uint2(push.materialBuffer, 0));
     StructuredBuffer<float4> materials = materialHandle;
     float4 baseColor = materials[input.materialIndex];
     float3 shifted = lerp(baseColor.rgb, baseColor.gbr, 0.45);

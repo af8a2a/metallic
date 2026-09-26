@@ -3,10 +3,9 @@ struct BindlessSmokeVertexOutput
     float4 position : SV_Position;
 };
 
-struct BindlessHeapPush
+struct SampledImagePush
 {
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
+    uint sourceImage;
 };
 
 static const float2 kFullscreenTrianglePositions[3] =
@@ -25,10 +24,10 @@ BindlessSmokeVertexOutput bindlessSmokeVertexMain(uint vertexIndex : SV_VertexID
 }
 
 [shader("fragment")]
-float4 bindlessSmokeFragmentMain(uniform BindlessHeapPush bindless) : SV_Target0
+float4 bindlessSmokeFragmentMain(uniform SampledImagePush bindless) : SV_Target0
 {
     DescriptorHandle<Texture2D<float4>> sourceHandle =
-        DescriptorHandle<Texture2D<float4>>(uint2(bindless.imageShaderIndexBase, 0));
+        DescriptorHandle<Texture2D<float4>>(uint2(bindless.sourceImage, 0));
     Texture2D<float4> source = sourceHandle;
     return source.Load(int3(0, 0, 0));
 }

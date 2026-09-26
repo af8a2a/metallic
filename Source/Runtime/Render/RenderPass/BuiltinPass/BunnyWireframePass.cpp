@@ -261,9 +261,9 @@ public:
             .depthCompareOp = depthCompareOp(reversedZ),
         });
         const BunnyWireframeUserPush push{
-            .paramsBuffer = paramsHandle_.index,
-            .positionBuffer = positionHandle_.index,
-            .transformBuffer = transformHandle_.index,
+            .paramsBuffer = paramsHandle_.shaderIndex,
+            .positionBuffer = positionHandle_.shaderIndex,
+            .transformBuffer = transformHandle_.shaderIndex,
         };
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
         context.commandBuffer().draw(drawVertexCount_);

@@ -101,8 +101,8 @@ public:
         if (!result) { return result; }
         uint32_t mips = 0;
         hzbElements(context.width(), context.height(), mips);
-        const render::HzbSpdUserPush push{.depthImage = depth_.index, .hzbBuffer = data_.index,
-            .counterBuffer = counter_.index, .width = context.width(), .height = context.height(),
+        const render::HzbSpdUserPush push{.depthImage = depth_.shaderIndex, .hzbBuffer = data_.shaderIndex,
+            .counterBuffer = counter_.shaderIndex, .width = context.width(), .height = context.height(),
             .mipCount = mips, .reversedZ = reversed};
         context.commandBuffer().bindBindlessHeap(*heap_);
         context.commandBuffer().bindComputePipeline(*pipeline_);

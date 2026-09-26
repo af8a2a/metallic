@@ -78,7 +78,7 @@ VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool
         render::ShaderCompileResult shader;
         if (!render::compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/EditorDisplay",
                 .entryPointName = entries[index], .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-                .macroDefines = defines, .macroDefineCount = 4}, shader)) {
+                .macroDefines = defines, .macroDefineCount = 4, .descriptorHeapMode = render::SlangDescriptorHeapMode::Mapped}, shader)) {
             spdlog::error("Editor display shader: {}", shader.diagnostics);
             destroyModules();
             return VK_NULL_HANDLE;

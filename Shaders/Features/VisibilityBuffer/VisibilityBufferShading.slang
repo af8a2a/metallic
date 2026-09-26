@@ -533,23 +533,23 @@ bool decodeStreamDeferredSurface(
 
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredParams>> streamParamsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredParams>>(uint2(
-            push.bufferShaderIndexBase + bindings.paramsBuffer,
+            bindings.paramsBuffer,
             0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredActiveHeader>> activeHeaderHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredActiveHeader>>(uint2(
-            push.bufferShaderIndexBase + bindings.activeHeaderBuffer,
+            bindings.activeHeaderBuffer,
             0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredActiveGroup>> activeGroupHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredActiveGroup>>(uint2(
-            push.bufferShaderIndexBase + bindings.activeGroupBuffer,
+            bindings.activeGroupBuffer,
             0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredPageTableEntry>> pageTableHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredPageTableEntry>>(uint2(
-            push.bufferShaderIndexBase + bindings.pageTableBuffer,
+            bindings.pageTableBuffer,
             0));
     DescriptorHandle<StructuredBuffer<uint>> pageHandle =
         DescriptorHandle<StructuredBuffer<uint>>(uint2(
-            push.bufferShaderIndexBase + bindings.pageBuffer,
+            bindings.pageBuffer,
             0));
     StructuredBuffer<GPUDrivenStreamDeferredParams> streamParamsBuffer = streamParamsHandle;
     StructuredBuffer<GPUDrivenStreamDeferredActiveHeader> activeHeaders = activeHeaderHandle;
@@ -764,7 +764,7 @@ bool decodeStreamDeferredSurface(
     }
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instanceHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(
-            push.bufferShaderIndexBase + push.instanceBuffer,
+            push.instanceBuffer,
             0));
     StructuredBuffer<GPUDrivenPreviewInstance> instances = instanceHandle;
     GPUDrivenPreviewInstance instance = instances[record.instanceIndex];
@@ -837,12 +837,12 @@ float4 sampleMaterialTexture(
     }
     DescriptorHandle<StructuredBuffer<uint>> remapHandle =
         DescriptorHandle<StructuredBuffer<uint>>(uint2(
-            push.bufferShaderIndexBase + push.materialTextureRemapBuffer,
+            push.materialTextureRemapBuffer,
             0));
     StructuredBuffer<uint> remap = remapHandle;
     DescriptorHandle<Texture2D<float4>> textureHandle =
         DescriptorHandle<Texture2D<float4>>(uint2(
-            push.imageShaderIndexBase + remap[textureInfo.textureIndex],
+            remap[textureInfo.textureIndex],
             0));
     Texture2D<float4> texture = textureHandle;
     return sampleImageBilinear(texture, transformMaterialUv(textureInfo, uv), true);
@@ -875,7 +875,7 @@ float3 environmentRadiance(float3 direction, GPUDrivenPreviewParams params, GPUD
         return proceduralSky(direction, params.environmentRotationRadians) * params.environmentIntensity;
     }
     DescriptorHandle<Texture2D<float4>> environmentHandle =
-        DescriptorHandle<Texture2D<float4>>(uint2(push.imageShaderIndexBase + push.environmentImage, 0));
+        DescriptorHandle<Texture2D<float4>>(uint2(push.environmentImage, 0));
     Texture2D<float4> environmentMap = environmentHandle;
     return max(
         sampleImageBilinear(
@@ -898,7 +898,7 @@ float3 environmentSHIrradiance(
         direction.x * sine + direction.z * cosine);
     DescriptorHandle<StructuredBuffer<float4>> coefficientsHandle =
         DescriptorHandle<StructuredBuffer<float4>>(uint2(
-            push.bufferShaderIndexBase + push.environmentSHBuffer,
+            push.environmentSHBuffer,
             0));
     StructuredBuffer<float4> coefficients = coefficientsHandle;
     SH::IrradianceL2RGB environment = SH::loadIrradianceL2RGB(coefficients);
@@ -960,7 +960,7 @@ uint shadeDeferredSurface(
     uint materialIndex = min(surface.materialIndex, max(params.materialCount, 1u) - 1u);
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materialHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(uint2(
-            push.bufferShaderIndexBase + push.materialBuffer,
+            push.materialBuffer,
             0));
     StructuredBuffer<GPUDrivenPreviewMaterial> materials = materialHandle;
     GPUDrivenPreviewMaterial material = materials[materialIndex];
@@ -1091,10 +1091,10 @@ bool decodeResidentVisibilitySurface(
     }
 
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> meshletHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.bufferShaderIndexBase + push.meshletBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.meshletBuffer, 0));
     DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> meshletDrawHandle =
         DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(
-            push.bufferShaderIndexBase + push.meshletDrawBuffer,
+            push.meshletDrawBuffer,
             0));
     StructuredBuffer<GPUDrivenPreviewMeshlet> meshlets = meshletHandle;
     StructuredBuffer<VisibleClusterRecord> meshletDraws = meshletDrawHandle;
@@ -1110,11 +1110,11 @@ bool decodeResidentVisibilitySurface(
 
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewGeometry>> geometryHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewGeometry>>(uint2(
-            push.bufferShaderIndexBase + push.transformBuffer,
+            push.transformBuffer,
             0));
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instanceHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(
-            push.bufferShaderIndexBase + push.instanceBuffer,
+            push.instanceBuffer,
             0));
     StructuredBuffer<GPUDrivenPreviewGeometry> geometries = geometryHandle;
     StructuredBuffer<GPUDrivenPreviewInstance> instances = instanceHandle;
@@ -1130,11 +1130,11 @@ bool decodeResidentVisibilitySurface(
     }
 
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vertexHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(uint2(push.bufferShaderIndexBase + push.positionBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(uint2(push.positionBuffer, 0));
     DescriptorHandle<StructuredBuffer<uint>> meshletVertexHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.meshletVertexBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.meshletVertexBuffer, 0));
     DescriptorHandle<StructuredBuffer<uint>> meshletTriangleHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.meshletTriangleBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.meshletTriangleBuffer, 0));
     StructuredBuffer<GPUDrivenPreviewVertex> vertices = vertexHandle;
     StructuredBuffer<uint> meshletVertices = meshletVertexHandle;
     StructuredBuffer<uint> meshletTriangles = meshletTriangleHandle;
@@ -1201,7 +1201,7 @@ bool decodeStreamVisibilitySurface(
     }
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredBindings>> bindingsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamDeferredBindings>>(uint2(
-            push.bufferShaderIndexBase + push.streamDeferredBindingsBuffer,
+            push.streamDeferredBindingsBuffer,
             0));
     StructuredBuffer<GPUDrivenStreamDeferredBindings> bindingsBuffer = bindingsHandle;
     GPUDrivenStreamDeferredBindings bindings = bindingsBuffer[0];
@@ -1217,7 +1217,7 @@ bool decodeStreamVisibilitySurface(
     uint localRecordIndex = recordIndex - bindings.visibleRecordBase;
     DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> streamRecordHandle =
         DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(
-            push.bufferShaderIndexBase + bindings.visibleClusterBuffer,
+            bindings.visibleClusterBuffer,
             0));
     StructuredBuffer<VisibleClusterRecord> streamRecords = streamRecordHandle;
     VisibleClusterRecord record = streamRecords[localRecordIndex];
@@ -1249,7 +1249,7 @@ void visibilityBufferShadeMain(
 {
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(
-            push.bufferShaderIndexBase + push.paramsBuffer, 0));
+            push.paramsBuffer, 0));
     GPUDrivenPreviewParams params = paramsHandle[0];
     if (dispatchThreadId.x >= params.width || dispatchThreadId.y >= params.height) {
         return;
@@ -1257,10 +1257,10 @@ void visibilityBufferShadeMain(
 
     DescriptorHandle<Texture2D<uint>> visibilityHandle =
         DescriptorHandle<Texture2D<uint>>(uint2(
-            push.imageShaderIndexBase + push.visibilityImage, 0));
+            push.visibilityImage, 0));
     DescriptorHandle<RWStructuredBuffer<uint>> colorHandle =
         DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            push.bufferShaderIndexBase + push.deferredColorBuffer, 0));
+            push.deferredColorBuffer, 0));
     Texture2D<uint> visibility = visibilityHandle;
     RWStructuredBuffer<uint> colors = colorHandle;
     uint packedVisibility = visibility.Load(int3(dispatchThreadId.xy, 0));

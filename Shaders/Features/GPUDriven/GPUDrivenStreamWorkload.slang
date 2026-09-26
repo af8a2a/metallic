@@ -9,7 +9,7 @@
 void streamWorkloadResetMain(uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
     DescriptorHandle<RWStructuredBuffer<uint64_t>> counters =
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(push.bufferShaderIndexBase + push.hybridQueueBuffer, 0));
+        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(push.hybridQueueBuffer, 0));
     counters[lane] = 0;
 }
 
@@ -18,9 +18,9 @@ void streamWorkloadResetMain(uint lane : SV_GroupIndex, uniform GPUDrivenStreamA
 void streamWorkloadMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
 {
     DescriptorHandle<StructuredBuffer<uint>> bins =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<uint64_t>> handle =
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(push.bufferShaderIndexBase + push.hybridQueueBuffer, 0));
+        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(push.hybridQueueBuffer, 0));
     RWStructuredBuffer<uint64_t> counters = handle;
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }

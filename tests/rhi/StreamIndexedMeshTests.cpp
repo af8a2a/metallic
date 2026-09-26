@@ -158,9 +158,9 @@ public:
                 params.renderEye[0] = .1f; params.renderEye[3] = .35f; params.renderCenter[3] = -.2f;
             }
             const StreamPageTableEntry entry{.deviceOffsetAndState = packStreamPageTableEntry(0, MeshletStreamPageResidencyState::Resident)};
-            MeshletStreamGpuRasterBindings bindings{.visibleClusterBuffer = handles[Records].index,
-                .instanceVisibilityBuffer = handles[Visibility].index, .visibleRecordBase = kVisibilityMaxRecordCount - capacity,
-                .visibleRecordCapacity = capacity, .gpuSceneInstanceBuffer = handles[Instances].index};
+            MeshletStreamGpuRasterBindings bindings{.visibleClusterBuffer = handles[Records].shaderIndex,
+                .instanceVisibilityBuffer = handles[Visibility].shaderIndex, .visibleRecordBase = kVisibilityMaxRecordCount - capacity,
+                .visibleRecordCapacity = capacity, .gpuSceneInstanceBuffer = handles[Instances].shaderIndex};
             const std::array<uint32_t, 2> visibility{test == 7 ? 3u : 1u, test == 7 ? 3u : 1u};
             std::array<uint32_t, 16 + 5 * capacity> bins{};
             bins[0] = capacity; bins[5] = capacity;
@@ -191,12 +191,12 @@ public:
                     commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f});
                     commands->setScissor({.width = width, .height = height});
                     commands->bindBindlessHeap(*heap); commands->bindGraphicsPipeline(*pipelines[(reversed ? 2 : 0) + indexed]);
-                    MeshletStreamUserPush push{.pageBuffer = handles[Pages].index, .activeGroupBuffer = handles[Groups].index,
-                        .pageTableBuffer = handles[PageTable].index, .paramsBuffer = handles[Params].index,
-                        .activeHeaderBuffer = handles[Header].index, .traversalPhase = test == 7 ? 1u : 0u,
-                        .rasterBindingsBuffer = handles[Bindings].index,
-                        .hybridQueueBuffer = hybridQueue ? handles[Queue].index : UINT32_MAX,
-                        .hybridClusterBuffer = prebinned ? handles[Bins].index : UINT32_MAX};
+                    MeshletStreamUserPush push{.pageBuffer = handles[Pages].shaderIndex, .activeGroupBuffer = handles[Groups].shaderIndex,
+                        .pageTableBuffer = handles[PageTable].shaderIndex, .paramsBuffer = handles[Params].shaderIndex,
+                        .activeHeaderBuffer = handles[Header].shaderIndex, .traversalPhase = test == 7 ? 1u : 0u,
+                        .rasterBindingsBuffer = handles[Bindings].shaderIndex,
+                        .hybridQueueBuffer = hybridQueue ? handles[Queue].shaderIndex : UINT32_MAX,
+                        .hybridClusterBuffer = prebinned ? handles[Bins].shaderIndex : UINT32_MAX};
                     commands->pushBindlessData(&push, sizeof(push));
                     commands->drawMeshTasks(prebinned && indexed ? capacity : capacity * 2);
                     commands->endRendering();

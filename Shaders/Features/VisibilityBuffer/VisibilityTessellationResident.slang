@@ -12,9 +12,9 @@ void visibilityTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     uniform GPUDrivenPreviewPush push)
 {
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> ph =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.paramsBuffer, 0));
     GPUDrivenPreviewParams params = ph[0];
-    DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + params.tessellationBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(params.tessellationBuffer, 0));
     uint draw = hybridFlatGroup(group);
     uint candidate = draw / kTessTasksPerCluster;
     uint first = (draw % kTessTasksPerCluster) * kTessRootsPerTask;
@@ -22,7 +22,7 @@ void visibilityTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     if (lane == 0u) {
         bool visible;
         if (push.environmentSHBuffer != 0xffffffffu) {
-            DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.environmentSHBuffer, 0));
+            DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.environmentSHBuffer, 0));
             visible = hybridBinRecord(bins, push.mipLevel, candidate, record);
         } else {
             record = residentLodRecordIndex(candidate, params, push);
@@ -43,8 +43,8 @@ void visibilityTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIn
         }
         if (!enabled) { count = first == 0u && lane == 0u ? 1u : 0u; }
         else if (lane < kTessRootsPerTask && first + lane < c.meshlet.ranges.w) {
-            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vb = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(uint2(push.bufferShaderIndexBase + push.positionBuffer, 0));
-            DescriptorHandle<StructuredBuffer<uint>> vi = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.meshletVertexBuffer, 0));
+            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vb = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(uint2(push.positionBuffer, 0));
+            DescriptorHandle<StructuredBuffer<uint>> vi = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.meshletVertexBuffer, 0));
             uint3 tri = residentClusterTriangle(c, first + lane, push);
             float3 source[3];
             for (uint i = 0u; i < 3u; ++i) {
@@ -78,12 +78,12 @@ void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     uint3 patch = uint3(payload.patches[patchBase], payload.patches[patchBase + 1u], payload.patches[patchBase + 2u]);
     ResidentRasterCluster c = residentRasterCluster(record, push);
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> ph =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.paramsBuffer, 0));
     GPUDrivenPreviewParams params = ph[0];
-    DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + params.tessellationBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(params.tessellationBuffer, 0));
     TessMaterial material = tessMaterial(data, c.instance.identity.y);
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vb = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(uint2(push.bufferShaderIndexBase + push.positionBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint>> vi = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.meshletVertexBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vb = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>>(uint2(push.positionBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint>> vi = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.meshletVertexBuffer, 0));
     CameraData camera = push.projectWithCullingCamera != 0u ? cullingCamera(params) : renderCamera(params);
     SceneTransform transform = instanceTransform(c.instance);
     if (material.enabled == 0u) {
@@ -134,7 +134,7 @@ void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIn
         float3 bary = tessPatchDomain(tessBary(data, g_TessPattern, lane), g_TessRates, patch, g_TessSourcePosition);
         float3 p, n; float2 uv;
         tessSourceDomain(bary, g_TessSourcePosition, g_TessSourceNormal, g_TessSourceUv, p, n, uv);
-        p += n * tessHeight(material, uv, push.imageShaderIndexBase);
+        p += n * tessHeight(material, uv);
         float4 clip = projectPosition(p, camera); clip.y = -clip.y;
         if (push.projectWithCullingCamera == 0u) { clip.xy -= 2.0 * float2(params.renderEye.w, params.renderCenter.w) / float2(params.width, params.height) * clip.w; }
         vertices[lane].position = clip;
@@ -158,8 +158,8 @@ void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIn
 uint tessResidentVisibility(TessVertex input, uint visibilityId, GPUDrivenPreviewPush push)
 {
 #if VISIBILITY_BUFFER_ALPHA_MASKED
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> parameters = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.bufferShaderIndexBase + push.paramsBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materials = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(uint2(push.bufferShaderIndexBase + push.materialBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> parameters = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(push.paramsBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materials = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>(uint2(push.materialBuffer, 0));
     GPUDrivenPreviewMaterial material = materials[input.material];
     if (materialBaseColorAlpha(material, input.uv, parameters[0], push) < material.params.z) { discard; }
 #endif

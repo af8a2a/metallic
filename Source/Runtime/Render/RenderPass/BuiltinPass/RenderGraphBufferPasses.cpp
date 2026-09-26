@@ -65,7 +65,7 @@ public:
 
         const RenderGraphBufferUserPush push{
             .inputBuffer = 0,
-            .outputBuffer = data.bindlessHandle().index,
+            .outputBuffer = data.bindlessHandle().shaderIndex,
             .passIndex = 0,
             .padding = 0,
         };
@@ -149,8 +149,8 @@ public:
         }
 
         const RenderGraphBufferUserPush push{
-            .inputBuffer = source.bindlessHandle().index,
-            .outputBuffer = data.bindlessHandle().index,
+            .inputBuffer = source.bindlessHandle().shaderIndex,
+            .outputBuffer = data.bindlessHandle().shaderIndex,
             .passIndex = 0,
             .padding = 0,
         };

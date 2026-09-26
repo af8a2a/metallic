@@ -12,9 +12,6 @@ struct NrdResourceIndices
 
 struct NrdPushData
 {
-    // The RHI prepends this header to every native bindless pipeline's user data.
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
     uint* constants;
     NrdResourceIndices* resources;
 };

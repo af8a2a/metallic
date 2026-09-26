@@ -31,8 +31,9 @@ RTXDI shaders. The shared math routines come from `External/MathLib`.
   There are no per-pass `ShaderBindingMappingDesc` records. Slang's runtime heap
   arrays use the same fixed heap mappings as Metallic's other native bindless
   shaders (samplers at binding 0, resources at binding 2).
-- The RHI prepends its two-word heap header to push data. User data contains two
-  device addresses: constants and the resource index table. Shader constants
+- Push data starts at byte zero and contains two device addresses: constants
+  and the resource index table. All resource indices are final indices in the
+  bound heap. Shader constants
   explicitly use column-major matrices to match their CPU representation.
   Shader-side addresses are pointers, so this path does not require shader Int64.
 

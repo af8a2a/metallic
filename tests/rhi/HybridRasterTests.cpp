@@ -136,7 +136,7 @@ public:
                 }
                 HYBRID_REQUIRE(commands->begin());
                 commands->bindBindlessHeap(*compareHeap); commands->bindComputePipeline(plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute);
-                uint32_t push[]={vertexHandle.index,handles[0].index,handles[1].index,width,height,reversed,sided,bits,plane,count};
+                uint32_t push[]={vertexHandle.shaderIndex,handles[0].shaderIndex,handles[1].shaderIndex,width,height,reversed,sided,bits,plane,count};
                 commands->pushBindlessData(push,sizeof(push));
                 const uint32_t lanes=plane>=2u ? 128u : 64u;
                 commands->dispatch(std::max(1u,(push[9]+lanes-1u)/lanes));
@@ -244,7 +244,7 @@ public:
                     commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f});
                     commands->setScissor({.width = width, .height = height});
                     commands->bindBindlessHeap(*heap); commands->bindGraphicsPipeline(*pipeline);
-                    const uint32_t push[] = {inputHandle.index, hybrid ? queueHandle.index : UINT32_MAX, doubleSided ? 1u : 0u};
+                    const uint32_t push[] = {inputHandle.shaderIndex, hybrid ? queueHandle.shaderIndex : UINT32_MAX, doubleSided ? 1u : 0u};
                     commands->pushBindlessData(push, sizeof(push));
                     commands->drawMeshTasks(uint32_t(vertices.size() / 3)); commands->endRendering();
                     if (hybrid) {
@@ -374,7 +374,7 @@ public:
             }
             HYBRID_REQUIRE(rasterizer.beginClusters(*commands, 8, true, 0, test.count, test.stream));
             commands->bindBindlessHeap(*heap); commands->bindComputePipeline(*pipeline);
-            const uint32_t push[] = {inputHandle.index, binHandle.index, test.count};
+            const uint32_t push[] = {inputHandle.shaderIndex, binHandle.shaderIndex, test.count};
             commands->pushBindlessData(push, sizeof(push));
             if (test.count != 0) {
                 commands->dispatch(std::min(test.count, 65535u), (test.count + 65534u) / 65535u);

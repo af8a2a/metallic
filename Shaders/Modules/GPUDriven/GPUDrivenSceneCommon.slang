@@ -8,8 +8,6 @@ public static const uint kInvalidTextureIndex = 0xffffffffu;
 
 public struct GPUDrivenPreviewPush
 {
-    public uint imageShaderIndexBase;
-    public uint bufferShaderIndexBase;
     public uint positionBuffer;
     public uint meshletBuffer;
     public uint meshletDrawBuffer;
@@ -195,7 +193,7 @@ public uint residentLodRecordIndex(uint candidate, GPUDrivenPreviewParams params
 {
     if (params.lodSelectionEnabled == 0u) { return params.meshletOffset + candidate; }
     DescriptorHandle<StructuredBuffer<uint4>> selections =
-        DescriptorHandle<StructuredBuffer<uint4>>(uint2(push.bufferShaderIndexBase + params.lodSelectionBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint4>>(uint2(params.lodSelectionBuffer, 0));
     uint count = min(selections[0].x, selections[0].y);
     return candidate < count ? selections[candidate + 1u].z : 0xffffffffu;
 }

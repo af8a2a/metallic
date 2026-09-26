@@ -52,9 +52,25 @@ namespace {
 
 constexpr uint32_t kVulkanApiVersion = VK_API_VERSION_1_4;
 constexpr uint64_t kAcquireTimeoutNanoseconds = std::numeric_limits<uint64_t>::max();
-// MTV2: Shader Object is mandatory. Pre-policy caches did not identify the
-// enabled feature state, so reject their backend blobs instead of reusing them.
-constexpr uint32_t kVulkanPipelineCacheBackendTag = 0x3256544du;
+// MTV3: native descriptor heaps and untyped pointers change the shader ABI.
+// Reject cached pipelines from the previous mapped-array backend.
+constexpr uint32_t kVulkanPipelineCacheBackendTag = 0x3356544du;
+
+// Inspect the emitted interface, including shaders whose unused heaps were removed.
+// Native heap runtime arrays have no DescriptorSet/Binding decorations.
+bool spirvHasDescriptorBindings(const uint32_t* words, uint64_t byteSize)
+{
+    if (words == nullptr || byteSize < 5 * sizeof(uint32_t)) { return false; }
+    const uint64_t size = byteSize / sizeof(uint32_t);
+    for (uint64_t offset = 5; offset < size;) {
+        const uint32_t count = words[offset] >> 16;
+        if (count == 0 || count > size - offset) { return false; }
+        if ((words[offset] & 0xffffu) == 71 && count >= 4 &&
+            (words[offset + 2] == 33 || words[offset + 2] == 34)) { return true; }
+        offset += count;
+    }
+    return false;
+}
 
 struct StateInfo {
     VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
@@ -1243,13 +1259,6 @@ uint32_t capacityFromBytes(VkDeviceSize byteSize, VkDeviceSize descriptorSize)
     return static_cast<uint32_t>(std::min(byteSize / descriptorSize, kMaxUint32));
 }
 
-struct BindlessHeapPushConstants {
-    uint32_t imageShaderIndexBase = 0;
-    uint32_t bufferShaderIndexBase = 0;
-};
-
-static_assert(sizeof(BindlessHeapPushConstants) == 8);
-
 class DescriptorHeapWriter {
 public:
     static bool isSupported(VkPhysicalDevice physicalDevice)
@@ -1282,7 +1291,7 @@ public:
         return heapProperties.samplerDescriptorSize > 0 &&
             heapProperties.imageDescriptorSize > 0 &&
             heapProperties.bufferDescriptorSize > 0 &&
-            heapProperties.maxPushDataSize >= sizeof(BindlessHeapPushConstants);
+            heapProperties.maxPushDataSize > 0;
     }
 
     VkResult initialize(VkPhysicalDevice physicalDevice, VkDevice device)
@@ -1303,7 +1312,7 @@ public:
         if (heapProperties.samplerDescriptorSize == 0 ||
             heapProperties.imageDescriptorSize == 0 ||
             heapProperties.bufferDescriptorSize == 0 ||
-            heapProperties.maxPushDataSize < sizeof(BindlessHeapPushConstants)) {
+            heapProperties.maxPushDataSize == 0) {
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
 
@@ -1569,6 +1578,7 @@ struct VulkanExtensionSet {
     bool deviceAddressCommands = false;
     bool deviceGeneratedCommands = false;
     bool descriptorHeap = false;
+    bool shaderUntypedPointers = false;
     bool shaderObject = false;
     bool accelerationStructure = false;
     bool deferredHostOperations = false;
@@ -1605,6 +1615,7 @@ struct VulkanExtensionSet {
         result.deviceAddressCommands = result.has(VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME);
         result.deviceGeneratedCommands = result.has(VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME);
         result.descriptorHeap = result.has(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+        result.shaderUntypedPointers = result.has(VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME);
         result.shaderObject = result.has(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
         result.accelerationStructure = result.has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
         result.deferredHostOperations = result.has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
@@ -1720,6 +1731,9 @@ struct VulkanDeviceFeatureProbe {
     VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeapFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
     };
+    VkPhysicalDeviceShaderUntypedPointersFeaturesKHR untypedPointerFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_UNTYPED_POINTERS_FEATURES_KHR,
+    };
     VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
     };
@@ -1799,6 +1813,9 @@ struct VulkanDeviceFeatureProbe {
         appendPNext(featureTail, vulkan13Features);
         if (extensions.descriptorHeap) {
             appendPNext(featureTail, descriptorHeapFeatures);
+        }
+        if (extensions.shaderUntypedPointers) {
+            appendPNext(featureTail, untypedPointerFeatures);
         }
         if (extensions.shaderObject) {
             appendPNext(featureTail, shaderObjectFeatures);
@@ -1999,6 +2016,7 @@ struct VulkanDeviceFeatureSelection {
     bool shaderIntegerDotProduct = false;
     bool cooperativeVector = false;
     bool bindlessDescriptorHeap = false;
+    bool shaderUntypedPointers = false;
     bool shaderObject = false;
     bool meshShader = false;
     bool taskShader = false;
@@ -2084,8 +2102,11 @@ struct VulkanDeviceFeatureSelection {
             probe.vulkan12Features.descriptorIndexing == VK_TRUE &&
             probe.vulkan12Features.runtimeDescriptorArray == VK_TRUE &&
             probe.vulkan12Features.shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
+            probe.vulkan12Features.shaderStorageImageArrayNonUniformIndexing == VK_TRUE &&
             probe.vulkan12Features.bufferDeviceAddress == VK_TRUE &&
             DescriptorHeapWriter::hasUsableProperties(physicalDevice);
+        result.shaderUntypedPointers = result.bindlessDescriptorHeap && extensions.shaderUntypedPointers &&
+            probe.untypedPointerFeatures.shaderUntypedPointers == VK_TRUE;
         result.shaderObject =
             request.shaderObject &&
             extensions.shaderObject &&
@@ -2253,6 +2274,9 @@ struct VulkanEnabledFeatureChain {
     VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeapFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
     };
+    VkPhysicalDeviceShaderUntypedPointersFeaturesKHR untypedPointerFeatures{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_UNTYPED_POINTERS_FEATURES_KHR,
+    };
     VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
     };
@@ -2349,6 +2373,8 @@ struct VulkanEnabledFeatureChain {
         vulkan12Features.descriptorIndexing = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         vulkan12Features.shaderSampledImageArrayNonUniformIndexing =
             selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
+        vulkan12Features.shaderStorageImageArrayNonUniformIndexing =
+            selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         vulkan12Features.runtimeDescriptorArray = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         vulkan12Features.bufferDeviceAddress = selection.usesBufferDeviceAddress() ? VK_TRUE : VK_FALSE;
         vulkan12Features.timelineSemaphore = VK_TRUE;
@@ -2378,6 +2404,7 @@ struct VulkanEnabledFeatureChain {
             selection.cooperativeVector ? VK_TRUE : VK_FALSE;
 #endif
         descriptorHeapFeatures.descriptorHeap = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
+        untypedPointerFeatures.shaderUntypedPointers = selection.shaderUntypedPointers ? VK_TRUE : VK_FALSE;
         shaderObjectFeatures.shaderObject = selection.shaderObject ? VK_TRUE : VK_FALSE;
 #ifdef VK_EXT_mesh_shader
         meshShaderFeatures.meshShader = selection.meshShader ? VK_TRUE : VK_FALSE;
@@ -2413,6 +2440,9 @@ struct VulkanEnabledFeatureChain {
         appendPNext(featureTail, vulkan13Features);
         if (selection.bindlessDescriptorHeap) {
             appendPNext(featureTail, descriptorHeapFeatures);
+        }
+        if (selection.shaderUntypedPointers) {
+            appendPNext(featureTail, untypedPointerFeatures);
         }
         if (selection.shaderObject) {
             appendPNext(featureTail, shaderObjectFeatures);
@@ -2486,6 +2516,9 @@ std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelect
     }
     if (selection.bindlessDescriptorHeap) {
         extensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
+    }
+    if (selection.shaderUntypedPointers) {
+        extensions.push_back(VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME);
     }
     if (selection.shaderObject) {
         extensions.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
@@ -3197,6 +3230,7 @@ struct TextureViewImpl {
 };
 
 struct ShaderModuleImpl {
+    bool hasDescriptorBindings = false;
     DeviceImpl* device = nullptr;
     VkShaderModule module = VK_NULL_HANDLE;
     uint64_t contentHash = 0;
@@ -3228,7 +3262,6 @@ struct GraphicsPipelineImpl {
     DeviceImpl* device = nullptr;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
-    VkShaderStageFlags bindlessPushStages = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     bool usesBindlessHeap = false;
     uint64_t psoHash = 0;
     bool pipelineCacheHit = false;
@@ -3239,7 +3272,6 @@ struct ComputePipelineImpl {
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     bool usesBindlessHeap = false;
-    uint32_t bindlessUserDataOffset = sizeof(BindlessHeapPushConstants);
     uint64_t psoHash = 0;
     bool pipelineCacheHit = false;
 };
@@ -3278,14 +3310,11 @@ struct CommandBufferImpl {
     VkPipelineLayout currentGraphicsPipelineLayout = VK_NULL_HANDLE;
     VkPipelineLayout currentComputePipelineLayout = VK_NULL_HANDLE;
     VkPipeline currentComputePipeline = VK_NULL_HANDLE;
-    VkShaderStageFlags currentGraphicsPipelineBindlessPushStages =
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     BindlessHeapImpl* currentBindlessHeap = nullptr;
     bool currentGraphicsPipelineUsesBindlessHeap = false;
     bool currentComputePipelineUsesBindlessHeap = false;
     bool currentGraphicsShaderObjectUsesBindlessHeap = false;
     bool currentGraphicsShaderObjectBound = false;
-    uint32_t currentBindlessUserDataOffset = sizeof(BindlessHeapPushConstants);
     Viewport currentViewport;
     Rect currentScissor;
     bool hasCurrentViewport = false;
@@ -3365,6 +3394,7 @@ struct DeviceImpl {
     bool validationEnabled = false;
     bool debugUtilsEnabled = false;
     bool bindlessDescriptorHeapEnabled = false;
+    bool shaderUntypedPointersEnabled = false;
     bool shaderObjectEnabled = false;
     bool pipelineExecutableStatistics = false;
     bool logPipelineKeys = false;
@@ -5061,15 +5091,6 @@ const BindlessHeapDesc& BindlessHeap::desc() const
     return impl_ != nullptr ? impl_->desc : emptyDesc;
 }
 
-uint32_t BindlessHeap::imageShaderIndexBase() const
-{
-    return impl_ != nullptr ? impl_->heap.imageShaderIndexBase() : 0;
-}
-
-uint32_t BindlessHeap::bufferShaderIndexBase() const
-{
-    return impl_ != nullptr ? impl_->heap.bufferShaderIndexBase() : 0;
-}
 
 Result BindlessHeap::allocateSampler(BindlessHandle& outHandle)
 {
@@ -5465,14 +5486,11 @@ Result CommandBuffer::begin(RenderFrameContext* frameContext)
     impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
     impl_->currentComputePipelineLayout = VK_NULL_HANDLE;
     impl_->currentComputePipeline = VK_NULL_HANDLE;
-    impl_->currentGraphicsPipelineBindlessPushStages =
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     impl_->currentBindlessHeap = nullptr;
     impl_->currentGraphicsPipelineUsesBindlessHeap = false;
     impl_->currentComputePipelineUsesBindlessHeap = false;
     impl_->currentGraphicsShaderObjectUsesBindlessHeap = false;
     impl_->currentGraphicsShaderObjectBound = false;
-    impl_->currentBindlessUserDataOffset = sizeof(BindlessHeapPushConstants);
     impl_->hasCurrentViewport = false;
     impl_->hasCurrentScissor = false;
     impl_->currentBindlessUserData.clear();
@@ -6227,56 +6245,21 @@ void clearGraphicsShaderObjects(detail::CommandBufferImpl& commandBuffer)
     commandBuffer.currentGraphicsShaderObjectUsesBindlessHeap = false;
 }
 
-void pushCurrentBindlessData(detail::CommandBufferImpl& commandBuffer, detail::BindlessHeapImpl& heap)
+// Descriptor indices in the payload are already relative to the bound heap.
+// Push the exact caller ABI from byte zero; no backend header is prepended.
+void pushCurrentBindlessData(detail::CommandBufferImpl& commandBuffer)
 {
-    const BindlessHeapPushConstants push{
-        .imageShaderIndexBase = heap.heap.imageShaderIndexBase(),
-        .bufferShaderIndexBase = heap.heap.bufferShaderIndexBase(),
-    };
-    if (commandBuffer.currentGraphicsPipelineUsesBindlessHeap &&
-        commandBuffer.currentGraphicsPipelineLayout != VK_NULL_HANDLE) {
-        vkCmdPushConstants(
-            commandBuffer.commandBuffer,
-            commandBuffer.currentGraphicsPipelineLayout,
-            commandBuffer.currentGraphicsPipelineBindlessPushStages,
-            0,
-            sizeof(push),
-            &push);
-    }
-    if (commandBuffer.currentComputePipelineUsesBindlessHeap &&
-        commandBuffer.currentComputePipelineLayout != VK_NULL_HANDLE) {
-        vkCmdPushConstants(
-            commandBuffer.commandBuffer,
-            commandBuffer.currentComputePipelineLayout,
-            VK_SHADER_STAGE_COMPUTE_BIT,
-            0,
-            sizeof(push),
-            &push);
-    }
-
-    const size_t payloadSize = commandBuffer.currentBindlessUserDataOffset +
-        commandBuffer.currentBindlessUserData.size();
+    const auto& payload = commandBuffer.currentBindlessUserData;
     const bool needsDescriptorHeapPush =
         commandBuffer.currentGraphicsPipelineUsesBindlessHeap ||
         commandBuffer.currentComputePipelineUsesBindlessHeap ||
         commandBuffer.currentGraphicsShaderObjectUsesBindlessHeap;
     if (needsDescriptorHeapPush &&
-        payloadSize > 0 &&
+        !payload.empty() &&
         commandBuffer.device != nullptr &&
         commandBuffer.device->bindlessDescriptorHeapEnabled &&
-        commandBuffer.device->descriptorHeapWriter.maxPushDataSize() >= payloadSize &&
+        commandBuffer.device->descriptorHeapWriter.maxPushDataSize() >= payload.size() &&
         vkCmdPushDataEXT != nullptr) {
-        std::vector<uint8_t> payload(payloadSize, 0);
-        if (commandBuffer.currentBindlessUserDataOffset != 0) {
-            std::memcpy(payload.data(), &push, sizeof(push));
-        }
-        if (!commandBuffer.currentBindlessUserData.empty()) {
-            std::memcpy(
-                payload.data() + commandBuffer.currentBindlessUserDataOffset,
-                commandBuffer.currentBindlessUserData.data(),
-                commandBuffer.currentBindlessUserData.size());
-        }
-
         const VkPushDataInfoEXT pushInfo{
             .sType = VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT,
             .offset = 0,
@@ -6299,11 +6282,9 @@ void CommandBuffer::bindGraphicsPipeline(GraphicsPipeline& pipeline)
     clearGraphicsShaderObjects(*impl_);
     vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.impl_->pipeline);
     impl_->currentGraphicsPipelineLayout = pipeline.impl_->layout;
-    impl_->currentGraphicsPipelineBindlessPushStages = pipeline.impl_->bindlessPushStages;
     impl_->currentGraphicsPipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
-    impl_->currentBindlessUserDataOffset = sizeof(BindlessHeapPushConstants);
     if (impl_->currentGraphicsPipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
-        pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
+        pushCurrentBindlessData(*impl_);
     }
 }
 
@@ -6316,9 +6297,8 @@ void CommandBuffer::bindComputePipeline(ComputePipeline& pipeline)
     impl_->currentComputePipeline = pipeline.impl_->pipeline;
     impl_->currentComputePipelineLayout = pipeline.impl_->layout;
     impl_->currentComputePipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
-    impl_->currentBindlessUserDataOffset = pipeline.impl_->bindlessUserDataOffset;
     if (impl_->currentComputePipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
-        pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
+        pushCurrentBindlessData(*impl_);
     }
 }
 
@@ -6340,9 +6320,8 @@ void CommandBuffer::bindComputePipeline(
     impl_->currentComputePipeline = pipeline.impl_->pipeline;
     impl_->currentComputePipelineLayout = pipeline.impl_->layout;
     impl_->currentComputePipelineUsesBindlessHeap = pipeline.impl_->usesBindlessHeap;
-    impl_->currentBindlessUserDataOffset = pipeline.impl_->bindlessUserDataOffset;
     if (impl_->currentComputePipelineUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
-        pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
+        pushCurrentBindlessData(*impl_);
     }
 }
 
@@ -6494,9 +6473,8 @@ void CommandBuffer::bindGraphicsShaderObjectProgram(GraphicsShaderObjectProgram&
     impl_->currentGraphicsPipelineUsesBindlessHeap = false;
     impl_->currentGraphicsShaderObjectBound = true;
     impl_->currentGraphicsShaderObjectUsesBindlessHeap = program.impl_->usesBindlessHeap;
-    impl_->currentBindlessUserDataOffset = sizeof(BindlessHeapPushConstants);
     if (impl_->currentGraphicsShaderObjectUsesBindlessHeap && impl_->currentBindlessHeap != nullptr) {
-        pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
+        pushCurrentBindlessData(*impl_);
     }
 }
 
@@ -6514,7 +6492,7 @@ void CommandBuffer::bindBindlessHeap(BindlessHeap& heap)
         impl_->commandBuffer,
         heap.impl_->samplerHeap.address,
         heap.impl_->resourceHeap.address);
-    pushCurrentBindlessData(*impl_, *heap.impl_);
+    pushCurrentBindlessData(*impl_);
 }
 
 void CommandBuffer::pushBindlessData(const void* data, uint32_t byteSize)
@@ -6528,7 +6506,7 @@ void CommandBuffer::pushBindlessData(const void* data, uint32_t byteSize)
         std::memcpy(impl_->currentBindlessUserData.data(), data, byteSize);
     }
     if (impl_->currentBindlessHeap != nullptr) {
-        pushCurrentBindlessData(*impl_, *impl_->currentBindlessHeap);
+        pushCurrentBindlessData(*impl_);
     }
 }
 
@@ -6541,19 +6519,17 @@ Result CommandBuffer::recordIsolatedCompute(const std::function<Result()>& recor
     const auto layout = impl_->currentComputePipelineLayout;
     const auto usesHeap = impl_->currentComputePipelineUsesBindlessHeap;
     auto* heap = impl_->currentBindlessHeap;
-    const auto offset = impl_->currentBindlessUserDataOffset;
     auto data = impl_->currentBindlessUserData;
     const auto restore = [&] {
         impl_->currentComputePipeline = pipeline;
         impl_->currentComputePipelineLayout = layout;
         impl_->currentComputePipelineUsesBindlessHeap = usesHeap;
         impl_->currentBindlessHeap = heap;
-        impl_->currentBindlessUserDataOffset = offset;
         impl_->currentBindlessUserData = std::move(data);
         if (pipeline) { vkCmdBindPipeline(impl_->commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline); }
         if (heap) {
             heap->heap.bind(impl_->commandBuffer, heap->samplerHeap.address, heap->resourceHeap.address);
-            pushCurrentBindlessData(*impl_, *heap);
+            pushCurrentBindlessData(*impl_);
         }
     };
     try {
@@ -9409,6 +9385,17 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
     if (impl_ == nullptr || desc.code == nullptr || desc.byteSize == 0 || (desc.byteSize % sizeof(uint32_t)) != 0) {
         return makeError(Error::InvalidArgument);
     }
+    const uint64_t wordCount = desc.byteSize / sizeof(uint32_t);
+    for (uint64_t offset = 5; offset < wordCount;) {
+        const uint32_t count = desc.code[offset] >> 16;
+        if (count == 0 || count > wordCount - offset) { return makeError(Error::InvalidArgument); }
+        // OpCapability DescriptorHeapEXT requires the native untyped-pointer path.
+        if ((desc.code[offset] & 0xffffu) == 17 && count == 2 && desc.code[offset + 1] == 5128 &&
+            (!impl_->bindlessDescriptorHeapEnabled || !impl_->shaderUntypedPointersEnabled)) {
+            return makeError(Error::Unsupported);
+        }
+        offset += count;
+    }
     activateVolkDevice(impl_->device);
 
     std::vector<uint32_t> opacityCode;
@@ -9446,6 +9433,7 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
 
     auto shaderImpl = std::make_unique<detail::ShaderModuleImpl>();
     shaderImpl->device = impl_.get();
+    shaderImpl->hasDescriptorBindings = spirvHasDescriptorBindings(deviceDesc.code, deviceDesc.byteSize);
     shaderImpl->module = module;
     shaderImpl->contentHash = detail::shaderContentHash(deviceDesc);
     if (impl_->pipelineExecutableStatistics) {
@@ -9670,7 +9658,11 @@ Result Device::createGraphicsPipeline(
         bindlessMappingInfo.mappingCount = static_cast<uint32_t>(bindlessMappings.size());
         bindlessMappingInfo.pMappings = bindlessMappings.data();
         for (VkPipelineShaderStageCreateInfo& stage : stages) {
-            stage.pNext = &bindlessMappingInfo;
+            for (const ShaderModule* shader : {desc.vertexShader, desc.taskShader, desc.meshShader, desc.fragmentShader}) {
+                if (shader != nullptr && shader->impl_->module == stage.module && shader->impl_->hasDescriptorBindings) {
+                    stage.pNext = &bindlessMappingInfo;
+                }
+            }
         }
     }
 
@@ -9746,15 +9738,8 @@ Result Device::createGraphicsPipeline(
         .pDynamicStates = dynamicStates.data(),
     };
 
-    VkPushConstantRange bindlessPushConstantRange{
-        .stageFlags = graphicsShaderStages,
-        .offset = 0,
-        .size = sizeof(BindlessHeapPushConstants),
-    };
     VkPipelineLayoutCreateInfo layoutInfo{
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .pushConstantRangeCount = desc.usesBindlessHeap ? 1u : 0u,
-        .pPushConstantRanges = desc.usesBindlessHeap ? &bindlessPushConstantRange : nullptr,
     };
     VkPipelineLayout layout = VK_NULL_HANDLE;
     VkResult result = VK_SUCCESS;
@@ -9815,7 +9800,6 @@ Result Device::createGraphicsPipeline(
     pipelineImpl->device = impl_.get();
     pipelineImpl->layout = layout;
     pipelineImpl->pipeline = pipeline;
-    pipelineImpl->bindlessPushStages = graphicsShaderStages;
     pipelineImpl->usesBindlessHeap = desc.usesBindlessHeap;
     pipelineImpl->psoHash = psoHash;
     pipelineImpl->pipelineCacheHit = pipelineCache != nullptr &&
@@ -9851,15 +9835,12 @@ Result Device::createComputePipeline(
             return makeError(Error::Unsupported);
         }
     }
-    const uint32_t bindlessUserDataOffset = desc.bindingMappingCount == 0
-        ? static_cast<uint32_t>(sizeof(BindlessHeapPushConstants))
-        : 0u;
     if (desc.usesBindlessHeap) {
         if (!impl_->capabilities.bindlessDescriptorHeap) {
             return makeError(Error::Unsupported);
         }
         const VkDeviceSize requiredPushDataSize =
-            bindlessUserDataOffset + desc.bindlessUserPushDataSize;
+            desc.bindlessUserPushDataSize;
         if (impl_->descriptorHeapWriter.maxPushDataSize() < requiredPushDataSize) {
             return makeError(Error::Unsupported);
         }
@@ -9891,7 +9872,7 @@ Result Device::createComputePipeline(
     VkShaderDescriptorSetAndBindingMappingInfoEXT bindlessMappingInfo{
         .sType = VK_STRUCTURE_TYPE_SHADER_DESCRIPTOR_SET_AND_BINDING_MAPPING_INFO_EXT,
     };
-    if (desc.usesBindlessHeap) {
+    if (desc.usesBindlessHeap && desc.computeShader->impl_->hasDescriptorBindings) {
         auto makeHeapMapping = [](uint32_t binding, VkSpirvResourceTypeFlagsEXT resourceMask, uint32_t stride) {
             VkDescriptorSetAndBindingMappingEXT mapping{
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_AND_BINDING_MAPPING_EXT,
@@ -9989,7 +9970,7 @@ Result Device::createComputePipeline(
                     .bindingCount = source.bindingCount,
                     .resourceMask = resourceMask,
                 };
-                const uint32_t pushOffset = bindlessUserDataOffset + source.pushDataOffset;
+                const uint32_t pushOffset = source.pushDataOffset;
                 const uint64_t heapOffset =
                     static_cast<uint64_t>(source.heapIndexOffset) * descriptorStride;
                 if (heapOffset > UINT32_MAX) {
@@ -10156,7 +10137,6 @@ Result Device::createComputePipeline(
     pipelineImpl->layout = layout;
     pipelineImpl->pipeline = pipeline;
     pipelineImpl->usesBindlessHeap = desc.usesBindlessHeap;
-    pipelineImpl->bindlessUserDataOffset = bindlessUserDataOffset;
     pipelineImpl->psoHash = psoHash;
     pipelineImpl->pipelineCacheHit = pipelineCache != nullptr &&
         pipelineCache->recordPsoLocked(psoHash);
@@ -10201,7 +10181,7 @@ Result Device::createGraphicsShaderObjectProgram(
             return makeError(Error::Unsupported);
         }
         const VkDeviceSize requiredPushDataSize =
-            sizeof(BindlessHeapPushConstants) + desc.bindlessUserPushDataSize;
+            desc.bindlessUserPushDataSize;
         if (impl_->descriptorHeapWriter.maxPushDataSize() < requiredPushDataSize) {
             return makeError(Error::Unsupported);
         }
@@ -10271,7 +10251,8 @@ Result Device::createGraphicsShaderObjectProgram(
     std::array<VkShaderCreateInfoEXT, 2> shaderInfos{
         VkShaderCreateInfoEXT{
             .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
-            .pNext = desc.usesBindlessHeap ? static_cast<const void*>(&bindlessMappingInfo) : nullptr,
+            .pNext = desc.usesBindlessHeap && spirvHasDescriptorBindings(deviceDesc.vertexCode, deviceDesc.vertexByteSize)
+                ? static_cast<const void*>(&bindlessMappingInfo) : nullptr,
             .flags = shaderFlags,
             .stage = VK_SHADER_STAGE_VERTEX_BIT,
             .nextStage = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -10282,7 +10263,8 @@ Result Device::createGraphicsShaderObjectProgram(
         },
         VkShaderCreateInfoEXT{
             .sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT,
-            .pNext = desc.usesBindlessHeap ? static_cast<const void*>(&bindlessMappingInfo) : nullptr,
+            .pNext = desc.usesBindlessHeap && spirvHasDescriptorBindings(deviceDesc.fragmentCode, deviceDesc.fragmentByteSize)
+                ? static_cast<const void*>(&bindlessMappingInfo) : nullptr,
             .flags = shaderFlags,
             .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
             .nextStage = 0,
@@ -10955,6 +10937,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     deviceImpl->capabilities.dynamicGeneratedPipelineLayout = selectedFeatures.dynamicGeneratedPipelineLayout;
     deviceImpl->capabilities.shaderObject = selectedFeatures.shaderObject;
     deviceImpl->shaderObjectEnabled = selectedFeatures.shaderObject;
+    deviceImpl->shaderUntypedPointersEnabled = selectedFeatures.shaderUntypedPointers;
     deviceImpl->capabilities.meshShader = selectedFeatures.meshShader;
     deviceImpl->capabilities.taskShader = selectedFeatures.taskShader;
     deviceImpl->capabilities.geometryShader = selectedFeatures.geometryShader;
@@ -12076,6 +12059,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                     commandBuffer->setScissor(renderArea);
                     commandBuffer->bindGraphicsPipeline(*pipeline);
                     commandBuffer->bindBindlessHeap(*bindlessHeap);
+                    commandBuffer->pushBindlessData(&sourceImageHandle.shaderIndex, sizeof(sourceImageHandle.shaderIndex));
                     commandBuffer->draw(3);
                     commandBuffer->endRendering();
 

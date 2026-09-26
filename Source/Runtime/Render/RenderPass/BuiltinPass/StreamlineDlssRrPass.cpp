@@ -839,7 +839,7 @@ private:
                 return result ? makeError(Error::Failure) : result;
             }
             result = auxiliaryHeap_->allocateSampledImage(depthGuideHandle_);
-            if (!result || !depthGuideHandle_.valid() || depthGuideHandle_.index != 0) {
+            if (!result || !depthGuideHandle_.valid()) {
                 log = "StreamlineDlssSrPass failed to allocate its depth guide descriptor";
                 return result ? makeError(Error::Failure) : result;
             }
@@ -1039,6 +1039,7 @@ private:
         commandBuffer.setScissor(renderArea);
         commandBuffer.bindBindlessHeap(*auxiliaryHeap_);
         commandBuffer.bindGraphicsPipeline(*depthExportPipeline_);
+        commandBuffer.pushBindlessData(&depthGuideHandle_.shaderIndex, sizeof(depthGuideHandle_.shaderIndex));
         commandBuffer.draw(3);
         commandBuffer.endRendering();
 
@@ -1102,7 +1103,7 @@ private:
         });
         commandBuffer.bindBindlessHeap(*auxiliaryHeap_);
         const StreamlineDlssAlphaUserPush push{
-            .outputImage = outputColorHandle_.index,
+            .outputImage = outputColorHandle_.shaderIndex,
         };
         commandBuffer.bindComputePipeline(
             *alphaResolvePipeline_,

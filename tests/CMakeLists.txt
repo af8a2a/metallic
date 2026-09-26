@@ -227,6 +227,8 @@ add_executable(MetallicRhiTests
     rhi/DebugControlTests.cpp
     rhi/Main.cpp
     rhi/RhiTest.h
+    rhi/NativeDescriptorHeapTests.cpp
+    rhi/NativeDescriptorHeapSpirvTests.cpp
     rhi/BindlessBufferTests.cpp
     rhi/DescriptorHeapCodePatternTests.cpp
     rhi/DlssMotionVectorTests.cpp

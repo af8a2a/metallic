@@ -24,11 +24,12 @@ namespace {
 
 class SceneRayTracingPositionFetchTest : public RhiTest {
 public:
-    explicit SceneRayTracingPositionFetchTest(bool authoredTangents = false)
-        : authoredTangents_(authoredTangents)
+    explicit SceneRayTracingPositionFetchTest(bool authoredTangents = false, bool native = false)
+        : authoredTangents_(authoredTangents), native_(native)
     {
         type = RhiTestType::Rendering;
-        name = authoredTangents ? "scene_ray_tracing_position_fetch_authored_tangents" : "scene_ray_tracing_position_fetch";
+        name = native ? "scene_ray_tracing_position_fetch_native" :
+            (authoredTangents ? "scene_ray_tracing_position_fetch_authored_tangents" : "scene_ray_tracing_position_fetch");
     }
 
     RhiTestResult run(RhiTestContext& context) override
@@ -148,6 +149,7 @@ public:
                 .capabilityCount = positionFetch ? 2u : 1u,
                 .macroDefines = defines,
                 .macroDefineCount = 1,
+                .descriptorHeapMode = native_ ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Default,
             }, shader);
             log = shader.diagnostics;
             FETCH_REQUIRE(compiled);
@@ -161,11 +163,15 @@ public:
                 layout.push_back({render::kSceneFallbackPositionsBinding});
             }
             render::ComputeProgram program;
-            FETCH_REQUIRE(program.initialize(*device, {
+            const auto initialized = program.initialize(*device, {
                 .spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * sizeof(uint32_t),
                 .pushConstantSize = sizeof(float), .bindings = layout.data(),
                 .bindingCount = static_cast<uint32_t>(std::size(layout)),
-            }, log));
+            }, log);
+            if (native_ && render::hasError(initialized, render::Error::Unsupported)) {
+                return RhiTestResult::skip("native descriptor heaps require KHR untyped pointers");
+            }
+            FETCH_REQUIRE(initialized);
             std::unique_ptr<render::Buffer> output;
             FETCH_REQUIRE(device->createBuffer({
                 .size = sizeof(baseline[0]), .structureStride = 4 * sizeof(float),
@@ -243,7 +249,7 @@ public:
                         !near(hit[8], 0.0f) || !near(hit[9], -0.8f) || !near(hit[10], 0.6f) ||
                         !near(hit[11], 1.0f) || !near(hit[19], right ? 1.0f : 0.0f) ||
                         !near(hit[20], right ? 0.75f : 0.25f) || !near(hit[21], right ? 0.75f : 0.25f)) {
-                        return RhiTestResult::fail("incorrect transformed hit/UV/normal at ray " + std::to_string(ray));
+                        return RhiTestResult::fail("incorrect transformed hit/UV/normal at ray " + std::to_string(ray) + " values=" + std::to_string(hit[0]) + "," + std::to_string(hit[1]) + "," + std::to_string(hit[2]) + "," + std::to_string(hit[3]) + "; " + std::to_string(hit[4]) + "," + std::to_string(hit[5]) + "," + std::to_string(hit[6]) + "," + std::to_string(hit[7]));
                     }
                     if (authoredTangents_ && (!near(hit[12], 1.0f) || !near(hit[15], -1.0f) ||
                         !near(hit[17], -0.6f) || !near(hit[18], -0.8f))) {
@@ -265,6 +271,7 @@ public:
 
 private:
     bool authoredTangents_ = false;
+    bool native_ = false;
 };
 
 METALLIC_REGISTER_RHI_TEST(SceneRayTracingPositionFetchTest);
@@ -274,6 +281,13 @@ public:
     ScenePositionFetchAuthoredTangentsTest() : SceneRayTracingPositionFetchTest(true) {}
 };
 METALLIC_REGISTER_RHI_TEST(ScenePositionFetchAuthoredTangentsTest);
+
+// Explicit native mode runs in ordinary CTest without process-wide overrides.
+class ScenePositionFetchNativeTest final : public SceneRayTracingPositionFetchTest {
+public:
+    ScenePositionFetchNativeTest() : SceneRayTracingPositionFetchTest(true, true) {}
+};
+METALLIC_REGISTER_RHI_TEST(ScenePositionFetchNativeTest);
 
 class SceneShadingVertexPackingTest final : public RhiTest {
 public:

@@ -1319,7 +1319,11 @@ enum class BindlessHandleKind : uint8_t {
 
 struct BindlessHandle {
     BindlessHandleKind kind = BindlessHandleKind::Invalid;
+    // Allocator-local slot; only use for descriptor writes and release.
     uint32_t index = UINT32_MAX;
+    // Final typed descriptor index in the owning heap, ready for shader parameters.
+    // This is not a byte offset or an index that can be shared across heaps.
+    // AS parameters currently use the separate address resolver ABI.
     uint32_t shaderIndex = UINT32_MAX;
 
     bool valid() const { return kind != BindlessHandleKind::Invalid && index != UINT32_MAX; }
@@ -1831,8 +1835,6 @@ public:
     BindlessHeap& operator=(const BindlessHeap&) = delete;
 
     const BindlessHeapDesc& desc() const;
-    uint32_t imageShaderIndexBase() const;
-    uint32_t bufferShaderIndexBase() const;
 
     Result allocateSampler(BindlessHandle& outHandle);
     Result allocateSampledImage(BindlessHandle& outHandle);
@@ -1966,6 +1968,7 @@ public:
     void setGraphicsShaderObjectState();
     void bindGraphicsShaderObjectProgram(GraphicsShaderObjectProgram& program);
     void bindBindlessHeap(BindlessHeap& heap);
+    // Upload the caller's shader parameter ABI at byte zero, without a heap header.
     void pushBindlessData(const void* data, uint32_t byteSize);
     // Record compute-only instrumentation, restoring the compute pipeline,
     // descriptor heap and shared push data before returning. No rendering scope.

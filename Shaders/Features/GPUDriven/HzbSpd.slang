@@ -10,8 +10,6 @@
 
 struct HzbSpdPush
 {
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
     uint depthImage;
     uint hzbBuffer;
     uint counterBuffer;
@@ -93,14 +91,14 @@ float spdLoad(HzbSpdPush push, uint2 pixel, uint sourceMip)
     uint index = spdMipOffset(push, sourceMip) + clamped.y * size.x + clamped.x;
     if (sourceMip == 0u) {
         Texture2D<float> source = DescriptorHandle<Texture2D<float>>(
-            uint2(push.imageShaderIndexBase + push.depthImage, 0));
+            uint2(push.depthImage, 0));
         float depth = source.Load(int3(clamped, 0));
         // Non-finite depth must not prove occlusion. A clear-depth contribution
         // propagates through the pyramid and conservatively keeps candidates.
         depth = isfinite(depth) ? saturate(depth) : (push.reversedZ != 0u ? 0.0 : 1.0);
         if (all(pixel < size)) {
             RWStructuredBuffer<float> output = DescriptorHandle<RWStructuredBuffer<float>>(
-                uint2(push.bufferShaderIndexBase + push.hzbBuffer, 0));
+                uint2(push.hzbBuffer, 0));
             output[index] = depth;
         }
         return depth;
@@ -108,7 +106,7 @@ float spdLoad(HzbSpdPush push, uint2 pixel, uint sourceMip)
     // DescriptorHandle cannot carry HLSL globallycoherent. Atomic loads/stores
     // give mip 6 device-scope release/acquire visibility in native SPIR-V.
     RWStructuredBuffer<Atomic<uint>> output = DescriptorHandle<RWStructuredBuffer<Atomic<uint>>>(
-        uint2(push.bufferShaderIndexBase + push.hzbBuffer, 0));
+        uint2(push.hzbBuffer, 0));
     return asfloat(output[index].load(MemoryOrder.Acquire));
 }
 
@@ -120,11 +118,11 @@ void spdStore(HzbSpdPush push, uint2 pixel, float value, uint mip)
     uint index = spdMipOffset(push, mip) + pixel.y * size.x + pixel.x;
     if (mip == 6u) {
         RWStructuredBuffer<Atomic<uint>> output = DescriptorHandle<RWStructuredBuffer<Atomic<uint>>>(
-            uint2(push.bufferShaderIndexBase + push.hzbBuffer, 0));
+            uint2(push.hzbBuffer, 0));
         output[index].store(asuint(value), MemoryOrder.Release);
     } else {
         RWStructuredBuffer<float> output = DescriptorHandle<RWStructuredBuffer<float>>(
-            uint2(push.bufferShaderIndexBase + push.hzbBuffer, 0));
+            uint2(push.hzbBuffer, 0));
         output[index] = value;
     }
 }
@@ -209,7 +207,7 @@ void hzbSpdMain(uint3 group : SV_GroupID, uint localIndex : SV_GroupIndex, unifo
     spdDownsampleTile(push, group.xy, lane, 0u);
     if (push.mipCount <= 7u) { return; }
     RWStructuredBuffer<Atomic<uint>> counter = DescriptorHandle<RWStructuredBuffer<Atomic<uint>>>(
-        uint2(push.bufferShaderIndexBase + push.counterBuffer, 0));
+        uint2(push.counterBuffer, 0));
     // Mip 6 and this RMW share logical lane 0. The acq-rel RMW chain elects a
     // single last group without spinning or assuming workgroup scheduling order.
     if (lane == 0u) { spdCompletedGroups = counter[0].add(1u, MemoryOrder.AcquireRelease); }

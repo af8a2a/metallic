@@ -130,6 +130,7 @@ public:
         context.commandBuffer().setScissor(renderArea);
         context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
         context.commandBuffer().bindGraphicsPipeline(*pipeline_);
+        context.commandBuffer().pushBindlessData(&imageHandle_.shaderIndex, sizeof(imageHandle_.shaderIndex));
         context.commandBuffer().draw(3);
         context.commandBuffer().endRendering();
         return {};

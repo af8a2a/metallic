@@ -982,10 +982,10 @@ public:
         commandBuffer->setGraphicsShaderObjectState();
 
         MaterialUserPush push{
-            .positionBuffer = positionHandle.index,
-            .materialIndexBuffer = materialIndexHandle.index,
-            .materialBuffer = materialHandle.index,
-            .paramsBuffer = paramsHandle.index,
+            .positionBuffer = positionHandle.shaderIndex,
+            .materialIndexBuffer = materialIndexHandle.shaderIndex,
+            .materialBuffer = materialHandle.shaderIndex,
+            .paramsBuffer = paramsHandle.shaderIndex,
             .vertexOffset = 0,
         };
         commandBuffer->pushBindlessData(&push, sizeof(push));

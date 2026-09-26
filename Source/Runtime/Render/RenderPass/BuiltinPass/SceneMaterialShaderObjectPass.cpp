@@ -293,13 +293,13 @@ public:
             }
 
             const MaterialShaderObjectUserPush push{
-                .positionBuffer = positionHandle_.index,
-                .materialIndexBuffer = materialIndexHandle_.index,
-                .materialBuffer = materialHandle_.index,
-                .paramsBuffer = paramsHandle_.index,
+                .positionBuffer = positionHandle_.shaderIndex,
+                .materialIndexBuffer = materialIndexHandle_.shaderIndex,
+                .materialBuffer = materialHandle_.shaderIndex,
+                .paramsBuffer = paramsHandle_.shaderIndex,
                 .vertexOffset = batch.firstVertex,
                 .materialVariant = desiredProgram == alternateProgram_.get() ? 1u : 0u,
-                .transformBuffer = transformHandle_.index,
+                .transformBuffer = transformHandle_.shaderIndex,
             };
             context.commandBuffer().pushBindlessData(&push, sizeof(push));
             context.commandBuffer().draw(batch.vertexCount);

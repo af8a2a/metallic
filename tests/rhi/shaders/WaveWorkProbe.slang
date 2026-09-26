@@ -2,8 +2,6 @@
 
 struct ProbePush
 {
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
     uint inputBuffer;
     uint outputBuffer;
 };
@@ -13,9 +11,9 @@ struct ProbePush
 void main(uint3 id : SV_DispatchThreadID, uniform ProbePush push)
 {
     DescriptorHandle<StructuredBuffer<uint>> input =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.inputBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.inputBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<uint4>> output =
-        DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(push.bufferShaderIndexBase + push.outputBuffer, 0));
+        DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(push.outputBuffer, 0));
     uint count = input[id.x];
     WaveWorkDistribution work = waveWorkBegin(count);
     output[id.x * 65u] = uint4(WaveGetLaneIndex(), WaveReadLaneFirst(id.x), count, work.total);

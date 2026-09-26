@@ -15,7 +15,7 @@ namespace {
 
 constexpr uint32_t kMaxComputeResourceSlots = 256;
 
-// The RHI prepends its two-word heap header. These addresses match
+// These addresses start at push byte zero and match
 // ComputeResourcePush in Shaders/Modules/Core/ComputeResources.slang.
 struct ComputeResourcePush {
     uint64_t resources = 0;
@@ -127,13 +127,15 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
     uint32_t imageBasePushDataOffset = UINT32_MAX;
     uint32_t bufferBasePushDataOffset = UINT32_MAX;
     bool usesResourceTable = true;
+    bool nativeDescriptorHeap = false;
     uint32_t resourceSlotCount = 0;
     std::string debugName = "ComputeProgram";
     std::vector<std::shared_ptr<ComputeDescriptorTables>> frameTables;
 
     bool hasCompatibleBindings(const Impl& other) const
     {
-        if (device != other.device || usesResourceTable != other.usesResourceTable ||
+        if (device != other.device || nativeDescriptorHeap != other.nativeDescriptorHeap ||
+            usesResourceTable != other.usesResourceTable ||
             resourceSlotCount != other.resourceSlotCount || pushConstantSize != other.pushConstantSize ||
             resourceTableCount != other.resourceTableCount || bindlessPushDataSize != other.bindlessPushDataSize ||
             samplerBasePushDataOffset != other.samplerBasePushDataOffset ||
@@ -295,6 +297,14 @@ Result ComputeProgram::initialize(
     impl_->pushConstantSize = desc.pushConstantSize;
     impl_->resourceTableCount = desc.resourceTableCount;
     impl_->usesResourceTable = desc.usesResourceTable;
+    for (size_t word = 5; word < desc.byteSize / sizeof(uint32_t);) {
+        const uint32_t count = desc.spirv[word] >> 16;
+        if (count == 0 || count > desc.byteSize / sizeof(uint32_t) - word) { return makeError(Error::InvalidArgument); }
+        if ((desc.spirv[word] & 0xffffu) == 17 && count == 2 && desc.spirv[word + 1] == 5128) {
+            impl_->nativeDescriptorHeap = true;
+        }
+        word += count;
+    }
     impl_->resourcePackets.resize(desc.resourceTableCount);
     impl_->debugName = desc.debugName != nullptr ? desc.debugName : "ComputeProgram";
 
@@ -853,13 +863,12 @@ Result ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         for (const auto& binding : tables->bindings) {
             const uint32_t descriptorCount = std::max(binding.desc.descriptorCount, 1u);
             uint64_t handle = binding.handles[desc.resourceTableIndex * descriptorCount].shaderIndex;
-            // Slang 2026.1.2 lowers DescriptorHandle<RTAS> to an address cast,
-            // unlike its image/buffer/sampler handles, which index heap arrays.
-            const auto* resource = findDispatchBinding(desc, binding.desc.binding);
-            if (binding.desc.kind == ComputeResourceBindingKind::AccelerationStructure) {
-                handle = resource->accelerationStructure->deviceAddress();
-            } else if (binding.desc.kind == ComputeResourceBindingKind::PartitionedAccelerationStructure) {
-                handle = resource->partitionedAccelerationStructure->deviceAddress();
+            // AS handles carry the full device address in both descriptor modes.
+            if (binding.desc.kind == ComputeResourceBindingKind::AccelerationStructure ||
+                binding.desc.kind == ComputeResourceBindingKind::PartitionedAccelerationStructure) {
+                const auto* resource = findDispatchBinding(desc, binding.desc.binding);
+                handle = binding.desc.kind == ComputeResourceBindingKind::AccelerationStructure
+                    ? resource->accelerationStructure->deviceAddress() : resource->partitionedAccelerationStructure->deviceAddress();
             }
             std::memcpy(bytes + binding.desc.binding * sizeof(uint64_t), &handle, sizeof(handle));
         }

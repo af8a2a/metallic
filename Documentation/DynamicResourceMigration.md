@@ -1,5 +1,6 @@
 # Metallic dynamic resource 迁移调研
 
+> 实施进度、DeviceLost 修复及 CPU 最终索引迁移见 [升级状态](DynamicResourceUpgradeStatus.md)。以下现状、版本和源码行号为迁移前调研快照；全量迁移尚未完成。
 日期：2026-09-25。本文是迁移设计，不表示迁移已经实现或通过 GPU 验证。
 
 ## 结论

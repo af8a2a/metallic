@@ -6,7 +6,7 @@
 void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool reorder)
 {
     DescriptorHandle<StructuredBuffer<uint>> bins =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.hybridClusterBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
     if (lane < WaveGetLaneCount()) {
@@ -42,7 +42,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPus
         c.position = asint(g_StreamRasterWords[tri.z].xy); c.depth = asfloat(g_StreamRasterWords[tri.z].z);
         hybridRasterPreparedTriangle(a, b, c,
             packVisibilityId(g_StreamSoftware.recordIndex, triangle), (g_StreamSoftware.instanceFlags & 2u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], bins[11], push.bufferShaderIndexBase, false);
+            bins[6], bins[7], bins[9], bins[10], bins[11], false);
     }
 }
 

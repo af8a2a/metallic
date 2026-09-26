@@ -5,8 +5,6 @@ using Metallic.Material;
 
 struct ProbePush
 {
-    uint imageShaderIndexBase;
-    uint bufferShaderIndexBase;
     uint inputBuffer;
     uint clusterBuffer;
     uint count;
@@ -18,9 +16,9 @@ void classifyMain(uint3 group : SV_GroupID, uniform ProbePush push)
     uint item = hybridFlatGroup(group);
     if (item >= push.count) { return; }
     DescriptorHandle<StructuredBuffer<uint2>> input =
-        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.bufferShaderIndexBase + push.inputBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.inputBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<uint>> bins =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.clusterBuffer, 0));
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.clusterBuffer, 0));
     uint2 candidate = input[item];
     hybridClassifyCluster(bins, candidate.y, candidate.x, item);
 }
@@ -33,9 +31,9 @@ void seedStreamCandidatesMain(uint3 id : SV_DispatchThreadID, uniform ProbePush 
     uint item = id.x;
     if (item >= push.count) { return; }
     DescriptorHandle<StructuredBuffer<uint2>> input =
-        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.bufferShaderIndexBase + push.inputBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.inputBuffer, 0));
     DescriptorHandle<RWStructuredBuffer<uint>> bins =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.bufferShaderIndexBase + push.clusterBuffer, 0));
+        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.clusterBuffer, 0));
     bins[kHybridBinHeaderWords + item] = 0xa5a5a5a5u;
     bins[hybridCandidateBase(push.count) + item * 2u] = 0xa5a5a5a5u;
     bins[hybridCandidateBase(push.count) + item * 2u + 1u] = 0xa5a5a5a5u;

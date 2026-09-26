@@ -19,7 +19,7 @@ internal int hybridEdgeBias(int2 a, int2 b)
 
 public void hybridRasterTriangle(float4 c0, float4 c1, float4 c2, uint visibilityId,
     bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
-    uint pixelBuffer, uint bufferBase)
+    uint pixelBuffer)
 {
     float2 viewport = float2(width, height);
     float2 s0 = (c0.xy / c0.w * 0.5 + 0.5) * viewport;
@@ -52,7 +52,7 @@ public void hybridRasterTriangle(float4 c0, float4 c1, float4 c2, uint visibilit
     float determinant = e1.x * e2.y - e1.y * e2.x;
     if (abs(determinant) < 1e-12) { return; }
     DescriptorHandle<RWStructuredBuffer<uint64_t>> pixelHandle =
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(bufferBase + pixelBuffer, 0));
+        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(pixelBuffer, 0));
     RWStructuredBuffer<uint64_t> pixels = pixelHandle;
     for (int y = lower.y; y <= upper.y; ++y) {
         for (int x = lower.x; x <= upper.x; ++x) {
@@ -90,7 +90,7 @@ public HybridScreenVertex hybridPrepareVertex(float4 clip, float2 viewport, uint
 
 public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
     uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
-    uint pixelBuffer, uint bufferBase, bool incrementalDepth)
+    uint pixelBuffer, bool incrementalDepth)
 {
     int2 p0 = a.position, p1 = b.position, p2 = c.position;
     int area = hybridEdge(p0, p1, p2);
@@ -114,7 +114,7 @@ public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVerte
     if (abs(determinant) < 1e-12) { return; }
     float3 z = float3(a.depth,b.depth,c.depth);
     float2 gradient = float2(e2.y*(z.y-z.x)-e1.y*(z.z-z.x), e1.x*(z.z-z.x)-e2.x*(z.y-z.x)) / determinant;
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> handle = DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(bufferBase + pixelBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint64_t>> handle = DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(pixelBuffer, 0));
     RWStructuredBuffer<uint64_t> pixels = handle;
     for (int y = lower.y; y <= upper.y; ++y) {
         int3 edges = rowEdges;

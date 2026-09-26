@@ -2063,46 +2063,46 @@ private:
     {
         const GPUDrivenPreviewFrameSlotResources& slot = activeFrameResources();
         return GPUDrivenPreviewUserPush{
-            .positionBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Vertices].index,
-            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].index,
+            .positionBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Vertices].shaderIndex,
+            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].shaderIndex,
             .meshletDrawBuffer =
-                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].index,
+                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex,
             .meshletVertexBuffer =
-                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletVertices].index,
+                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletVertices].shaderIndex,
             .meshletTriangleBuffer =
-                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletTriangleWords].index,
-            .paramsBuffer = slot.paramsHandle.index,
-            .transformBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Geometries].index,
-            .instanceBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Instances].index,
-            .instanceVisibilityBuffer = slot.instanceVisibilityHandle.index,
-            .visibleInstanceIdsBuffer = slot.visibleInstanceIdsHandle.index,
-            .visibleInstanceCounterBuffer = slot.visibleInstanceCounterHandle.index,
-            .visibleMeshletBuffer0 = slot.visibleMeshletHandles[0].index,
-            .visibleMeshletBuffer1 = slot.visibleMeshletHandles[1].index,
-            .indirectBuffer0 = slot.indirectHandles[0].index,
-            .indirectBuffer1 = slot.indirectHandles[1].index,
-            .hzbBuffer0 = hzbHandles_[0].index,
-            .hzbBuffer1 = hzbHandles_[1].index,
+                gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletTriangleWords].shaderIndex,
+            .paramsBuffer = slot.paramsHandle.shaderIndex,
+            .transformBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Geometries].shaderIndex,
+            .instanceBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Instances].shaderIndex,
+            .instanceVisibilityBuffer = slot.instanceVisibilityHandle.shaderIndex,
+            .visibleInstanceIdsBuffer = slot.visibleInstanceIdsHandle.shaderIndex,
+            .visibleInstanceCounterBuffer = slot.visibleInstanceCounterHandle.shaderIndex,
+            .visibleMeshletBuffer0 = slot.visibleMeshletHandles[0].shaderIndex,
+            .visibleMeshletBuffer1 = slot.visibleMeshletHandles[1].shaderIndex,
+            .indirectBuffer0 = slot.indirectHandles[0].shaderIndex,
+            .indirectBuffer1 = slot.indirectHandles[1].shaderIndex,
+            .hzbBuffer0 = hzbHandles_[0].shaderIndex,
+            .hzbBuffer1 = hzbHandles_[1].shaderIndex,
             // Reuse the raster-only unused color slot for the hybrid queue.
             .deferredColorBuffer = hybridRasterEnabled() && !clusterPrebinEnabled()
-                ? hybridQueueHandle_.index : kGPUDrivenInvalidBindlessIndex,
+                ? hybridQueueHandle_.shaderIndex : kGPUDrivenInvalidBindlessIndex,
             .depthImage = freezeCullingCamera_
-                ? cullingDepthImageHandle_.index
-                : depthImageHandle_.index,
-            .visibilityImage = visibilityImageHandle_.index,
+                ? cullingDepthImageHandle_.shaderIndex
+                : depthImageHandle_.shaderIndex,
+            .visibilityImage = visibilityImageHandle_.shaderIndex,
             .passIndex = passIndex,
             .mipLevel = mipLevel,
             .projectWithCullingCamera = projectWithCullingCamera ? 1u : 0u,
-            .materialBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Materials].index,
-            .materialTextureRemapBuffer = materialTextureRemapHandle_.index,
+            .materialBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Materials].shaderIndex,
+            .materialTextureRemapBuffer = materialTextureRemapHandle_.shaderIndex,
             .environmentImage = kGPUDrivenInvalidBindlessIndex,
             .environmentSHBuffer = clusterPrebinEnabled()
-                ? hybridClusterHandle_.index : kGPUDrivenInvalidBindlessIndex,
+                ? hybridClusterHandle_.shaderIndex : kGPUDrivenInvalidBindlessIndex,
             .streamDeferredBindingsBuffer = kGPUDrivenInvalidBindlessIndex,
             .residentRecordCapacity = residentRecordCapacity_,
             .streamOwnerMaskBuffer =
                 streamEnabled_ && streamOwnerMaskHandle_.valid()
-                ? streamOwnerMaskHandle_.index
+                ? streamOwnerMaskHandle_.shaderIndex
                 : kGPUDrivenInvalidBindlessIndex,
             .tessellationEdgePixels = tessellationEdgePixels(),
             .tessellationMaxFactor = tessellationMaxFactor(),
@@ -2294,7 +2294,7 @@ private:
         if (prebin) {
             auto binProfile = context.profileScope("Soft/hard classification");
             Result result = hybridRasterizer_->beginClusters(commandBuffer,
-                softwareRasterMaxPixels(), reversedZ, hybridPixelHandle_.index, activeMeshletCount_, false, false, tessellationEnabled());
+                softwareRasterMaxPixels(), reversedZ, hybridPixelHandle_.shaderIndex, activeMeshletCount_, false, false, tessellationEnabled());
             if (!result) { return result; }
             commandBuffer.bindBindlessHeap(*bindlessHeap_);
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify resident clusters"});
@@ -2400,9 +2400,9 @@ private:
         if (boolProperty(&properties(), "hzbSpd", true) &&
             frameWidth_ <= kHzbSpdMaxDimension && frameHeight_ <= kHzbSpdMaxDimension) {
             const HzbSpdUserPush push{
-                .depthImage = freezeCullingCamera_ ? cullingDepthImageHandle_.index : depthImageHandle_.index,
-                .hzbBuffer = hzbHandles_[frameIndex_ & 1u].index,
-                .counterBuffer = hzbSpdCounterHandle_.index,
+                .depthImage = freezeCullingCamera_ ? cullingDepthImageHandle_.shaderIndex : depthImageHandle_.shaderIndex,
+                .hzbBuffer = hzbHandles_[frameIndex_ & 1u].shaderIndex,
+                .counterBuffer = hzbSpdCounterHandle_.shaderIndex,
                 .width = frameWidth_, .height = frameHeight_, .mipCount = hzbMipCount_,
                 .reversedZ = previousParams_.clipOrtho[3] > 0.5f ? 1u : 0u};
             const GPUSceneComputeDispatchDesc dispatch{
@@ -2496,15 +2496,15 @@ private:
         commandBuffer.bindBindlessHeap(*bindlessHeap_);
         commandBuffer.bindGraphicsPipeline(*compositePipeline_);
         const VisibilityBufferCompositeUserPush push{
-            .paramsBuffer = activeFrameResources().paramsHandle.index,
-            .visibilityImage = visibilityImageHandle_.index,
+            .paramsBuffer = activeFrameResources().paramsHandle.shaderIndex,
+            .visibilityImage = visibilityImageHandle_.shaderIndex,
             // Frozen HZB depth belongs to the culling camera, not the debug viewport.
-            .depthImage = depthImageHandle_.index,
-            .residentRecords = gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].index,
-            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].index,
+            .depthImage = depthImageHandle_.shaderIndex,
+            .residentRecords = gpuSceneBindings_[GPUSceneGlobalBufferKind::MeshletDraws].shaderIndex,
+            .meshletBuffer = gpuSceneBindings_[GPUSceneGlobalBufferKind::Meshlets].shaderIndex,
             .residentRecordCapacity = residentRecordCapacity_,
-            .streamRecords = streamEnabled_ ? streamDebugRecordsHandle_.index : kGPUDrivenInvalidBindlessIndex,
-            .streamGroups = streamEnabled_ ? streamDebugGroupsHandle_.index : kGPUDrivenInvalidBindlessIndex,
+            .streamRecords = streamEnabled_ ? streamDebugRecordsHandle_.shaderIndex : kGPUDrivenInvalidBindlessIndex,
+            .streamGroups = streamEnabled_ ? streamDebugGroupsHandle_.shaderIndex : kGPUDrivenInvalidBindlessIndex,
             .shadedColors = boolProperty(&properties(), "shadedDebugColors", true) ? 1u : 0u,
         };
         commandBuffer.pushBindlessData(&push, sizeof(push));
@@ -2764,13 +2764,13 @@ private:
         result = streamRuntime_->updateRasterBindings(
             MeshletStreamGpuRasterBindings{
                 .instanceVisibilityBuffer =
-                    streamInstanceVisibilityHandle_.index,
-                .hzbBuffer0 = streamHzbHandles_[0].index,
-                .hzbBuffer1 = streamHzbHandles_[1].index,
-                .depthImage = streamDepthImageHandle_.index,
-                .visibilityImage = streamVisibilityImageHandle_.index,
+                    streamInstanceVisibilityHandle_.shaderIndex,
+                .hzbBuffer0 = streamHzbHandles_[0].shaderIndex,
+                .hzbBuffer1 = streamHzbHandles_[1].shaderIndex,
+                .depthImage = streamDepthImageHandle_.shaderIndex,
+                .visibilityImage = streamVisibilityImageHandle_.shaderIndex,
                 .visibleInstanceIdsBuffer =
-                    streamVisibleInstanceIdsHandle_.index,
+                    streamVisibleInstanceIdsHandle_.shaderIndex,
                 .visibleRecordBase = residentRecordCapacity_,
                 .visibleRecordCapacity = streamRecordCapacity,
                 .hzbMipCount = hzbMipCount_,
@@ -2779,13 +2779,13 @@ private:
                 .width = frameWidth_,
                 .height = frameHeight_,
                 .visibleInstanceCounterBuffer =
-                    streamVisibleInstanceCounterHandle_.index,
-                .gpuSceneInstanceBuffer = streamGPUSceneInstanceHandle_.index,
-                .tessellationBuffer = tessellationEnabled() ? streamTessellationHandle_.index : UINT32_MAX,
+                    streamVisibleInstanceCounterHandle_.shaderIndex,
+                .gpuSceneInstanceBuffer = streamGPUSceneInstanceHandle_.shaderIndex,
+                .tessellationBuffer = tessellationEnabled() ? streamTessellationHandle_.shaderIndex : UINT32_MAX,
                 .displacementBound = previousParams_.displacementBound,
                 .classificationFlags = boolProperty(&properties(), "metadataFastClassification", true) ? 0u : 1u,
-                .materialBuffer = streamMaterialHandle_.index,
-                .materialTextureRemapBuffer = streamMaterialTextureRemapHandle_.index,
+                .materialBuffer = streamMaterialHandle_.shaderIndex,
+                .materialTextureRemapBuffer = streamMaterialTextureRemapHandle_.shaderIndex,
                 .materialTextureCount = materialTextureCount_,
             });
         if (!result || streamOwnerMaskBuffer_ == nullptr) {
@@ -2951,8 +2951,8 @@ private:
         MeshletStreamUserPush push = streamRuntime_->userPush();
         const bool forceHardware = prebin && !tessellationEnabled() &&
             boolProperty(&properties(), "benchmarkForceHardwareRaster", false);
-        push.hybridQueueBuffer = hybridRasterEnabled() && !prebin ? streamHybridQueueHandle_.index : UINT32_MAX;
-        push.hybridClusterBuffer = prebin ? streamHybridClusterHandle_.index : UINT32_MAX;
+        push.hybridQueueBuffer = hybridRasterEnabled() && !prebin ? streamHybridQueueHandle_.shaderIndex : UINT32_MAX;
+        push.hybridClusterBuffer = prebin ? streamHybridClusterHandle_.shaderIndex : UINT32_MAX;
         push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
         push.tessellationEdgePixels = tessellationEdgePixels();
         push.tessellationMaxFactor = tessellationMaxFactor();
@@ -2961,13 +2961,13 @@ private:
             auto binProfile = context.profileScope("Candidates");
             const uint32_t count = streamRuntime_->visibleClusterCapacity();
             result = hybridRasterizer_->beginClusters(commandBuffer,
-                forceHardware ? 0.0f : softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.index, count, true, true, tessellationEnabled());
+                forceHardware ? 0.0f : softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.shaderIndex, count, true, true, tessellationEnabled());
             if (!result) { return result; }
             commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: compact stream candidates"});
             // The prepare entry uses this otherwise unused handle for its
             // indirect dispatches; raster entries retain the queue contract.
-            push.hybridQueueBuffer = streamCandidateArgumentsHandle_.index;
+            push.hybridQueueBuffer = streamCandidateArgumentsHandle_.shaderIndex;
             result = hybridRasterizer_->prepareStreamClusterCandidates(commandBuffer, *streamClusterPreparePipeline_, push);
             commandBuffer.endDebugLabel();
             if (!result) { return result; }
@@ -3002,7 +3002,7 @@ private:
                 auto diagnostic = context.profileScope("SW workload replay (diagnostic)");
                 commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
                 auto counterPush = push;
-                counterPush.hybridQueueBuffer = streamWorkloadHandle_.index;
+                counterPush.hybridQueueBuffer = streamWorkloadHandle_.shaderIndex;
                 BufferBarrierDesc barrier{.buffer = &hybridRasterizer_->workloadBuffer(),
                     .before = ResourceState::General, .after = ResourceState::General};
                 commandBuffer.barrier({.buffers = &barrier, .bufferCount = 1});
@@ -3498,7 +3498,7 @@ private:
         }
         std::vector<uint32_t> materialTextureRemap(
             materialTextureCount_,
-            bundle.materialTextureHandles.front().index);
+            bundle.materialTextureHandles.front().shaderIndex);
         const auto textureForSlot = [](const scene::RenderMaterial& material,
                                        uint32_t slot) -> const scene::RenderTextureInfo* {
             const std::array<const scene::RenderTextureInfo*,
@@ -3542,7 +3542,7 @@ private:
                 continue;
             }
             materialTextureRemap[remapIndex] =
-                bundle.materialTextureHandles[consumerTextureIndex].index;
+                bundle.materialTextureHandles[consumerTextureIndex].shaderIndex;
         }
         result = uploadStorageBuffer(
             *device_, materialTextureRemap.data(),
@@ -3583,7 +3583,7 @@ private:
             std::unordered_map<uint32_t, uint32_t> streamDescriptors;
             streamDescriptors.reserve(bundle.materialTextureHandles.size());
             for (size_t i = 0; i < bundle.materialTextureHandles.size(); ++i) {
-                streamDescriptors.emplace(bundle.materialTextureHandles[i].index, streamMaterialTextureHandles_[i].index);
+                streamDescriptors.emplace(bundle.materialTextureHandles[i].shaderIndex, streamMaterialTextureHandles_[i].shaderIndex);
             }
             for (auto& descriptor : materialTextureRemap) {
                 descriptor = streamDescriptors.at(descriptor);
@@ -3614,7 +3614,7 @@ private:
             std::vector<uint32_t> descriptors(logicalTextureToMaterialTexture_.size(), UINT32_MAX);
             for (size_t i = 0; i < descriptors.size(); ++i) {
                 const uint32_t mapped = logicalTextureToMaterialTexture_[i];
-                if (mapped < handles.size()) { descriptors[i] = handles[mapped].index; }
+                if (mapped < handles.size()) { descriptors[i] = handles[mapped].shaderIndex; }
             }
             return buildTessellationData(materials, descriptors);
         };
@@ -4592,9 +4592,9 @@ private:
 
         params.meshletOffset = adaptiveMeshletRange_.offset;
         params.meshletCount = adaptiveMeshletRange_.count;
-        params.lodSelectionBuffer = slot.lodSelectionHandle.index;
+        params.lodSelectionBuffer = slot.lodSelectionHandle.shaderIndex;
         params.lodSelectionEnabled = 1u;
-        params.tessellationBuffer = tessellationEnabled() ? tessellationHandle_.index : UINT32_MAX;
+        params.tessellationBuffer = tessellationEnabled() ? tessellationHandle_.shaderIndex : UINT32_MAX;
         params.displacementBound = tessellationEnabled() && gpuSceneSource_ ? tessellationDisplacementBound(gpuSceneSource_->materials()) : 0.0f;
         void* mapped = slot.paramsBuffer->map();
         if (mapped == nullptr) {

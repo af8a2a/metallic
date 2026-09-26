@@ -15,6 +15,14 @@ enum class SlangShaderDebugMode : uint8_t {
     ShaderDebug, // Full variable debug information without optimization (-g2 -O0).
 };
 
+enum class SlangDescriptorHeapMode : uint8_t {
+    // Mapped by default. METALLIC_SLANG_DESCRIPTOR_MODE=native opts into the
+    // experimental native path; see Documentation/DynamicResourceUpgradeStatus.md.
+    Default,
+    Mapped,
+    Native,
+};
+
 struct SlangMacroDefine {
     const char* name = nullptr;
     const char* value = "1";
@@ -35,6 +43,7 @@ struct SlangShaderDesc {
     uint32_t capabilityCount = 0;
     const SlangMacroDefine* macroDefines = nullptr;
     uint32_t macroDefineCount = 0;
+    SlangDescriptorHeapMode descriptorHeapMode = SlangDescriptorHeapMode::Default;
 };
 
 struct ShaderCompileResult {

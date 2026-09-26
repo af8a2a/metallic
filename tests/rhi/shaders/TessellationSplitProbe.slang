@@ -4,7 +4,7 @@ using Metallic.GPUDriven;
 #include "../../../Shaders/Features/VisibilityBuffer/VisibilityTessellationSplit.slang"
 
 struct ProbeCase { float4 position[3]; float4 eyeNear; float4 forwardScale; float4 options; };
-struct Push { uint images, buffers, input, output; };
+struct Push { uint input, output; };
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
@@ -12,8 +12,8 @@ void main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform Push push
 {
     if (lane >= kTessRootsPerTask) { return; }
     uint index = group.x * kTessRootsPerTask + lane;
-    DescriptorHandle<StructuredBuffer<ProbeCase>> cases = DescriptorHandle<StructuredBuffer<ProbeCase>>(uint2(push.buffers + push.input, 0));
-    DescriptorHandle<RWStructuredBuffer<uint4>> output = DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(push.buffers + push.output, 0));
+    DescriptorHandle<StructuredBuffer<ProbeCase>> cases = DescriptorHandle<StructuredBuffer<ProbeCase>>(uint2(push.input, 0));
+    DescriptorHandle<RWStructuredBuffer<uint4>> output = DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(push.output, 0));
     ProbeCase test = cases[index];
     float3 source[3];
     for (uint i = 0u; i < 3u; ++i) { source[i] = test.position[i].xyz; }
