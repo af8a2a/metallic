@@ -1,4 +1,5 @@
 #include "Runtime/Render/MaterialBinning.h"
+#include "Runtime/Render/MaterialBinningParams.h"
 #include "Runtime/Render/SlangCompiler.h"
 
 namespace metallic::render {
@@ -30,7 +31,7 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
     const uint64_t columns = (uint64_t(desc.width) + kMaterialTileWidth - 1) / kMaterialTileWidth;
     const uint64_t rows = (uint64_t(desc.height) + kMaterialTileHeight - 1) / kMaterialTileHeight;
     const uint64_t tileCount = columns * rows;
-    if (frame == nullptr || !frame->recording() || desc.visibility == nullptr ||
+    if (frame == nullptr || !frame->recording() || !commands.recording() || desc.visibility == nullptr ||
         desc.records == nullptr || desc.instances == nullptr || desc.materials == nullptr ||
         desc.shadingMaterials == nullptr || desc.shadingMaterials->desc().size == 0 ||
         tileCount == 0 || tileCount > UINT32_MAX / kMaterialClassCount ||
@@ -38,11 +39,6 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
         log = "Material classification requires a recording frame, valid scene materials and bounded non-empty tile dimensions";
         return makeError(Error::InvalidArgument);
     }
-    const ComputeProgramBindingDesc layout[] = {
-        {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
-        {.binding = 1}, {.binding = 2}, {.binding = 3}, {.binding = 4},
-        {.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8},
-    };
     const char* entries[] = {"materialBinningResetMain", "materialBinningClassifyMain", "materialBinningArgumentsMain"};
     const char* capabilities[] = {"spvGroupNonUniformBallot", "spvGroupNonUniformArithmetic"};
     for (size_t i = 0; i < programs_.size(); ++i) {
@@ -53,9 +49,8 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
             .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders",
             .capabilities = capabilities, .capabilityCount = 2}, shader);
         if (!result) { log = shader.diagnostics; return result; }
-        result = programs_[i].initialize(device, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = 16,
-            .bindings = layout, .bindingCount = 9, .debugName = entries[i], .requiresRayQuery = false}, log);
+        result = programs_[i].initialize(device, {.spirv = shader.spirv,
+            .parameters = parameterAbi<MaterialBinningParams>(kMaterialBinningAbi), .debugName = entries[i]}, log);
         if (!result) { return result; }
     }
 
@@ -92,21 +87,26 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
             .after = ResourceState::General};
     }
     commands.barrier({.buffers = barriers, .bufferCount = 3});
-    TextureView* visibility = desc.visibility;
-    const ComputeDispatchBinding bindings[] = {
-        {.binding = 0, .textureViews = &visibility, .textureViewCount = 1},
-        {.binding = 1, .buffer = desc.records}, {.binding = 2, .buffer = desc.instances},
-        {.binding = 3, .buffer = desc.materials}, {.binding = 4, .buffer = desc.shadingMaterials},
-        {.binding = 5, .buffer = buffers[0].get()}, {.binding = 6, .buffer = buffers[1].get()},
-        {.binding = 7, .buffer = buffers[2].get()},
-        {.binding = 8, .buffer = desc.streamRecords != nullptr ? desc.streamRecords : desc.records},
+    std::shared_ptr<ResourceRegistry> registry;
+    auto result = device.resourceRegistry(registry);
+    if (!result) { return result; }
+    ParameterWriter writer(device, *frame, *registry);
+    const MaterialBinningParams params{
+        .visibility = writer.sampledImage(desc.visibility),
+        .records = writer.buffer(desc.records), .instances = writer.buffer(desc.instances),
+        .materials = writer.buffer(desc.materials), .shadingMaterials = writer.buffer(desc.shadingMaterials),
+        .bins = writer.buffer(buffers[0].get()), .tiles = writer.buffer(buffers[1].get()),
+        .arguments = writer.buffer(buffers[2].get()),
+        .streamRecords = writer.buffer(desc.streamRecords ? desc.streamRecords : desc.records),
+        .width = desc.width, .height = desc.height, .tileCount = static_cast<uint32_t>(tileCount),
+        .residentRecordCount = desc.residentRecordCount,
     };
-    const uint32_t push[] = {desc.width, desc.height, static_cast<uint32_t>(tileCount), desc.residentRecordCount};
+    EncodedParameters encoded;
+    result = writer.encode(params, kMaterialBinningAbi, encoded);
+    if (!result) { return result; }
     for (size_t i = 0; i < programs_.size(); ++i) {
-        auto result = programs_[i].dispatch({.commandBuffer = &commands, .bindings = bindings,
-            .bindingCount = 9, .pushData = push, .pushDataSize = sizeof(push),
-            .groupCountX = i == 1 ? static_cast<uint32_t>(columns) : 1,
-            .groupCountY = i == 1 ? static_cast<uint32_t>(rows) : 1});
+        result = programs_[i].dispatch(commands, encoded, i == 1 ? static_cast<uint32_t>(columns) : 1,
+            i == 1 ? static_cast<uint32_t>(rows) : 1);
         if (!result) { return result; }
         for (size_t b = 0; b < 3; ++b) {
             barriers[b] = {.buffer = buffers[b].get(), .before = ResourceState::General,

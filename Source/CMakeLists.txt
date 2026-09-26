@@ -47,6 +47,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Debug/RenderDebugProviders.cpp
     Runtime/Render/Debug/GpuDebugProbe.cpp
     Runtime/Render/ComputeProgram.cpp
+    Runtime/Render/ComputeKernel.cpp
+    Runtime/Render/ResourceRegistry.cpp
     Runtime/Render/VisibilityHybridRasterizer.cpp
     Runtime/Render/MeshletLod.cpp
     Runtime/Render/ResidentMeshletLod.cpp

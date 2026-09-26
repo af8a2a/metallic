@@ -1,5 +1,6 @@
 #include "RhiTest.h"
 #include "Runtime/Render/MaterialBinning.h"
+#include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -13,10 +14,16 @@ namespace {
 
 constexpr uint32_t kBinCount = render::kMaterialClassCount;
 constexpr uint32_t kProbeHeader = kBinCount * 5 + 2;
+constexpr uint64_t kProbeAbi = 0x4d42505200000001ull;
+struct MaterialProbeParams {
+    render::ShaderBuffer bins, tiles, arguments, output;
+    uint32_t width, height, binCount, bin;
+};
+static_assert(sizeof(MaterialProbeParams) == 48);
 
 class MaterialBinningProbePass final : public render::UnsafePass {
 public:
-    explicit MaterialBinningProbePass(bool fixture) : fixture_(fixture) {}
+    explicit MaterialBinningProbePass(bool fixture, bool typed = false) : fixture_(fixture), typed_(typed) {}
 
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
     {
@@ -41,6 +48,21 @@ public:
     render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         device_ = context.device;
+        if (typed_) {
+            const char* entries[] = {"materialReadbackResetMain", "materialIndirectProbeMain", "materialIndirectProbeMain"};
+            for (uint32_t i = 0; i < kernels_.size(); ++i) {
+                const render::SlangMacroDefine defines[] = {{"PROBE_TYPED", "1"}, {"PROBE_ALTERNATE", "1"}};
+                render::ShaderCompileResult shader;
+                auto result = render::compileSlangShaderToSpirv({.moduleName = "MaterialBinningProbe",
+                    .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                    .macroDefines = defines, .macroDefineCount = i == 2 ? 2u : 1u}, shader);
+                if (!result) { log = shader.diagnostics; return result; }
+                result = kernels_[i].initialize(*device_, {.spirv = shader.spirv,
+                    .parameters = render::parameterAbi<MaterialProbeParams>(kProbeAbi)}, log);
+                if (!result) { return result; }
+            }
+            return {};
+        }
         const render::ComputeProgramBindingDesc layout[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
             {.binding = 1}, {.binding = 2}, {.binding = 3},
@@ -88,6 +110,7 @@ public:
             .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
             .width = push[0], .height = push[1]}, bins, log);
         if (!result) { return result; }
+        if (typed_) { return executeTyped(context, bins, push, readbackGroups); }
         // Invalid inputs must fail before recording vkCmdDispatchIndirect2KHR.
         for (uint64_t offset : {uint64_t(1), bins.arguments->desc().size - 4, UINT64_MAX}) {
             if (!render::hasError(commands.dispatchIndirect(*bins.arguments, offset), render::Error::InvalidArgument)) {
@@ -140,15 +163,67 @@ public:
     }
 
 private:
+    render::Result executeTyped(render::RenderGraphExecutionContext& context,
+        const render::MaterialBinningResult& bins, const uint32_t* push, uint32_t groups)
+    {
+        auto& commands = context.commandBuffer();
+        std::shared_ptr<render::ResourceRegistry> registry;
+        auto result = device_->resourceRegistry(registry);
+        if (!result) { return result; }
+        const auto writes = registry->stats().descriptorWrites;
+        render::ParameterWriter writer(*device_, *commands.frameContext(), *registry);
+        MaterialProbeParams params{writer.buffer(bins.bins), writer.buffer(bins.tiles),
+            writer.buffer(bins.arguments), writer.buffer(context.outputBuffer("data").buffer()),
+            push[0], push[1], push[2], push[3]};
+        // The producer's three buffers must reuse their entries in another kernel.
+        if (registry->stats().descriptorWrites > writes + 1) { return render::makeError(render::Error::Failure); }
+        render::EncodedParameters encoded;
+        result = writer.encode(params, kProbeAbi, encoded);
+        if (!result) { return result; }
+        render::BufferBarrierDesc argumentBarrier{.buffer = bins.arguments,
+            .before = render::ResourceState::IndirectArgument, .after = render::ResourceState::ShaderRead};
+        commands.barrier({.buffers = &argumentBarrier, .bufferCount = 1});
+        result = kernels_[0].dispatch(commands, encoded, std::min(groups, 65535u), (groups + 65534) / 65535);
+        if (!result) { return result; }
+        std::swap(argumentBarrier.before, argumentBarrier.after);
+        commands.barrier({.buffers = &argumentBarrier, .bufferCount = 1});
+        for (uint64_t offset : {uint64_t(1), bins.arguments->desc().size - 4, UINT64_MAX}) {
+            if (!render::hasError(kernels_[1].dispatchIndirect(commands, encoded, *bins.arguments, offset),
+                render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
+        }
+        render::EncodedParameters wrongAbi;
+        result = writer.encode(params, kProbeAbi + 1, wrongAbi);
+        if (!result) { return result; }
+        if (!render::hasError(kernels_[1].dispatchIndirect(commands, wrongAbi, *bins.arguments),
+            render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
+        render::BufferBarrierDesc outputBarrier{.buffer = context.outputBuffer("data").buffer(),
+            .before = render::ResourceState::General, .after = render::ResourceState::General};
+        for (uint32_t bin = 0; bin < bins.binCount; ++bin) {
+            params.bin = bin;
+            result = writer.encode(params, kProbeAbi, encoded);
+            if (!result) { return result; }
+            commands.barrier({.buffers = &outputBarrier, .bufferCount = 1});
+            const size_t permutation = (context.frameIndex() & 1u) && (bin & 1u) ? 2 : 1;
+            result = kernels_[permutation].dispatchIndirect(commands, encoded, *bins.arguments, uint64_t(bin) * 12);
+            if (!result) { return result; }
+        }
+        return {};
+    }
     bool fixture_;
+    bool typed_;
     render::Device* device_ = nullptr;
     std::array<render::ComputeProgram, 3> programs_;
+    std::array<render::ComputeKernel, 3> kernels_;
     render::MaterialBinning binning_;
 };
 
-class MaterialBinningTest final : public RhiTest {
+class MaterialBinningTest : public RhiTest {
 public:
-    MaterialBinningTest() { type = RhiTestType::Rendering; name = "material_binning_indirect_coverage"; }
+    explicit MaterialBinningTest(bool typed = false) : typed_(typed)
+    {
+        type = RhiTestType::Rendering;
+        name = typed ? "material_binning_typed_indirect_coverage" : "material_binning_indirect_coverage";
+    }
 
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -163,7 +238,7 @@ public:
         render::registerRenderGraphPassType("MaterialBinFixture", "Fixture",
             [] { return std::make_unique<MaterialBinningProbePass>(true); });
         render::registerRenderGraphPassType("MaterialBinProbe", "Probe",
-            [] { return std::make_unique<MaterialBinningProbePass>(false); });
+            [typed = typed_] { return std::make_unique<MaterialBinningProbePass>(false, typed); });
         render::RenderGraph graph;
         graph.addNode("MaterialBinFixture", "Fixture");
         graph.addNode("MaterialBinProbe", "Probe");
@@ -219,9 +294,16 @@ public:
         }
         return RhiTestResult::pass("257 materials in five feature classes; exact wave32 tile masks, edges, background, texture/NTC conservatism, feature edits, resize/reuse and 2D indirect coverage");
     }
+private:
+    bool typed_;
 };
 
 METALLIC_REGISTER_RHI_TEST(MaterialBinningTest);
+class TypedMaterialBinningTest final : public MaterialBinningTest {
+public:
+    TypedMaterialBinningTest() : MaterialBinningTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(TypedMaterialBinningTest);
 
 } // namespace
 } // namespace metallic::tests

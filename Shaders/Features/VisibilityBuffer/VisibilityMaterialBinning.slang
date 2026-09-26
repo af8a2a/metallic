@@ -1,34 +1,45 @@
 import Core;
+import ParameterRoot;
 using Metallic;
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
-#define gVisibility getResource<Texture2D<uint>>(0)
-#define gRecords getResource<StructuredBuffer<VisibleClusterRecord>>(1)
-#define gInstances getResource<StructuredBuffer<GPUDrivenPreviewInstance>>(2)
-#define gMaterials getResource<StructuredBuffer<GPUDrivenPreviewMaterial>>(3)
-#define gShadingMaterials getResource<StructuredBuffer<PathTraceMaterial>>(4)
-#define gBins getResource<RWStructuredBuffer<MaterialBin>>(5)
-#define gTiles getResource<RWStructuredBuffer<MaterialTile>>(6)
-#define gIndirect getResource<RWStructuredBuffer<uint>>(7)
-#define gStreamRecords getResource<StructuredBuffer<VisibleClusterRecord>>(8)
-
-struct MaterialBinningPush
+// Wire layout matches MaterialBinningParams.h, verified by GPU producer/consumer tests.
+struct MaterialBinningParams
 {
+    DescriptorHandle<Texture2D<uint>> visibility;
+    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> records;
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances;
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>> materials;
+    DescriptorHandle<StructuredBuffer<PathTraceMaterial>> shadingMaterials;
+    DescriptorHandle<RWStructuredBuffer<MaterialBin>> bins;
+    DescriptorHandle<RWStructuredBuffer<MaterialTile>> tiles;
+    DescriptorHandle<RWStructuredBuffer<uint>> arguments;
+    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> streamRecords;
     uint width;
     uint height;
     uint tileCount;
     uint residentRecordCount;
 };
 
+#define gVisibility resolveDescriptor(getParameters<MaterialBinningParams>().visibility)
+#define gRecords resolveDescriptor(getParameters<MaterialBinningParams>().records)
+#define gInstances resolveDescriptor(getParameters<MaterialBinningParams>().instances)
+#define gMaterials resolveDescriptor(getParameters<MaterialBinningParams>().materials)
+#define gShadingMaterials resolveDescriptor(getParameters<MaterialBinningParams>().shadingMaterials)
+#define gBins resolveDescriptor(getParameters<MaterialBinningParams>().bins)
+#define gTiles resolveDescriptor(getParameters<MaterialBinningParams>().tiles)
+#define gIndirect resolveDescriptor(getParameters<MaterialBinningParams>().arguments)
+#define gStreamRecords resolveDescriptor(getParameters<MaterialBinningParams>().streamRecords)
+
 uint materialClassForPixel(uint2 pixel)
 {
     uint recordIndex, triangleIndex;
     if (!unpackVisibilityId(gVisibility.Load(int3(pixel, 0)), recordIndex, triangleIndex)) { return kMaterialClassBackground; }
     uint count, stride;
-    MaterialBinningPush push = getConstants<MaterialBinningPush>();
+    MaterialBinningParams push = getParameters<MaterialBinningParams>();
     VisibleClusterRecord record;
     if (recordIndex < push.residentRecordCount) {
         gRecords.GetDimensions(count, stride);
@@ -57,7 +68,7 @@ uint materialClassForPixel(uint2 pixel)
 [numthreads(32, 1, 1)]
 void materialBinningResetMain(uint lane : SV_GroupIndex)
 {
-    MaterialBinningPush push = getConstants<MaterialBinningPush>();
+    MaterialBinningParams push = getParameters<MaterialBinningParams>();
     if (lane < kMaterialClassCount) {
         MaterialBin bin = {lane * push.tileCount, 0u};
         gBins[lane] = bin;
@@ -68,7 +79,7 @@ void materialBinningResetMain(uint lane : SV_GroupIndex)
 [numthreads(32, 1, 1)]
 void materialBinningClassifyMain(uint3 group : SV_GroupID)
 {
-    MaterialBinningPush push = getConstants<MaterialBinningPush>();
+    MaterialBinningParams push = getParameters<MaterialBinningParams>();
     uint lane = WaveGetLaneIndex();
     uint columns = (push.width + kMaterialTileWidth - 1u) / kMaterialTileWidth;
     MaterialTile tile = {group.y * columns + group.x, 0u};
@@ -93,7 +104,7 @@ void materialBinningClassifyMain(uint3 group : SV_GroupID)
 [numthreads(32, 1, 1)]
 void materialBinningArgumentsMain(uint lane : SV_GroupIndex)
 {
-    MaterialBinningPush push = getConstants<MaterialBinningPush>();
+    MaterialBinningParams push = getParameters<MaterialBinningParams>();
     if (lane < kMaterialClassCount) {
         uint count = gBins[lane].count;
         gIndirect[lane * 3u] = min(count, kMaterialBinMaxGroupsX);

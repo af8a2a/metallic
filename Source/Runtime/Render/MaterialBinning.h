@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/ComputeKernel.h"
 #include "Runtime/Render/RenderFrameContext.h"
 
 #include <array>
@@ -41,7 +41,7 @@ public:
 
 private:
     struct Allocation;
-    std::array<ComputeProgram, 3> programs_;
+    std::array<ComputeKernel, 3> programs_;
     std::vector<std::shared_ptr<Allocation>> allocations_;
 };
 

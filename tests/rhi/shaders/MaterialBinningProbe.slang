@@ -10,19 +10,43 @@ using Metallic.Material;
 #define gInstances getResource<RWStructuredBuffer<GPUDrivenPreviewInstance>>(2)
 #define gMaterials getResource<RWStructuredBuffer<GPUDrivenPreviewMaterial>>(3)
 #define gShadingMaterials getResource<RWStructuredBuffer<PathTraceMaterial>>(4)
+#if defined(PROBE_TYPED)
+import ParameterRoot;
+struct MaterialProbeParams {
+    DescriptorHandle<StructuredBuffer<MaterialBin>> bins;
+    DescriptorHandle<StructuredBuffer<MaterialTile>> tiles;
+    DescriptorHandle<StructuredBuffer<uint>> arguments;
+    DescriptorHandle<RWStructuredBuffer<uint>> output;
+    uint width; uint height; uint binCount; uint bin;
+};
+#define gBins resolveDescriptor(getParameters<MaterialProbeParams>().bins)
+#define gTiles resolveDescriptor(getParameters<MaterialProbeParams>().tiles)
+#define gArguments resolveDescriptor(getParameters<MaterialProbeParams>().arguments)
+#define gResult resolveDescriptor(getParameters<MaterialProbeParams>().output)
+#else
 #define gBins getResource<StructuredBuffer<MaterialBin>>(5)
 #define gTiles getResource<StructuredBuffer<MaterialTile>>(6)
 #define gArguments getResource<StructuredBuffer<uint>>(7)
 #define gResult getResource<RWStructuredBuffer<uint>>(8)
+#endif
 
 struct ProbePush { uint width; uint height; uint binCount; uint bin; };
+ProbePush probePush()
+{
+#if defined(PROBE_TYPED)
+    MaterialProbeParams params = getParameters<MaterialProbeParams>();
+    return {params.width, params.height, params.binCount, params.bin};
+#else
+    return getConstants<ProbePush>();
+#endif
+}
 static const uint kProbeHeader = 27u;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void materialFixtureMain(uint3 id : SV_DispatchThreadID)
 {
-    ProbePush push = getConstants<ProbePush>();
+    ProbePush push = probePush();
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
     if (i < 260u) {
         VisibleClusterRecord record = {0u, i, 0u, 0u};
@@ -68,7 +92,7 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
 [numthreads(64, 1, 1)]
 void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
 {
-    ProbePush push = getConstants<ProbePush>();
+    ProbePush push = probePush();
     uint i = id.y * kMaterialBinMaxGroupsX * 64u + id.x;
     if (i == 0u) { gResult[kProbeHeader - 2u] = push.bin; gResult[kProbeHeader - 1u] = 0u; }
     if (i < push.binCount) {
@@ -87,7 +111,7 @@ void materialReadbackResetMain(uint3 id : SV_DispatchThreadID)
 [numthreads(32, 1, 1)]
 void materialIndirectProbeMain(uint3 group : SV_GroupID)
 {
-    ProbePush push = getConstants<ProbePush>();
+    ProbePush push = probePush();
     MaterialBin bin = gBins[push.bin];
     uint index = group.y * kMaterialBinMaxGroupsX + group.x;
     if (index >= bin.count) { return; }

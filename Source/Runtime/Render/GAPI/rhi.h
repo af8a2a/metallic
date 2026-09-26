@@ -1506,6 +1506,9 @@ public:
 
     const BufferDesc& desc() const;
     uint64_t deviceAddress() const;
+    // Retains this allocation, not the movable public wrapper. Device must outlive it.
+    std::shared_ptr<void> retainAllocation() const;
+    const void* deviceIdentity() const;
     void* map();
     void unmap();
     void flush(uint64_t offset = 0, uint64_t size = UINT64_MAX);
@@ -1514,7 +1517,7 @@ public:
 private:
     explicit Buffer(std::unique_ptr<detail::BufferImpl> impl);
 
-    std::unique_ptr<detail::BufferImpl> impl_;
+    std::shared_ptr<detail::BufferImpl> impl_;
 
     friend class Device;
     friend class CommandBuffer;
@@ -1616,12 +1619,14 @@ public:
     const RayTracingAccelerationStructureDesc& desc() const;
     bool valid() const;
     uint64_t deviceAddress() const;
+    std::shared_ptr<void> retainAllocation() const;
+    const void* deviceIdentity() const;
 
 private:
     explicit RayTracingAccelerationStructure(
         std::unique_ptr<detail::RayTracingAccelerationStructureImpl> impl);
 
-    std::unique_ptr<detail::RayTracingAccelerationStructureImpl> impl_;
+    std::shared_ptr<detail::RayTracingAccelerationStructureImpl> impl_;
 
     friend class Device;
     friend class CommandBuffer;
@@ -1671,7 +1676,7 @@ public:
 private:
     explicit Texture(std::unique_ptr<detail::TextureImpl> impl);
 
-    std::unique_ptr<detail::TextureImpl> impl_;
+    std::shared_ptr<detail::TextureImpl> impl_;
 
     friend class Device;
     friend class Swapchain;
@@ -1692,6 +1697,11 @@ public:
 
     TextureView(const TextureView&) = delete;
     TextureView& operator=(const TextureView&) = delete;
+
+    const TextureViewDesc& desc() const;
+    // Owns the image allocation, not this view. Borrowed swapchain images return empty.
+    std::shared_ptr<void> retainTexture() const;
+    const void* deviceIdentity() const;
 
 private:
     explicit TextureView(std::unique_ptr<detail::TextureViewImpl> impl);
@@ -1920,7 +1930,9 @@ public:
 
     Result begin(RenderFrameContext* frameContext = nullptr);
     RenderFrameContext* frameContext() const { return frameContext_; }
+    bool recording() const { return recording_; }
     QueueAccessBits queueCapabilities() const;
+    const void* deviceIdentity() const;
     // Queue::submit merges these waits and the command buffer retains their
     // timeline lifetimes until its next recording. Call while recording.
     Result addDependency(const GpuCompletionPoint& completion);
@@ -2065,6 +2077,8 @@ private:
     friend struct detail::VulkanNativeAccess;
 };
 
+class ResourceRegistry;
+
 class Device {
 public:
     Device();
@@ -2076,6 +2090,8 @@ public:
     Device& operator=(const Device&) = delete;
 
     const DeviceCapabilities& capabilities() const;
+    const void* identity() const;
+    Result resourceRegistry(std::shared_ptr<ResourceRegistry>& outRegistry);
     DeviceMemoryBudget memoryBudget() const;
     void setMemoryBudgetPolicy(const MemoryBudgetPolicy& policy);
     Result reserveMemoryBudget(uint64_t bytes, MemoryBudgetReservation& reservation);

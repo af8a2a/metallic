@@ -16,6 +16,7 @@
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/ResourceRegistry.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_loadso.h>
@@ -3223,10 +3224,11 @@ struct TextureImpl {
 
 struct TextureViewImpl {
     DeviceImpl* device = nullptr;
-    Texture* texture = nullptr;
+    std::shared_ptr<TextureImpl> texture;
     TextureViewDesc desc;
     VkImageView view = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
+    ~TextureViewImpl();
 };
 
 struct ShaderModuleImpl {
@@ -3365,6 +3367,8 @@ struct BindlessHeapImpl {
 };
 
 struct DeviceImpl {
+    std::mutex registryMutex;
+    std::shared_ptr<ResourceRegistry> resourceRegistry;
     ValidationSink validationSink;
     VkInstance instance = VK_NULL_HANDLE;
     VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
@@ -3546,6 +3550,13 @@ TextureImpl::~TextureImpl()
     device->trackMemoryLocked(desc.memoryDomain, allocationSize, deviceLocal, false);
 }
 
+TextureViewImpl::~TextureViewImpl()
+{
+    if (device && view != VK_NULL_HANDLE) {
+        vkDestroyImageView(device->device, view, nullptr);
+    }
+}
+
 RayTracingAccelerationStructureImpl::~RayTracingAccelerationStructureImpl()
 {
     if (device != nullptr && micromap != VK_NULL_HANDLE) {
@@ -3579,6 +3590,8 @@ DeviceImpl::~DeviceImpl()
         vulkan::shutdownStreamline();
         streamlineInitialized = false;
     }
+
+    resourceRegistry.reset();
 
     if (allocator != VK_NULL_HANDLE) {
         for (auto pool : materialImagePools) {
@@ -4761,6 +4774,26 @@ Buffer::Buffer(std::unique_ptr<detail::BufferImpl> impl)
 
 Buffer::~Buffer() = default;
 
+std::shared_ptr<void> Buffer::retainAllocation() const
+{
+    return impl_;
+}
+
+const void* Buffer::deviceIdentity() const
+{
+    return impl_ ? impl_->device : nullptr;
+}
+
+std::shared_ptr<void> RayTracingAccelerationStructure::retainAllocation() const
+{
+    return impl_;
+}
+
+const void* RayTracingAccelerationStructure::deviceIdentity() const
+{
+    return impl_ ? impl_->device : nullptr;
+}
+
 Buffer::Buffer(Buffer&&) noexcept = default;
 Buffer& Buffer::operator=(Buffer&&) noexcept = default;
 
@@ -4925,12 +4958,27 @@ TextureView::TextureView(std::unique_ptr<detail::TextureViewImpl> impl)
 {
 }
 
-TextureView::~TextureView()
+TextureView::~TextureView() = default;
+
+const TextureViewDesc& TextureView::desc() const
 {
-    if (impl_ != nullptr && impl_->view != VK_NULL_HANDLE) {
-        vkDestroyImageView(impl_->device->device, impl_->view, nullptr);
-        impl_->view = VK_NULL_HANDLE;
-    }
+    static const TextureViewDesc empty;
+    return impl_ ? impl_->desc : empty;
+}
+
+std::shared_ptr<void> TextureView::retainTexture() const
+{
+    return impl_ && impl_->texture && impl_->texture->ownsImage ? impl_->texture : nullptr;
+}
+
+const void* TextureView::deviceIdentity() const
+{
+    return impl_ ? impl_->device : nullptr;
+}
+
+const void* CommandBuffer::deviceIdentity() const
+{
+    return impl_ ? impl_->device : nullptr;
 }
 
 TextureView::TextureView(TextureView&&) noexcept = default;
@@ -5262,12 +5310,11 @@ Result BindlessHeap::writeImages(const BindlessImageWrite* writes, uint32_t writ
         if ((!sampled && !storage) ||
             view == nullptr ||
             view->impl_ == nullptr ||
-            view->impl_->texture == nullptr ||
-            view->impl_->texture->impl_ == nullptr) {
+            view->impl_->texture == nullptr || view->impl_->device != impl_->device) {
             return makeError(Error::InvalidArgument);
         }
 
-        const TextureDesc& textureDesc = view->impl_->texture->impl_->desc;
+        const TextureDesc& textureDesc = view->impl_->texture->desc;
         if ((sampled && !hasFlag(textureDesc.usage, TextureUsageBits::Sampled)) ||
             (storage && !hasFlag(textureDesc.usage, TextureUsageBits::Storage))) {
             return makeError(Error::InvalidArgument);
@@ -5276,7 +5323,7 @@ Result BindlessHeap::writeImages(const BindlessImageWrite* writes, uint32_t writ
         handles[index] = write.handle;
         viewInfos[index] = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = view->impl_->texture->impl_->image,
+            .image = view->impl_->texture->image,
             .viewType = toVkImageViewType(textureDesc.type),
             .format = view->impl_->format,
             .components = {static_cast<VkComponentSwizzle>(viewDesc.swizzle[0]),
@@ -7937,6 +7984,26 @@ Device::~Device() = default;
 Device::Device(Device&&) noexcept = default;
 Device& Device::operator=(Device&&) noexcept = default;
 
+const void* Device::identity() const
+{
+    return impl_.get();
+}
+
+Result Device::resourceRegistry(std::shared_ptr<ResourceRegistry>& outRegistry)
+{
+    outRegistry.reset();
+    if (!impl_) { return makeError(Error::InvalidArgument); }
+    std::lock_guard lock(impl_->registryMutex);
+    if (!impl_->resourceRegistry) {
+        auto registry = std::make_shared<ResourceRegistry>();
+        const auto result = registry->initialize(*this);
+        if (!result) { return result; }
+        impl_->resourceRegistry = std::move(registry);
+    }
+    outRegistry = impl_->resourceRegistry;
+    return {};
+}
+
 MemoryBudgetReservation::~MemoryBudgetReservation() { reset(); }
 MemoryBudgetReservation::MemoryBudgetReservation(MemoryBudgetReservation&& other) noexcept
     : state_(std::move(other.state_)), bytes_(std::exchange(other.bytes_, 0)) {}
@@ -9371,8 +9438,9 @@ Result Device::createTextureView(
 
     auto viewImpl = std::make_unique<detail::TextureViewImpl>();
     viewImpl->device = impl_.get();
-    viewImpl->texture = &texture;
+    viewImpl->texture = texture.impl_;
     viewImpl->desc = desc;
+    viewImpl->desc.format = format;
     viewImpl->view = view;
     viewImpl->format = toVkFormat(format);
     outTextureView.reset(new TextureView(std::move(viewImpl)));
