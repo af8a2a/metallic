@@ -847,12 +847,12 @@ void resetSlangShaderHotReloadTracking()
     shaderHotReloadTracker().reset();
 }
 
-Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult)
+Result<> compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult)
 {
     return compileSlangShaderToSpirv(desc, SlangShaderCacheOptions{}, outResult);
 }
 
-Result compileSlangShaderToSpirv(
+Result<> compileSlangShaderToSpirv(
     const SlangShaderDesc& desc,
     const SlangShaderCacheOptions& cacheOptions,
     ShaderCompileResult& outResult)

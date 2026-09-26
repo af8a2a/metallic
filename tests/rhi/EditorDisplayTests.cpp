@@ -62,12 +62,12 @@ public:
         const render::TextureDesc texture{.usage = render::TextureUsageBits::ColorAttachment |
                 render::TextureUsageBits::Sampled | render::TextureUsageBits::TransferSource,
             .format = render::Format::Rgba16Sfloat, .width = 32, .height = 32};
-        if (!device.createTexture(texture, output) || !device.createTexture(texture, source) ||
-            !device.createTextureView(*output, {}, outputView) || !device.createTextureView(*source, {}, sourceView) ||
+        if (!device.createTexture(texture).transform([&](auto rhiValue) { output = std::move(rhiValue); }) || !device.createTexture(texture).transform([&](auto rhiValue) { source = std::move(rhiValue); }) ||
+            !device.createTextureView(*output, {}).transform([&](auto rhiValue) { outputView = std::move(rhiValue); }) || !device.createTextureView(*source, {}).transform([&](auto rhiValue) { sourceView = std::move(rhiValue); }) ||
             !device.createBuffer({.size = 32 * 32 * 8, .usage = render::BufferUsageBits::TransferDestination,
-                .memoryLocation = render::MemoryLocation::HostReadback}, readback) ||
-            !device.createCommandPool(context.graphicsQueue, pool) || !pool->createCommandBuffer(commands) ||
-            !device.createFence(false, fence) || !commands->begin()) {
+                .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }) ||
+            !device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }) || !pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }) ||
+            !device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }) || !commands->begin()) {
             return RhiTestResult::fail("HDR ImGui fixture allocation failed");
         }
         render::TextureBarrierDesc barriers[] = {

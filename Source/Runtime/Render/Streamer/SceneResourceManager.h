@@ -10,7 +10,7 @@ namespace metallic::render {
 
 class SceneResourceManager {
 public:
-    Result acquire(
+    Result<> acquire(
         Device& device,
         Queue& graphicsQueue,
         const RenderGraphProperties& properties,
@@ -18,12 +18,12 @@ public:
         SceneResourceFeatureBits features,
         std::shared_ptr<SceneResourceSnapshot>& outSnapshot,
         std::string& log);
-    Result resolveScene(
+    Result<> resolveScene(
         const RenderGraphProperties& properties,
         const scene::Scene* runtimeScene,
         const scene::Scene*& outScene,
         std::string& log);
-    Result beginAcquireAsync(
+    Result<> beginAcquireAsync(
         Device& device,
         Queue& graphicsQueue,
         const RenderGraphProperties& properties,
@@ -31,7 +31,7 @@ public:
         SceneResourceFeatureBits features,
         std::shared_ptr<SceneResourceSnapshot>& outSnapshot,
         std::string& log);
-    Result pumpAsync(
+    Result<> pumpAsync(
         const std::shared_ptr<SceneResourceSnapshot>& snapshot,
         const scene::Scene& runtimeScene,
         double budgetMilliseconds,

@@ -19,21 +19,21 @@ static_assert(sizeof(LodPush) == 104);
 
 } // namespace
 
-Result ResidentMeshletLod::initialize(Device& device, uint32_t capacity, std::string& log)
+Result<> ResidentMeshletLod::initialize(Device& device, uint32_t capacity, std::string& log)
 {
     if (capacity == 0 || !visibilityRecordCapacityFitsId(capacity)) { return makeError(Error::InvalidArgument); }
     capacity_ = capacity;
-    Result result = device.createBuffer({.size = (uint64_t(capacity) + 1u) * 16u, .structureStride = 16,
+    Result<> result = device.createBuffer({.size = (uint64_t(capacity) + 1u) * 16u, .structureStride = 16,
         .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
-        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, selections_);
+        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { selections_ = std::move(rhiValue); });
     if (result) {
         result = device.createBuffer({.size = 36, .structureStride = 4,
             .usage = BufferUsageBits::Storage | BufferUsageBits::Indirect | BufferUsageBits::TransferSource,
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, arguments_);
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { arguments_ = std::move(rhiValue); });
     }
     if (!result) { return result; }
     result = device.createBuffer({.size = (uint64_t(capacity) + (capacity + 63u) / 64u) * 4u,
-        .structureStride = 4, .usage = BufferUsageBits::Storage}, scratch_);
+        .structureStride = 4, .usage = BufferUsageBits::Storage}).transform([&](auto rhiValue) { scratch_ = std::move(rhiValue); });
     if (!result) { return result; }
     const char* entries[] = {"residentLodResetMain", "residentLodSelectMain", "residentLodArgumentsMain", "residentLodScatterMain"};
     for (size_t i = 0; i < shaders_.size(); ++i) {
@@ -42,17 +42,17 @@ Result ResidentMeshletLod::initialize(Device& device, uint32_t capacity, std::st
             .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
         if (!result) { log += shader.diagnostics; return result; }
         result = device.createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4u,
-            .debugName = entries[i]}, shaders_[i]);
+            .debugName = entries[i]}).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });
         if (result) {
             result = device.createComputePipeline({.computeShader = shaders_[i].get(),
-                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(LodPush)}, pipelines_[i]);
+                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(LodPush)}).transform([&](auto rhiValue) { pipelines_[i] = std::move(rhiValue); });
         }
         if (!result) { return result; }
     }
     return {};
 }
 
-Result ResidentMeshletLod::record(CommandBuffer& commands, ResourceRegistry& registry,
+Result<> ResidentMeshletLod::record(CommandBuffer& commands, ResourceRegistry& registry,
     const GPUSceneConsumerBindings& bindings, const MeshletLodView& view,
     GPUSceneRasterDrawRange candidates, uint32_t instanceCount, uint32_t groupCount,
     ResourceLease output, ResourceLease arguments, ResourceLease scratch, uint32_t manualLevel)

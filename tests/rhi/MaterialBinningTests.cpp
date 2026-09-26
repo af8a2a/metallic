@@ -45,7 +45,7 @@ public:
         return reflection;
     }
 
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         device_ = context.device;
         if (typed_) {
@@ -83,7 +83,7 @@ public:
         return {};
     }
 
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         auto& commands = context.commandBuffer();
         uint32_t push[] = {context.width(), context.height(), kBinCount, static_cast<uint32_t>(context.frameIndex() % 4)};
@@ -163,12 +163,12 @@ public:
     }
 
 private:
-    render::Result executeTyped(render::RenderGraphExecutionContext& context,
+    render::Result<> executeTyped(render::RenderGraphExecutionContext& context,
         const render::MaterialBinningResult& bins, const uint32_t* push, uint32_t groups)
     {
         auto& commands = context.commandBuffer();
         std::shared_ptr<render::ResourceRegistry> registry;
-        auto result = device_->resourceRegistry(registry);
+        auto result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (!result) { return result; }
         const auto writes = registry->stats().descriptorWrites;
         render::ParameterWriter writer(*device_, *commands.frameContext(), *registry);
@@ -229,7 +229,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         auto result = render::createDevice({.applicationName = "Material binning probe",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
         if (!result) { return RhiTestResult::fail("Device creation failed"); }
         if (!device->capabilities().computeSubgroupBallotArithmetic || device->capabilities().subgroupSize != 32) {

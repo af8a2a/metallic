@@ -18,26 +18,22 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Buffer> invalidBuffer;
-        render::Result result = context.device.createBuffer(
-            render::BufferDesc{
+        render::Result<> result = context.device.createBuffer(render::BufferDesc{
                 .size = 0,
                 .usage = render::BufferUsageBits::TransferSource,
                 .memoryLocation = render::MemoryLocation::HostUpload,
-            },
-            invalidBuffer);
+            }).transform([&](auto rhiValue) { invalidBuffer = std::move(rhiValue); });
         if (!render::hasError(result, render::Error::InvalidArgument) || invalidBuffer != nullptr) {
             return RhiTestResult::fail("zero-sized buffer was not rejected");
         }
 
         std::unique_ptr<render::Buffer> uploadBuffer;
-        result = context.device.createBuffer(
-            render::BufferDesc{
+        result = context.device.createBuffer(render::BufferDesc{
                 .size = 256,
                 .structureStride = 16,
                 .usage = render::BufferUsageBits::TransferSource,
                 .memoryLocation = render::MemoryLocation::HostUpload,
-            },
-            uploadBuffer);
+            }).transform([&](auto rhiValue) { uploadBuffer = std::move(rhiValue); });
         if (!result || uploadBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createBuffer returned ") + toString(result));
         }
@@ -50,8 +46,7 @@ public:
         // These usages must work without Storage or an explicit ShaderDeviceAddress request.
         for (auto usage : {render::BufferUsageBits::Indirect, render::BufferUsageBits::TransferDestination}) {
             std::unique_ptr<render::Buffer> addressBuffer;
-            result = context.device.createBuffer(
-                {.size = 16, .usage = usage, .memoryLocation = render::MemoryLocation::Device}, addressBuffer);
+            result = context.device.createBuffer({.size = 16, .usage = usage, .memoryLocation = render::MemoryLocation::Device}).transform([&](auto rhiValue) { addressBuffer = std::move(rhiValue); });
             if (!result || addressBuffer == nullptr || addressBuffer->deviceAddress() == 0) {
                 return RhiTestResult::fail("command buffer usage requires an implicit device address");
             }
@@ -65,18 +60,15 @@ public:
         uploadBuffer->unmap();
 
         std::unique_ptr<render::Texture> invalidTexture;
-        result = context.device.createTexture(
-            render::TextureDesc{
+        result = context.device.createTexture(render::TextureDesc{
                 .format = render::Format::Unknown,
-            },
-            invalidTexture);
+            }).transform([&](auto rhiValue) { invalidTexture = std::move(rhiValue); });
         if (!render::hasError(result, render::Error::InvalidArgument) || invalidTexture != nullptr) {
             return RhiTestResult::fail("texture with unknown format was not rejected");
         }
 
         std::unique_ptr<render::Texture> texture;
-        result = context.device.createTexture(
-            render::TextureDesc{
+        result = context.device.createTexture(render::TextureDesc{
                 .type = render::TextureType::Texture2D,
                 .usage = render::TextureUsageBits::ColorAttachment | render::TextureUsageBits::TransferSource,
                 .format = render::Format::Rgba8Unorm,
@@ -86,8 +78,7 @@ public:
                 .mipCount = 1,
                 .layerCount = 1,
                 .memoryLocation = render::MemoryLocation::Device,
-            },
-            texture);
+            }).transform([&](auto rhiValue) { texture = std::move(rhiValue); });
         if (!result || texture == nullptr) {
             return RhiTestResult::fail(std::string("createTexture returned ") + toString(result));
         }
@@ -98,22 +89,20 @@ public:
         }
 
         std::unique_ptr<render::TextureView> textureView;
-        result = context.device.createTextureView(
-            *texture,
+        result = context.device.createTextureView(*texture,
             render::TextureViewDesc{
                 .format = render::Format::Rgba8Unorm,
                 .baseMip = 0,
                 .mipCount = 1,
                 .baseLayer = 0,
                 .layerCount = 1,
-            },
-            textureView);
+            }).transform([&](auto rhiValue) { textureView = std::move(rhiValue); });
         if (!result || textureView == nullptr) {
             return RhiTestResult::fail(std::string("createTextureView returned ") + toString(result));
         }
 
         std::unique_ptr<render::Fence> fence;
-        result = context.device.createFence(true, fence);
+        result = context.device.createFence(true).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
             return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
         }
@@ -133,7 +122,7 @@ public:
         }
 
         std::unique_ptr<render::Semaphore> semaphore;
-        result = context.device.createSemaphore(render::SemaphoreDesc{.initialValue = 2}, semaphore);
+        result = context.device.createSemaphore(render::SemaphoreDesc{.initialValue = 2}).transform([&](auto rhiValue) { semaphore = std::move(rhiValue); });
         if (!result || semaphore == nullptr) {
             return RhiTestResult::fail(std::string("createSemaphore returned ") + toString(result));
         }
@@ -153,7 +142,7 @@ public:
         }
 
         std::unique_ptr<render::SwapchainSemaphore> swapchainSemaphore;
-        result = context.device.createSwapchainSemaphore(swapchainSemaphore);
+        result = context.device.createSwapchainSemaphore().transform([&](auto rhiValue) { swapchainSemaphore = std::move(rhiValue); });
         if (!result || swapchainSemaphore == nullptr) {
             return RhiTestResult::fail(std::string("createSwapchainSemaphore returned ") + toString(result));
         }
@@ -173,27 +162,25 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Buffer> indirectBuffer;
-        render::Result result = context.device.createBuffer(
-            render::BufferDesc{
+        render::Result<> result = context.device.createBuffer(render::BufferDesc{
                 .size = 16,
                 .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::Indirect,
                 .memoryLocation = render::MemoryLocation::Device,
-            },
-            indirectBuffer);
+            }).transform([&](auto rhiValue) { indirectBuffer = std::move(rhiValue); });
         if (!result || indirectBuffer == nullptr) {
             return RhiTestResult::fail(
                 std::string("createBuffer(indirect) returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
-        result = context.device.createCommandPool(context.graphicsQueue, commandPool);
+        result = context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
             return RhiTestResult::fail(
                 std::string("createCommandPool returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandBuffer> commandBuffer;
-        result = commandPool->createCommandBuffer(commandBuffer);
+        result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
             return RhiTestResult::fail(
                 std::string("createCommandBuffer returned ") + toString(result));
@@ -228,7 +215,7 @@ public:
         }
 
         std::unique_ptr<render::Fence> fence;
-        result = context.device.createFence(false, fence);
+        result = context.device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
             return RhiTestResult::fail(
                 std::string("createFence returned ") + toString(result));

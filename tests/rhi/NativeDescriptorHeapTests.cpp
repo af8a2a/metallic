@@ -13,7 +13,7 @@ namespace metallic::tests {
 namespace {
 
 #define NATIVE_REQUIRE(expression) do { \
-    const render::Result result = (expression); \
+    const render::Result<> result = (expression); \
     if (!result) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(result) + " " + log); } \
 } while (false)
 
@@ -47,7 +47,7 @@ public:
         }
         std::unique_ptr<render::Device> device;
         auto setup = render::createDevice({.applicationName = "Native descriptor layout regression",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("descriptor heaps unavailable"); }
         NATIVE_REQUIRE(setup);
         auto& queue = *device->getQueue(render::QueueType::Graphics);
@@ -77,15 +77,15 @@ public:
             NATIVE_REQUIRE(initialized);
             std::unique_ptr<render::Buffer> records, output;
             NATIVE_REQUIRE(device->createBuffer({.size = 32u * 96u, .structureStride = 96,
-                .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::Device}, records));
+                .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::Device}).transform([&](auto rhiValue) { records = std::move(rhiValue); }));
             NATIVE_REQUIRE(device->createBuffer({.size = 32u * 200u, .structureStride = 4,
-                .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}, output));
+                .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
             render::QueueSubmissionTracker tracker;
             NATIVE_REQUIRE(tracker.initialize(*device, queue));
             std::unique_ptr<render::CommandPool> pool;
             std::unique_ptr<render::CommandBuffer> commands;
-            NATIVE_REQUIRE(device->createCommandPool(queue, pool));
-            NATIVE_REQUIRE(pool->createCommandBuffer(commands));
+            NATIVE_REQUIRE(device->createCommandPool(queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+            NATIVE_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
             render::RenderFrameContext frame;
             struct Drain {
                 render::RenderFrameContext& frame;
@@ -143,7 +143,7 @@ public:
         std::string log;
         std::unique_ptr<render::Device> device;
         const auto setup = render::createDevice({.applicationName = "Final descriptor indices",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("descriptor heaps unavailable"); }
         NATIVE_REQUIRE(setup);
         auto& queue = *device->getQueue(render::QueueType::Graphics);
@@ -155,7 +155,7 @@ public:
             }, compiled));
             std::unique_ptr<render::ShaderModule> shader;
             const auto moduleResult = device->createShaderModule({.code = compiled.spirv.data(),
-                .byteSize = compiled.spirv.size() * sizeof(uint32_t)}, shader);
+                .byteSize = compiled.spirv.size() * sizeof(uint32_t)}).transform([&](auto rhiValue) { shader = std::move(rhiValue); });
             if (mode == render::SlangDescriptorHeapMode::Native && render::hasError(moduleResult, render::Error::Unsupported)) {
                 return RhiTestResult::skip("mapped passed; native requires KHR untyped pointers");
             }
@@ -164,25 +164,25 @@ public:
             static_assert(sizeof(Push) == 8);
             std::unique_ptr<render::ComputePipeline> pipeline;
             NATIVE_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .computeEntryPoint = "main",
-                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}, pipeline));
+                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
             std::array<std::unique_ptr<render::BindlessHeap>, 2> heaps;
             std::array<std::unique_ptr<render::Buffer>, 2> inputs, outputs;
             std::array<render::BindlessHandle, 2> inputHandles, outputHandles;
             for (uint32_t i = 0; i < heaps.size(); ++i) {
                 // Different image capacities move the buffer partition. Also skip
                 // slot zero so neither a local index nor an implicit slot can pass.
-                NATIVE_REQUIRE(device->createBindlessHeap({.maxSampledImages = 3u + i * 10u, .maxBuffers = 4}, heaps[i]));
+                NATIVE_REQUIRE(device->createBindlessHeap({.maxSampledImages = 3u + i * 10u, .maxBuffers = 4}).transform([&](auto rhiValue) { heaps[i] = std::move(rhiValue); }));
                 render::BindlessHandle unused;
-                NATIVE_REQUIRE(heaps[i]->allocateBuffer(unused));
-                NATIVE_REQUIRE(heaps[i]->allocateBuffer(inputHandles[i]));
-                NATIVE_REQUIRE(heaps[i]->allocateBuffer(outputHandles[i]));
+                NATIVE_REQUIRE(heaps[i]->allocateBuffer().transform([&](auto rhiValue) { unused = std::move(rhiValue); }));
+                NATIVE_REQUIRE(heaps[i]->allocateBuffer().transform([&](auto rhiValue) { inputHandles[i] = std::move(rhiValue); }));
+                NATIVE_REQUIRE(heaps[i]->allocateBuffer().transform([&](auto rhiValue) { outputHandles[i] = std::move(rhiValue); }));
                 if (inputHandles[i].index == 0 || inputHandles[i].shaderIndex == inputHandles[i].index) {
                     return RhiTestResult::fail("test must exercise a nonzero slot and buffer partition");
                 }
                 NATIVE_REQUIRE(device->createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
-                    .memoryLocation = render::MemoryLocation::HostUpload}, inputs[i]));
+                    .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[i] = std::move(rhiValue); }));
                 NATIVE_REQUIRE(device->createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
-                    .memoryLocation = render::MemoryLocation::HostReadback}, outputs[i]));
+                    .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { outputs[i] = std::move(rhiValue); }));
                 NATIVE_REQUIRE(heaps[i]->writeStorageBuffer(inputHandles[i], *inputs[i]));
                 NATIVE_REQUIRE(heaps[i]->writeStorageBuffer(outputHandles[i], *outputs[i]));
                 const std::array<uint32_t, 4> data{outputHandles[i].shaderIndex, 17u + i * 13u, 0, 0};
@@ -199,8 +199,8 @@ public:
             NATIVE_REQUIRE(tracker.initialize(*device, queue));
             std::unique_ptr<render::CommandPool> pool;
             std::unique_ptr<render::CommandBuffer> commands;
-            NATIVE_REQUIRE(device->createCommandPool(queue, pool));
-            NATIVE_REQUIRE(pool->createCommandBuffer(commands));
+            NATIVE_REQUIRE(device->createCommandPool(queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+            NATIVE_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
             render::RenderFrameContext frame;
             struct Drain {
                 render::RenderFrameContext& frame;
@@ -263,7 +263,7 @@ public:
         std::string log;
         std::unique_ptr<render::Device> device;
         const auto setup = render::createDevice({.applicationName = "Native mixed atomic regression",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("descriptor heaps unavailable"); }
         NATIVE_REQUIRE(setup);
         if (!device->capabilities().shaderBufferInt64Atomics) { return RhiTestResult::skip("uint64 buffer atomics unavailable"); }
@@ -285,7 +285,7 @@ public:
             binary.write(reinterpret_cast<const char*>(compiled.spirv.data()), compiled.spirv.size() * sizeof(uint32_t));
             std::unique_ptr<render::ShaderModule> shader;
             const auto module = device->createShaderModule({.code = compiled.spirv.data(),
-                .byteSize = compiled.spirv.size() * sizeof(uint32_t)}, shader);
+                .byteSize = compiled.spirv.size() * sizeof(uint32_t)}).transform([&](auto rhiValue) { shader = std::move(rhiValue); });
             if (mode == render::SlangDescriptorHeapMode::Native && render::hasError(module, render::Error::Unsupported)) {
                 return RhiTestResult::skip("mapped passed; native requires KHR untyped pointers");
             }
@@ -294,20 +294,20 @@ public:
             static_assert(sizeof(Push) == 20);
             std::unique_ptr<render::ComputePipeline> pipeline;
             NATIVE_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .computeEntryPoint = "main",
-                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}, pipeline));
+                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
             std::unique_ptr<render::BindlessHeap> heap;
-            NATIVE_REQUIRE(device->createBindlessHeap({.maxSampledImages = 7, .maxBuffers = 8}, heap));
+            NATIVE_REQUIRE(device->createBindlessHeap({.maxSampledImages = 7, .maxBuffers = 8}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
             render::BindlessHandle unused;
-            NATIVE_REQUIRE(heap->allocateBuffer(unused));
+            NATIVE_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { unused = std::move(rhiValue); }));
             std::array<render::BindlessHandle, 3> handles;
             std::array<std::unique_ptr<render::Buffer>, 3> buffers;
             const std::array<uint64_t, 3> sizes{1024 * 8, 16, count * 96};
             const std::array<uint32_t, 3> strides{8, 4, 96};
             for (uint32_t i = 0; i < buffers.size(); ++i) {
-                NATIVE_REQUIRE(heap->allocateBuffer(handles[i]));
+                NATIVE_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
                 NATIVE_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = strides[i],
                     .usage = render::BufferUsageBits::Storage,
-                    .memoryLocation = i == 2 ? render::MemoryLocation::HostUpload : render::MemoryLocation::HostReadback}, buffers[i]));
+                    .memoryLocation = i == 2 ? render::MemoryLocation::HostUpload : render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
                 NATIVE_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
                 if (handles[i].index == 0 || handles[i].index == handles[i].shaderIndex) {
                     return RhiTestResult::fail("atomic test requires nonzero final descriptor indices");
@@ -332,8 +332,8 @@ public:
             NATIVE_REQUIRE(tracker.initialize(*device, queue));
             std::unique_ptr<render::CommandPool> pool;
             std::unique_ptr<render::CommandBuffer> commands;
-            NATIVE_REQUIRE(device->createCommandPool(queue, pool));
-            NATIVE_REQUIRE(pool->createCommandBuffer(commands));
+            NATIVE_REQUIRE(device->createCommandPool(queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+            NATIVE_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
             render::RenderFrameContext frame;
             struct Drain {
                 render::RenderFrameContext& frame;

@@ -24,16 +24,16 @@ StreamingUploads::~StreamingUploads()
     endFrame();
 }
 
-Result StreamingUploads::initialize(Device& device, std::string& log, uint32_t frameSlotCount)
+Result<> StreamingUploads::initialize(Device& device, std::string& log, uint32_t frameSlotCount)
 {
     log.clear();
     if (streamer_ != nullptr) {
-        return streamer_->desc().queuedFrameCount == frameSlotCount ? Result{} : makeError(Error::InvalidArgument);
+        return streamer_->desc().queuedFrameCount == frameSlotCount ? Result<>{} : makeError(Error::InvalidArgument);
     }
 
     StreamerDesc desc = defaultRenderGraphStreamerDesc();
     desc.queuedFrameCount = frameSlotCount;
-    Result result = device.createStreamer(desc, streamer_);
+    Result<> result = device.createStreamer(desc).transform([&](auto rhiValue) { streamer_ = std::move(rhiValue); });
     if (!result || streamer_ == nullptr) {
         log = "createStreamer(StreamingUploads) returned ";
         log += resultToString(result);
@@ -64,12 +64,12 @@ void StreamingUploads::beginFrame()
     stats_.streamer = streamer_ != nullptr ? streamer_->stats() : StreamerStats{};
 }
 
-Result StreamingUploads::beginFrame(RenderFrameContext& frame)
+Result<> StreamingUploads::beginFrame(RenderFrameContext& frame)
 {
     if (streamer_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    Result result = streamer_->beginFrame(frame);
+    Result<> result = streamer_->beginFrame(frame);
     if (result) {
         beginFrame();
     }

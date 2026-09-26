@@ -160,7 +160,7 @@ struct NrdRuntime::Impl {
     bool frameReady = false;
     std::array<bool, 5> scheduled{};
 
-    Result pipeline(uint32_t index)
+    Result<> pipeline(uint32_t index)
     {
         if (pipelines[index].valid())
             return {};
@@ -170,7 +170,7 @@ struct NrdRuntime::Impl {
             defines.push_back({define.name, define.value});
         const char* searchPaths[] = {PROJECT_SOURCE_DIR "/External/MathLib"};
         ShaderCompileResult compiled;
-        Result result = compileSlangShaderToSpirv(
+        Result<> result = compileSlangShaderToSpirv(
             {
                 .moduleName = recipe.shaderName.c_str(),
                 .entryPointName = "main",
@@ -196,7 +196,7 @@ NrdRuntime::~NrdRuntime() = default;
 NrdRuntime::NrdRuntime(NrdRuntime&&) noexcept = default;
 NrdRuntime& NrdRuntime::operator=(NrdRuntime&&) noexcept = default;
 
-Result NrdRuntime::initialize(Device& device, uint16_t width, uint16_t height,
+Result<> NrdRuntime::initialize(Device& device, uint16_t width, uint16_t height,
                               const NrdUserTexturePool& userTexturePool, std::string& log, bool sigmaOnly)
 {
     if (!width || !height)
@@ -209,7 +209,7 @@ Result NrdRuntime::initialize(Device& device, uint16_t width, uint16_t height,
     impl_->width = width;
     impl_->height = height;
     impl_->userTexturePool = userTexturePool;
-    auto createTextureResource = [&](const denoising::TextureDesc& nrdDesc, Impl::TextureResource& resource) {
+    auto createTextureResource = [&](const denoising::TextureDesc& nrdDesc, Impl::TextureResource& resource) -> Result<> {
         const Format format = formatFromNrd(nrdDesc.format);
         if (format == Format::Unknown || nrdDesc.downsampleFactor == 0) {
             log = "NrdRuntime received an unsupported internal texture descriptor";
@@ -217,8 +217,7 @@ Result NrdRuntime::initialize(Device& device, uint16_t width, uint16_t height,
         }
         const uint16_t textureWidth = divideRoundUp(width, nrdDesc.downsampleFactor);
         const uint16_t textureHeight = divideRoundUp(height, nrdDesc.downsampleFactor);
-        Result result = device.createTexture(
-            TextureDesc{
+        Result<> result = device.createTexture(TextureDesc{
                 .type = TextureType::Texture2D,
                 .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage | TextureUsageBits::TransferDestination,
                 .format = format,
@@ -229,8 +228,7 @@ Result NrdRuntime::initialize(Device& device, uint16_t width, uint16_t height,
                 .layerCount = 1,
                 .memoryLocation = MemoryLocation::Device,
                 .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
-            },
-            resource.texture);
+            }).transform([&](auto rhiValue) { resource.texture = std::move(rhiValue); });
         if (!result || resource.texture == nullptr) {
             log = "createTexture(NRD internal) returned ";
             log += resultToString(result);
@@ -243,17 +241,16 @@ Result NrdRuntime::initialize(Device& device, uint16_t width, uint16_t height,
                                               .mipCount = 1,
                                               .baseLayer = 0,
                                               .layerCount = 1,
-                                          },
-                                          resource.view);
+                                          }).transform([&](auto rhiValue) { resource.view = std::move(rhiValue); });
         if (!result || resource.view == nullptr) {
             log = "createTextureView(NRD internal) returned ";
             log += resultToString(result);
             return result ? makeError(Error::Failure) : result;
         }
-        return Result{};
+        return Result<>{};
     };
 
-    auto createPool = [&](const auto& descriptions, auto& textures) -> Result {
+    auto createPool = [&](const auto& descriptions, auto& textures) -> Result<> {
         textures.resize(descriptions.size());
         for (size_t i = 0; i < descriptions.size(); ++i) {
             auto result = createTextureResource(descriptions[i], textures[i]);
@@ -269,7 +266,7 @@ Result NrdRuntime::initialize(Device& device, uint16_t width, uint16_t height,
         clear();
         return result;
     }
-    result = device.resourceRegistry(impl_->registry);
+    result = device.resourceRegistry().transform([&](auto rhiValue) { impl_->registry = std::move(rhiValue); });
     if (!result) { clear(); return result; }
     impl_->pipelines.resize(impl_->plan.pipelines().size());
     return {};
@@ -299,7 +296,7 @@ void NrdRuntime::setUserPoolTexture(denoising::ResourceType resource, Texture& t
         impl_->userTexturePool[i] = {&texture, &view};
 }
 
-Result NrdRuntime::setCommonSettings(const denoising::CommonSettings& settings)
+Result<> NrdRuntime::setCommonSettings(const denoising::CommonSettings& settings)
 {
     if (impl_)
         impl_->frameReady = false;
@@ -317,14 +314,14 @@ Result NrdRuntime::setCommonSettings(const denoising::CommonSettings& settings)
     return {};
 }
 
-Result NrdRuntime::setReblurSettings(const denoising::ReblurSettings& settings)
+Result<> NrdRuntime::setReblurSettings(const denoising::ReblurSettings& settings)
 {
     if (!valid())
         return makeError(Error::InvalidArgument);
     impl_->plan.setReblurSettings(settings);
     return {};
 }
-Result NrdRuntime::setRelaxSettings(const denoising::RelaxSettings& settings)
+Result<> NrdRuntime::setRelaxSettings(const denoising::RelaxSettings& settings)
 {
     if (!valid())
         return makeError(Error::InvalidArgument);
@@ -332,23 +329,23 @@ Result NrdRuntime::setRelaxSettings(const denoising::RelaxSettings& settings)
     return {};
 }
 
-Result NrdRuntime::setSigmaSettings(const denoising::SigmaSettings& settings)
+Result<> NrdRuntime::setSigmaSettings(const denoising::SigmaSettings& settings)
 {
     if (!valid()) { return makeError(Error::InvalidArgument); }
     impl_->plan.setSigmaSettings(settings);
     return {};
 }
 
-Result NrdRuntime::denoise(NrdDenoiserMode mode, CommandBuffer& commands)
+Result<> NrdRuntime::denoise(NrdDenoiserMode mode, CommandBuffer& commands)
 {
     return record(static_cast<uint32_t>(mode), commands);
 }
-Result NrdRuntime::denoiseReference(bool specular, CommandBuffer& commands)
+Result<> NrdRuntime::denoiseReference(bool specular, CommandBuffer& commands)
 {
     return record(specular ? 3 : 2, commands);
 }
 
-Result NrdRuntime::record(uint32_t index, CommandBuffer& commands)
+Result<> NrdRuntime::record(uint32_t index, CommandBuffer& commands)
 {
     if (!commands.recording() || !commands.frameContext() || !commands.frameContext()->recording() ||
         !valid() || !impl_->frameReady || index >= impl_->scheduled.size() || impl_->scheduled[index])
@@ -406,7 +403,7 @@ Result NrdRuntime::record(uint32_t index, CommandBuffer& commands)
     return {};
 }
 
-Result NrdRuntime::dispatch(CommandBuffer& commands, const denoising::DispatchDesc& stage)
+Result<> NrdRuntime::dispatch(CommandBuffer& commands, const denoising::DispatchDesc& stage)
 {
     ParameterWriter writer(*impl_->device, *commands.frameContext(), *impl_->registry);
     NrdResourceIndices indices;

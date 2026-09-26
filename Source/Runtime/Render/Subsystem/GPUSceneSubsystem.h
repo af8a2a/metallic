@@ -93,16 +93,16 @@ public:
 
     static constexpr RenderSubsystemId kSubsystemId = "render.gpu-scene";
 
-    Result initialize(const RenderSubsystemInitContext& context, std::string& log) override;
+    Result<> initialize(const RenderSubsystemInitContext& context, std::string& log) override;
     void onWorldChanged(RenderWorld* world) override;
-    Result beginFrame(
+    Result<> beginFrame(
         const RenderSubsystemFrameContext& context,
         RenderChangeBits& changes,
         std::string& log) override;
-    Result recordPreGraph(
+    Result<> recordPreGraph(
         const RenderSubsystemFrameContext& context,
         std::string& log) override;
-    Result prepareShaderReload(
+    Result<> prepareShaderReload(
         const RenderSubsystemInitContext& context,
         std::unique_ptr<RenderSubsystemShaderReload>& outReload,
         std::string& log) override;
@@ -152,7 +152,7 @@ public:
     uint32_t currentFrameSlot() const { return currentFrameSlot_; }
     uint32_t frameSlotCount() const { return frameSlotCount_; }
 
-    Result acquireSourceOverride(
+    Result<> acquireSourceOverride(
         const scene::Scene* scene,
         GPUSceneSourceOverrideToken& token,
         std::string& log);
@@ -162,7 +162,7 @@ public:
     const scene::Scene* sourceOverride() const;
 
     GPUSceneViewId createView(const GPUSceneViewDesc& desc = {});
-    Result createView(
+    Result<> createView(
         const GPUSceneViewDesc& desc,
         GPUSceneViewId& view,
         std::string& log);
@@ -173,7 +173,7 @@ public:
         uint64_t sceneIdentity, MeshletStreamDeferredGpuResourcesView resources);
     const MeshletStreamDeferredGpuResourcesView* visibilityStream(
         GPUSceneViewId view, uint64_t frameIndex, uint64_t sceneIdentity) const;
-    Result ensureViewGpuResources(
+    Result<> ensureViewGpuResources(
         GPUSceneViewId view,
         const GPUSceneViewDesc& desc,
         std::string& log);
@@ -181,12 +181,12 @@ public:
         GPUSceneViewId view,
         uint32_t frameSlot,
         GPUSceneViewGpuResourcesView& resources) const;
-    Result recordInitialize(
+    Result<> recordInitialize(
         CommandBuffer& commandBuffer,
         GPUSceneViewId view,
         uint32_t frameSlot,
         std::string& log);
-    Result publishViewGpuResources(
+    Result<> publishViewGpuResources(
         GPUSceneViewId view,
         uint32_t frameSlot,
         uint32_t hzbWriteIndex,
@@ -259,31 +259,31 @@ public:
         return rasterDrawLayout_;
     }
 
-    Result createBindings(
+    Result<> createBindings(
         GPUSceneConsumerBindings& bindings,
         std::string& log) const;
     void releaseBindings(GPUSceneConsumerBindings& bindings) const;
 
-    Result recordCull(
+    Result<> recordCull(
         CommandBuffer& commandBuffer,
         GPUSceneViewId view,
         uint32_t frameSlot,
         const GPUSceneCullRecordDesc& desc,
         std::string& log);
-    Result recordInstanceCull(
+    Result<> recordInstanceCull(
         CommandBuffer& commandBuffer,
         GPUSceneViewId view,
         uint32_t frameSlot,
         const GPUSceneInstanceCullRecordDesc& desc,
         std::string& log);
-    Result recordBuildHzb(
+    Result<> recordBuildHzb(
         CommandBuffer& commandBuffer,
         GPUSceneViewId view,
         uint32_t frameSlot,
         const GPUSceneHzbRecordDesc& desc,
         std::string& log);
     // Requires commandBuffer to belong to a recording RenderFrameContext.
-    Result recordLightGrid(CommandBuffer& commandBuffer, GPUSceneViewId view,
+    Result<> recordLightGrid(CommandBuffer& commandBuffer, GPUSceneViewId view,
         uint32_t frameSlot, const ClusterLightGridDesc& desc, std::string& log);
     const ClusterLightGridSnapshot* lightGrid(GPUSceneViewId view, uint32_t frameSlot) const;
 
@@ -302,10 +302,10 @@ private:
     const scene::Scene* effectiveSourceOverride() const;
     void sourceOverrideChanged(const scene::Scene* previousOverride);
     void requestUpload(PendingUpload upload);
-    Result uploadFullScene(
+    Result<> uploadFullScene(
         const RenderSubsystemFrameContext& context,
         std::string& log);
-    Result uploadInstances(
+    Result<> uploadInstances(
         const RenderSubsystemFrameContext& context,
         std::string& log);
     static uint64_t viewResourceKey(GPUSceneViewId view);

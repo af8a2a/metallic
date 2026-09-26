@@ -133,11 +133,11 @@ public:
         }
         std::unique_ptr<Device> device;
         auto created = createDevice({.applicationName = "Resident meshlet LOD regression", .enableValidation = context.enableValidation,
-            .enableBindlessDescriptorHeap = true}, device);
+            .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless compute"); }
         LOD_REQUIRE(created);
         std::shared_ptr<ResourceRegistry> registry;
-        LOD_REQUIRE(device->resourceRegistry(registry));
+        LOD_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         std::array<std::unique_ptr<Buffer>, 4> buffers;
         GPUSceneConsumerBindings bindings;
         const GPUSceneGlobalBufferKind kinds[] = {GPUSceneGlobalBufferKind::LodGroups, GPUSceneGlobalBufferKind::Meshlets,
@@ -147,7 +147,7 @@ public:
         const size_t counts[] = {f.groups.size(), f.clusters.size(), f.instances.size(), f.candidates.size()};
         for (uint32_t i = 0; i < 4; ++i) {
             LOD_REQUIRE(device->createBuffer({.size = counts[i] * strides[i], .structureStride = strides[i],
-                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, buffers[i]));
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
             void* mapped = buffers[i]->map();
             if (!mapped) { return RhiTestResult::fail("input map"); }
             std::memcpy(mapped, data[i], counts[i] * strides[i]); buffers[i]->flush(); buffers[i]->unmap();
@@ -164,13 +164,13 @@ public:
         std::unique_ptr<Buffer> readback;
         const uint64_t selectionBytes = (uint64_t(capacity) + 1u) * 16u;
         LOD_REQUIRE(device->createBuffer({.size = selectionBytes + 24, .usage = BufferUsageBits::TransferDestination,
-            .memoryLocation = MemoryLocation::HostReadback}, readback));
+            .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         Queue* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         std::unique_ptr<Fence> fence;
-        LOD_REQUIRE(device->createCommandPool(*queue, pool));
-        LOD_REQUIRE(pool->createCommandBuffer(commands)); LOD_REQUIRE(device->createFence(false, fence));
+        LOD_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        LOD_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })); LOD_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         for (uint32_t test = 0; test < 24; ++test) {
             MeshletLodView view;
             view.eye = {float(test % 3) * 20, 1, float(test % 5) * 25, .1f};

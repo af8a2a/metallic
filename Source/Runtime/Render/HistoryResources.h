@@ -44,7 +44,7 @@ public:
     HistoryResourceManager(const HistoryResourceManager&) = delete;
     HistoryResourceManager& operator=(const HistoryResourceManager&) = delete;
 
-    Result initialize(Device& device);
+    Result<> initialize(Device& device);
     void reset();
 
     void beginFrame(uint64_t frameIndex);
@@ -54,12 +54,12 @@ public:
     uint64_t invalidationRevision() const;
     uint64_t reprojectionInvalidationRevision() const;
 
-    Result ensureTexture(
+    Result<> ensureTexture(
         std::string_view name,
         const TextureDesc& desc,
         TextureViewDesc viewDesc = {});
 
-    Result ensureBuffer(
+    Result<> ensureBuffer(
         std::string_view name,
         const BufferDesc& desc,
         const BufferViewDesc* viewDesc = nullptr);
@@ -70,14 +70,14 @@ public:
 
     void markWritten(std::string_view name);
 
-    Result transitionTexture(
+    Result<> transitionTexture(
         CommandBuffer& commandBuffer,
         std::string_view name,
         HistorySlot slot,
         ResourceState after,
         bool forceBarrier = false);
 
-    Result transitionBuffer(
+    Result<> transitionBuffer(
         CommandBuffer& commandBuffer,
         std::string_view name,
         HistorySlot slot,

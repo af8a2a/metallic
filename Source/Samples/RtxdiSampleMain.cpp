@@ -62,7 +62,7 @@ int runSmokeTest(const std::string& scenePath)
         environment.path = std::filesystem::path(PROJECT_SOURCE_DIR) / environment.path;
     }
     preview.setEnvironment(std::move(environment));
-    metallic::render::Result result = preview.initialize(false, true);
+    metallic::render::Result<> result = preview.initialize(false, true);
     if (!result) {
         spdlog::error(
             "RTXDI smoke test failed to initialize preview renderer: {}",

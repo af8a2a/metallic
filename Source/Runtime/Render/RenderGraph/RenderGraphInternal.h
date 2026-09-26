@@ -28,7 +28,7 @@ BufferUsageBits bufferUsageForField(const RenderGraphField& field);
 void applyAccessDefaults(RenderGraphField& field);
 RenderGraphResourceAccess explicitAccessForState(RenderGraphResourceType type, ResourceState state);
 Format resolveFormat(Format format, Format defaultFormat);
-std::string resultMessage(std::string_view label, const Result& result);
+std::string resultMessage(std::string_view label, const Result<>& result);
 std::string passProfileMarkerName(const std::string& name, const std::string& type);
 ColorValue debugLabelColorFromArgb(uint32_t argb);
 const char* queueTypeName(QueueType type);

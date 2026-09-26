@@ -46,8 +46,8 @@ public:
     NeuralTextureResources(const NeuralTextureResources&) = delete;
     NeuralTextureResources& operator=(const NeuralTextureResources&) = delete;
 
-    Result prepare(Device& device, const scene::Scene& scene, std::string& log);
-    Result recordUploads(CommandBuffer& commandBuffer);
+    Result<> prepare(Device& device, const scene::Scene& scene, std::string& log);
+    Result<> recordUploads(CommandBuffer& commandBuffer);
     void releaseUploadBuffers();
     void clear();
 

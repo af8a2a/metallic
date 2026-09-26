@@ -7,11 +7,11 @@
 namespace metallic::render {
 // Owned and prepared only by StreamerSubsystem. Passes receive the sampled view.
 struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
-    static std::string imageError(std::string_view label, Result result)
+    static std::string imageError(std::string_view label, Result<> result)
     {
         return std::string(label) + ": " + std::string(resultToString(result));
     }
-    Result prepare(Device& device, const std::string& imagePath, std::string& log)
+    Result<> prepare(Device& device, const std::string& imagePath, std::string& log)
     {
         int imageWidth = 0;
         int imageHeight = 0;
@@ -31,13 +31,11 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
         const uint64_t imageByteSize =
             static_cast<uint64_t>(imageWidth_) * static_cast<uint64_t>(imageHeight_) * 4ull;
 
-        Result result = device.createBuffer(
-            BufferDesc{
+        Result<> result = device.createBuffer(BufferDesc{
                 .size = imageByteSize,
                 .usage = BufferUsageBits::TransferSource,
                 .memoryLocation = MemoryLocation::HostUpload,
-            },
-            uploadBuffer_);
+            }).transform([&](auto rhiValue) { uploadBuffer_ = std::move(rhiValue); });
         if (!result || uploadBuffer_ == nullptr) {
             stbi_image_free(pixels);
             log += imageError("createBuffer(ImageSamplePass upload)", result);
@@ -56,8 +54,7 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
         uploadBuffer_->unmap();
         stbi_image_free(pixels);
 
-        result = device.createTexture(
-            TextureDesc{
+        result = device.createTexture(TextureDesc{
                 .type = TextureType::Texture2D,
                 .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
                 .format = Format::Rgba8Unorm,
@@ -67,24 +64,21 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
                 .mipCount = 1,
                 .layerCount = 1,
                 .memoryLocation = MemoryLocation::Device,
-            },
-            imageTexture_);
+            }).transform([&](auto rhiValue) { imageTexture_ = std::move(rhiValue); });
         if (!result || imageTexture_ == nullptr) {
             log += imageError("createTexture(ImageSamplePass image)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
 
-        result = device.createTextureView(
-            *imageTexture_,
+        result = device.createTextureView(*imageTexture_,
             TextureViewDesc{
                 .format = Format::Rgba8Unorm,
                 .baseMip = 0,
                 .mipCount = 1,
                 .baseLayer = 0,
                 .layerCount = 1,
-            },
-            imageView_);
+            }).transform([&](auto rhiValue) { imageView_ = std::move(rhiValue); });
         if (!result || imageView_ == nullptr) {
             log += imageError("createTextureView(ImageSamplePass image)", result);
             log += '\n';
@@ -93,7 +87,7 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
 
         return {};
     }
-    Result upload(CommandBuffer& commands)
+    Result<> upload(CommandBuffer& commands)
     {
         if (!uploaded_) {
             TextureBarrierDesc toTransfer{

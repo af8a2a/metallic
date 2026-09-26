@@ -69,7 +69,7 @@ public:
         };
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         runtime_.reset();
         sliderProgram_.clear();
@@ -101,7 +101,7 @@ public:
         return {};
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         const auto input = context.inputTexture("inputColor");
         const auto output = context.outputTexture("color");
@@ -202,11 +202,11 @@ public:
         lastRevision_ = revision;
         lastScene_ = scene;
         lastProperties_ = std::move(historyProperties);
-        return sliderDebug ? drawSliderDebug(context, input, output) : Result{};
+        return sliderDebug ? drawSliderDebug(context, input, output) : Result<>{};
     }
 
 private:
-    Result initializeSliderDebug(std::string& log)
+    Result<> initializeSliderDebug(std::string& log)
     {
         if (sliderProgram_.valid()) { return {}; }
         ShaderCompileResult shader;
@@ -222,7 +222,7 @@ private:
             .bindings = bindings, .bindingCount = 2, .debugName = "DlssNrSliderDebug", .requiresRayQuery = false}, log);
     }
 
-    Result drawSliderDebug(RenderGraphExecutionContext& context, TextureHandle input, TextureHandle output)
+    Result<> drawSliderDebug(RenderGraphExecutionContext& context, TextureHandle input, TextureHandle output)
     {
         const auto& properties = context.properties();
         const float split = properties.value("splitPosition", 0.5f);

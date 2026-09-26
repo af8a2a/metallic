@@ -42,7 +42,7 @@ public:
         reflection.addBufferOutput("counter").buffer(8, 4).storageReadWrite();
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "HzbSpdFixture",
@@ -65,18 +65,18 @@ public:
             log = "SPD wave operations require SPIR-V 1.6";
             return render::makeError(render::Error::Failure);
         }
-        result = context.device->createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4}, shader_);
+        result = context.device->createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4}).transform([&](auto rhiValue) { shader_ = std::move(rhiValue); });
         if (!result) { return result; }
         result = context.device->createComputePipeline({.computeShader = shader_.get(), .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = sizeof(render::HzbSpdUserPush)}, pipeline_);
+            .bindlessUserPushDataSize = sizeof(render::HzbSpdUserPush)}).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
         if (!result) { return result; }
-        result = context.device->createBindlessHeap({.maxSampledImages = 1, .maxBuffers = 2}, heap_);
-        if (result) { result = heap_->allocateSampledImage(depth_); }
-        if (result) { result = heap_->allocateBuffer(data_); }
-        if (result) { result = heap_->allocateBuffer(counter_); }
+        result = context.device->createBindlessHeap({.maxSampledImages = 1, .maxBuffers = 2}).transform([&](auto rhiValue) { heap_ = std::move(rhiValue); });
+        if (result) { result = heap_->allocateSampledImage().transform([&](auto rhiValue) { depth_ = std::move(rhiValue); }); }
+        if (result) { result = heap_->allocateBuffer().transform([&](auto rhiValue) { data_ = std::move(rhiValue); }); }
+        if (result) { result = heap_->allocateBuffer().transform([&](auto rhiValue) { counter_ = std::move(rhiValue); }); }
         return result;
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const uint32_t seed = uint32_t(context.frameIndex());
         const uint32_t reversed = context.properties().value("reversedZ", true) ? 1u : 0u;
@@ -127,7 +127,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         auto result = render::createDevice({.applicationName = "SPD HZB reduction",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
         if (!result) { return RhiTestResult::fail("SPD device creation failed"); }
         render::registerRenderGraphPassType("HzbSpdProbe", "SPD reduction probe", [] { return std::make_unique<HzbSpdProbe>(); });

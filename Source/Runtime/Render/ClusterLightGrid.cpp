@@ -23,17 +23,17 @@ float3 safeNormalize(const float3& value, const float3& fallback)
     return lengthSquared > 1e-8f ? value / std::sqrt(lengthSquared) : fallback;
 }
 
-Result compileClusterLightGridProgram(std::vector<uint32_t>& spirv, std::string& log)
+Result<> compileClusterLightGridProgram(std::vector<uint32_t>& spirv, std::string& log)
 {
     ShaderCompileResult shader;
-    Result result = compileSlangShaderToSpirv({.moduleName = "Features/Lighting/ClusterLightGrid",
+    Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/Lighting/ClusterLightGrid",
         .entryPointName = "clusterLightGridMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
     if (!result) { log = shader.diagnostics; return result; }
     spirv = std::move(shader.spirv);
     return {};
 }
 
-Result initializeClusterLightGridProgram(Device& device, ComputeProgram& program,
+Result<> initializeClusterLightGridProgram(Device& device, ComputeProgram& program,
     const std::vector<uint32_t>& spirv, std::string& log)
 {
     const std::array<ComputeProgramBindingDesc, 5> bindings{{
@@ -46,7 +46,7 @@ Result initializeClusterLightGridProgram(Device& device, ComputeProgram& program
 
 } // namespace
 
-Result buildClusterLightGridParams(const ClusterLightGridDesc& desc,
+Result<> buildClusterLightGridParams(const ClusterLightGridDesc& desc,
     ClusterLightGridParams& params, std::string& log)
 {
     params = {};
@@ -213,7 +213,7 @@ private:
     bool committed_ = false;
 };
 
-Result ClusterLightGrid::record(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
+Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
     const GPUScene& scene, GPUSceneViewId view, uint32_t frameSlot,
     const ClusterLightGridDesc& desc, std::string& log)
 {
@@ -234,7 +234,7 @@ Result ClusterLightGrid::record(Device& device, CommandBuffer& commands, RenderS
         return makeError(Error::InvalidArgument);
     }
     ClusterLightGridParams params;
-    Result result = buildClusterLightGridParams(desc, params, log);
+    Result<> result = buildClusterLightGridParams(desc, params, log);
     if (!result) { return result; }
     if (scene.lights().size() > UINT32_MAX ||
         scene.lights().size() * sizeof(GpuPunctualLight) > kMaxGridBytes) {
@@ -294,7 +294,7 @@ Result ClusterLightGrid::record(Device& device, CommandBuffer& commands, RenderS
             std::unique_ptr<Buffer> buffer;
             result = device.createBuffer({.size = sizes[index],
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
-                .memoryLocation = index < 3 ? MemoryLocation::HostUpload : MemoryLocation::Device}, buffer);
+                .memoryLocation = index < 3 ? MemoryLocation::HostUpload : MemoryLocation::Device}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
             if (!result) { log = "ClusterLightGrid buffer allocation failed"; return result; }
             next->buffers[index] = std::move(buffer);
         }
@@ -370,12 +370,12 @@ const ClusterLightGridSnapshot* ClusterLightGrid::snapshot(const GPUScene& scene
         scene.drawSet().lightRevision == snapshot_.sourceLightRevision ? &snapshot_ : nullptr;
 }
 
-Result ClusterLightGrid::prepareShaderReload(Device& device,
+Result<> ClusterLightGrid::prepareShaderReload(Device& device,
     std::unique_ptr<RenderSubsystemShaderReload>& outReload, std::string& log)
 {
     outReload.reset();
     std::vector<uint32_t> nextSpirv;
-    Result result = compileClusterLightGridProgram(nextSpirv, log);
+    Result<> result = compileClusterLightGridProgram(nextSpirv, log);
     if (!result) { return result; }
     ComputeProgram nextProgram;
     result = initializeClusterLightGridProgram(device, nextProgram, nextSpirv, log);

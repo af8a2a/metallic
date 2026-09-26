@@ -123,13 +123,13 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         render::GpuClockCalibration first;
-        auto result = context.graphicsQueue.calibrateTimestamps(first);
+        auto result = context.graphicsQueue.calibrateTimestamps().transform([&](auto rhiValue) { first = std::move(rhiValue); });
         if (!result && result.error() == render::Error::Unsupported) {
             return RhiTestResult::skip("calibrated device/host timestamps unavailable");
         }
         if (!result) { return RhiTestResult::fail(toString(result)); }
         render::GpuClockCalibration second;
-        result = context.graphicsQueue.calibrateTimestamps(second);
+        result = context.graphicsQueue.calibrateTimestamps().transform([&](auto rhiValue) { second = std::move(rhiValue); });
         if (!result || first.cpuNanoseconds == 0 ||
             second.cpuNanoseconds < first.cpuNanoseconds || second.gpuTimestamp < first.gpuTimestamp) {
             return RhiTestResult::fail("calibrated clock samples are invalid or run backwards");
@@ -203,7 +203,7 @@ public:
         reflection.addBufferOutput("data").buffer(16).transferWrite();
         return reflection;
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         auto parent = context.profileScope("Parent");
         for (uint32_t i = 0; i < context.properties().value("scopes", 300u); ++i) {
@@ -278,10 +278,10 @@ public:
         auto result = executor.compile(context.device, graph, 32, 32, log);
         if (!result) { return RhiTestResult::fail(log); }
         std::unique_ptr<render::CommandPool> pool;
-        result = context.device.createCommandPool(context.graphicsQueue, pool);
+        result = context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); });
         if (!result) { return RhiTestResult::fail(toString(result)); }
         std::unique_ptr<render::CommandBuffer> commands;
-        result = pool->createCommandBuffer(commands);
+        result = pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); });
         if (!result) { return RhiTestResult::fail(toString(result)); }
         render::RenderFrameContext frame;
         render::QueueSubmissionTracker tracker;

@@ -30,7 +30,7 @@ public:
     ImportancePdfTexture(const ImportancePdfTexture&) = delete;
     ImportancePdfTexture& operator=(const ImportancePdfTexture&) = delete;
 
-    Result initialize(
+    Result<> initialize(
         Device& device,
         uint32_t sourceWidth,
         uint32_t sourceHeight,
@@ -69,14 +69,14 @@ public:
     ImportancePdfCompute(const ImportancePdfCompute&) = delete;
     ImportancePdfCompute& operator=(const ImportancePdfCompute&) = delete;
 
-    Result initialize(Device& device, std::string& log);
-    Result buildLocalLights(
+    Result<> initialize(Device& device, std::string& log);
+    Result<> buildLocalLights(
         CommandBuffer& commandBuffer,
         TextureView& environmentMap,
         ImportancePdfTexture& localLightPdf,
         Buffer& punctualLights,
         uint32_t lightCount);
-    Result buildEnvironment(
+    Result<> buildEnvironment(
         CommandBuffer& commandBuffer,
         TextureView& environmentMap,
         ImportancePdfTexture& environmentPdf);

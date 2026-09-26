@@ -47,11 +47,11 @@ std::vector<GpuPunctualLight> buildPunctualLightRecords(
 
 class SceneLightResources {
 public:
-    Result update(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
+    Result<> update(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
         const scene::Scene* scene, const scene::LightingSettings& settings);
     // Camera-independent full-scene proposal: never use DrawSet/LightGrid's
     // camera-filtered candidates for secondary path vertices.
-    Result buildSampling(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
+    Result<> buildSampling(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
         TextureView& environment, const ReGIRBuildParameters& parameters,
         uint32_t gridSize, uint32_t lightsPerCell, bool buildGrid, std::string& log);
     Buffer* buffer() const { return buffer_.get(); }

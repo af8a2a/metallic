@@ -59,7 +59,7 @@ public:
         reflection.addBufferOutput("pixels").buffer(uint64_t(context.width) * context.height * 8).transferWrite();
         return reflection;
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const auto source = context.inputTexture("color");
         const uint32_t bytes = source.desc().format == render::Format::Rgba16Sfloat ? 8 : 4;
@@ -79,7 +79,7 @@ public:
         reflection.addTextureOutput("color").format = render::Format::Rgba32Sfloat;
         return reflection;
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const float level = context.properties().value("level", 1.0f);
         const render::RenderingAttachmentDesc attachment{.view = context.outputTexture("color").view(),
@@ -108,7 +108,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         const auto result = render::createDevice({.applicationName = "HDR output GPU test",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Bindless device unavailable"); }
         if (!result) { return RhiTestResult::fail(toString(result)); }
         render::registerRenderGraphPassType("DisplayReadback", "HDR readback", [] { return std::make_unique<DisplayReadbackPass>(); });

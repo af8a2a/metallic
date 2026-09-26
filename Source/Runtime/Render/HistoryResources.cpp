@@ -206,7 +206,7 @@ struct HistoryResourceManager::Impl {
         }
     }
 
-    Result createTextureRecord(
+    Result<> createTextureRecord(
         const TextureDesc& desc,
         const TextureViewDesc& viewDesc,
         uint64_t generation,
@@ -223,12 +223,12 @@ struct HistoryResourceManager::Impl {
         record.textureViewDesc = viewDesc;
 
         for (TextureSlot& slot : record.textureSlots) {
-            Result result = device->createTexture(desc, slot.texture);
+            Result<> result = device->createTexture(desc).transform([&](auto rhiValue) { slot.texture = std::move(rhiValue); });
             if (!result || slot.texture == nullptr) {
                 return result ? makeError(Error::Failure) : result;
             }
 
-            result = device->createTextureView(*slot.texture, viewDesc, slot.view);
+            result = device->createTextureView(*slot.texture, viewDesc).transform([&](auto rhiValue) { slot.view = std::move(rhiValue); });
             if (!result || slot.view == nullptr) {
                 return result ? makeError(Error::Failure) : result;
             }
@@ -242,7 +242,7 @@ struct HistoryResourceManager::Impl {
         return {};
     }
 
-    Result createBufferRecord(
+    Result<> createBufferRecord(
         const BufferDesc& desc,
         const std::optional<BufferViewDesc>& viewDesc,
         uint64_t generation,
@@ -259,13 +259,13 @@ struct HistoryResourceManager::Impl {
         record.bufferViewDesc = viewDesc;
 
         for (BufferSlot& slot : record.bufferSlots) {
-            Result result = device->createBuffer(desc, slot.buffer);
+            Result<> result = device->createBuffer(desc).transform([&](auto rhiValue) { slot.buffer = std::move(rhiValue); });
             if (!result || slot.buffer == nullptr) {
                 return result ? makeError(Error::Failure) : result;
             }
 
             if (viewDesc.has_value()) {
-                result = device->createBufferView(*slot.buffer, *viewDesc, slot.view);
+                result = device->createBufferView(*slot.buffer, *viewDesc).transform([&](auto rhiValue) { slot.view = std::move(rhiValue); });
                 if (!result || slot.view == nullptr) {
                     return result ? makeError(Error::Failure) : result;
                 }
@@ -302,7 +302,7 @@ HistoryResourceManager::~HistoryResourceManager() = default;
 HistoryResourceManager::HistoryResourceManager(HistoryResourceManager&&) noexcept = default;
 HistoryResourceManager& HistoryResourceManager::operator=(HistoryResourceManager&&) noexcept = default;
 
-Result HistoryResourceManager::initialize(Device& device)
+Result<> HistoryResourceManager::initialize(Device& device)
 {
     ++impl_->reprojectionInvalidationRevision;
     impl_->records.clear();
@@ -375,7 +375,7 @@ uint64_t HistoryResourceManager::reprojectionInvalidationRevision() const
     return impl_->reprojectionInvalidationRevision;
 }
 
-Result HistoryResourceManager::ensureTexture(
+Result<> HistoryResourceManager::ensureTexture(
     std::string_view name,
     const TextureDesc& desc,
     TextureViewDesc viewDesc)
@@ -395,7 +395,7 @@ Result HistoryResourceManager::ensureTexture(
 
     const uint64_t generation = existing != nullptr ? existing->generation + 1 : 1;
     Impl::Record newRecord;
-    Result result = impl_->createTextureRecord(desc, normalizedViewDesc, generation, newRecord);
+    Result<> result = impl_->createTextureRecord(desc, normalizedViewDesc, generation, newRecord);
     if (!result) {
         return result;
     }
@@ -404,7 +404,7 @@ Result HistoryResourceManager::ensureTexture(
     return {};
 }
 
-Result HistoryResourceManager::ensureBuffer(
+Result<> HistoryResourceManager::ensureBuffer(
     std::string_view name,
     const BufferDesc& desc,
     const BufferViewDesc* viewDesc)
@@ -427,7 +427,7 @@ Result HistoryResourceManager::ensureBuffer(
 
     const uint64_t generation = existing != nullptr ? existing->generation + 1 : 1;
     Impl::Record newRecord;
-    Result result = impl_->createBufferRecord(desc, normalizedViewDesc, generation, newRecord);
+    Result<> result = impl_->createBufferRecord(desc, normalizedViewDesc, generation, newRecord);
     if (!result) {
         return result;
     }
@@ -503,7 +503,7 @@ void HistoryResourceManager::markWritten(std::string_view name)
     }
 }
 
-Result HistoryResourceManager::transitionTexture(
+Result<> HistoryResourceManager::transitionTexture(
     CommandBuffer& commandBuffer,
     std::string_view name,
     HistorySlot slot,
@@ -545,7 +545,7 @@ Result HistoryResourceManager::transitionTexture(
     return {};
 }
 
-Result HistoryResourceManager::transitionBuffer(
+Result<> HistoryResourceManager::transitionBuffer(
     CommandBuffer& commandBuffer,
     std::string_view name,
     HistorySlot slot,

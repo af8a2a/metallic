@@ -20,7 +20,7 @@ public:
         using namespace render;
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Wave work distribution",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless compute"); }
         WAVE_WORK_REQUIRE(created);
         if (!device->capabilities().computeSubgroupBallotArithmetic) {
@@ -47,15 +47,15 @@ public:
         }
         std::vector<Record> records(threadCount * 65u, Record{poison, poison, poison, poison});
         std::unique_ptr<BindlessHeap> heap;
-        WAVE_WORK_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}, heap));
+        WAVE_WORK_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<std::unique_ptr<Buffer>, 2> buffers;
         std::array<BindlessHandle, 2> handles;
         const uint64_t sizes[] = {counts.size() * sizeof(uint32_t), records.size() * sizeof(Record)};
         const void* data[] = {counts.data(), records.data()};
         for (uint32_t i = 0; i < 2; ++i) {
             WAVE_WORK_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = i == 0 ? 4u : 16u,
-                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, buffers[i]));
-            WAVE_WORK_REQUIRE(heap->allocateBuffer(handles[i]));
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
+            WAVE_WORK_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
             WAVE_WORK_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
             void* mapped = buffers[i]->map();
             if (!mapped) { return RhiTestResult::fail("Cannot map wave work input"); }
@@ -68,17 +68,17 @@ public:
         if (!compilation) { return RhiTestResult::fail(compiled.diagnostics); }
         std::unique_ptr<ShaderModule> shader;
         WAVE_WORK_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(),
-            .byteSize = compiled.spirv.size() * 4}, shader));
+            .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> pipeline;
         WAVE_WORK_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = 8}, pipeline));
+            .bindlessUserPushDataSize = 8}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         std::unique_ptr<Fence> fence;
-        WAVE_WORK_REQUIRE(device->createCommandPool(*queue, pool));
-        WAVE_WORK_REQUIRE(pool->createCommandBuffer(commands));
-        WAVE_WORK_REQUIRE(device->createFence(false, fence));
+        WAVE_WORK_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        WAVE_WORK_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
+        WAVE_WORK_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         WAVE_WORK_REQUIRE(commands->begin());
         commands->hostWriteBarrier();
         const BufferBarrierDesc barriers[] = {

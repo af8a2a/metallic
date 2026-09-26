@@ -26,7 +26,7 @@ uint32_t paddedDimension(uint32_t value)
     return std::bit_ceil(value);
 }
 
-std::string resultMessage(std::string_view label, Result result)
+std::string resultMessage(std::string_view label, Result<> result)
 {
     std::string message(label);
     message += " returned ";
@@ -74,7 +74,7 @@ ImportancePdfTexture::~ImportancePdfTexture() = default;
 ImportancePdfTexture::ImportancePdfTexture(ImportancePdfTexture&&) noexcept = default;
 ImportancePdfTexture& ImportancePdfTexture::operator=(ImportancePdfTexture&&) noexcept = default;
 
-Result ImportancePdfTexture::initialize(
+Result<> ImportancePdfTexture::initialize(
     Device& device,
     uint32_t sourceWidth,
     uint32_t sourceHeight,
@@ -105,8 +105,7 @@ Result ImportancePdfTexture::initialize(
         mipHeight = std::max(mipHeight / 2u, 1u);
     }
 
-    Result result = device.createTexture(
-        TextureDesc{
+    Result<> result = device.createTexture(TextureDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled | TextureUsageBits::Storage,
             .format = Format::R32Sfloat,
@@ -116,23 +115,20 @@ Result ImportancePdfTexture::initialize(
             .mipCount = impl_->mipCount,
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
-        },
-        impl_->texture);
+        }).transform([&](auto rhiValue) { impl_->texture = std::move(rhiValue); });
     if (!result || impl_->texture == nullptr) {
         log = resultMessage(std::string("createTexture(") + std::string(debugName) + ")", result);
         return result ? makeError(Error::Failure) : result;
     }
 
-    result = device.createTextureView(
-        *impl_->texture,
+    result = device.createTextureView(*impl_->texture,
         TextureViewDesc{
             .format = Format::R32Sfloat,
             .baseMip = 0,
             .mipCount = impl_->mipCount,
             .baseLayer = 0,
             .layerCount = 1,
-        },
-        impl_->view);
+        }).transform([&](auto rhiValue) { impl_->view = std::move(rhiValue); });
     if (!result || impl_->view == nullptr) {
         log = resultMessage(std::string("createTextureView(") + std::string(debugName) + ")", result);
         return result ? makeError(Error::Failure) : result;
@@ -141,16 +137,14 @@ Result ImportancePdfTexture::initialize(
     impl_->ownedMipViews.reserve(impl_->mipCount);
     for (uint32_t mipIndex = 0; mipIndex < impl_->mipCount; ++mipIndex) {
         std::unique_ptr<TextureView> mipView;
-        result = device.createTextureView(
-            *impl_->texture,
+        result = device.createTextureView(*impl_->texture,
             TextureViewDesc{
                 .format = Format::R32Sfloat,
                 .baseMip = mipIndex,
                 .mipCount = 1,
                 .baseLayer = 0,
                 .layerCount = 1,
-            },
-            mipView);
+            }).transform([&](auto rhiValue) { mipView = std::move(rhiValue); });
         if (!result || mipView == nullptr) {
             log = resultMessage(std::string("createTextureView(") + std::string(debugName) + " mip)", result);
             return result ? makeError(Error::Failure) : result;
@@ -322,7 +316,7 @@ ImportancePdfCompute::~ImportancePdfCompute() = default;
 ImportancePdfCompute::ImportancePdfCompute(ImportancePdfCompute&&) noexcept = default;
 ImportancePdfCompute& ImportancePdfCompute::operator=(ImportancePdfCompute&&) noexcept = default;
 
-Result ImportancePdfCompute::initialize(Device& device, std::string& log)
+Result<> ImportancePdfCompute::initialize(Device& device, std::string& log)
 {
     if (impl_ == nullptr) {
         impl_ = std::make_unique<Impl>();
@@ -332,7 +326,7 @@ Result ImportancePdfCompute::initialize(Device& device, std::string& log)
     }
 
     ShaderCompileResult compileResult;
-    const Result compile = compileSlangShaderToSpirv(
+    const Result<> compile = compileSlangShaderToSpirv(
         SlangShaderDesc{
             .moduleName = kPrepareLightsPdfShaderModuleName,
             .entryPointName = kPrepareLightsPdfEntryPoint,
@@ -349,11 +343,11 @@ Result ImportancePdfCompute::initialize(Device& device, std::string& log)
     }
 
     std::unique_ptr<Buffer> emptyLights;
-    Result emptyResult = device.createBuffer(BufferDesc{
+    Result<> emptyResult = device.createBuffer(BufferDesc{
         .size = sizeof(float) * 16u,
         .usage = BufferUsageBits::Storage,
         .memoryLocation = MemoryLocation::HostUpload,
-    }, emptyLights);
+    }).transform([&](auto rhiValue) { emptyLights = std::move(rhiValue); });
     if (!emptyResult || emptyLights == nullptr) {
         log = resultMessage("createBuffer(ImportancePdfCompute empty lights)", emptyResult);
         return emptyResult ? makeError(Error::Failure) : emptyResult;
@@ -394,7 +388,7 @@ Result ImportancePdfCompute::initialize(Device& device, std::string& log)
         log);
 }
 
-Result ImportancePdfCompute::buildLocalLights(
+Result<> ImportancePdfCompute::buildLocalLights(
     CommandBuffer& commandBuffer,
     TextureView& environmentMap,
     ImportancePdfTexture& localLightPdf,
@@ -453,7 +447,7 @@ Result ImportancePdfCompute::buildLocalLights(
     push.sourceSize[1] = localLightPdf.textureHeight();
     push.destinationSize[0] = localLightPdf.textureWidth();
     push.destinationSize[1] = localLightPdf.textureHeight();
-    Result result = dispatch(push, 0u);
+    Result<> result = dispatch(push, 0u);
     if (result) {
         localLightPdf.synchronizeGpuBuild(commandBuffer);
     }
@@ -475,7 +469,7 @@ Result ImportancePdfCompute::buildLocalLights(
     return result;
 }
 
-Result ImportancePdfCompute::buildEnvironment(
+Result<> ImportancePdfCompute::buildEnvironment(
     CommandBuffer& commandBuffer,
     TextureView& environmentMap,
     ImportancePdfTexture& environmentPdf)
@@ -529,7 +523,7 @@ Result ImportancePdfCompute::buildEnvironment(
     push.sourceSize[1] = environmentPdf.sourceHeight();
     push.destinationSize[0] = environmentPdf.textureWidth();
     push.destinationSize[1] = environmentPdf.textureHeight();
-    Result result = dispatch(push, kImportancePdfMaxMipCount);
+    Result<> result = dispatch(push, kImportancePdfMaxMipCount);
     if (result) {
         environmentPdf.synchronizeGpuBuild(commandBuffer);
     }

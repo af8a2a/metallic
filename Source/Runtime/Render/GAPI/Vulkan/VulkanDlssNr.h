@@ -38,7 +38,7 @@ struct DlssNrDesc {
 };
 
 // Validates the recovered feature-18 contract without loading any runtime.
-Result validateDlssNrDesc(const DlssNrDesc& desc, std::string& log);
+Result<> validateDlssNrDesc(const DlssNrDesc& desc, std::string& log);
 bool dlssNrSdkAvailable();
 
 // One context per temporal view. Destroy before its Device. The graph must
@@ -50,9 +50,9 @@ public:
     DlssNrContext(const DlssNrContext&) = delete;
     DlssNrContext& operator=(const DlssNrContext&) = delete;
 
-    Result initialize(Device& device, std::string& log);
+    Result<> initialize(Device& device, std::string& log);
     // Resources enter and leave in General. Output is distinct from every input.
-    Result evaluate(CommandBuffer& commandBuffer, const DlssNrDesc& desc, std::string& log);
+    Result<> evaluate(CommandBuffer& commandBuffer, const DlssNrDesc& desc, std::string& log);
 
 private:
     struct Impl;

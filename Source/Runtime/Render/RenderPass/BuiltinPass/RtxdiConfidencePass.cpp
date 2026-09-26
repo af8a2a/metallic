@@ -85,7 +85,7 @@ public:
         };
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) {
             log = "RtxdiConfidencePass requires a device";
@@ -94,7 +94,7 @@ public:
 
         const uint32_t gradientWidth = (context.width + kGradientFactor - 1u) / kGradientFactor;
         const uint32_t gradientHeight = (context.height + kGradientFactor - 1u) / kGradientFactor;
-        Result result = ensureGradientTextures(
+        Result<> result = ensureGradientTextures(
             *context.device,
             std::max(gradientWidth, 1u),
             std::max(gradientHeight, 1u),
@@ -160,7 +160,7 @@ public:
         return result;
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle noisyDiffuse = context.inputTexture("noisyDiffuse");
         TextureHandle noisySpecular = context.inputTexture("noisySpecular");
@@ -197,7 +197,7 @@ public:
         ConfidenceHistoryViews luminanceHistory;
         ConfidenceHistoryViews diffuseConfidenceHistory;
         ConfidenceHistoryViews specularConfidenceHistory;
-        Result result = prepareHistoryTexture(
+        Result<> result = prepareHistoryTexture(
             context,
             "luminance",
             Format::Rg16Sfloat,
@@ -377,7 +377,7 @@ private:
         return std::isfinite(value) ? std::clamp(value, minimum, maximum) : fallback;
     }
 
-    Result ensureGradientTextures(
+    Result<> ensureGradientTextures(
         Device& device,
         uint32_t width,
         uint32_t height,
@@ -392,7 +392,7 @@ private:
 
         ConfidenceGradientTexture nextA;
         ConfidenceGradientTexture nextB;
-        Result result = createGradientTexture(device, width, height, "A", nextA, log);
+        Result<> result = createGradientTexture(device, width, height, "A", nextA, log);
         if (!result) {
             return result;
         }
@@ -408,7 +408,7 @@ private:
         return {};
     }
 
-    static Result createGradientTexture(
+    static Result<> createGradientTexture(
         Device& device,
         uint32_t width,
         uint32_t height,
@@ -416,8 +416,7 @@ private:
         ConfidenceGradientTexture& outTexture,
         std::string& log)
     {
-        Result result = device.createTexture(
-            TextureDesc{
+        Result<> result = device.createTexture(TextureDesc{
                 .type = TextureType::Texture2D,
                 .usage = TextureUsageBits::Storage,
                 .format = Format::Rgba16Sfloat,
@@ -427,18 +426,15 @@ private:
                 .mipCount = 1,
                 .layerCount = 1,
                 .memoryLocation = MemoryLocation::Device,
-            },
-            outTexture.texture);
+            }).transform([&](auto rhiValue) { outTexture.texture = std::move(rhiValue); });
         if (!result || outTexture.texture == nullptr) {
             log = resultMessage(
                 std::string("createTexture(RtxdiConfidence gradient ") + std::string(label) + ')',
                 result);
             return result ? makeError(Error::Failure) : result;
         }
-        result = device.createTextureView(
-            *outTexture.texture,
-            TextureViewDesc{.format = Format::Rgba16Sfloat},
-            outTexture.view);
+        result = device.createTextureView(*outTexture.texture,
+            TextureViewDesc{.format = Format::Rgba16Sfloat}).transform([&](auto rhiValue) { outTexture.view = std::move(rhiValue); });
         if (!result || outTexture.view == nullptr) {
             log = resultMessage(
                 std::string("createTextureView(RtxdiConfidence gradient ") + std::string(label) + ')',
@@ -494,7 +490,7 @@ private:
         commandBuffer.barrier(BarrierDesc{.textures = &barrier, .textureCount = 1});
     }
 
-    static Result prepareHistoryTexture(
+    static Result<> prepareHistoryTexture(
         RenderGraphExecutionContext& context,
         std::string_view suffix,
         Format format,
@@ -516,7 +512,7 @@ private:
             .memoryLocation = MemoryLocation::Device,
         };
         const std::string name = historyNameForContext(context, suffix);
-        Result result = history->ensureTexture(name, desc, TextureViewDesc{.format = format});
+        Result<> result = history->ensureTexture(name, desc, TextureViewDesc{.format = format});
         if (!result) {
             return result;
         }

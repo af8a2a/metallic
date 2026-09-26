@@ -135,11 +135,11 @@ public:
     MeshletStreamClasPool(MeshletStreamClasPool&&) noexcept;
     MeshletStreamClasPool& operator=(MeshletStreamClasPool&&) noexcept;
 
-    Result initialize(Device& device, const MeshletStreamClasPoolDesc& desc, std::string& log);
+    Result<> initialize(Device& device, const MeshletStreamClasPoolDesc& desc, std::string& log);
     void clear();
     void beginFrame(CpuProfileRecorder* profiler = nullptr);
 
-    Result cmdBuildPages(
+    Result<> cmdBuildPages(
         CommandBuffer& commandBuffer,
         Buffer& pageBuffer,
         std::span<const MeshletStreamClasPageBuild> pages,

@@ -21,7 +21,7 @@ uint64_t alignUp(uint64_t value, uint64_t alignment)
     return ((value + alignment - 1u) / alignment) * alignment;
 }
 
-Result createClasBuffer(
+Result<> createClasBuffer(
     Device& device,
     uint64_t size,
     BufferUsageBits usage,
@@ -30,14 +30,12 @@ Result createClasBuffer(
     const char* label,
     std::string& log)
 {
-    Result result = device.createBuffer(
-        BufferDesc{
+    Result<> result = device.createBuffer(BufferDesc{
             .size = size,
             .usage = usage,
             .memoryLocation = location,
             .memoryDomain = MemoryBudgetDomain::ClasScratch,
-        },
-        outBuffer);
+        }).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
     if (!result || outBuffer == nullptr) {
         log = std::string(label) + " returned " + resultToString(result);
         return result ? makeError(Error::Failure) : result;
@@ -158,7 +156,7 @@ MeshletStreamClasPool::~MeshletStreamClasPool() = default;
 MeshletStreamClasPool::MeshletStreamClasPool(MeshletStreamClasPool&&) noexcept = default;
 MeshletStreamClasPool& MeshletStreamClasPool::operator=(MeshletStreamClasPool&&) noexcept = default;
 
-Result MeshletStreamClasPool::initialize(
+Result<> MeshletStreamClasPool::initialize(
     Device& device,
     const MeshletStreamClasPoolDesc& desc,
     std::string& log)
@@ -183,7 +181,7 @@ Result MeshletStreamClasPool::initialize(
     }
 
     ClusterAccelerationStructureProperties properties;
-    Result result = device.queryClusterAccelerationStructureProperties(properties);
+    Result<> result = device.queryClusterAccelerationStructureProperties().transform([&](auto rhiValue) { properties = std::move(rhiValue); });
     if (!result ||
         properties.clusterStorageAlignment == 0 ||
         properties.scratchAlignment == 0 ||
@@ -204,8 +202,7 @@ Result MeshletStreamClasPool::initialize(
     }
 
     ClusterAccelerationStructureBuildSizes singleClusterSizes;
-    result = device.queryClusterAccelerationStructureTriangleBuildSizes(
-        ClusterAccelerationStructureTriangleBuildSizesDesc{
+    result = device.queryClusterAccelerationStructureTriangleBuildSizes(ClusterAccelerationStructureTriangleBuildSizesDesc{
             .maxClusterTriangleCount = maxClusterTriangles,
             .maxClusterVertexCount = maxClusterVertices,
             .maxClusterUniqueGeometryCount = 1,
@@ -215,8 +212,7 @@ Result MeshletStreamClasPool::initialize(
             .maxTotalVertexCount = maxClusterVertices,
             .vertexFormat = Format::Rgb32Sfloat,
             .maxAccelerationStructureCount = 1,
-        },
-        singleClusterSizes);
+        }).transform([&](auto rhiValue) { singleClusterSizes = std::move(rhiValue); });
     if (!result || singleClusterSizes.accelerationStructureSize == 0) {
         log = std::string("queryClusterAccelerationStructureTriangleBuildSizes(single CLAS) returned ") +
             resultToString(result);
@@ -224,8 +220,7 @@ Result MeshletStreamClasPool::initialize(
     }
 
     ClusterAccelerationStructureBuildSizes batchSizes;
-    result = device.queryClusterAccelerationStructureTriangleBuildSizes(
-        ClusterAccelerationStructureTriangleBuildSizesDesc{
+    result = device.queryClusterAccelerationStructureTriangleBuildSizes(ClusterAccelerationStructureTriangleBuildSizesDesc{
             .maxClusterTriangleCount = maxClusterTriangles,
             .maxClusterVertexCount = maxClusterVertices,
             .maxClusterUniqueGeometryCount = 1,
@@ -235,8 +230,7 @@ Result MeshletStreamClasPool::initialize(
             .maxTotalVertexCount = desc.maxBuildClusters * maxClusterVertices,
             .vertexFormat = Format::Rgb32Sfloat,
             .maxAccelerationStructureCount = desc.maxBuildClusters,
-        },
-        batchSizes);
+        }).transform([&](auto rhiValue) { batchSizes = std::move(rhiValue); });
     if (!result || batchSizes.buildScratchSize == 0) {
         log = std::string("queryClusterAccelerationStructureTriangleBuildSizes(batch CLAS) returned ") +
             resultToString(result);
@@ -467,7 +461,7 @@ void MeshletStreamClasPool::beginFrame(CpuProfileRecorder* profiler)
     }
 }
 
-Result MeshletStreamClasPool::cmdBuildPages(
+Result<> MeshletStreamClasPool::cmdBuildPages(
     CommandBuffer& commandBuffer,
     Buffer& pageBuffer,
     std::span<const MeshletStreamClasPageBuild> pages,
@@ -632,7 +626,7 @@ Result MeshletStreamClasPool::cmdBuildPages(
     impl_->addressBuffer->unmap();
 
     Impl::FrameResources& frame = impl_->frames[impl_->frameIndex % impl_->frames.size()];
-    Result result = commandBuffer.buildClusterAccelerationStructureTriangles(
+    Result<> result = commandBuffer.buildClusterAccelerationStructureTriangles(
         ClusterAccelerationStructureTriangleBuildDesc{
             .clusters = buildInfos.data(),
             .clusterCount = static_cast<uint32_t>(buildInfos.size()),

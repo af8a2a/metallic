@@ -34,7 +34,7 @@ public:
         reflection.addBufferOutput("field").buffer((kTexels + 2ull) * 16, 16).storageReadWrite();
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "EnvironmentPrefilterFieldProbe",
@@ -45,7 +45,7 @@ public:
         return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
             .bindings = bindings, .bindingCount = 3, .requiresRayQuery = false}, log);
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const auto& environment = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot();
         auto* source = environment.radianceView;
@@ -68,7 +68,7 @@ public:
         std::filesystem::create_directories(context.outputDirectory);
         std::unique_ptr<render::Device> device;
         auto result = render::createDevice({.applicationName = "HDR prefilter regression",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires native bindless resources"); }
         if (!result) { return RhiTestResult::fail("Create prefilter device"); }
         render::registerRenderGraphPassType("EnvironmentPrefilterFieldProbe", "HDR prefilter field",

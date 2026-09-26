@@ -17,13 +17,13 @@ struct SceneStreamingState {
     bool debugReadback = false;
 };
 
-Result StreamerSubsystem::initialize(const RenderSubsystemInitContext& context, std::string& log)
+Result<> StreamerSubsystem::initialize(const RenderSubsystemInitContext& context, std::string& log)
 {
     device_ = &context.device;
     return uploads_.initialize(context.device, log, context.host.frameSlotCount());
 }
 
-Result StreamerSubsystem::beginFrame(const RenderSubsystemFrameContext& context, RenderChangeBits&, std::string&)
+Result<> StreamerSubsystem::beginFrame(const RenderSubsystemFrameContext& context, RenderChangeBits&, std::string&)
 {
     collectReleasedStreams();
     textureFrames_.clear();
@@ -54,7 +54,7 @@ void StreamerSubsystem::shutdown()
     device_ = nullptr;
 }
 
-Result StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requirements,
+Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requirements,
     const RenderGraphProperties& properties, const scene::Scene* scene,
     std::shared_ptr<PreparedSceneResources>& prepared, std::string& log, bool debugReadback)
 {
@@ -117,7 +117,7 @@ Result StreamerSubsystem::prepareScene(const SceneStreamingRequirements& require
     if (!prepared->state || prepared->state->desc != desc || prepared->state->sceneIdentity != identity ||
         prepared->state->structuralRevision != structural || prepared->state->debugReadback != debugReadback || prepared->streamSourceId != source.sourceId) {
         std::unique_ptr<PipelineCache> cache;
-        auto result = device_->createPipelineCache({.filePath = PROJECT_SOURCE_DIR "/.cache/pso/SceneStreaming.pso"}, cache);
+        auto result = device_->createPipelineCache({.filePath = PROJECT_SOURCE_DIR "/.cache/pso/SceneStreaming.pso"}).transform([&](auto rhiValue) { cache = std::move(rhiValue); });
         if (!result) { return result; }
         std::shared_ptr<MeshletStreamRuntime> stream;
         result = acquireStream(desc, debugReadback, stream, log, cache.get());
@@ -132,7 +132,7 @@ Result StreamerSubsystem::prepareScene(const SceneStreamingRequirements& require
     return {};
 }
 
-Result StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
+Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
     const SceneStreamingRequirements& requirements, RenderGraphExecutionContext& context, const MeshletStreamFrameDesc& view, std::string& log)
 {
     prepared.ready = !prepared.snapshot || !prepared.snapshot->pathTraceResources ||
@@ -200,7 +200,7 @@ Result StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
             auto [entry, inserted] = textureFrames_.try_emplace(resources.get(), nullptr);
             if (inserted) {
                 CpuProfileRecorder profiler;
-                Result result;
+                Result<> result;
                 {
                     CpuProfileScope profile(&profiler, "Texture streaming");
                     result = resources->beginTextureStreaming(context.commandBuffer(), context.frameIndex(),
@@ -217,7 +217,7 @@ Result StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
     return {};
 }
 
-Result StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepared,
+Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepared,
     RenderGraphExecutionContext& context, const MeshletStreamFrameDesc& view,
     const MeshletStreamRuntime::TraversalCheckpoint& checkpoint)
 {
@@ -255,7 +255,7 @@ Result StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepared,
     return result;
 }
 
-Result StreamerSubsystem::recordSceneEnd(PreparedSceneResources& prepared, RenderGraphExecutionContext& context)
+Result<> StreamerSubsystem::recordSceneEnd(PreparedSceneResources& prepared, RenderGraphExecutionContext& context)
 {
     if (!prepared.geometry) { return {}; }
     auto scope = context.profileScope("Stream End");
@@ -283,14 +283,14 @@ Result StreamerSubsystem::recordSceneEnd(PreparedSceneResources& prepared, Rende
     return result;
 }
 
-Result StreamerSubsystem::acquireStream(const MeshletStreamRuntimeDesc& desc, bool debugReadback,
+Result<> StreamerSubsystem::acquireStream(const MeshletStreamRuntimeDesc& desc, bool debugReadback,
     std::shared_ptr<MeshletStreamRuntime>& outSession, std::string& log, PipelineCache* cache)
 {
     if (!device_) { return makeError(Error::InvalidArgument); }
     collectReleasedStreams();
     auto session = std::make_shared<MeshletStreamRuntime>();
     session->setDebugReadbackEnabled(debugReadback);
-    Result result = session->initialize(*device_, desc, log, cache);
+    Result<> result = session->initialize(*device_, desc, log, cache);
     if (!result) { return result; }
     streams_.push_back(session);
     outSession = std::move(session);

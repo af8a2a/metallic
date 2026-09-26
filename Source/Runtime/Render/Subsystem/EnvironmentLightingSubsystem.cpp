@@ -126,10 +126,10 @@ struct EnvironmentLightingSubsystem::DecodeJob {
 struct EnvironmentLightingSubsystem::GpuPrecompute {
     ComputeProgram program;
 
-    Result initialize(Device& device, std::string& log)
+    Result<> initialize(Device& device, std::string& log)
     {
         ShaderCompileResult compileResult;
-        Result result = compileSlangShaderToSpirv(
+        Result<> result = compileSlangShaderToSpirv(
             SlangShaderDesc{
                 .moduleName = "Features/Environment/EnvironmentLightingPrecompute",
                 .entryPointName = "environmentLightingPrecomputeMain",
@@ -177,7 +177,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             log);
     }
 
-    Result build(
+    Result<> build(
         CommandBuffer& commandBuffer,
         TextureView& radianceView,
         Buffer& partials,
@@ -211,7 +211,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             .dispatchWidth = dispatchWidth,
             .procedural = procedural ? 1u : 0u,
         };
-        Result result = program.dispatch(ComputeDispatchDesc{
+        Result<> result = program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = bindings.data(),
             .bindingCount = static_cast<uint32_t>(bindings.size()),
@@ -294,7 +294,7 @@ struct EnvironmentLightingSubsystem::Resources {
 EnvironmentLightingSubsystem::EnvironmentLightingSubsystem() = default;
 EnvironmentLightingSubsystem::~EnvironmentLightingSubsystem() = default;
 
-Result EnvironmentLightingSubsystem::initialize(
+Result<> EnvironmentLightingSubsystem::initialize(
     const RenderSubsystemInitContext& context,
     std::string& log)
 {
@@ -303,7 +303,7 @@ Result EnvironmentLightingSubsystem::initialize(
         desc_ = *desc;
     }
     desc_.maxDecodeJobs = std::max(desc_.maxDecodeJobs, 1u);
-    Result result = pdfCompute_.initialize(context.device, log);
+    Result<> result = pdfCompute_.initialize(context.device, log);
     if (!result) {
         return result;
     }
@@ -418,7 +418,7 @@ void EnvironmentLightingSubsystem::startDecodeJob(
     decodeJobs_.push_back(std::move(job));
 }
 
-Result EnvironmentLightingSubsystem::beginFrame(
+Result<> EnvironmentLightingSubsystem::beginFrame(
     const RenderSubsystemFrameContext&,
     RenderChangeBits& changes,
     std::string&)
@@ -470,7 +470,7 @@ void EnvironmentLightingSubsystem::pollDecodeJobs(RenderChangeBits& changes)
     }
 }
 
-Result EnvironmentLightingSubsystem::recordPreGraph(
+Result<> EnvironmentLightingSubsystem::recordPreGraph(
     const RenderSubsystemFrameContext& context,
     std::string& log)
 {
@@ -486,7 +486,7 @@ Result EnvironmentLightingSubsystem::recordPreGraph(
     const auto previousResources = resources_;
     const auto previousSnapshot = snapshot_;
     const auto previousRevision = resourceRevision_;
-    Result result = context.host.deferSubmission(*context.commandBuffer, {},
+    Result<> result = context.host.deferSubmission(*context.commandBuffer, {},
         [this, decoded, previousResources, previousSnapshot, previousRevision]() {
             resources_ = previousResources;
             resourceRevision_ = previousRevision;
@@ -504,7 +504,7 @@ Result EnvironmentLightingSubsystem::recordPreGraph(
     return result;
 }
 
-Result EnvironmentLightingSubsystem::prepareShaderReload(
+Result<> EnvironmentLightingSubsystem::prepareShaderReload(
     const RenderSubsystemInitContext& context,
     std::unique_ptr<RenderSubsystemShaderReload>& outReload,
     std::string& log)
@@ -516,7 +516,7 @@ Result EnvironmentLightingSubsystem::prepareShaderReload(
     }
 
     ImportancePdfCompute nextPdfCompute;
-    Result result = nextPdfCompute.initialize(context.device, log);
+    Result<> result = nextPdfCompute.initialize(context.device, log);
     if (!result) {
         return result;
     }
@@ -534,7 +534,7 @@ Result EnvironmentLightingSubsystem::prepareShaderReload(
     return {};
 }
 
-Result EnvironmentLightingSubsystem::publishDecoded(
+Result<> EnvironmentLightingSubsystem::publishDecoded(
     const RenderSubsystemFrameContext& context,
     const DecodedEnvironment& decoded,
     std::string& log)
@@ -555,8 +555,7 @@ Result EnvironmentLightingSubsystem::publishDecoded(
     next->mapAvailable = decoded.mapAvailable;
     const auto mipCount = static_cast<uint32_t>(decoded.mipOffsets.size());
 
-    Result result = device_->createTexture(
-        TextureDesc{
+    Result<> result = device_->createTexture(TextureDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
             .format = Format::Rgba32Sfloat,
@@ -567,22 +566,19 @@ Result EnvironmentLightingSubsystem::publishDecoded(
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
-        },
-        next->radiance);
+        }).transform([&](auto rhiValue) { next->radiance = std::move(rhiValue); });
     if (!result || next->radiance == nullptr) {
         log = "EnvironmentLightingSubsystem createTexture returned " + std::string(resultToString(result));
         return result ? makeError(Error::Failure) : result;
     }
-    result = device_->createTextureView(
-        *next->radiance,
+    result = device_->createTextureView(*next->radiance,
         TextureViewDesc{
             .format = Format::Rgba32Sfloat,
             .baseMip = 0,
             .mipCount = mipCount,
             .baseLayer = 0,
             .layerCount = 1,
-        },
-        next->radianceView);
+        }).transform([&](auto rhiValue) { next->radianceView = std::move(rhiValue); });
     if (!result || next->radianceView == nullptr) {
         log = "EnvironmentLightingSubsystem createTextureView returned " + std::string(resultToString(result));
         return result ? makeError(Error::Failure) : result;
@@ -592,17 +588,15 @@ Result EnvironmentLightingSubsystem::publishDecoded(
     result = device_->createBuffer({.size = kEnvironmentSpecularBytes,
         .structureStride = sizeof(std::array<float, 4>), .usage = BufferUsageBits::Storage,
         .memoryLocation = MemoryLocation::Device,
-        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, next->prefilteredSpecularBuffer);
+        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { next->prefilteredSpecularBuffer = std::move(rhiValue); });
     if (!result) { log = "Environment specular prefilter allocation failed"; return result; }
-    result = device_->createBuffer(
-        BufferDesc{
+    result = device_->createBuffer(BufferDesc{
             .size = kSphericalHarmonicsBytes,
             .structureStride = sizeof(std::array<float, 4>),
             .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
-        },
-        next->sphericalHarmonicsBuffer);
+        }).transform([&](auto rhiValue) { next->sphericalHarmonicsBuffer = std::move(rhiValue); });
     if (!result || next->sphericalHarmonicsBuffer == nullptr) {
         log = "EnvironmentLightingSubsystem failed to create the GPU SH buffer";
         return result ? makeError(Error::Failure) : result;
@@ -619,14 +613,12 @@ Result EnvironmentLightingSubsystem::publishDecoded(
 
     const uint64_t radianceBytes = decoded.pixels.size() * sizeof(float);
     auto staging = std::make_shared<EnvironmentUploadResources>();
-    result = device_->createBuffer(
-        BufferDesc{
+    result = device_->createBuffer(BufferDesc{
             .size = radianceBytes,
             .usage = BufferUsageBits::TransferSource,
             .memoryLocation = MemoryLocation::HostUpload,
             .queueAccess = QueueAccessBits::Graphics,
-        },
-        staging->radiance);
+        }).transform([&](auto rhiValue) { staging->radiance = std::move(rhiValue); });
     if (!result || staging->radiance == nullptr) {
         log = "EnvironmentLightingSubsystem failed to create the radiance staging buffer";
         return result ? makeError(Error::Failure) : result;
@@ -637,15 +629,13 @@ Result EnvironmentLightingSubsystem::publishDecoded(
     const uint64_t partialCount =
         (texelCount + kEnvironmentSHThreadCount - 1u) / kEnvironmentSHThreadCount;
     const uint64_t partialBytes = partialCount * kSphericalHarmonicsBytes;
-    result = device_->createBuffer(
-        BufferDesc{
+    result = device_->createBuffer(BufferDesc{
             .size = partialBytes,
             .structureStride = sizeof(std::array<float, 4>),
             .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
-        },
-        staging->sphericalHarmonicsPartials);
+        }).transform([&](auto rhiValue) { staging->sphericalHarmonicsPartials = std::move(rhiValue); });
     if (!result || staging->sphericalHarmonicsPartials == nullptr) {
         log = "EnvironmentLightingSubsystem failed to create the GPU SH partial buffer";
         return result ? makeError(Error::Failure) : result;

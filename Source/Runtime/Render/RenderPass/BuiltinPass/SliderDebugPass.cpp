@@ -57,12 +57,12 @@ public:
         };
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) { return makeError(Error::InvalidArgument); }
         if (program_.valid()) { return {}; }
         ShaderCompileResult shader;
-        Result result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/SliderDebug",
+        Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/SliderDebug",
             .entryPointName = "sliderDebugMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
         if (!result) { log += shader.diagnostics; return result; }
         const ComputeProgramBindingDesc bindings[] = {
@@ -75,7 +75,7 @@ public:
             .bindings = bindings, .bindingCount = 3, .debugName = "SliderDebug", .requiresRayQuery = false}, log);
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         const auto sourceA = context.inputTexture("sourceA");
         const auto sourceB = context.inputTexture("sourceB");

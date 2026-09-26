@@ -30,7 +30,7 @@ public:
         }
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "SliderDebugFixture",
@@ -47,7 +47,7 @@ public:
             .bindings = readback_ ? bindings + 1 : bindings, .bindingCount = readback_ ? 2u : 1u,
             .requiresRayQuery = false}, log);
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         if (context.properties().value("integer", false)) { return {}; }
         const uint32_t path = context.properties().value("path", 0u);
@@ -76,7 +76,7 @@ public:
         render::registerRenderGraphPassType("SliderReadback", "Read pixels", [] { return std::make_unique<SliderFixturePass>(true); });
         std::unique_ptr<render::Device> device;
         const auto initialized = render::createDevice({.applicationName = "SliderDebug GPU test",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
         if (!initialized) { return RhiTestResult::fail("Device initialization failed"); }
         render::RenderGraph graph;

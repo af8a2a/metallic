@@ -18,7 +18,7 @@ namespace metallic::tests {
 namespace {
 
 #define OMM_REQUIRE(expression) do { \
-    const render::Result checked = (expression); \
+    const render::Result<> checked = (expression); \
     if (!checked) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(checked) + " " + log); } \
 } while (false)
 #define OMM_EXPECT(expression, message) do { if (!(expression)) { return RhiTestResult::fail(message); } } while (false)
@@ -125,13 +125,13 @@ public:
             const auto setup = render::createDevice({.applicationName = "Opacity Micromap Test",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
                 .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
-                .enableOpacityMicromap = enable}, device);
+                .enableOpacityMicromap = enable}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
             if (render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("ray queries unavailable"); }
             OMM_REQUIRE(setup);
             if (enable && !device->capabilities().opacityMicromap) { return RhiTestResult::skip("fallback passed; OMM unavailable"); }
             if (!enable) {
                 render::RayTracingAccelerationStructureBuildSizes sizes;
-                const auto unavailable = device->queryRayTracingAccelerationStructureBuildSizes({.type = render::RayTracingAccelerationStructureType::OpacityMicromap}, sizes);
+                const auto unavailable = device->queryRayTracingAccelerationStructureBuildSizes({.type = render::RayTracingAccelerationStructureType::OpacityMicromap}).transform([&](auto rhiValue) { sizes = std::move(rhiValue); });
                 OMM_EXPECT(render::hasError(unavailable, render::Error::Unsupported), "disabled OMM was accepted");
             }
             auto& queue = *device->getQueue(render::QueueType::Graphics);
@@ -169,13 +169,13 @@ public:
                 .pushConstantSize = 4, .bindings = layout, .bindingCount = uint32_t(std::size(layout))}, log));
             std::unique_ptr<render::Buffer> output;
             OMM_REQUIRE(device->createBuffer({.size = sizeof(Probe), .structureStride = 8,
-                .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}, output));
+                .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
             render::QueueSubmissionTracker tracker;
             OMM_REQUIRE(tracker.initialize(*device, queue));
             std::unique_ptr<render::CommandPool> pool;
             std::unique_ptr<render::CommandBuffer> commands;
-            OMM_REQUIRE(device->createCommandPool(queue, pool));
-            OMM_REQUIRE(pool->createCommandBuffer(commands));
+            OMM_REQUIRE(device->createCommandPool(queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+            OMM_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
             render::RenderFrameContext frame;
             struct Drain {
                 render::RenderFrameContext& frame;

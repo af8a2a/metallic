@@ -35,7 +35,7 @@ struct MaterialBinningResult {
 // Native wave32 is required; scratch storage is retained until frame completion.
 class MaterialBinning {
 public:
-    Result record(Device& device, CommandBuffer& commands, const MaterialBinningDesc& desc,
+    Result<> record(Device& device, CommandBuffer& commands, const MaterialBinningDesc& desc,
         MaterialBinningResult& output, std::string& log);
     void clear();
 

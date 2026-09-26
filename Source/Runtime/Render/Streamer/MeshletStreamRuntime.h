@@ -521,14 +521,14 @@ public:
 
     // The optional caller-owned cache is used only during initialization.
     // Its owner handles persistence; no cache pointer survives this call.
-    Result initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log,
+    Result<> initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log,
         PipelineCache* pipelineCache = nullptr);
-    Result syncRuntimeScene(const scene::Scene& scene, std::string& log);
-    Result syncRuntimeScene(
+    Result<> syncRuntimeScene(const scene::Scene& scene, std::string& log);
+    Result<> syncRuntimeScene(
         const scene::Scene& scene,
         std::span<const uint32_t> runtimeRenderNodeIndices,
         std::string& log);
-    Result syncGPUSceneInstanceMapping(std::span<const uint32_t> mapping);
+    Result<> syncGPUSceneInstanceMapping(std::span<const uint32_t> mapping);
     void reset();
 
     bool ready() const;
@@ -540,24 +540,24 @@ public:
     bool tlasReady() const { return tlasBuilt_; }
     RayTracingAccelerationStructure* accelerationStructure() const;
 
-    Result cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame,
+    Result<> cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame,
         const std::function<void()>& flushUploads = {});
     // CPU-only, non-blocking maintenance for the next recorded frame. A caller
     // may invoke this before pacing; cmdBeginFrame remains the fallback owner.
     void prepareMaintenance(CpuProfileRecorder* profiler = nullptr, bool allowLegacyReadback = false);
     const CpuProfileRecorder& beginFrameCpuProfile() const { return beginFrameCpuProfile_; }
     using TraversalCheckpoint = std::function<void(std::string_view)>;
-    Result cmdPreTraversal(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame,
+    Result<> cmdPreTraversal(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame,
         const TraversalCheckpoint& checkpoint = {});
-    Result cmdPostTraversal(CommandBuffer& commandBuffer);
-    Result cmdEndFrame(CommandBuffer& commandBuffer);
+    Result<> cmdPostTraversal(CommandBuffer& commandBuffer);
+    Result<> cmdEndFrame(CommandBuffer& commandBuffer);
 
     ResourceRegistry* resourceRegistry() const { return registry_.get(); }
     BindlessHeap* bindlessHeap() const { return registry_ ? registry_->heap() : nullptr; }
     MeshletStreamUserPush userPush() const;
-    Result updateRasterBindings(const MeshletStreamGpuRasterBindings& bindings);
-    Result cmdPrepareVisibility(CommandBuffer& commandBuffer);
-    Result cmdPrepareDeferred(CommandBuffer& commandBuffer);
+    Result<> updateRasterBindings(const MeshletStreamGpuRasterBindings& bindings);
+    Result<> cmdPrepareVisibility(CommandBuffer& commandBuffer);
+    Result<> cmdPrepareDeferred(CommandBuffer& commandBuffer);
     MeshletStreamDeferredGpuResourcesView deferredGpuResources() const;
     uint32_t frameIndex() const { return frameIndex_; }
     uint32_t visibleClusterCapacity() const;
@@ -616,21 +616,21 @@ private:
 
     uint32_t computeMaxActiveGroups(uint32_t capacity) const;
     uint32_t computeMaxPrimitiveGroups() const;
-    Result initializeSceneMetadataBuffers(Device& device, std::string& log);
+    Result<> initializeSceneMetadataBuffers(Device& device, std::string& log);
 
-    Result initializePageTableIfNeeded(CommandBuffer& commandBuffer);
-    Result applyPageTablePatches(CommandBuffer& commandBuffer);
-    Result clearRequestBuffer(CommandBuffer& commandBuffer);
-    Result dispatchTraversal(CommandBuffer& commandBuffer, uint32_t threadCount, uint32_t traversalPhase);
-    Result buildActiveTable(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
-    Result buildBlasInputs(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
-    Result cmdBuildBlas(CommandBuffer& commandBuffer);
-    Result cmdBuildFallbackBlas(CommandBuffer& commandBuffer);
-    Result buildTlasInstances(CommandBuffer& commandBuffer);
-    Result cmdBuildTlas(CommandBuffer& commandBuffer);
-    Result copyRequestBufferForReadback(CommandBuffer& commandBuffer);
-    Result updateParamsBuffer(const MeshletStreamFrameDesc& frame);
-    Result transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
+    Result<> initializePageTableIfNeeded(CommandBuffer& commandBuffer);
+    Result<> applyPageTablePatches(CommandBuffer& commandBuffer);
+    Result<> clearRequestBuffer(CommandBuffer& commandBuffer);
+    Result<> dispatchTraversal(CommandBuffer& commandBuffer, uint32_t threadCount, uint32_t traversalPhase);
+    Result<> buildActiveTable(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
+    Result<> buildBlasInputs(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint);
+    Result<> cmdBuildBlas(CommandBuffer& commandBuffer);
+    Result<> cmdBuildFallbackBlas(CommandBuffer& commandBuffer);
+    Result<> buildTlasInstances(CommandBuffer& commandBuffer);
+    Result<> cmdBuildTlas(CommandBuffer& commandBuffer);
+    Result<> copyRequestBufferForReadback(CommandBuffer& commandBuffer);
+    Result<> updateParamsBuffer(const MeshletStreamFrameDesc& frame);
+    Result<> transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
     void consumeGpuRequestReadback(CpuProfileRecorder* profiler, bool allowLegacyReadback);
 
     scene::MeshletStreamAsset asset_;

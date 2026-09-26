@@ -123,7 +123,7 @@ public:
         };
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) {
             log = "RtxcrMaterialSamplePass requires a device";
@@ -141,7 +141,7 @@ public:
 
         const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
         ShaderCompileResult compileResult;
-        Result result = compileSlangShaderToSpirv(
+        Result<> result = compileSlangShaderToSpirv(
             SlangShaderDesc{
                 .moduleName = kRtxcrMaterialSampleShaderModuleName,
                 .entryPointName = kRtxcrMaterialSampleEntryPoint,
@@ -185,7 +185,7 @@ public:
 #endif
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() || color.view() == nullptr || !program_.valid()) {

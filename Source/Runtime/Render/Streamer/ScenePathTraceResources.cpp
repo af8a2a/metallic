@@ -157,17 +157,17 @@ struct ScenePathTraceMaterialTexture {
     bool uploaded = false;
 };
 
-Result createSharedTexture(Device& device, const TextureDesc& desc, std::shared_ptr<Texture>& output)
+Result<> createSharedTexture(Device& device, const TextureDesc& desc, std::shared_ptr<Texture>& output)
 {
     std::unique_ptr<Texture> texture;
-    auto result = device.createTexture(desc, texture);
+    auto result = device.createTexture(desc).transform([&](auto rhiValue) { texture = std::move(rhiValue); });
     output = std::move(texture);
     return result;
 }
-Result createSharedTextureView(Device& device, Texture& texture, const TextureViewDesc& desc, std::shared_ptr<TextureView>& output)
+Result<> createSharedTextureView(Device& device, Texture& texture, const TextureViewDesc& desc, std::shared_ptr<TextureView>& output)
 {
     std::unique_ptr<TextureView> view;
-    auto result = device.createTextureView(texture, desc, view);
+    auto result = device.createTextureView(texture, desc).transform([&](auto rhiValue) { view = std::move(rhiValue); });
     output = std::move(view);
     return result;
 }
@@ -188,7 +188,7 @@ struct ScenePathTraceBufferUpload {
 };
 
 
-std::string resultMessage(std::string_view label, const Result& result)
+std::string resultMessage(std::string_view label, const Result<>& result)
 {
     std::string message(label);
     message += " returned ";
@@ -209,7 +209,7 @@ public:
         clear();
     }
 
-    Result upload(
+    Result<> upload(
         Device& device,
         const void* data,
         uint64_t byteSize,
@@ -223,7 +223,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
         void* mapped = nullptr;
-        Result result = allocate(device, byteSize, alignment, outBuffer, outOffset, mapped, log, label);
+        Result<> result = allocate(device, byteSize, alignment, outBuffer, outOffset, mapped, log, label);
         if (!result) {
             return result;
         }
@@ -232,7 +232,7 @@ public:
         return {};
     }
 
-    Result allocate(
+    Result<> allocate(
         Device& device,
         uint64_t byteSize,
         uint64_t alignment,
@@ -262,14 +262,12 @@ public:
         if (selectedPage == nullptr) {
             const uint64_t pageSize = std::max(kPageByteSize, alignUp(byteSize, alignment));
             std::unique_ptr<Buffer> buffer;
-            Result result = device.createBuffer(
-                BufferDesc{
+            Result<> result = device.createBuffer(BufferDesc{
                     .size = pageSize,
                     .usage = BufferUsageBits::TransferSource,
                     .memoryLocation = MemoryLocation::HostUpload,
                     .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
-                },
-                buffer);
+                }).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
             if (!result || buffer == nullptr) {
                 log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
                 log += '\n';
@@ -392,7 +390,7 @@ void appendLogBlock(std::string& log, const std::string& message)
     }
 }
 
-Result uploadStorageBuffer(
+Result<> uploadStorageBuffer(
     Device& device,
     const void* data,
     uint64_t byteSize,
@@ -409,8 +407,7 @@ Result uploadStorageBuffer(
     }
 
     const bool deviceLocal = pendingUploads != nullptr;
-    Result result = device.createBuffer(
-        BufferDesc{
+    Result<> result = device.createBuffer(BufferDesc{
             .size = byteSize,
             .structureStride = structureStride,
             .usage = deviceLocal
@@ -420,8 +417,7 @@ Result uploadStorageBuffer(
             .queueAccess = deviceLocal
                 ? QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy
                 : QueueAccessBits::Graphics,
-        },
-        outBuffer);
+        }).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
     if (!result || outBuffer == nullptr) {
         log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
         log += '\n';
@@ -643,7 +639,7 @@ bool decodeSceneTexture(
     return true;
 }
 
-Result createMaterialTexture(
+Result<> createMaterialTexture(
     Device& device,
     SceneUploadStagingArena& stagingArena,
     const uint8_t* pixels,
@@ -705,7 +701,7 @@ Result createMaterialTexture(
     std::string uploadLabel = "ScenePathTracePass texture upload ";
     uploadLabel += std::string(label);
     void* mapped = nullptr;
-    Result result = stagingArena.allocate(
+    Result<> result = stagingArena.allocate(
         device,
         allocationSize,
         uploadAlignment,
@@ -768,7 +764,7 @@ Result createMaterialTexture(
     return {};
 }
 
-Result createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena,
+Result<> createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena,
     Ktx2MipReader& reader, std::vector<uint8_t>& bytes, SceneTextureLoadTiming& timing,
     const Ktx2TextureInfo& info, uint32_t firstMip, ScenePathTraceMaterialTexture& texture, std::string& log,
     const Ktx2PrefetchResult* prefetched = nullptr)
@@ -788,7 +784,7 @@ Result createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena,
         size = offset + bytes;
     }
     auto phaseBegin = SceneResourceLogClock::now();
-    Result result = createSharedTexture(device, desc, texture.texture);
+    Result<> result = createSharedTexture(device, desc, texture.texture);
     if (!result) { log = "Cannot allocate KTX2 texture: " + info.path.string(); return result; }
     result = createSharedTextureView(device, *texture.texture,
         {.format=desc.format,.mipCount=desc.mipCount,.swizzle=info.swizzle}, texture.view);
@@ -1484,7 +1480,7 @@ struct ScenePathTraceResources::Impl {
         for (const auto& retired : retiredTextures) { textureStats.retiredAllocationBytes += retired.bytes; }
     }
 
-    Result pumpTextureMigration(CpuProfileRecorder* profiler)
+    Result<> pumpTextureMigration(CpuProfileRecorder* profiler)
     {
         CpuProfileScope phase(profiler, "Poll migration completion");
         if (!textureMigration) { return {}; }
@@ -1535,7 +1531,7 @@ struct ScenePathTraceResources::Impl {
         }
         phase.next("Prepare images and staging");
         const auto prepareStarted = SceneResourceLogClock::now();
-        Result result;
+        Result<> result;
         // Consume ready jobs only; cap image count/bytes at scheduling and spend
         // at most one millisecond preparing a batch per tick (one image may overrun).
         while (migration.textures.size() != migration.requests.size()) {
@@ -1562,13 +1558,13 @@ struct ScenePathTraceResources::Impl {
         phase.next("Release decode workers");
         migration.decode.reset();
         phase.next("Upload command setup");
-        if (!(result = device->createCommandPool(*graphicsQueue, migration.pool)) ||
-            !(result = migration.pool->createCommandBuffer(migration.commands)) ||
+        if (!(result = device->createCommandPool(*graphicsQueue).transform([&](auto rhiValue) { migration.pool = std::move(rhiValue); })) ||
+            !(result = migration.pool->createCommandBuffer().transform([&](auto rhiValue) { migration.commands = std::move(rhiValue); })) ||
             !(result = migration.tracker.initialize(*device, *graphicsQueue)) ||
             !(result = migration.frame.begin(streamingFrame)) ||
             !(result = migration.commands->begin(&migration.frame))) { return result; }
         if (graphicsQueue->timestampValidBits() != 0) {
-            if (device->createTimestampQueryPool(*graphicsQueue, {.queryCount=2}, migration.timestamps)) {
+            if (device->createTimestampQueryPool(*graphicsQueue, {.queryCount=2}).transform([&](auto rhiValue) { migration.timestamps = std::move(rhiValue); })) {
                 if (!(result = migration.commands->resetTimestampQueries(*migration.timestamps, 0, 2)) ||
                     !(result = migration.commands->writeTimestamp(*migration.timestamps, 0, PipelineStageBits::TopOfPipe))) { return result; }
             }
@@ -1626,7 +1622,7 @@ struct ScenePathTraceResources::Impl {
             // A separate cooldown prevents refine/evict oscillation around a view cut.
             if (target == current || streamingFrame - textureLastChanged[image] < std::min(30u, textureColdFrames)) { continue; }
             uint64_t bytes = 0;
-            if (!device->textureAllocationSize(ktxImages[image]->textureDesc(target), bytes)) { continue; }
+            if (!device->textureAllocationSize(ktxImages[image]->textureDesc(target)).transform([&](auto rhiValue) { bytes = std::move(rhiValue); })) { continue; }
             const uint64_t oldBytes = materialTextures[slot].texture->allocationSize();
             const double priority = target > current ? 1e12 + double(oldBytes) :
                 double(textureHits[image]) * (current - target) / double(std::max<uint64_t>(bytes - std::min(bytes,oldBytes),1));
@@ -1662,12 +1658,12 @@ struct ScenePathTraceResources::Impl {
         textureMigration = std::move(migration);
     }
 
-    Result beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler, bool freezePublication)
+    Result<> beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler, bool freezePublication)
     {
         if (!emptyTextureFeedback) {
             std::unique_ptr<Buffer> buffer;
             auto result = device->createBuffer({.size=32, .usage=BufferUsageBits::Storage,
-                .memoryLocation=MemoryLocation::HostUpload}, buffer);
+                .memoryLocation=MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
             if (!result) { return result; }
             auto* mapped = buffer->map(); if (!mapped) { return makeError(Error::Failure); }
             std::memset(mapped,0,32); buffer->flush(); buffer->unmap();
@@ -1704,7 +1700,7 @@ struct ScenePathTraceResources::Impl {
         } else {
             std::unique_ptr<Buffer> created;
             result = device->createBuffer({.size=materialTextures.size()*32, .usage=BufferUsageBits::Storage,
-                .memoryLocation=MemoryLocation::HostReadback},created);
+                .memoryLocation=MemoryLocation::HostReadback}).transform([&](auto rhiValue) { created = std::move(rhiValue); });
             if (!result) { return result; }
             buffer = std::move(created);
         }
@@ -1837,7 +1833,7 @@ struct ScenePathTraceResources::Impl {
         clear();
     }
 
-    Result submitTextureUploads(Device& device, Queue& graphicsQueue, std::string& log)
+    Result<> submitTextureUploads(Device& device, Queue& graphicsQueue, std::string& log)
     {
         const uint64_t batchByteSize = pendingUploadByteSize();
         const uint32_t batchRegionCount = pendingUploadRegionCount();
@@ -1861,19 +1857,17 @@ struct ScenePathTraceResources::Impl {
         const bool requiresGraphicsAcquire = uploadQueue != &graphicsQueue;
 
         auto phaseBegin = SceneResourceLogClock::now();
-        Result result = device.createCommandPool(*uploadQueue, batch->uploadPool);
+        Result<> result = device.createCommandPool(*uploadQueue).transform([&](auto rhiValue) { batch->uploadPool = std::move(rhiValue); });
         if (!result || batch->uploadPool == nullptr) {
             log += resultMessage("createCommandPool(scene texture uploads)", result);
             return result ? makeError(Error::Failure) : result;
         }
-        result = batch->uploadPool->createCommandBuffer(batch->uploadCommands);
+        result = batch->uploadPool->createCommandBuffer().transform([&](auto rhiValue) { batch->uploadCommands = std::move(rhiValue); });
         if (!result || batch->uploadCommands == nullptr) {
             log += resultMessage("createCommandBuffer(scene texture uploads)", result);
             return result ? makeError(Error::Failure) : result;
         }
-        result = device.createSemaphore(
-            SemaphoreDesc{.initialValue = 0},
-            batch->timeline);
+        result = device.createSemaphore(SemaphoreDesc{.initialValue = 0}).transform([&](auto rhiValue) { batch->timeline = std::move(rhiValue); });
         if (!result || batch->timeline == nullptr) {
             log += resultMessage("createSemaphore(scene uploads)", result);
             return result ? makeError(Error::Failure) : result;
@@ -1939,12 +1933,12 @@ struct ScenePathTraceResources::Impl {
         uploadStats.peakInFlightBatches = std::max(uploadStats.peakInFlightBatches, uploadStats.inFlightBatches);
         if (requiresGraphicsAcquire) {
             phaseBegin = SceneResourceLogClock::now();
-            result = device.createCommandPool(graphicsQueue, batch->acquirePool);
+            result = device.createCommandPool(graphicsQueue).transform([&](auto rhiValue) { batch->acquirePool = std::move(rhiValue); });
             if (!result || batch->acquirePool == nullptr) {
                 log += resultMessage("createCommandPool(scene upload acquire)", result);
                 return result ? makeError(Error::Failure) : result;
             }
-            result = batch->acquirePool->createCommandBuffer(batch->acquireCommands);
+            result = batch->acquirePool->createCommandBuffer().transform([&](auto rhiValue) { batch->acquireCommands = std::move(rhiValue); });
             if (!result || batch->acquireCommands == nullptr) {
                 log += resultMessage("createCommandBuffer(scene upload acquire)", result);
                 return result ? makeError(Error::Failure) : result;
@@ -2103,7 +2097,7 @@ struct ScenePathTraceResources::Impl {
         retireCompletedTextureUploads();
     }
 
-    Result planTextureResources(Device& device, const scene::Scene& scene, std::string& log)
+    Result<> planTextureResources(Device& device, const scene::Scene& scene, std::string& log)
     {
         auto phaseBegin = SceneResourceLogClock::now();
         textureStats = {};
@@ -2195,7 +2189,7 @@ struct ScenePathTraceResources::Impl {
         const TextureDesc fallback{.usage=TextureUsageBits::Sampled|TextureUsageBits::TransferDestination,
             .format=Format::Rgba8Unorm,.queueAccess=QueueAccessBits::Graphics|QueueAccessBits::Copy};
         uint64_t fallbackBytes = 0;
-        auto result = device.textureAllocationSize(fallback,fallbackBytes);
+        auto result = device.textureAllocationSize(fallback).transform([&](auto rhiValue) { fallbackBytes = std::move(rhiValue); });
         if (!result) { return result; }
         uint32_t cap = textureMaxDimension;
         for (;;) {
@@ -2206,7 +2200,7 @@ struct ScenePathTraceResources::Impl {
                 const uint32_t first = info.firstMipForDimension(protectedImages[i] && textureMaskMaxDimension != 0
                     ? std::max(cap, textureMaskMaxDimension) : cap);
                 uint64_t bytes = 0;
-                result = device.textureAllocationSize(info.textureDesc(first),bytes);
+                result = device.textureAllocationSize(info.textureDesc(first)).transform([&](auto rhiValue) { bytes = std::move(rhiValue); });
                 if (!result) { log = "Unsupported texture allocation: " + info.path.string(); return result; }
                 allocation += bytes; payload += info.tailBytes(first); ktxFirstMips[i] = first;
             }
@@ -2243,7 +2237,7 @@ struct ScenePathTraceResources::Impl {
         textureStats.peakStagingBytes = std::max(textureStats.peakStagingBytes,staging);
     }
 
-    Result buildMaterialTextures(Device& device, const scene::Scene& loadedScene,
+    Result<> buildMaterialTextures(Device& device, const scene::Scene& loadedScene,
         std::vector<uint32_t>& outTextureIndexMap, std::string& log)
     {
         auto result = beginMaterialTextureBuild(device,loadedScene,log);
@@ -2267,7 +2261,7 @@ struct ScenePathTraceResources::Impl {
         return result;
     }
 
-    Result beginMaterialTextureBuild(
+    Result<> beginMaterialTextureBuild(
         Device& device,
         const scene::Scene& loadedScene,
         std::string& log)
@@ -2276,7 +2270,7 @@ struct ScenePathTraceResources::Impl {
         lastUploadProgress = textureLoadBegin;
         ktxReader = std::make_unique<Ktx2MipReader>();
         decodedKtxScratch.clear();
-        Result result = neuralTextures.prepare(device, loadedScene, log);
+        Result<> result = neuralTextures.prepare(device, loadedScene, log);
         if (!result) {
             return result;
         }
@@ -2330,7 +2324,7 @@ struct ScenePathTraceResources::Impl {
         return {};
     }
 
-    Result buildMaterialTextureStep(
+    Result<> buildMaterialTextureStep(
         Device& device,
         const scene::Scene& loadedScene,
         bool& complete,
@@ -2365,7 +2359,7 @@ struct ScenePathTraceResources::Impl {
             }
 
             ScenePathTraceMaterialTexture materialTexture;
-            Result result;
+            Result<> result;
             const size_t imageIndex = logicalTexture.imageIndex < 0 ? SIZE_MAX : size_t(logicalTexture.imageIndex);
             if (imageIndex < ktxImages.size() && ktxImages[imageIndex]) {
                 const Ktx2PrefetchResult* prefetched = nullptr;
@@ -2463,7 +2457,7 @@ struct ScenePathTraceResources::Impl {
         return {};
     }
 
-    Result uploadTexture(CommandBuffer& commandBuffer, ScenePathTraceMaterialTexture& texture)
+    Result<> uploadTexture(CommandBuffer& commandBuffer, ScenePathTraceMaterialTexture& texture)
     {
         if (texture.uploaded) {
             return {};
@@ -2554,7 +2548,7 @@ struct ScenePathTraceResources::Impl {
         }
     }
 
-    Result uploadMaterialTextures(CommandBuffer& commandBuffer)
+    Result<> uploadMaterialTextures(CommandBuffer& commandBuffer)
     {
         if (!uploadBatches.empty()) {
             (void)commandBuffer;
@@ -2566,7 +2560,7 @@ struct ScenePathTraceResources::Impl {
         }
 
         for (ScenePathTraceMaterialTexture& texture : materialTextures) {
-            Result result = uploadTexture(commandBuffer, texture);
+            Result<> result = uploadTexture(commandBuffer, texture);
             if (!result) {
                 return result;
             }
@@ -2754,7 +2748,7 @@ ScenePathTraceResources::ScenePathTraceResources(ScenePathTraceResources&&) noex
 
 ScenePathTraceResources& ScenePathTraceResources::operator=(ScenePathTraceResources&&) noexcept = default;
 
-Result ScenePathTraceResources::prepare(
+Result<> ScenePathTraceResources::prepare(
     Device& device,
     Queue& graphicsQueue,
     const RenderGraphProperties& properties,
@@ -2762,7 +2756,7 @@ Result ScenePathTraceResources::prepare(
     std::string& log)
 {
     if (runtimeScene && runtimeScene->hasStreamGeometry()) {
-        Result result = beginPrepareAsync(device, graphicsQueue, properties, *runtimeScene, log);
+        Result<> result = beginPrepareAsync(device, graphicsQueue, properties, *runtimeScene, log);
         bool complete = false;
         scene::SceneLoadProgress progress;
         while (result && !complete) {
@@ -2829,7 +2823,7 @@ Result ScenePathTraceResources::prepare(
         sceneStats.textureCount);
 
     std::vector<uint32_t> textureIndexMap;
-    Result result;
+    Result<> result;
     {
         SceneResourceLogScope scope("build material textures");
         result = impl_->buildMaterialTextures(device, loadedScene, textureIndexMap, log);
@@ -2980,7 +2974,7 @@ Result ScenePathTraceResources::prepare(
     return {};
 }
 
-Result ScenePathTraceResources::beginPrepareAsync(
+Result<> ScenePathTraceResources::beginPrepareAsync(
     Device& device,
     Queue& graphicsQueue,
     const RenderGraphProperties& properties,
@@ -3019,7 +3013,7 @@ Result ScenePathTraceResources::beginPrepareAsync(
     impl_->asyncSourceVisibilityRevision = boundScene->visibilityRevision();
     impl_->asyncSourceMaterialRevision = boundScene->materialRevision();
     impl_->sourceMaterialResourceLayout = materialResourceLayout(*boundScene);
-    Result result = impl_->beginMaterialTextureBuild(device, *boundScene, log);
+    Result<> result = impl_->beginMaterialTextureBuild(device, *boundScene, log);
     if (!result) {
         impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
         return result;
@@ -3028,7 +3022,7 @@ Result ScenePathTraceResources::beginPrepareAsync(
     return {};
 }
 
-Result ScenePathTraceResources::pumpPrepareAsync(
+Result<> ScenePathTraceResources::pumpPrepareAsync(
     double budgetMilliseconds,
     bool& complete,
     scene::SceneLoadProgress& progress,
@@ -3070,7 +3064,7 @@ Result ScenePathTraceResources::pumpPrepareAsync(
 
     const auto begin = SceneResourceLogClock::now();
     const double budget = std::max(budgetMilliseconds, 0.1);
-    Result result;
+    Result<> result;
     while (sceneResourceElapsedMilliseconds(begin) < budget) {
         impl_->retireCompletedTextureUploads();
         if (impl_->backpressureBegin && impl_->uploadBatches.size() < Impl::kMaxUploadBatchesInFlight) {
@@ -3288,7 +3282,7 @@ Result ScenePathTraceResources::pumpPrepareAsync(
             {
                 bool accelerationStructuresComplete = impl_->materialOnly;
                 std::string rtxLog;
-                result = impl_->materialOnly ? Result{} : impl_->rtxBuilder.pollBuild(
+                result = impl_->materialOnly ? Result<>{} : impl_->rtxBuilder.pollBuild(
                     accelerationStructuresComplete,
                     rtxLog);
                 appendLogBlock(log, rtxLog);
@@ -3349,7 +3343,7 @@ bool ScenePathTraceResources::preparing() const
         impl_->asyncPrepareStage != Impl::AsyncPrepareStage::Failed;
 }
 
-Result ScenePathTraceResources::syncRuntimeScene(
+Result<> ScenePathTraceResources::syncRuntimeScene(
     const scene::Scene* runtimeScene,
     std::string& log)
 {
@@ -3374,7 +3368,7 @@ Result ScenePathTraceResources::syncRuntimeScene(
             {"materialTextureColdFrames", impl_->textureColdFrames},
             {"materialTextureBudgetMiB", impl_->textureBudgetBytes / (1024 * 1024)},
         };
-        Result result = prepare(
+        Result<> result = prepare(
             device,
             graphicsQueue,
             properties,
@@ -3430,7 +3424,7 @@ Result ScenePathTraceResources::syncRuntimeScene(
             impl_->neuralTextures.logicalTextureSetIndices(),
             log);
         stampTextureFormats(materials,impl_->materialTextures);
-        const Result result = uploadStorageBuffer(
+        const Result<> result = uploadStorageBuffer(
             *impl_->device,
             materials.data(),
             static_cast<uint64_t>(materials.size() * sizeof(ScenePathTraceGpuMaterial)),
@@ -3474,7 +3468,7 @@ Result ScenePathTraceResources::syncRuntimeScene(
     if (accelerationQueue == nullptr) {
         accelerationQueue = impl_->graphicsQueue;
     }
-    Result result = impl_->rtxBuilder.updateInstanceTransforms(
+    Result<> result = impl_->rtxBuilder.updateInstanceTransforms(
         *impl_->device,
         *accelerationQueue,
         *boundScene,
@@ -3508,7 +3502,7 @@ std::shared_ptr<const ComputeSampledImageSnapshot> ScenePathTraceResources::mate
     return impl_->materialTextureSnapshot;
 }
 
-Result ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandBuffer)
+Result<> ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandBuffer)
 {
     if (auto* frame = commandBuffer.frameContext()) {
         frame->retain(impl_);
@@ -3521,7 +3515,7 @@ Result ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandBuf
     return impl_->uploadMaterialTextures(commandBuffer);
 }
 
-Result ScenePathTraceResources::beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler, bool freezePublication)
+Result<> ScenePathTraceResources::beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler, bool freezePublication)
 {
     return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler, freezePublication);
 }
@@ -3623,7 +3617,7 @@ bool ScenePathTraceResources::gpuWorkComplete()
 {
     bool accelerationStructureComplete =
         impl_->rtxBuilder.buildState() != SceneAccelerationStructureBuildState::Building;
-    Result result;
+    Result<> result;
     if (!accelerationStructureComplete) {
         std::string log;
         result = impl_->rtxBuilder.pollBuild(accelerationStructureComplete, log);

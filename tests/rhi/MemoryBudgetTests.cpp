@@ -28,27 +28,27 @@ public:
         policy.deviceLocalHeapLimitBytes = initial.heaps[initial.primaryDeviceLocalHeap].usageBytes + 32 * kMiB;
         device.setMemoryBudgetPolicy(policy);
         MemoryBudgetReservation future;
-        if (!device.reserveMemoryBudget(24 * kMiB, future)) { return RhiTestResult::fail("Cannot reserve test headroom"); }
+        if (!device.reserveMemoryBudget(24 * kMiB).transform([&](auto rhiValue) { future = std::move(rhiValue); })) { return RhiTestResult::fail("Cannot reserve test headroom"); }
         MemoryBudgetReservation moved = std::move(future);
         if (future || !moved || device.memoryBudget().reservedBytes != initial.reservedBytes + 24 * kMiB) {
             return RhiTestResult::fail("Reservation move lost or duplicated credits");
         }
         std::unique_ptr<Buffer> rejected;
         auto result = device.createBuffer({.size = 16 * kMiB, .usage = BufferUsageBits::Storage,
-            .memoryDomain = MemoryBudgetDomain::Geometry}, rejected);
+            .memoryDomain = MemoryBudgetDomain::Geometry}).transform([&](auto rhiValue) { rejected = std::move(rhiValue); });
         if (!hasError(result, Error::OutOfMemory) || rejected) {
             return RhiTestResult::fail("Geometry consumed reserved feature headroom");
         }
         std::unique_ptr<Texture> rejectedTexture;
         result = device.createTexture({.usage = TextureUsageBits::Sampled, .format = Format::Rgba8Unorm,
-            .width = 2048, .height = 2048, .memoryDomain = MemoryBudgetDomain::MaterialTextures}, rejectedTexture);
+            .width = 2048, .height = 2048, .memoryDomain = MemoryBudgetDomain::MaterialTextures}).transform([&](auto rhiValue) { rejectedTexture = std::move(rhiValue); });
         if (!hasError(result, Error::OutOfMemory) || rejectedTexture) {
             return RhiTestResult::fail("Textures bypassed the shared budget");
         }
         moved.reset();
         std::unique_ptr<Buffer> geometry;
         if (!device.createBuffer({.size = 4 * kMiB, .usage = BufferUsageBits::Storage,
-                .memoryDomain = MemoryBudgetDomain::Geometry}, geometry)) {
+                .memoryDomain = MemoryBudgetDomain::Geometry}).transform([&](auto rhiValue) { geometry = std::move(rhiValue); })) {
             return RhiTestResult::fail("Released reservation did not restore allocation headroom");
         }
         const auto beforeMove = device.memoryBudget();
@@ -64,7 +64,7 @@ public:
         // Move assignment must release the overwritten Vulkan allocation too.
         std::unique_ptr<Buffer> a, b;
         const BufferDesc buffer{.size = kMiB, .usage = BufferUsageBits::Storage, .memoryDomain = MemoryBudgetDomain::Geometry};
-        if (!device.createBuffer(buffer, a) || !device.createBuffer(buffer, b)) {
+        if (!device.createBuffer(buffer).transform([&](auto rhiValue) { a = std::move(rhiValue); }) || !device.createBuffer(buffer).transform([&](auto rhiValue) { b = std::move(rhiValue); })) {
             return RhiTestResult::fail("Move-assignment fixture allocation failed");
         }
         *a = std::move(*b);
@@ -72,13 +72,13 @@ public:
         std::unique_ptr<Texture> x, y;
         const TextureDesc texture{.usage = TextureUsageBits::Sampled, .format = Format::Rgba8Unorm,
             .width = 64, .height = 64, .memoryDomain = MemoryBudgetDomain::MaterialTextures};
-        if (!device.createTexture(texture, x) || !device.createTexture(texture, y)) {
+        if (!device.createTexture(texture).transform([&](auto rhiValue) { x = std::move(rhiValue); }) || !device.createTexture(texture).transform([&](auto rhiValue) { y = std::move(rhiValue); })) {
             return RhiTestResult::fail("Texture move fixture allocation failed");
         }
         *x = std::move(*y);
         x.reset(); y.reset();
         MemoryBudgetReservation impossible;
-        if (!hasError(device.reserveMemoryBudget(UINT64_MAX, impossible), Error::OutOfMemory) || impossible) {
+        if (!hasError(device.reserveMemoryBudget(UINT64_MAX).transform([&](auto rhiValue) { impossible = std::move(rhiValue); }), Error::OutOfMemory) || impossible) {
             return RhiTestResult::fail("Oversized reservation was accepted");
         }
         const auto final = device.memoryBudget();

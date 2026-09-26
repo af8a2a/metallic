@@ -18,7 +18,7 @@ public:
         return reflection;
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -31,7 +31,7 @@ public:
             return {};
         }
 
-        Result result = createSlangShaderModule(
+        Result<> result = createSlangShaderModule(
             *context.device,
             kRenderGraphBufferShaderModuleName,
             kRenderGraphBufferWriteEntryPoint,
@@ -41,14 +41,12 @@ public:
             return result;
         }
 
-        result = context.device->createComputePipeline(
-            ComputePipelineDesc{
+        result = context.device->createComputePipeline(ComputePipelineDesc{
                 .computeShader = shader_.get(),
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),
-            },
-            pipeline_);
+            }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
         if (!result) {
             log += resultMessage("createComputePipeline(RenderGraphBufferWritePass)", result);
             log += '\n';
@@ -56,7 +54,7 @@ public:
         return result;
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         BufferHandle data = context.outputBuffer("data");
         if (!data.valid() || !data.bindlessHandle().valid() || pipeline_ == nullptr) {
@@ -98,7 +96,7 @@ public:
         return reflection;
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -111,7 +109,7 @@ public:
             return {};
         }
 
-        Result result = createSlangShaderModule(
+        Result<> result = createSlangShaderModule(
             *context.device,
             kRenderGraphBufferShaderModuleName,
             kRenderGraphBufferCopyEntryPoint,
@@ -121,14 +119,12 @@ public:
             return result;
         }
 
-        result = context.device->createComputePipeline(
-            ComputePipelineDesc{
+        result = context.device->createComputePipeline(ComputePipelineDesc{
                 .computeShader = shader_.get(),
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),
-            },
-            pipeline_);
+            }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
         if (!result) {
             log += resultMessage("createComputePipeline(RenderGraphBufferCopyPass)", result);
             log += '\n';
@@ -136,7 +132,7 @@ public:
         return result;
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         BufferHandle source = context.inputBuffer("source");
         BufferHandle data = context.outputBuffer("data");

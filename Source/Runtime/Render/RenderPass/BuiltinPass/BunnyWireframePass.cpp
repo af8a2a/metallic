@@ -18,7 +18,7 @@ public:
         return reflection;
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -67,7 +67,7 @@ public:
             buildBunnyParams(context.width, context.height, properties(), drawBounds_, params);
         }
 
-        Result result = uploadStorageBuffer(
+        Result<> result = uploadStorageBuffer(
             *context.device,
             positions.data(),
             static_cast<uint64_t>(positions.size() * sizeof(BunnyWireframeGpuPosition)),
@@ -98,30 +98,28 @@ public:
             return result;
         }
 
-        result = context.device->createBindlessHeap(
-            BindlessHeapDesc{
+        result = context.device->createBindlessHeap(BindlessHeapDesc{
                 .maxBuffers = 3,
-            },
-            bindlessHeap_);
+            }).transform([&](auto rhiValue) { bindlessHeap_ = std::move(rhiValue); });
         if (!result || bindlessHeap_ == nullptr) {
             log += resultMessage("createBindlessHeap(BunnyWireframePass)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
 
-        result = bindlessHeap_->allocateBuffer(paramsHandle_);
+        result = bindlessHeap_->allocateBuffer().transform([&](auto rhiValue) { paramsHandle_ = std::move(rhiValue); });
         if (!result || !paramsHandle_.valid()) {
             log += resultMessage("allocateBuffer(BunnyWireframePass params)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
-        result = bindlessHeap_->allocateBuffer(positionHandle_);
+        result = bindlessHeap_->allocateBuffer().transform([&](auto rhiValue) { positionHandle_ = std::move(rhiValue); });
         if (!result || !positionHandle_.valid()) {
             log += resultMessage("allocateBuffer(BunnyWireframePass positions)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
-        result = bindlessHeap_->allocateBuffer(transformHandle_);
+        result = bindlessHeap_->allocateBuffer().transform([&](auto rhiValue) { transformHandle_ = std::move(rhiValue); });
         if (!result || !transformHandle_.valid()) {
             log += resultMessage("allocateBuffer(BunnyWireframePass transforms)", result);
             log += '\n';
@@ -165,16 +163,14 @@ public:
             return result;
         }
 
-        result = context.device->createGraphicsShaderObjectProgram(
-            GraphicsShaderObjectProgramDesc{
+        result = context.device->createGraphicsShaderObjectProgram(GraphicsShaderObjectProgramDesc{
                 .vertexCode = vertexCompile.spirv.data(),
                 .vertexByteSize = static_cast<uint64_t>(vertexCompile.spirv.size() * sizeof(uint32_t)),
                 .fragmentCode = fragmentCompile.spirv.data(),
                 .fragmentByteSize = static_cast<uint64_t>(fragmentCompile.spirv.size() * sizeof(uint32_t)),
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(BunnyWireframeUserPush),
-            },
-            program_);
+            }).transform([&](auto rhiValue) { program_ = std::move(rhiValue); });
         if (!result || program_ == nullptr) {
             log += resultMessage("createGraphicsShaderObjectProgram(BunnyWireframePass)", result);
             log += '\n';
@@ -190,9 +186,9 @@ public:
         return {};
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
-        Result syncResult = syncRuntimeGeometry(context.runtimeScene());
+        Result<> syncResult = syncRuntimeGeometry(context.runtimeScene());
         if (!syncResult) {
             return syncResult;
         }
@@ -206,7 +202,7 @@ public:
         }
 
         if (drawVertexCount_ > 0) {
-            Result result = updateParamsBuffer(context.width(), context.height(), context.properties());
+            Result<> result = updateParamsBuffer(context.width(), context.height(), context.properties());
             if (!result) {
                 return result;
             }
@@ -272,7 +268,7 @@ public:
     }
 
 private:
-    static Result uploadStorageBuffer(
+    static Result<> uploadStorageBuffer(
         Device& device,
         const void* data,
         uint64_t byteSize,
@@ -285,14 +281,12 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        Result result = device.createBuffer(
-            BufferDesc{
+        Result<> result = device.createBuffer(BufferDesc{
                 .size = byteSize,
                 .structureStride = 0,
                 .usage = BufferUsageBits::Storage,
                 .memoryLocation = MemoryLocation::HostUpload,
-            },
-            outBuffer);
+            }).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
         if (!result || outBuffer == nullptr) {
             log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
             log += '\n';
@@ -310,7 +304,7 @@ private:
         return {};
     }
 
-    Result syncRuntimeGeometry(const scene::Scene* runtimeScene)
+    Result<> syncRuntimeGeometry(const scene::Scene* runtimeScene)
     {
         runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
         if (runtimeScene == nullptr) {
@@ -344,7 +338,7 @@ private:
         return {};
     }
 
-    Result rebuildRuntimeGeometry(const scene::Scene& runtimeScene)
+    Result<> rebuildRuntimeGeometry(const scene::Scene& runtimeScene)
     {
         if (device_ == nullptr || bindlessHeap_ == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -371,7 +365,7 @@ private:
         }
 
         std::unique_ptr<Buffer> positionBuffer;
-        Result result = uploadStorageBuffer(
+        Result<> result = uploadStorageBuffer(
             *device_,
             positions.data(),
             static_cast<uint64_t>(positions.size() * sizeof(BunnyWireframeGpuPosition)),
@@ -412,7 +406,7 @@ private:
         return {};
     }
 
-    Result updateParamsBuffer(
+    Result<> updateParamsBuffer(
         uint32_t width,
         uint32_t height,
         const RenderGraphProperties& properties)

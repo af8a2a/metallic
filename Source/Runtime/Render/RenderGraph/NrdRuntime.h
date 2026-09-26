@@ -50,7 +50,7 @@ public:
     NrdRuntime(const NrdRuntime&) = delete;
     NrdRuntime& operator=(const NrdRuntime&) = delete;
 
-    Result initialize(Device& device, uint16_t width, uint16_t height, const NrdUserTexturePool& userTexturePool,
+    Result<> initialize(Device& device, uint16_t width, uint16_t height, const NrdUserTexturePool& userTexturePool,
                       std::string& log, bool sigmaOnly = false);
     void clear();
     bool valid() const;
@@ -59,16 +59,16 @@ public:
     uint16_t height() const;
 
     void setUserPoolTexture(denoising::ResourceType resource, Texture& texture, TextureView& view);
-    Result setCommonSettings(const denoising::CommonSettings& settings);
-    Result setReblurSettings(const denoising::ReblurSettings& settings);
-    Result setRelaxSettings(const denoising::RelaxSettings& settings);
-    Result setSigmaSettings(const denoising::SigmaSettings& settings);
-    Result denoise(NrdDenoiserMode mode, CommandBuffer& commandBuffer);
-    Result denoiseReference(bool specular, CommandBuffer& commandBuffer);
+    Result<> setCommonSettings(const denoising::CommonSettings& settings);
+    Result<> setReblurSettings(const denoising::ReblurSettings& settings);
+    Result<> setRelaxSettings(const denoising::RelaxSettings& settings);
+    Result<> setSigmaSettings(const denoising::SigmaSettings& settings);
+    Result<> denoise(NrdDenoiserMode mode, CommandBuffer& commandBuffer);
+    Result<> denoiseReference(bool specular, CommandBuffer& commandBuffer);
 
 private:
-    Result record(uint32_t index, CommandBuffer& commandBuffer);
-    Result dispatch(CommandBuffer& commandBuffer, const denoising::DispatchDesc& stage);
+    Result<> record(uint32_t index, CommandBuffer& commandBuffer);
+    Result<> dispatch(CommandBuffer& commandBuffer, const denoising::DispatchDesc& stage);
 
     struct Impl;
     std::shared_ptr<Impl> impl_;

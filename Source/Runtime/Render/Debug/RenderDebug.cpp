@@ -414,8 +414,8 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
     // Allocate every destination before recording anything: batch preflight is atomic.
     for (const auto& copy : copies) {
         std::unique_ptr<Buffer> buffer;
-        const Result result = device_->createBuffer(BufferDesc{.size = copy.bytes, .usage = BufferUsageBits::TransferDestination,
-            .memoryLocation = MemoryLocation::HostReadback, .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy}, buffer);
+        const Result<> result = device_->createBuffer(BufferDesc{.size = copy.bytes, .usage = BufferUsageBits::TransferDestination,
+            .memoryLocation = MemoryLocation::HostReadback, .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
         if (!result) { reject("ReadbackAllocationFailed", resultToString(result)); return; }
         readback->buffers.push_back(std::move(buffer));
     }
@@ -429,10 +429,10 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
             const uint64_t bytes = probe.push.groupCount * 32u;
             result = device_->createBuffer({.size = bytes, .structureStride = 32,
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
-                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, output);
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { output = std::move(rhiValue); });
             if (result) { result = device_->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
                 .memoryLocation = MemoryLocation::HostReadback,
-                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, host); }
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { host = std::move(rhiValue); }); }
             if (!result) { reject("ProbeAllocationFailed", resultToString(result)); return; }
             readback->probeOutputs.push_back(std::move(output)); readback->buffers.push_back(std::move(host));
         }
@@ -463,7 +463,7 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
         }
     }
     if (!probes.empty()) {
-        const auto result = commands.recordIsolatedCompute([&]() -> Result {
+        const auto result = commands.recordIsolatedCompute([&]() -> Result<> {
             for (size_t i = 0; i < probes.size(); ++i) {
                 const auto result = recordDebugProbe(commands, *probeProgram_, probes[i], *readback->probeOutputs[i], *readback->buffers[copies.size() + i]);
                 if (!result) { return result; }

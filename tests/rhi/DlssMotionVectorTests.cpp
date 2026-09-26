@@ -22,7 +22,7 @@ public:
         return reflection;
     }
 
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
         const char* capabilities[] = {"spvRayQueryKHR"};
@@ -42,7 +42,7 @@ public:
         }, log);
     }
 
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding binding{
             .binding = 63, .buffer = context.outputBuffer("motion").buffer()};
@@ -68,7 +68,7 @@ public:
             [] { return std::make_unique<DlssMotionVectorProbePass>(); });
         std::unique_ptr<render::Device> device;
         const auto initialized = render::createDevice({.applicationName = "DLSS motion vectors",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(initialized, render::Error::Unsupported)) {
             return RhiTestResult::skip("Requires bindless descriptors");
         }

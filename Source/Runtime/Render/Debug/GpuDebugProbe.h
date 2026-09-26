@@ -23,8 +23,8 @@ debug::DebugResult<std::vector<PreparedDebugProbe>> prepareDebugProbes(
     const debug::DebugValue& specification, std::span<const DebugResourceBinding> resources,
     const std::unordered_map<std::string, debug::DebugTypeDesc>& layouts,
     const debug::DebugEvidenceStamp& evidence, uint64_t scanBudget);
-Result initializeDebugProbe(Device& device, ComputeProgram& program, std::string& log);
-Result recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
+Result<> initializeDebugProbe(Device& device, ComputeProgram& program, std::string& log);
+Result<> recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
     const PreparedDebugProbe& probe, Buffer& output, Buffer& readback);
 
 } // namespace metallic::render

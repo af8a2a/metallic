@@ -42,7 +42,7 @@ public:
         reflection.addBufferOutput("value").buffer(16, 4).shaderRead();
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         ++probe.compiles;
         if (context.runtimeScene == nullptr ||
@@ -65,7 +65,7 @@ public:
         }
         return {};
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         ++probe.executions;
         if (hasView_ != (context.viewConstants() != nullptr)) { return render::makeError(render::Error::Failure); }
@@ -140,11 +140,11 @@ public:
             std::unique_ptr<render::CommandPool> pool;
             std::unique_ptr<render::CommandBuffer> commands;
             if (!submissions.initialize(context.device, context.graphicsQueue) ||
-                !context.device.createCommandPool(context.graphicsQueue, pool) || !pool->createCommandBuffer(commands)) {
+                !context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }) || !pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })) {
                 return RhiTestResult::fail("Probe command setup failed");
             }
             uint64_t frameIndex = 0;
-            const auto renderFrame = [&]() -> render::Result {
+            const auto renderFrame = [&]() -> render::Result<> {
                 if (managedSubmission) {
                     auto status = executor.execute(render::RenderGraphSubmitDesc{.graphicsQueue = &context.graphicsQueue});
                     if (status) { status = executor.waitForSubmittedWork(); }

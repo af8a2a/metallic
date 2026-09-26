@@ -21,7 +21,7 @@ namespace metallic::tests {
 namespace {
 
 #define FRAME_REQUIRE(expression) do { \
-    const render::Result frameResult = (expression); \
+    const render::Result<> frameResult = (expression); \
     if (!frameResult) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(frameResult)); } \
 } while (false)
 
@@ -56,20 +56,20 @@ struct Commands {
         }
         (void)frame.reset();
     }
-    render::Result initialize(render::Device& device, render::Queue& queue)
+    render::Result<> initialize(render::Device& device, render::Queue& queue)
     {
-        render::Result result = device.createCommandPool(queue, pool);
-        return result ? pool->createCommandBuffer(buffer) : result;
+        render::Result<> result = device.createCommandPool(queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); });
+        return result ? pool->createCommandBuffer().transform([&](auto rhiValue) { buffer = std::move(rhiValue); }) : result;
     }
-    render::Result begin(uint64_t index)
+    render::Result<> begin(uint64_t index)
     {
-        render::Result result = frame.begin(index);
+        render::Result<> result = frame.begin(index);
         if (result) { result = pool->reset(); }
         return result ? buffer->begin(&frame) : result;
     }
-    render::Result submit(render::QueueSubmissionTracker& tracker, render::Semaphore* gate = nullptr)
+    render::Result<> submit(render::QueueSubmissionTracker& tracker, render::Semaphore* gate = nullptr)
     {
-        render::Result result = buffer->end();
+        render::Result<> result = buffer->end();
         if (!result) { return result; }
         render::CommandBuffer* buffers[] = {buffer.get()};
         render::SemaphoreSubmitDesc wait{.semaphore = gate, .value = 1};
@@ -143,7 +143,7 @@ public:
         std::unique_ptr<render::Semaphore> gate;
         FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
-        FRAME_REQUIRE(context.device.createSemaphore(gate));
+        FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         QueueDrain drain{context.graphicsQueue, gate.get()};
         FRAME_REQUIRE(commands.begin(0));
         const render::GpuCompletionPoint cancelled = commands.frame.completion();
@@ -229,7 +229,7 @@ public:
         std::unique_ptr<render::Semaphore> gate;
         FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
-        FRAME_REQUIRE(context.device.createSemaphore(gate));
+        FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         QueueDrain drain{context.graphicsQueue, gate.get()};
         FRAME_REQUIRE(commands.begin(0));
         auto retained = std::make_shared<uint32_t>(17);
@@ -284,18 +284,18 @@ public:
         std::unique_ptr<render::Semaphore> gate;
         FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
-        FRAME_REQUIRE(context.device.createSemaphore(gate));
+        FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         FRAME_REQUIRE(context.device.createStreamer(render::StreamerDesc{
             .constantBufferSize = 4096,
             .dynamicBufferSizePerFrame = 64 * 1024,
             .queuedFrameCount = 1,
-        }, streamer));
+        }).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         constexpr uint32_t kLargeWordCount = 20'000;
         FRAME_REQUIRE(context.device.createBuffer(render::BufferDesc{
             .size = (kLargeWordCount + 1ull) * sizeof(uint32_t),
             .usage = render::BufferUsageBits::TransferDestination,
             .memoryLocation = render::MemoryLocation::HostReadback,
-        }, output));
+        }).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         QueueDrain drain{context.graphicsQueue, gate.get()};
         FRAME_REQUIRE(commands.begin(0));
         FRAME_REQUIRE(streamer->beginFrame(commands.frame));
@@ -352,14 +352,14 @@ public:
         std::unique_ptr<render::Semaphore> gate;
         FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
-        FRAME_REQUIRE(context.device.createSemaphore(gate));
+        FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         FRAME_REQUIRE(context.device.createStreamer({.dynamicBufferSizePerFrame = 64 * 1024,
-            .queuedFrameCount = 2}, streamer));
+            .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         constexpr uint32_t kPages = 64, kWordsPerPage = 5 * 1024;
         constexpr uint64_t kBytes = uint64_t(kPages) * kWordsPerPage * sizeof(uint32_t);
         FRAME_REQUIRE(context.device.createBuffer({.size = kBytes,
             .usage = render::BufferUsageBits::TransferDestination,
-            .memoryLocation = render::MemoryLocation::HostReadback}, output));
+            .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         QueueDrain drain{context.graphicsQueue, gate.get()};
         FRAME_REQUIRE(commands.begin(1));
         FRAME_REQUIRE(streamer->beginFrame(commands.frame));
@@ -398,7 +398,7 @@ public:
         // Reject capacities whose alignment or queued-frame multiplication
         // would overflow before attempting any Vulkan allocation.
         if (context.device.createStreamer({.dynamicBufferSizePerFrame = UINT64_MAX,
-                .queuedFrameCount = 2}, streamer)) {
+                .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) {
             return RhiTestResult::fail("overflowing staging capacity was accepted");
         }
         return RhiTestResult::pass();
@@ -407,12 +407,12 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(FrameUploadGrowthBurstTest);
 
-render::Result createProbe(render::Device& device, const char* entry,
+render::Result<> createProbe(render::Device& device, const char* entry,
     std::span<const render::ComputeProgramBindingDesc> bindings, render::ComputeProgram& program, std::string& log,
     uint32_t tableCount = 1)
 {
     render::ShaderCompileResult shader;
-    render::Result result = render::compileSlangShaderToSpirv({
+    render::Result<> result = render::compileSlangShaderToSpirv({
         .moduleName = "FrameResourceProbe", .entryPointName = entry,
         .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
     }, shader);
@@ -430,8 +430,8 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result setup = render::createDevice({.applicationName = "Frame descriptors",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+        render::Result<> setup = render::createDevice({.applicationName = "Frame descriptors",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!setup && render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("descriptor heap unsupported"); }
         FRAME_REQUIRE(setup);
         auto& queue = *device->getQueue(render::QueueType::Graphics);
@@ -444,18 +444,18 @@ public:
         FRAME_REQUIRE(tracker.initialize(*device, queue));
         FRAME_REQUIRE(first.initialize(*device, queue));
         FRAME_REQUIRE(second.initialize(*device, queue));
-        FRAME_REQUIRE(device->createSemaphore(gate));
+        FRAME_REQUIRE(device->createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         const std::array<uint32_t, 3> expected{17, 83, 197};
         for (size_t index = 0; index < inputs.size(); ++index) {
             FRAME_REQUIRE(device->createBuffer({.size = 4, .structureStride = 4,
-                .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostUpload}, inputs[index]));
+                .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[index] = std::move(rhiValue); }));
             void* mapped = inputs[index]->map();
             if (mapped == nullptr) { return RhiTestResult::fail("input map failed"); }
             std::memcpy(mapped, &expected[index], 4);
             inputs[index]->flush(); inputs[index]->unmap();
         }
         FRAME_REQUIRE(device->createBuffer({.size = 12, .structureStride = 4,
-            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}, output));
+            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
@@ -495,7 +495,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         auto setup = render::createDevice({.applicationName = "Sampled image cache",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!setup && render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("descriptor heap unsupported"); }
         FRAME_REQUIRE(setup);
         auto& queue = *device->getQueue(render::QueueType::Graphics);
@@ -512,17 +512,17 @@ public:
         FRAME_REQUIRE(tracker.initialize(*device, queue));
         FRAME_REQUIRE(commands.initialize(*device, queue));
         FRAME_REQUIRE(pending.initialize(*device, queue));
-        FRAME_REQUIRE(device->createSemaphore(gate));
+        FRAME_REQUIRE(device->createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         FRAME_REQUIRE(device->createBuffer({.size = 8 * sizeof(uint32_t), .structureStride = 4,
-            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}, output));
+            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         for (size_t i = 0; i < 3; ++i) {
             render::TextureDesc desc;
             desc.width = 1; desc.height = 1;
             desc.format = render::Format::Rgba32Sfloat;
             desc.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::TransferDestination;
-            FRAME_REQUIRE(device->createTexture(desc, images->textures[i]));
+            FRAME_REQUIRE(device->createTexture(desc).transform([&](auto rhiValue) { images->textures[i] = std::move(rhiValue); }));
             std::unique_ptr<render::TextureView> view;
-            FRAME_REQUIRE(device->createTextureView(*images->textures[i], {}, view));
+            FRAME_REQUIRE(device->createTextureView(*images->textures[i], {}).transform([&](auto rhiValue) { view = std::move(rhiValue); }));
             images->views[i] = std::move(view);
         }
         auto a = std::make_shared<const render::ComputeSampledImageSnapshot>(render::ComputeSampledImageSnapshot{
@@ -607,8 +607,8 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result setup = render::createDevice({.applicationName = "Frame history",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+        render::Result<> setup = render::createDevice({.applicationName = "Frame history",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!setup && render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("descriptor heap unsupported"); }
         FRAME_REQUIRE(setup);
         auto& queue = *device->getQueue(render::QueueType::Graphics);
@@ -620,9 +620,9 @@ public:
         std::unique_ptr<render::Semaphore> gate;
         FRAME_REQUIRE(tracker.initialize(*device, queue));
         FRAME_REQUIRE(history.initialize(*device));
-        FRAME_REQUIRE(device->createSemaphore(gate));
+        FRAME_REQUIRE(device->createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         FRAME_REQUIRE(device->createBuffer({.size = 12, .structureStride = 4,
-            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}, output));
+            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         render::TextureDesc textureDesc;
         textureDesc.usage = render::TextureUsageBits::Storage;
         textureDesc.width = 1;
@@ -689,17 +689,17 @@ public:
         constexpr uint32_t kPixelCount = kWidth * kWidth;
         FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
         for (auto& slot : slots) { FRAME_REQUIRE(slot.initialize(context.device, context.graphicsQueue)); }
-        FRAME_REQUIRE(context.device.createSemaphore(gate));
-        FRAME_REQUIRE(context.device.createSemaphore(rebuildGate));
+        FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
+        FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { rebuildGate = std::move(rhiValue); }));
         FRAME_REQUIRE(context.device.createStreamer({.dynamicBufferSizePerFrame = 64 * 1024,
-            .queuedFrameCount = 2}, streamer));
+            .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         FRAME_REQUIRE(context.device.createBuffer({.size = 6 * sizeof(uint32_t),
             .usage = render::BufferUsageBits::TransferDestination,
-            .memoryLocation = render::MemoryLocation::HostReadback}, uploadReadback));
+            .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { uploadReadback = std::move(rhiValue); }));
         for (auto& image : imageReadbacks) {
             FRAME_REQUIRE(context.device.createBuffer({.size = kPixelCount * sizeof(uint32_t),
                 .usage = render::BufferUsageBits::TransferDestination,
-                .memoryLocation = render::MemoryLocation::HostReadback}, image));
+                .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { image = std::move(rhiValue); }));
         }
         render::RenderGraphCompileOptions options;
         options.enablePreviewOutputAccess = true;
@@ -805,8 +805,8 @@ public:
         std::unique_ptr<render::Semaphore> graphicsGate, copyGate;
         FRAME_REQUIRE(graphics.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(copy.initialize(context.device, *copyQueue));
-        FRAME_REQUIRE(context.device.createSemaphore(graphicsGate));
-        FRAME_REQUIRE(context.device.createSemaphore(copyGate));
+        FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { graphicsGate = std::move(rhiValue); }));
+        FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { copyGate = std::move(rhiValue); }));
         DeviceDrain drain{context.device, graphicsGate.get(), copyGate.get()};
         FRAME_REQUIRE(frame.begin(0));
         auto resource = std::make_shared<uint32_t>(17);
@@ -871,11 +871,11 @@ public:
         reflection.addBufferOutput("data").buffer(16).transferWrite();
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string&) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string&) override
     {
         const auto result = context.device->createBuffer({.size = 16,
             .usage = render::BufferUsageBits::TransferSource, .memoryLocation = render::MemoryLocation::HostUpload,
-            .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute}, input_);
+            .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute}).transform([&](auto rhiValue) { input_ = std::move(rhiValue); });
         if (!result) { return result; }
         const uint32_t words[] = {11, 12, 21, 22};
         void* mapped = input_->map();
@@ -883,7 +883,7 @@ public:
         std::memcpy(mapped, words, sizeof(words)); input_->flush(); input_->unmap();
         return {};
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         auto parentProfile = context.profileScope("Fork/join");
         const auto transaction = [](render::CommandBuffer& commands, int id) {
@@ -898,13 +898,13 @@ public:
             auto result = transaction(commands, 2);
             if (!result) { return result; }
             commands.copyBuffer({.source = input_.get(), .destination = output, .size = 8});
-            return properties().value("fail", 0) == 2 ? render::makeError(render::Error::Failure) : render::Result{};
+            return properties().value("fail", 0) == 2 ? render::makeError(render::Error::Failure) : render::Result<>{};
         }, [&](render::CommandBuffer& commands) {
             auto profile = context.profileScope(commands, "Graphics branch");
             auto result = transaction(commands, 3);
             if (!result) { return result; }
             commands.copyBuffer({.source = input_.get(), .destination = output, .sourceOffset = 8, .destinationOffset = 8, .size = 8});
-            return properties().value("fail", 0) == 3 ? render::makeError(render::Error::Failure) : render::Result{};
+            return properties().value("fail", 0) == 3 ? render::makeError(render::Error::Failure) : render::Result<>{};
         });
         return result ? transaction(context.commandBuffer(), 4) : result;
     }
@@ -919,7 +919,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         FRAME_REQUIRE(render::createDevice({.applicationName = "Async branch lifetime regression",
-            .enableValidation = context.enableValidation, .enableAsyncCompute = true}, device));
+            .enableValidation = context.enableValidation, .enableAsyncCompute = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto* graphics = device->getQueue(render::QueueType::Graphics);
         auto* compute = device->getQueue(render::QueueType::Compute);
         render::registerRenderGraphPassType("FrameParallelBranchPass", "Parallel branch test",
@@ -975,7 +975,7 @@ public:
                 FRAME_REQUIRE(consumer.initialize(*device, *graphics));
                 FRAME_REQUIRE(tracker.initialize(*device, *graphics));
                 FRAME_REQUIRE(device->createBuffer({.size = 16, .usage = render::BufferUsageBits::TransferDestination,
-                    .memoryLocation = render::MemoryLocation::HostReadback}, readback));
+                    .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
                 FRAME_REQUIRE(consumer.begin(0));
                 FRAME_REQUIRE(executor.transitionOutput(*consumer.buffer, "Branches.data", render::ResourceState::TransferSource));
                 consumer.buffer->copyBuffer({.source = executor.outputResource("Branches.data")->buffer,
@@ -1012,7 +1012,7 @@ public:
         reflection.addBufferOutput("data").buffer(16).transferWrite();
         return reflection;
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         auto profile = context.profileScope("Transfer");
         if (properties().value("fail", false)) { return render::makeError(render::Error::Failure); }
@@ -1026,7 +1026,7 @@ public:
         const std::array<uint32_t, 4> words{value, value + 1, value + 2, value + 3};
         const render::StreamDataChunk chunk{.data = words.data(), .size = sizeof(words)};
         return context.streamer()->streamBufferData({.dataChunks = &chunk, .dataChunkCount = 1,
-            .dstBuffer = output}).valid() ? render::Result{} : render::makeError(render::Error::Failure);
+            .dstBuffer = output}).valid() ? render::Result<>{} : render::makeError(render::Error::Failure);
     }
 };
 
@@ -1040,11 +1040,11 @@ public:
         reflection.addBufferOutput("data").buffer(16).transferWrite();
         return reflection;
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         auto* history = context.historyResources();
         if (history == nullptr) { return render::makeError(render::Error::InvalidArgument); }
-        render::Result result = history->ensureBuffer("self-submit-history", {.size = 16,
+        render::Result<> result = history->ensureBuffer("self-submit-history", {.size = 16,
             .usage = render::BufferUsageBits::TransferSource | render::BufferUsageBits::TransferDestination});
         if (!result) { return result; }
         result = history->transitionBuffer(context.commandBuffer(), "self-submit-history",
@@ -1088,7 +1088,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         FRAME_REQUIRE(render::createDevice({.applicationName = "Graph output consumer overlap",
-            .enableValidation = context.enableValidation, .enableAsyncCompute = true}, device));
+            .enableValidation = context.enableValidation, .enableAsyncCompute = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto* graphics = device->getQueue(render::QueueType::Graphics);
         auto* compute = device->getQueue(render::QueueType::Compute);
         registerFrameGraphTransferPass();
@@ -1105,14 +1105,14 @@ public:
             FRAME_REQUIRE(device->createBuffer({.size = 16,
                 .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback,
-                .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute}, readback));
+                .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
             std::string log;
             FRAME_REQUIRE(executor.compile(*device, graph, 1, 1, log));
             const render::RenderGraphSubmitDesc submit{.graphicsQueue = graphics,
                 .computeQueue = compute, .slotWaitTimeoutNanoseconds = 0};
             for (uint32_t cycle = 0; cycle < 4; ++cycle) {
                 std::unique_ptr<render::Semaphore> gate;
-                FRAME_REQUIRE(device->createSemaphore(gate));
+                FRAME_REQUIRE(device->createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
                 DeviceDrain drain{*device, gate.get()};
                 GateWatchdog watchdog(*gate);
                 FRAME_REQUIRE(executor.execute(submit));
@@ -1150,7 +1150,7 @@ public:
             // Destructive graph changes must still wait even though recording no
             // longer waits. A delayed signal makes a premature rebuild observable.
             std::unique_ptr<render::Semaphore> gate;
-            FRAME_REQUIRE(device->createSemaphore(gate));
+            FRAME_REQUIRE(device->createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
             DeviceDrain drain{*device, gate.get()};
             FRAME_REQUIRE(reader.begin(4));
             FRAME_REQUIRE(executor.transitionOutput(*reader.buffer, "Output.data", render::ResourceState::TransferSource));
@@ -1192,13 +1192,13 @@ public:
         std::unique_ptr<render::Semaphore> gate;
         FRAME_REQUIRE(blocker.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(blockedGraphics.initialize(context.device, context.graphicsQueue));
-        FRAME_REQUIRE(context.device.createSemaphore(gate));
+        FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         FRAME_REQUIRE(consumer.initialize(context.device, *copyQueue));
         FRAME_REQUIRE(consumerTracker.initialize(context.device, *copyQueue));
         FRAME_REQUIRE(context.device.createBuffer({.size = 16,
             .usage = render::BufferUsageBits::TransferDestination,
             .memoryLocation = render::MemoryLocation::HostReadback,
-            .queueAccess = render::QueueAccessBits::Copy}, consumerReadback));
+            .queueAccess = render::QueueAccessBits::Copy}).transform([&](auto rhiValue) { consumerReadback = std::move(rhiValue); }));
         std::string log;
         FRAME_REQUIRE(executor.compile(context.device, graph, 16, 16, log));
         DeviceDrain drain{context.device, gate.get()};
@@ -1340,7 +1340,7 @@ public:
         FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(context.device.createBuffer({.size = 16 * 16 * 4,
             .usage = render::BufferUsageBits::TransferDestination,
-            .memoryLocation = render::MemoryLocation::HostReadback}, pixels));
+            .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { pixels = std::move(rhiValue); }));
         FRAME_REQUIRE(readback.begin(6));
         FRAME_REQUIRE(executor.transitionOutput(*readback.buffer, "TextureCopy.color", render::ResourceState::TransferSource));
         readback.buffer->copyTextureToBuffer({.texture = executor.outputResource("TextureCopy.color")->texture,
@@ -1455,7 +1455,7 @@ public:
         FRAME_REQUIRE(tracker.initialize(context.device, *queue));
         FRAME_REQUIRE(commands.begin(1));
         std::unique_ptr<render::CommandBuffer> tail;
-        FRAME_REQUIRE(commands.pool->createCommandBuffer(tail));
+        FRAME_REQUIRE(commands.pool->createCommandBuffer().transform([&](auto rhiValue) { tail = std::move(rhiValue); }));
         FRAME_REQUIRE(registerEvent(*commands.buffer, 6));
         FRAME_REQUIRE(commands.buffer->end());
         FRAME_REQUIRE(tail->begin(&commands.frame));
@@ -1498,7 +1498,7 @@ public:
         reflection.addBufferOutput("data").buffer(16, 16).storageReadWrite();
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "FrameEnvironmentProbe",
@@ -1511,7 +1511,7 @@ public:
             .byteSize = shader.spirv.size() * sizeof(uint32_t), .bindings = bindings,
             .bindingCount = 2, .requiresRayQuery = false}, log);
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         if (properties().value("failRecording", false)) { return render::makeError(render::Error::Failure); }
         const int previous = publicationCount++;
@@ -1549,7 +1549,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         const auto result = render::createDevice({.applicationName = "Environment submission recovery",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("requires bindless descriptors"); }
         FRAME_REQUIRE(result);
         render::registerRenderGraphPassType("FrameEnvironmentProbePass", "Environment submission probe",

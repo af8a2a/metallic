@@ -69,22 +69,22 @@ public:
     RhiTestResult initialize(bool validation)
     {
         const auto result = render::createDevice({.applicationName = "ReGIR virtual-light tests",
-            .enableValidation = validation, .enableBindlessDescriptorHeap = true}, device_);
+            .enableValidation = validation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) {
             return RhiTestResult::skip("ReGIR tests require bindless compute support");
         }
         REGIR_CHECK(result);
         queue_ = device_->getQueue(render::QueueType::Graphics);
         REGIR_CHECK(queue_ != nullptr);
-        REGIR_CHECK(device_->createCommandPool(*queue_, pool_));
-        REGIR_CHECK(pool_->createCommandBuffer(commands_));
+        REGIR_CHECK(device_->createCommandPool(*queue_).transform([&](auto rhiValue) { pool_ = std::move(rhiValue); }));
+        REGIR_CHECK(pool_->createCommandBuffer().transform([&](auto rhiValue) { commands_ = std::move(rhiValue); }));
         REGIR_CHECK(pdfCompute_.initialize(*device_, log_));
         REGIR_CHECK(pdf_.initialize(*device_, 4, 4, "ReGIR test power PDF", log_));
         REGIR_CHECK(selector_.initialize(*device_, log_));
         REGIR_CHECK(selector_.ensureGrid(*device_, 1, kReservoirSlots, log_));
         REGIR_CHECK(device_->createTexture({.usage = render::TextureUsageBits::Sampled,
-            .format = render::Format::R32Sfloat, .width = 1, .height = 1}, dummyEnvironment_));
-        REGIR_CHECK(device_->createTextureView(*dummyEnvironment_, {}, dummyEnvironmentView_));
+            .format = render::Format::R32Sfloat, .width = 1, .height = 1}).transform([&](auto rhiValue) { dummyEnvironment_ = std::move(rhiValue); }));
+        REGIR_CHECK(device_->createTextureView(*dummyEnvironment_, {}).transform([&](auto rhiValue) { dummyEnvironmentView_ = std::move(rhiValue); }));
         render::ShaderCompileResult shader;
         const auto compiled = render::compileSlangShaderToSpirv({.moduleName = "ReGIRVirtualLightProbe",
             .entryPointName = "reGIRVirtualLightProbeMain",
@@ -130,7 +130,7 @@ public:
         std::unique_ptr<render::Buffer> lightBuffer;
         REGIR_CHECK(device_->createBuffer({.size = lights.size() * sizeof(render::GpuPunctualLight),
             .usage = render::BufferUsageBits::Storage,
-            .memoryLocation = render::MemoryLocation::HostUpload}, lightBuffer));
+            .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { lightBuffer = std::move(rhiValue); }));
         void* mapped = lightBuffer->map();
         REGIR_CHECK(mapped != nullptr);
         std::memcpy(mapped, lights.data(), lights.size() * sizeof(render::GpuPunctualLight));
@@ -199,7 +199,7 @@ public:
             }
             REGIR_CHECK(device_->createBuffer({.size = slots.size() * sizeof(slots[0]),
                 .usage = render::BufferUsageBits::Storage,
-                .memoryLocation = render::MemoryLocation::HostUpload}, syntheticGrid));
+                .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { syntheticGrid = std::move(rhiValue); }));
             mapped = syntheticGrid->map();
             REGIR_CHECK(mapped != nullptr);
             std::memcpy(mapped, slots.data(), slots.size() * sizeof(slots[0]));
@@ -213,10 +213,10 @@ public:
         std::unique_ptr<render::Buffer> readback;
         REGIR_CHECK(device_->createBuffer({.size = outputBytes,
             .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource,
-            .memoryLocation = render::MemoryLocation::Device}, probe));
+            .memoryLocation = render::MemoryLocation::Device}).transform([&](auto rhiValue) { probe = std::move(rhiValue); }));
         REGIR_CHECK(device_->createBuffer({.size = outputBytes,
             .usage = render::BufferUsageBits::TransferDestination,
-            .memoryLocation = render::MemoryLocation::HostReadback}, readback));
+            .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         const render::BufferBarrierDesc outputBarrier{.buffer = probe.get(),
             .before = render::ResourceState::Undefined, .after = render::ResourceState::General};
         commands_->barrier({.buffers = &outputBarrier, .bufferCount = 1});

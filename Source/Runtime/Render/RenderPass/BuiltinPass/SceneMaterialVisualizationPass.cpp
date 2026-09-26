@@ -67,7 +67,7 @@ public:
             45.0f);
         return settings;
     }
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
             log = "SceneMaterialVisualizationPass requires a device and graphics queue";
@@ -86,7 +86,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
         sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
-        Result result;
+        Result<> result;
         const bool ntcActive = sceneResources_.neuralTextures().active();
         const bool positionFetch = context.device->capabilities().rayTracingPositionFetch;
         const bool ntcCooperativeVector =
@@ -244,7 +244,7 @@ public:
         return {};
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         std::string syncLog;
         TextureHandle color = context.outputTexture("color");
@@ -262,7 +262,7 @@ public:
         push.materialTextureCount = sceneResources_.materialTextureCount();
         push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
 
-        Result result;
+        Result<> result;
 
         std::vector<ComputeDispatchBinding> bindings{
             ComputeDispatchBinding{

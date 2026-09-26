@@ -264,7 +264,7 @@ Error errorFromSl(sl::Result result)
     }
 }
 
-Result resultFromSl(sl::Result result, const char* label, std::string& log)
+Result<> resultFromSl(sl::Result result, const char* label, std::string& log)
 {
     if (result == sl::Result::eOk) {
         return {};
@@ -279,7 +279,7 @@ Result resultFromSl(sl::Result result, const char* label, std::string& log)
     return makeError(errorFromSl(result));
 }
 
-Result getEvaluationFrameToken(StreamlineState& state, sl::FrameToken*& token, std::string& log)
+Result<> getEvaluationFrameToken(StreamlineState& state, sl::FrameToken*& token, std::string& log)
 {
     token = state.activeFrameToken;
     if (token != nullptr) {
@@ -429,7 +429,7 @@ void destroyDescriptorHeapWorkaround(StreamlineState& state)
     state.descriptorHeapWorkaroundEnabled = false;
 }
 
-Result initializeDescriptorHeapWorkaround(
+Result<> initializeDescriptorHeapWorkaround(
     StreamlineState& state,
     const NativeDevice& device,
     std::string& log)
@@ -950,7 +950,7 @@ bool streamlineDlssRrSupported()
 #endif
 }
 
-Result getStreamlineDlssSrOptimalSettings(
+Result<> getStreamlineDlssSrOptimalSettings(
     StreamlineDlssSrMode mode,
     uint32_t outputWidth,
     uint32_t outputHeight,
@@ -991,7 +991,7 @@ Result getStreamlineDlssSrOptimalSettings(
 
     sl::DLSSOptions options = makeDlssSrBaseOptions(mode, outputWidth, outputHeight);
     sl::DLSSOptimalSettings nativeSettings;
-    Result result = resultFromSl(
+    Result<> result = resultFromSl(
         slDLSSGetOptimalSettings(options, nativeSettings),
         "slDLSSGetOptimalSettings",
         log);
@@ -1046,7 +1046,7 @@ Result getStreamlineDlssSrOptimalSettings(
 #endif
 }
 
-Result getStreamlineDlssRrOptimalSettings(
+Result<> getStreamlineDlssRrOptimalSettings(
     StreamlineDlssRrMode mode,
     uint32_t outputWidth,
     uint32_t outputHeight,
@@ -1087,7 +1087,7 @@ Result getStreamlineDlssRrOptimalSettings(
 
     sl::DLSSDOptions options = makeDlssRrBaseOptions(mode, outputWidth, outputHeight);
     sl::DLSSDOptimalSettings nativeSettings;
-    Result result = resultFromSl(
+    Result<> result = resultFromSl(
         slDLSSDGetOptimalSettings(options, nativeSettings),
         "slDLSSDGetOptimalSettings",
         log);
@@ -1142,7 +1142,7 @@ Result getStreamlineDlssRrOptimalSettings(
 #endif
 }
 
-Result initializeStreamlinePreDevice(std::string& log)
+Result<> initializeStreamlinePreDevice(std::string& log)
 {
 #if !METALLIC_HAS_STREAMLINE
     log = "NVIDIA Streamline SDK is not available";
@@ -1182,7 +1182,7 @@ Result initializeStreamlinePreDevice(std::string& log)
         sl::PreferenceFlags::eUseManualHooking |
         sl::PreferenceFlags::eUseFrameBasedResourceTagging;
 
-    Result result = resultFromSl(slInit(preferences, sl::kSDKVersion), "slInit", log);
+    Result<> result = resultFromSl(slInit(preferences, sl::kSDKVersion), "slInit", log);
     if (!result) {
         return result;
     }
@@ -1193,7 +1193,7 @@ Result initializeStreamlinePreDevice(std::string& log)
 #endif
 }
 
-Result setStreamlineVulkanDevice(
+Result<> setStreamlineVulkanDevice(
     const NativeDevice& device,
     const NativeQueue& graphicsQueue,
     const NativeQueue& computeQueue,
@@ -1226,7 +1226,7 @@ Result setStreamlineVulkanDevice(
     state.dlssSrOptimalSettingsCache.clear();
     state.dlssRrOptimalSettingsCache.clear();
 
-    Result workaroundResult = initializeDescriptorHeapWorkaround(state, device, log);
+    Result<> workaroundResult = initializeDescriptorHeapWorkaround(state, device, log);
     if (!workaroundResult) {
         state.vulkanDeviceSet = false;
         return workaroundResult;
@@ -1267,7 +1267,7 @@ StreamlineReflexStatus streamlineReflexStatus()
 #endif
 }
 
-Result setStreamlineReflexOptions(const StreamlineReflexOptions& options)
+Result<> setStreamlineReflexOptions(const StreamlineReflexOptions& options)
 {
     if (options.mode != StreamlineReflexMode::Off && options.mode != StreamlineReflexMode::On &&
         options.mode != StreamlineReflexMode::Boost) {
@@ -1287,7 +1287,7 @@ Result setStreamlineReflexOptions(const StreamlineReflexOptions& options)
 #endif
 }
 
-Result notifyStreamlineOffscreenFrame()
+Result<> notifyStreamlineOffscreenFrame()
 {
 #if METALLIC_HAS_STREAMLINE
     std::lock_guard lock(streamlineMutex());
@@ -1514,7 +1514,7 @@ void prepareStreamlineNgxCommandBuffer(CommandBuffer& commandBuffer)
 #endif
 }
 
-Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDlssSrDesc& desc, std::string& log)
+Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDlssSrDesc& desc, std::string& log)
 {
 #if !METALLIC_HAS_STREAMLINE
     (void)commandBuffer;
@@ -1596,7 +1596,7 @@ Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDl
     }
 
     sl::FrameToken* frameToken = nullptr;
-    Result result = getEvaluationFrameToken(state, frameToken, log);
+    Result<> result = getEvaluationFrameToken(state, frameToken, log);
     if (!result) {
         return result;
     }
@@ -1669,7 +1669,7 @@ Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDl
 #endif
 }
 
-Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDlssRrDesc& desc, std::string& log)
+Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDlssRrDesc& desc, std::string& log)
 {
 #if !METALLIC_HAS_STREAMLINE
     (void)commandBuffer;
@@ -1750,7 +1750,7 @@ Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDl
     }
 
     sl::FrameToken* frameToken = nullptr;
-    Result result = getEvaluationFrameToken(state, frameToken, log);
+    Result<> result = getEvaluationFrameToken(state, frameToken, log);
     if (!result) {
         return result;
     }

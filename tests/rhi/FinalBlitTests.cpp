@@ -18,7 +18,7 @@ public:
         return reflection;
     }
 
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::TextureHandle color = context.outputTexture("color");
         render::RenderingAttachmentDesc attachment{
@@ -64,11 +64,11 @@ public:
         graph.addEdge("Source.color", "FinalBlit.source");
         // No extraOutputs: the executor itself must retain the presentation root.
         std::unique_ptr<render::Device> device;
-        const render::Result deviceResult = render::createDevice(render::DeviceDesc{
+        const render::Result<> deviceResult = render::createDevice(render::DeviceDesc{
             .applicationName = "FinalBlit Test",
             .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true,
-        }, device);
+        }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!deviceResult) {
             return render::hasError(deviceResult, render::Error::Unsupported)
                 ? RhiTestResult::skip(toString(deviceResult))
@@ -119,7 +119,7 @@ public:
         render::registerRenderGraphPassType("FinalBlitTestSource", "Test source",
             [] { return std::make_unique<FinalBlitTestSource>(); });
         render::RenderGraphPreviewRenderer preview;
-        render::Result result = preview.initialize(context.enableValidation);
+        render::Result<> result = preview.initialize(context.enableValidation);
         if (!result) {
             return RhiTestResult::skip("Preview device unavailable: " + std::string(toString(result)));
         }

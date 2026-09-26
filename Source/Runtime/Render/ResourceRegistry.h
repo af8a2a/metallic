@@ -67,7 +67,7 @@ public:
     uint64_t address() const;
     bool compatible(const CommandBuffer& commands, ParameterAbi abi) const;
 private:
-    Result bindResources(CommandBuffer& commands) const;
+    Result<> bindResources(CommandBuffer& commands) const;
     std::shared_ptr<detail::ParameterPacket> packet_;
     friend class ParameterWriter;
     friend class ComputeKernel;
@@ -87,22 +87,22 @@ struct ResourceRegistryStats {
 class ResourceRegistry {
 public:
     ResourceRegistry() = default;
-    Result initialize(Device& device, const BindlessHeapDesc& capacity = {
+    Result<> initialize(Device& device, const BindlessHeapDesc& capacity = {
         .maxSamplers = 64, .maxSampledImages = 8192, .maxStorageImages = 1024, .maxBuffers = 8192});
-    Result storageBuffer(Buffer& buffer, ResourceLease& out);
-    Result sampledImage(TextureView& view, ResourceLease& out, ResourceState layout = ResourceState::ShaderRead);
-    Result storageImage(TextureView& view, ResourceLease& out);
-    Result sampler(const SamplerDesc& sampler, ResourceLease& out);
-    Result accelerationStructure(RayTracingAccelerationStructure& structure, ResourceLease& out);
-    Result partitionedAccelerationStructure(PartitionedAccelerationStructure& structure, ResourceLease& out);
+    Result<> storageBuffer(Buffer& buffer, ResourceLease& out);
+    Result<> sampledImage(TextureView& view, ResourceLease& out, ResourceState layout = ResourceState::ShaderRead);
+    Result<> storageImage(TextureView& view, ResourceLease& out);
+    Result<> sampler(const SamplerDesc& sampler, ResourceLease& out);
+    Result<> accelerationStructure(RayTracingAccelerationStructure& structure, ResourceLease& out);
+    Result<> partitionedAccelerationStructure(PartitionedAccelerationStructure& structure, ResourceLease& out);
     void collect();
     ResourceRegistryStats stats() const;
     // Borrowed heap for prepared raster/SDK pipelines. Only registry registration writes descriptors.
     BindlessHeap* heap() const;
-    Result bind(CommandBuffer& commands) const;
-    Result retain(CommandBuffer& commands, const ResourceLease& lease) const;
+    Result<> bind(CommandBuffer& commands) const;
+    Result<> retain(CommandBuffer& commands, const ResourceLease& lease) const;
 private:
-    Result image(TextureView& view, ResourceLease& out, ShaderResourceKind kind, ResourceState layout);
+    Result<> image(TextureView& view, ResourceLease& out, ShaderResourceKind kind, ResourceState layout);
     std::shared_ptr<detail::RegistryState> state_;
     friend class ParameterWriter;
 };
@@ -130,26 +130,26 @@ public:
     uint64_t sampledImages(std::span<TextureView* const> views);
     // Immutable ABI payload owned by the same submission as the root packet.
     uint64_t data(const void* bytes, uint64_t size, uint64_t alignment = 16);
-    Result use(const ResourceLease& lease);
+    Result<> use(const ResourceLease& lease);
     // Retain transitive owners (for example a scene's BLAS set behind a TLAS).
     void retain(std::shared_ptr<void> owner) { if (owner) { arrays_.push_back(std::move(owner)); } }
-    Result status() const { return result_; }
+    Result<> status() const { return result_; }
 
     template<typename T>
-    Result encode(const T& params, uint64_t abiId, EncodedParameters& out)
+    Result<> encode(const T& params, uint64_t abiId, EncodedParameters& out)
     {
         return encodeBytes(&params, parameterAbi<T>(abiId), out);
     }
 private:
-    Result encodeBytes(const void* params, ParameterAbi abi, EncodedParameters& out);
-    Result upload(const void* data, uint64_t size, uint64_t alignment,
+    Result<> encodeBytes(const void* params, ParameterAbi abi, EncodedParameters& out);
+    Result<> upload(const void* data, uint64_t size, uint64_t alignment,
         uint64_t& address, std::shared_ptr<void>& allocation);
-    uint64_t append(Result result, ResourceLease lease);
+    uint64_t append(Result<> result, ResourceLease lease);
     Device& device_;
     RenderFrameContext& frame_;
     GpuCompletionPoint completion_;
     std::shared_ptr<detail::RegistryState> registry_;
-    Result result_;
+    Result<> result_;
     std::vector<std::shared_ptr<detail::ResourceLeaseState>> resources_;
     std::vector<std::shared_ptr<void>> arrays_;
 };

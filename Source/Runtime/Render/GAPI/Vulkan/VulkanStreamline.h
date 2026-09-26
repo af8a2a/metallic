@@ -52,13 +52,13 @@ enum class StreamlineLatencyMarker : uint32_t {
 };
 
 StreamlineReflexStatus streamlineReflexStatus();
-Result setStreamlineReflexOptions(const StreamlineReflexOptions& options);
+Result<> setStreamlineReflexOptions(const StreamlineReflexOptions& options);
 void setStreamlineLatencyMarker(StreamlineLatencyMarker marker);
 
 // Offscreen evaluations do not pass through vkQueuePresentKHR. Advance the
 // common plugin's frame bookkeeping once after submitting each such frame.
 // Never call this in addition to an actual interposed presentation.
-Result notifyStreamlineOffscreenFrame();
+Result<> notifyStreamlineOffscreenFrame();
 
 // Optional CPU wall timings for frame-begin diagnostics. The cached driver report
 // is refreshed at the normal cadence, not queried again for instrumentation.
@@ -225,20 +225,20 @@ bool streamlineSdkAvailable();
 bool streamlineInitialized();
 bool streamlineDlssSrSupported();
 bool streamlineDlssRrSupported();
-Result getStreamlineDlssSrOptimalSettings(
+Result<> getStreamlineDlssSrOptimalSettings(
     StreamlineDlssSrMode mode,
     uint32_t outputWidth,
     uint32_t outputHeight,
     StreamlineDlssSrOptimalSettings& settings,
     std::string& log);
-Result getStreamlineDlssRrOptimalSettings(
+Result<> getStreamlineDlssRrOptimalSettings(
     StreamlineDlssRrMode mode,
     uint32_t outputWidth,
     uint32_t outputHeight,
     StreamlineDlssRrOptimalSettings& settings,
     std::string& log);
-Result initializeStreamlinePreDevice(std::string& log);
-Result setStreamlineVulkanDevice(
+Result<> initializeStreamlinePreDevice(std::string& log);
+Result<> setStreamlineVulkanDevice(
     const NativeDevice& device,
     const NativeQueue& graphicsQueue,
     const NativeQueue& computeQueue,
@@ -247,7 +247,7 @@ void shutdownStreamline();
 // Switch from the engine's descriptor heap to legacy NGX descriptors, including
 // direct experimental features that share Streamline's Vulkan device.
 void prepareStreamlineNgxCommandBuffer(CommandBuffer& commandBuffer);
-Result evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDlssSrDesc& desc, std::string& log);
-Result evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDlssRrDesc& desc, std::string& log);
+Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDlssSrDesc& desc, std::string& log);
+Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDlssRrDesc& desc, std::string& log);
 
 } // namespace metallic::render::vulkan

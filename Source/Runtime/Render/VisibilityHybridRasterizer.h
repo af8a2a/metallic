@@ -12,26 +12,26 @@ struct MeshletStreamUserPush;
 // resolve, with the triangle-queue path retained for runtime comparisons.
 class VisibilityHybridRasterizer {
 public:
-    Result initialize(Device& device, uint32_t width, uint32_t height, std::string& log,
+    Result<> initialize(Device& device, uint32_t width, uint32_t height, std::string& log,
         uint32_t capacity = 262144, uint32_t clusterCapacity = 1);
     // Extent changes within the pixel allocation preserve buffers, bindings and GPU states.
     // Previously recorded commands already contain their own push-constant extent.
     bool supportsRenderExtent(uint32_t width, uint32_t height) const;
-    Result setRenderExtent(uint32_t width, uint32_t height);
+    Result<> setRenderExtent(uint32_t width, uint32_t height);
     void begin(CommandBuffer& commands, float maxPixels, bool reversedZ);
-    Result resolve(CommandBuffer& commands, Texture& visibilityTexture, TextureView& visibility,
+    Result<> resolve(CommandBuffer& commands, Texture& visibilityTexture, TextureView& visibility,
         Texture& depthTexture, TextureView& depth, bool softwareRasterized = false);
-    Result beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
+    Result<> beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
         uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact = false, bool tessellation = false);
     // beginClusters and the producer heap/bindings must be ready first.
-    Result prepareStreamClusterCandidates(CommandBuffer& commands, ComputePipeline& pipeline,
+    Result<> prepareStreamClusterCandidates(CommandBuffer& commands, ComputePipeline& pipeline,
         MeshletStreamUserPush push);
     // Batch metadata culling, then dispatch geometry classification only for
     // survivors. Both kernels share the producer's bindless heap.
-    Result cullStreamClusters(CommandBuffer& commands, ComputePipeline& pipeline,
+    Result<> cullStreamClusters(CommandBuffer& commands, ComputePipeline& pipeline,
         MeshletStreamUserPush push);
     Buffer& candidateArguments() const { return *candidateArguments_; }
-    Result finishClusterBins(CommandBuffer& commands);
+    Result<> finishClusterBins(CommandBuffer& commands);
     Buffer& workloadBuffer() const { return *workloadBuffer_; }
     Buffer& clusterBuffer() const { return *clusterBuffer_; }
     Buffer& clusterArguments() const { return *clusterArguments_; }

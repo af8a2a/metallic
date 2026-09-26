@@ -192,14 +192,14 @@ struct OpenPBRLutTexture {
 
 class OpenPBRLutResources final {
 public:
-    Result prepare(Device& device, std::string& log)
+    Result<> prepare(Device& device, std::string& log)
     {
         if (valid()) {
             return {};
         }
 
         clear();
-        Result result = createScalarLut(
+        Result<> result = createScalarLut(
             device,
             kOpenPBRIdealDielectricAverageEnergyComplement,
             kOpenPBRLutSize,
@@ -300,16 +300,16 @@ public:
         return {};
     }
 
-    Result upload(CommandBuffer& commandBuffer)
+    Result<> upload(CommandBuffer& commandBuffer)
     {
         for (OpenPBRLutTexture& texture : lut2D_) {
-            Result result = uploadTexture(commandBuffer, texture);
+            Result<> result = uploadTexture(commandBuffer, texture);
             if (!result) {
                 return result;
             }
         }
         for (OpenPBRLutTexture& texture : lut3D_) {
-            Result result = uploadTexture(commandBuffer, texture);
+            Result<> result = uploadTexture(commandBuffer, texture);
             if (!result) {
                 return result;
             }
@@ -367,7 +367,7 @@ private:
     }
 
     template <size_t ValueCount>
-    static Result createScalarLut(
+    static Result<> createScalarLut(
         Device& device,
         const OpenPBRLutScalar (&values)[ValueCount],
         uint32_t width,
@@ -394,7 +394,7 @@ private:
         return createRgbaLutTexture(device, pixels.data(), width, height, depth, label, outTexture, log);
     }
 
-    static Result createLtcLut(Device& device, OpenPBRLutTexture& outTexture, std::string& log)
+    static Result<> createLtcLut(Device& device, OpenPBRLutTexture& outTexture, std::string& log)
     {
         std::vector<float> pixels(std::size(kOpenPBRLtc) * 4u, 0.0f);
         for (size_t index = 0; index < std::size(kOpenPBRLtc); ++index) {
@@ -414,7 +414,7 @@ private:
             log);
     }
 
-    static Result createRgbaLutTexture(
+    static Result<> createRgbaLutTexture(
         Device& device,
         const float* pixels,
         uint32_t width,
@@ -438,13 +438,11 @@ private:
             static_cast<uint64_t>(depth) *
             4ull *
             sizeof(float);
-        Result result = device.createBuffer(
-            BufferDesc{
+        Result<> result = device.createBuffer(BufferDesc{
                 .size = byteSize,
                 .usage = BufferUsageBits::TransferSource,
                 .memoryLocation = MemoryLocation::HostUpload,
-            },
-            outTexture.uploadBuffer);
+            }).transform([&](auto rhiValue) { outTexture.uploadBuffer = std::move(rhiValue); });
         if (!result || outTexture.uploadBuffer == nullptr) {
             log += resultMessage(std::string("createBuffer(") + std::string(label) + " upload)", result);
             log += '\n';
@@ -462,8 +460,7 @@ private:
         outTexture.uploadBuffer->flush(0, byteSize);
         outTexture.uploadBuffer->unmap();
 
-        result = device.createTexture(
-            TextureDesc{
+        result = device.createTexture(TextureDesc{
                 .type = depth > 1 ? TextureType::Texture3D : TextureType::Texture2D,
                 .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
                 .format = Format::Rgba32Sfloat,
@@ -473,24 +470,21 @@ private:
                 .mipCount = 1,
                 .layerCount = 1,
                 .memoryLocation = MemoryLocation::Device,
-            },
-            outTexture.texture);
+            }).transform([&](auto rhiValue) { outTexture.texture = std::move(rhiValue); });
         if (!result || outTexture.texture == nullptr) {
             log += resultMessage(std::string("createTexture(") + std::string(label) + ")", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
 
-        result = device.createTextureView(
-            *outTexture.texture,
+        result = device.createTextureView(*outTexture.texture,
             TextureViewDesc{
                 .format = Format::Rgba32Sfloat,
                 .baseMip = 0,
                 .mipCount = 1,
                 .baseLayer = 0,
                 .layerCount = 1,
-            },
-            outTexture.view);
+            }).transform([&](auto rhiValue) { outTexture.view = std::move(rhiValue); });
         if (!result || outTexture.view == nullptr) {
             log += resultMessage(std::string("createTextureView(") + std::string(label) + ")", result);
             log += '\n';
@@ -499,7 +493,7 @@ private:
         return {};
     }
 
-    static Result uploadTexture(CommandBuffer& commandBuffer, OpenPBRLutTexture& texture)
+    static Result<> uploadTexture(CommandBuffer& commandBuffer, OpenPBRLutTexture& texture)
     {
         if (texture.uploaded) {
             return {};
@@ -819,7 +813,7 @@ public:
             true);
         return settings;
     }
-    Result prepare(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {
         // Resource-only graph rebuilds reuse compiled passes. A scheduling toggle
         // also changes the entry point, thread-group size and descriptor layout.
@@ -830,7 +824,7 @@ public:
         return {};
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         streamMaterials_ = context.runtimeScene != nullptr && context.runtimeScene->hasStreamGeometry();
         if (streamMaterials_ && (!visibilityDeferred_ || properties().value("lightingMode", "reference") != "realtime")) {
@@ -858,7 +852,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
         sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
-        Result result;
+        Result<> result;
         const uint64_t resourceRevision = sceneResources_.revision();
         if (resourceRevision != sceneResourceRevision_) {
             sceneResourceRevision_ = resourceRevision;
@@ -971,9 +965,7 @@ public:
         }
 
         if (visibilityDeferred_ && deferredPipelineCache_ == nullptr) {
-            result = context.device->createPipelineCache(
-                PipelineCacheDesc{.filePath = PROJECT_SOURCE_DIR "/.cache/pso/VisibilityBufferDeferredPass.pso"},
-                deferredPipelineCache_);
+            result = context.device->createPipelineCache(PipelineCacheDesc{.filePath = PROJECT_SOURCE_DIR "/.cache/pso/VisibilityBufferDeferredPass.pso"}).transform([&](auto rhiValue) { deferredPipelineCache_ = std::move(rhiValue); });
             if (!result || deferredPipelineCache_ == nullptr) {
                 log += "createPipelineCache(VisibilityBufferDeferredPass) failed\n";
                 return result ? makeError(Error::Failure) : result;
@@ -1164,7 +1156,7 @@ public:
             [&](PathTracePermutation permutation,
                 std::span<const SlangMacroDefine> extraDefines,
                 const std::vector<ComputeProgramBindingDesc>& permutationBindings,
-                ComputeProgram& outProgram) -> Result {
+                ComputeProgram& outProgram) -> Result<> {
             std::vector<SlangMacroDefine> defines{
                 {.name = "METALLIC_STREAM_MATERIALS", .value = streamMaterials_ ? "1" : "0"},
                 {.name = "METALLIC_STREAM_RAY_QUERIES", .value = streamRayQueries_ ? "1" : "0"},
@@ -1202,7 +1194,7 @@ public:
             }
 #endif
             ShaderCompileResult permutationCompile;
-            Result permutationResult = compileSlangShaderToSpirv(
+            Result<> permutationResult = compileSlangShaderToSpirv(
                 SlangShaderDesc{
                     .moduleName = moduleName,
                     .entryPointName = entryPointName,
@@ -1369,9 +1361,9 @@ public:
                 },
             };
             auto compileMaintenance =
-                [&](const char* entryPointName, ComputeProgram& outProgram) -> Result {
+                [&](const char* entryPointName, ComputeProgram& outProgram) -> Result<> {
                 ShaderCompileResult maintenanceCompile;
-                Result maintenanceResult = compileSlangShaderToSpirv(
+                Result<> maintenanceResult = compileSlangShaderToSpirv(
                     SlangShaderDesc{
                         .moduleName = kSceneSharcMaintenanceShaderModuleName,
                         .entryPointName = entryPointName,
@@ -1508,7 +1500,7 @@ public:
                     },
                 };
                 ShaderCompileResult tonemapCompile;
-                Result tonemapResult = compileSlangShaderToSpirv(
+                Result<> tonemapResult = compileSlangShaderToSpirv(
                     SlangShaderDesc{
                         .moduleName = kScenePathTraceTonemapShaderModuleName,
                         .entryPointName = kScenePathTraceTonemapEntryPointName,
@@ -1562,7 +1554,7 @@ public:
 #endif
 
         if (deferredPipelineCache_ != nullptr) {
-            const Result saveResult = deferredPipelineCache_->save();
+            const Result<> saveResult = deferredPipelineCache_->save();
             const PipelineCacheStats stats = deferredPipelineCache_->stats();
             spdlog::info("[VisibilityBufferDeferredPass] PSO cache hits={} misses={}",
                 stats.hitCount, stats.missCount);
@@ -1576,7 +1568,7 @@ public:
         return {};
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         CpuProfileRecorder profiler;
         const auto result = executeProfiled(context, visibilityDeferred_ ? &profiler : nullptr);
@@ -1584,7 +1576,7 @@ public:
         return result;
     }
 
-    Result executeProfiled(RenderGraphExecutionContext& context, CpuProfileRecorder* profiler)
+    Result<> executeProfiled(RenderGraphExecutionContext& context, CpuProfileRecorder* profiler)
     {
         CpuProfileScope profile(profiler, "Validate scene and environment");
         std::string syncLog;
@@ -1616,7 +1608,7 @@ public:
         profile.next("Prepare lights and sampling");
         const uint64_t previousLightRevision = lights_.revision();
         const auto resolvedLighting = resolveSceneLighting(lightScene, context.world());
-        Result lightResult = lights_.update(*device_, context.commandBuffer(), *context.subsystems(),
+        Result<> lightResult = lights_.update(*device_, context.commandBuffer(), *context.subsystems(),
             lightScene, resolvedLighting);
         if (!lightResult) { return lightResult; }
         if (previousLightRevision != lights_.revision()) {
@@ -1769,7 +1761,7 @@ public:
                     [](const auto& buffer) { return buffer.use_count() == 1; });
                 if (free == deferredFrameInfoPool_.end()) {
                     std::unique_ptr<Buffer> buffer;
-                    auto allocated = device_->createBuffer(rasterInfo.buffer()->desc(), buffer);
+                    auto allocated = device_->createBuffer(rasterInfo.buffer()->desc()).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
                     if (!allocated) { return allocated; }
                     deferredFrameInfoPool_.emplace_back(std::move(buffer));
                     free = std::prev(deferredFrameInfoPool_.end());
@@ -1856,7 +1848,7 @@ public:
 
         TextureView* historyCurrentView = color.view();
         TextureView* historyPreviousView = color.view();
-        Result result = prepareHistoryTextures(
+        Result<> result = prepareHistoryTextures(
             context,
             *color.view(),
             push,
@@ -2226,7 +2218,7 @@ private:
         return !realtime_ && boolProperty(properties, "exportDenoiserGuides", false);
     }
 
-    Result prepareHistoryTextures(
+    Result<> prepareHistoryTextures(
         RenderGraphExecutionContext& context,
         TextureView& fallbackView,
         ScenePathTracePush& push,
@@ -2273,7 +2265,7 @@ private:
             .memoryLocation = MemoryLocation::Device,
         };
         const std::string historyName = historyNameForContext(context, push.cacheMode);
-        Result result = history->ensureTexture(
+        Result<> result = history->ensureTexture(
             historyName,
             historyDesc,
             TextureViewDesc{.format = historyFormat});
@@ -2344,7 +2336,7 @@ private:
         materialBinning_.clear();
     }
 
-    Result ensureCacheParamsBuffer(Device& device)
+    Result<> ensureCacheParamsBuffer(Device& device)
     {
         if (cacheParamsBuffer_ != nullptr) {
             return {};
@@ -2355,7 +2347,7 @@ private:
             .memoryLocation = MemoryLocation::HostUpload,
         };
         std::unique_ptr<Buffer> buffer;
-        Result result = device.createBuffer(desc, buffer);
+        Result<> result = device.createBuffer(desc).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
         if (!result || buffer == nullptr) {
             spdlog::warn("[ScenePathTracePass] failed to create cache parameter buffer: {}",
                 result ? "null buffer" : resultToString(result));
@@ -2365,7 +2357,7 @@ private:
         return {};
     }
 
-    Result writeCacheParamsBuffer(CommandBuffer& commandBuffer, const ScenePathTraceCacheParams& params)
+    Result<> writeCacheParamsBuffer(CommandBuffer& commandBuffer, const ScenePathTraceCacheParams& params)
     {
         if (cacheParamsBuffer_ == nullptr) {
             return makeError(Error::Failure);
@@ -2375,7 +2367,7 @@ private:
                 [](const auto& candidate) { return candidate.completion.isComplete(); });
             if (allocation == cacheParamsAllocations_.end()) {
                 std::unique_ptr<Buffer> buffer;
-                Result result = device_->createBuffer(cacheParamsBuffer_->desc(), buffer);
+                Result<> result = device_->createBuffer(cacheParamsBuffer_->desc()).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
                 if (!result) {
                     return result;
                 }
@@ -2396,7 +2388,7 @@ private:
         return {};
     }
 
-    Result ensureSharcBuffers(Device& device, uint32_t entryCount)
+    Result<> ensureSharcBuffers(Device& device, uint32_t entryCount)
     {
         if (sharcHashEntriesBuffer_ != nullptr && sharcAccumulationBuffer_ != nullptr &&
             sharcResolvedBuffer_ != nullptr && entryCount == sharcEntryCount_) {
@@ -2420,7 +2412,7 @@ private:
                 .memoryLocation = MemoryLocation::Device,
             };
             std::unique_ptr<Buffer> buffer;
-            Result result = device.createBuffer(bufferDesc, buffer);
+            Result<> result = device.createBuffer(bufferDesc).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
             if (!result || buffer == nullptr) {
                 spdlog::warn("[ScenePathTracePass] failed to create SHaRC {} buffer: {}",
                     desc.label,
@@ -2438,7 +2430,7 @@ private:
         return {};
     }
 
-    Result executeSharcFrame(
+    Result<> executeSharcFrame(
         RenderGraphExecutionContext& context,
         ScenePathTracePush& push,
         const std::vector<ComputeDispatchBinding>& baseBindings,
@@ -2453,7 +2445,7 @@ private:
             kSharcMaxEntriesLog2);
         const uint32_t entryCount = 1u << entriesLog2;
 
-        Result result = ensureSharcBuffers(*device_, entryCount);
+        Result<> result = ensureSharcBuffers(*device_, entryCount);
         if (!result) {
             return result;
         }
@@ -2570,7 +2562,7 @@ private:
         });
     }
 
-    Result dispatchSharcMaintenance(
+    Result<> dispatchSharcMaintenance(
         CommandBuffer& commandBuffer,
         ComputeProgram& program,
         const SceneSharcMaintenancePush& maintenancePush,
@@ -2657,7 +2649,7 @@ private:
         return NrcResolveMode::AddQueryResultToOutput;
     }
 
-    Result executeNrcFrame(
+    Result<> executeNrcFrame(
         RenderGraphExecutionContext& context,
         ScenePathTracePush& push,
         const std::vector<ComputeDispatchBinding>& baseBindings,
@@ -2676,14 +2668,14 @@ private:
         // execute, when the previous command buffer is guaranteed submitted.
         if (nrcEndFramePending_) {
             nrcEndFramePending_ = false;
-            Result endResult = nrc_.endFrame(*graphicsQueue_);
+            Result<> endResult = nrc_.endFrame(*graphicsQueue_);
             if (!endResult) {
                 return endResult;
             }
         }
         if (!nrc_.valid()) {
             std::string nrcLog;
-            Result initResult = nrc_.initialize(*device_, nrcLog);
+            Result<> initResult = nrc_.initialize(*device_, nrcLog);
             if (!initResult) {
                 spdlog::warn("[ScenePathTracePass] NRC initialization failed: {}", nrcLog);
                 return initResult;
@@ -2713,7 +2705,7 @@ private:
             !nrcConfigured_ || settings != nrcContextSettings_ || settings.requestReset;
         if (reconfigure) {
             std::string configureLog;
-            Result configureResult = nrc_.configure(settings, *device_, configureLog);
+            Result<> configureResult = nrc_.configure(settings, *device_, configureLog);
             if (!configureResult) {
                 spdlog::warn("[ScenePathTracePass] NRC configure failed: {}", configureLog);
                 return configureResult;
@@ -2728,16 +2720,16 @@ private:
         frameSettings.maxExpectedAverageRadianceValue =
             floatProperty(context.properties(), "nrc.maxExpectedRadiance", 1.0f);
         frameSettings.resolveMode = nrcResolveModeFromProperties(context.properties());
-        Result result = nrc_.beginFrame(commandBuffer, frameSettings);
+        Result<> result = nrc_.beginFrame(commandBuffer, frameSettings);
         if (!result) {
             return result;
         }
 
-        ::NrcConstants nrcConstants;
-        result = nrc_.populateShaderConstants(nrcConstants);
-        if (!result) {
-            return result;
+        const auto constants = nrc_.populateShaderConstants();
+        if (!constants) {
+            return makeError(constants.error());
         }
+        const auto& nrcConstants = *constants;
 
         ScenePathTraceCacheParams params;
         copyFloat4(push.eye, params.sharcCameraPosition);

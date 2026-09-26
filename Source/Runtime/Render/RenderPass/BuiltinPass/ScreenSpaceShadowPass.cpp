@@ -53,7 +53,7 @@ public:
         return screenSpaceShadowRuntimeSettings(properties());
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) { return makeError(Error::InvalidArgument); }
         device_ = context.device;
@@ -67,13 +67,13 @@ public:
             return makeError(Error::InvalidArgument);
         }
         geometry_ = *context.preparedScene->snapshot->pathTraceResources;
-        Result result;
+        Result<> result;
         history_ = std::make_shared<History>();
         shadows_.clear();
         return {};
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         CpuProfileRecorder profiler;
         const auto result = executeProfiled(context, profiler);
@@ -81,7 +81,7 @@ public:
         return result;
     }
 
-    Result executeProfiled(RenderGraphExecutionContext& context, CpuProfileRecorder& profiler)
+    Result<> executeProfiled(RenderGraphExecutionContext& context, CpuProfileRecorder& profiler)
     {
         CpuProfileScope profile(&profiler, "Validate inputs and camera");
         const auto depth = context.inputTexture("depth");

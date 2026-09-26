@@ -21,7 +21,7 @@ public:
         reflection.addBufferOutput("data").buffer(32 * 16, 16).storageReadWrite();
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "GPUDrivenConeProbe",
@@ -31,7 +31,7 @@ public:
         return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
             .bindings = bindings, .bindingCount = 1, .requiresRayQuery = false}, log);
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = context.outputBuffer("data").buffer()}};
         return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 1});
@@ -47,7 +47,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         const auto initialized = render::createDevice({.applicationName = "Cone scale regression",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
         if (!initialized) { return RhiTestResult::fail("Cone probe device creation failed"); }
         render::registerRenderGraphPassType("GPUDrivenConeProbe", "Normal cone scale probe",
@@ -90,7 +90,7 @@ public:
         reflection.addBufferOutput("current").buffer(222 * 4, 4).storageReadWrite();
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "TwoPassOcclusionProbe",
@@ -100,7 +100,7 @@ public:
         return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
             .bindings = bindings, .bindingCount = 3, .requiresRayQuery = false}, log);
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
@@ -119,7 +119,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         const auto initialized = render::createDevice({.applicationName = "Two-pass occlusion regression",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
         if (!initialized) { return RhiTestResult::fail("Occlusion probe device creation failed"); }
         render::registerRenderGraphPassType("TwoPassOcclusionProbe", "Two-pass occlusion probe",

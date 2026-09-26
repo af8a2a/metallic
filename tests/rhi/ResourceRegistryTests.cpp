@@ -10,7 +10,7 @@ namespace metallic::tests {
 namespace {
 
 #define REG_REQUIRE(expression) do { \
-    const render::Result result = (expression); \
+    const render::Result<> result = (expression); \
     if (!result) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(result)); } \
 } while (false)
 #define REG_CHECK(expression) do { \
@@ -24,12 +24,12 @@ struct ProbeParams {
 };
 static_assert(sizeof(ProbeParams) == 24 && offsetof(ProbeParams, add) == 16);
 
-render::Result makeBuffer(render::Device& device, std::unique_ptr<render::Buffer>& buffer, uint32_t value = 0)
+render::Result<> makeBuffer(render::Device& device, std::unique_ptr<render::Buffer>& buffer, uint32_t value = 0)
 {
     auto result = device.createBuffer({.size = 64, .structureStride = 4,
         .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::Indirect,
         .memoryLocation = render::MemoryLocation::HostReadback,
-        .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute}, buffer);
+        .queueAccess = render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
     if (!result) { return result; }
     void* mapped = buffer->map();
     if (!mapped) { return render::makeError(render::Error::Failure); }
@@ -50,18 +50,18 @@ struct Commands {
         if (pool) { (void)pool->reset(); }
         (void)frame.reset();
     }
-    render::Result initialize(render::Device& device, render::Queue& queue)
+    render::Result<> initialize(render::Device& device, render::Queue& queue)
     {
-        auto result = device.createCommandPool(queue, pool);
-        return result ? pool->createCommandBuffer(commands) : result;
+        auto result = device.createCommandPool(queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); });
+        return result ? pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }) : result;
     }
-    render::Result begin(uint64_t index)
+    render::Result<> begin(uint64_t index)
     {
         auto result = frame.begin(index);
         if (result) { result = pool->reset(); }
         return result ? commands->begin(&frame) : result;
     }
-    render::Result submit(render::QueueSubmissionTracker& tracker, render::Semaphore& gate)
+    render::Result<> submit(render::QueueSubmissionTracker& tracker, render::Semaphore& gate)
     {
         auto result = commands->end();
         if (!result) { return result; }
@@ -82,7 +82,7 @@ struct Drain {
     }
 };
 
-render::Result makeKernel(render::Device& device, render::ComputeKernel& kernel, std::string& log)
+render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kernel, std::string& log)
 {
     render::ShaderCompileResult shader;
     auto result = render::compileSlangShaderToSpirv({.moduleName = "RegistryProbe",
@@ -98,7 +98,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         REG_REQUIRE(render::createDevice({.applicationName = "Registry identity", .enableValidation = context.enableValidation,
-            .enableBindlessDescriptorHeap = true}, device));
+            .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         render::ResourceRegistry registry;
         REG_REQUIRE(registry.initialize(*device, {.maxSamplers = 2, .maxSampledImages = 2,
             .maxStorageImages = 1, .maxBuffers = 2}));
@@ -127,9 +127,9 @@ public:
         std::unique_ptr<render::Texture> texture;
         std::unique_ptr<render::TextureView> first, second;
         REG_REQUIRE(device->createTexture({.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::Storage,
-            .format = render::Format::Rgba8Unorm}, texture));
-        REG_REQUIRE(device->createTextureView(*texture, {}, first));
-        REG_REQUIRE(device->createTextureView(*texture, {.format = render::Format::Rgba8Unorm}, second));
+            .format = render::Format::Rgba8Unorm}).transform([&](auto rhiValue) { texture = std::move(rhiValue); }));
+        REG_REQUIRE(device->createTextureView(*texture, {}).transform([&](auto rhiValue) { first = std::move(rhiValue); }));
+        REG_REQUIRE(device->createTextureView(*texture, {.format = render::Format::Rgba8Unorm}).transform([&](auto rhiValue) { second = std::move(rhiValue); }));
         render::ResourceLease imageA, imageB, generalImage, storageImage;
         REG_REQUIRE(registry.sampledImage(*first, imageA));
         REG_REQUIRE(registry.sampledImage(*second, imageB));
@@ -177,11 +177,11 @@ public:
     {
         std::unique_ptr<render::Device> device;
         REG_REQUIRE(render::createDevice({.applicationName = "Registry lifetime", .enableValidation = context.enableValidation,
-            .enableBindlessDescriptorHeap = true}, device));
+            .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry, sameRegistry;
-        REG_REQUIRE(device->resourceRegistry(registry));
-        REG_REQUIRE(device->resourceRegistry(sameRegistry));
+        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { sameRegistry = std::move(rhiValue); }));
         REG_CHECK(registry == sameRegistry);
         render::ComputeKernel firstKernel, secondKernel;
         std::string log;
@@ -197,7 +197,7 @@ public:
         REG_REQUIRE(first.initialize(*device, queue));
         REG_REQUIRE(second.initialize(*device, queue));
         std::unique_ptr<render::Semaphore> gate;
-        REG_REQUIRE(device->createSemaphore(gate));
+        REG_REQUIRE(device->createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         Drain drain{queue, *gate};
         REG_REQUIRE(first.begin(0));
         render::EncodedParameters stale;
@@ -299,12 +299,12 @@ public:
     {
         std::unique_ptr<render::Device> device;
         REG_REQUIRE(render::createDevice({.applicationName = "Registry partial submission",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device));
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& graphics = *device->getQueue(render::QueueType::Graphics);
         auto* copy = device->getQueue(render::QueueType::Copy);
         if (!copy) { return RhiTestResult::skip("Requires a copy queue"); }
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry(registry));
+        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         render::ComputeKernel kernel;
         std::string log;
         REG_REQUIRE(makeKernel(*device, kernel, log));
@@ -320,7 +320,7 @@ public:
         Commands recording;
         REG_REQUIRE(recording.initialize(*device, graphics));
         std::unique_ptr<render::Semaphore> gate;
-        REG_REQUIRE(device->createSemaphore(gate));
+        REG_REQUIRE(device->createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         Drain drain{*copy, *gate};
         REG_REQUIRE(recording.begin(0));
         {
@@ -363,10 +363,10 @@ public:
     {
         std::unique_ptr<render::Device> device;
         REG_REQUIRE(render::createDevice({.applicationName = "Registry texture array",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device));
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry(registry));
+        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         struct Params { render::ShaderStorageImage image; uint64_t samples; render::ShaderBuffer output; };
         static_assert(sizeof(Params) == 24);
         const char* entries[] = {"registryTextureWriteMain", "registryTextureReadMain"};
@@ -384,15 +384,15 @@ public:
         std::unique_ptr<render::Buffer> output;
         REG_REQUIRE(makeBuffer(*device, output));
         REG_REQUIRE(device->createTexture({.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::Storage,
-            .format = render::Format::R32Uint}, image));
-        REG_REQUIRE(device->createTextureView(*image, {}, view));
+            .format = render::Format::R32Uint}).transform([&](auto rhiValue) { image = std::move(rhiValue); }));
+        REG_REQUIRE(device->createTextureView(*image, {}).transform([&](auto rhiValue) { view = std::move(rhiValue); }));
         std::weak_ptr<void> allocation = view->retainTexture();
         render::QueueSubmissionTracker tracker;
         REG_REQUIRE(tracker.initialize(*device, queue));
         Commands recording;
         REG_REQUIRE(recording.initialize(*device, queue));
         std::unique_ptr<render::Semaphore> gate;
-        REG_REQUIRE(device->createSemaphore(gate));
+        REG_REQUIRE(device->createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         Drain drain{queue, *gate};
         REG_REQUIRE(recording.begin(0));
         {
@@ -438,39 +438,40 @@ public:
     {
         std::unique_ptr<render::Device> device, other;
         REG_REQUIRE(render::createDevice({.applicationName = "Buffer slice ranges",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device));
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         REG_REQUIRE(render::createDevice({.applicationName = "Buffer slice foreign source",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, other));
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { other = std::move(rhiValue); }));
         std::unique_ptr<render::Buffer> buffer;
         REG_REQUIRE(makeBuffer(*device, buffer));
         render::BufferSlice parent, child, invalid, empty;
-        REG_REQUIRE(buffer->slice(parent, 16, 32));
-        REG_REQUIRE(parent.subslice(child, 8, 8));
+        REG_REQUIRE(buffer->slice(16, 32).transform([&](auto rhiValue) { parent = std::move(rhiValue); }));
+        REG_REQUIRE(parent.subslice(8, 8).transform([&](auto rhiValue) { child = std::move(rhiValue); }));
         REG_CHECK(child.offset() == 24 && child.size() == 8);
         REG_CHECK(child.deviceAddress() == buffer->deviceAddress() + 24);
         REG_CHECK(child.deviceIdentity() == device->identity());
         REG_CHECK(child.allocationIdentity() == buffer->retainAllocation().get());
         REG_REQUIRE(child.validateData(device->identity(), 4, 4));
         REG_CHECK(render::hasError(child.validateData(other->identity(), 4, 4), render::Error::InvalidArgument));
-        REG_REQUIRE(parent.subslice(empty, 32));
+        REG_REQUIRE(parent.subslice(32).transform([&](auto value) { empty = std::move(value); }));
         REG_CHECK(empty.valid() && empty.size() == 0);
         REG_CHECK(!empty.validateData(device->identity(), 4, 4));
         for (uint64_t offset : {uint64_t(33), UINT64_MAX}) {
-            invalid = child;
-            REG_CHECK(!parent.subslice(invalid, offset) && !invalid.valid());
+            const auto rejected = parent.subslice(offset);
+            REG_CHECK(render::hasError(rejected, render::Error::InvalidArgument));
+            REG_CHECK(parent.offset() == 16 && parent.size() == 32);
         }
-        REG_CHECK(!parent.subslice(invalid, 0, 33) && !invalid.valid());
-        REG_CHECK(!parent.subslice(invalid, 31, UINT64_MAX - 1));
-        REG_REQUIRE(parent.subslice(invalid, 1, 8));
+        REG_CHECK(render::hasError(parent.subslice(0, 33), render::Error::InvalidArgument));
+        REG_CHECK(render::hasError(parent.subslice(31, UINT64_MAX - 1), render::Error::InvalidArgument));
+        REG_REQUIRE(parent.subslice(1, 8).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
         REG_CHECK(!invalid.validateData(device->identity(), 4, 4));
-        REG_REQUIRE(parent.subslice(invalid, 0, 12));
+        REG_REQUIRE(parent.subslice(0, 12).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
         REG_CHECK(!invalid.validateData(device->identity(), 8, 4));
         REG_CHECK(!child.validateData(device->identity(), 0, 4));
         REG_CHECK(!child.validateData(device->identity(), 4, 0));
         REG_CHECK(!child.validateData(device->identity(), 4, 3));
         REG_CHECK(!child.validateData(device->identity(), 3, 4));
         REG_CHECK(!child.validate(device->identity(), render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource));
-        REG_REQUIRE(parent.subslice(parent, 8, 8));
+        REG_REQUIRE(parent.subslice(8, 8).transform([&](auto rhiValue) { parent = std::move(rhiValue); }));
         REG_CHECK(parent.offset() == child.offset() && parent.size() == child.size());
 
         std::weak_ptr<void> allocation = buffer->retainAllocation();
@@ -482,7 +483,7 @@ public:
         REG_CHECK(!allocation.expired() && child.deviceAddress() == address);
         parent = {}; invalid = {}; empty = {};
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry(registry));
+        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         render::RenderFrameContext frame;
         REG_REQUIRE(frame.begin(0));
         render::EncodedParameters packet;
@@ -515,10 +516,10 @@ public:
     {
         std::unique_ptr<render::Device> device;
         REG_REQUIRE(render::createDevice({.applicationName = "Buffer slice data chain",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device));
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry(registry));
+        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         struct Params { render::ShaderDataSpan source, output, arguments; uint32_t add; };
         static_assert(sizeof(Params) == 56 && offsetof(Params, add) == 48);
         std::array<render::ComputeKernel, 2> kernels;
@@ -542,12 +543,12 @@ public:
             .bindings = &layout, .bindingCount = 1, .requiresRayQuery = false}, log));
         std::unique_ptr<render::Buffer> source, work, output;
         REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::TransferSource,
-            .memoryLocation = render::MemoryLocation::HostUpload}, source));
+            .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { source = std::move(rhiValue); }));
         REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::ShaderDeviceAddress |
-            render::BufferUsageBits::TransferDestination | render::BufferUsageBits::Indirect}, work));
+            render::BufferUsageBits::TransferDestination | render::BufferUsageBits::Indirect}).transform([&](auto rhiValue) { work = std::move(rhiValue); }));
         REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::ShaderDeviceAddress |
             render::BufferUsageBits::TransferSource | render::BufferUsageBits::TransferDestination,
-            .memoryLocation = render::MemoryLocation::HostReadback}, output));
+            .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         auto* sourceWords = static_cast<uint32_t*>(source->map());
         REG_CHECK(sourceWords);
         for (uint32_t i = 0; i < 16; ++i) { sourceWords[i] = 100 + i; }
@@ -562,22 +563,22 @@ public:
         Commands recording;
         REG_REQUIRE(recording.initialize(*device, queue));
         std::unique_ptr<render::Semaphore> gate;
-        REG_REQUIRE(device->createSemaphore(gate));
+        REG_REQUIRE(device->createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         Drain drain{queue, *gate};
         REG_REQUIRE(recording.begin(0));
         {
             render::BufferSlice from, data, to, arguments, invalid;
-            REG_REQUIRE(source->slice(from, 8, 16));
-            REG_REQUIRE(work->slice(data, 16, 16));
-            REG_REQUIRE(work->slice(arguments, 48, 12));
-            REG_REQUIRE(output->slice(to, 20, 16));
+            REG_REQUIRE(source->slice(8, 16).transform([&](auto rhiValue) { from = std::move(rhiValue); }));
+            REG_REQUIRE(work->slice(16, 16).transform([&](auto rhiValue) { data = std::move(rhiValue); }));
+            REG_REQUIRE(work->slice(48, 12).transform([&](auto rhiValue) { arguments = std::move(rhiValue); }));
+            REG_REQUIRE(output->slice(20, 16).transform([&](auto rhiValue) { to = std::move(rhiValue); }));
             // Transfer-only memory is not a shader data buffer.
             REG_CHECK(!from.validateData(device->identity(), 4, 4));
-            REG_REQUIRE(to.subslice(invalid, 0, 12));
+            REG_REQUIRE(to.subslice(0, 12).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
             REG_CHECK(!recording.commands->copyBuffer(from, invalid));
             REG_CHECK(!recording.commands->copyBuffer(to, to));
             REG_CHECK(!recording.commands->dispatchIndirect(to));
-            REG_REQUIRE(arguments.subslice(invalid, 1, 8));
+            REG_REQUIRE(arguments.subslice(1, 8).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
             REG_CHECK(!recording.commands->dispatchIndirect(invalid));
             render::BufferBarrierDesc workBarrier{.buffer = work.get(),
                 .before = render::ResourceState::Undefined, .after = render::ResourceState::TransferDestination};

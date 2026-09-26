@@ -280,12 +280,12 @@ public:
     BufferHandle outputBuffer(std::string_view fieldName) const;
     const BindlessHandle* bindlessResource(std::string_view fieldName) const;
     const BindlessHandle* bindlessInput(std::string_view fieldName) const;
-    using CommandRecorder = std::function<Result(CommandBuffer&)>;
+    using CommandRecorder = std::function<Result<>(CommandBuffer&)>;
     bool supportsParallelCompute() const { return bool(parallelRecorder_); }
     // Fork after current commands; run disjoint compute/graphics branches, then
     // join before subsequent commands. Reacquire commandBuffer() after this call.
     // Only declared shared resources may cross queues. No submission occurs here.
-    Result parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics);
+    Result<> parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics);
     // GPU intervals use the command buffer's actual queue. Outer scopes follow
     // commandBuffer() across a fork/join; branch scopes bind their explicit buffer.
     // GPU scopes also emit nested debug labels, balanced per recording across a
@@ -348,7 +348,7 @@ private:
         RenderWorld* world,
         RenderSubsystemHost* subsystems);
 
-    using ParallelRecorder = std::function<Result(RenderGraphExecutionContext&, const CommandRecorder&, const CommandRecorder&)>;
+    using ParallelRecorder = std::function<Result<>(RenderGraphExecutionContext&, const CommandRecorder&, const CommandRecorder&)>;
     ParallelRecorder parallelRecorder_;
     std::function<uint32_t(CommandBuffer&, std::string_view, uint32_t)> beginProfile_;
     std::function<void(CommandBuffer&, uint32_t, double)> endProfile_;
@@ -395,7 +395,7 @@ public:
     // Pure view description; scene scheduling and IO belong to StreamerSubsystem.
     virtual void describeSceneView(const RenderGraphExecutionContext&, MeshletStreamFrameDesc&) const {}
     // Render-only camera, HZB and descriptor setup before the subsystem's traversal.
-    virtual Result prepareExecution(RenderGraphExecutionContext&) { return {}; }
+    virtual Result<> prepareExecution(RenderGraphExecutionContext&) { return {}; }
     virtual void sceneTraversalCheckpoint(RenderGraphExecutionContext&, std::string_view) const {}
 
     virtual RenderPassReflection reflect(const RenderGraphCompileContext& context) const = 0;
@@ -411,9 +411,9 @@ public:
     // private resources support the selected queue family. Other passes execute
     // on graphics and form an ordering boundary for independent graph branches.
     virtual bool supportsAsyncQueue() const { return false; }
-    virtual Result prepare(const RenderGraphCompileContext& context, std::string& log);
-    virtual Result compile(const RenderGraphCompileContext& context, std::string& log);
-    virtual Result execute(RenderGraphExecutionContext& context) = 0;
+    virtual Result<> prepare(const RenderGraphCompileContext& context, std::string& log);
+    virtual Result<> compile(const RenderGraphCompileContext& context, std::string& log);
+    virtual Result<> execute(RenderGraphExecutionContext& context) = 0;
 
     void setProperties(RenderGraphProperties properties) { properties_ = std::move(properties); }
     const RenderGraphProperties& properties() const { return properties_; }

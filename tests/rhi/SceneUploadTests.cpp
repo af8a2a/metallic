@@ -92,7 +92,7 @@ public:
         std::unique_ptr<Device> device;
         const auto initialized = createDevice({.applicationName = "Scene upload pipeline test",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
-            .enableRayTracingAccelerationStructure = true, .validationSink = uploadValidationSink(context)}, device);
+            .enableRayTracingAccelerationStructure = true, .validationSink = uploadValidationSink(context)}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(initialized, Error::Unsupported)) { return RhiTestResult::skip("Requires ray tracing and bindless resources"); }
         UPLOAD_REQUIRE(initialized);
         auto* graphics = device->getQueue(QueueType::Graphics);
@@ -121,7 +121,7 @@ public:
             if (!scene.setImageDecodeResult(index, std::move(mips), {})) { return RhiTestResult::fail("Failed to set fixture mip chain"); }
         }
         std::unique_ptr<Semaphore> gate;
-        UPLOAD_REQUIRE(device->createSemaphore({}, gate));
+        UPLOAD_REQUIRE(device->createSemaphore({}).transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         ScenePathTraceResources resources;
         UploadQueueDrain drain{*gate, *copy, *graphics};
         const SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1, .stages = PipelineStageBits::AllCommands};
@@ -161,13 +161,13 @@ public:
             .pushConstantSize = 4, .bindings = layout, .bindingCount = 2, .requiresRayQuery = false}, log));
         std::unique_ptr<Buffer> output;
         UPLOAD_REQUIRE(device->createBuffer({.size = kTextureCount * kMipCount * 2u * 16u, .structureStride = 16,
-            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback}, output));
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         QueueSubmissionTracker tracker;
         UPLOAD_REQUIRE(tracker.initialize(*device, *graphics));
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
-        UPLOAD_REQUIRE(device->createCommandPool(*graphics, pool));
-        UPLOAD_REQUIRE(pool->createCommandBuffer(commands));
+        UPLOAD_REQUIRE(device->createCommandPool(*graphics).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        UPLOAD_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
         RenderFrameContext frame;
         struct FrameDrain {
             RenderFrameContext& frame;
@@ -241,7 +241,7 @@ public:
         std::unique_ptr<render::Device> device;
         const auto initialized = render::createDevice({.applicationName = "Super Sponza upload smoke",
             .enableValidation = context.enableValidation, .enableRayTracingAccelerationStructure = true,
-            .validationSink = uploadValidationSink(context)}, device);
+            .validationSink = uploadValidationSink(context)}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires ray tracing"); }
         UPLOAD_REQUIRE(initialized);
         scene::SceneLoader loader;

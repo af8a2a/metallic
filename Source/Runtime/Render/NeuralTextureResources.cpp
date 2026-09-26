@@ -41,7 +41,7 @@ void appendWarning(std::string& log, std::string message)
     log += '\n';
 }
 
-Result createUploadBuffer(
+Result<> createUploadBuffer(
     Device& device,
     const void* data,
     uint64_t byteSize,
@@ -51,14 +51,12 @@ Result createUploadBuffer(
     if (data == nullptr || byteSize == 0) {
         return makeError(Error::InvalidArgument);
     }
-    Result result = device.createBuffer(
-        BufferDesc{
+    Result<> result = device.createBuffer(BufferDesc{
             .size = byteSize,
             .usage = BufferUsageBits::TransferSource | additionalUsage,
             .memoryLocation = MemoryLocation::HostUpload,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
-        },
-        outBuffer);
+        }).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
     if (!result || outBuffer == nullptr) {
         return result ? makeError(Error::Failure) : result;
     }
@@ -73,15 +71,14 @@ Result createUploadBuffer(
     return {};
 }
 
-Result createDeviceStorageBuffer(
+Result<> createDeviceStorageBuffer(
     Device& device,
     uint64_t byteSize,
     uint32_t structureStride,
     std::unique_ptr<Buffer>& outBuffer,
     BufferUsageBits additionalUsage = BufferUsageBits::None)
 {
-    return device.createBuffer(
-        BufferDesc{
+    return device.createBuffer(BufferDesc{
             .size = byteSize,
             .structureStride = structureStride,
             .usage = BufferUsageBits::Storage |
@@ -89,8 +86,7 @@ Result createDeviceStorageBuffer(
                 additionalUsage,
             .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
-        },
-        outBuffer);
+        }).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
 }
 
 uint64_t rgba8MipChainByteSize(uint32_t width, uint32_t height, uint32_t mipCount)
@@ -382,7 +378,7 @@ NeuralTextureResources::~NeuralTextureResources() = default;
 NeuralTextureResources::NeuralTextureResources(NeuralTextureResources&&) noexcept = default;
 NeuralTextureResources& NeuralTextureResources::operator=(NeuralTextureResources&&) noexcept = default;
 
-Result NeuralTextureResources::prepare(
+Result<> NeuralTextureResources::prepare(
     Device& device,
     const scene::Scene& loadedScene,
     std::string& log)
@@ -521,7 +517,7 @@ Result NeuralTextureResources::prepare(
         } else {
             ++impl_->stats.genericInt8TextureSetCount;
         }
-        Result result = createUploadBuffer(
+        Result<> result = createUploadBuffer(
             device,
             pending.latentData.data(),
             pending.latentData.size(),
@@ -532,8 +528,7 @@ Result NeuralTextureResources::prepare(
             return {};
         }
         // The inference shader expects the exact packed BGRA4 latent representation.
-        result = device.createTexture(
-            TextureDesc{
+        result = device.createTexture(TextureDesc{
                 .type = TextureType::Texture2D,
                 .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
                 .format = Format::Bgra4Unorm,
@@ -544,23 +539,20 @@ Result NeuralTextureResources::prepare(
                 .layerCount = static_cast<uint32_t>(pending.desc.arraySize),
                 .memoryLocation = MemoryLocation::Device,
                 .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Copy,
-            },
-            set.texture);
+            }).transform([&](auto rhiValue) { set.texture = std::move(rhiValue); });
         if (!result || set.texture == nullptr) {
             appendWarning(log, "[NTC] Failed to create BGRA4 latent texture; using conventional textures");
             impl_->clear();
             return {};
         }
-        result = device.createTextureView(
-            *set.texture,
+        result = device.createTextureView(*set.texture,
             TextureViewDesc{
                 .format = Format::Bgra4Unorm,
                 .baseMip = 0,
                 .mipCount = static_cast<uint32_t>(pending.desc.mipLevels),
                 .baseLayer = 0,
                 .layerCount = static_cast<uint32_t>(pending.desc.arraySize),
-            },
-            set.view);
+            }).transform([&](auto rhiValue) { set.view = std::move(rhiValue); });
         if (!result || set.view == nullptr) {
             appendWarning(log, "[NTC] Failed to create latent texture view; using conventional textures");
             impl_->clear();
@@ -573,14 +565,14 @@ Result NeuralTextureResources::prepare(
                                       uint64_t byteSize,
                                       uint32_t stride,
                                       std::unique_ptr<Buffer>& upload,
-                                      std::unique_ptr<Buffer>& destination) -> Result {
-        Result result = createUploadBuffer(device, data, byteSize, upload);
+                                      std::unique_ptr<Buffer>& destination) -> Result<> {
+        Result<> result = createUploadBuffer(device, data, byteSize, upload);
         if (!result) {
             return result;
         }
         return createDeviceStorageBuffer(device, byteSize, stride, destination);
     };
-    Result result = createBufferPair(
+    Result<> result = createBufferPair(
         constants.data(),
         constants.size() * sizeof(NtcTextureSetConstants),
         sizeof(NtcTextureSetConstants),
@@ -677,7 +669,7 @@ Result NeuralTextureResources::prepare(
 #endif
 }
 
-Result NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
+Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
 {
     if (!active() || impl_->uploadRecorded) {
         return {};

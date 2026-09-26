@@ -204,8 +204,8 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
         std::unique_ptr<render::CommandPool> pool;
         std::unique_ptr<render::CommandBuffer> commands;
         if (!device_->createBuffer({.size = pixels.size() * sizeof(uint32_t),
-                .usage = render::BufferUsageBits::TransferDestination, .memoryLocation = render::MemoryLocation::HostReadback}, readback) ||
-            !device_->createCommandPool(*graphicsQueue_, pool) || !pool->createCommandBuffer(commands) ||
+                .usage = render::BufferUsageBits::TransferDestination, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }) ||
+            !device_->createCommandPool(*graphicsQueue_).transform([&](auto rhiValue) { pool = std::move(rhiValue); }) || !pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }) ||
             !tracker.initialize(*device_, *graphicsQueue_) || !frame.begin(0) || !commands->begin(&frame) ||
             !graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::TransferSource)) { return false; }
         commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
@@ -345,8 +345,8 @@ bool EditorApplication::runSceneSwitchSmokeTest()
         std::unique_ptr<render::CommandPool> pool;
         std::unique_ptr<render::CommandBuffer> commands;
         if (!device_->createBuffer({.size = pixelCount * (hdr ? 8u : 4u),
-                .usage = render::BufferUsageBits::TransferDestination, .memoryLocation = render::MemoryLocation::HostReadback}, readback) ||
-            !device_->createCommandPool(*graphicsQueue_, pool) || !pool->createCommandBuffer(commands) ||
+                .usage = render::BufferUsageBits::TransferDestination, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }) ||
+            !device_->createCommandPool(*graphicsQueue_).transform([&](auto rhiValue) { pool = std::move(rhiValue); }) || !pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }) ||
             !tracker.initialize(*device_, *graphicsQueue_) || !frame.begin(0) || !commands->begin(&frame) ||
             !graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::TransferSource)) { return false; }
         commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),

@@ -21,7 +21,7 @@ public:
         return reflection;
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle source = context.inputTexture("source");
         TextureHandle color = context.outputTexture("color");

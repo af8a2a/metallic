@@ -22,7 +22,7 @@ public:
         std::string log;
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Stream candidate regression",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless heap"); }
         CANDIDATE_REQUIRE(created);
         if (!device->capabilities().shaderBufferInt64Atomics || device->capabilities().subPixelPrecisionBits > 8) {
@@ -35,16 +35,16 @@ public:
         VisibilityHybridRasterizer rasterizer;
         CANDIDATE_REQUIRE(rasterizer.initialize(*device, 1, 1, log, 1, capacity));
         std::unique_ptr<BindlessHeap> heap;
-        CANDIDATE_REQUIRE(device->createBindlessHeap({.maxBuffers = 7}, heap));
+        CANDIDATE_REQUIRE(device->createBindlessHeap({.maxBuffers = 7}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<BindlessHandle, 7> handles;
-        for (auto& handle : handles) { CANDIDATE_REQUIRE(heap->allocateBuffer(handle)); }
+        for (auto& handle : handles) { CANDIDATE_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
         std::array<std::unique_ptr<Buffer>, 5> inputs;
         const uint32_t strides[] = {sizeof(MeshletStreamGpuActiveHeader), sizeof(MeshletStreamGpuActiveGroup),
             sizeof(MeshletStreamGpuRasterBindings), 4, 8};
         const uint32_t counts[] = {1, groupCapacity, 1, instances, capacity};
         for (size_t i = 0; i < inputs.size(); ++i) {
             CANDIDATE_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
-                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, inputs[i]));
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[i] = std::move(rhiValue); }));
             CANDIDATE_REQUIRE(heap->writeStorageBuffer(handles[i], *inputs[i]));
         }
         CANDIDATE_REQUIRE(heap->writeStorageBuffer(handles[5], rasterizer.clusterBuffer()));
@@ -68,23 +68,23 @@ public:
             log = compiled.diagnostics;
             CANDIDATE_REQUIRE(result);
             CANDIDATE_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(),
-                .byteSize = compiled.spirv.size() * 4}, shaders[i]));
+                .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
             CANDIDATE_REQUIRE(device->createComputePipeline({.computeShader = shaders[i].get(), .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = i == 0 ? uint32_t(sizeof(MeshletStreamUserPush)) : 12u}, pipelines[i]));
+                .bindlessUserPushDataSize = i == 0 ? uint32_t(sizeof(MeshletStreamUserPush)) : 12u}).transform([&](auto rhiValue) { pipelines[i] = std::move(rhiValue); }));
         }
         std::unique_ptr<Buffer> readback, arguments;
         const uint64_t bytes = rasterizer.clusterBuffer().desc().size;
         CANDIDATE_REQUIRE(device->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
-            .memoryLocation = MemoryLocation::HostReadback}, readback));
+            .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         CANDIDATE_REQUIRE(device->createBuffer({.size = 36, .usage = BufferUsageBits::TransferDestination,
-            .memoryLocation = MemoryLocation::HostReadback}, arguments));
+            .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { arguments = std::move(rhiValue); }));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         std::unique_ptr<Fence> fence;
-        CANDIDATE_REQUIRE(device->createCommandPool(*queue, pool));
-        CANDIDATE_REQUIRE(pool->createCommandBuffer(commands));
-        CANDIDATE_REQUIRE(device->createFence(false, fence));
+        CANDIDATE_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        CANDIDATE_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
+        CANDIDATE_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         struct Case { uint32_t count; uint32_t phase; bool dense = false; bool hidden = false; };
         const Case cases[] = {{0, 0}, {1, 0}, {127, 0}, {128, 1}, {129, 1},
             {16383, 0}, {16384, 1}, {16385, 0}, {30001, 1}, {30001, 0, false, true},

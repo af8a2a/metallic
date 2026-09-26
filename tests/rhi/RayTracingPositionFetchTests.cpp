@@ -18,7 +18,7 @@ namespace metallic::tests {
 namespace {
 
 #define FETCH_REQUIRE(expression) do { \
-    const render::Result result = (expression); \
+    const render::Result<> result = (expression); \
     if (!result) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(result) + " " + log); } \
 } while (false)
 
@@ -85,7 +85,7 @@ public:
                 .enableRayTracingAccelerationStructure = true,
                 .enableRayQuery = true,
                 .enableRayTracingPositionFetch = positionFetch,
-            }, device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
             if (!setup && render::hasError(setup, render::Error::Unsupported)) {
                 return RhiTestResult::skip("ray query/descriptor heap unavailable");
             }
@@ -100,7 +100,7 @@ public:
                 render::RayTracingAccelerationStructureBuildSizes sizes;
                 const auto unavailable = device->queryRayTracingAccelerationStructureBuildSizes({
                     .flags = render::RayTracingAccelerationStructureBuildFlags::AllowDataAccess,
-                }, sizes);
+                }).transform([&](auto rhiValue) { sizes = std::move(rhiValue); });
                 if (device->capabilities().rayTracingPositionFetch ||
                     !render::hasError(unavailable, render::Error::Unsupported)) {
                     return RhiTestResult::fail("disabled position fetch accepted a data-access BLAS");
@@ -124,7 +124,7 @@ public:
                 return RhiTestResult::fail("fixture did not exercise BLAS compaction");
             }
             render::RayTracingAccelerationStructureProperties accelerationProperties;
-            FETCH_REQUIRE(device->queryRayTracingAccelerationStructureProperties(accelerationProperties));
+            FETCH_REQUIRE(device->queryRayTracingAccelerationStructureProperties().transform([&](auto rhiValue) { accelerationProperties = std::move(rhiValue); }));
             if (resources.accelerationStructure().stats().geometryBytes != accelerationProperties.instanceRecordSize) {
                 return RhiTestResult::fail("BLAS build-only vertex/index buffers remained resident");
             }
@@ -177,13 +177,13 @@ public:
                 .size = sizeof(baseline[0]), .structureStride = 4 * sizeof(float),
                 .usage = render::BufferUsageBits::Storage,
                 .memoryLocation = render::MemoryLocation::HostReadback,
-            }, output));
+            }).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
             render::QueueSubmissionTracker tracker;
             FETCH_REQUIRE(tracker.initialize(*device, *queue));
             std::unique_ptr<render::CommandPool> pool;
             std::unique_ptr<render::CommandBuffer> commands;
-            FETCH_REQUIRE(device->createCommandPool(*queue, pool));
-            FETCH_REQUIRE(pool->createCommandBuffer(commands));
+            FETCH_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+            FETCH_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
             render::RenderFrameContext frame;
             // Drain before destroying buffers/pipelines on every return path.
             struct Drain {
@@ -302,7 +302,7 @@ public:
         std::string log;
         std::unique_ptr<render::Device> device;
         FETCH_REQUIRE(render::createDevice({.applicationName = "Compact scene vertices",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device));
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         if (!device->capabilities().bindlessDescriptorHeap) { return RhiTestResult::skip("descriptor heap unavailable"); }
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::vector<std::array<float, 3>> directions{
@@ -326,9 +326,9 @@ public:
         std::vector<std::array<float, 12>> actual(vertices.size());
         std::unique_ptr<render::Buffer> input, output;
         FETCH_REQUIRE(device->createBuffer({.size = vertices.size() * sizeof(vertices[0]), .structureStride = 16,
-            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostUpload}, input));
+            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { input = std::move(rhiValue); }));
         FETCH_REQUIRE(device->createBuffer({.size = actual.size() * sizeof(actual[0]), .structureStride = 16,
-            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}, output));
+            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         void* mapped = input->map();
         if (mapped == nullptr) { return RhiTestResult::fail("packing input map failed"); }
         std::memcpy(mapped, vertices.data(), vertices.size() * sizeof(vertices[0]));
@@ -350,8 +350,8 @@ public:
         FETCH_REQUIRE(tracker.initialize(*device, queue));
         std::unique_ptr<render::CommandPool> pool;
         std::unique_ptr<render::CommandBuffer> commands;
-        FETCH_REQUIRE(device->createCommandPool(queue, pool));
-        FETCH_REQUIRE(pool->createCommandBuffer(commands));
+        FETCH_REQUIRE(device->createCommandPool(queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        FETCH_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
         render::RenderFrameContext frame;
         struct Drain {
             render::RenderFrameContext& frame;

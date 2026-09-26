@@ -38,7 +38,7 @@ public:
         render::HistoryResourceManager manager;
         render::TextureDesc desc = makeHistoryTextureDesc(16, 16);
 
-        render::Result result = manager.ensureTexture("uninitialized", desc);
+        render::Result<> result = manager.ensureTexture("uninitialized", desc);
         if (!render::hasError(result, render::Error::InvalidArgument)) {
             return RhiTestResult::fail("ensureTexture succeeded before initialize");
         }
@@ -118,7 +118,7 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         render::HistoryResourceManager manager;
-        render::Result result = manager.initialize(context.device);
+        render::Result<> result = manager.initialize(context.device);
         if (!result) {
             return RhiTestResult::fail(std::string("HistoryResourceManager::initialize returned ") + toString(result));
         }
@@ -194,13 +194,11 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result result = render::createDevice(
-            render::DeviceDesc{
+        render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic History Buffer View Test",
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
-            },
-            device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
@@ -279,7 +277,7 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         render::HistoryResourceManager manager;
-        render::Result result = manager.initialize(context.device);
+        render::Result<> result = manager.initialize(context.device);
         if (!result) {
             return RhiTestResult::fail(std::string("HistoryResourceManager::initialize returned ") + toString(result));
         }
@@ -303,19 +301,19 @@ public:
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
-        result = context.device.createCommandPool(context.graphicsQueue, commandPool);
+        result = context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
             return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandBuffer> commandBuffer;
-        result = commandPool->createCommandBuffer(commandBuffer);
+        result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
 
         std::unique_ptr<render::Fence> fence;
-        result = context.device.createFence(false, fence);
+        result = context.device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
             return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
         }

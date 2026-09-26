@@ -14,7 +14,7 @@ namespace metallic::render::vulkan {
 
 namespace {
 
-Result resultFromNrc(nrc::Status status)
+Result<> resultFromNrc(nrc::Status status)
 {
     switch (status) {
     case nrc::Status::OK:
@@ -134,7 +134,7 @@ NrcIntegration& NrcIntegration::operator=(NrcIntegration&& other) noexcept
     return *this;
 }
 
-Result NrcIntegration::initialize(Device& device, std::string& log)
+Result<> NrcIntegration::initialize(Device& device, std::string& log)
 {
     if (valid()) {
         return {};
@@ -207,7 +207,7 @@ bool NrcIntegration::valid() const
     return context_ != nullptr;
 }
 
-Result NrcIntegration::configure(const nrc::ContextSettings& settings, Device& device, std::string& log)
+Result<> NrcIntegration::configure(const nrc::ContextSettings& settings, Device& device, std::string& log)
 {
     if (!valid()) {
         log = "NRC integration is not initialized";
@@ -237,7 +237,7 @@ Result NrcIntegration::configure(const nrc::ContextSettings& settings, Device& d
             .memoryLocation = MemoryLocation::Device,
         };
         std::unique_ptr<Buffer> buffer;
-        const Result result = device.createBuffer(desc, buffer);
+        const Result<> result = device.createBuffer(desc).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
         if (!result || buffer == nullptr) {
             const char* debugName = info.debugName != nullptr ? info.debugName : "?";
             log += "createBuffer(NRC ";
@@ -277,7 +277,7 @@ Result NrcIntegration::configure(const nrc::ContextSettings& settings, Device& d
     return {};
 }
 
-Result NrcIntegration::beginFrame(CommandBuffer& commandBuffer, const nrc::FrameSettings& frameSettings)
+Result<> NrcIntegration::beginFrame(CommandBuffer& commandBuffer, const nrc::FrameSettings& frameSettings)
 {
     if (!valid()) {
         return makeError(Error::Failure);
@@ -286,16 +286,18 @@ Result NrcIntegration::beginFrame(CommandBuffer& commandBuffer, const nrc::Frame
     return resultFromNrc(status);
 }
 
-Result NrcIntegration::populateShaderConstants(::NrcConstants& outConstants) const
+Result<::NrcConstants> NrcIntegration::populateShaderConstants() const
 {
     if (!valid()) {
         return makeError(Error::Failure);
     }
-    const nrc::Status status = context_->PopulateShaderConstants(outConstants);
-    return resultFromNrc(status);
+    ::NrcConstants constants{};
+    const auto result = resultFromNrc(context_->PopulateShaderConstants(constants));
+    if (!result) { return makeError(result.error()); }
+    return constants;
 }
 
-Result NrcIntegration::queryAndTrain(CommandBuffer& commandBuffer, float* trainingLoss)
+Result<> NrcIntegration::queryAndTrain(CommandBuffer& commandBuffer, float* trainingLoss)
 {
     if (!valid()) {
         return makeError(Error::Failure);
@@ -304,7 +306,7 @@ Result NrcIntegration::queryAndTrain(CommandBuffer& commandBuffer, float* traini
     return resultFromNrc(status);
 }
 
-Result NrcIntegration::resolve(CommandBuffer& commandBuffer, TextureView& outputView)
+Result<> NrcIntegration::resolve(CommandBuffer& commandBuffer, TextureView& outputView)
 {
     if (!valid()) {
         return makeError(Error::Failure);
@@ -313,7 +315,7 @@ Result NrcIntegration::resolve(CommandBuffer& commandBuffer, TextureView& output
     return resultFromNrc(status);
 }
 
-Result NrcIntegration::endFrame(Queue& queue)
+Result<> NrcIntegration::endFrame(Queue& queue)
 {
     if (!valid()) {
         return makeError(Error::Failure);

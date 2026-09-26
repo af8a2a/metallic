@@ -17,7 +17,7 @@ struct SceneLightResources::SamplingState {
     bool cancelled = false;
 };
 
-Result SceneLightResources::buildSampling(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
+Result<> SceneLightResources::buildSampling(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
     TextureView& environment, const ReGIRBuildParameters& parameters,
     uint32_t gridSize, uint32_t lightsPerCell, bool buildGrid, std::string& log)
 {
@@ -29,7 +29,7 @@ Result SceneLightResources::buildSampling(Device& device, CommandBuffer& command
         sampling_->pdf.textureHeight() != size.height || sampling_->grid.layout().gridSize != gridSize ||
         sampling_->grid.layout().lightsPerCell != lightsPerCell) {
         auto next = std::make_shared<SamplingState>();
-        Result result = next->compute.initialize(device, log);
+        Result<> result = next->compute.initialize(device, log);
         if (!result) { return result; }
         result = next->grid.initialize(device, log);
         if (!result) { return result; }
@@ -43,10 +43,10 @@ Result SceneLightResources::buildSampling(Device& device, CommandBuffer& command
     if (auto* frame = commands.frameContext()) { frame->retain(sampling_); }
     // PDF layout state is advanced while recording. If any later pass cancels
     // this recording, recreate it instead of assuming those GPU transitions ran.
-    Result transaction = host.deferSubmission(commands, []() {},
+    Result<> transaction = host.deferSubmission(commands, []() {},
         [state = sampling_]() { state->cancelled = true; });
     if (!transaction) { return transaction; }
-    Result result = sampling_->compute.buildLocalLights(commands, environment, sampling_->pdf, *buffer_, lightCount());
+    Result<> result = sampling_->compute.buildLocalLights(commands, environment, sampling_->pdf, *buffer_, lightCount());
     if (!result || !buildGrid) { return result; }
     return sampling_->grid.build(commands, *sampling_->pdf.view(), *buffer_, parameters);
 }
@@ -199,7 +199,7 @@ std::vector<GpuPunctualLight> buildPunctualLightRecords(
     return records;
 }
 
-Result SceneLightResources::update(Device& device, CommandBuffer& commands,
+Result<> SceneLightResources::update(Device& device, CommandBuffer& commands,
     RenderSubsystemHost& host, const scene::Scene* scene, const scene::LightingSettings& settings)
 {
     if (!scene::validLightingSettings(settings)) { return makeError(Error::InvalidArgument); }
@@ -208,10 +208,10 @@ Result SceneLightResources::update(Device& device, CommandBuffer& commands,
     if (records.size() != records_.size() ||
         std::memcmp(records.data(), records_.data(), static_cast<size_t>(bytes)) != 0) {
         std::unique_ptr<Buffer> next;
-        Result result = device.createBuffer(BufferDesc{
+        Result<> result = device.createBuffer(BufferDesc{
             .size = bytes, .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::HostUpload,
-        }, next);
+        }).transform([&](auto rhiValue) { next = std::move(rhiValue); });
         if (!result) { return result; }
         if (next == nullptr) { return makeError(Error::Failure); }
         void* mapped = next->map();

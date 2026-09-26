@@ -408,12 +408,12 @@ std::vector<RenderGraphRuntimeSetting> RenderGraphPass::runtimeSettings() const
     return {};
 }
 
-Result RenderGraphPass::prepare(const RenderGraphCompileContext&, std::string&)
+Result<> RenderGraphPass::prepare(const RenderGraphCompileContext&, std::string&)
 {
     return {};
 }
 
-Result RenderGraphPass::compile(const RenderGraphCompileContext&, std::string&)
+Result<> RenderGraphPass::compile(const RenderGraphCompileContext&, std::string&)
 {
     return {};
 }
@@ -448,11 +448,11 @@ QueueType UnsafePass::queueType() const
     return QueueType::Graphics;
 }
 
-Result RenderGraphExecutionContext::parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics)
+Result<> RenderGraphExecutionContext::parallelCompute(const CommandRecorder& compute, const CommandRecorder& graphics)
 {
     if (!compute || !graphics) { return makeError(Error::InvalidArgument); }
     if (parallelRecorder_) { return parallelRecorder_(*this, compute, graphics); }
-    Result result = compute(commandBuffer());
+    Result<> result = compute(commandBuffer());
     return result ? graphics(commandBuffer()) : result;
 }
 

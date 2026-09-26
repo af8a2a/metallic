@@ -182,7 +182,7 @@ TEST(NrdPlan, RejectsInvalidImageAndProjectionData)
     EXPECT_TRUE(plan.beginFrame(settings));
 }
 
-void require(render::Result result)
+void require(render::Result<> result)
 {
     if (!result)
         throw std::runtime_error(render::resultToString(result));
@@ -195,8 +195,7 @@ protected:
     void SetUp() override
     {
         ASSERT_TRUE(video.ready) << SDL_GetError();
-        const auto result = render::createDevice(
-            {.applicationName = "Metallic native NRD tests",
+        const auto result = render::createDevice({.applicationName = "Metallic native NRD tests",
              .enableValidation = true,
              .enableBindlessDescriptorHeap = true,
              .enableRayTracingAccelerationStructure = requiresRayQueries(),
@@ -206,19 +205,17 @@ protected:
                                         if ((message.severity & 0x1100u) != 0)
                                             static_cast<std::atomic<uint32_t>*>(context)->fetch_add(1);
                                     },
-                                .context = &validationErrors}},
-            device);
+                                .context = &validationErrors}}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported))
             GTEST_SKIP() << "Bindless descriptor heaps unavailable";
         require(result);
         queue = device->getQueue(render::QueueType::Graphics);
-        require(device->createCommandPool(*queue, commands));
-        require(commands->createCommandBuffer(command));
-        require(device->createStreamer({.constantBufferSize = 1024 * 1024}, streamer));
+        require(device->createCommandPool(*queue).transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
+        require(commands->createCommandBuffer().transform([&](auto rhiValue) { command = std::move(rhiValue); }));
+        require(device->createStreamer({.constantBufferSize = 1024 * 1024}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         require(device->createBuffer({.size = 63 * 37 * 16,
                                       .usage = render::BufferUsageBits::TransferDestination,
-                                      .memoryLocation = render::MemoryLocation::HostReadback},
-                                     readback));
+                                      .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         createTextures(63, 37);
     }
 
@@ -241,15 +238,13 @@ protected:
                 resource == rd::ResourceType::IN_PENUMBRA || resource == rd::ResourceType::OUT_SHADOW_TRANSLUCENCY)
                 format = render::Format::R32Sfloat;
             std::unique_ptr<render::Texture> texture;
-            require(device->createTexture(
-                {.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::Storage |
+            require(device->createTexture({.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::Storage |
                           render::TextureUsageBits::TransferDestination | render::TextureUsageBits::TransferSource,
                  .format = format,
                  .width = width,
-                 .height = height},
-                texture));
+                 .height = height}).transform([&](auto rhiValue) { texture = std::move(rhiValue); }));
             std::unique_ptr<render::TextureView> view;
-            require(device->createTextureView(*texture, {.format = format}, view));
+            require(device->createTextureView(*texture, {.format = format}).transform([&](auto rhiValue) { view = std::move(rhiValue); }));
             pool[i] = {texture.get(), view.get()};
             textures.push_back(std::move(texture));
             views.push_back(std::move(view));
@@ -344,7 +339,7 @@ protected:
         if (discard) {
             recording.cancel();
             command.reset();
-            require(commands->createCommandBuffer(command));
+            require(commands->createCommandBuffer().transform([&](auto rhiValue) { command = std::move(rhiValue); }));
         } else {
             render::CommandBuffer* list[] = {command.get()};
             render::QueueSubmissionTracker tracker;
@@ -413,7 +408,7 @@ TEST_F(NrdGpu, SharedRegistryAndRetiredRuntimeSubmission)
     EXPECT_FLOAT_EQ(first[0], 2);
     EXPECT_FLOAT_EQ(first[1], 10);
     std::shared_ptr<render::ResourceRegistry> registry;
-    require(device->resourceRegistry(registry));
+    require(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
     const auto before = registry->stats().descriptorWrites;
     render::ResourceLease output;
     require(registry->storageImage(*pool[static_cast<size_t>(rd::ResourceType::OUT_DIFF_RADIANCE_HITDIST)].view, output));
@@ -583,10 +578,10 @@ TEST_F(NrdRayTracingGpu, RayTracedShadowOcclusionAndHistory)
     std::unique_ptr<render::TextureView> depthView;
     std::unique_ptr<render::Buffer> upload;
     require(device->createTexture({.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::TransferDestination,
-        .format = render::Format::R32Sfloat, .width = w, .height = h}, depth));
-    require(device->createTextureView(*depth, {.format = render::Format::R32Sfloat}, depthView));
+        .format = render::Format::R32Sfloat, .width = w, .height = h}).transform([&](auto rhiValue) { depth = std::move(rhiValue); }));
+    require(device->createTextureView(*depth, {.format = render::Format::R32Sfloat}).transform([&](auto rhiValue) { depthView = std::move(rhiValue); }));
     require(device->createBuffer({.size = uint64_t(w) * h * 4, .usage = render::BufferUsageBits::TransferSource,
-        .memoryLocation = render::MemoryLocation::HostUpload}, upload));
+        .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { upload = std::move(rhiValue); }));
     bool depthReady = false;
     uint32_t shadowFrame = 0;
     render::ViewConstants previous{};
@@ -632,7 +627,7 @@ TEST_F(NrdRayTracingGpu, RayTracedShadowOcclusionAndHistory)
         if (discard) {
             recording.cancel();
             command.reset();
-            require(commands->createCommandBuffer(command));
+            require(commands->createCommandBuffer().transform([&](auto rhiValue) { command = std::move(rhiValue); }));
             streamer->endFrame();
             return std::vector<uint8_t>{};
         }
@@ -730,8 +725,8 @@ TEST_F(NrdRayTracingGpu, RayTracedShadowOcclusionAndHistory)
     depthView.reset();
     depth.reset();
     require(device->createTexture({.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::TransferDestination,
-        .format = render::Format::R32Sfloat, .width = w, .height = h}, depth));
-    require(device->createTextureView(*depth, {.format = render::Format::R32Sfloat}, depthView));
+        .format = render::Format::R32Sfloat, .width = w, .height = h}).transform([&](auto rhiValue) { depth = std::move(rhiValue); }));
+    require(device->createTextureView(*depth, {.format = render::Format::R32Sfloat}).transform([&](auto rhiValue) { depthView = std::move(rhiValue); }));
     depthReady = false;
     lights[1].colorIntensity[3] = 10;
     auto resized = renderShadow(false);

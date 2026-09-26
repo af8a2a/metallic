@@ -18,13 +18,13 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::CommandPool> commandPool;
-        render::Result result = context.device.createCommandPool(context.graphicsQueue, commandPool);
+        render::Result<> result = context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
             return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandBuffer> commandBuffer;
-        result = commandPool->createCommandBuffer(commandBuffer);
+        result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
@@ -39,13 +39,13 @@ public:
         }
 
         std::unique_ptr<render::Fence> fence;
-        result = context.device.createFence(false, fence);
+        result = context.device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
             return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
         }
 
         std::unique_ptr<render::Semaphore> semaphore;
-        result = context.device.createSemaphore(semaphore);
+        result = context.device.createSemaphore().transform([&](auto rhiValue) { semaphore = std::move(rhiValue); });
         if (!result || semaphore == nullptr) {
             return RhiTestResult::fail(std::string("createSemaphore returned ") + toString(result));
         }
@@ -110,21 +110,19 @@ public:
         }
 
         std::unique_ptr<render::TimestampQueryPool> queryPool;
-        render::Result result = context.device.createTimestampQueryPool(
-            context.graphicsQueue,
-            render::TimestampQueryPoolDesc{.queryCount = 2},
-            queryPool);
+        render::Result<> result = context.device.createTimestampQueryPool(context.graphicsQueue,
+            render::TimestampQueryPoolDesc{.queryCount = 2}).transform([&](auto rhiValue) { queryPool = std::move(rhiValue); });
         if (!result || queryPool == nullptr) {
             return RhiTestResult::fail(std::string("createTimestampQueryPool returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
-        result = context.device.createCommandPool(context.graphicsQueue, commandPool);
+        result = context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
             return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
         std::unique_ptr<render::CommandBuffer> commandBuffer;
-        result = commandPool->createCommandBuffer(commandBuffer);
+        result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
@@ -152,7 +150,7 @@ public:
         }
 
         std::unique_ptr<render::Fence> fence;
-        result = context.device.createFence(false, fence);
+        result = context.device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
             return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
         }

@@ -35,7 +35,7 @@ struct ShaderHotReloadFixture {
         return static_cast<bool>(stream);
     }
 
-    render::Result compile()
+    render::Result<> compile()
     {
         const std::string searchPath = sourceDirectory.string();
         return render::compileSlangShaderToSpirv(

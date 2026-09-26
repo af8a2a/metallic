@@ -119,7 +119,7 @@ struct PatternCommands {
 };
 
 #define PATTERN_REQUIRE(expression) do { \
-    const render::Result patternResult = (expression); \
+    const render::Result<> patternResult = (expression); \
     if (!patternResult) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(patternResult)); } \
 } while (false)
 
@@ -232,7 +232,7 @@ public:
             .enableRayQuery = previewDevice,
             .enablePushDescriptor = previewDevice,
             .enableClusterAccelerationStructure = previewDevice,
-            .enableAftermath = aftermath}, device);
+            .enableAftermath = aftermath}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) {
             return RhiTestResult::skip("Requested device capabilities unavailable: " + description);
         }
@@ -298,12 +298,12 @@ public:
         PATTERN_REQUIRE(device->createBuffer({.size = inputBytes,
             .structureStride = environment ? uint32_t(sizeof(kTexel)) : uint32_t(sizeof(kInput)),
             .usage = render::BufferUsageBits::Storage,
-            .memoryLocation = environment ? render::MemoryLocation::HostReadback : render::MemoryLocation::HostUpload}, input));
+            .memoryLocation = environment ? render::MemoryLocation::HostReadback : render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { input = std::move(rhiValue); }));
         PATTERN_REQUIRE(device->createBuffer({.size = outputBytes,
             .structureStride = environment ? uint32_t(sizeof(kTexel)) : uint32_t(sizeof(uint32_t)),
-            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}, output));
+            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         PATTERN_REQUIRE(device->createBuffer({.size = sizeof(kTexel),
-            .usage = render::BufferUsageBits::TransferSource, .memoryLocation = render::MemoryLocation::HostUpload}, upload));
+            .usage = render::BufferUsageBits::TransferSource, .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { upload = std::move(rhiValue); }));
         void* mapped = input->map();
         if (mapped == nullptr) { return RhiTestResult::fail("Input mapping failed"); }
         if (environment) { std::memset(mapped, 0, static_cast<size_t>(inputBytes)); }
@@ -317,8 +317,8 @@ public:
         upload->unmap();
         PATTERN_REQUIRE(device->createTexture({
             .usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::TransferDestination,
-            .format = render::Format::Rgba32Sfloat, .width = 1, .height = 1}, texture));
-        PATTERN_REQUIRE(device->createTextureView(*texture, {.format = render::Format::Rgba32Sfloat}, view));
+            .format = render::Format::Rgba32Sfloat, .width = 1, .height = 1}).transform([&](auto rhiValue) { texture = std::move(rhiValue); }));
+        PATTERN_REQUIRE(device->createTextureView(*texture, {.format = render::Format::Rgba32Sfloat}).transform([&](auto rhiValue) { view = std::move(rhiValue); }));
 
         // These objects outlive PatternCommands; production PDF code also
         // retains its descriptor tables and allocations through the frame.
@@ -332,8 +332,8 @@ public:
 
         PatternCommands commands;
         PATTERN_REQUIRE(commands.tracker.initialize(*device, *queue));
-        PATTERN_REQUIRE(device->createCommandPool(*queue, commands.pool));
-        PATTERN_REQUIRE(commands.pool->createCommandBuffer(commands.buffer));
+        PATTERN_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { commands.pool = std::move(rhiValue); }));
+        PATTERN_REQUIRE(commands.pool->createCommandBuffer().transform([&](auto rhiValue) { commands.buffer = std::move(rhiValue); }));
         PATTERN_REQUIRE(commands.frame.begin(0));
         PATTERN_REQUIRE(commands.buffer->begin(&commands.frame));
         const render::TextureBarrierDesc toTransfer{.texture = texture.get(),

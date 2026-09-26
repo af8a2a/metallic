@@ -118,7 +118,7 @@ public:
         return settings;
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr || context.subsystems() == nullptr) {
             log = "LightGridDebugPass requires a device and render subsystem host";
@@ -135,7 +135,7 @@ public:
         }
         if (program_.valid()) { return {}; }
         ShaderCompileResult shader;
-        Result result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/LightGridDebug",
+        Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/LightGridDebug",
             .entryPointName = "lightGridDebugMain", .searchPath = kTriangleShaderSearchPath}, shader);
         if (!result) {
             log = "LightGridDebug shader compilation failed: " + shader.diagnostics;
@@ -159,7 +159,7 @@ public:
         return {};
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() || color.view() == nullptr || !program_.valid() ||
@@ -187,7 +187,7 @@ public:
         };
         std::string log;
         ClusterLightGridParams checkedParams;
-        Result result = buildClusterLightGridParams(desc, checkedParams, log);
+        Result<> result = buildClusterLightGridParams(desc, checkedParams, log);
         if (!result) {
             spdlog::error("[LightGridDebugPass] {}", log);
             return result;
@@ -257,7 +257,7 @@ public:
     }
 
 private:
-    Result initializeProgram(ComputeProgram& program, std::string& log)
+    Result<> initializeProgram(ComputeProgram& program, std::string& log)
     {
         const ComputeProgramBindingDesc bindings[] = {
             {.binding = 0}, {.binding = 1},

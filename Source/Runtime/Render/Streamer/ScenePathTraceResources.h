@@ -72,29 +72,29 @@ public:
     ScenePathTraceResources(const ScenePathTraceResources&) = default;
     ScenePathTraceResources& operator=(const ScenePathTraceResources&) = default;
 
-    Result prepare(
+    Result<> prepare(
         Device& device,
         Queue& graphicsQueue,
         const RenderGraphProperties& properties,
         const scene::Scene* runtimeScene,
         std::string& log);
-    Result beginPrepareAsync(
+    Result<> beginPrepareAsync(
         Device& device,
         Queue& graphicsQueue,
         const RenderGraphProperties& properties,
         const scene::Scene& runtimeScene,
         std::string& log,
         bool materialsOnly = false);
-    Result pumpPrepareAsync(
+    Result<> pumpPrepareAsync(
         double budgetMilliseconds,
         bool& complete,
         scene::SceneLoadProgress& progress,
         std::string& log);
     bool preparing() const;
-    Result syncRuntimeScene(const scene::Scene* runtimeScene, std::string& log);
-    Result uploadMaterialTextures(CommandBuffer& commandBuffer);
+    Result<> syncRuntimeScene(const scene::Scene* runtimeScene, std::string& log);
+    Result<> uploadMaterialTextures(CommandBuffer& commandBuffer);
     // Called once by the deferred consumer; never waits for feedback or decode.
-    Result beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler = nullptr, bool freezePublication = false);
+    Result<> beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler = nullptr, bool freezePublication = false);
     bool textureUploadsReady() const;
     bool gpuWorkComplete();
     SceneUploadStats uploadStats() const;

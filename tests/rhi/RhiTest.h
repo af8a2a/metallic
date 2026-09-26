@@ -91,7 +91,7 @@ public:
     }
 };
 
-const char* toString(render::Result result);
+const char* toString(render::Result<> result);
 const char* toString(RhiTestType type);
 bool saveRgba8Png(
     const std::filesystem::path& outputPath,

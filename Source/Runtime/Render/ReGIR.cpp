@@ -40,7 +40,7 @@ struct BuildReGIRPush {
 
 static_assert(sizeof(BuildReGIRPush) == 64);
 
-std::string resultMessage(std::string_view label, Result result)
+std::string resultMessage(std::string_view label, Result<> result)
 {
     std::string message(label);
     message += " returned ";
@@ -113,7 +113,7 @@ ReGIRLightSelector::~ReGIRLightSelector() = default;
 ReGIRLightSelector::ReGIRLightSelector(ReGIRLightSelector&&) noexcept = default;
 ReGIRLightSelector& ReGIRLightSelector::operator=(ReGIRLightSelector&&) noexcept = default;
 
-Result ReGIRLightSelector::initialize(Device& device, std::string& log)
+Result<> ReGIRLightSelector::initialize(Device& device, std::string& log)
 {
     if (impl_ == nullptr) {
         impl_ = std::make_unique<Impl>();
@@ -123,7 +123,7 @@ Result ReGIRLightSelector::initialize(Device& device, std::string& log)
     }
 
     ShaderCompileResult compileResult;
-    const Result compile = compileSlangShaderToSpirv(
+    const Result<> compile = compileSlangShaderToSpirv(
         SlangShaderDesc{
             .moduleName = kBuildReGIRShaderModuleName,
             .entryPointName = kBuildReGIREntryPoint,
@@ -158,7 +158,7 @@ Result ReGIRLightSelector::initialize(Device& device, std::string& log)
         log);
 }
 
-Result ReGIRLightSelector::ensureGrid(
+Result<> ReGIRLightSelector::ensureGrid(
     Device& device,
     uint32_t gridSize,
     uint32_t lightsPerCell,
@@ -181,13 +181,11 @@ Result ReGIRLightSelector::ensureGrid(
     }
 
     std::unique_ptr<Buffer> nextBuffer;
-    const Result result = device.createBuffer(
-        BufferDesc{
+    const Result<> result = device.createBuffer(BufferDesc{
             .size = nextLayout.bufferByteSize,
             .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
-        },
-        nextBuffer);
+        }).transform([&](auto rhiValue) { nextBuffer = std::move(rhiValue); });
     if (!result || nextBuffer == nullptr) {
         log = resultMessage("createBuffer(ReGIR light selector)", result);
         return result ? makeError(Error::Failure) : result;
@@ -203,7 +201,7 @@ Result ReGIRLightSelector::ensureGrid(
     return {};
 }
 
-Result ReGIRLightSelector::build(
+Result<> ReGIRLightSelector::build(
     CommandBuffer& commandBuffer,
     TextureView& localLightPdf,
     Buffer& punctualLights,
@@ -260,7 +258,7 @@ Result ReGIRLightSelector::build(
     push.sceneCenterRadius[3] = parameters.sceneRadius;
     push.samplingJitter = parameters.samplingJitter;
 
-    Result result = impl_->program.dispatch(ComputeDispatchDesc{
+    Result<> result = impl_->program.dispatch(ComputeDispatchDesc{
         .commandBuffer = &commandBuffer,
         .bindings = bindings,
         .bindingCount = static_cast<uint32_t>(std::size(bindings)),

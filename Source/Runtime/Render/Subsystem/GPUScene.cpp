@@ -620,7 +620,7 @@ void GPUScene::invalidateSourceIds()
     fallbackMaterial_ = {};
 }
 
-Result GPUScene::rebuild(const GPUSceneSourceView& source, std::string& log)
+Result<> GPUScene::rebuild(const GPUSceneSourceView& source, std::string& log)
 {
     if (source.renderPrimitives.size() > std::numeric_limits<uint32_t>::max() ||
         source.renderNodes.size() > std::numeric_limits<uint32_t>::max() ||

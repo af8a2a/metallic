@@ -2,6 +2,8 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 
+#include <type_traits>
+
 namespace metallic::tests {
 namespace {
 
@@ -32,7 +34,7 @@ public:
             return RhiTestResult::fail("copy queue did not expose an independent Copy wrapper");
         }
 
-        render::Result result = context.device.waitIdle();
+        render::Result<> result = context.device.waitIdle();
         if (!result) {
             return RhiTestResult::fail(std::string("Device::waitIdle returned ") + toString(result));
         }
@@ -52,8 +54,7 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result result = render::createDevice(
-            render::DeviceDesc{
+        render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic RHI Optional Feature Soft Request Test",
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
@@ -63,8 +64,7 @@ public:
                 .enablePushDescriptor = true,
                 .enableClusterAccelerationStructure = true,
                 .enablePartitionedAccelerationStructure = true,
-            },
-            device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("createDevice(optional features) returned ") + toString(result));
@@ -125,13 +125,11 @@ public:
         // Reject this invalid request before creating another Vulkan device.
         // Feature-off driver-cache reproductions belong to the standalone app.
         std::unique_ptr<render::Device> rejectedDevice;
-        const render::Result result = render::createDevice(
-            render::DeviceDesc{
+        const render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic RHI Required Shader Object Test",
                 .enableValidation = context.enableValidation,
                 .enableShaderObject = false,
-            },
-            rejectedDevice);
+            }).transform([&](auto rhiValue) { rejectedDevice = std::move(rhiValue); });
         if (!render::hasError(result, render::Error::InvalidArgument) || rejectedDevice != nullptr) {
             return RhiTestResult::fail(
                 std::string("createDevice(enableShaderObject=false) must reject the request without a device, got ") +
@@ -196,13 +194,11 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result result = render::createDevice(
-            render::DeviceDesc{
+        render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic RHI Cluster Acceleration Structure Test",
                 .enableValidation = context.enableValidation,
                 .enableClusterAccelerationStructure = true,
-            },
-            device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("createDevice(cluster acceleration structure) returned ") + toString(result));
@@ -212,14 +208,12 @@ public:
         }
 
         render::ClusterAccelerationStructureBuildSizes triangleSizes;
-        result = device->queryClusterAccelerationStructureTriangleBuildSizes(
-            render::ClusterAccelerationStructureTriangleBuildSizesDesc{
+        result = device->queryClusterAccelerationStructureTriangleBuildSizes(render::ClusterAccelerationStructureTriangleBuildSizesDesc{
                 .maxClusterTriangleCount = 1,
                 .maxClusterVertexCount = 3,
                 .maxTotalTriangleCount = 1,
                 .maxTotalVertexCount = 3,
-            },
-            triangleSizes);
+            }).transform([&](auto rhiValue) { triangleSizes = std::move(rhiValue); });
 
         const render::DeviceCapabilities& capabilities = device->capabilities();
         if (!capabilities.clusterAccelerationStructure) {
@@ -242,12 +236,10 @@ public:
         }
 
         render::ClusterAccelerationStructureBuildSizes bottomLevelSizes;
-        result = device->queryClusterAccelerationStructureBottomLevelBuildSizes(
-            render::ClusterAccelerationStructureBottomLevelBuildSizesDesc{
+        result = device->queryClusterAccelerationStructureBottomLevelBuildSizes(render::ClusterAccelerationStructureBottomLevelBuildSizesDesc{
                 .maxClusterCountPerAccelerationStructure = 1,
                 .maxTotalClusterCount = 1,
-            },
-            bottomLevelSizes);
+            }).transform([&](auto rhiValue) { bottomLevelSizes = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("queryClusterAccelerationStructureBottomLevelBuildSizes returned ") + toString(result));
@@ -271,13 +263,11 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result result = render::createDevice(
-            render::DeviceDesc{
+        render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic RHI Partitioned Acceleration Structure Test",
                 .enableValidation = context.enableValidation,
                 .enablePartitionedAccelerationStructure = true,
-            },
-            device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("createDevice(partitioned acceleration structure) returned ") + toString(result));
@@ -287,14 +277,12 @@ public:
         }
 
         render::PartitionedAccelerationStructureBuildSizes sizes;
-        result = device->queryPartitionedAccelerationStructureBuildSizes(
-            render::PartitionedAccelerationStructureBuildInputs{
+        result = device->queryPartitionedAccelerationStructureBuildSizes(render::PartitionedAccelerationStructureBuildInputs{
                 .instanceCount = 1,
                 .partitionCount = 1,
                 .maxInstancePerPartitionCount = 1,
                 .maxOperationCount = 1,
-            },
-            sizes);
+            }).transform([&](auto rhiValue) { sizes = std::move(rhiValue); });
 
         const render::DeviceCapabilities& capabilities = device->capabilities();
         if (!capabilities.partitionedAccelerationStructure) {
@@ -324,6 +312,132 @@ public:
     }
 };
 
+class ExpectedResourceResultsTest final : public RhiTest {
+public:
+    ExpectedResourceResultsTest()
+    {
+        type = RhiTestType::Resource;
+        name = "expected_resource_results";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        static_assert(std::is_same_v<Result<BufferSlice>, std::expected<BufferSlice, Error>>);
+        static_assert(!std::is_copy_constructible_v<Result<std::unique_ptr<Buffer>>>);
+        static_assert(std::is_move_constructible_v<Result<std::unique_ptr<Buffer>>>);
+
+        Device emptyDevice;
+        if (!hasError(emptyDevice.createBuffer({.size = 64}), Error::InvalidArgument) ||
+            !hasError(emptyDevice.createSemaphore(), Error::InvalidArgument) ||
+            !hasError(emptyDevice.resourceRegistry(), Error::InvalidArgument) ||
+            !hasError(emptyDevice.reserveMemoryBudget(64), Error::InvalidArgument) ||
+            !hasError(emptyDevice.textureAllocationSize({}), Error::InvalidArgument) ||
+            !hasError(emptyDevice.queryRayTracingAccelerationStructureProperties(), Error::InvalidArgument) ||
+            !hasError(BufferSlice{}.subslice(), Error::InvalidArgument)) {
+            return RhiTestResult::fail("invalid objects did not return the expected error");
+        }
+
+        bool visited = false;
+        const auto rejected = emptyDevice.createBuffer({.size = 64}).transform(
+            [&](auto) { visited = true; });
+        if (visited || !hasError(rejected, Error::InvalidArgument) ||
+            std::string_view(resultToString(rejected)) != "InvalidArgument") {
+            return RhiTestResult::fail("failed creation exposed a value or lost its error");
+        }
+
+        auto created = context.device.createBuffer({.size = 64, .usage = BufferUsageBits::Storage});
+        if (!created) { return RhiTestResult::fail(resultToString(created)); }
+        auto buffer = std::move(*created);
+        if (!buffer || *created) {
+            return RhiTestResult::fail("buffer ownership was not transferred from the result");
+        }
+        auto slice = buffer->slice(16, 32);
+        if (!slice || slice->offset() != 16 || slice->size() != 32 ||
+            !hasError(slice->subslice(33), Error::InvalidArgument)) {
+            return RhiTestResult::fail("slice result lost its range or error");
+        }
+        auto remainder = slice->subslice(8);
+        if (!remainder || remainder->offset() != 24 || remainder->size() != 24) {
+            return RhiTestResult::fail("subslice default size did not preserve the remaining range");
+        }
+        std::weak_ptr<void> allocation = buffer->retainAllocation();
+        buffer.reset();
+        if (allocation.expired()) {
+            return RhiTestResult::fail("returned slices did not retain the buffer allocation");
+        }
+        slice = makeError(Error::Failure);
+        remainder = makeError(Error::Failure);
+        if (!allocation.expired()) {
+            return RhiTestResult::fail("discarded result values leaked a buffer allocation");
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+class ExpectedBindlessResultsTest final : public RhiTest {
+public:
+    ExpectedBindlessResultsTest()
+    {
+        type = RhiTestType::Resource;
+        name = "expected_bindless_results";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        auto device = createDevice({.applicationName = "Expected bindless results",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true});
+        if (hasError(device, Error::Unsupported)) { return RhiTestResult::skip(resultToString(device)); }
+        if (!device) { return RhiTestResult::fail(resultToString(device)); }
+        auto created = (*device)->createBindlessHeap({
+            .maxSamplers = 1, .maxSampledImages = 1, .maxStorageImages = 1, .maxBuffers = 1});
+        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip(resultToString(created)); }
+        if (!created) { return RhiTestResult::fail(resultToString(created)); }
+        auto& heap = **created;
+        using Allocate = Result<BindlessHandle> (BindlessHeap::*)();
+        const std::pair<Allocate, BindlessHandleKind> cases[] = {
+            {&BindlessHeap::allocateSampler, BindlessHandleKind::Sampler},
+            {&BindlessHeap::allocateSampledImage, BindlessHandleKind::SampledImage},
+            {&BindlessHeap::allocateStorageImage, BindlessHandleKind::StorageImage},
+            {&BindlessHeap::allocateBuffer, BindlessHandleKind::Buffer},
+            {&BindlessHeap::allocateAccelerationStructure, BindlessHandleKind::AccelerationStructure},
+            {&BindlessHeap::allocatePartitionedAccelerationStructure, BindlessHandleKind::PartitionedAccelerationStructure},
+        };
+        for (const auto& [allocate, kind] : cases) {
+            const auto handle = (heap.*allocate)();
+            if (!handle || !handle->valid() || handle->kind != kind) {
+                return RhiTestResult::fail("allocation did not return the requested handle kind");
+            }
+            // Sampled and storage images share one pool with the summed capacity.
+            const bool image = kind == BindlessHandleKind::SampledImage || kind == BindlessHandleKind::StorageImage;
+            auto second = image ? (heap.*allocate)() : Result<BindlessHandle>(makeError(Error::Unsupported));
+            if (image && (!second || second->kind != kind || second->index == handle->index)) {
+                return RhiTestResult::fail("shared image pool did not expose both slots");
+            }
+            if (!hasError((heap.*allocate)(), Error::OutOfMemory)) {
+                return RhiTestResult::fail("exhausted allocation did not return OutOfMemory");
+            }
+            heap.release(*handle);
+            const auto reused = (heap.*allocate)();
+            if (!reused || reused->index != handle->index) {
+                return RhiTestResult::fail("released slot was not reusable");
+            }
+            heap.release(*reused);
+            if (second) { heap.release(*second); }
+        }
+        BindlessHeap moved = std::move(heap);
+        for (const auto& [allocate, kind] : cases) {
+            if (!hasError((heap.*allocate)(), Error::InvalidArgument)) {
+                return RhiTestResult::fail("moved-from heap did not return InvalidArgument");
+            }
+        }
+        return RhiTestResult::pass();
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(ExpectedResourceResultsTest);
+METALLIC_REGISTER_RHI_TEST(ExpectedBindlessResultsTest);
 METALLIC_REGISTER_RHI_TEST(ValidateDeviceTest);
 METALLIC_REGISTER_RHI_TEST(ShaderObjectRequiredTest);
 METALLIC_REGISTER_RHI_TEST(ScenePathNormalizationTest);

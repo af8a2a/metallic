@@ -68,7 +68,7 @@ void TracyGpuProfiler::beginFrame(Queue& queue, GpuProfileFrame& frame)
     frame.active = true;
     frame.connection = connectionId();
     frame.thread = tracy::GetThreadHandle();
-    frame.calibrated = queue.calibrateTimestamps(frame.calibration).has_value();
+    frame.calibrated = queue.calibrateTimestamps().transform([&](auto rhiValue) { frame.calibration = std::move(rhiValue); }).has_value();
     frame.calibrationCpuTime = tracy::Profiler::GetTime();
     frame.cpuBegin = frame.calibrationCpuTime;
 }

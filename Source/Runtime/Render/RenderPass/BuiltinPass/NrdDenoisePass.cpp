@@ -105,7 +105,7 @@ public:
             50.0f);
         return settings;
     }
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
 #if !METALLIC_HAS_NRD
         log = "NrdDenoisePass requires METALLIC_ENABLE_NRD=ON";
@@ -125,7 +125,7 @@ public:
 #endif
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
 #if !METALLIC_HAS_NRD
         (void)context;
@@ -178,7 +178,7 @@ public:
             context.height(),
             context.properties());
 
-        Result result = ensureNrd(
+        Result<> result = ensureNrd(
             context,
             noisyDiffuse,
             noisySpecular,
@@ -455,7 +455,7 @@ private:
         return NrdDenoiserMode::Reblur;
     }
 
-    Result ensureNrd(
+    Result<> ensureNrd(
         RenderGraphExecutionContext& context,
         TextureHandle noisyDiffuse,
         TextureHandle noisySpecular,
@@ -504,7 +504,7 @@ private:
         if (sizeChanged) {
             nrd_ = std::make_unique<NrdRuntime>();
             std::string log;
-            Result result = nrd_->initialize(*device_, width, height, pool, log);
+            Result<> result = nrd_->initialize(*device_, width, height, pool, log);
             if (!result) {
                 nrd_.reset();
                 return result;
@@ -528,7 +528,7 @@ private:
         return {};
     }
 
-    Result runNrd(
+    Result<> runNrd(
         RenderGraphExecutionContext& context,
         uint32_t denoiserMode,
         TextureHandle noisyDiffuse,
@@ -572,7 +572,7 @@ private:
             boolProperty(&properties, "relaxConfidenceInputs", true);
         commonSettings.enableValidation = boolProperty(&properties, "enableValidation", true);
 
-        Result result = nrd_->setCommonSettings(commonSettings);
+        Result<> result = nrd_->setCommonSettings(commonSettings);
         if (!result) {
             return result;
         }

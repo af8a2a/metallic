@@ -416,7 +416,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         const auto initialized = render::createDevice({.applicationName = "LightGrid debug reload test",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(initialized, render::Error::Unsupported)) {
             return RhiTestResult::skip("LightGrid debug reload requires bindless compute support");
         }
@@ -431,13 +431,13 @@ public:
             render::Device& device;
             ~WaitBeforeDestruction() { (void)device.waitIdle(); }
         } waitBeforeDestruction{*device};
-        LIGHT_DEBUG_CHECK(device->createCommandPool(*queue, pool));
-        LIGHT_DEBUG_CHECK(pool->createCommandBuffer(commands));
+        LIGHT_DEBUG_CHECK(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        LIGHT_DEBUG_CHECK(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
         constexpr uint32_t kExtent = 32;
         constexpr uint64_t kReadbackBytes = kExtent * kExtent * sizeof(uint32_t);
         LIGHT_DEBUG_CHECK(device->createBuffer({.size = kReadbackBytes,
             .usage = render::BufferUsageBits::TransferDestination,
-            .memoryLocation = render::MemoryLocation::HostReadback}, readback));
+            .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         render::RenderGraph graph;
         auto properties = debugProperties();
         properties["source"] = "bench";

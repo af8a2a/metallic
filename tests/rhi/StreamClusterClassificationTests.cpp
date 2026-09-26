@@ -36,7 +36,7 @@ public:
         std::string log;
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Stream classification regression",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless heap"); }
         CLASSIFY_REQUIRE(created);
         if (!device->capabilities().shaderBufferInt64Atomics || device->capabilities().subPixelPrecisionBits > 8) {
@@ -49,9 +49,9 @@ public:
         std::array<VisibilityHybridRasterizer, 2> rasterizers;
         for (auto& rasterizer : rasterizers) { CLASSIFY_REQUIRE(rasterizer.initialize(*device, 128, 128, log, 1, capacity)); }
         std::unique_ptr<BindlessHeap> heap;
-        CLASSIFY_REQUIRE(device->createBindlessHeap({.maxBuffers = 18}, heap));
+        CLASSIFY_REQUIRE(device->createBindlessHeap({.maxBuffers = 18}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<BindlessHandle, 18> handles;
-        for (auto& handle : handles) { CLASSIFY_REQUIRE(heap->allocateBuffer(handle)); }
+        for (auto& handle : handles) { CLASSIFY_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
         enum Input { Header, Groups, Params, Pages, PageTable, Bindings, Visibility, Requests, Records, Hzb0, Hzb1, Instances, InputCount };
         const uint32_t strides[] = {sizeof(MeshletStreamGpuActiveHeader), sizeof(MeshletStreamGpuActiveGroup),
             sizeof(MeshletStreamGpuParams), 4, sizeof(StreamPageTableEntry), sizeof(MeshletStreamGpuRasterBindings),
@@ -62,7 +62,7 @@ public:
         for (size_t i = 0; i < inputs.size(); ++i) {
             CLASSIFY_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
-                .memoryLocation = MemoryLocation::HostUpload}, inputs[i]));
+                .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[i] = std::move(rhiValue); }));
             CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[i], *inputs[i]));
         }
         for (size_t i = 0; i < 2; ++i) {
@@ -70,7 +70,7 @@ public:
             CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[13 + i * 2], rasterizers[i].candidateArguments()));
             CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[16 + i], rasterizers[i].workloadBuffer()));
         }
-        const auto upload = [&](size_t index, const void* data, size_t size) -> Result {
+        const auto upload = [&](size_t index, const void* data, size_t size) -> Result<> {
             void* mapped = inputs[index]->map();
             if (!mapped) { return makeError(Error::Failure); }
             std::memcpy(mapped, data, size);
@@ -90,9 +90,9 @@ public:
                 .additionalSearchPaths = additional, .additionalSearchPathCount = 1}, compiled);
             log = compiled.diagnostics;
             CLASSIFY_REQUIRE(result);
-            CLASSIFY_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}, shaders[i]));
+            CLASSIFY_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
             CLASSIFY_REQUIRE(device->createComputePipeline({.computeShader = shaders[i].get(), .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, pipelines[i]));
+                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { pipelines[i] = std::move(rhiValue); }));
         }
         // Opt-in resource report for classifier and production SW entrypoints,
         // alongside the validation-enabled classification regression below.
@@ -115,9 +115,9 @@ public:
                         .additionalSearchPaths = additionalStatsPaths, .additionalSearchPathCount = 1}, compiled));
                     std::unique_ptr<ShaderModule> shader;
                     std::unique_ptr<ComputePipeline> pipeline;
-                    CLASSIFY_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}, shader));
+                    CLASSIFY_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
                     CLASSIFY_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .usesBindlessHeap = true,
-                        .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, pipeline));
+                        .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
                 }
             }
         }
@@ -125,17 +125,17 @@ public:
         const uint64_t recordBytes = inputs[Records]->desc().size;
         std::unique_ptr<Buffer> readback;
         CLASSIFY_REQUIRE(device->createBuffer({.size = binBytes + recordBytes + 52 + 128,
-            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, readback));
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         std::unique_ptr<Buffer> exactQueueReadback;
         CLASSIFY_REQUIRE(device->createBuffer({.size = uint64_t(capacity) * 16,
-            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, exactQueueReadback));
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { exactQueueReadback = std::move(rhiValue); }));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         std::unique_ptr<Fence> fence;
-        CLASSIFY_REQUIRE(device->createCommandPool(*queue, pool));
-        CLASSIFY_REQUIRE(pool->createCommandBuffer(commands));
-        CLASSIFY_REQUIRE(device->createFence(false, fence));
+        CLASSIFY_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        CLASSIFY_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
+        CLASSIFY_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         // Optional classifier-only A/B on the P1 exact queue. This isolates the
         // removed guard; use sample profiles to include changed cull/queue work.
         // Both kernels only overwrite tags, so the queue can be safely reused.
@@ -151,7 +151,7 @@ public:
             benchmark.open(benchmarkPath);
             if (!benchmark) { return RhiTestResult::fail("Cannot open classification benchmark CSV"); }
             benchmark << "case,phase,groups,classify_count,round,variant,gpu_us,debug_mode\n" << std::setprecision(10);
-            CLASSIFY_REQUIRE(device->createTimestampQueryPool(*queue, {.queryCount = timedDispatches * 2}, timing));
+            CLASSIFY_REQUIRE(device->createTimestampQueryPool(*queue, {.queryCount = timedDispatches * 2}).transform([&](auto rhiValue) { timing = std::move(rhiValue); }));
         }
         bool sawFastSoftware = false, sawFastHardware = false;
         bool submitted = false, sawRetry = false, sawLate = false, sawSoftware = false, sawHardware = false, saw2D = false;

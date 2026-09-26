@@ -144,7 +144,7 @@ public:
         return settings;
     }
 
-    Result prepare(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {
         forceReset_ = true;
         preparedValid_ = false;
@@ -170,7 +170,7 @@ public:
             return {};
         }
 
-        Result result = variant_ == DlssVariant::RayReconstruction
+        Result<> result = variant_ == DlssVariant::RayReconstruction
             ? vulkan::getStreamlineDlssRrOptimalSettings(
                   preparedMode_,
                   context.width,
@@ -193,7 +193,7 @@ public:
         return result;
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
 #if !METALLIC_HAS_STREAMLINE
         log = std::string(passTypeName()) + " requires the NVIDIA Streamline SDK target";
@@ -249,7 +249,7 @@ public:
 #endif
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle inputColor = context.inputTexture("inputColor");
         TextureHandle outputColor = context.outputTexture("color");
@@ -385,7 +385,7 @@ public:
         camera.previousValid = previousCameraValid;
 
         std::string log;
-        Result result;
+        Result<> result;
         if (rayReconstruction) {
             result = vulkan::evaluateStreamlineDlssRr(
                 context.commandBuffer(),
@@ -408,7 +408,7 @@ public:
                 },
                 log);
         } else {
-            Result depthResult = exportSuperResolutionDepth(
+            Result<> depthResult = exportSuperResolutionDepth(
                 context.commandBuffer(),
                 depth,
                 renderWidth,
@@ -467,7 +467,7 @@ public:
     }
 
 private:
-    Result resolveOutputGuides(RenderGraphExecutionContext& context, TextureHandle motion,
+    Result<> resolveOutputGuides(RenderGraphExecutionContext& context, TextureHandle motion,
         TextureHandle depth, std::array<float, 2> jitter)
     {
         if (!boolProperty(&properties(), "exportOutputGuides", false)) { return {}; }
@@ -814,7 +814,7 @@ private:
         });
     }
 
-    Result prepareSuperResolutionResources(
+    Result<> prepareSuperResolutionResources(
         Device& device,
         uint32_t renderWidth,
         uint32_t renderHeight,
@@ -825,25 +825,23 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        Result result;
+        Result<> result;
         if (auxiliaryHeap_ == nullptr) {
-            result = device.createBindlessHeap(
-                BindlessHeapDesc{
+            result = device.createBindlessHeap(BindlessHeapDesc{
                     .maxSampledImages = 1,
                     .maxStorageImages = 1,
-                },
-                auxiliaryHeap_);
+                }).transform([&](auto rhiValue) { auxiliaryHeap_ = std::move(rhiValue); });
             if (!result || auxiliaryHeap_ == nullptr) {
                 log += resultMessage("createBindlessHeap(StreamlineDlssSrPass)", result);
                 log += '\n';
                 return result ? makeError(Error::Failure) : result;
             }
-            result = auxiliaryHeap_->allocateSampledImage(depthGuideHandle_);
+            result = auxiliaryHeap_->allocateSampledImage().transform([&](auto rhiValue) { depthGuideHandle_ = std::move(rhiValue); });
             if (!result || !depthGuideHandle_.valid()) {
                 log = "StreamlineDlssSrPass failed to allocate its depth guide descriptor";
                 return result ? makeError(Error::Failure) : result;
             }
-            result = auxiliaryHeap_->allocateStorageImage(outputColorHandle_);
+            result = auxiliaryHeap_->allocateStorageImage().transform([&](auto rhiValue) { outputColorHandle_ = std::move(rhiValue); });
             if (!result || !outputColorHandle_.valid()) {
                 log = "StreamlineDlssSrPass failed to allocate its output descriptor";
                 return result ? makeError(Error::Failure) : result;
@@ -869,8 +867,7 @@ private:
             if (!result) {
                 return result;
             }
-            result = device.createGraphicsPipeline(
-                GraphicsPipelineDesc{
+            result = device.createGraphicsPipeline(GraphicsPipelineDesc{
                     .vertexShader = depthVertexShader_.get(),
                     .fragmentShader = depthFragmentShader_.get(),
                     .depthStencilFormat = Format::D32Sfloat,
@@ -881,8 +878,7 @@ private:
                         .depthCompareOp = CompareOp::Always,
                     },
                     .usesBindlessHeap = true,
-                },
-                depthExportPipeline_);
+                }).transform([&](auto rhiValue) { depthExportPipeline_ = std::move(rhiValue); });
             if (!result || depthExportPipeline_ == nullptr) {
                 log += resultMessage("createGraphicsPipeline(StreamlineDlssSrPass depth export)", result);
                 log += '\n';
@@ -900,13 +896,11 @@ private:
             if (!result) {
                 return result;
             }
-            result = device.createComputePipeline(
-                ComputePipelineDesc{
+            result = device.createComputePipeline(ComputePipelineDesc{
                     .computeShader = alphaShader_.get(),
                     .usesBindlessHeap = true,
                     .bindlessUserPushDataSize = sizeof(StreamlineDlssAlphaUserPush),
-                },
-                alphaResolvePipeline_);
+                }).transform([&](auto rhiValue) { alphaResolvePipeline_ = std::move(rhiValue); });
             if (!result || alphaResolvePipeline_ == nullptr) {
                 log += resultMessage("createComputePipeline(StreamlineDlssSrPass alpha resolve)", result);
                 log += '\n';
@@ -923,8 +917,7 @@ private:
         dlssDepthView_.reset();
         dlssDepth_.reset();
         dlssDepthState_ = ResourceState::Undefined;
-        result = device.createTexture(
-            TextureDesc{
+        result = device.createTexture(TextureDesc{
                 .type = TextureType::Texture2D,
                 .usage = TextureUsageBits::DepthStencilAttachment | TextureUsageBits::Sampled,
                 .format = Format::D32Sfloat,
@@ -934,23 +927,20 @@ private:
                 .mipCount = 1,
                 .layerCount = 1,
                 .memoryLocation = MemoryLocation::Device,
-            },
-            dlssDepth_);
+            }).transform([&](auto rhiValue) { dlssDepth_ = std::move(rhiValue); });
         if (!result || dlssDepth_ == nullptr) {
             log += resultMessage("createTexture(StreamlineDlssSrPass D32 depth)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
-        result = device.createTextureView(
-            *dlssDepth_,
+        result = device.createTextureView(*dlssDepth_,
             TextureViewDesc{
                 .format = Format::D32Sfloat,
                 .baseMip = 0,
                 .mipCount = 1,
                 .baseLayer = 0,
                 .layerCount = 1,
-            },
-            dlssDepthView_);
+            }).transform([&](auto rhiValue) { dlssDepthView_ = std::move(rhiValue); });
         if (!result || dlssDepthView_ == nullptr) {
             log += resultMessage("createTextureView(StreamlineDlssSrPass D32 depth)", result);
             log += '\n';
@@ -961,7 +951,7 @@ private:
         return {};
     }
 
-    Result exportSuperResolutionDepth(
+    Result<> exportSuperResolutionDepth(
         CommandBuffer& commandBuffer,
         TextureHandle depthGuide,
         uint32_t renderWidth,
@@ -977,7 +967,7 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        Result result = auxiliaryHeap_->writeSampledImage(
+        Result<> result = auxiliaryHeap_->writeSampledImage(
             depthGuideHandle_,
             *depthGuide.view(),
             ResourceState::ShaderRead);
@@ -1071,7 +1061,7 @@ private:
         return {};
     }
 
-    Result resolveSuperResolutionAlpha(
+    Result<> resolveSuperResolutionAlpha(
         CommandBuffer& commandBuffer,
         TextureHandle outputColor)
     {
@@ -1081,7 +1071,7 @@ private:
             !outputColorHandle_.valid()) {
             return makeError(Error::InvalidArgument);
         }
-        Result result = auxiliaryHeap_->writeStorageImage(
+        Result<> result = auxiliaryHeap_->writeStorageImage(
             outputColorHandle_,
             *outputColor.view());
         if (!result) {

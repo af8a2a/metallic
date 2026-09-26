@@ -233,7 +233,7 @@ public:
         render::GPUScene gpuScene;
         gpuScene.setDefaultFrameSlotCount(2);
         std::string log;
-        render::Result result = gpuScene.rebuild(
+        render::Result<> result = gpuScene.rebuild(
             makeSourceView(primitives, nodes, materials, 1, 1, 1),
             log);
         if (!result) {
@@ -388,14 +388,12 @@ public:
         }
 
         std::unique_ptr<render::Buffer> gpuViewBuffer;
-        result = context.device.createBuffer(
-            render::BufferDesc{
+        result = context.device.createBuffer(render::BufferDesc{
                 .size = 256,
                 .structureStride = sizeof(uint32_t),
                 .usage = render::BufferUsageBits::Storage |
                     render::BufferUsageBits::Indirect,
-            },
-            gpuViewBuffer);
+            }).transform([&](auto rhiValue) { gpuViewBuffer = std::move(rhiValue); });
         if (!result || gpuViewBuffer == nullptr) {
             return RhiTestResult::fail("GPUScene buffer-view test buffer creation failed");
         }
@@ -662,7 +660,7 @@ public:
 
         render::GPUScene gpuScene;
         std::string log;
-        render::Result result = gpuScene.rebuild(
+        render::Result<> result = gpuScene.rebuild(
             makeSourceView(primitives, nodes, materials, 1, 1, 1),
             log);
         if (!result) {
@@ -887,13 +885,11 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result result = render::createDevice(
-            render::DeviceDesc{
+        render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic GPUScene GPU Resources Test",
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
-            },
-            device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             return render::hasError(result, render::Error::Unsupported)
                 ? RhiTestResult::skip(std::string("createDevice returned ") + toString(result))
@@ -922,7 +918,7 @@ public:
         }
 
         std::shared_ptr<render::ResourceRegistry> registry;
-        result = device->resourceRegistry(registry);
+        result = device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (!result) { return RhiTestResult::fail("Device registry unavailable"); }
 
         std::vector<scene::RenderPrimitive> primitives{
@@ -960,7 +956,7 @@ public:
         nodes[3].renderPrimitiveIndex = scene::kInvalidSceneIndex;
 
         std::unique_ptr<render::CommandPool> commandPool;
-        result = device->createCommandPool(*queue, commandPool);
+        result = device->createCommandPool(*queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
             return RhiTestResult::fail(
                 std::string("createCommandPool returned ") + toString(result));
@@ -971,12 +967,12 @@ public:
                                uint32_t frameSlot,
                                Check&& check) -> RhiTestResult {
             log.clear();
-            render::Result frameResult = host.beginFrame(frameIndex, frameSlot, nullptr, log);
+            render::Result<> frameResult = host.beginFrame(frameIndex, frameSlot, nullptr, log);
             if (!frameResult) {
                 return RhiTestResult::fail("GPUScene beginFrame failed: " + log);
             }
             std::unique_ptr<render::CommandBuffer> commandBuffer;
-            frameResult = commandPool->createCommandBuffer(commandBuffer);
+            frameResult = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
             if (!frameResult || commandBuffer == nullptr || !commandBuffer->begin()) {
                 host.endFrame();
                 return RhiTestResult::fail("GPUScene command-buffer creation/begin failed");
@@ -1014,7 +1010,7 @@ public:
                 return RhiTestResult::fail("GPUScene command recording failed: " + log);
             }
             std::unique_ptr<render::Fence> fence;
-            frameResult = device->createFence(false, fence);
+            frameResult = device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
             if (!frameResult || fence == nullptr) {
                 host.endFrame();
                 return RhiTestResult::fail("GPUScene fence creation failed");
@@ -1181,7 +1177,7 @@ public:
             firstInstance = views.instances.buffer;
             firstDrawKeys = views.drawKeys.buffer;
             log.clear();
-            render::Result bindingResult =
+            render::Result<> bindingResult =
                 subsystem->createBindings(bindings, log);
             if (!bindingResult || !bindings.validFor(views) ||
                 !bindings[render::GPUSceneGlobalBufferKind::Geometries].valid() ||
@@ -1202,14 +1198,12 @@ public:
                 return RhiTestResult::fail("GPUScene full-upload statistics are incorrect");
             }
 
-            render::Result readbackResult = device->createBuffer(
-                render::BufferDesc{
+            render::Result<> readbackResult = device->createBuffer(render::BufferDesc{
                     .size = kCanonicalReadbackSize,
                     .usage = render::BufferUsageBits::TransferDestination,
                     .memoryLocation = render::MemoryLocation::HostReadback,
                     .queueAccess = render::QueueAccessBits::Graphics,
-                },
-                canonicalReadback);
+                }).transform([&](auto rhiValue) { canonicalReadback = std::move(rhiValue); });
             if (!readbackResult || canonicalReadback == nullptr) {
                 return RhiTestResult::fail(
                     "GPUScene canonical payload readback allocation failed");
@@ -1540,13 +1534,11 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result result = render::createDevice(
-            render::DeviceDesc{
+        render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic GPUScene View GPU Resources Test",
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
-            },
-            device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             return render::hasError(result, render::Error::Unsupported)
                 ? RhiTestResult::skip(std::string("createDevice returned ") + toString(result))
@@ -1717,7 +1709,7 @@ public:
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
-        result = device->createCommandPool(*queue, commandPool);
+        result = device->createCommandPool(*queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
             return RhiTestResult::fail(
                 "GPUScene View resource command-pool creation failed");
@@ -1728,7 +1720,7 @@ public:
                 "GPUScene View resource beginFrame failed: " + log);
         }
         std::unique_ptr<render::CommandBuffer> commandBuffer;
-        result = commandPool->createCommandBuffer(commandBuffer);
+        result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr || !commandBuffer->begin()) {
             host.endFrame();
             return RhiTestResult::fail(
@@ -1857,7 +1849,7 @@ public:
                 "GPUScene View resource command-buffer end failed");
         }
         std::unique_ptr<render::Fence> fence;
-        result = device->createFence(false, fence);
+        result = device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
             host.endFrame();
             return RhiTestResult::fail(
@@ -1906,7 +1898,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         const auto result = render::createDevice({.applicationName = "GPUScene submission recovery",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("requires bindless buffers"); }
         SUBMISSION_CHECK(result);
         auto* queue = device->getQueue(render::QueueType::Graphics);
@@ -1939,11 +1931,11 @@ public:
         std::unique_ptr<render::CommandPool> pool;
         std::unique_ptr<render::CommandBuffer> commands;
         std::unique_ptr<render::Buffer> readback;
-        SUBMISSION_CHECK(device->createCommandPool(*queue, pool));
-        SUBMISSION_CHECK(pool->createCommandBuffer(commands));
+        SUBMISSION_CHECK(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        SUBMISSION_CHECK(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
         SUBMISSION_CHECK(device->createBuffer({.size = sizeof(render::GPUSceneGpuInstanceRecord),
             .usage = render::BufferUsageBits::TransferDestination,
-            .memoryLocation = render::MemoryLocation::HostReadback}, readback));
+            .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         struct Drain {
             render::Queue& queue;
             ~Drain() { (void)queue.waitIdle(); }

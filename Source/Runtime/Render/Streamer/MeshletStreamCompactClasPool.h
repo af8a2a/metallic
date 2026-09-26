@@ -10,9 +10,9 @@ class MeshletStreamCompactClasPool {
   public:
     MeshletStreamCompactClasPool();
     ~MeshletStreamCompactClasPool();
-    Result initialize(Device&, const MeshletStreamClasPoolDesc&, std::string&);
+    Result<> initialize(Device&, const MeshletStreamClasPoolDesc&, std::string&);
     void beginFrame(CpuProfileRecorder* profiler = nullptr);
-    Result cmdBuildPages(CommandBuffer&, Buffer&, std::span<const MeshletStreamClasPageBuild>, std::string&);
+    Result<> cmdBuildPages(CommandBuffer&, Buffer&, std::span<const MeshletStreamClasPageBuild>, std::string&);
     void retirePages(std::span<const uint32_t>);
     bool ready() const;
     bool pageHasClas(uint32_t) const;

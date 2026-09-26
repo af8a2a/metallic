@@ -31,11 +31,11 @@ public:
     StreamingUploads(const StreamingUploads&) = delete;
     StreamingUploads& operator=(const StreamingUploads&) = delete;
 
-    Result initialize(Device& device, std::string& log, uint32_t frameSlotCount = 3);
+    Result<> initialize(Device& device, std::string& log, uint32_t frameSlotCount = 3);
     void reset();
 
     void beginFrame();
-    Result beginFrame(RenderFrameContext& frame);
+    Result<> beginFrame(RenderFrameContext& frame);
     void flush(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase = {});
     void endFrame();
 

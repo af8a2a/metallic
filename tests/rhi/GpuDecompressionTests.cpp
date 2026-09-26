@@ -62,13 +62,13 @@ public:
             std::vector<StreamDecompressionTile> tiles;
             for (const auto& tile : metadata.tiles) { tiles.push_back({tile.sourceOffset, tile.destinationOffset, tile.storedBytes, tile.decodedBytes, tile.codec != 0}); }
             requireGpuPage(bool(tracker.initialize(context.device, context.graphicsQueue)), "Tracker initialization");
-            requireGpuPage(bool(context.device.createStreamer({.dynamicBufferSizePerFrame = 1024, .queuedFrameCount = 2}, streamer)), "Streamer creation");
-            requireGpuPage(bool(context.device.createCommandPool(context.graphicsQueue, pool)) && bool(pool->createCommandBuffer(commands)), "Commands creation");
+            requireGpuPage(bool(context.device.createStreamer({.dynamicBufferSizePerFrame = 1024, .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })), "Streamer creation");
+            requireGpuPage(bool(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); })) && bool(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })), "Commands creation");
             requireGpuPage(bool(context.device.createBuffer({.size = decoded.size(),
                 .usage = BufferUsageBits::TransferDestination | BufferUsageBits::TransferSource | BufferUsageBits::MemoryDecompression,
-                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, destination)), "GPU destination creation");
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { destination = std::move(rhiValue); })), "GPU destination creation");
             requireGpuPage(bool(context.device.createBuffer({.size = decoded.size(), .usage = BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::HostReadback}, readback)), "Readback creation");
+                .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); })), "Readback creation");
             // Include cancelled recording and repeated slot reuse.
             for (uint32_t iteration = 0; iteration < 7; ++iteration) {
                 requireGpuPage(bool(frame.begin(iteration)) && bool(pool->reset()) && bool(commands->begin(&frame)) &&
@@ -136,12 +136,12 @@ public:
                 QueueSubmissionTracker tracker;
                 struct Drain { Queue& queue; RenderFrameContext& frame; ~Drain() { frame.cancel(); (void)queue.waitIdle(); } } drain{context.graphicsQueue, frame};
                 requireGpuPage(bool(tracker.initialize(context.device, context.graphicsQueue)), "Tracker");
-                requireGpuPage(bool(context.device.createStreamer({.dynamicBufferSizePerFrame = 1024, .queuedFrameCount = 2}, streamer)), "Streamer");
-                requireGpuPage(bool(context.device.createCommandPool(context.graphicsQueue, pool)) && bool(pool->createCommandBuffer(commands)), "Commands");
+                requireGpuPage(bool(context.device.createStreamer({.dynamicBufferSizePerFrame = 1024, .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })), "Streamer");
+                requireGpuPage(bool(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); })) && bool(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })), "Commands");
                 requireGpuPage(bool(context.device.createBuffer({.size = residency.pageBufferSize(),
-                    .usage = BufferUsageBits::TransferDestination | BufferUsageBits::TransferSource | BufferUsageBits::MemoryDecompression}, destination)), "Destination");
+                    .usage = BufferUsageBits::TransferDestination | BufferUsageBits::TransferSource | BufferUsageBits::MemoryDecompression}).transform([&](auto rhiValue) { destination = std::move(rhiValue); })), "Destination");
                 requireGpuPage(bool(context.device.createBuffer({.size = reference.size(), .usage = BufferUsageBits::TransferDestination,
-                    .memoryLocation = MemoryLocation::HostReadback}, readback)), "Readback");
+                    .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); })), "Readback");
                 (void)residency.requestPage(0); // Return value means already resident.
                 requireGpuPage(residency.pageAllocated(0) && residency.queuedUploadCount() == 1, "Request admission");
                 const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);

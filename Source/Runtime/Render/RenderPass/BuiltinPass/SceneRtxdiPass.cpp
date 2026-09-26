@@ -181,7 +181,7 @@ public:
         return settings;
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
             log = "SceneRtxdiPass requires a device and graphics queue";
@@ -200,7 +200,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
         sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
-        Result result;
+        Result<> result;
         const uint64_t resourceRevision = sceneResources_.revision();
         if (resourceRevision != sceneResourceRevision_) {
             sceneResourceRevision_ = resourceRevision;
@@ -357,7 +357,7 @@ public:
         return result;
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         std::string syncLog;
         if (sceneResources_.revision() != sceneResourceRevision_) {
@@ -379,7 +379,7 @@ public:
         }
         const scene::Scene* lightScene = context.runtimeScene();
         if (!lightScene || !context.subsystems()) { return makeError(Error::InvalidArgument); }
-        Result lightResult;
+        Result<> lightResult;
         auto lighting = resolveSceneLighting(lightScene, context.world());
         const bool benchmark = context.properties().value("lightSource", std::string("scene")) == "bench";
         if (benchmark) {
@@ -438,7 +438,7 @@ public:
         SceneRtxdiHistoryViews reservoirHistory;
         SceneRtxdiHistoryViews positionHistory;
         SceneRtxdiHistoryViews normalHistory;
-        Result result = prepareHistoryTexture(
+        Result<> result = prepareHistoryTexture(
             context,
             "reservoir",
             Format::Rgba32Uint,
@@ -672,7 +672,7 @@ private:
         return texture.valid() && texture.texture() != nullptr && texture.view() != nullptr;
     }
 
-    static Result prepareHistoryTexture(
+    static Result<> prepareHistoryTexture(
         RenderGraphExecutionContext& context,
         std::string_view suffix,
         Format format,
@@ -694,7 +694,7 @@ private:
             .memoryLocation = MemoryLocation::Device,
         };
         const std::string name = historyNameForContext(context, suffix);
-        Result result = history->ensureTexture(name, desc, TextureViewDesc{.format = format});
+        Result<> result = history->ensureTexture(name, desc, TextureViewDesc{.format = format});
         if (!result) {
             return result;
         }

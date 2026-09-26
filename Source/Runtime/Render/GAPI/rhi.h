@@ -20,14 +20,18 @@ enum class Error : int8_t {
     DeviceLost,
 };
 
-using Result = std::expected<void, Error>;
+// Operations return their value on success and Error on failure. Use Result<>
+// for commands with no result value; resource factories return owning pointers.
+template<typename T = void>
+using Result = std::expected<T, Error>;
 
-[[nodiscard]] inline Result makeError(Error error)
+[[nodiscard]] inline std::unexpected<Error> makeError(Error error)
 {
     return std::unexpected(error);
 }
 
-[[nodiscard]] inline bool hasError(const Result& result, Error error)
+template<typename T>
+[[nodiscard]] inline bool hasError(const Result<T>& result, Error error)
 {
     return !result.has_value() && result.error() == error;
 }
@@ -52,7 +56,8 @@ using Result = std::expected<void, Error>;
     return "Unknown";
 }
 
-[[nodiscard]] inline const char* resultToString(const Result& result)
+template<typename T>
+[[nodiscard]] inline const char* resultToString(const Result<T>& result)
 {
     return result.has_value() ? "Success" : errorToString(result.error());
 }
@@ -1402,13 +1407,13 @@ public:
     Queue(const Queue&) = delete;
     Queue& operator=(const Queue&) = delete;
 
-    Result submit(const QueueSubmitDesc& desc);
-    Result waitIdle();
+    Result<> submit(const QueueSubmitDesc& desc);
+    Result<> waitIdle();
     QueueType type() const;
     bool sameQueue(const Queue& other) const;
     uint32_t timestampValidBits() const;
     // Optional and non-blocking: Unsupported leaves ordinary timestamp timing usable.
-    Result calibrateTimestamps(GpuClockCalibration& outCalibration) const;
+    [[nodiscard]] Result<GpuClockCalibration> calibrateTimestamps() const;
 
 private:
     explicit Queue(std::unique_ptr<detail::QueueImpl> impl);
@@ -1432,8 +1437,8 @@ public:
     Fence(const Fence&) = delete;
     Fence& operator=(const Fence&) = delete;
 
-    Result wait(uint64_t timeoutNanoseconds = UINT64_MAX);
-    Result reset();
+    Result<> wait(uint64_t timeoutNanoseconds = UINT64_MAX);
+    Result<> reset();
     bool isSignaled() const;
 
 private:
@@ -1456,8 +1461,8 @@ public:
     Semaphore(const Semaphore&) = delete;
     Semaphore& operator=(const Semaphore&) = delete;
 
-    Result wait(uint64_t value, uint64_t timeoutNanoseconds = UINT64_MAX);
-    Result signal(uint64_t value);
+    Result<> wait(uint64_t value, uint64_t timeoutNanoseconds = UINT64_MAX);
+    Result<> signal(uint64_t value);
     uint64_t currentValue() const;
 
 private:
@@ -1508,11 +1513,11 @@ public:
     uint64_t deviceAddress() const;
     std::shared_ptr<void> retainAllocation() const;
     // UINT64_MAX takes the remainder; failure clears out. Empty CPU slices are valid.
-    Result subslice(BufferSlice& out, uint64_t offset = 0, uint64_t size = UINT64_MAX) const;
+    [[nodiscard]] Result<BufferSlice> subslice(uint64_t offset = 0, uint64_t size = UINT64_MAX) const;
     // Requires a nonempty addressed range, all usage bits, and absolute alignment.
-    Result validate(const void* device, BufferUsageBits usage, uint64_t alignment = 1,
+    Result<> validate(const void* device, BufferUsageBits usage, uint64_t alignment = 1,
         uint64_t minimumSize = 1) const;
-    Result validateData(const void* device, uint32_t stride, uint32_t alignment) const;
+    Result<> validateData(const void* device, uint32_t stride, uint32_t alignment) const;
 private:
     std::shared_ptr<detail::BufferImpl> allocation_;
     uint64_t offset_ = 0;
@@ -1532,7 +1537,7 @@ public:
 
     const BufferDesc& desc() const;
     uint64_t deviceAddress() const;
-    Result slice(BufferSlice& out, uint64_t offset = 0, uint64_t size = UINT64_MAX) const;
+    [[nodiscard]] Result<BufferSlice> slice(uint64_t offset = 0, uint64_t size = UINT64_MAX) const;
     // Retains this allocation, not the movable public wrapper. Device must outlive it.
     std::shared_ptr<void> retainAllocation() const;
     const void* deviceIdentity() const;
@@ -1588,7 +1593,7 @@ public:
     TimestampQueryPool& operator=(const TimestampQueryPool&) = delete;
 
     const TimestampQueryPoolDesc& desc() const;
-    Result readResults(
+    Result<> readResults(
         uint32_t firstQuery,
         uint32_t queryCount,
         TimestampQueryResult* outResults) const;
@@ -1618,7 +1623,7 @@ public:
         const RayTracingAccelerationStructureCompactionQueryPool&) = delete;
 
     const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc() const;
-    Result readResults(
+    Result<> readResults(
         uint32_t firstQuery,
         uint32_t queryCount,
         uint64_t* outCompactedSizes) const;
@@ -1779,7 +1784,7 @@ public:
     PipelineCacheStats stats() const;
     // Persists pending cache changes. This is a no-op when no new PSO hash was
     // recorded since loading or the previous save.
-    Result save();
+    Result<> save();
 
 private:
     explicit PipelineCache(std::unique_ptr<detail::PipelineCacheImpl> impl);
@@ -1875,25 +1880,25 @@ public:
 
     const BindlessHeapDesc& desc() const;
 
-    Result allocateSampler(BindlessHandle& outHandle);
-    Result allocateSampledImage(BindlessHandle& outHandle);
-    Result allocateStorageImage(BindlessHandle& outHandle);
-    Result allocateBuffer(BindlessHandle& outHandle);
-    Result allocateAccelerationStructure(BindlessHandle& outHandle);
-    Result allocatePartitionedAccelerationStructure(BindlessHandle& outHandle);
+    [[nodiscard]] Result<BindlessHandle> allocateSampler();
+    [[nodiscard]] Result<BindlessHandle> allocateSampledImage();
+    [[nodiscard]] Result<BindlessHandle> allocateStorageImage();
+    [[nodiscard]] Result<BindlessHandle> allocateBuffer();
+    [[nodiscard]] Result<BindlessHandle> allocateAccelerationStructure();
+    [[nodiscard]] Result<BindlessHandle> allocatePartitionedAccelerationStructure();
     void release(BindlessHandle handle);
-    Result writeSampler(BindlessHandle handle, const SamplerDesc& sampler);
-    Result writeSamplers(const BindlessSamplerWrite* writes, uint32_t writeCount);
-    Result writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state = ResourceState::ShaderRead);
-    Result writeStorageImage(BindlessHandle handle, TextureView& view);
-    Result writeImages(const BindlessImageWrite* writes, uint32_t writeCount);
-    Result writeBufferView(BindlessHandle handle, BufferView& view);
-    Result writeConstantBuffer(BindlessHandle handle, Buffer& buffer);
-    Result writeStorageBuffer(BindlessHandle handle, Buffer& buffer);
-    Result writeAccelerationStructure(
+    Result<> writeSampler(BindlessHandle handle, const SamplerDesc& sampler);
+    Result<> writeSamplers(const BindlessSamplerWrite* writes, uint32_t writeCount);
+    Result<> writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state = ResourceState::ShaderRead);
+    Result<> writeStorageImage(BindlessHandle handle, TextureView& view);
+    Result<> writeImages(const BindlessImageWrite* writes, uint32_t writeCount);
+    Result<> writeBufferView(BindlessHandle handle, BufferView& view);
+    Result<> writeConstantBuffer(BindlessHandle handle, Buffer& buffer);
+    Result<> writeStorageBuffer(BindlessHandle handle, Buffer& buffer);
+    Result<> writeAccelerationStructure(
         BindlessHandle handle,
         RayTracingAccelerationStructure& accelerationStructure);
-    Result writePartitionedAccelerationStructure(
+    Result<> writePartitionedAccelerationStructure(
         BindlessHandle handle,
         PartitionedAccelerationStructure& accelerationStructure);
 
@@ -1931,7 +1936,7 @@ public:
         std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset);
     BufferOffset streamTextureData(const StreamTextureDataDesc& desc);
     uint64_t streamConstantData(const void* data, uint64_t byteSize);
-    Result beginFrame(RenderFrameContext& frame);
+    Result<> beginFrame(RenderFrameContext& frame);
     // Covers copies currently queued for the next flush. Returns null without
     // beginFrame(frame), or when no copies are pending. See StreamUploadCompletion.h.
     std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion();
@@ -1957,44 +1962,44 @@ public:
     CommandBuffer(const CommandBuffer&) = delete;
     CommandBuffer& operator=(const CommandBuffer&) = delete;
 
-    Result begin(RenderFrameContext* frameContext = nullptr);
+    Result<> begin(RenderFrameContext* frameContext = nullptr);
     RenderFrameContext* frameContext() const { return frameContext_; }
     bool recording() const { return recording_; }
     QueueAccessBits queueCapabilities() const;
     const void* deviceIdentity() const;
     // Queue::submit merges these waits and the command buffer retains their
     // timeline lifetimes until its next recording. Call while recording.
-    Result addDependency(const GpuCompletionPoint& completion);
-    Result addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction);
+    Result<> addDependency(const GpuCompletionPoint& completion);
+    Result<> addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction);
     // Frames retain through completion; standalone callers retain until command reset.
-    Result retainResource(std::shared_ptr<void> resource);
-    Result end();
+    Result<> retainResource(std::shared_ptr<void> resource);
+    Result<> end();
     void beginDebugLabel(const DebugLabelDesc& desc);
     void endDebugLabel();
     // Reset on a graphics/compute queue, including pools written by another queue.
     // The caller must order that queue after the reset before writing timestamps.
-    Result resetTimestampQueries(
+    Result<> resetTimestampQueries(
         TimestampQueryPool& queryPool,
         uint32_t firstQuery,
         uint32_t queryCount);
-    Result writeTimestamp(
+    Result<> writeTimestamp(
         TimestampQueryPool& queryPool,
         uint32_t queryIndex,
         PipelineStageBits stage);
-    Result resetRayTracingAccelerationStructureCompactionQueries(
+    Result<> resetRayTracingAccelerationStructureCompactionQueries(
         RayTracingAccelerationStructureCompactionQueryPool& queryPool,
         uint32_t firstQuery,
         uint32_t queryCount);
-    Result writeRayTracingAccelerationStructureCompactedSize(
+    Result<> writeRayTracingAccelerationStructureCompactedSize(
         RayTracingAccelerationStructureCompactionQueryPool& queryPool,
         uint32_t queryIndex,
         RayTracingAccelerationStructure& accelerationStructure);
     void barrier(const BarrierDesc& desc);
     void hostWriteBarrier();
     void copyBuffer(const BufferCopyDesc& desc);
-    Result copyBuffer(const BufferSlice& source, const BufferSlice& destination);
-    Result decompressBuffers(std::span<const BufferDecompressionDesc> regions);
-    Result validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const;
+    Result<> copyBuffer(const BufferSlice& source, const BufferSlice& destination);
+    Result<> decompressBuffers(std::span<const BufferDecompressionDesc> regions);
+    Result<> validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const;
     void copyTexture(const TextureCopyDesc& desc);
     void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
     void copyBufferToTexture(const BufferTextureCopyDesc& desc);
@@ -2016,24 +2021,24 @@ public:
     void pushBindlessData(const void* data, uint32_t byteSize);
     // Record compute-only instrumentation, restoring the compute pipeline,
     // descriptor heap and shared push data before returning. No rendering scope.
-    Result recordIsolatedCompute(const std::function<Result()>& record);
+    Result<> recordIsolatedCompute(const std::function<Result<>()>& record);
     void draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
     void drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     void drawMeshTasksIndirect(Buffer& buffer, uint64_t offset = 0);
     void dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     // Three GPU-written uint32 group counts; offset is 4-byte aligned.
-    Result dispatchIndirect(Buffer& buffer, uint64_t offset = 0);
-    Result dispatchIndirect(const BufferSlice& arguments);
-    Result buildClusterAccelerationStructureTriangles(
+    Result<> dispatchIndirect(Buffer& buffer, uint64_t offset = 0);
+    Result<> dispatchIndirect(const BufferSlice& arguments);
+    Result<> buildClusterAccelerationStructureTriangles(
         const ClusterAccelerationStructureTriangleBuildDesc& desc);
-    Result moveClusterAccelerationStructures(const ClusterAccelerationStructureMoveDesc& desc);
-    Result buildClusterAccelerationStructureBottomLevels(
+    Result<> moveClusterAccelerationStructures(const ClusterAccelerationStructureMoveDesc& desc);
+    Result<> buildClusterAccelerationStructureBottomLevels(
         const ClusterAccelerationStructureBottomLevelBuildDesc& desc);
-    Result buildPartitionedAccelerationStructure(
+    Result<> buildPartitionedAccelerationStructure(
         const PartitionedAccelerationStructureBuildDesc& desc);
-    Result buildRayTracingAccelerationStructure(
+    Result<> buildRayTracingAccelerationStructure(
         const RayTracingAccelerationStructureBuildDesc& desc);
-    Result compactRayTracingAccelerationStructure(
+    Result<> compactRayTracingAccelerationStructure(
         RayTracingAccelerationStructure& source,
         RayTracingAccelerationStructure& destination);
 
@@ -2041,7 +2046,7 @@ private:
     explicit CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl);
 
     std::unique_ptr<detail::CommandBufferImpl> impl_;
-    Result processDecompressionBuffers(std::span<const BufferDecompressionDesc> regions, bool record) const;
+    Result<> processDecompressionBuffers(std::span<const BufferDecompressionDesc> regions, bool record) const;
     RenderFrameContext* frameContext_ = nullptr;
     std::shared_ptr<detail::CommandSubmissionState> submission_;
     std::shared_ptr<const void> frameRecording_;
@@ -2067,8 +2072,8 @@ public:
     CommandPool(const CommandPool&) = delete;
     CommandPool& operator=(const CommandPool&) = delete;
 
-    Result reset();
-    Result createCommandBuffer(std::unique_ptr<CommandBuffer>& outCommandBuffer);
+    Result<> reset();
+    [[nodiscard]] Result<std::unique_ptr<CommandBuffer>> createCommandBuffer();
 
 private:
     explicit CommandPool(std::unique_ptr<detail::CommandPoolImpl> impl);
@@ -2097,8 +2102,8 @@ public:
     // The negotiated mode, including any SDR fallback.
     DisplayOutputMode outputMode() const;
     Texture* texture(uint32_t imageIndex);
-    Result acquireNextImage(SwapchainSemaphore& semaphore, uint32_t& imageIndex);
-    Result present(Queue& queue, uint32_t imageIndex, SwapchainSemaphore& waitSemaphore);
+    [[nodiscard]] Result<uint32_t> acquireNextImage(SwapchainSemaphore& semaphore);
+    Result<> present(Queue& queue, uint32_t imageIndex, SwapchainSemaphore& waitSemaphore);
 
 private:
     explicit Swapchain(std::unique_ptr<detail::SwapchainImpl> impl);
@@ -2124,88 +2129,63 @@ public:
 
     const DeviceCapabilities& capabilities() const;
     const void* identity() const;
-    Result resourceRegistry(std::shared_ptr<ResourceRegistry>& outRegistry);
+    [[nodiscard]] Result<std::shared_ptr<ResourceRegistry>> resourceRegistry();
     DeviceMemoryBudget memoryBudget() const;
     void setMemoryBudgetPolicy(const MemoryBudgetPolicy& policy);
-    Result reserveMemoryBudget(uint64_t bytes, MemoryBudgetReservation& reservation);
+    [[nodiscard]] Result<MemoryBudgetReservation> reserveMemoryBudget(uint64_t bytes);
     void logMemoryBudget(const char* phase) const;
     Queue* getQueue(QueueType type, uint32_t indwriteStorageBufferex = 0);
-    Result waitIdle();
-    Result createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapchain>& outSwapchain);
-    Result createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& outCommandPool);
-    Result createFence(bool signaled, std::unique_ptr<Fence>& outFence);
-    Result createTimestampQueryPool(
-        Queue& queue,
-        const TimestampQueryPoolDesc& desc,
-        std::unique_ptr<TimestampQueryPool>& outQueryPool);
-    Result createRayTracingAccelerationStructureCompactionQueryPool(
-        const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc,
-        std::unique_ptr<RayTracingAccelerationStructureCompactionQueryPool>& outQueryPool);
-    Result createSemaphore(const SemaphoreDesc& desc, std::unique_ptr<Semaphore>& outSemaphore);
-    Result createSemaphore(std::unique_ptr<Semaphore>& outSemaphore);
-    Result createSwapchainSemaphore(std::unique_ptr<SwapchainSemaphore>& outSemaphore);
-    Result createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& outBuffer);
-    Result queryRayTracingAccelerationStructureProperties(
-        RayTracingAccelerationStructureProperties& outProperties) const;
-    Result queryRayTracingAccelerationStructureBuildSizes(
-        const RayTracingAccelerationStructureBuildInputs& inputs,
-        RayTracingAccelerationStructureBuildSizes& outSizes) const;
-    Result createRayTracingAccelerationStructure(
-        const RayTracingAccelerationStructureDesc& desc,
-        std::unique_ptr<RayTracingAccelerationStructure>& outAccelerationStructure);
-    Result createRayTracingInstanceBuffer(
-        const RayTracingInstanceDesc* instances,
-        uint32_t instanceCount,
-        std::unique_ptr<Buffer>& outBuffer);
-    Result writeRayTracingInstances(
+    Result<> waitIdle();
+    [[nodiscard]] Result<std::unique_ptr<Swapchain>> createSwapchain(const SwapchainDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<CommandPool>> createCommandPool(Queue& queue);
+    [[nodiscard]] Result<std::unique_ptr<Fence>> createFence(bool signaled);
+    [[nodiscard]] Result<std::unique_ptr<TimestampQueryPool>> createTimestampQueryPool(Queue& queue,
+        const TimestampQueryPoolDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructureCompactionQueryPool>> createRayTracingAccelerationStructureCompactionQueryPool(const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<Semaphore>> createSemaphore(const SemaphoreDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<Semaphore>> createSemaphore();
+    [[nodiscard]] Result<std::unique_ptr<SwapchainSemaphore>> createSwapchainSemaphore();
+    [[nodiscard]] Result<std::unique_ptr<Buffer>> createBuffer(const BufferDesc& desc);
+    [[nodiscard]] Result<RayTracingAccelerationStructureProperties> queryRayTracingAccelerationStructureProperties() const;
+    [[nodiscard]] Result<RayTracingAccelerationStructureBuildSizes> queryRayTracingAccelerationStructureBuildSizes(const RayTracingAccelerationStructureBuildInputs& inputs) const;
+    [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createRayTracingAccelerationStructure(const RayTracingAccelerationStructureDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<Buffer>> createRayTracingInstanceBuffer(const RayTracingInstanceDesc* instances,
+        uint32_t instanceCount);
+    Result<> writeRayTracingInstances(
         Buffer& buffer,
         const RayTracingInstanceDesc* instances,
         uint32_t instanceCount);
-    Result createBufferView(Buffer& buffer, const BufferViewDesc& desc, std::unique_ptr<BufferView>& outBufferView);
-    Result createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& outTexture);
-    Result textureAllocationSize(const TextureDesc& desc, uint64_t& byteSize);
-    Result createTextureView(Texture& texture, const TextureViewDesc& desc, std::unique_ptr<TextureView>& outTextureView);
-    Result createStreamer(const StreamerDesc& desc, std::unique_ptr<Streamer>& outStreamer);
-    Result createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule);
-    Result createPipelineCache(const PipelineCacheDesc& desc, std::unique_ptr<PipelineCache>& outPipelineCache);
-    Result createGraphicsPipeline(const GraphicsPipelineDesc& desc, std::unique_ptr<GraphicsPipeline>& outGraphicsPipeline);
-    Result createComputePipeline(const ComputePipelineDesc& desc, std::unique_ptr<ComputePipeline>& outComputePipeline);
-    Result createGraphicsShaderObjectProgram(
-        const GraphicsShaderObjectProgramDesc& desc,
-        std::unique_ptr<GraphicsShaderObjectProgram>& outProgram);
-    Result createBindlessHeap(const BindlessHeapDesc& desc, std::unique_ptr<BindlessHeap>& outBindlessHeap);
-    Result queryClusterAccelerationStructureProperties(
-        ClusterAccelerationStructureProperties& outProperties) const;
-    Result queryClusterAccelerationStructureTriangleBuildSizes(
-        const ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
-        ClusterAccelerationStructureBuildSizes& outSizes) const;
+    [[nodiscard]] Result<std::unique_ptr<BufferView>> createBufferView(Buffer& buffer, const BufferViewDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<Texture>> createTexture(const TextureDesc& desc);
+    [[nodiscard]] Result<uint64_t> textureAllocationSize(const TextureDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<TextureView>> createTextureView(Texture& texture, const TextureViewDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<Streamer>> createStreamer(const StreamerDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<ShaderModule>> createShaderModule(const ShaderModuleDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<PipelineCache>> createPipelineCache(const PipelineCacheDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<GraphicsPipeline>> createGraphicsPipeline(const GraphicsPipelineDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<ComputePipeline>> createComputePipeline(const ComputePipelineDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<GraphicsShaderObjectProgram>> createGraphicsShaderObjectProgram(const GraphicsShaderObjectProgramDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<BindlessHeap>> createBindlessHeap(const BindlessHeapDesc& desc);
+    [[nodiscard]] Result<ClusterAccelerationStructureProperties> queryClusterAccelerationStructureProperties() const;
+    [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureTriangleBuildSizes(const ClusterAccelerationStructureTriangleBuildSizesDesc& desc) const;
     // MOVE_OBJECTS reports its required scratch bytes in updateScratchSize.
-    Result queryClusterAccelerationStructureMoveSizes(uint32_t maxCount, uint64_t maxBytes,
-        ClusterAccelerationStructureBuildSizes& outSizes) const;
-    Result queryClusterAccelerationStructureBottomLevelBuildSizes(
-        const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc,
-        ClusterAccelerationStructureBuildSizes& outSizes) const;
-    Result queryPartitionedAccelerationStructureBuildSizes(
-        const PartitionedAccelerationStructureBuildInputs& inputs,
-        PartitionedAccelerationStructureBuildSizes& outSizes) const;
-    Result createPartitionedAccelerationStructure(
-        const PartitionedAccelerationStructureDesc& desc,
-        std::unique_ptr<PartitionedAccelerationStructure>& outAccelerationStructure);
-    Result createPartitionedAccelerationStructureInstanceBuffer(
-        const PartitionedAccelerationStructureInstanceDesc* instances,
-        uint32_t instanceCount,
-        std::unique_ptr<Buffer>& outBuffer);
+    [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureMoveSizes(uint32_t maxCount, uint64_t maxBytes) const;
+    [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureBottomLevelBuildSizes(const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc) const;
+    [[nodiscard]] Result<PartitionedAccelerationStructureBuildSizes> queryPartitionedAccelerationStructureBuildSizes(const PartitionedAccelerationStructureBuildInputs& inputs) const;
+    [[nodiscard]] Result<std::unique_ptr<PartitionedAccelerationStructure>> createPartitionedAccelerationStructure(const PartitionedAccelerationStructureDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<Buffer>> createPartitionedAccelerationStructureInstanceBuffer(const PartitionedAccelerationStructureInstanceDesc* instances,
+        uint32_t instanceCount);
 
 private:
     explicit Device(std::unique_ptr<detail::DeviceImpl> impl);
 
     std::unique_ptr<detail::DeviceImpl> impl_;
 
-    friend Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice);
+    friend Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc);
     friend struct detail::VulkanNativeAccess;
 };
 
-Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice);
+[[nodiscard]] Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc);
 int runRhiSmokeTest(bool enableValidation);
 int runRhiTrianglePreviewTest(bool enableValidation);
 int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation);
@@ -2221,8 +2201,8 @@ public:
     TrianglePreviewRenderer(const TrianglePreviewRenderer&) = delete;
     TrianglePreviewRenderer& operator=(const TrianglePreviewRenderer&) = delete;
 
-    Result initialize(bool enableValidation = false);
-    Result render(uint32_t width, uint32_t height);
+    Result<> initialize(bool enableValidation = false);
+    Result<> render(uint32_t width, uint32_t height);
     const std::vector<uint32_t>& pixels() const;
     uint32_t width() const;
     uint32_t height() const;

@@ -48,7 +48,7 @@ public:
             60.0f);
         return settings;
     }
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
             log = "SceneRayQueryVisualizationPass requires a device and graphics queue";
@@ -107,7 +107,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
         sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
-        Result result;
+        Result<> result;
         clusterAccelerationStructure_ = context.preparedScene->clusterAccelerationStructure;
 
         ShaderCompileResult computeCompile;
@@ -184,7 +184,7 @@ public:
         return {};
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() ||

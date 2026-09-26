@@ -17,7 +17,7 @@
 
 namespace metallic::tests {
 
-const char* toString(render::Result result)
+const char* toString(render::Result<> result)
 {
     return render::resultToString(result);
 }
@@ -198,8 +198,7 @@ public:
         }
         sdlInitialized_ = true;
 
-        render::Result result = render::createDevice(
-            render::DeviceDesc{
+        render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic RHI Tests",
                 .enableValidation = options_.enableValidation,
                 .enableBindlessDescriptorHeap = options_.enableStreamline || options_.enableBindless,
@@ -220,8 +219,7 @@ public:
                     }
                 }, .context = &validationMessageCount_},
                 .enableAsyncCompute = options_.enableAsyncCompute,
-            },
-            device_);
+            }).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });
         if (!result) {
             const std::string message = std::string("createDevice returned ") + metallic::tests::toString(result);
             if (render::hasError(result, render::Error::Unsupported)) {

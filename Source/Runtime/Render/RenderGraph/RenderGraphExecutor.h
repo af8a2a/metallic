@@ -62,13 +62,13 @@ public:
     RenderGraphExecutor(const RenderGraphExecutor&) = delete;
     RenderGraphExecutor& operator=(const RenderGraphExecutor&) = delete;
 
-    Result compile(
+    Result<> compile(
         Device& device,
         const RenderGraph& graph,
         uint32_t width,
         uint32_t height,
         std::string& log);
-    Result compile(
+    Result<> compile(
         Device& device,
         const RenderGraph& graph,
         uint32_t width,
@@ -77,11 +77,11 @@ public:
         std::string& log);
     // Call between frames, with no recorded-but-unsubmitted command buffers that
     // reference this graph. On failure the current passes and resources stay valid.
-    Result reloadShaders(std::string& log);
-    Result execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources = nullptr);
-    Result execute(const RenderGraphSubmitDesc& desc);
+    Result<> reloadShaders(std::string& log);
+    Result<> execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources = nullptr);
+    Result<> execute(const RenderGraphSubmitDesc& desc);
     GpuCompletionPoint lastSubmittedCompletion() const;
-    Result waitForSubmittedWork(uint64_t timeoutNanoseconds = UINT64_MAX);
+    Result<> waitForSubmittedWork(uint64_t timeoutNanoseconds = UINT64_MAX);
     void bindRuntimeScene(const scene::Scene* scene);
     void bindRenderWorld(RenderWorld* world);
     // One view per executor; separate viewports/executors retain independent history.
@@ -89,12 +89,12 @@ public:
     RenderView* renderView();
     RenderSubsystemHost* subsystemHost();
     const RenderSubsystemHost* subsystemHost() const;
-    Result beginSceneResourcePreparation(
+    Result<> beginSceneResourcePreparation(
         Device& device,
         const RenderGraphProperties& properties,
         const scene::Scene& scene,
         std::string& log);
-    Result pumpSceneResourcePreparation(
+    Result<> pumpSceneResourcePreparation(
         const scene::Scene& scene,
         double budgetMilliseconds,
         bool& complete,
@@ -106,7 +106,7 @@ public:
     bool syncRuntimeProperties(const RenderGraph& graph);
     // Attach before compilation; observer and device outlive submitted work.
     void setDebugObserver(IRenderDebugObserver* observer);
-    Result transitionOutput(
+    Result<> transitionOutput(
         CommandBuffer& commandBuffer,
         std::string_view fullName,
         ResourceState state);
@@ -114,7 +114,7 @@ public:
     RenderGraphResource* outputResource(std::string_view fullName);
     const RenderGraphResource* outputResource(std::string_view fullName) const;
     const RenderGraphExecutionStats& executionStats() const;
-    Result collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats);
+    Result<> collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats);
     const RenderGraphStreamingStats& streamingStats() const;
     bool compiled() const;
     uint32_t width() const;
@@ -136,10 +136,10 @@ public:
     RenderGraphPreviewRenderer(const RenderGraphPreviewRenderer&) = delete;
     RenderGraphPreviewRenderer& operator=(const RenderGraphPreviewRenderer&) = delete;
 
-    Result initialize(bool enableValidation = false, bool enableRayQuery = false, bool enableAftermath = true);
-    Result render(RenderGraph& graph, uint32_t width, uint32_t height);
+    Result<> initialize(bool enableValidation = false, bool enableRayQuery = false, bool enableAftermath = true);
+    Result<> render(RenderGraph& graph, uint32_t width, uint32_t height);
     // Disabling readback still completes the frame, but leaves pixels() empty.
-    Result render(RenderGraph& graph, uint32_t width, uint32_t height, std::string_view outputName, bool readback = true);
+    Result<> render(RenderGraph& graph, uint32_t width, uint32_t height, std::string_view outputName, bool readback = true);
     // Bind before rendering; the scene must outlive the preview renderer.
     // This keeps scene-owned lighting and world overrides in the same scene.
     void bindRuntimeScene(const scene::Scene* scene);
@@ -156,7 +156,7 @@ public:
     uint32_t height() const;
     const std::string& lastLog() const;
     const RenderGraphExecutionStats& executionStats() const;
-    Result collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats);
+    Result<> collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats);
 
 private:
     struct Impl;

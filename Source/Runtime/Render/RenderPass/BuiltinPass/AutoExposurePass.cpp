@@ -58,7 +58,7 @@ public:
         };
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) { return makeError(Error::InvalidArgument); }
         const ComputeProgramBindingDesc bindings[] = {
@@ -72,7 +72,7 @@ public:
         for (size_t i = 0; i < programs_.size(); ++i) {
             if (programs_[i].valid()) { continue; }
             ShaderCompileResult shader;
-            Result result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/AutoExposure",
+            Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/AutoExposure",
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
             if (!result) { log += shader.diagnostics; return result; }
             result = programs_[i].initialize(*context.device, {.spirv = shader.spirv.data(),
@@ -82,10 +82,10 @@ public:
         }
         state_ = std::make_shared<State>();
         return context.device->createBuffer({.size = 16, .structureStride = 16,
-            .usage = BufferUsageBits::Storage}, state_->history);
+            .usage = BufferUsageBits::Storage}).transform([&](auto rhiValue) { state_->history = std::move(rhiValue); });
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         const TextureHandle source = context.inputTexture("source");
         const TextureHandle color = context.outputTexture("color");
@@ -133,7 +133,7 @@ public:
         };
         auto& commands = context.commandBuffer();
         if (auto* frame = commands.frameContext()) { frame->retain(state_); }
-        Result result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
+        Result<> result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
             [] {}, [state = state_] { state->valid = false; }));
         if (!result) { return result; }
         const BufferBarrierDesc historyBarrier{.buffer = state_->history.get(),

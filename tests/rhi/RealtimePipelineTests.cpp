@@ -44,7 +44,7 @@ public:
         reflection.addBufferOutput("data").buffer(8 * 16, 16).storageReadWrite();
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "RealtimeGuideProbe",
@@ -54,7 +54,7 @@ public:
         return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
             .bindings = bindings, .bindingCount = 2, .requiresRayQuery = false}, log);
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 2, .buffer = context.outputBuffer("data").buffer()},
@@ -77,7 +77,7 @@ public:
         if (!stbi_write_hdr(path.string().c_str(), 32, 16, 3, pixels.data())) { return realtimeFailure("HDR fixture write failed"); }
         std::unique_ptr<render::Device> device;
         auto result = render::createDevice({.applicationName = "Environment prefilter energy",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
         if (!result) { return realtimeFailure("Prefilter device creation failed"); }
         render::RenderWorld world;
@@ -129,7 +129,7 @@ public:
         return reflection;
     }
 
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "RealtimeGuideProbe",
@@ -144,7 +144,7 @@ public:
             .requiresRayQuery = false}, log);
     }
 
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
             .buffer = context.outputBuffer("pixels").buffer(), .bufferRowPitch = context.width() * 4,
@@ -197,7 +197,7 @@ public:
         }
         const uint32_t initialValidationCount = context.validationMessageCount != nullptr
             ? context.validationMessageCount->load() : 0;
-        render::Result result;
+        render::Result<> result;
         render::RenderWorld world;
         world.setScene(&scene);
         world.setEnvironment({.enabled = true, .path = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.environment->path});

@@ -71,9 +71,9 @@ Key keyFor(ShaderResourceKind kind, const std::shared_ptr<void>& allocation)
     return {uint64_t(kind), reinterpret_cast<uintptr_t>(allocation.get())};
 }
 
-Result acquire(const std::shared_ptr<detail::RegistryState>& state, const Key& key,
+Result<> acquire(const std::shared_ptr<detail::RegistryState>& state, const Key& key,
     ShaderResourceKind kind, std::shared_ptr<void> allocation, bool permanent,
-    const std::function<Result(detail::RegistryEntry&)>& write,
+    const std::function<Result<>(detail::RegistryEntry&)>& write,
     std::shared_ptr<detail::ResourceLeaseState>& out)
 {
     if (!state || (!allocation && !permanent)) { return makeError(Error::InvalidArgument); }
@@ -138,7 +138,7 @@ bool EncodedParameters::compatible(const CommandBuffer& commands, ParameterAbi a
         packet_->completion.sameSubmission(frame->completion());
 }
 
-Result EncodedParameters::bindResources(CommandBuffer& commands) const
+Result<> EncodedParameters::bindResources(CommandBuffer& commands) const
 {
     if (!compatible(commands, abi())) { return makeError(Error::InvalidArgument); }
     commands.frameContext()->retain(packet_);
@@ -146,18 +146,18 @@ Result EncodedParameters::bindResources(CommandBuffer& commands) const
     return {};
 }
 
-Result ResourceRegistry::initialize(Device& device, const BindlessHeapDesc& capacity)
+Result<> ResourceRegistry::initialize(Device& device, const BindlessHeapDesc& capacity)
 {
     if (state_) { return makeError(Error::InvalidArgument); }
     auto state = std::make_shared<detail::RegistryState>();
-    auto result = device.createBindlessHeap(capacity, state->heap);
+    auto result = device.createBindlessHeap(capacity).transform([&](auto rhiValue) { state->heap = std::move(rhiValue); });
     if (!result) { return result; }
     state->device = device.identity();
     state_ = std::move(state);
     return {};
 }
 
-Result ResourceRegistry::storageBuffer(Buffer& buffer, ResourceLease& out)
+Result<> ResourceRegistry::storageBuffer(Buffer& buffer, ResourceLease& out)
 {
     out = {};
     if (!state_ || buffer.deviceIdentity() != state_->device ||
@@ -167,14 +167,14 @@ Result ResourceRegistry::storageBuffer(Buffer& buffer, ResourceLease& out)
     auto allocation = buffer.retainAllocation();
     return acquire(state_, keyFor(ShaderResourceKind::Buffer, allocation), ShaderResourceKind::Buffer,
         allocation, false, [&](auto& entry) {
-            auto result = state_->heap->allocateBuffer(entry.handle);
+            auto result = state_->heap->allocateBuffer().transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); });
             if (!result) { return result; }
             entry.value = entry.handle.shaderIndex;
             return state_->heap->writeStorageBuffer(entry.handle, buffer);
         }, out.state_);
 }
 
-Result ResourceRegistry::image(TextureView& view, ResourceLease& out, ShaderResourceKind kind, ResourceState layout)
+Result<> ResourceRegistry::image(TextureView& view, ResourceLease& out, ShaderResourceKind kind, ResourceState layout)
 {
     out = {};
     if (!state_ || view.deviceIdentity() != state_->device) { return makeError(Error::InvalidArgument); }
@@ -186,7 +186,7 @@ Result ResourceRegistry::image(TextureView& view, ResourceLease& out, ShaderReso
     for (size_t i = 0; i < 4; ++i) { key[8 + i] = uint64_t(desc.swizzle[i]); }
     return acquire(state_, key, kind, allocation, false, [&](auto& entry) {
         auto result = kind == ShaderResourceKind::SampledImage
-            ? state_->heap->allocateSampledImage(entry.handle) : state_->heap->allocateStorageImage(entry.handle);
+            ? state_->heap->allocateSampledImage().transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); }) : state_->heap->allocateStorageImage().transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); });
         if (!result) { return result; }
         entry.value = entry.handle.shaderIndex;
         return kind == ShaderResourceKind::SampledImage ? state_->heap->writeSampledImage(entry.handle, view, layout)
@@ -194,7 +194,7 @@ Result ResourceRegistry::image(TextureView& view, ResourceLease& out, ShaderReso
     }, out.state_);
 }
 
-Result ResourceRegistry::sampledImage(TextureView& view, ResourceLease& out, ResourceState layout)
+Result<> ResourceRegistry::sampledImage(TextureView& view, ResourceLease& out, ResourceState layout)
 {
     if (layout != ResourceState::ShaderRead && layout != ResourceState::General) {
         out = {}; return makeError(Error::InvalidArgument);
@@ -202,26 +202,26 @@ Result ResourceRegistry::sampledImage(TextureView& view, ResourceLease& out, Res
     return image(view, out, ShaderResourceKind::SampledImage, layout);
 }
 
-Result ResourceRegistry::storageImage(TextureView& view, ResourceLease& out)
+Result<> ResourceRegistry::storageImage(TextureView& view, ResourceLease& out)
 {
     return image(view, out, ShaderResourceKind::StorageImage, ResourceState::General);
 }
 
-Result ResourceRegistry::sampler(const SamplerDesc& sampler, ResourceLease& out)
+Result<> ResourceRegistry::sampler(const SamplerDesc& sampler, ResourceLease& out)
 {
     out = {};
     Key key{uint64_t(ShaderResourceKind::Sampler), uint64_t(sampler.minFilter), uint64_t(sampler.magFilter),
         uint64_t(sampler.mipFilter), uint64_t(sampler.addressU), uint64_t(sampler.addressV), uint64_t(sampler.addressW),
         std::bit_cast<uint32_t>(sampler.minLod), std::bit_cast<uint32_t>(sampler.maxLod)};
     return acquire(state_, key, ShaderResourceKind::Sampler, {}, true, [&](auto& entry) {
-        auto result = state_->heap->allocateSampler(entry.handle);
+        auto result = state_->heap->allocateSampler().transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); });
         if (!result) { return result; }
         entry.value = entry.handle.shaderIndex;
         return state_->heap->writeSampler(entry.handle, sampler);
     }, out.state_);
 }
 
-Result ResourceRegistry::accelerationStructure(RayTracingAccelerationStructure& structure, ResourceLease& out)
+Result<> ResourceRegistry::accelerationStructure(RayTracingAccelerationStructure& structure, ResourceLease& out)
 {
     out = {};
     if (!state_ || structure.deviceIdentity() != state_->device || !structure.valid()) {
@@ -232,11 +232,11 @@ Result ResourceRegistry::accelerationStructure(RayTracingAccelerationStructure& 
         ShaderResourceKind::AccelerationStructure, allocation, false, [&](auto& entry) {
             // Matches Core.resolveDescriptor's explicit AS address contract in both modes.
             entry.value = structure.deviceAddress();
-            return Result{};
+            return Result<>{};
         }, out.state_);
 }
 
-Result ResourceRegistry::partitionedAccelerationStructure(PartitionedAccelerationStructure& structure, ResourceLease& out)
+Result<> ResourceRegistry::partitionedAccelerationStructure(PartitionedAccelerationStructure& structure, ResourceLease& out)
 {
     out = {};
     if (!state_ || structure.deviceIdentity() != state_->device || !structure.valid()) {
@@ -247,7 +247,7 @@ Result ResourceRegistry::partitionedAccelerationStructure(PartitionedAcceleratio
         ShaderResourceKind::PartitionedAccelerationStructure, allocation, false, [&](auto& entry) {
             // Matches Core.resolveDescriptor's explicit AS address contract in both modes.
             entry.value = structure.deviceAddress();
-            return Result{};
+            return Result<>{};
         }, out.state_);
 }
 
@@ -268,7 +268,7 @@ BindlessHeap* ResourceRegistry::heap() const
     return state_ ? state_->heap.get() : nullptr;
 }
 
-Result ResourceRegistry::bind(CommandBuffer& commands) const
+Result<> ResourceRegistry::bind(CommandBuffer& commands) const
 {
     if (!state_ || commands.deviceIdentity() != state_->device) { return makeError(Error::InvalidArgument); }
     auto result = commands.retainResource(state_);
@@ -276,7 +276,7 @@ Result ResourceRegistry::bind(CommandBuffer& commands) const
     return result;
 }
 
-Result ResourceRegistry::retain(CommandBuffer& commands, const ResourceLease& lease) const
+Result<> ResourceRegistry::retain(CommandBuffer& commands, const ResourceLease& lease) const
 {
     if (!state_ || !lease.state_ || lease.state_->registry != state_ || commands.deviceIdentity() != state_->device) {
         return makeError(Error::InvalidArgument);
@@ -292,14 +292,14 @@ ParameterWriter::ParameterWriter(Device& device, RenderFrameContext& frame, Reso
     }
 }
 
-Result ParameterWriter::use(const ResourceLease& lease)
+Result<> ParameterWriter::use(const ResourceLease& lease)
 {
     if (result_ && (!lease.state_ || lease.state_->registry != registry_)) { result_ = makeError(Error::InvalidArgument); }
     if (result_) { resources_.push_back(lease.state_); }
     return result_;
 }
 
-uint64_t ParameterWriter::append(Result result, ResourceLease lease)
+uint64_t ParameterWriter::append(Result<> result, ResourceLease lease)
 {
     if (result_ && !result) { result_ = result; }
     return use(lease) ? lease.shaderValue() : UINT64_MAX;
@@ -325,9 +325,12 @@ ShaderDataSpan ParameterWriter::dataBuffer(const BufferSlice& slice, uint32_t st
 ShaderDataSpan ParameterWriter::dataBuffer(Buffer* buffer, uint32_t stride, uint32_t alignment)
 {
     if (!result_) { return {}; }
-    BufferSlice slice;
-    result_ = buffer ? buffer->slice(slice) : makeError(Error::InvalidArgument);
-    return result_ ? dataBuffer(slice, stride, alignment) : ShaderDataSpan{};
+    auto slice = buffer ? buffer->slice() : makeError(Error::InvalidArgument);
+    if (!slice) {
+        result_ = makeError(slice.error());
+        return {};
+    }
+    return dataBuffer(*slice, stride, alignment);
 }
 
 ShaderSampledImage ParameterWriter::sampledImage(TextureView* view, ResourceState layout)
@@ -362,7 +365,7 @@ ShaderAccelerationStructure ParameterWriter::accelerationStructure(RayTracingAcc
     return {append(result, std::move(lease))};
 }
 
-Result ParameterWriter::upload(const void* data, uint64_t size, uint64_t alignment,
+Result<> ParameterWriter::upload(const void* data, uint64_t size, uint64_t alignment,
     uint64_t& address, std::shared_ptr<void>& allocation)
 {
     if (!result_) { return result_; }
@@ -387,7 +390,7 @@ Result ParameterWriter::upload(const void* data, uint64_t size, uint64_t alignme
         auto result = device_.createBuffer({.size = std::max<uint64_t>(64 * 1024, size),
             .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::HostUpload,
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, chunk->buffer);
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { chunk->buffer = std::move(rhiValue); });
         if (!result) { return result; }
         chunk->completion = frame_.completion(); offset = 0;
         registry_->stats.parameterCapacity += chunk->buffer->desc().size;
@@ -432,7 +435,7 @@ uint64_t ParameterWriter::data(const void* bytes, uint64_t size, uint64_t alignm
     return address;
 }
 
-Result ParameterWriter::encodeBytes(const void* params, ParameterAbi abi, EncodedParameters& out)
+Result<> ParameterWriter::encodeBytes(const void* params, ParameterAbi abi, EncodedParameters& out)
 {
     out = {};
     if (!result_) { return result_; }

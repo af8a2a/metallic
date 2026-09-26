@@ -43,13 +43,13 @@ public:
     ReGIRLightSelector(const ReGIRLightSelector&) = delete;
     ReGIRLightSelector& operator=(const ReGIRLightSelector&) = delete;
 
-    Result initialize(Device& device, std::string& log);
-    Result ensureGrid(
+    Result<> initialize(Device& device, std::string& log);
+    Result<> ensureGrid(
         Device& device,
         uint32_t gridSize,
         uint32_t lightsPerCell,
         std::string& log);
-    Result build(
+    Result<> build(
         CommandBuffer& commandBuffer,
         TextureView& localLightPdf,
         Buffer& punctualLights,

@@ -47,7 +47,7 @@ bool RenderSubsystemHost::registerSubsystem(
     return true;
 }
 
-Result RenderSubsystemHost::initialize(Device& device, uint32_t frameSlotCount, std::string& log)
+Result<> RenderSubsystemHost::initialize(Device& device, uint32_t frameSlotCount, std::string& log)
 {
     if (frameSlotCount == 0) {
         log = "RenderSubsystemHost frameSlotCount must be non-zero";
@@ -63,13 +63,13 @@ Result RenderSubsystemHost::initialize(Device& device, uint32_t frameSlotCount, 
     return {};
 }
 
-Result RenderSubsystemHost::activate(RenderSubsystemId id, std::string& log)
+Result<> RenderSubsystemHost::activate(RenderSubsystemId id, std::string& log)
 {
     const RenderSubsystemId ids[] = {id};
     return activate(ids, log);
 }
 
-Result RenderSubsystemHost::activate(std::span<const RenderSubsystemId> ids, std::string& log)
+Result<> RenderSubsystemHost::activate(std::span<const RenderSubsystemId> ids, std::string& log)
 {
     if (device_ == nullptr) {
         log = "RenderSubsystemHost must be initialized before activation";
@@ -77,7 +77,7 @@ Result RenderSubsystemHost::activate(std::span<const RenderSubsystemId> ids, std
     }
     for (RenderSubsystemId id : ids) {
         std::vector<std::string> stack;
-        Result result = activateRecursive(std::string(id), stack, log);
+        Result<> result = activateRecursive(std::string(id), stack, log);
         if (!result) {
             return result;
         }
@@ -85,7 +85,7 @@ Result RenderSubsystemHost::activate(std::span<const RenderSubsystemId> ids, std
     return {};
 }
 
-Result RenderSubsystemHost::activateRecursive(
+Result<> RenderSubsystemHost::activateRecursive(
     const std::string& id,
     std::vector<std::string>& stack,
     std::string& log)
@@ -115,7 +115,7 @@ Result RenderSubsystemHost::activateRecursive(
     record.activating = true;
     stack.push_back(id);
     for (const std::string& dependency : record.registration.dependencies) {
-        Result result = activateRecursive(dependency, stack, log);
+        Result<> result = activateRecursive(dependency, stack, log);
         if (!result) {
             stack.pop_back();
             record.activating = false;
@@ -130,7 +130,7 @@ Result RenderSubsystemHost::activateRecursive(
         log = "Render subsystem factory returned null for '" + id + "'";
         return makeError(Error::Failure);
     }
-    Result result = instance->initialize(RenderSubsystemInitContext{*device_, *this}, log);
+    Result<> result = instance->initialize(RenderSubsystemInitContext{*device_, *this}, log);
     if (!result) {
         log = "Render subsystem '" + id + "' initialization failed: " + log;
         return result;
@@ -152,7 +152,7 @@ void RenderSubsystemHost::setWorld(RenderWorld* world)
     }
 }
 
-Result RenderSubsystemHost::beginFrame(
+Result<> RenderSubsystemHost::beginFrame(
     uint64_t frameIndex,
     uint32_t frameSlot,
     HistoryResourceManager* historyResources,
@@ -195,7 +195,7 @@ Result RenderSubsystemHost::beginFrame(
     const RenderSubsystemFrameContext context = frameContext(nullptr, nullptr);
     for (const std::string& id : activeOrder_) {
         RenderChangeBits subsystemChanges = RenderChangeBits::None;
-        Result result = records_.at(id)->instance->beginFrame(context, subsystemChanges, log);
+        Result<> result = records_.at(id)->instance->beginFrame(context, subsystemChanges, log);
         ++begunSubsystemCount_;
         lastChanges_ |= subsystemChanges;
         if (!result) {
@@ -248,7 +248,7 @@ bool RenderSubsystemHost::dependencyClosure(
     return true;
 }
 
-Result RenderSubsystemHost::recordPreGraph(
+Result<> RenderSubsystemHost::recordPreGraph(
     CommandBuffer& commandBuffer,
     Streamer* streamer,
     std::span<const RenderSubsystemId> requiredSubsystems,
@@ -265,7 +265,7 @@ Result RenderSubsystemHost::recordPreGraph(
     preGraphOrder_.clear();
     const RenderSubsystemFrameContext context = frameContext(&commandBuffer, streamer);
     for (const std::string& id : closure) {
-        Result result = records_.at(id)->instance->recordPreGraph(context, log);
+        Result<> result = records_.at(id)->instance->recordPreGraph(context, log);
         preGraphOrder_.push_back(id);
         if (!result) {
             log = "Render subsystem '" + id + "' recordPreGraph failed: " + log;
@@ -275,7 +275,7 @@ Result RenderSubsystemHost::recordPreGraph(
     return {};
 }
 
-Result RenderSubsystemHost::recordPostGraph(
+Result<> RenderSubsystemHost::recordPostGraph(
     CommandBuffer& commandBuffer,
     Streamer* streamer,
     std::span<const RenderSubsystemId> requiredSubsystems,
@@ -287,11 +287,11 @@ Result RenderSubsystemHost::recordPostGraph(
     }
     (void)requiredSubsystems;
     const RenderSubsystemFrameContext context = frameContext(&commandBuffer, streamer);
-    Result firstFailure;
+    Result<> firstFailure;
     std::string failures;
     for (auto iter = preGraphOrder_.rbegin(); iter != preGraphOrder_.rend(); ++iter) {
         std::string hookLog;
-        Result result = records_.at(*iter)->instance->recordPostGraph(context, hookLog);
+        Result<> result = records_.at(*iter)->instance->recordPostGraph(context, hookLog);
         if (!result) {
             if (firstFailure) {
                 firstFailure = result;
@@ -309,7 +309,7 @@ Result RenderSubsystemHost::recordPostGraph(
     return firstFailure;
 }
 
-Result RenderSubsystemHost::reloadShaders(std::string& log)
+Result<> RenderSubsystemHost::reloadShaders(std::string& log)
 {
     log.clear();
     if (device_ == nullptr || frameActive_) {
@@ -322,7 +322,7 @@ Result RenderSubsystemHost::reloadShaders(std::string& log)
     for (const std::string& id : activeOrder_) {
         std::string subsystemLog;
         std::unique_ptr<RenderSubsystemShaderReload> preparedReload;
-        Result result = records_.at(id)->instance->prepareShaderReload(
+        Result<> result = records_.at(id)->instance->prepareShaderReload(
             RenderSubsystemInitContext{*device_, *this},
             preparedReload,
             subsystemLog);
@@ -415,13 +415,13 @@ bool RenderSubsystemHost::isActive(RenderSubsystemId id) const
     return get(id) != nullptr;
 }
 
-Result RenderSubsystemHost::deferSubmission(CommandBuffer& commandBuffer,
+Result<> RenderSubsystemHost::deferSubmission(CommandBuffer& commandBuffer,
     std::function<void()> submitted, std::function<void()> cancelled,
     std::shared_ptr<SubmissionTransaction>* outTransaction)
 {
     std::erase_if(pendingTransactions_, [](const auto& transaction) { return transaction->resolved(); });
     auto transaction = std::make_shared<SubmissionTransaction>(std::move(submitted), std::move(cancelled));
-    Result result = commandBuffer.addSubmissionTransaction(transaction);
+    Result<> result = commandBuffer.addSubmissionTransaction(transaction);
     if (result) {
         pendingTransactions_.push_back(transaction);
         if (outTransaction != nullptr) { *outTransaction = transaction; }

@@ -77,20 +77,20 @@ public:
         };
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) {
             return makeError(Error::InvalidArgument);
         }
         displayOutput_ = context.displayOutput;
-        Result result = initializeProgram(*context.device, "finalBlitUvMain", false, uvProgram_, log);
+        Result<> result = initializeProgram(*context.device, "finalBlitUvMain", false, uvProgram_, log);
         if (!result) {
             return result;
         }
         return initializeProgram(*context.device, "finalBlitMain", true, blitProgram_, log);
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         const TextureHandle color = context.outputTexture("color");
         if (!color.valid() || color.view() == nullptr) {
@@ -136,7 +136,7 @@ private:
     };
     static_assert(sizeof(Push) == 32);
 
-    static Result initializeProgram(
+    static Result<> initializeProgram(
         Device& device, const char* entryPoint, bool sampleSource,
         ComputeProgram& program, std::string& log)
     {
@@ -144,7 +144,7 @@ private:
             return {};
         }
         ShaderCompileResult shader;
-        Result result = compileSlangShaderToSpirv(SlangShaderDesc{
+        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
             .moduleName = "Features/PostProcess/FinalBlit",
             .entryPointName = entryPoint,
             .searchPath = PROJECT_SOURCE_DIR "/Shaders",

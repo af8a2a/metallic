@@ -79,7 +79,7 @@ uint64_t checkedByteSize(uint64_t count, uint64_t stride)
     return count * stride;
 }
 
-std::string resultMessage(const char* action, Result result)
+std::string resultMessage(const char* action, Result<> result)
 {
     return std::string(action) + " returned " + resultToString(result);
 }
@@ -100,7 +100,7 @@ void copyTransform(float (&destination)[3][4], const float4x4& source)
     destination[2][3] = source.a23;
 }
 
-Result createBuffer(
+Result<> createBuffer(
     Device& device,
     const char* label,
     uint64_t size,
@@ -109,14 +109,12 @@ Result createBuffer(
     std::unique_ptr<Buffer>& outBuffer,
     std::string& log)
 {
-    Result result = device.createBuffer(
-        BufferDesc{
+    Result<> result = device.createBuffer(BufferDesc{
             .size = size,
             .usage = usage,
             .memoryLocation = location,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
-        },
-        outBuffer);
+        }).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
     if (!result) {
         log = resultMessage(label, result);
     }
@@ -124,7 +122,7 @@ Result createBuffer(
 }
 
 template <typename T>
-Result uploadVector(Buffer& buffer, const std::vector<T>& values, const char* label, std::string& log)
+Result<> uploadVector(Buffer& buffer, const std::vector<T>& values, const char* label, std::string& log)
 {
     if (values.empty()) {
         return {};
@@ -155,16 +153,16 @@ bool primitiveUsesAlphaMask(
     return scene.materials()[static_cast<size_t>(primitive.materialIndex)].alphaMode == "MASK";
 }
 
-Result recordSubmitWait(
+Result<> recordSubmitWait(
     Device& device,
     Queue& queue,
     CommandPool& commandPool,
     const char* label,
-    const std::function<Result(CommandBuffer&)>& record,
+    const std::function<Result<>(CommandBuffer&)>& record,
     std::string& log)
 {
     std::unique_ptr<CommandBuffer> commandBuffer;
-    Result result = commandPool.createCommandBuffer(commandBuffer);
+    Result<> result = commandPool.createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
     if (!result) {
         const std::string action = std::string("createCommandBuffer(") + label + ")";
         log = resultMessage(action.c_str(), result);
@@ -172,7 +170,7 @@ Result recordSubmitWait(
     }
 
     std::unique_ptr<Fence> fence;
-    result = device.createFence(false, fence);
+    result = device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
     if (!result) {
         const std::string action = std::string("createFence(") + label + ")";
         log = resultMessage(action.c_str(), result);
@@ -485,7 +483,7 @@ ScenePartitionedAccelerationStructureBuilder::~ScenePartitionedAccelerationStruc
 ScenePartitionedAccelerationStructureBuilder::ScenePartitionedAccelerationStructureBuilder(ScenePartitionedAccelerationStructureBuilder&&) noexcept = default;
 ScenePartitionedAccelerationStructureBuilder& ScenePartitionedAccelerationStructureBuilder::operator=(ScenePartitionedAccelerationStructureBuilder&&) noexcept = default;
 
-Result ScenePartitionedAccelerationStructureBuilder::build(
+Result<> ScenePartitionedAccelerationStructureBuilder::build(
     Device& device,
     Queue& queue,
     const scene::Scene& scene,
@@ -569,7 +567,7 @@ Result ScenePartitionedAccelerationStructureBuilder::build(
         return makeError(Error::Unsupported);
     }
 
-    Result result = createBuffer(
+    Result<> result = createBuffer(
         device,
         "createBuffer(PTLAS vertices)",
         vertices.size() * sizeof(RayTracingVertex),
@@ -624,27 +622,23 @@ Result ScenePartitionedAccelerationStructureBuilder::build(
                 : RayTracingGeometryFlags::None,
         };
         BuiltBlas& blas = impl_->blases[blasIndex];
-        result = device.queryRayTracingAccelerationStructureBuildSizes(
-            RayTracingAccelerationStructureBuildInputs{
+        result = device.queryRayTracingAccelerationStructureBuildSizes(RayTracingAccelerationStructureBuildInputs{
                 .type = RayTracingAccelerationStructureType::BottomLevel,
                 .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
                 .geometries = &geometry,
                 .geometryCount = 1,
-            },
-            blas.sizes);
+            }).transform([&](auto rhiValue) { blas.sizes = std::move(rhiValue); });
         if (!result) {
             log = resultMessage("queryRayTracingAccelerationStructureBuildSizes(PTLAS BLAS)", result);
             clear();
             return result;
         }
         maxScratchSize = std::max(maxScratchSize, blas.sizes.buildScratchSize);
-        result = device.createRayTracingAccelerationStructure(
-            RayTracingAccelerationStructureDesc{
+        result = device.createRayTracingAccelerationStructure(RayTracingAccelerationStructureDesc{
                 .type = RayTracingAccelerationStructureType::BottomLevel,
                 .buildFlags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
                 .size = blas.sizes.accelerationStructureSize,
-            },
-            blas.accelerationStructure);
+            }).transform([&](auto rhiValue) { blas.accelerationStructure = std::move(rhiValue); });
         if (!result) {
             log = resultMessage("createRayTracingAccelerationStructure(PTLAS BLAS)", result);
             clear();
@@ -710,9 +704,7 @@ Result ScenePartitionedAccelerationStructureBuilder::build(
         .maxOperationCount = 1,
     };
     PartitionedAccelerationStructureBuildSizes ptlasSizes;
-    result = device.queryPartitionedAccelerationStructureBuildSizes(
-        ptlasInputs,
-        ptlasSizes);
+    result = device.queryPartitionedAccelerationStructureBuildSizes(ptlasInputs).transform([&](auto rhiValue) { ptlasSizes = std::move(rhiValue); });
     if (!result) {
         log = resultMessage("queryPartitionedAccelerationStructureBuildSizes(PTLAS)", result);
         clear();
@@ -728,21 +720,17 @@ Result ScenePartitionedAccelerationStructureBuilder::build(
         return makeError(Error::Failure);
     }
     maxScratchSize = std::max(maxScratchSize, ptlasSizes.buildScratchSize);
-    result = device.createPartitionedAccelerationStructure(
-        PartitionedAccelerationStructureDesc{
+    result = device.createPartitionedAccelerationStructure(PartitionedAccelerationStructureDesc{
             .inputs = ptlasInputs,
             .sizes = ptlasSizes,
-        },
-        impl_->ptlas);
+        }).transform([&](auto rhiValue) { impl_->ptlas = std::move(rhiValue); });
     if (!result) {
         log = resultMessage("createPartitionedAccelerationStructure", result);
         clear();
         return result;
     }
-    result = device.createPartitionedAccelerationStructureInstanceBuffer(
-        instances.data(),
-        static_cast<uint32_t>(instances.size()),
-        impl_->instanceBuffer);
+    result = device.createPartitionedAccelerationStructureInstanceBuffer(instances.data(),
+        static_cast<uint32_t>(instances.size())).transform([&](auto rhiValue) { impl_->instanceBuffer = std::move(rhiValue); });
     if (!result) {
         log = resultMessage("createPartitionedAccelerationStructureInstanceBuffer", result);
         clear();
@@ -750,7 +738,7 @@ Result ScenePartitionedAccelerationStructureBuilder::build(
     }
 
     RayTracingAccelerationStructureProperties rtasProperties;
-    result = device.queryRayTracingAccelerationStructureProperties(rtasProperties);
+    result = device.queryRayTracingAccelerationStructureProperties().transform([&](auto rhiValue) { rtasProperties = std::move(rhiValue); });
     if (!result) {
         log = resultMessage("queryRayTracingAccelerationStructureProperties(PTLAS)", result);
         clear();
@@ -772,7 +760,7 @@ Result ScenePartitionedAccelerationStructureBuilder::build(
     }
 
     std::unique_ptr<CommandPool> commandPool;
-    result = device.createCommandPool(queue, commandPool);
+    result = device.createCommandPool(queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
     if (!result) {
         log = resultMessage("createCommandPool(PTLAS AS build)", result);
         clear();
@@ -784,7 +772,7 @@ Result ScenePartitionedAccelerationStructureBuilder::build(
         queue,
         *commandPool,
         "PTLAS AS build",
-        [&](CommandBuffer& commandBuffer) -> Result {
+        [&](CommandBuffer& commandBuffer) -> Result<> {
             for (size_t blasIndex = 0; blasIndex < primitiveInputs.size(); ++blasIndex) {
                 const PrimitiveInput& input = primitiveInputs[blasIndex];
                 BuiltBlas& blas = impl_->blases[blasIndex];
@@ -802,7 +790,7 @@ Result ScenePartitionedAccelerationStructureBuilder::build(
                         ? RayTracingGeometryFlags::Opaque
                         : RayTracingGeometryFlags::None,
                 };
-                Result buildResult = commandBuffer.buildRayTracingAccelerationStructure(
+                Result<> buildResult = commandBuffer.buildRayTracingAccelerationStructure(
                     RayTracingAccelerationStructureBuildDesc{
                         .destination = blas.accelerationStructure.get(),
                         .geometries = &geometry,
@@ -938,7 +926,7 @@ SceneClusterAccelerationStructureBuilder::SceneClusterAccelerationStructureBuild
 SceneClusterAccelerationStructureBuilder& SceneClusterAccelerationStructureBuilder::operator=(
     SceneClusterAccelerationStructureBuilder&&) noexcept = default;
 
-Result SceneClusterAccelerationStructureBuilder::build(
+Result<> SceneClusterAccelerationStructureBuilder::build(
     Device& device,
     Queue& queue,
     const scene::Scene& scene,
@@ -972,7 +960,7 @@ Result SceneClusterAccelerationStructureBuilder::build(
     }
 
     ClusterAccelerationStructureProperties clusterProperties;
-    Result result = device.queryClusterAccelerationStructureProperties(clusterProperties);
+    Result<> result = device.queryClusterAccelerationStructureProperties().transform([&](auto rhiValue) { clusterProperties = std::move(rhiValue); });
     if (!result ||
         clusterProperties.clusterStorageAlignment == 0 ||
         clusterProperties.bottomLevelStorageAlignment == 0 ||
@@ -996,8 +984,7 @@ Result SceneClusterAccelerationStructureBuilder::build(
     const uint32_t totalClusterVertexCount = static_cast<uint32_t>(inputs.vertices.size());
 
     ClusterAccelerationStructureBuildSizes singleClasSizes;
-    result = device.queryClusterAccelerationStructureTriangleBuildSizes(
-        ClusterAccelerationStructureTriangleBuildSizesDesc{
+    result = device.queryClusterAccelerationStructureTriangleBuildSizes(ClusterAccelerationStructureTriangleBuildSizesDesc{
             .maxClusterTriangleCount = maxClusterTriangleCount,
             .maxClusterVertexCount = maxClusterVertexCount,
             .maxClusterUniqueGeometryCount = 1,
@@ -1007,8 +994,7 @@ Result SceneClusterAccelerationStructureBuilder::build(
             .maxTotalVertexCount = maxClusterVertexCount,
             .vertexFormat = Format::Rgb32Sfloat,
             .maxAccelerationStructureCount = 1,
-        },
-        singleClasSizes);
+        }).transform([&](auto rhiValue) { singleClasSizes = std::move(rhiValue); });
     if (!result || singleClasSizes.accelerationStructureSize == 0) {
         log = resultMessage(
             "queryClusterAccelerationStructureTriangleBuildSizes(single CLAS)",
@@ -1018,8 +1004,7 @@ Result SceneClusterAccelerationStructureBuilder::build(
     }
 
     ClusterAccelerationStructureBuildSizes clasBatchSizes;
-    result = device.queryClusterAccelerationStructureTriangleBuildSizes(
-        ClusterAccelerationStructureTriangleBuildSizesDesc{
+    result = device.queryClusterAccelerationStructureTriangleBuildSizes(ClusterAccelerationStructureTriangleBuildSizesDesc{
             .maxClusterTriangleCount = maxClusterTriangleCount,
             .maxClusterVertexCount = maxClusterVertexCount,
             .maxClusterUniqueGeometryCount = 1,
@@ -1029,8 +1014,7 @@ Result SceneClusterAccelerationStructureBuilder::build(
             .maxTotalVertexCount = totalClusterVertexCount,
             .vertexFormat = Format::Rgb32Sfloat,
             .maxAccelerationStructureCount = clusterCount,
-        },
-        clasBatchSizes);
+        }).transform([&](auto rhiValue) { clasBatchSizes = std::move(rhiValue); });
     if (!result || clasBatchSizes.buildScratchSize == 0) {
         log = resultMessage(
             "queryClusterAccelerationStructureTriangleBuildSizes(CLAS batch)",
@@ -1055,14 +1039,12 @@ Result SceneClusterAccelerationStructureBuilder::build(
     }
 
     ClusterAccelerationStructureBuildSizes singleClusterBlasSizes;
-    result = device.queryClusterAccelerationStructureBottomLevelBuildSizes(
-        ClusterAccelerationStructureBottomLevelBuildSizesDesc{
+    result = device.queryClusterAccelerationStructureBottomLevelBuildSizes(ClusterAccelerationStructureBottomLevelBuildSizesDesc{
             .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
             .maxClusterCountPerAccelerationStructure = maxClustersPerBlas,
             .maxTotalClusterCount = maxClustersPerBlas,
             .maxAccelerationStructureCount = 1,
-        },
-        singleClusterBlasSizes);
+        }).transform([&](auto rhiValue) { singleClusterBlasSizes = std::move(rhiValue); });
     if (!result || singleClusterBlasSizes.accelerationStructureSize == 0) {
         log = resultMessage(
             "queryClusterAccelerationStructureBottomLevelBuildSizes(single BLAS)",
@@ -1072,14 +1054,12 @@ Result SceneClusterAccelerationStructureBuilder::build(
     }
 
     ClusterAccelerationStructureBuildSizes clusterBlasBatchSizes;
-    result = device.queryClusterAccelerationStructureBottomLevelBuildSizes(
-        ClusterAccelerationStructureBottomLevelBuildSizesDesc{
+    result = device.queryClusterAccelerationStructureBottomLevelBuildSizes(ClusterAccelerationStructureBottomLevelBuildSizesDesc{
             .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
             .maxClusterCountPerAccelerationStructure = maxClustersPerBlas,
             .maxTotalClusterCount = static_cast<uint32_t>(selectedClusterReferenceCount),
             .maxAccelerationStructureCount = instanceCount,
-        },
-        clusterBlasBatchSizes);
+        }).transform([&](auto rhiValue) { clusterBlasBatchSizes = std::move(rhiValue); });
     if (!result || clusterBlasBatchSizes.buildScratchSize == 0) {
         log = resultMessage(
             "queryClusterAccelerationStructureBottomLevelBuildSizes(BLAS batch)",
@@ -1089,13 +1069,11 @@ Result SceneClusterAccelerationStructureBuilder::build(
     }
 
     RayTracingAccelerationStructureBuildSizes tlasSizes;
-    result = device.queryRayTracingAccelerationStructureBuildSizes(
-        RayTracingAccelerationStructureBuildInputs{
+    result = device.queryRayTracingAccelerationStructureBuildSizes(RayTracingAccelerationStructureBuildInputs{
             .type = RayTracingAccelerationStructureType::TopLevel,
             .flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
             .instanceCount = instanceCount,
-        },
-        tlasSizes);
+        }).transform([&](auto rhiValue) { tlasSizes = std::move(rhiValue); });
     if (!result ||
         tlasSizes.accelerationStructureSize == 0 ||
         tlasSizes.buildScratchSize == 0) {
@@ -1107,7 +1085,7 @@ Result SceneClusterAccelerationStructureBuilder::build(
     }
 
     RayTracingAccelerationStructureProperties rtasProperties;
-    result = device.queryRayTracingAccelerationStructureProperties(rtasProperties);
+    result = device.queryRayTracingAccelerationStructureProperties().transform([&](auto rhiValue) { rtasProperties = std::move(rhiValue); });
     if (!result || rtasProperties.scratchAlignment == 0) {
         log = resultMessage("queryRayTracingAccelerationStructureProperties", result);
         clear();
@@ -1426,13 +1404,11 @@ Result SceneClusterAccelerationStructureBuilder::build(
         return result;
     }
 
-    result = device.createRayTracingAccelerationStructure(
-        RayTracingAccelerationStructureDesc{
+    result = device.createRayTracingAccelerationStructure(RayTracingAccelerationStructureDesc{
             .type = RayTracingAccelerationStructureType::TopLevel,
             .buildFlags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace,
             .size = tlasSizes.accelerationStructureSize,
-        },
-        impl_->tlas);
+        }).transform([&](auto rhiValue) { impl_->tlas = std::move(rhiValue); });
     if (!result) {
         log = resultMessage(
             "createRayTracingAccelerationStructure(cluster TLAS)",
@@ -1477,7 +1453,7 @@ Result SceneClusterAccelerationStructureBuilder::build(
     }
 
     std::unique_ptr<CommandPool> commandPool;
-    result = device.createCommandPool(queue, commandPool);
+    result = device.createCommandPool(queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
     if (!result) {
         log = resultMessage(
             "createCommandPool(cluster acceleration-structure build)",
@@ -1491,8 +1467,8 @@ Result SceneClusterAccelerationStructureBuilder::build(
         queue,
         *commandPool,
         "cluster acceleration-structure build",
-        [&](CommandBuffer& commandBuffer) -> Result {
-            Result buildResult =
+        [&](CommandBuffer& commandBuffer) -> Result<> {
+            Result<> buildResult =
                 commandBuffer.buildClusterAccelerationStructureTriangles(
                     ClusterAccelerationStructureTriangleBuildDesc{
                         .clusters = clasBuildInfos.data(),

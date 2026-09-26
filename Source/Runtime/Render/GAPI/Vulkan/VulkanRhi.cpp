@@ -79,7 +79,7 @@ struct StateInfo {
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
-Result resultFromVk(VkResult result)
+Result<> resultFromVk(VkResult result)
 {
     switch (result) {
     case VK_SUCCESS:
@@ -609,7 +609,7 @@ VkPhysicalDeviceOpacityMicromapPropertiesKHR queryOpacityMicromapProperties(
     return properties;
 }
 
-Result makeOpacityMicromapGeometry(
+Result<> makeOpacityMicromapGeometry(
     VkPhysicalDevice physicalDevice,
     bool enabled,
     bool useExt,
@@ -703,7 +703,7 @@ VkMicromapBuildInfoEXT makeExtMicromapBuildInfo(
     };
 }
 
-Result makeExtMicromapAttachment(
+Result<> makeExtMicromapAttachment(
     const RayTracingTriangleGeometryDesc& source,
     VkMicromapEXT micromap,
     std::vector<VkMicromapUsageEXT>& usages,
@@ -3261,8 +3261,8 @@ struct PipelineCacheImpl {
     bool dirty = false;
 
     ~PipelineCacheImpl();
-    Result initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc);
-    Result saveLocked();
+    Result<> initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc);
+    Result<> saveLocked();
     bool recordPsoLocked(uint64_t psoHash);
 };
 
@@ -3342,7 +3342,7 @@ struct SwapchainImpl {
     std::vector<std::unique_ptr<Texture>> textures;
 
     ~SwapchainImpl();
-    Result initialize(const SwapchainDesc& desc);
+    Result<> initialize(const SwapchainDesc& desc);
     void wrapImages(const std::vector<VkImage>& images, TextureUsageBits usage);
 };
 
@@ -3365,8 +3365,8 @@ struct BindlessHeapImpl {
     BindlessHeapBuffer resourceHeap;
 
     ~BindlessHeapImpl();
-    Result initialize(DeviceImpl& owningDevice, const BindlessHeapDesc& heapDesc);
-    Result createHeapBuffer(VkDeviceSize size, VkDeviceSize alignment, BindlessHeapBuffer& outBuffer);
+    Result<> initialize(DeviceImpl& owningDevice, const BindlessHeapDesc& heapDesc);
+    Result<> createHeapBuffer(VkDeviceSize size, VkDeviceSize alignment, BindlessHeapBuffer& outBuffer);
     void destroyHeapBuffer(BindlessHeapBuffer& buffer);
     void flushSamplerDirty();
     void flushResourceDirty();
@@ -3389,7 +3389,7 @@ struct DeviceImpl {
     mutable uint32_t budgetRefreshIndex = 0;
     DeviceMemoryBudget memoryBudgetLocked() const;
     bool admitMemoryLocked(uint32_t memoryType, uint64_t bytes, MemoryBudgetDomain domain);
-    Result prepareBufferAllocationLocked(const VkBufferCreateInfo& info, VmaAllocationCreateInfo& allocationInfo, MemoryBudgetDomain domain);
+    Result<> prepareBufferAllocationLocked(const VkBufferCreateInfo& info, VmaAllocationCreateInfo& allocationInfo, MemoryBudgetDomain domain);
     void trackMemoryLocked(MemoryBudgetDomain domain, uint64_t bytes, bool local, bool add);
     DeviceCapabilities capabilities;
     PipelineCacheFileIdentity pipelineCacheFileIdentity;
@@ -3517,7 +3517,7 @@ void DeviceImpl::trackMemoryLocked(MemoryBudgetDomain domain, uint64_t bytes, bo
     }
 }
 
-Result DeviceImpl::prepareBufferAllocationLocked(const VkBufferCreateInfo& info, VmaAllocationCreateInfo& allocationInfo, MemoryBudgetDomain domain)
+Result<> DeviceImpl::prepareBufferAllocationLocked(const VkBufferCreateInfo& info, VmaAllocationCreateInfo& allocationInfo, MemoryBudgetDomain domain)
 {
     uint32_t memoryType = 0;
     const VkResult result = vmaFindMemoryTypeIndexForBufferInfo(allocator, &info, &allocationInfo, &memoryType);
@@ -3648,7 +3648,7 @@ PipelineCacheImpl::~PipelineCacheImpl()
     {
         std::lock_guard lock(mutex);
         if (saveOnDestroy && dirty && !filePath.empty()) {
-            const Result result = saveLocked();
+            const Result<> result = saveLocked();
             if (!result) {
                 spdlog::warn("Failed to save pipeline cache '{}'", filePath.string());
             }
@@ -3658,7 +3658,7 @@ PipelineCacheImpl::~PipelineCacheImpl()
     }
 }
 
-Result PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc)
+Result<> PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineCacheDesc& desc)
 {
     device = &owningDevice;
     saveOnDestroy = desc.saveOnDestroy;
@@ -3741,7 +3741,7 @@ Result PipelineCacheImpl::initialize(DeviceImpl& owningDevice, const PipelineCac
     return {};
 }
 
-Result PipelineCacheImpl::saveLocked()
+Result<> PipelineCacheImpl::saveLocked()
 {
     if (device == nullptr || pipelineCache == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
@@ -3871,7 +3871,7 @@ std::vector<uint32_t> queueFamiliesForAccess(const DeviceImpl& device, QueueAcce
     return families;
 }
 
-Result ensureMicromapIdentityIndices(
+Result<> ensureMicromapIdentityIndices(
     RayTracingAccelerationStructureImpl& micromap,
     uint32_t triangleCount,
     VkDeviceAddress& address)
@@ -3908,7 +3908,7 @@ Result ensureMicromapIdentityIndices(
     auto allocationInfo = allocationInfoForMemory(MemoryLocation::HostUpload);
     auto indices = std::make_unique<MicromapIdentityIndexBuffer>();
     std::unique_lock budgetLock(device.memoryBudgetState->mutex);
-    const Result admitted = device.prepareBufferAllocationLocked(bufferInfo, allocationInfo, MemoryBudgetDomain::RayTracing);
+    const Result<> admitted = device.prepareBufferAllocationLocked(bufferInfo, allocationInfo, MemoryBudgetDomain::RayTracing);
     if (!admitted) { return admitted; }
     indices->device = &device;
     indices->allocator = device.allocator;
@@ -3958,7 +3958,7 @@ BindlessHeapImpl::~BindlessHeapImpl()
     destroyHeapBuffer(resourceHeap);
 }
 
-Result BindlessHeapImpl::initialize(DeviceImpl& owningDevice, const BindlessHeapDesc& heapDesc)
+Result<> BindlessHeapImpl::initialize(DeviceImpl& owningDevice, const BindlessHeapDesc& heapDesc)
 {
     if (!owningDevice.capabilities.bindlessDescriptorHeap) {
         return makeError(Error::Unsupported);
@@ -3985,7 +3985,7 @@ Result BindlessHeapImpl::initialize(DeviceImpl& owningDevice, const BindlessHeap
         if (heap.setupSamplerHeap(desc.maxSamplers) == 0) {
             return makeError(Error::Unsupported);
         }
-        Result result = createHeapBuffer(heap.samplerHeapSize(), heap.samplerHeapAlignment(), samplerHeap);
+        Result<> result = createHeapBuffer(heap.samplerHeapSize(), heap.samplerHeapAlignment(), samplerHeap);
         if (!result) {
             return result;
         }
@@ -4001,7 +4001,7 @@ Result BindlessHeapImpl::initialize(DeviceImpl& owningDevice, const BindlessHeap
     return {};
 }
 
-Result BindlessHeapImpl::createHeapBuffer(VkDeviceSize size, VkDeviceSize alignment, BindlessHeapBuffer& outBuffer)
+Result<> BindlessHeapImpl::createHeapBuffer(VkDeviceSize size, VkDeviceSize alignment, BindlessHeapBuffer& outBuffer)
 {
     if (device == nullptr || size == 0) {
         return makeError(Error::InvalidArgument);
@@ -4032,7 +4032,7 @@ Result BindlessHeapImpl::createHeapBuffer(VkDeviceSize size, VkDeviceSize alignm
     VkBuffer buffer = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
     std::unique_lock budgetLock(device->memoryBudgetState->mutex);
-    const Result admitted = device->prepareBufferAllocationLocked(bufferInfo, allocationInfo, MemoryBudgetDomain::FrameResources);
+    const Result<> admitted = device->prepareBufferAllocationLocked(bufferInfo, allocationInfo, MemoryBudgetDomain::FrameResources);
     if (!admitted) { return admitted; }
     const VkResult vkResult = vmaCreateBuffer(
         device->allocator,
@@ -4159,7 +4159,7 @@ void SwapchainImpl::wrapImages(const std::vector<VkImage>& images, TextureUsageB
     }
 }
 
-Result SwapchainImpl::initialize(const SwapchainDesc& desc)
+Result<> SwapchainImpl::initialize(const SwapchainDesc& desc)
 {
     if (desc.window.system != WindowSystem::Sdl3 || desc.window.nativeWindow == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -4310,7 +4310,7 @@ Queue::~Queue() = default;
 Queue::Queue(Queue&&) noexcept = default;
 Queue& Queue::operator=(Queue&&) noexcept = default;
 
-Result Queue::submit(const QueueSubmitDesc& desc)
+Result<> Queue::submit(const QueueSubmitDesc& desc)
 {
     METALLIC_TRACY_CPU_SCOPE("Queue Submit");
     if (impl_ == nullptr || impl_->queue == VK_NULL_HANDLE) {
@@ -4427,7 +4427,7 @@ Result Queue::submit(const QueueSubmitDesc& desc)
     }
 
     profiling::pacingTrace("QueueSubmitBegin", UINT64_MAX, impl_->familyIndex);
-    const Result result = resultFromVk(vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence));
+    const Result<> result = resultFromVk(vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence));
     profiling::pacingTrace("QueueSubmitEnd", UINT64_MAX, impl_->familyIndex);
     if (result) {
         // Mark the whole accepted batch before invoking any CPU publication hooks.
@@ -4446,7 +4446,7 @@ bool Queue::sameQueue(const Queue& other) const
     return impl_ && other.impl_ && impl_->device == other.impl_->device && impl_->queue == other.impl_->queue;
 }
 
-Result Queue::waitIdle()
+Result<> Queue::waitIdle()
 {
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -4464,9 +4464,9 @@ uint32_t Queue::timestampValidBits() const
     return impl_ != nullptr ? impl_->timestampValidBits : 0;
 }
 
-Result Queue::calibrateTimestamps(GpuClockCalibration& outCalibration) const
+Result<GpuClockCalibration> Queue::calibrateTimestamps() const
 {
-    outCalibration = {};
+    GpuClockCalibration calibration{};
     if (impl_ == nullptr) { return makeError(Error::InvalidArgument); }
     const auto& device = *impl_->device;
     if (impl_->timestampValidBits == 0 || device.getCalibratedTimestamps == nullptr ||
@@ -4480,7 +4480,7 @@ Result Queue::calibrateTimestamps(GpuClockCalibration& outCalibration) const
     uint64_t timestamps[2]{};
     uint64_t deviation = 0;
     const VkResult result = device.getCalibratedTimestamps(device.device, 2, info, timestamps, &deviation);
-    if (result != VK_SUCCESS) { return resultFromVk(result); }
+    if (result != VK_SUCCESS) { return std::unexpected(resultFromVk(result).error()); }
     uint64_t cpuNanoseconds = timestamps[1];
 #if defined(_WIN32)
     // Divide before multiplying so long-running QPC counters cannot overflow.
@@ -4491,8 +4491,8 @@ Result Queue::calibrateTimestamps(GpuClockCalibration& outCalibration) const
         static_cast<uint64_t>(static_cast<double>(timestamps[1] % ticksPerSecond) *
             1'000'000'000.0 / static_cast<double>(ticksPerSecond));
 #endif
-    outCalibration = {timestamps[0], cpuNanoseconds, deviation};
-    return {};
+    calibration = {timestamps[0], cpuNanoseconds, deviation};
+    return calibration;
 }
 
 Fence::Fence(std::unique_ptr<detail::FenceImpl> impl)
@@ -4511,7 +4511,7 @@ Fence::~Fence()
 Fence::Fence(Fence&&) noexcept = default;
 Fence& Fence::operator=(Fence&&) noexcept = default;
 
-Result Fence::wait(uint64_t timeoutNanoseconds)
+Result<> Fence::wait(uint64_t timeoutNanoseconds)
 {
     METALLIC_TRACY_CPU_SCOPE("Fence Wait");
     if (impl_ == nullptr) {
@@ -4536,7 +4536,7 @@ Result Fence::wait(uint64_t timeoutNanoseconds)
     return resultFromVk(result);
 }
 
-Result Fence::reset()
+Result<> Fence::reset()
 {
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -4573,7 +4573,7 @@ const TimestampQueryPoolDesc& TimestampQueryPool::desc() const
     return impl_ != nullptr ? impl_->desc : kEmptyDesc;
 }
 
-Result TimestampQueryPool::readResults(
+Result<> TimestampQueryPool::readResults(
     uint32_t firstQuery,
     uint32_t queryCount,
     TimestampQueryResult* outResults) const
@@ -4662,7 +4662,7 @@ RayTracingAccelerationStructureCompactionQueryPool::desc() const
     return impl_ != nullptr ? impl_->desc : kEmptyDesc;
 }
 
-Result RayTracingAccelerationStructureCompactionQueryPool::readResults(
+Result<> RayTracingAccelerationStructureCompactionQueryPool::readResults(
     uint32_t firstQuery,
     uint32_t queryCount,
     uint64_t* outCompactedSizes) const
@@ -4703,7 +4703,7 @@ Semaphore::~Semaphore()
 Semaphore::Semaphore(Semaphore&&) noexcept = default;
 Semaphore& Semaphore::operator=(Semaphore&&) noexcept = default;
 
-Result Semaphore::wait(uint64_t value, uint64_t timeoutNanoseconds)
+Result<> Semaphore::wait(uint64_t value, uint64_t timeoutNanoseconds)
 {
     METALLIC_TRACY_CPU_SCOPE("Timeline Wait");
     if (impl_ == nullptr || impl_->semaphore == VK_NULL_HANDLE) {
@@ -4729,7 +4729,7 @@ Result Semaphore::wait(uint64_t value, uint64_t timeoutNanoseconds)
     return resultFromVk(result);
 }
 
-Result Semaphore::signal(uint64_t value)
+Result<> Semaphore::signal(uint64_t value)
 {
     if (impl_ == nullptr || impl_->semaphore == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
@@ -4814,12 +4814,12 @@ uint64_t Buffer::deviceAddress() const
     return impl_ ? impl_->address : 0;
 }
 
-Result Buffer::slice(BufferSlice& out, uint64_t offset, uint64_t size) const
+Result<BufferSlice> Buffer::slice(uint64_t offset, uint64_t size) const
 {
     BufferSlice whole;
     whole.allocation_ = impl_;
     whole.size_ = desc().size;
-    return whole.subslice(out, offset, size);
+    return whole.subslice(offset, size);
 }
 
 const BufferDesc& BufferSlice::allocationDesc() const
@@ -4844,21 +4844,19 @@ std::shared_ptr<void> BufferSlice::retainAllocation() const
     return allocation_;
 }
 
-Result BufferSlice::subslice(BufferSlice& out, uint64_t offset, uint64_t size) const
+Result<BufferSlice> BufferSlice::subslice(uint64_t offset, uint64_t size) const
 {
-    // Build the result before assigning, including when out aliases *this.
     BufferSlice next;
     if (!allocation_ || offset > size_ || (size != UINT64_MAX && size > size_ - offset)) {
-        out = {}; return makeError(Error::InvalidArgument);
+        return makeError(Error::InvalidArgument);
     }
     next.allocation_ = allocation_;
     next.offset_ = offset_ + offset;
     next.size_ = size == UINT64_MAX ? size_ - offset : size;
-    out = std::move(next);
-    return {};
+    return next;
 }
 
-Result BufferSlice::validate(const void* device, BufferUsageBits usage, uint64_t alignment, uint64_t minimumSize) const
+Result<> BufferSlice::validate(const void* device, BufferUsageBits usage, uint64_t alignment, uint64_t minimumSize) const
 {
     const auto address = deviceAddress();
     if (!allocation_ || !device || deviceIdentity() != device || size_ == 0 || size_ < minimumSize ||
@@ -4870,7 +4868,7 @@ Result BufferSlice::validate(const void* device, BufferUsageBits usage, uint64_t
     return {};
 }
 
-Result BufferSlice::validateData(const void* device, uint32_t stride, uint32_t alignment) const
+Result<> BufferSlice::validateData(const void* device, uint32_t stride, uint32_t alignment) const
 {
     auto result = validate(device, BufferUsageBits::None, alignment);
     if (!result) { return result; }
@@ -5104,7 +5102,7 @@ PipelineCacheStats PipelineCache::stats() const
     return impl_->stats;
 }
 
-Result PipelineCache::save()
+Result<> PipelineCache::save()
 {
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -5216,52 +5214,52 @@ const BindlessHeapDesc& BindlessHeap::desc() const
 }
 
 
-Result BindlessHeap::allocateSampler(BindlessHandle& outHandle)
+Result<BindlessHandle> BindlessHeap::allocateSampler()
 {
-    outHandle = {};
+    BindlessHandle handle{};
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->heap.allocateSampler(outHandle)) {
+    if (!impl_->heap.allocateSampler(handle)) {
         return makeError(Error::OutOfMemory);
     }
-    return {};
+    return handle;
 }
 
-Result BindlessHeap::allocateSampledImage(BindlessHandle& outHandle)
+Result<BindlessHandle> BindlessHeap::allocateSampledImage()
 {
-    outHandle = {};
+    BindlessHandle handle{};
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->heap.allocateSampledImage(outHandle)) {
+    if (!impl_->heap.allocateSampledImage(handle)) {
         return makeError(Error::OutOfMemory);
     }
-    return {};
+    return handle;
 }
 
-Result BindlessHeap::allocateStorageImage(BindlessHandle& outHandle)
+Result<BindlessHandle> BindlessHeap::allocateStorageImage()
 {
-    outHandle = {};
+    BindlessHandle handle{};
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->heap.allocateStorageImage(outHandle)) {
+    if (!impl_->heap.allocateStorageImage(handle)) {
         return makeError(Error::OutOfMemory);
     }
-    return {};
+    return handle;
 }
 
-Result BindlessHeap::allocateBuffer(BindlessHandle& outHandle)
+Result<BindlessHandle> BindlessHeap::allocateBuffer()
 {
-    outHandle = {};
+    BindlessHandle handle{};
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->heap.allocateBuffer(outHandle)) {
+    if (!impl_->heap.allocateBuffer(handle)) {
         return makeError(Error::OutOfMemory);
     }
-    return {};
+    return handle;
 }
 
 void BindlessHeap::release(BindlessHandle handle)
@@ -5271,7 +5269,7 @@ void BindlessHeap::release(BindlessHandle handle)
     }
 }
 
-Result BindlessHeap::writeSampler(BindlessHandle handle, const SamplerDesc& sampler)
+Result<> BindlessHeap::writeSampler(BindlessHandle handle, const SamplerDesc& sampler)
 {
     const BindlessSamplerWrite write{
         .handle = handle,
@@ -5280,7 +5278,7 @@ Result BindlessHeap::writeSampler(BindlessHandle handle, const SamplerDesc& samp
     return writeSamplers(&write, 1);
 }
 
-Result BindlessHeap::writeSamplers(const BindlessSamplerWrite* writes, uint32_t writeCount)
+Result<> BindlessHeap::writeSamplers(const BindlessSamplerWrite* writes, uint32_t writeCount)
 {
     if (impl_ == nullptr ||
         impl_->samplerHeap.mapped == nullptr ||
@@ -5325,27 +5323,27 @@ Result BindlessHeap::writeSamplers(const BindlessSamplerWrite* writes, uint32_t 
     return {};
 }
 
-Result BindlessHeap::allocateAccelerationStructure(BindlessHandle& outHandle)
+Result<BindlessHandle> BindlessHeap::allocateAccelerationStructure()
 {
-    outHandle = {};
-    if (impl_ == nullptr || !impl_->heap.allocateBuffer(outHandle)) {
+    BindlessHandle handle{};
+    if (impl_ == nullptr || !impl_->heap.allocateBuffer(handle)) {
         return makeError(impl_ == nullptr ? Error::InvalidArgument : Error::OutOfMemory);
     }
-    outHandle.kind = BindlessHandleKind::AccelerationStructure;
-    return {};
+    handle.kind = BindlessHandleKind::AccelerationStructure;
+    return handle;
 }
 
-Result BindlessHeap::allocatePartitionedAccelerationStructure(BindlessHandle& outHandle)
+Result<BindlessHandle> BindlessHeap::allocatePartitionedAccelerationStructure()
 {
-    outHandle = {};
-    if (impl_ == nullptr || !impl_->heap.allocateBuffer(outHandle)) {
+    BindlessHandle handle{};
+    if (impl_ == nullptr || !impl_->heap.allocateBuffer(handle)) {
         return makeError(impl_ == nullptr ? Error::InvalidArgument : Error::OutOfMemory);
     }
-    outHandle.kind = BindlessHandleKind::PartitionedAccelerationStructure;
-    return {};
+    handle.kind = BindlessHandleKind::PartitionedAccelerationStructure;
+    return handle;
 }
 
-Result BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state)
+Result<> BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state)
 {
     const BindlessImageWrite write{
         .handle = handle,
@@ -5355,7 +5353,7 @@ Result BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view,
     return writeImages(&write, 1);
 }
 
-Result BindlessHeap::writeStorageImage(BindlessHandle handle, TextureView& view)
+Result<> BindlessHeap::writeStorageImage(BindlessHandle handle, TextureView& view)
 {
     const BindlessImageWrite write{
         .handle = handle,
@@ -5365,7 +5363,7 @@ Result BindlessHeap::writeStorageImage(BindlessHandle handle, TextureView& view)
     return writeImages(&write, 1);
 }
 
-Result BindlessHeap::writeImages(const BindlessImageWrite* writes, uint32_t writeCount)
+Result<> BindlessHeap::writeImages(const BindlessImageWrite* writes, uint32_t writeCount)
 {
     if (impl_ == nullptr ||
         impl_->resourceHeap.mapped == nullptr ||
@@ -5438,7 +5436,7 @@ Result BindlessHeap::writeImages(const BindlessImageWrite* writes, uint32_t writ
     return {};
 }
 
-Result BindlessHeap::writeBufferView(BindlessHandle handle, BufferView& view)
+Result<> BindlessHeap::writeBufferView(BindlessHandle handle, BufferView& view)
 {
     if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || view.impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -5457,7 +5455,7 @@ Result BindlessHeap::writeBufferView(BindlessHandle handle, BufferView& view)
     return {};
 }
 
-Result BindlessHeap::writeConstantBuffer(BindlessHandle handle, Buffer& buffer)
+Result<> BindlessHeap::writeConstantBuffer(BindlessHandle handle, Buffer& buffer)
 {
     if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || buffer.impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -5481,7 +5479,7 @@ Result BindlessHeap::writeConstantBuffer(BindlessHandle handle, Buffer& buffer)
     return {};
 }
 
-Result BindlessHeap::writeStorageBuffer(BindlessHandle handle, Buffer& buffer)
+Result<> BindlessHeap::writeStorageBuffer(BindlessHandle handle, Buffer& buffer)
 {
     if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || buffer.impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -5505,7 +5503,7 @@ Result BindlessHeap::writeStorageBuffer(BindlessHandle handle, Buffer& buffer)
     return {};
 }
 
-Result BindlessHeap::writeAccelerationStructure(
+Result<> BindlessHeap::writeAccelerationStructure(
     BindlessHandle handle,
     RayTracingAccelerationStructure& accelerationStructure)
 {
@@ -5540,7 +5538,7 @@ Result BindlessHeap::writeAccelerationStructure(
     return {};
 }
 
-Result BindlessHeap::writePartitionedAccelerationStructure(
+Result<> BindlessHeap::writePartitionedAccelerationStructure(
     BindlessHandle handle,
     PartitionedAccelerationStructure& accelerationStructure)
 {
@@ -5600,7 +5598,7 @@ QueueAccessBits CommandBuffer::queueCapabilities() const
     return result;
 }
 
-Result CommandBuffer::begin(RenderFrameContext* frameContext)
+Result<> CommandBuffer::begin(RenderFrameContext* frameContext)
 {
     if (impl_ == nullptr || (frameContext != nullptr && !frameContext->recording())) {
         return makeError(Error::InvalidArgument);
@@ -5622,7 +5620,7 @@ Result CommandBuffer::begin(RenderFrameContext* frameContext)
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
-    Result result = resultFromVk(vkBeginCommandBuffer(impl_->commandBuffer, &beginInfo));
+    Result<> result = resultFromVk(vkBeginCommandBuffer(impl_->commandBuffer, &beginInfo));
     recording_ = result.has_value();
     if (result) {
         if (submission_ != nullptr) { submission_->cancel(); }
@@ -5637,12 +5635,12 @@ Result CommandBuffer::begin(RenderFrameContext* frameContext)
     return result;
 }
 
-Result CommandBuffer::end()
+Result<> CommandBuffer::end()
 {
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    Result result = resultFromVk(vkEndCommandBuffer(impl_->commandBuffer));
+    Result<> result = resultFromVk(vkEndCommandBuffer(impl_->commandBuffer));
     if (result) { recording_ = false; }
     return result;
 }
@@ -5681,7 +5679,7 @@ void CommandBuffer::endDebugLabel()
     impl_->device->cmdEndDebugUtilsLabel(impl_->commandBuffer);
 }
 
-Result CommandBuffer::resetTimestampQueries(
+Result<> CommandBuffer::resetTimestampQueries(
     TimestampQueryPool& queryPool,
     uint32_t firstQuery,
     uint32_t queryCount)
@@ -5704,7 +5702,7 @@ Result CommandBuffer::resetTimestampQueries(
     return {};
 }
 
-Result CommandBuffer::writeTimestamp(
+Result<> CommandBuffer::writeTimestamp(
     TimestampQueryPool& queryPool,
     uint32_t queryIndex,
     PipelineStageBits stage)
@@ -5725,7 +5723,7 @@ Result CommandBuffer::writeTimestamp(
     return {};
 }
 
-Result CommandBuffer::resetRayTracingAccelerationStructureCompactionQueries(
+Result<> CommandBuffer::resetRayTracingAccelerationStructureCompactionQueries(
     RayTracingAccelerationStructureCompactionQueryPool& queryPool,
     uint32_t firstQuery,
     uint32_t queryCount)
@@ -5752,7 +5750,7 @@ Result CommandBuffer::resetRayTracingAccelerationStructureCompactionQueries(
     return {};
 }
 
-Result CommandBuffer::writeRayTracingAccelerationStructureCompactedSize(
+Result<> CommandBuffer::writeRayTracingAccelerationStructureCompactedSize(
     RayTracingAccelerationStructureCompactionQueryPool& queryPool,
     uint32_t queryIndex,
     RayTracingAccelerationStructure& accelerationStructure)
@@ -5886,12 +5884,12 @@ void CommandBuffer::copyBuffer(const BufferCopyDesc& desc)
 {
     if (!desc.source || !desc.destination || !desc.size) { return; }
     BufferSlice source, destination;
-    if (!desc.source->slice(source, desc.sourceOffset, desc.size) ||
-        !desc.destination->slice(destination, desc.destinationOffset, desc.size)) { return; }
+    if (!desc.source->slice(desc.sourceOffset, desc.size).transform([&](auto rhiValue) { source = std::move(rhiValue); }) ||
+        !desc.destination->slice(desc.destinationOffset, desc.size).transform([&](auto rhiValue) { destination = std::move(rhiValue); })) { return; }
     (void)copyBuffer(source, destination);
 }
 
-Result CommandBuffer::copyBuffer(const BufferSlice& source, const BufferSlice& destination)
+Result<> CommandBuffer::copyBuffer(const BufferSlice& source, const BufferSlice& destination)
 {
     if (!impl_ || !recording_ || !(impl_->queueFlags & (VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) ||
         !source.validate(deviceIdentity(), BufferUsageBits::TransferSource) ||
@@ -5915,17 +5913,17 @@ Result CommandBuffer::copyBuffer(const BufferSlice& source, const BufferSlice& d
     return {};
 }
 
-Result CommandBuffer::decompressBuffers(std::span<const BufferDecompressionDesc> regions)
+Result<> CommandBuffer::decompressBuffers(std::span<const BufferDecompressionDesc> regions)
 {
     return processDecompressionBuffers(regions, true);
 }
 
-Result CommandBuffer::validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const
+Result<> CommandBuffer::validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const
 {
     return processDecompressionBuffers(regions, false);
 }
 
-Result CommandBuffer::processDecompressionBuffers(std::span<const BufferDecompressionDesc> regions, bool record) const
+Result<> CommandBuffer::processDecompressionBuffers(std::span<const BufferDecompressionDesc> regions, bool record) const
 {
     if (!impl_ || !recording_ || !impl_->device->capabilities.memoryDecompression ||
         !(impl_->queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) {
@@ -6634,7 +6632,7 @@ void CommandBuffer::pushBindlessData(const void* data, uint32_t byteSize)
     }
 }
 
-Result CommandBuffer::recordIsolatedCompute(const std::function<Result()>& record)
+Result<> CommandBuffer::recordIsolatedCompute(const std::function<Result<>()>& record)
 {
     if (!impl_ || !recording_ || !(impl_->queueFlags & VK_QUEUE_COMPUTE_BIT)) {
         return makeError(Error::Unsupported);
@@ -6715,14 +6713,14 @@ void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_
     }
 }
 
-Result CommandBuffer::dispatchIndirect(Buffer& buffer, uint64_t offset)
+Result<> CommandBuffer::dispatchIndirect(Buffer& buffer, uint64_t offset)
 {
     BufferSlice arguments;
-    auto result = buffer.slice(arguments, offset, sizeof(VkDispatchIndirectCommand));
+    auto result = buffer.slice(offset, sizeof(VkDispatchIndirectCommand)).transform([&](auto rhiValue) { arguments = std::move(rhiValue); });
     return result ? dispatchIndirect(arguments) : result;
 }
 
-Result CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
+Result<> CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
 {
     if (!impl_ || !recording_ || (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
         !arguments.validate(deviceIdentity(), BufferUsageBits::Indirect, 4, sizeof(VkDispatchIndirectCommand))) {
@@ -6739,7 +6737,7 @@ Result CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
     return {};
 }
 
-Result CommandBuffer::buildRayTracingAccelerationStructure(
+Result<> CommandBuffer::buildRayTracingAccelerationStructure(
     const RayTracingAccelerationStructureBuildDesc& desc)
 {
     if (impl_ == nullptr ||
@@ -6835,12 +6833,12 @@ Result CommandBuffer::buildRayTracingAccelerationStructure(
                 }
                 if (source.opacityMicromap->impl_->micromap != VK_NULL_HANDLE) {
                     VkDeviceAddress identityIndexAddress = 0;
-                    const Result indexResult = detail::ensureMicromapIdentityIndices(
+                    const Result<> indexResult = detail::ensureMicromapIdentityIndices(
                         *source.opacityMicromap->impl_, source.primitiveCount, identityIndexAddress);
                     if (!indexResult) {
                         return indexResult;
                     }
-                    const Result result = makeExtMicromapAttachment(source,
+                    const Result<> result = makeExtMicromapAttachment(source,
                         source.opacityMicromap->impl_->micromap, extAttachmentUsages[index], extAttachments[index],
                         identityIndexAddress);
                     if (!result) {
@@ -6890,7 +6888,7 @@ Result CommandBuffer::buildRayTracingAccelerationStructure(
             return makeError(Error::InvalidArgument);
         }
         VkAccelerationStructureGeometryKHR geometry{};
-        const Result result = makeOpacityMicromapGeometry(
+        const Result<> result = makeOpacityMicromapGeometry(
             impl_->device->physicalDevice, impl_->device->capabilities.opacityMicromap,
             impl_->device->opacityMicromapExt, desc.micromap, destinationDesc.buildFlags, true,
             micromapUsages, micromapData, geometry);
@@ -7054,7 +7052,7 @@ Result CommandBuffer::buildRayTracingAccelerationStructure(
     return {};
 }
 
-Result CommandBuffer::compactRayTracingAccelerationStructure(
+Result<> CommandBuffer::compactRayTracingAccelerationStructure(
     RayTracingAccelerationStructure& source,
     RayTracingAccelerationStructure& destination)
 {
@@ -7116,7 +7114,7 @@ Result CommandBuffer::compactRayTracingAccelerationStructure(
     return {};
 }
 
-Result CommandBuffer::buildClusterAccelerationStructureTriangles(
+Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
     const ClusterAccelerationStructureTriangleBuildDesc& desc)
 {
 #ifndef VK_NV_cluster_acceleration_structure
@@ -7385,10 +7383,9 @@ Result CommandBuffer::buildClusterAccelerationStructureTriangles(
 #endif
 }
 
-Result Device::queryClusterAccelerationStructureMoveSizes(
-    uint32_t maxCount, uint64_t maxBytes, ClusterAccelerationStructureBuildSizes& outSizes) const
+Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationStructureMoveSizes(uint32_t maxCount, uint64_t maxBytes) const
 {
-    outSizes = {};
+    ClusterAccelerationStructureBuildSizes buildSizes{};
 #ifndef VK_NV_cluster_acceleration_structure
     return makeError(Error::Unsupported);
 #else
@@ -7407,12 +7404,12 @@ Result Device::queryClusterAccelerationStructureMoveSizes(
         .opInput = {.pMoveObjects = &move}};
     VkAccelerationStructureBuildSizesInfoKHR sizes{.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
     vkGetClusterAccelerationStructureBuildSizesNV(impl_->device, &input, &sizes);
-    outSizes = {sizes.accelerationStructureSize, sizes.updateScratchSize, sizes.buildScratchSize};
-    return {};
+    buildSizes = {sizes.accelerationStructureSize, sizes.updateScratchSize, sizes.buildScratchSize};
+    return buildSizes;
 #endif
 }
 
-Result CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerationStructureMoveDesc& desc)
+Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerationStructureMoveDesc& desc)
 {
 #ifndef VK_NV_cluster_acceleration_structure
     return makeError(Error::Unsupported);
@@ -7527,7 +7524,7 @@ Result CommandBuffer::moveClusterAccelerationStructures(const ClusterAcceleratio
 #endif
 }
 
-Result CommandBuffer::buildClusterAccelerationStructureBottomLevels(
+Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
     const ClusterAccelerationStructureBottomLevelBuildDesc& desc)
 {
 #ifndef VK_NV_cluster_acceleration_structure
@@ -7743,7 +7740,7 @@ Result CommandBuffer::buildClusterAccelerationStructureBottomLevels(
 #endif
 }
 
-Result CommandBuffer::buildPartitionedAccelerationStructure(
+Result<> CommandBuffer::buildPartitionedAccelerationStructure(
     const PartitionedAccelerationStructureBuildDesc& desc)
 {
 #ifndef VK_NV_partitioned_acceleration_structure
@@ -7915,19 +7912,18 @@ CommandPool::~CommandPool()
 CommandPool::CommandPool(CommandPool&&) noexcept = default;
 CommandPool& CommandPool::operator=(CommandPool&&) noexcept = default;
 
-Result CommandPool::reset()
+Result<> CommandPool::reset()
 {
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    const Result result = resultFromVk(vkResetCommandPool(impl_->device->device, impl_->pool, 0));
+    const Result<> result = resultFromVk(vkResetCommandPool(impl_->device->device, impl_->pool, 0));
     if (result) { impl_->submissions->cancel(); }
     return result;
 }
 
-Result CommandPool::createCommandBuffer(std::unique_ptr<CommandBuffer>& outCommandBuffer)
+Result<std::unique_ptr<CommandBuffer>> CommandPool::createCommandBuffer()
 {
-    outCommandBuffer.reset();
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -7946,7 +7942,7 @@ Result CommandPool::createCommandBuffer(std::unique_ptr<CommandBuffer>& outComma
     } else {
         const VkResult result = vkAllocateCommandBuffers(impl_->device->device, &allocateInfo, &commandBuffer);
         if (result != VK_SUCCESS) {
-            return resultFromVk(result);
+            return std::unexpected(resultFromVk(result).error());
         }
     }
 
@@ -7958,8 +7954,7 @@ Result CommandPool::createCommandBuffer(std::unique_ptr<CommandBuffer>& outComma
     commandBufferImpl->capturePool = impl_->recycleForCapture ? impl_.get() : nullptr;
     commandBufferImpl->queueFamilyIndex = impl_->queueFamilyIndex;
     commandBufferImpl->queueFlags = impl_->queueFlags;
-    outCommandBuffer.reset(new CommandBuffer(std::move(commandBufferImpl)));
-    return {};
+    return std::unique_ptr<CommandBuffer>(new CommandBuffer(std::move(commandBufferImpl)));
 }
 
 Swapchain::Swapchain(std::unique_ptr<detail::SwapchainImpl> impl)
@@ -8004,8 +7999,9 @@ Texture* Swapchain::texture(uint32_t imageIndex)
     return impl_->textures[imageIndex].get();
 }
 
-Result Swapchain::acquireNextImage(SwapchainSemaphore& semaphore, uint32_t& imageIndex)
+Result<uint32_t> Swapchain::acquireNextImage(SwapchainSemaphore& semaphore)
 {
+    uint32_t imageIndex{};
     if (impl_ == nullptr || semaphore.impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -8020,15 +8016,16 @@ Result Swapchain::acquireNextImage(SwapchainSemaphore& semaphore, uint32_t& imag
     // SUBOPTIMAL still acquires an image and schedules a semaphore signal. The
     // caller must submit/present it, rather than reusing an unconsumed semaphore.
     if (result == VK_SUBOPTIMAL_KHR) {
-        return {};
+        return imageIndex;
     }
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
         return makeError(Error::OutOfDate);
     }
-    return resultFromVk(result);
+    if (result != VK_SUCCESS) { return std::unexpected(resultFromVk(result).error()); }
+    return imageIndex;
 }
 
-Result Swapchain::present(Queue& queue, uint32_t imageIndex, SwapchainSemaphore& waitSemaphore)
+Result<> Swapchain::present(Queue& queue, uint32_t imageIndex, SwapchainSemaphore& waitSemaphore)
 {
     if (impl_ == nullptr || queue.impl_ == nullptr || waitSemaphore.impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -8071,19 +8068,19 @@ const void* Device::identity() const
     return impl_.get();
 }
 
-Result Device::resourceRegistry(std::shared_ptr<ResourceRegistry>& outRegistry)
+Result<std::shared_ptr<ResourceRegistry>> Device::resourceRegistry()
 {
-    outRegistry.reset();
+    std::shared_ptr<ResourceRegistry> outRegistry{};
     if (!impl_) { return makeError(Error::InvalidArgument); }
     std::lock_guard lock(impl_->registryMutex);
     if (!impl_->resourceRegistry) {
         auto registry = std::make_shared<ResourceRegistry>();
         const auto result = registry->initialize(*this);
-        if (!result) { return result; }
+        if (!result) { return std::unexpected(result.error()); }
         impl_->resourceRegistry = std::move(registry);
     }
     outRegistry = impl_->resourceRegistry;
-    return {};
+    return outRegistry;
 }
 
 MemoryBudgetReservation::~MemoryBudgetReservation() { reset(); }
@@ -8115,13 +8112,13 @@ void Device::setMemoryBudgetPolicy(const MemoryBudgetPolicy& policy)
     std::lock_guard lock(impl_->memoryBudgetState->mutex);
     impl_->memoryBudgetState->policy = policy;
 }
-Result Device::reserveMemoryBudget(uint64_t bytes, MemoryBudgetReservation& reservation)
+Result<MemoryBudgetReservation> Device::reserveMemoryBudget(uint64_t bytes)
 {
-    reservation.reset();
+    MemoryBudgetReservation reservation{};
     if (!impl_ || !impl_->allocator) { return makeError(Error::InvalidArgument); }
     std::lock_guard lock(impl_->memoryBudgetState->mutex);
     auto& state = *impl_->memoryBudgetState;
-    if (!state.policy.enabled || !bytes) { return {}; }
+    if (!state.policy.enabled || !bytes) { return reservation; }
     const auto budget = impl_->memoryBudgetLocked();
     if (bytes > budget.availableBytes) {
         ++state.deniedAllocations;
@@ -8131,7 +8128,7 @@ Result Device::reserveMemoryBudget(uint64_t bytes, MemoryBudgetReservation& rese
     state.reservedBytes += bytes;
     reservation.state_ = impl_->memoryBudgetState;
     reservation.bytes_ = bytes;
-    return {};
+    return reservation;
 }
 void Device::logMemoryBudget(const char* phase) const
 {
@@ -8165,10 +8162,9 @@ const DeviceCapabilities& Device::capabilities() const
     return impl_ != nullptr ? impl_->capabilities : emptyCapabilities;
 }
 
-Result Device::queryRayTracingAccelerationStructureProperties(
-    RayTracingAccelerationStructureProperties& outProperties) const
+Result<RayTracingAccelerationStructureProperties> Device::queryRayTracingAccelerationStructureProperties() const
 {
-    outProperties = {};
+    RayTracingAccelerationStructureProperties queriedProperties{};
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -8188,7 +8184,7 @@ Result Device::queryRayTracingAccelerationStructureProperties(
         .pNext = &properties,
     };
     vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties2);
-    outProperties = RayTracingAccelerationStructureProperties{
+    queriedProperties = RayTracingAccelerationStructureProperties{
         .scratchAlignment = std::max<uint64_t>(
             impl_->opacityMicromapExt ? 128 : 1,
             properties.minAccelerationStructureScratchOffsetAlignment),
@@ -8198,14 +8194,12 @@ Result Device::queryRayTracingAccelerationStructureProperties(
         .maxOpacity4StateSubdivisionLevel = micromapProperties.maxOpacity4StateSubdivisionLevel,
         .maxMicromapTriangles = micromapProperties.maxMicromapTriangles,
     };
-    return {};
+    return queriedProperties;
 }
 
-Result Device::queryRayTracingAccelerationStructureBuildSizes(
-    const RayTracingAccelerationStructureBuildInputs& inputs,
-    RayTracingAccelerationStructureBuildSizes& outSizes) const
+Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAccelerationStructureBuildSizes(const RayTracingAccelerationStructureBuildInputs& inputs) const
 {
-    outSizes = {};
+    RayTracingAccelerationStructureBuildSizes buildSizes{};
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -8281,10 +8275,10 @@ Result Device::queryRayTracingAccelerationStructureBuildSizes(
                     return makeError(Error::InvalidArgument);
                 }
                 if (source.opacityMicromap->impl_->micromap != VK_NULL_HANDLE) {
-                    const Result result = makeExtMicromapAttachment(source,
+                    const Result<> result = makeExtMicromapAttachment(source,
                         source.opacityMicromap->impl_->micromap, extAttachmentUsages[index], extAttachments[index]);
                     if (!result) {
-                        return result;
+                        return std::unexpected(result.error());
                     }
                     opacityAttachment = &extAttachments[index];
                 } else {
@@ -8320,12 +8314,12 @@ Result Device::queryRayTracingAccelerationStructureBuildSizes(
             return makeError(Error::InvalidArgument);
         }
         VkAccelerationStructureGeometryKHR geometry{};
-        const Result result = makeOpacityMicromapGeometry(
+        const Result<> result = makeOpacityMicromapGeometry(
             impl_->physicalDevice, impl_->capabilities.opacityMicromap,
             impl_->opacityMicromapExt, inputs.micromap, inputs.flags, false,
             micromapUsages, micromapData, geometry);
         if (!result) {
-            return result;
+            return std::unexpected(result.error());
         }
         geometries.push_back(geometry);
     } else {
@@ -8352,8 +8346,8 @@ Result Device::queryRayTracingAccelerationStructureBuildSizes(
         if (sizes.micromapSize == 0) {
             return makeError(Error::Failure);
         }
-        outSizes = {.accelerationStructureSize = sizes.micromapSize, .buildScratchSize = sizes.buildScratchSize};
-        return {};
+        buildSizes = {.accelerationStructureSize = sizes.micromapSize, .buildScratchSize = sizes.buildScratchSize};
+        return buildSizes;
     }
 
     VkAccelerationStructureBuildGeometryInfoKHR buildInfo{
@@ -8376,19 +8370,16 @@ Result Device::queryRayTracingAccelerationStructureBuildSizes(
     if (sizes.accelerationStructureSize == 0 || (!isMicromap && sizes.buildScratchSize == 0)) {
         return makeError(Error::Failure);
     }
-    outSizes = RayTracingAccelerationStructureBuildSizes{
+    buildSizes = RayTracingAccelerationStructureBuildSizes{
         .accelerationStructureSize = sizes.accelerationStructureSize,
         .buildScratchSize = sizes.buildScratchSize,
         .updateScratchSize = sizes.updateScratchSize,
     };
-    return {};
+    return buildSizes;
 }
 
-Result Device::createRayTracingAccelerationStructure(
-    const RayTracingAccelerationStructureDesc& desc,
-    std::unique_ptr<RayTracingAccelerationStructure>& outAccelerationStructure)
+Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracingAccelerationStructure(const RayTracingAccelerationStructureDesc& desc)
 {
-    outAccelerationStructure.reset();
     if (impl_ == nullptr || desc.size == 0) {
         return makeError(Error::InvalidArgument);
     }
@@ -8415,17 +8406,15 @@ Result Device::createRayTracingAccelerationStructure(
         return makeError(Error::InvalidArgument);
     }
     std::unique_ptr<Buffer> storage;
-    Result result = createBuffer(
-        BufferDesc{
+    Result<> result = createBuffer(BufferDesc{
             .size = desc.size + (isMicromap ? 255 : 0),
             .usage = BufferUsageBits::AccelerationStructureStorage |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::Device,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
-        },
-        storage);
+        }).transform([&](auto rhiValue) { storage = std::move(rhiValue); });
     if (!result) {
-        return result;
+        return std::unexpected(result.error());
     }
 
     activateVolkDevice(impl_->device);
@@ -8442,10 +8431,9 @@ Result Device::createRayTracingAccelerationStructure(
         micromapImpl->storage = std::move(storage);
         const VkResult result = vkCreateMicromapEXT(impl_->device, &micromapInfo, nullptr, &micromapImpl->micromap);
         if (result != VK_SUCCESS) {
-            return resultFromVk(result);
+            return std::unexpected(resultFromVk(result).error());
         }
-        outAccelerationStructure.reset(new RayTracingAccelerationStructure(std::move(micromapImpl)));
-        return {};
+        return std::unique_ptr<RayTracingAccelerationStructure>(new RayTracingAccelerationStructure(std::move(micromapImpl)));
     }
     VkAccelerationStructureCreateInfoKHR createInfo{
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
@@ -8471,7 +8459,7 @@ Result Device::createRayTracingAccelerationStructure(
         vkResult = vkCreateAccelerationStructureKHR(impl_->device, &createInfo, nullptr, &accelerationStructure);
     }
     if (vkResult != VK_SUCCESS) {
-        return resultFromVk(vkResult);
+        return std::unexpected(resultFromVk(vkResult).error());
     }
 
     VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
@@ -8493,41 +8481,35 @@ Result Device::createRayTracingAccelerationStructure(
     accelerationStructureImpl->storage = std::move(storage);
     accelerationStructureImpl->accelerationStructure = accelerationStructure;
     accelerationStructureImpl->address = address;
-    outAccelerationStructure.reset(
-        new RayTracingAccelerationStructure(std::move(accelerationStructureImpl)));
-    return {};
+    return std::unique_ptr<RayTracingAccelerationStructure>(new RayTracingAccelerationStructure(std::move(accelerationStructureImpl)));
 }
 
-Result Device::createRayTracingInstanceBuffer(
-    const RayTracingInstanceDesc* instances,
-    uint32_t instanceCount,
-    std::unique_ptr<Buffer>& outBuffer)
+Result<std::unique_ptr<Buffer>> Device::createRayTracingInstanceBuffer(const RayTracingInstanceDesc* instances,
+    uint32_t instanceCount)
 {
-    outBuffer.reset();
+    std::unique_ptr<Buffer> buffer{};
     if (impl_ == nullptr || instances == nullptr || instanceCount == 0) {
         return makeError(Error::InvalidArgument);
     }
-    Result result = createBuffer(
-        BufferDesc{
+    Result<> result = createBuffer(BufferDesc{
             .size = static_cast<uint64_t>(instanceCount) * sizeof(RayTracingGpuInstance),
             .structureStride = sizeof(RayTracingGpuInstance),
             .usage = BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::HostUpload,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
-        },
-        outBuffer);
+        }).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
     if (!result) {
-        return result;
+        return std::unexpected(result.error());
     }
-    result = writeRayTracingInstances(*outBuffer, instances, instanceCount);
+    result = writeRayTracingInstances(*buffer, instances, instanceCount);
     if (!result) {
-        outBuffer.reset();
+        return makeError(result.error());
     }
-    return result;
+    return buffer;
 }
 
-Result Device::writeRayTracingInstances(
+Result<> Device::writeRayTracingInstances(
     Buffer& buffer,
     const RayTracingInstanceDesc* instances,
     uint32_t instanceCount)
@@ -8580,10 +8562,9 @@ Result Device::writeRayTracingInstances(
     return {};
 }
 
-Result Device::queryClusterAccelerationStructureProperties(
-    ClusterAccelerationStructureProperties& outProperties) const
+Result<ClusterAccelerationStructureProperties> Device::queryClusterAccelerationStructureProperties() const
 {
-    outProperties = {};
+    ClusterAccelerationStructureProperties queriedProperties{};
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -8606,7 +8587,7 @@ Result Device::queryClusterAccelerationStructureProperties(
         properties.clusterScratchByteAlignment == 0) {
         return makeError(Error::Failure);
     }
-    outProperties = ClusterAccelerationStructureProperties{
+    queriedProperties = ClusterAccelerationStructureProperties{
         .clusterStorageAlignment = properties.clusterByteAlignment,
         .bottomLevelStorageAlignment = properties.clusterBottomLevelByteAlignment,
         .scratchAlignment = properties.clusterScratchByteAlignment,
@@ -8615,15 +8596,13 @@ Result Device::queryClusterAccelerationStructureProperties(
         .bottomLevelBuildInfoSize =
             sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV),
     };
-    return {};
+    return queriedProperties;
 #endif
 }
 
-Result Device::queryClusterAccelerationStructureTriangleBuildSizes(
-    const ClusterAccelerationStructureTriangleBuildSizesDesc& desc,
-    ClusterAccelerationStructureBuildSizes& outSizes) const
+Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationStructureTriangleBuildSizes(const ClusterAccelerationStructureTriangleBuildSizesDesc& desc) const
 {
-    outSizes = {};
+    ClusterAccelerationStructureBuildSizes buildSizes{};
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -8674,20 +8653,18 @@ Result Device::queryClusterAccelerationStructureTriangleBuildSizes(
         .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR,
     };
     vkGetClusterAccelerationStructureBuildSizesNV(impl_->device, &inputInfo, &sizes);
-    outSizes = ClusterAccelerationStructureBuildSizes{
+    buildSizes = ClusterAccelerationStructureBuildSizes{
         .accelerationStructureSize = sizes.accelerationStructureSize,
         .updateScratchSize = sizes.updateScratchSize,
         .buildScratchSize = sizes.buildScratchSize,
     };
-    return {};
+    return buildSizes;
 #endif
 }
 
-Result Device::queryClusterAccelerationStructureBottomLevelBuildSizes(
-    const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc,
-    ClusterAccelerationStructureBuildSizes& outSizes) const
+Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationStructureBottomLevelBuildSizes(const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc) const
 {
-    outSizes = {};
+    ClusterAccelerationStructureBuildSizes buildSizes{};
     if (impl_ == nullptr ||
         desc.maxClusterCountPerAccelerationStructure == 0 ||
         desc.maxTotalClusterCount == 0 ||
@@ -8726,20 +8703,18 @@ Result Device::queryClusterAccelerationStructureBottomLevelBuildSizes(
     if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0) {
         return makeError(Error::Failure);
     }
-    outSizes = ClusterAccelerationStructureBuildSizes{
+    buildSizes = ClusterAccelerationStructureBuildSizes{
         .accelerationStructureSize = sizes.accelerationStructureSize,
         .updateScratchSize = sizes.updateScratchSize,
         .buildScratchSize = sizes.buildScratchSize,
     };
-    return {};
+    return buildSizes;
 #endif
 }
 
-Result Device::queryPartitionedAccelerationStructureBuildSizes(
-    const PartitionedAccelerationStructureBuildInputs& inputs,
-    PartitionedAccelerationStructureBuildSizes& outSizes) const
+Result<PartitionedAccelerationStructureBuildSizes> Device::queryPartitionedAccelerationStructureBuildSizes(const PartitionedAccelerationStructureBuildInputs& inputs) const
 {
-    outSizes = {};
+    PartitionedAccelerationStructureBuildSizes buildSizes{};
     if (impl_ == nullptr || inputs.instanceCount == 0 ||
         inputs.partitionCount == 0 || inputs.maxInstancePerPartitionCount == 0 ||
         inputs.maxOperationCount == 0) {
@@ -8776,7 +8751,7 @@ Result Device::queryPartitionedAccelerationStructureBuildSizes(
     if (sizes.accelerationStructureSize == 0 || sizes.buildScratchSize == 0) {
         return makeError(Error::Failure);
     }
-    outSizes = PartitionedAccelerationStructureBuildSizes{
+    buildSizes = PartitionedAccelerationStructureBuildSizes{
         .accelerationStructureSize = sizes.accelerationStructureSize,
         .updateScratchSize = sizes.updateScratchSize,
         .buildScratchSize = sizes.buildScratchSize,
@@ -8794,25 +8769,20 @@ Result Device::queryPartitionedAccelerationStructureBuildSizes(
                 sizeof(VkPartitionedAccelerationStructureWritePartitionTranslationDataNV)
             : 0,
     };
-    return {};
+    return buildSizes;
 #endif
 }
 
-Result Device::createPartitionedAccelerationStructure(
-    const PartitionedAccelerationStructureDesc& desc,
-    std::unique_ptr<PartitionedAccelerationStructure>& outAccelerationStructure)
+Result<std::unique_ptr<PartitionedAccelerationStructure>> Device::createPartitionedAccelerationStructure(const PartitionedAccelerationStructureDesc& desc)
 {
-    outAccelerationStructure.reset();
     if (impl_ == nullptr || desc.sizes.accelerationStructureSize == 0 ||
         desc.sizes.operationInfoSize == 0 || desc.sizes.operationCountSize == 0) {
         return makeError(Error::InvalidArgument);
     }
     PartitionedAccelerationStructureBuildSizes expectedSizes;
-    Result result = queryPartitionedAccelerationStructureBuildSizes(
-        desc.inputs,
-        expectedSizes);
+    Result<> result = queryPartitionedAccelerationStructureBuildSizes(desc.inputs).transform([&](auto rhiValue) { expectedSizes = std::move(rhiValue); });
     if (!result) {
-        return result;
+        return std::unexpected(result.error());
     }
     if (desc.sizes.accelerationStructureSize < expectedSizes.accelerationStructureSize ||
         desc.sizes.operationInfoSize < expectedSizes.operationInfoSize ||
@@ -8823,56 +8793,46 @@ Result Device::createPartitionedAccelerationStructure(
     auto implementation = std::make_unique<detail::PartitionedAccelerationStructureImpl>();
     implementation->device = impl_.get();
     implementation->desc = desc;
-    result = createBuffer(
-        BufferDesc{
+    result = createBuffer(BufferDesc{
             .size = desc.sizes.accelerationStructureSize,
             .usage = BufferUsageBits::AccelerationStructureStorage |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::Device,
-        },
-        implementation->storage);
+        }).transform([&](auto rhiValue) { implementation->storage = std::move(rhiValue); });
     if (!result) {
-        return result;
+        return std::unexpected(result.error());
     }
-    result = createBuffer(
-        BufferDesc{
+    result = createBuffer(BufferDesc{
             .size = desc.sizes.operationInfoSize,
             .usage = BufferUsageBits::Storage |
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::HostUpload,
-        },
-        implementation->operationBuffer);
+        }).transform([&](auto rhiValue) { implementation->operationBuffer = std::move(rhiValue); });
     if (!result) {
-        return result;
+        return std::unexpected(result.error());
     }
-    result = createBuffer(
-        BufferDesc{
+    result = createBuffer(BufferDesc{
             .size = desc.sizes.operationCountSize,
             .usage = BufferUsageBits::Storage |
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::HostUpload,
-        },
-        implementation->operationCountBuffer);
+        }).transform([&](auto rhiValue) { implementation->operationCountBuffer = std::move(rhiValue); });
     if (!result) {
-        return result;
+        return std::unexpected(result.error());
     }
     implementation->address = implementation->storage->deviceAddress();
     if (implementation->address == 0) {
         return makeError(Error::Failure);
     }
-    outAccelerationStructure.reset(
-        new PartitionedAccelerationStructure(std::move(implementation)));
-    return {};
+    return std::unique_ptr<PartitionedAccelerationStructure>(new PartitionedAccelerationStructure(std::move(implementation)));
 }
 
-Result Device::createPartitionedAccelerationStructureInstanceBuffer(
-    const PartitionedAccelerationStructureInstanceDesc* instances,
-    uint32_t instanceCount,
-    std::unique_ptr<Buffer>& outBuffer)
+Result<std::unique_ptr<Buffer>> Device::createPartitionedAccelerationStructureInstanceBuffer(const PartitionedAccelerationStructureInstanceDesc* instances,
+    uint32_t instanceCount)
 {
-    outBuffer.reset();
+    std::unique_ptr<Buffer> buffer{};
     if (impl_ == nullptr || instances == nullptr || instanceCount == 0) {
         return makeError(Error::InvalidArgument);
     }
@@ -8902,29 +8862,27 @@ Result Device::createPartitionedAccelerationStructureInstanceBuffer(
         destination.partitionIndex = source.partitionIndex;
         destination.accelerationStructure = source.bottomLevel->impl_->address;
     }
-    Result result = createBuffer(
-        BufferDesc{
+    Result<> result = createBuffer(BufferDesc{
             .size = static_cast<uint64_t>(encoded.size()) * sizeof(encoded[0]),
             .structureStride = sizeof(encoded[0]),
             .usage = BufferUsageBits::Storage |
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::HostUpload,
-        },
-        outBuffer);
+        }).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
     if (!result) {
-        return result;
+        return std::unexpected(result.error());
     }
-    void* mapped = outBuffer->map();
+    void* mapped = buffer->map();
     if (mapped == nullptr) {
-        outBuffer.reset();
+        buffer.reset();
         return makeError(Error::Failure);
     }
     const uint64_t byteSize = static_cast<uint64_t>(encoded.size()) * sizeof(encoded[0]);
     std::memcpy(mapped, encoded.data(), static_cast<size_t>(byteSize));
-    outBuffer->flush(0, byteSize);
-    outBuffer->unmap();
-    return {};
+    buffer->flush(0, byteSize);
+    buffer->unmap();
+    return buffer;
 #endif
 }
 
@@ -8946,7 +8904,7 @@ Queue* Device::getQueue(QueueType type, uint32_t index)
     return nullptr;
 }
 
-Result Device::waitIdle()
+Result<> Device::waitIdle()
 {
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -8955,9 +8913,8 @@ Result Device::waitIdle()
     return resultFromVk(vkDeviceWaitIdle(impl_->device));
 }
 
-Result Device::createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapchain>& outSwapchain)
+Result<std::unique_ptr<Swapchain>> Device::createSwapchain(const SwapchainDesc& desc)
 {
-    outSwapchain.reset();
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -8965,18 +8922,16 @@ Result Device::createSwapchain(const SwapchainDesc& desc, std::unique_ptr<Swapch
 
     auto swapchainImpl = std::make_unique<detail::SwapchainImpl>();
     swapchainImpl->device = impl_.get();
-    const Result result = swapchainImpl->initialize(desc);
+    const Result<> result = swapchainImpl->initialize(desc);
     if (!result) {
-        return result;
+        return std::unexpected(result.error());
     }
 
-    outSwapchain.reset(new Swapchain(std::move(swapchainImpl)));
-    return {};
+    return std::unique_ptr<Swapchain>(new Swapchain(std::move(swapchainImpl)));
 }
 
-Result Device::createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& outCommandPool)
+Result<std::unique_ptr<CommandPool>> Device::createCommandPool(Queue& queue)
 {
-    outCommandPool.reset();
     if (impl_ == nullptr ||
         queue.impl_ == nullptr ||
         queue.impl_->device != impl_.get()) {
@@ -9002,8 +8957,7 @@ Result Device::createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& out
         }
     }
     if (poolImpl->pool != VK_NULL_HANDLE) {
-        outCommandPool.reset(new CommandPool(std::move(poolImpl)));
-        return {};
+        return std::unique_ptr<CommandPool>(new CommandPool(std::move(poolImpl)));
     }
 
     VkCommandPoolCreateInfo createInfo{
@@ -9015,17 +8969,15 @@ Result Device::createCommandPool(Queue& queue, std::unique_ptr<CommandPool>& out
     VkCommandPool pool = VK_NULL_HANDLE;
     const VkResult result = vkCreateCommandPool(impl_->device, &createInfo, nullptr, &pool);
     if (result != VK_SUCCESS) {
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
 
     poolImpl->pool = pool;
-    outCommandPool.reset(new CommandPool(std::move(poolImpl)));
-    return {};
+    return std::unique_ptr<CommandPool>(new CommandPool(std::move(poolImpl)));
 }
 
-Result Device::createFence(bool signaled, std::unique_ptr<Fence>& outFence)
+Result<std::unique_ptr<Fence>> Device::createFence(bool signaled)
 {
-    outFence.reset();
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -9039,22 +8991,18 @@ Result Device::createFence(bool signaled, std::unique_ptr<Fence>& outFence)
     VkFence fence = VK_NULL_HANDLE;
     const VkResult result = vkCreateFence(impl_->device, &createInfo, nullptr, &fence);
     if (result != VK_SUCCESS) {
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
 
     auto fenceImpl = std::make_unique<detail::FenceImpl>();
     fenceImpl->device = impl_.get();
     fenceImpl->fence = fence;
-    outFence.reset(new Fence(std::move(fenceImpl)));
-    return {};
+    return std::unique_ptr<Fence>(new Fence(std::move(fenceImpl)));
 }
 
-Result Device::createTimestampQueryPool(
-    Queue& queue,
-    const TimestampQueryPoolDesc& desc,
-    std::unique_ptr<TimestampQueryPool>& outQueryPool)
+Result<std::unique_ptr<TimestampQueryPool>> Device::createTimestampQueryPool(Queue& queue,
+    const TimestampQueryPoolDesc& desc)
 {
-    outQueryPool.reset();
     if (impl_ == nullptr ||
         queue.impl_ == nullptr ||
         queue.impl_->device != impl_.get() ||
@@ -9075,7 +9023,7 @@ Result Device::createTimestampQueryPool(
     VkQueryPool queryPool = VK_NULL_HANDLE;
     const VkResult result = vkCreateQueryPool(impl_->device, &createInfo, nullptr, &queryPool);
     if (result != VK_SUCCESS) {
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
 
     auto queryPoolImpl = std::make_unique<detail::TimestampQueryPoolImpl>();
@@ -9085,15 +9033,11 @@ Result Device::createTimestampQueryPool(
     queryPoolImpl->queueFamilyIndex = queue.impl_->familyIndex;
     queryPoolImpl->timestampValidBits = queue.impl_->timestampValidBits;
     queryPoolImpl->timestampPeriodNanoseconds = impl_->capabilities.timestampPeriodNanoseconds;
-    outQueryPool.reset(new TimestampQueryPool(std::move(queryPoolImpl)));
-    return {};
+    return std::unique_ptr<TimestampQueryPool>(new TimestampQueryPool(std::move(queryPoolImpl)));
 }
 
-Result Device::createRayTracingAccelerationStructureCompactionQueryPool(
-    const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc,
-    std::unique_ptr<RayTracingAccelerationStructureCompactionQueryPool>& outQueryPool)
+Result<std::unique_ptr<RayTracingAccelerationStructureCompactionQueryPool>> Device::createRayTracingAccelerationStructureCompactionQueryPool(const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc)
 {
-    outQueryPool.reset();
     if (impl_ == nullptr || desc.queryCount == 0) {
         return makeError(Error::InvalidArgument);
     }
@@ -9111,7 +9055,7 @@ Result Device::createRayTracingAccelerationStructureCompactionQueryPool(
     VkQueryPool queryPool = VK_NULL_HANDLE;
     const VkResult result = vkCreateQueryPool(impl_->device, &createInfo, nullptr, &queryPool);
     if (result != VK_SUCCESS) {
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
 
     auto queryPoolImpl =
@@ -9119,19 +9063,16 @@ Result Device::createRayTracingAccelerationStructureCompactionQueryPool(
     queryPoolImpl->device = impl_.get();
     queryPoolImpl->desc = desc;
     queryPoolImpl->queryPool = queryPool;
-    outQueryPool.reset(
-        new RayTracingAccelerationStructureCompactionQueryPool(std::move(queryPoolImpl)));
-    return {};
+    return std::unique_ptr<RayTracingAccelerationStructureCompactionQueryPool>(new RayTracingAccelerationStructureCompactionQueryPool(std::move(queryPoolImpl)));
 }
 
-Result Device::createSemaphore(std::unique_ptr<Semaphore>& outSemaphore)
+Result<std::unique_ptr<Semaphore>> Device::createSemaphore()
 {
-    return createSemaphore(SemaphoreDesc{}, outSemaphore);
+    return createSemaphore(SemaphoreDesc{});
 }
 
-Result Device::createSemaphore(const SemaphoreDesc& desc, std::unique_ptr<Semaphore>& outSemaphore)
+Result<std::unique_ptr<Semaphore>> Device::createSemaphore(const SemaphoreDesc& desc)
 {
-    outSemaphore.reset();
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -9150,19 +9091,17 @@ Result Device::createSemaphore(const SemaphoreDesc& desc, std::unique_ptr<Semaph
     VkSemaphore semaphore = VK_NULL_HANDLE;
     const VkResult result = vkCreateSemaphore(impl_->device, &createInfo, nullptr, &semaphore);
     if (result != VK_SUCCESS) {
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
 
     auto semaphoreImpl = std::make_unique<detail::SemaphoreImpl>();
     semaphoreImpl->device = impl_.get();
     semaphoreImpl->semaphore = semaphore;
-    outSemaphore.reset(new Semaphore(std::move(semaphoreImpl)));
-    return {};
+    return std::unique_ptr<Semaphore>(new Semaphore(std::move(semaphoreImpl)));
 }
 
-Result Device::createSwapchainSemaphore(std::unique_ptr<SwapchainSemaphore>& outSemaphore)
+Result<std::unique_ptr<SwapchainSemaphore>> Device::createSwapchainSemaphore()
 {
-    outSemaphore.reset();
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -9175,19 +9114,17 @@ Result Device::createSwapchainSemaphore(std::unique_ptr<SwapchainSemaphore>& out
     VkSemaphore semaphore = VK_NULL_HANDLE;
     const VkResult result = vkCreateSemaphore(impl_->device, &createInfo, nullptr, &semaphore);
     if (result != VK_SUCCESS) {
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
 
     auto semaphoreImpl = std::make_unique<detail::SwapchainSemaphoreImpl>();
     semaphoreImpl->device = impl_.get();
     semaphoreImpl->semaphore = semaphore;
-    outSemaphore.reset(new SwapchainSemaphore(std::move(semaphoreImpl)));
-    return {};
+    return std::unique_ptr<SwapchainSemaphore>(new SwapchainSemaphore(std::move(semaphoreImpl)));
 }
 
-Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& outBuffer)
+Result<std::unique_ptr<Buffer>> Device::createBuffer(const BufferDesc& desc)
 {
-    outBuffer.reset();
     if (impl_ == nullptr || desc.size == 0) {
         return makeError(Error::InvalidArgument);
     }
@@ -9258,8 +9195,8 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
             desc.usage == BufferUsageBits::TransferSource) {
         allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
     }
-    const Result admitted = impl_->prepareBufferAllocationLocked(bufferInfo, allocationInfo, domain);
-    if (!admitted) { return admitted; }
+    const Result<> admitted = impl_->prepareBufferAllocationLocked(bufferInfo, allocationInfo, domain);
+    if (!admitted) { return std::unexpected(admitted.error()); }
     VmaAllocationInfo allocatedInfo{};
     const VkResult result = vmaCreateBuffer(
         impl_->allocator,
@@ -9276,7 +9213,7 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
             static_cast<uint64_t>(usage),
             static_cast<uint32_t>(desc.memoryLocation),
             queueFamilies.size());
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
 
     auto bufferImpl = std::make_unique<detail::BufferImpl>();
@@ -9292,16 +9229,12 @@ Result Device::createBuffer(const BufferDesc& desc, std::unique_ptr<Buffer>& out
     bufferImpl->allocationBytes = allocatedInfo.size;
     bufferImpl->deviceLocal = (impl_->memoryProperties.memoryHeaps[impl_->memoryProperties.memoryTypes[allocatedInfo.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
     impl_->trackMemoryLocked(domain, allocatedInfo.size, bufferImpl->deviceLocal, true);
-    outBuffer.reset(new Buffer(std::move(bufferImpl)));
-    return {};
+    return std::unique_ptr<Buffer>(new Buffer(std::move(bufferImpl)));
 }
 
-Result Device::createBufferView(
-    Buffer& buffer,
-    const BufferViewDesc& desc,
-    std::unique_ptr<BufferView>& outBufferView)
+Result<std::unique_ptr<BufferView>> Device::createBufferView(Buffer& buffer,
+    const BufferViewDesc& desc)
 {
-    outBufferView.reset();
     if (impl_ == nullptr || buffer.impl_ == nullptr || desc.offset >= buffer.impl_->desc.size) {
         return makeError(Error::InvalidArgument);
     }
@@ -9361,13 +9294,12 @@ Result Device::createBufferView(
     viewImpl->descriptorType = descriptorType;
     viewImpl->address = bufferAddress + desc.offset;
     viewImpl->size = viewSize;
-    outBufferView.reset(new BufferView(std::move(viewImpl)));
-    return {};
+    return std::unique_ptr<BufferView>(new BufferView(std::move(viewImpl)));
 }
 
-Result Device::textureAllocationSize(const TextureDesc& desc, uint64_t& byteSize)
+Result<uint64_t> Device::textureAllocationSize(const TextureDesc& desc)
 {
-    byteSize = 0;
+    uint64_t allocationSize{};
     if (!impl_ || desc.format == Format::Unknown || !desc.width || !desc.height || !desc.mipCount) {
         return makeError(Error::InvalidArgument);
     }
@@ -9385,17 +9317,16 @@ Result Device::textureAllocationSize(const TextureDesc& desc, uint64_t& byteSize
     };
     VkImage image = VK_NULL_HANDLE;
     const auto result = vkCreateImage(impl_->device, &info, nullptr, &image);
-    if (result != VK_SUCCESS) { return resultFromVk(result); }
+    if (result != VK_SUCCESS) { return std::unexpected(resultFromVk(result).error()); }
     VkMemoryRequirements requirements{};
     vkGetImageMemoryRequirements(impl_->device, image, &requirements);
     vkDestroyImage(impl_->device, image, nullptr);
-    byteSize = requirements.size;
-    return {};
+    allocationSize = requirements.size;
+    return allocationSize;
 }
 
-Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& outTexture)
+Result<std::unique_ptr<Texture>> Device::createTexture(const TextureDesc& desc)
 {
-    outTexture.reset();
     if (impl_ == nullptr || desc.format == Format::Unknown) {
         return makeError(Error::InvalidArgument);
     }
@@ -9430,7 +9361,7 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     std::unique_lock budgetLock(impl_->memoryBudgetState->mutex);
     uint32_t memoryType = 0;
     VkResult typeResult = vmaFindMemoryTypeIndexForImageInfo(impl_->allocator, &imageInfo, &allocationInfo, &memoryType);
-    if (typeResult != VK_SUCCESS) { return resultFromVk(typeResult); }
+    if (typeResult != VK_SUCCESS) { return std::unexpected(resultFromVk(typeResult).error()); }
     VkMemoryDedicatedRequirements dedicated{.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
     VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
     const VkDeviceImageMemoryRequirements request{.sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS, .pCreateInfo = &imageInfo};
@@ -9443,7 +9374,7 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
         if (!pool) {
             const VmaPoolCreateInfo poolInfo{.memoryTypeIndex = memoryType, .blockSize = kMaterialBlockBytes};
             const VkResult created = vmaCreatePool(impl_->allocator, &poolInfo, &pool);
-            if (created != VK_SUCCESS) { return resultFromVk(created); }
+            if (created != VK_SUCCESS) { return std::unexpected(resultFromVk(created).error()); }
         }
         VmaDetailedStatistics stats{};
         vmaCalculatePoolStatistics(impl_->allocator, pool, &stats);
@@ -9465,7 +9396,7 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
         &allocation,
         &allocatedInfo);
     if (result != VK_SUCCESS) {
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
 
     auto textureImpl = std::make_unique<detail::TextureImpl>();
@@ -9481,16 +9412,12 @@ Result Device::createTexture(const TextureDesc& desc, std::unique_ptr<Texture>& 
     textureImpl->allocationSize = allocatedInfo.size;
     textureImpl->deviceLocal = (impl_->memoryProperties.memoryHeaps[impl_->memoryProperties.memoryTypes[allocatedInfo.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
     impl_->trackMemoryLocked(domain, allocatedInfo.size, textureImpl->deviceLocal, true);
-    outTexture.reset(new Texture(std::move(textureImpl)));
-    return {};
+    return std::unique_ptr<Texture>(new Texture(std::move(textureImpl)));
 }
 
-Result Device::createTextureView(
-    Texture& texture,
-    const TextureViewDesc& desc,
-    std::unique_ptr<TextureView>& outTextureView)
+Result<std::unique_ptr<TextureView>> Device::createTextureView(Texture& texture,
+    const TextureViewDesc& desc)
 {
-    outTextureView.reset();
     if (impl_ == nullptr || texture.impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -9519,7 +9446,7 @@ Result Device::createTextureView(
     VkImageView view = VK_NULL_HANDLE;
     const VkResult result = vkCreateImageView(impl_->device, &viewInfo, nullptr, &view);
     if (result != VK_SUCCESS) {
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
 
     auto viewImpl = std::make_unique<detail::TextureViewImpl>();
@@ -9529,13 +9456,11 @@ Result Device::createTextureView(
     viewImpl->desc.format = format;
     viewImpl->view = view;
     viewImpl->format = toVkFormat(format);
-    outTextureView.reset(new TextureView(std::move(viewImpl)));
-    return {};
+    return std::unique_ptr<TextureView>(new TextureView(std::move(viewImpl)));
 }
 
-Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<ShaderModule>& outShaderModule)
+Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderModuleDesc& desc)
 {
-    outShaderModule.reset();
     if (impl_ == nullptr || desc.code == nullptr || desc.byteSize == 0 || (desc.byteSize % sizeof(uint32_t)) != 0) {
         return makeError(Error::InvalidArgument);
     }
@@ -9571,7 +9496,7 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
     VkShaderModule module = VK_NULL_HANDLE;
     const VkResult result = vkCreateShaderModule(impl_->device, &createInfo, nullptr, &module);
     if (result != VK_SUCCESS) {
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
     profiling::registerNsightAftermathShaderBinary(deviceDesc.code, deviceDesc.byteSize);
     if (desc.debugName != nullptr && desc.debugName[0] != '\0' &&
@@ -9601,34 +9526,26 @@ Result Device::createShaderModule(const ShaderModuleDesc& desc, std::unique_ptr<
         shaderImpl->deviceSpirvFnv1a64 = fingerprint(deviceDesc);
         shaderImpl->diagnosticName = desc.debugName ? desc.debugName : "";
     }
-    outShaderModule.reset(new ShaderModule(std::move(shaderImpl)));
-    return {};
+    return std::unique_ptr<ShaderModule>(new ShaderModule(std::move(shaderImpl)));
 }
 
-Result Device::createPipelineCache(
-    const PipelineCacheDesc& desc,
-    std::unique_ptr<PipelineCache>& outPipelineCache)
+Result<std::unique_ptr<PipelineCache>> Device::createPipelineCache(const PipelineCacheDesc& desc)
 {
-    outPipelineCache.reset();
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
     activateVolkDevice(impl_->device);
 
     auto cacheImpl = std::make_unique<detail::PipelineCacheImpl>();
-    Result result = cacheImpl->initialize(*impl_, desc);
+    Result<> result = cacheImpl->initialize(*impl_, desc);
     if (!result) {
-        return result;
+        return std::unexpected(result.error());
     }
-    outPipelineCache.reset(new PipelineCache(std::move(cacheImpl)));
-    return {};
+    return std::unique_ptr<PipelineCache>(new PipelineCache(std::move(cacheImpl)));
 }
 
-Result Device::createGraphicsPipeline(
-    const GraphicsPipelineDesc& desc,
-    std::unique_ptr<GraphicsPipeline>& outGraphicsPipeline)
+Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const GraphicsPipelineDesc& desc)
 {
-    outGraphicsPipeline.reset();
     const bool usesTaskShader = desc.taskShader != nullptr;
     const bool usesMeshShader = desc.meshShader != nullptr;
     const bool usesVertexShader = desc.vertexShader != nullptr;
@@ -9900,7 +9817,7 @@ Result Device::createGraphicsPipeline(
     if (!desc.usesBindlessHeap) {
         result = vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
         if (result != VK_SUCCESS) {
-            return resultFromVk(result);
+            return std::unexpected(resultFromVk(result).error());
         }
     }
 
@@ -9947,7 +9864,7 @@ Result Device::createGraphicsPipeline(
         if (layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(impl_->device, layout, nullptr);
         }
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
 
     auto pipelineImpl = std::make_unique<detail::GraphicsPipelineImpl>();
@@ -9958,15 +9875,11 @@ Result Device::createGraphicsPipeline(
     pipelineImpl->psoHash = psoHash;
     pipelineImpl->pipelineCacheHit = pipelineCache != nullptr &&
         pipelineCache->recordPsoLocked(psoHash);
-    outGraphicsPipeline.reset(new GraphicsPipeline(std::move(pipelineImpl)));
-    return {};
+    return std::unique_ptr<GraphicsPipeline>(new GraphicsPipeline(std::move(pipelineImpl)));
 }
 
-Result Device::createComputePipeline(
-    const ComputePipelineDesc& desc,
-    std::unique_ptr<ComputePipeline>& outComputePipeline)
+Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const ComputePipelineDesc& desc)
 {
-    outComputePipeline.reset();
     if (impl_ == nullptr ||
         desc.computeShader == nullptr ||
         desc.computeShader->impl_ == nullptr ||
@@ -10169,7 +10082,7 @@ Result Device::createComputePipeline(
     if (!desc.usesBindlessHeap) {
         result = vkCreatePipelineLayout(impl_->device, &layoutInfo, nullptr, &layout);
         if (result != VK_SUCCESS) {
-            return resultFromVk(result);
+            return std::unexpected(resultFromVk(result).error());
         }
     }
 
@@ -10207,7 +10120,7 @@ Result Device::createComputePipeline(
             if (layout != VK_NULL_HANDLE) {
                 vkDestroyPipelineLayout(impl_->device, layout, nullptr);
             }
-            return keyResult != VK_SUCCESS ? resultFromVk(keyResult) : makeError(Error::Failure);
+            return makeError(keyResult != VK_SUCCESS ? resultFromVk(keyResult).error() : Error::Failure);
         }
         const auto keyHex = [](const VkPipelineBinaryKeyKHR& key) {
             constexpr char digits[] = "0123456789abcdef";
@@ -10244,7 +10157,7 @@ Result Device::createComputePipeline(
         if (layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(impl_->device, layout, nullptr);
         }
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
 
     if (impl_->pipelineExecutableStatistics && vkGetPipelineExecutablePropertiesKHR && vkGetPipelineExecutableStatisticsKHR) {
@@ -10294,15 +10207,11 @@ Result Device::createComputePipeline(
     pipelineImpl->psoHash = psoHash;
     pipelineImpl->pipelineCacheHit = pipelineCache != nullptr &&
         pipelineCache->recordPsoLocked(psoHash);
-    outComputePipeline.reset(new ComputePipeline(std::move(pipelineImpl)));
-    return {};
+    return std::unique_ptr<ComputePipeline>(new ComputePipeline(std::move(pipelineImpl)));
 }
 
-Result Device::createGraphicsShaderObjectProgram(
-    const GraphicsShaderObjectProgramDesc& desc,
-    std::unique_ptr<GraphicsShaderObjectProgram>& outProgram)
+Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShaderObjectProgram(const GraphicsShaderObjectProgramDesc& desc)
 {
-    outProgram.reset();
     if (impl_ == nullptr ||
         desc.vertexCode == nullptr ||
         desc.vertexByteSize == 0 ||
@@ -10445,7 +10354,7 @@ Result Device::createGraphicsShaderObjectProgram(
                 vkDestroyShaderEXT(impl_->device, shader, nullptr);
             }
         }
-        return resultFromVk(result);
+        return std::unexpected(resultFromVk(result).error());
     }
     profiling::registerNsightAftermathShaderBinary(deviceDesc.vertexCode, deviceDesc.vertexByteSize);
     profiling::registerNsightAftermathShaderBinary(deviceDesc.fragmentCode, deviceDesc.fragmentByteSize);
@@ -10455,13 +10364,11 @@ Result Device::createGraphicsShaderObjectProgram(
     programImpl->vertexShader = shaders[0];
     programImpl->fragmentShader = shaders[1];
     programImpl->usesBindlessHeap = desc.usesBindlessHeap;
-    outProgram.reset(new GraphicsShaderObjectProgram(std::move(programImpl)));
-    return {};
+    return std::unique_ptr<GraphicsShaderObjectProgram>(new GraphicsShaderObjectProgram(std::move(programImpl)));
 }
 
-Result Device::createBindlessHeap(const BindlessHeapDesc& desc, std::unique_ptr<BindlessHeap>& outBindlessHeap)
+Result<std::unique_ptr<BindlessHeap>> Device::createBindlessHeap(const BindlessHeapDesc& desc)
 {
-    outBindlessHeap.reset();
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -10471,18 +10378,16 @@ Result Device::createBindlessHeap(const BindlessHeapDesc& desc, std::unique_ptr<
     }
 
     auto bindlessImpl = std::make_unique<detail::BindlessHeapImpl>();
-    Result result = bindlessImpl->initialize(*impl_, desc);
+    Result<> result = bindlessImpl->initialize(*impl_, desc);
     if (!result) {
-        return result;
+        return std::unexpected(result.error());
     }
 
-    outBindlessHeap.reset(new BindlessHeap(std::move(bindlessImpl)));
-    return {};
+    return std::unique_ptr<BindlessHeap>(new BindlessHeap(std::move(bindlessImpl)));
 }
 
-Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
+Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
 {
-    outDevice.reset();
 
     if (!desc.enableShaderObject) {
         spdlog::error("Shader Object is required: DeviceDesc::enableShaderObject must be true.");
@@ -10518,7 +10423,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
             loadVulkanLoaderProcAddr(vulkanLibraryName, deviceImpl->vulkanLoaderHandle);
         if (streamlineVkGetInstanceProcAddr != nullptr) {
             std::string streamlineLog;
-            Result streamlineResult = vulkan::initializeStreamlinePreDevice(streamlineLog);
+            Result<> streamlineResult = vulkan::initializeStreamlinePreDevice(streamlineLog);
             if (streamlineResult) {
                 deviceImpl->streamlineInitialized = true;
             } else {
@@ -10553,7 +10458,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         vkResult = volkInitialize();
         if (vkResult != VK_SUCCESS) {
             spdlog::error("volkInitialize failed with VkResult {}", static_cast<int>(vkResult));
-            return resultFromVk(vkResult);
+            return std::unexpected(resultFromVk(vkResult).error());
         }
     }
 
@@ -10622,7 +10527,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 
     vkResult = vkCreateInstance(&instanceInfo, nullptr, &deviceImpl->instance);
     if (vkResult != VK_SUCCESS) {
-        return resultFromVk(vkResult);
+        return std::unexpected(resultFromVk(vkResult).error());
     }
     volkLoadInstance(deviceImpl->instance);
 
@@ -10637,7 +10542,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         if (vkResult == VK_SUCCESS) {
             return makeError(Error::Unsupported);
         }
-        return resultFromVk(vkResult);
+        return std::unexpected(resultFromVk(vkResult).error());
     }
 
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
@@ -10989,7 +10894,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 
     vkResult = vkCreateDevice(deviceImpl->physicalDevice, &deviceInfo, nullptr, &deviceImpl->device);
     if (vkResult != VK_SUCCESS) {
-        return resultFromVk(vkResult);
+        return std::unexpected(resultFromVk(vkResult).error());
     }
     activateVolkDevice(deviceImpl->device);
 
@@ -11058,7 +10963,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     if (selectedFeatures.bindlessDescriptorHeap) {
         vkResult = deviceImpl->descriptorHeapWriter.initialize(deviceImpl->physicalDevice, deviceImpl->device);
         if (vkResult != VK_SUCCESS) {
-            return resultFromVk(vkResult);
+            return std::unexpected(resultFromVk(vkResult).error());
         }
 
         const VkDeviceSize samplerCapacityBytes =
@@ -11168,12 +11073,12 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
     VmaVulkanFunctions vulkanFunctions{};
     vkResult = vmaImportVulkanFunctionsFromVolk(&allocatorInfo, &vulkanFunctions);
     if (vkResult != VK_SUCCESS) {
-        return resultFromVk(vkResult);
+        return std::unexpected(resultFromVk(vkResult).error());
     }
     allocatorInfo.pVulkanFunctions = &vulkanFunctions;
     vkResult = vmaCreateAllocator(&allocatorInfo, &deviceImpl->allocator);
     if (vkResult != VK_SUCCESS) {
-        return resultFromVk(vkResult);
+        return std::unexpected(resultFromVk(vkResult).error());
     }
 
     VkQueue graphicsQueue = VK_NULL_HANDLE;
@@ -11221,7 +11126,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
 
     if (deviceImpl->streamlineInitialized && selectedFeatures.streamline) {
         std::string streamlineLog;
-        Result streamlineResult = setStreamlineVulkanDevice(
+        Result<> streamlineResult = setStreamlineVulkanDevice(
             vulkan::NativeDevice{
                 .instance = deviceImpl->instance,
                 .physicalDevice = deviceImpl->physicalDevice,
@@ -11266,8 +11171,7 @@ Result createDevice(const DeviceDesc& desc, std::unique_ptr<Device>& outDevice)
         spdlog::info("[Vulkan] VK_NV_cooperative_vector enabled");
     }
 
-    outDevice.reset(new Device(std::move(deviceImpl)));
-    return {};
+    return std::unique_ptr<Device>(new Device(std::move(deviceImpl)));
 }
 
 namespace detail {
@@ -11492,12 +11396,12 @@ VkImageView nativeImageView(TextureView& view)
 
 namespace {
 
-int resultToExitCode(Result result)
+int resultToExitCode(Result<> result)
 {
     return result ? 0 : 1;
 }
 
-bool checkResult(Result result, const char* label)
+bool checkResult(Result<> result, const char* label)
 {
     if (result) {
         return true;
@@ -11515,14 +11419,14 @@ constexpr const char* kBindlessSmokeShaderModuleName = "Features/SmokeTests/Bind
 constexpr const char* kBindlessSmokeVertexEntryPoint = "bindlessSmokeVertexMain";
 constexpr const char* kBindlessSmokeFragmentEntryPoint = "bindlessSmokeFragmentMain";
 
-Result createSlangShaderModule(
+Result<> createSlangShaderModule(
     Device& device,
     const char* moduleName,
     const char* entryPointName,
     std::unique_ptr<ShaderModule>& outShaderModule)
 {
     ShaderCompileResult compileResult;
-    Result result = compileSlangShaderToSpirv(
+    Result<> result = compileSlangShaderToSpirv(
         SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPointName,
@@ -11541,16 +11445,14 @@ Result createSlangShaderModule(
     }
 
     const std::string shaderDebugName = std::string(moduleName) + "." + entryPointName;
-    return device.createShaderModule(
-        ShaderModuleDesc{
+    return device.createShaderModule(ShaderModuleDesc{
             .code = compileResult.spirv.data(),
             .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
             .debugName = shaderDebugName.c_str(),
-        },
-        outShaderModule);
+        }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
 }
 
-Result createTriangleShaderModule(Device& device, const char* entryPointName, std::unique_ptr<ShaderModule>& outShaderModule)
+Result<> createTriangleShaderModule(Device& device, const char* entryPointName, std::unique_ptr<ShaderModule>& outShaderModule)
 {
     return createSlangShaderModule(device, kTriangleShaderModuleName, entryPointName, outShaderModule);
 }
@@ -11575,20 +11477,18 @@ struct TrianglePreviewRendererImpl {
     uint32_t width = 0;
     uint32_t height = 0;
 
-    Result initialize(bool enableValidation);
-    Result ensureResources(uint32_t newWidth, uint32_t newHeight);
-    Result render(uint32_t newWidth, uint32_t newHeight);
+    Result<> initialize(bool enableValidation);
+    Result<> ensureResources(uint32_t newWidth, uint32_t newHeight);
+    Result<> render(uint32_t newWidth, uint32_t newHeight);
 };
 
-Result TrianglePreviewRendererImpl::initialize(bool enableValidation)
+Result<> TrianglePreviewRendererImpl::initialize(bool enableValidation)
 {
-    Result result = createDevice(
-        DeviceDesc{
+    Result<> result = createDevice(DeviceDesc{
             .applicationName = "Metallic Triangle Preview",
             .enableValidation = enableValidation,
             .enableAftermath = true,
-        },
-        device);
+        }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
     if (!result) {
         return result;
     }
@@ -11598,15 +11498,15 @@ Result TrianglePreviewRendererImpl::initialize(bool enableValidation)
         return makeError(Error::Unsupported);
     }
 
-    result = device->createCommandPool(*graphicsQueue, commandPool);
+    result = device->createCommandPool(*graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
     if (!result) {
         return result;
     }
-    result = commandPool->createCommandBuffer(commandBuffer);
+    result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
     if (!result) {
         return result;
     }
-    result = device->createFence(true, fence);
+    result = device->createFence(true).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
     if (!result) {
         return result;
     }
@@ -11620,17 +11520,15 @@ Result TrianglePreviewRendererImpl::initialize(bool enableValidation)
         return result;
     }
 
-    return device->createGraphicsPipeline(
-        GraphicsPipelineDesc{
+    return device->createGraphicsPipeline(GraphicsPipelineDesc{
             .vertexShader = vertexShader.get(),
             .fragmentShader = fragmentShader.get(),
             .colorFormat = Format::Rgba8Unorm,
             .topology = PrimitiveTopology::TriangleList,
-        },
-        pipeline);
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
 }
 
-Result TrianglePreviewRendererImpl::ensureResources(uint32_t newWidth, uint32_t newHeight)
+Result<> TrianglePreviewRendererImpl::ensureResources(uint32_t newWidth, uint32_t newHeight)
 {
     if (newWidth == 0 || newHeight == 0) {
         return makeError(Error::InvalidArgument);
@@ -11649,8 +11547,7 @@ Result TrianglePreviewRendererImpl::ensureResources(uint32_t newWidth, uint32_t 
     colorTexture.reset();
     readbackBuffer.reset();
 
-    Result result = device->createTexture(
-        TextureDesc{
+    Result<> result = device->createTexture(TextureDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::ColorAttachment | TextureUsageBits::TransferSource,
             .format = Format::Rgba8Unorm,
@@ -11660,34 +11557,29 @@ Result TrianglePreviewRendererImpl::ensureResources(uint32_t newWidth, uint32_t 
             .mipCount = 1,
             .layerCount = 1,
             .memoryLocation = MemoryLocation::Device,
-        },
-        colorTexture);
+        }).transform([&](auto rhiValue) { colorTexture = std::move(rhiValue); });
     if (!result) {
         return result;
     }
 
-    result = device->createTextureView(
-        *colorTexture,
+    result = device->createTextureView(*colorTexture,
         TextureViewDesc{
             .format = Format::Rgba8Unorm,
             .baseMip = 0,
             .mipCount = 1,
             .baseLayer = 0,
             .layerCount = 1,
-        },
-        colorTextureView);
+        }).transform([&](auto rhiValue) { colorTextureView = std::move(rhiValue); });
     if (!result) {
         return result;
     }
 
     const uint64_t byteSize = static_cast<uint64_t>(newWidth) * static_cast<uint64_t>(newHeight) * 4ull;
-    result = device->createBuffer(
-        BufferDesc{
+    result = device->createBuffer(BufferDesc{
             .size = byteSize,
             .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback,
-        },
-        readbackBuffer);
+        }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
     if (!result) {
         return result;
     }
@@ -11698,9 +11590,9 @@ Result TrianglePreviewRendererImpl::ensureResources(uint32_t newWidth, uint32_t 
     return {};
 }
 
-Result TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeight)
+Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeight)
 {
-    Result result = ensureResources(newWidth, newHeight);
+    Result<> result = ensureResources(newWidth, newHeight);
     if (!result) {
         return result;
     }
@@ -11827,7 +11719,7 @@ TrianglePreviewRenderer::~TrianglePreviewRenderer() = default;
 TrianglePreviewRenderer::TrianglePreviewRenderer(TrianglePreviewRenderer&&) noexcept = default;
 TrianglePreviewRenderer& TrianglePreviewRenderer::operator=(TrianglePreviewRenderer&&) noexcept = default;
 
-Result TrianglePreviewRenderer::initialize(bool enableValidation)
+Result<> TrianglePreviewRenderer::initialize(bool enableValidation)
 {
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -11835,7 +11727,7 @@ Result TrianglePreviewRenderer::initialize(bool enableValidation)
     return impl_->initialize(enableValidation);
 }
 
-Result TrianglePreviewRenderer::render(uint32_t width, uint32_t height)
+Result<> TrianglePreviewRenderer::render(uint32_t width, uint32_t height)
 {
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
@@ -11869,7 +11761,7 @@ int runRhiTrianglePreviewTest(bool enableValidation)
     int exitCode = 0;
     {
         TrianglePreviewRenderer previewRenderer;
-        Result result = previewRenderer.initialize(enableValidation);
+        Result<> result = previewRenderer.initialize(enableValidation);
         if (!checkResult(result, "TrianglePreviewRenderer::initialize")) {
             exitCode = resultToExitCode(result);
         } else {
@@ -11930,21 +11822,19 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
         std::unique_ptr<ShaderModule> fragmentShader;
         std::unique_ptr<GraphicsPipeline> pipeline;
 
-        Result result = createDevice(
-            DeviceDesc{
+        Result<> result = createDevice(DeviceDesc{
                 .applicationName = "Metallic RHI Bindless Descriptor Heap Smoke Test",
                 .enableValidation = enableValidation,
                 .enableBindlessDescriptorHeap = true,
                 .enableAftermath = true,
-            },
-            device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!checkResult(result, "createDevice")) {
             exitCode = resultToExitCode(result);
         } else {
             const BindlessHeapDesc bindlessHeapDesc{
                 .maxSampledImages = 1,
             };
-            result = device->createBindlessHeap(bindlessHeapDesc, bindlessHeap);
+            result = device->createBindlessHeap(bindlessHeapDesc).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
             if (!device->capabilities().bindlessDescriptorHeap) {
                 if (hasError(result, Error::Unsupported)) {
                     spdlog::info("VK_EXT_descriptor_heap unsupported; bindless smoke test skipped.");
@@ -11964,26 +11854,25 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                 }
 
                 if (exitCode == 0) {
-                    result = device->createCommandPool(*graphicsQueue, commandPool);
+                    result = device->createCommandPool(*graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
                     if (!checkResult(result, "createCommandPool")) {
                         exitCode = resultToExitCode(result);
                     }
                 }
                 if (exitCode == 0) {
-                    result = commandPool->createCommandBuffer(commandBuffer);
+                    result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
                     if (!checkResult(result, "createCommandBuffer")) {
                         exitCode = resultToExitCode(result);
                     }
                 }
                 if (exitCode == 0) {
-                    result = device->createFence(true, fence);
+                    result = device->createFence(true).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
                     if (!checkResult(result, "createFence")) {
                         exitCode = resultToExitCode(result);
                     }
                 }
                 if (exitCode == 0) {
-                    result = device->createTexture(
-                        TextureDesc{
+                    result = device->createTexture(TextureDesc{
                             .type = TextureType::Texture2D,
                             .usage = TextureUsageBits::Sampled | TextureUsageBits::ColorAttachment,
                             .format = Format::Rgba8Unorm,
@@ -11993,30 +11882,26 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                             .mipCount = 1,
                             .layerCount = 1,
                             .memoryLocation = MemoryLocation::Device,
-                        },
-                        sourceTexture);
+                        }).transform([&](auto rhiValue) { sourceTexture = std::move(rhiValue); });
                     if (!checkResult(result, "createTexture(source)")) {
                         exitCode = resultToExitCode(result);
                     }
                 }
                 if (exitCode == 0) {
-                    result = device->createTextureView(
-                        *sourceTexture,
+                    result = device->createTextureView(*sourceTexture,
                         TextureViewDesc{
                             .format = Format::Rgba8Unorm,
                             .baseMip = 0,
                             .mipCount = 1,
                             .baseLayer = 0,
                             .layerCount = 1,
-                        },
-                        sourceTextureView);
+                        }).transform([&](auto rhiValue) { sourceTextureView = std::move(rhiValue); });
                     if (!checkResult(result, "createTextureView(source)")) {
                         exitCode = resultToExitCode(result);
                     }
                 }
                 if (exitCode == 0) {
-                    result = device->createTexture(
-                        TextureDesc{
+                    result = device->createTexture(TextureDesc{
                             .type = TextureType::Texture2D,
                             .usage = TextureUsageBits::ColorAttachment | TextureUsageBits::TransferSource,
                             .format = Format::Rgba8Unorm,
@@ -12026,35 +11911,30 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                             .mipCount = 1,
                             .layerCount = 1,
                             .memoryLocation = MemoryLocation::Device,
-                        },
-                        outputTexture);
+                        }).transform([&](auto rhiValue) { outputTexture = std::move(rhiValue); });
                     if (!checkResult(result, "createTexture(output)")) {
                         exitCode = resultToExitCode(result);
                     }
                 }
                 if (exitCode == 0) {
-                    result = device->createTextureView(
-                        *outputTexture,
+                    result = device->createTextureView(*outputTexture,
                         TextureViewDesc{
                             .format = Format::Rgba8Unorm,
                             .baseMip = 0,
                             .mipCount = 1,
                             .baseLayer = 0,
                             .layerCount = 1,
-                        },
-                        outputTextureView);
+                        }).transform([&](auto rhiValue) { outputTextureView = std::move(rhiValue); });
                     if (!checkResult(result, "createTextureView(output)")) {
                         exitCode = resultToExitCode(result);
                     }
                 }
                 if (exitCode == 0) {
-                    result = device->createBuffer(
-                        BufferDesc{
+                    result = device->createBuffer(BufferDesc{
                             .size = kReadbackByteSize,
                             .usage = BufferUsageBits::TransferDestination,
                             .memoryLocation = MemoryLocation::HostReadback,
-                        },
-                        readbackBuffer);
+                        }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
                     if (!checkResult(result, "createBuffer(readback)")) {
                         exitCode = resultToExitCode(result);
                     }
@@ -12062,7 +11942,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
 
                 BindlessHandle sourceImageHandle;
                 if (exitCode == 0) {
-                    result = bindlessHeap->allocateSampledImage(sourceImageHandle);
+                    result = bindlessHeap->allocateSampledImage().transform([&](auto rhiValue) { sourceImageHandle = std::move(rhiValue); });
                     if (!checkResult(result, "allocateSampledImage")) {
                         exitCode = resultToExitCode(result);
                     }
@@ -12097,15 +11977,13 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                     }
                 }
                 if (exitCode == 0) {
-                    result = device->createGraphicsPipeline(
-                        GraphicsPipelineDesc{
+                    result = device->createGraphicsPipeline(GraphicsPipelineDesc{
                             .vertexShader = vertexShader.get(),
                             .fragmentShader = fragmentShader.get(),
                             .colorFormat = Format::Rgba8Unorm,
                             .topology = PrimitiveTopology::TriangleList,
                             .usesBindlessHeap = true,
-                        },
-                        pipeline);
+                        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
                     if (!checkResult(result, "createGraphicsPipeline(bindless)")) {
                         exitCode = resultToExitCode(result);
                     }
@@ -12365,13 +12243,11 @@ int runRhiSmokeTest(bool enableValidation)
         return 1;
     }
 
-    Result result = createDevice(
-        DeviceDesc{
+    Result<> result = createDevice(DeviceDesc{
             .applicationName = "Metallic RHI Smoke Test",
             .enableValidation = enableValidation,
             .enableAftermath = true,
-        },
-        device);
+        }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
     if (!checkResult(result, "createDevice")) {
         cleanup();
         return resultToExitCode(result);
@@ -12384,8 +12260,7 @@ int runRhiSmokeTest(bool enableValidation)
         return 1;
     }
 
-    result = device->createSwapchain(
-        SwapchainDesc{
+    result = device->createSwapchain(SwapchainDesc{
             .window = {
                 .system = WindowSystem::Sdl3,
                 .nativeWindow = window,
@@ -12396,8 +12271,7 @@ int runRhiSmokeTest(bool enableValidation)
             .framesInFlight = 2,
             .format = Format::Bgra8Srgb,
             .vsync = true,
-        },
-        swapchain);
+        }).transform([&](auto rhiValue) { swapchain = std::move(rhiValue); });
     if (!checkResult(result, "createSwapchain")) {
         cleanup();
         return resultToExitCode(result);
@@ -12407,16 +12281,14 @@ int runRhiSmokeTest(bool enableValidation)
     renderFinishedSemaphores.reserve(swapchain->imageCount());
     for (uint32_t imageIndex = 0; imageIndex < swapchain->imageCount(); ++imageIndex) {
         std::unique_ptr<TextureView> view;
-        result = device->createTextureView(
-            *swapchain->texture(imageIndex),
+        result = device->createTextureView(*swapchain->texture(imageIndex),
             TextureViewDesc{
                 .format = swapchain->format(),
                 .baseMip = 0,
                 .mipCount = 1,
                 .baseLayer = 0,
                 .layerCount = 1,
-            },
-            view);
+            }).transform([&](auto rhiValue) { view = std::move(rhiValue); });
         if (!checkResult(result, "createTextureView")) {
             cleanup();
             return resultToExitCode(result);
@@ -12424,7 +12296,7 @@ int runRhiSmokeTest(bool enableValidation)
         swapchainViews.push_back(std::move(view));
 
         std::unique_ptr<SwapchainSemaphore> renderFinished;
-        result = device->createSwapchainSemaphore(renderFinished);
+        result = device->createSwapchainSemaphore().transform([&](auto rhiValue) { renderFinished = std::move(rhiValue); });
         if (!checkResult(result, "createSwapchainSemaphore(renderFinished)")) {
             cleanup();
             return resultToExitCode(result);
@@ -12432,26 +12304,26 @@ int runRhiSmokeTest(bool enableValidation)
         renderFinishedSemaphores.push_back(std::move(renderFinished));
     }
 
-    result = device->createCommandPool(*graphicsQueue, commandPool);
+    result = device->createCommandPool(*graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
     if (!checkResult(result, "createCommandPool")) {
         cleanup();
         return resultToExitCode(result);
     }
 
-    result = commandPool->createCommandBuffer(commandBuffer);
+    result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
     if (!checkResult(result, "createCommandBuffer")) {
         cleanup();
         return resultToExitCode(result);
     }
 
-    if (!checkResult(device->createSwapchainSemaphore(imageAvailable), "createSwapchainSemaphore(imageAvailable)") ||
-        !checkResult(device->createFence(false, frameFence), "createFence")) {
+    if (!checkResult(device->createSwapchainSemaphore().transform([&](auto rhiValue) { imageAvailable = std::move(rhiValue); }), "createSwapchainSemaphore(imageAvailable)") ||
+        !checkResult(device->createFence(false).transform([&](auto rhiValue) { frameFence = std::move(rhiValue); }), "createFence")) {
         cleanup();
         return 1;
     }
 
     uint32_t imageIndex = 0;
-    result = swapchain->acquireNextImage(*imageAvailable, imageIndex);
+    result = swapchain->acquireNextImage(*imageAvailable).transform([&](auto rhiValue) { imageIndex = std::move(rhiValue); });
     if (!checkResult(result, "acquireNextImage")) {
         cleanup();
         return resultToExitCode(result);

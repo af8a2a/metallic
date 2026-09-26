@@ -29,8 +29,7 @@ class ClasSizeMoveTest final : public RhiTest {
         std::unique_ptr<Device> device;
         auto result = createDevice({.applicationName = "CLAS size/move regression",
                                     .enableValidation = context.enableValidation,
-                                    .enableClusterAccelerationStructure = true},
-                                   device);
+                                    .enableClusterAccelerationStructure = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(result, Error::Unsupported)) {
             return RhiTestResult::skip("CLAS unavailable");
         }
@@ -47,22 +46,21 @@ class ClasSizeMoveTest final : public RhiTest {
                                    BufferUsageBits::AccelerationStructureStorage;
             auto buffer = [&](uint64_t bytes, MemoryLocation location) {
                 std::unique_ptr<Buffer> out;
-                require(bool(device->createBuffer({.size = bytes, .usage = usage, .memoryLocation = location}, out)),
+                require(bool(device->createBuffer({.size = bytes, .usage = usage, .memoryLocation = location}).transform([&](auto rhiValue) { out = std::move(rhiValue); })),
                         "Buffer allocation failed");
                 return out;
             };
             ClusterAccelerationStructureProperties properties;
-            require(bool(device->queryClusterAccelerationStructureProperties(properties)),
+            require(bool(device->queryClusterAccelerationStructureProperties().transform([&](auto rhiValue) { properties = std::move(rhiValue); })),
                     "CLAS properties unavailable");
             ClusterAccelerationStructureBuildSizes worst, moveSizes;
             require(bool(device->queryClusterAccelerationStructureTriangleBuildSizes({.maxClusterTriangleCount = 128,
                                                                                       .maxClusterVertexCount = 128,
                                                                                       .maxTotalTriangleCount = 128,
-                                                                                      .maxTotalVertexCount = 128},
-                                                                                     worst)),
+                                                                                      .maxTotalVertexCount = 128}).transform([&](auto rhiValue) { worst = std::move(rhiValue); })),
                     "Build sizes failed");
             const uint64_t stride = worst.accelerationStructureSize;
-            require(bool(device->queryClusterAccelerationStructureMoveSizes(2, 2 * stride, moveSizes)),
+            require(bool(device->queryClusterAccelerationStructureMoveSizes(2, 2 * stride).transform([&](auto rhiValue) { moveSizes = std::move(rhiValue); })),
                     "Move sizes failed");
             auto temp = buffer(2 * stride, MemoryLocation::Device);
             auto scratch =
@@ -87,8 +85,8 @@ class ClasSizeMoveTest final : public RhiTest {
             std::unique_ptr<CommandPool> commandsPool;
             std::unique_ptr<CommandBuffer> commands;
             std::unique_ptr<Fence> fence;
-            require(bool(device->createCommandPool(*queue, commandsPool)) &&
-                        bool(commandsPool->createCommandBuffer(commands)) && bool(device->createFence(false, fence)),
+            require(bool(device->createCommandPool(*queue).transform([&](auto rhiValue) { commandsPool = std::move(rhiValue); })) &&
+                        bool(commandsPool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })) && bool(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); })),
                     "Command resources failed");
             auto submit = [&]() {
                 require(bool(commands->end()), "End failed");
@@ -159,7 +157,7 @@ class ClasSizeMoveTest final : public RhiTest {
                     "Overlapping destinations accepted");
             moves[1].destinationOffset = actual[0];
             ClusterAccelerationStructureBuildSizes exactMoveSizes;
-            require(bool(device->queryClusterAccelerationStructureMoveSizes(2, uint64_t(actual[0]) + actual[1], exactMoveSizes)),
+            require(bool(device->queryClusterAccelerationStructureMoveSizes(2, uint64_t(actual[0]) + actual[1]).transform([&](auto rhiValue) { exactMoveSizes = std::move(rhiValue); })),
                     "Exact move sizes failed");
             if (exactMoveSizes.updateScratchSize > 1) {
                 auto smallScratch = buffer(exactMoveSizes.updateScratchSize - 1, MemoryLocation::Device);
@@ -211,8 +209,7 @@ class CompactClasLifecycleTest final : public RhiTest {
         std::unique_ptr<Device> device;
         auto result = createDevice({.applicationName = "Compact CLAS lifecycle",
                                     .enableValidation = context.enableValidation,
-                                    .enableClusterAccelerationStructure = true},
-                                   device);
+                                    .enableClusterAccelerationStructure = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(result, Error::Unsupported)) {
             return RhiTestResult::skip("CLAS unavailable");
         }
@@ -262,14 +259,12 @@ class CompactClasLifecycleTest final : public RhiTest {
         }
 
         std::unique_ptr<render::Buffer> pageBuffer;
-        result = device->createBuffer(
-            render::BufferDesc{
+        result = device->createBuffer(render::BufferDesc{
                 .size = decodedPayload.size(),
                 .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::ShaderDeviceAddress |
                          render::BufferUsageBits::AccelerationStructureBuildInput,
                 .memoryLocation = render::MemoryLocation::HostUpload,
-            },
-            pageBuffer);
+            }).transform([&](auto rhiValue) { pageBuffer = std::move(rhiValue); });
         if (!result || pageBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createBuffer(stream CLAS page) returned ") + toString(result));
         }
@@ -305,13 +300,13 @@ class CompactClasLifecycleTest final : public RhiTest {
             RenderFrameContext frame;
             std::unique_ptr<CommandPool> commandPool;
             std::unique_ptr<CommandBuffer> cmd;
-            require(bool(tracker.initialize(*device, *queue)) && bool(device->createCommandPool(*queue, commandPool)) &&
-                        bool(commandPool->createCommandBuffer(cmd)),
+            require(bool(tracker.initialize(*device, *queue)) && bool(device->createCommandPool(*queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); })) &&
+                        bool(commandPool->createCommandBuffer().transform([&](auto rhiValue) { cmd = std::move(rhiValue); })),
                     "Commands failed");
             uint64_t frameId = 0;
             std::unique_ptr<Buffer> publicationReadback;
             require(bool(device->createBuffer({.size = 4, .usage = BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::HostReadback}, publicationReadback)), "Publication readback failed");
+                .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { publicationReadback = std::move(rhiValue); })), "Publication readback failed");
             uint32_t gpuPageEntry = 0;
             auto record = [&](bool request, bool cancel = false) {
                 require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)),
@@ -441,7 +436,7 @@ class MiniZorahClasInFlightTest final : public RhiTest {
         desc.enableClusterAccelerationStructure = true;
         desc.enableAftermath = true;
         std::unique_ptr<Device> device;
-        auto result = createDevice(desc, device);
+        auto result = createDevice(desc).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(result, Error::Unsupported)) { return RhiTestResult::skip("CLAS unavailable"); }
         if (!result) { return RhiTestResult::fail(toString(result)); }
         std::string log;

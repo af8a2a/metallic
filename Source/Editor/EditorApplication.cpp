@@ -2437,11 +2437,10 @@ bool EditorApplication::initializeRhi()
         startupSampleId_.empty() ? "<generic-editor>" : startupSampleId_,
         startupSampleRequiresStreamline);
 
-    render::Result result;
+    render::Result<> result;
     {
         StartupLogScope scope("RHI createDevice");
-        result = render::createDevice(
-            render::DeviceDesc{
+        result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic Engine Editor",
                 .enableValidation = debugRuntime_ && environmentFlagEnabled("METALLIC_DEBUG_VALIDATION"),
                 .enableBindlessDescriptorHeap = true,
@@ -2462,8 +2461,7 @@ bool EditorApplication::initializeRhi()
                 .validationSink = debugRuntime_ ? debugRuntime_->validationSink() : render::ValidationSink{},
                 .enableAsyncCompute = true,
                 .memoryBudget = {.enabled = gpuDrivenScenesOnly_},
-            },
-            device_);
+            }).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });
     }
     if (!result || device_ == nullptr) {
         spdlog::error("createDevice failed with Result {}", render::resultToString(result));
@@ -2499,12 +2497,12 @@ bool EditorApplication::initializeRhi()
             return false;
         }
         for (FrameSlot& frame : frameSlots_) {
-            result = device_->createCommandPool(*graphicsQueue_, frame.commandPool);
+            result = device_->createCommandPool(*graphicsQueue_).transform([&](auto rhiValue) { frame.commandPool = std::move(rhiValue); });
             if (result) {
-                result = frame.commandPool->createCommandBuffer(frame.commandBuffer);
+                result = frame.commandPool->createCommandBuffer().transform([&](auto rhiValue) { frame.commandBuffer = std::move(rhiValue); });
             }
             if (result) {
-                result = device_->createSwapchainSemaphore(frame.imageAvailable);
+                result = device_->createSwapchainSemaphore().transform([&](auto rhiValue) { frame.imageAvailable = std::move(rhiValue); });
             }
             if (!result) {
                 spdlog::error("Frame slot {} initialization failed: {}",
@@ -2558,8 +2556,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
     }
     destroySwapchainResources();
 
-    render::Result result = device_->createSwapchain(
-        render::SwapchainDesc{
+    render::Result<> result = device_->createSwapchain(render::SwapchainDesc{
             .window = render::WindowHandle{
                 .system = render::WindowSystem::Sdl3,
                 .nativeWindow = window_,
@@ -2574,8 +2571,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
                 std::string_view(std::getenv("METALLIC_FULL_ROAM_NO_VSYNC")) == "1"),
             .outputMode = hdrOutputRequested_ && displayHdrEnabled_
                 ? render::DisplayOutputMode::HdrScRgb : render::DisplayOutputMode::Sdr,
-        },
-        swapchain_);
+        }).transform([&](auto rhiValue) { swapchain_ = std::move(rhiValue); });
     if (!result || swapchain_ == nullptr) {
         spdlog::error("createSwapchain failed with Result {}", render::resultToString(result));
         return false;
@@ -2592,16 +2588,14 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
         }
 
         std::unique_ptr<render::TextureView> view;
-        result = device_->createTextureView(
-            *texture,
+        result = device_->createTextureView(*texture,
             render::TextureViewDesc{
                 .format = swapchain_->format(),
                 .baseMip = 0,
                 .mipCount = 1,
                 .baseLayer = 0,
                 .layerCount = 1,
-            },
-            view);
+            }).transform([&](auto rhiValue) { view = std::move(rhiValue); });
         if (!result || view == nullptr) {
             spdlog::error("createTextureView(swapchain) failed with Result {}", render::resultToString(result));
             return false;
@@ -2609,7 +2603,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
         swapchainImageViews_.push_back(std::move(view));
 
         std::unique_ptr<render::SwapchainSemaphore> renderFinished;
-        result = device_->createSwapchainSemaphore(renderFinished);
+        result = device_->createSwapchainSemaphore().transform([&](auto rhiValue) { renderFinished = std::move(rhiValue); });
         if (!result || renderFinished == nullptr) {
             spdlog::error(
                 "createSwapchainSemaphore(renderFinished) failed with Result {}",
@@ -2881,7 +2875,7 @@ void EditorApplication::pollShaderHotReload()
     }
 
     std::string reloadLog;
-    const render::Result result = graphExecutor_->reloadShaders(reloadLog);
+    const render::Result<> result = graphExecutor_->reloadShaders(reloadLog);
     if (!result) {
         renderGraphStatus_ = "Shader hot reload failed; kept the previous pipelines: " + reloadLog;
         spdlog::error(
@@ -2959,7 +2953,7 @@ bool EditorApplication::renderFrame()
 
     {
         auto frameFenceScope = profiler_.scope("Wait Frame Slot");
-        render::Result result;
+        render::Result<> result;
         {
             auto profileScope = profiler_.scope("Wait Slot Completion");
             result = frame.context.begin(submittedFrameIndex_);
@@ -6624,7 +6618,7 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     compileOptions.extraOutputs.push_back(previewOutput);
     compileOptions.enablePreviewOutputAccess = true;
     compileOptions.displayOutput = displayOutput_;
-    render::Result result;
+    render::Result<> result;
     {
         StartupLogScope scope("RenderGraph compile for preview output '" + previewOutput + "'");
         result = graphExecutor_->compile(*device_, renderGraph_, width, height, compileOptions, log);
@@ -6662,7 +6656,7 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
 void EditorApplication::destroyViewportDescriptor()
 {
     if (viewportDescriptor_ != VK_NULL_HANDLE && imguiRendererInitialized_) {
-        const render::Result result = frameSubmissions_.wait();
+        const render::Result<> result = frameSubmissions_.wait();
         if (!result) {
             spdlog::error("Viewport descriptor retirement failed: {}", render::resultToString(result));
             running_ = false;
@@ -6705,7 +6699,7 @@ bool EditorApplication::renderGraphPreview()
         .name = "RenderGraph Preview",
         .color = render::ColorValue{0.78f, 0.36f, 0.92f, 1.0f},
     });
-    render::Result result = graphExecutor_->execute(render::RenderGraphSubmitDesc{.graphicsQueue = graphicsQueue_,
+    render::Result<> result = graphExecutor_->execute(render::RenderGraphSubmitDesc{.graphicsQueue = graphicsQueue_,
         .computeQueue = device_->getQueue(render::QueueType::Compute), .historyResources = &historyResources_});
     profiler_.addRenderGraphStats(graphExecutor_->executionStats());
     if (result) { historyFrameIndex_ = graphExecutor_->executionStats().executionId + 1; }
@@ -6753,12 +6747,12 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
     if (smokeTest_) {
         spdlog::info("[Smoke] Begin editor Vulkan frame");
     }
-    render::Result result;
+    render::Result<> result;
 
     uint32_t imageIndex = 0;
     if (renderMainViewport) {
         auto profileScope = profiler_.scope("Acquire Swapchain Image");
-        result = swapchain_->acquireNextImage(*frame.imageAvailable, imageIndex);
+        result = swapchain_->acquireNextImage(*frame.imageAvailable).transform([&](auto rhiValue) { imageIndex = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::OutOfDate)) {
                 swapchainOutOfDate_ = true;
@@ -7429,7 +7423,7 @@ void EditorApplication::pollSceneLoad()
     if (pendingSceneResourcePreparation_) {
         bool resourcesComplete = false;
         std::string log;
-        const render::Result result = graphExecutor_->pumpSceneResourcePreparation(
+        const render::Result<> result = graphExecutor_->pumpSceneResourcePreparation(
             *readySceneLoad_,
             2.0,
             resourcesComplete,
@@ -7501,7 +7495,7 @@ void EditorApplication::pollSceneLoad()
         render::RenderGraphProperties properties = render::RenderGraphProperties::object();
         properties["path"] = displayPathForProperty(readySceneLoad_->sourcePath());
         std::string log;
-        const render::Result result = graphExecutor_->beginSceneResourcePreparation(
+        const render::Result<> result = graphExecutor_->beginSceneResourcePreparation(
             *device_,
             properties,
             *readySceneLoad_,
@@ -7660,7 +7654,7 @@ void EditorApplication::buildSceneAccelerationStructure()
     if (accelerationStructureQueue == nullptr) {
         accelerationStructureQueue = graphicsQueue_;
     }
-    const render::Result result =
+    const render::Result<> result =
         sceneAccelerationStructure_->build(*device_, *accelerationStructureQueue, scene_, log);
     sceneAccelerationStructureStatus_ = log.empty()
         ? std::string("RTAS build returned ") + render::resultToString(result)

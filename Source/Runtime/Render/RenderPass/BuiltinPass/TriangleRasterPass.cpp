@@ -17,7 +17,7 @@ public:
         return reflection;
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -26,7 +26,7 @@ public:
             return {};
         }
 
-        Result result = createShaderModule(*context.device, kTriangleVertexEntryPoint, vertexShader_, log);
+        Result<> result = createShaderModule(*context.device, kTriangleVertexEntryPoint, vertexShader_, log);
         if (!result) {
             return result;
         }
@@ -35,14 +35,12 @@ public:
             return result;
         }
 
-        result = context.device->createGraphicsPipeline(
-            GraphicsPipelineDesc{
+        result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
                 .vertexShader = vertexShader_.get(),
                 .fragmentShader = fragmentShader_.get(),
                 .colorFormat = Format::Rgba8Unorm,
                 .topology = PrimitiveTopology::TriangleList,
-            },
-            pipeline_);
+            }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
         if (!result) {
             log += resultMessage("createGraphicsPipeline", result);
             log += '\n';
@@ -50,7 +48,7 @@ public:
         return result;
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle color = context.outputTexture("color");
         if (!color.valid() || pipeline_ == nullptr) {
@@ -91,14 +89,14 @@ public:
     }
 
 private:
-    static Result createShaderModule(
+    static Result<> createShaderModule(
         Device& device,
         const char* entryPointName,
         std::unique_ptr<ShaderModule>& outShaderModule,
         std::string& log)
     {
         ShaderCompileResult compileResult;
-        Result result = compileSlangShaderToSpirv(
+        Result<> result = compileSlangShaderToSpirv(
             SlangShaderDesc{
                 .moduleName = kTriangleShaderModuleName,
                 .entryPointName = entryPointName,
@@ -120,13 +118,11 @@ private:
 
         const std::string shaderDebugName =
             std::string(kTriangleShaderModuleName) + "." + entryPointName;
-        result = device.createShaderModule(
-            ShaderModuleDesc{
+        result = device.createShaderModule(ShaderModuleDesc{
                 .code = compileResult.spirv.data(),
                 .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
                 .debugName = shaderDebugName.c_str(),
-            },
-            outShaderModule);
+            }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
         if (!result) {
             log += resultMessage("createShaderModule", result);
             log += '\n';

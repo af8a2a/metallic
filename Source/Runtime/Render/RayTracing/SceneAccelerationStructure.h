@@ -50,12 +50,12 @@ public:
     SceneAccelerationStructureBuilder(const SceneAccelerationStructureBuilder&) = delete;
     SceneAccelerationStructureBuilder& operator=(const SceneAccelerationStructureBuilder&) = delete;
 
-    Result build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
-    Result beginBuild(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
-    Result pollBuild(bool& complete, std::string& log);
+    Result<> build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
+    Result<> beginBuild(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
+    Result<> pollBuild(bool& complete, std::string& log);
     bool pollBuild();
     SceneAccelerationStructureBuildState buildState() const;
-    Result updateInstanceTransforms(
+    Result<> updateInstanceTransforms(
         Device& device,
         Queue& queue,
         const scene::Scene& scene,
@@ -68,7 +68,7 @@ public:
 
 private:
     struct Impl;
-    Result buildInternal(
+    Result<> buildInternal(
         Device& device,
         Queue& queue,
         const scene::Scene& scene,

@@ -118,21 +118,21 @@ public:
     ComputeProgram(const ComputeProgram&) = delete;
     ComputeProgram& operator=(const ComputeProgram&) = delete;
 
-    Result initialize(Device& device, const ComputeProgramDesc& desc, std::string& log);
+    Result<> initialize(Device& device, const ComputeProgramDesc& desc, std::string& log);
     void clear();
     bool valid() const;
-    Result dispatch(const ComputeDispatchDesc& desc);
+    Result<> dispatch(const ComputeDispatchDesc& desc);
     // Bind one immutable descriptor table for the batch. Every item supplies
     // pushDataSize bytes and an offset into desc.indirectArguments. Optional
     // barriers separate dispatches sharing writable resources. Compatible per-item
     // programs share this table; the entire batch is validated before recording.
-    Result dispatchIndirectBatch(const ComputeDispatchDesc& desc,
+    Result<> dispatchIndirectBatch(const ComputeDispatchDesc& desc,
         std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches = {});
 
 private:
-    Result dispatchImpl(const ComputeDispatchDesc& desc,
+    Result<> dispatchImpl(const ComputeDispatchDesc& desc,
         std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches);
-    Result dispatchShared(const ComputeDispatchDesc& desc,
+    Result<> dispatchShared(const ComputeDispatchDesc& desc,
         std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches);
     struct Impl;
     std::shared_ptr<Impl> impl_;

@@ -46,20 +46,20 @@ public:
 
     // Initializes the NRC library for the device lifetime and
     // creates a context on the device.
-    Result initialize(Device& device, std::string& log);
+    Result<> initialize(Device& device, std::string& log);
     void clear();
     bool valid() const;
 
     // (Re)configures the context and (re)allocates the shared buffers.
     // Call whenever the context settings change; may stall.
-    Result configure(const nrc::ContextSettings& settings, Device& device, std::string& log);
+    Result<> configure(const nrc::ContextSettings& settings, Device& device, std::string& log);
     const nrc::ContextSettings& contextSettings() const { return contextSettings_; }
 
-    Result beginFrame(CommandBuffer& commandBuffer, const nrc::FrameSettings& frameSettings);
-    Result populateShaderConstants(::NrcConstants& outConstants) const;
-    Result queryAndTrain(CommandBuffer& commandBuffer, float* trainingLoss);
-    Result resolve(CommandBuffer& commandBuffer, TextureView& outputView);
-    Result endFrame(Queue& queue);
+    Result<> beginFrame(CommandBuffer& commandBuffer, const nrc::FrameSettings& frameSettings);
+    [[nodiscard]] Result<::NrcConstants> populateShaderConstants() const;
+    Result<> queryAndTrain(CommandBuffer& commandBuffer, float* trainingLoss);
+    Result<> resolve(CommandBuffer& commandBuffer, TextureView& outputView);
+    Result<> endFrame(Queue& queue);
 
     Buffer* buffer(uint32_t index) const
     {

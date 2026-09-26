@@ -31,7 +31,7 @@ public:
             Copy copy;
             copy.metadata = {{"frame", editorFrame}, {"phase", checkpoint}, {"camera", camera}, {"shader", values}, {"binHeader", binHeader}, {"cullHeader", cullHeader}};
             if (!device_->createBuffer({.size = 128, .usage = render::BufferUsageBits::TransferDestination,
-                .memoryLocation = render::MemoryLocation::HostReadback}, copy.buffer)) { throw std::runtime_error("SW workload readback allocation failed"); }
+                .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { copy.buffer = std::move(rhiValue); })) { throw std::runtime_error("SW workload readback allocation failed"); }
             render::BufferBarrierDesc barrier{.buffer = resource.buffer, .before = resource.state, .after = render::ResourceState::TransferSource};
             commands.barrier({.buffers = &barrier, .bufferCount = 1});
             commands.copyBuffer({.source = resource.buffer, .destination = copy.buffer.get(), .size = 128});

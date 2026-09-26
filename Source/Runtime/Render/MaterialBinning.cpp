@@ -17,7 +17,7 @@ void MaterialBinning::clear()
     allocations_.clear();
 }
 
-Result MaterialBinning::record(Device& device, CommandBuffer& commands,
+Result<> MaterialBinning::record(Device& device, CommandBuffer& commands,
     const MaterialBinningDesc& desc, MaterialBinningResult& output, std::string& log)
 {
     output = {};
@@ -71,7 +71,7 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
             auto result = device.createBuffer({.size = sizes[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource |
                     (i == 2 ? BufferUsageBits::Indirect : BufferUsageBits::None),
-                .memoryLocation = MemoryLocation::Device}, allocation->buffers[i]);
+                .memoryLocation = MemoryLocation::Device}).transform([&](auto rhiValue) { allocation->buffers[i] = std::move(rhiValue); });
             if (!result) { return result; }
         }
         allocation->tileCount = static_cast<uint32_t>(tileCount);
@@ -88,7 +88,7 @@ Result MaterialBinning::record(Device& device, CommandBuffer& commands,
     }
     commands.barrier({.buffers = barriers, .bufferCount = 3});
     std::shared_ptr<ResourceRegistry> registry;
-    auto result = device.resourceRegistry(registry);
+    auto result = device.resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
     if (!result) { return result; }
     ParameterWriter writer(device, *frame, *registry);
     const MaterialBinningParams params{

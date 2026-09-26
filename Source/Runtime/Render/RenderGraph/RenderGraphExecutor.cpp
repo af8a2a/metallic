@@ -461,7 +461,7 @@ struct RenderGraphExecutor::Impl {
 
     RenderView* renderView() { return externalView != nullptr ? externalView : hasOwnedView ? &ownedView : nullptr; }
 
-    Result prepareView(CommandBuffer& commands, uint64_t frameIndex)
+    Result<> prepareView(CommandBuffer& commands, uint64_t frameIndex)
     {
         auto* view = renderView();
         frameViewBuffer = nullptr;
@@ -485,9 +485,9 @@ struct RenderGraphExecutor::Impl {
         if (viewBuffers.size() <= slot) { viewBuffers.resize(slot + 1); }
         if (viewBuffers[slot] == nullptr) {
             std::unique_ptr<Buffer> buffer;
-            Result result = device->createBuffer({.size = sizeof(ViewConstants), .structureStride = sizeof(ViewConstants),
+            Result<> result = device->createBuffer({.size = sizeof(ViewConstants), .structureStride = sizeof(ViewConstants),
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload,
-                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, buffer);
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
             if (!result) { return result; }
             viewBuffers[slot] = std::move(buffer);
         }
@@ -622,7 +622,7 @@ struct RenderGraphExecutor::Impl {
         return result;
     }
 
-    Result prepareNodeScene(CompiledNode& node, RenderGraphCompileContext& context, std::string& log)
+    Result<> prepareNodeScene(CompiledNode& node, RenderGraphCompileContext& context, std::string& log)
     {
         node.sceneRequirements = node.pass->sceneResourcesRequired(context);
         auto result = streamerSubsystem()->prepareScene(node.sceneRequirements, node.effectiveProperties,
@@ -640,7 +640,7 @@ struct RenderGraphExecutor::Impl {
         node.pass->setProperties(node.effectiveProperties);
     }
 
-    Result resolveSceneBindings(std::vector<SceneBinding>& bindings, std::string& log)
+    Result<> resolveSceneBindings(std::vector<SceneBinding>& bindings, std::string& log)
     {
         bindings.assign(executionList.size(), {});
         auto* resources = streamerSubsystem();
@@ -688,7 +688,7 @@ struct RenderGraphExecutor::Impl {
             } else {
                 const scene::Scene* source = nullptr;
                 // Only an explicit asset binding or an absent world may resolve path.
-                Result result = resources->manager().resolveScene(properties, nullptr, source, log);
+                Result<> result = resources->manager().resolveScene(properties, nullptr, source, log);
                 if (!result) { log = "Pass '" + node.name + "' scene resolution failed: " + log; return result; }
                 bindings[index] = captureSceneBinding(source);
             }
@@ -697,10 +697,10 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    Result refreshFrameSceneBindings(HistoryResourceManager* history, std::string& log)
+    Result<> refreshFrameSceneBindings(HistoryResourceManager* history, std::string& log)
     {
         std::vector<SceneBinding> bindings;
-        Result result = resolveSceneBindings(bindings, log);
+        Result<> result = resolveSceneBindings(bindings, log);
         if (!result) { return result; }
         const bool forceRefresh = !sceneBindingsReady;
         bool changed = forceRefresh;
@@ -745,7 +745,7 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    Result refreshReusablePasses(
+    Result<> refreshReusablePasses(
         const RenderGraph& graph,
         const ActiveGraph& activeGraph,
         const RenderGraphCompileContext& compileContext,
@@ -763,7 +763,7 @@ struct RenderGraphExecutor::Impl {
             node.runtimeProperties = graphNode->runtimeProperties;
         }
         std::vector<SceneBinding> sceneBindings;
-        Result bindingResult = resolveSceneBindings(sceneBindings, log);
+        Result<> bindingResult = resolveSceneBindings(sceneBindings, log);
         if (!bindingResult) { return bindingResult; }
         for (size_t index = 0; index < activeGraph.executionOrder.size(); ++index) {
             const std::string& passName = activeGraph.executionOrder[index];
@@ -786,7 +786,7 @@ struct RenderGraphExecutor::Impl {
             applySceneProperties(compiledNode, sceneBindings[index]);
             auto nodeContext = contextForScene(compileContext, sceneBindings[index]);
             std::string prepareLog;
-            Result prepareResult = prepareNodeScene(compiledNode, nodeContext, prepareLog);
+            Result<> prepareResult = prepareNodeScene(compiledNode, nodeContext, prepareLog);
             if (!prepareResult) { log = prepareLog; return prepareResult; }
             prepareResult = compiledNode.pass->prepare(nodeContext, prepareLog);
             if (prepareResult && sceneBindings[index] != compiledNode.sceneBinding) {
@@ -842,7 +842,7 @@ struct RenderGraphExecutor::Impl {
         return plan;
     }
 
-    Result resolveTextureOutputExtents(
+    Result<> resolveTextureOutputExtents(
         const RenderGraph& graph,
         const ActiveGraph& activeGraph,
         ResolvedTextureExtentMap& resolvedExtents,
@@ -1088,7 +1088,7 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    Result resolveNodeExecutionExtents(std::string& log)
+    Result<> resolveNodeExecutionExtents(std::string& log)
     {
         for (CompiledNode& node : executionList) {
             node.executionWidth = width;
@@ -1124,7 +1124,7 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    Result allocateGraphResources(
+    Result<> allocateGraphResources(
         Device& graphDevice,
         const RenderGraph& graph,
         const ActiveGraph& activeGraph,
@@ -1136,7 +1136,7 @@ struct RenderGraphExecutor::Impl {
         bindlessHeap.reset();
 
         ResolvedTextureExtentMap resolvedTextureExtents;
-        Result extentConstraintResult = resolveTextureOutputExtents(
+        Result<> extentConstraintResult = resolveTextureOutputExtents(
             graph,
             activeGraph,
             resolvedTextureExtents,
@@ -1201,22 +1201,20 @@ struct RenderGraphExecutor::Impl {
                         .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
                     };
 
-                    Result result = graphDevice.createTexture(desc, slot.texture);
+                    Result<> result = graphDevice.createTexture(desc).transform([&](auto rhiValue) { slot.texture = std::move(rhiValue); });
                     if (!result || slot.texture == nullptr) {
                         log += resultMessage(std::string("createTexture(") + fullName + ")", result);
                         log += '\n';
                         return result ? makeError(Error::Failure) : result;
                     }
-                    result = graphDevice.createTextureView(
-                        *slot.texture,
+                    result = graphDevice.createTextureView(*slot.texture,
                         TextureViewDesc{
                             .format = desc.format,
                             .baseMip = 0,
                             .mipCount = 1,
                             .baseLayer = 0,
                             .layerCount = 1,
-                        },
-                        slot.textureView);
+                        }).transform([&](auto rhiValue) { slot.textureView = std::move(rhiValue); });
                     if (!result || slot.textureView == nullptr) {
                         log += resultMessage(std::string("createTextureView(") + fullName + ")", result);
                         log += '\n';
@@ -1273,7 +1271,7 @@ struct RenderGraphExecutor::Impl {
                         .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
                     };
 
-                    Result result = graphDevice.createBuffer(desc, slot.buffer);
+                    Result<> result = graphDevice.createBuffer(desc).transform([&](auto rhiValue) { slot.buffer = std::move(rhiValue); });
                     if (!result || slot.buffer == nullptr) {
                         log += resultMessage(std::string("createBuffer(") + fullName + ")", result);
                         log += '\n';
@@ -1288,7 +1286,7 @@ struct RenderGraphExecutor::Impl {
                     };
                     const bool needsBindlessBuffer = bindlessPlan.bufferResourceSet.contains(fullName);
                     if (needsBindlessBuffer) {
-                        result = graphDevice.createBufferView(*slot.buffer, viewDesc, slot.bufferView);
+                        result = graphDevice.createBufferView(*slot.buffer, viewDesc).transform([&](auto rhiValue) { slot.bufferView = std::move(rhiValue); });
                         if (!result || slot.bufferView == nullptr) {
                             log += resultMessage(std::string("createBufferView(") + fullName + ")", result);
                             log += '\n';
@@ -1311,18 +1309,16 @@ struct RenderGraphExecutor::Impl {
             }
         }
 
-        Result extentResult = resolveNodeExecutionExtents(log);
+        Result<> extentResult = resolveNodeExecutionExtents(log);
         if (!extentResult) {
             return extentResult;
         }
 
         if (!bindlessPlan.sampledImageResources.empty() || !bindlessPlan.bufferResources.empty()) {
-            Result result = graphDevice.createBindlessHeap(
-                BindlessHeapDesc{
+            Result<> result = graphDevice.createBindlessHeap(BindlessHeapDesc{
                     .maxSampledImages = static_cast<uint32_t>(bindlessPlan.sampledImageResources.size()),
                     .maxBuffers = static_cast<uint32_t>(bindlessPlan.bufferResources.size()),
-                },
-                bindlessHeap);
+                }).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
             if (!result || bindlessHeap == nullptr) {
                 log += resultMessage("createBindlessHeap(RenderGraph)", result);
                 log += '\n';
@@ -1337,7 +1333,7 @@ struct RenderGraphExecutor::Impl {
                 }
 
                 BindlessHandle handle;
-                result = bindlessHeap->allocateSampledImage(handle);
+                result = bindlessHeap->allocateSampledImage().transform([&](auto rhiValue) { handle = std::move(rhiValue); });
                 if (!result) {
                     log += resultMessage(std::string("allocateSampledImage(") + fullName + ")", result);
                     log += '\n';
@@ -1365,7 +1361,7 @@ struct RenderGraphExecutor::Impl {
                 }
 
                 BindlessHandle handle;
-                result = bindlessHeap->allocateBuffer(handle);
+                result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); });
                 if (!result) {
                     log += resultMessage(std::string("allocateBuffer(") + fullName + ")", result);
                     log += '\n';
@@ -1385,7 +1381,7 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    Result rebuildGraphResources(
+    Result<> rebuildGraphResources(
         Device& graphDevice,
         const RenderGraph& graph,
         const ActiveGraph& activeGraph,
@@ -1418,7 +1414,7 @@ struct RenderGraphExecutor::Impl {
         return 0;
     }
 
-    Result waitForSubmittedWork(uint64_t timeoutNanoseconds)
+    Result<> waitForSubmittedWork(uint64_t timeoutNanoseconds)
     {
         profiling::CpuPhase phase("drain.externalWait");
         const auto begin = std::chrono::steady_clock::now();
@@ -1429,13 +1425,13 @@ struct RenderGraphExecutor::Impl {
             return timeoutNanoseconds - std::min(timeoutNanoseconds, elapsed);
         };
         for (const GpuCompletionPoint& completion : externalCompletions) {
-            Result result = completion.wait(remaining());
+            Result<> result = completion.wait(remaining());
             if (!result) { return result; }
         }
         externalCompletions.clear();
         phase.next("drain.slotWait");
         for (const auto& slot : submissionSlots) {
-            Result result = slot->frame.wait(remaining());
+            Result<> result = slot->frame.wait(remaining());
             if (!result) { return result; }
         }
         // Descriptor heap reserved ranges remain associated with executable
@@ -1453,7 +1449,7 @@ struct RenderGraphExecutor::Impl {
         // rather than waiting for begin() on a slot the new graph may never reach.
         phase.next("drain.releaseResources");
         for (const auto& slot : submissionSlots) {
-            Result result = slot->frame.reset();
+            Result<> result = slot->frame.reset();
             if (!result) { return result; }
         }
         return {};
@@ -1483,7 +1479,7 @@ struct RenderGraphExecutor::Impl {
             auto* queue = graphDevice.getQueue(types[i]);
             if (!queue || queue->timestampValidBits() == 0) { continue; }
             const auto result = graphDevice.createTimestampQueryPool(*queue,
-                {.queryCount = uint32_t(perSlot * kGpuTimingSlotCount)}, gpuTimestampQueryPools[i]);
+                {.queryCount = uint32_t(perSlot * kGpuTimingSlotCount)}).transform([&](auto rhiValue) { gpuTimestampQueryPools[i] = std::move(rhiValue); });
             if (!result) { gpuTimestampQueryPools[i].reset(); }
         }
         for (uint32_t i = 0; i < kGpuTimingSlotCount; ++i) {
@@ -1518,7 +1514,7 @@ struct RenderGraphExecutor::Impl {
         }
     }
 
-    Result resolveGpuTimings()
+    Result<> resolveGpuTimings()
     {
         std::array<GpuTimingSlot*, kGpuTimingSlotCount> ordered;
         for (size_t i = 0; i < ordered.size(); ++i) { ordered[i] = &gpuTimingSlots[i]; }
@@ -1569,7 +1565,7 @@ struct RenderGraphExecutor::Impl {
                 GpuClockCalibration calibration;
                 const auto before = profiling::CpuPhaseTrace::Clock::now();
                 const auto* queue = device->getQueue(QueueType::Graphics);
-                const auto calibrated = queue ? queue->calibrateTimestamps(calibration) : makeError(Error::Unsupported);
+                const auto calibrated = queue ? queue->calibrateTimestamps().transform([&](auto rhiValue) { calibration = std::move(rhiValue); }) : makeError(Error::Unsupported);
                 const auto after = profiling::CpuPhaseTrace::Clock::now();
                 if (calibrated) {
                     trace->gpuSpans.push_back({slot.stats.executionId, values[0][slot.frameTimer.begin].value, values[0][slot.frameTimer.begin + 1].value,
@@ -1627,20 +1623,20 @@ struct RenderGraphExecutor::Impl {
         activeGpuTimingSlot = nullptr; activeGpuTimingValid = false;
     }
 
-    Result prepareCommandPool(SubmissionSlot& slot, QueueType type, Queue& queue, CommandPool*& out)
+    Result<> prepareCommandPool(SubmissionSlot& slot, QueueType type, Queue& queue, CommandPool*& out)
     {
         QueueCommandContext& context = slot.queues[queueContextIndex(type)];
         if (context.queue != &queue || context.commandPool == nullptr) {
             context.commandPool.reset();
-            Result result = device->createCommandPool(queue, context.commandPool);
+            Result<> result = device->createCommandPool(queue).transform([&](auto rhiValue) { context.commandPool = std::move(rhiValue); });
             if (!result) { return result; }
             context.queue = &queue;
         }
         out = context.commandPool.get();
-        return out != nullptr ? Result{} : makeError(Error::Failure);
+        return out != nullptr ? Result<>{} : makeError(Error::Failure);
     }
 
-    Result transition(
+    Result<> transition(
         CommandBuffer& commandBuffer,
         RenderGraphResource& resource,
         ResourceState state,
@@ -1698,7 +1694,7 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    Result executeNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
+    Result<> executeNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
         const RenderGraphExecutionContext::ParallelRecorder& parallel = {})
     {
         std::vector<RenderGraphExecutionContext::Binding> bindings;
@@ -1711,7 +1707,7 @@ struct RenderGraphExecutor::Impl {
             if (field.visibility == RenderGraphFieldVisibility::Output) {
                 resource = this->resource(fullName);
                 if (resource != nullptr) {
-                    Result result = transition(
+                    Result<> result = transition(
                         commandBuffer,
                         *resource,
                         stateForAccess(field.access),
@@ -1725,7 +1721,7 @@ struct RenderGraphExecutor::Impl {
                 if (alias != inputAliases.end()) {
                     resource = this->resource(alias->second);
                     if (resource != nullptr) {
-                        Result result = transition(
+                        Result<> result = transition(
                             commandBuffer,
                             *resource,
                             stateForAccess(field.access),
@@ -1802,16 +1798,16 @@ struct RenderGraphExecutor::Impl {
         if (parallel) {
             context.parallelRecorder_ = [&](RenderGraphExecutionContext& current,
                 const RenderGraphExecutionContext::CommandRecorder& compute,
-                const RenderGraphExecutionContext::CommandRecorder& graphics) -> Result {
+                const RenderGraphExecutionContext::CommandRecorder& graphics) -> Result<> {
                 labels.suspend();
                 const auto branch = [&](CommandBuffer& commands,
                     const RenderGraphExecutionContext::CommandRecorder& record) {
                     labels.resume(commands);
-                    const Result result = record(commands);
+                    const Result<> result = record(commands);
                     labels.suspend();
                     return result;
                 };
-                const Result result = parallel(current,
+                const Result<> result = parallel(current,
                     [&](CommandBuffer& commands) { return branch(commands, compute); },
                     [&](CommandBuffer& commands) { return branch(commands, graphics); });
                 // A failed fork may leave current pointing at an ended producer.
@@ -1868,7 +1864,7 @@ struct RenderGraphExecutor::Impl {
         const bool firstFeature = featureReservation != firstFeatureReservations.end() && bool(featureReservation->second);
         if (firstFeature) { device->logMemoryBudget("before first external feature"); }
         std::string streamingLog;
-        Result result;
+        Result<> result;
         if (upload && node.preparedScene) {
             auto scope = context.profileScope("Streamer prepare");
             MeshletStreamFrameDesc view;
@@ -1927,7 +1923,7 @@ RenderGraphExecutor::~RenderGraphExecutor() = default;
 RenderGraphExecutor::RenderGraphExecutor(RenderGraphExecutor&&) noexcept = default;
 RenderGraphExecutor& RenderGraphExecutor::operator=(RenderGraphExecutor&&) noexcept = default;
 
-Result RenderGraphExecutor::compile(
+Result<> RenderGraphExecutor::compile(
     Device& device,
     const RenderGraph& graph,
     uint32_t width,
@@ -1937,7 +1933,7 @@ Result RenderGraphExecutor::compile(
     return compile(device, graph, width, height, RenderGraphCompileOptions{}, log);
 }
 
-Result RenderGraphExecutor::compile(
+Result<> RenderGraphExecutor::compile(
     Device& device,
     const RenderGraph& graph,
     uint32_t width,
@@ -1982,7 +1978,7 @@ Result RenderGraphExecutor::compile(
         activeGraph.executionOrder.size(),
         options.extraOutputs.size());
 
-    Result pendingResult;
+    Result<> pendingResult;
     {
         RenderGraphLogScope scope("wait for previous submitted RenderGraph work");
         pendingResult = impl_->waitForSubmittedWork(UINT64_MAX);
@@ -1998,12 +1994,12 @@ Result RenderGraphExecutor::compile(
     MemoryBudgetReservation graphReservation;
     std::unordered_map<std::string, MemoryBudgetReservation> featureReservations;
     const auto budgetPolicy = device.memoryBudget().policy;
-    Result budgetResult = device.reserveMemoryBudget(budgetPolicy.graphReserveBytes, graphReservation);
+    Result<> budgetResult = device.reserveMemoryBudget(budgetPolicy.graphReserveBytes).transform([&](auto rhiValue) { graphReservation = std::move(rhiValue); });
     for (const auto& passName : activeGraph.executionOrder) {
         const auto* node = graph.findNode(passName);
         if (budgetResult && node && mergeRenderGraphProperties(node->properties, node->runtimeProperties).value("enabled", true) &&
                 (node->type == "StreamlineDlssSrPass" || node->type == "StreamlineDlssRrPass" || node->type == "DlssNrPass")) {
-            budgetResult = device.reserveMemoryBudget(budgetPolicy.externalFeatureReserveBytes, featureReservations[node->name]);
+            budgetResult = device.reserveMemoryBudget(budgetPolicy.externalFeatureReserveBytes).transform([&](auto rhiValue) { featureReservations[node->name] = std::move(rhiValue); });
         }
     }
     if (!budgetResult) {
@@ -2061,7 +2057,7 @@ Result RenderGraphExecutor::compile(
         }
         impl_->subsystemHost->shutdown();
     }
-    Result subsystemResult = impl_->subsystemHost->initialize(device,
+    Result<> subsystemResult = impl_->subsystemHost->initialize(device,
         impl_->subsystemHost->frameSlotCount() != 0 ? impl_->subsystemHost->frameSlotCount() : 2, log);
     if (!subsystemResult) {
         impl_->isCompiled = false;
@@ -2147,7 +2143,7 @@ Result RenderGraphExecutor::compile(
 
     if (canReuseCompiledPasses) {
         impl_->isCompiled = false;
-        Result refreshResult;
+        Result<> refreshResult;
         {
             RenderGraphLogScope scope("refresh reusable passes");
             refreshResult = impl_->refreshReusablePasses(graph, activeGraph, compileContext, log);
@@ -2156,7 +2152,7 @@ Result RenderGraphExecutor::compile(
             return refreshResult;
         }
 
-        Result resourceResult;
+        Result<> resourceResult;
         graphReservation.reset();
         {
             RenderGraphLogScope scope("rebuild graph resources");
@@ -2207,14 +2203,14 @@ Result RenderGraphExecutor::compile(
     spdlog::info("[RenderGraph] Created {} compiled pass objects", impl_->executionList.size());
     impl_->rebuildInputAliases(graph, activeGraph);
     std::vector<Impl::SceneBinding> sceneBindings;
-    Result bindingResult = impl_->resolveSceneBindings(sceneBindings, log);
+    Result<> bindingResult = impl_->resolveSceneBindings(sceneBindings, log);
     if (!bindingResult) { return bindingResult; }
     for (size_t index = 0; index < impl_->executionList.size(); ++index) {
         auto& node = impl_->executionList[index];
         node.sceneBinding = sceneBindings[index];
         impl_->applySceneProperties(node, node.sceneBinding);
         auto nodeContext = impl_->contextForScene(compileContext, node.sceneBinding);
-        Result result = impl_->prepareNodeScene(node, nodeContext, log);
+        Result<> result = impl_->prepareNodeScene(node, nodeContext, log);
         if (!result) { return result; }
         result = node.pass->prepare(nodeContext, log);
         if (!result) { log = "RenderGraph prepare failed for pass '" + node.name + "': " + log; return result; }
@@ -2231,7 +2227,7 @@ Result RenderGraphExecutor::compile(
     }
 
     for (Impl::CompiledNode& node : impl_->executionList) {
-        Result result;
+        Result<> result;
         {
             RenderGraphLogScope scope(
                 "compile pass '" + node.name + "' (" + node.type + ")");
@@ -2244,7 +2240,7 @@ Result RenderGraphExecutor::compile(
         node.pass->setProperties(node.effectiveProperties);
     }
 
-    Result resourceResult;
+    Result<> resourceResult;
     graphReservation.reset(); // Spend the graph promise; newly created resources enter heap usage.
     {
         RenderGraphLogScope scope("allocate graph resources");
@@ -2271,7 +2267,7 @@ Result RenderGraphExecutor::compile(
     return {};
 }
 
-Result RenderGraphExecutor::reloadShaders(std::string& log)
+Result<> RenderGraphExecutor::reloadShaders(std::string& log)
 {
     RenderGraphLogScope reloadScope("transactional shader reload");
     log.clear();
@@ -2280,7 +2276,7 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
         return makeError(Error::InvalidArgument);
     }
 
-    Result result = impl_->waitForSubmittedWork(UINT64_MAX);
+    Result<> result = impl_->waitForSubmittedWork(UINT64_MAX);
     if (!result) {
         log = resultMessage("RenderGraph waitForSubmittedWork before shader reload", result);
         return result;
@@ -2436,7 +2432,7 @@ Result RenderGraphExecutor::reloadShaders(std::string& log)
     return {};
 }
 
-Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources)
+Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourceManager* historyResources)
 {
     METALLIC_TRACY_CPU_SCOPE("RenderGraph Record");
     DebugExecutionScope debugScope;
@@ -2445,7 +2441,7 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
     }
 
     std::string sceneLog;
-    Result sceneResult = impl_->refreshFrameSceneBindings(historyResources, sceneLog);
+    Result<> sceneResult = impl_->refreshFrameSceneBindings(historyResources, sceneLog);
     if (!sceneResult) { spdlog::error("[RenderGraph] {}", sceneLog); return sceneResult; }
 
     // External command buffers now outlive execute(). Guard destructive graph
@@ -2461,7 +2457,7 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
     if (requiresCompletedFrame || sceneStamp != impl_->recordedSceneStamp || impl_->hasSubmittedWork) {
         const profiling::NsightProfileRange waitMarker(profiling::NsightDomain::Render,
             "Wait Graph Resources", profiling::NsightCategory::RenderGraph);
-        Result result = impl_->waitForSubmittedWork(UINT64_MAX);
+        Result<> result = impl_->waitForSubmittedWork(UINT64_MAX);
         if (!result) {
             return result;
         }
@@ -2477,7 +2473,7 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
             impl_->externalCompletions.push_back(frame->completion());
         }
     }
-    Result dependencyResult = commandBuffer.addDependency(impl_->lastSubmittedCompletion);
+    Result<> dependencyResult = commandBuffer.addDependency(impl_->lastSubmittedCompletion);
     if (!dependencyResult) { return dependencyResult; }
     impl_->historyResources = historyResources;
     std::string subsystemLog;
@@ -2488,7 +2484,7 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
         profiling::NsightCategory::RenderGraph,
         frameIndex);
     RenderFrameContext* frameResources = commandBuffer.frameContext();
-    Result result = impl_->subsystemHost->beginFrame(
+    Result<> result = impl_->subsystemHost->beginFrame(
         frameResources != nullptr ? frameResources->frameIndex() : frameIndex,
         frameResources != nullptr ? frameResources->slotIndex()
             : static_cast<uint32_t>(frameIndex % impl_->subsystemHost->frameSlotCount()),
@@ -2544,8 +2540,8 @@ Result RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResourc
         std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
     impl_->finishGpuTiming(commandBuffer, result.has_value());
 
-    const Result graphResult = result;
-    Result postResult = impl_->subsystemHost->recordPostGraph(
+    const Result<> graphResult = result;
+    Result<> postResult = impl_->subsystemHost->recordPostGraph(
         commandBuffer,
         upload != nullptr ? upload->streamer() : nullptr,
         requiredSubsystems,
@@ -2599,7 +2595,7 @@ const RenderSubsystemHost* RenderGraphExecutor::subsystemHost() const
     return impl_->subsystemHost;
 }
 
-Result RenderGraphExecutor::beginSceneResourcePreparation(
+Result<> RenderGraphExecutor::beginSceneResourcePreparation(
     Device& device,
     const RenderGraphProperties& properties,
     const scene::Scene& scene,
@@ -2612,7 +2608,7 @@ Result RenderGraphExecutor::beginSceneResourcePreparation(
     if (!registerBuiltInRenderSubsystems(*impl_->subsystemHost, log)) {
         return makeError(Error::InvalidArgument);
     }
-    Result result = impl_->subsystemHost->initialize(device,
+    Result<> result = impl_->subsystemHost->initialize(device,
         impl_->subsystemHost->frameSlotCount() != 0 ? impl_->subsystemHost->frameSlotCount() : 2, log);
     if (!result) {
         return result;
@@ -2640,7 +2636,7 @@ Result RenderGraphExecutor::beginSceneResourcePreparation(
         log);
 }
 
-Result RenderGraphExecutor::pumpSceneResourcePreparation(
+Result<> RenderGraphExecutor::pumpSceneResourcePreparation(
     const scene::Scene& scene,
     double budgetMilliseconds,
     bool& complete,
@@ -2654,7 +2650,7 @@ Result RenderGraphExecutor::pumpSceneResourcePreparation(
     if (sceneResources == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    Result result = sceneResources->manager().pumpAsync(
+    Result<> result = sceneResources->manager().pumpAsync(
         impl_->pendingSceneResourceSnapshot,
         scene,
         budgetMilliseconds,
@@ -2678,7 +2674,7 @@ void RenderGraphExecutor::acceptSceneResourcePreparation()
     impl_->pendingSceneResourceSnapshot.reset();
 }
 
-Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
+Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 {
     CpuProfileRecorder preparation;
     CpuProfileScope preparationPhase(&preparation, "Refresh scene bindings");
@@ -2689,7 +2685,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     }
 
     std::string sceneLog;
-    Result sceneResult = impl_->refreshFrameSceneBindings(desc.historyResources, sceneLog);
+    Result<> sceneResult = impl_->refreshFrameSceneBindings(desc.historyResources, sceneLog);
     if (!sceneResult) { spdlog::error("[RenderGraph] {}", sceneLog); return sceneResult; }
 
     phase.next("graph.preflight");
@@ -2720,7 +2716,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     preflightDetail.next("Append incoming waits");
     std::vector<SemaphoreSubmitDesc> initialWaits;
     for (const auto& point : desc.waitCompletions) {
-        Result result = point.appendWaits(initialWaits);
+        Result<> result = point.appendWaits(initialWaits);
         if (!result) { return result; }
     }
 
@@ -2749,7 +2745,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     if (drainReasonMask != 0) {
         phase.next("graph.priorFrameDrain");
         preparationPhase.next("Prior frame drain");
-        Result result = impl_->waitForSubmittedWork(desc.slotWaitTimeoutNanoseconds);
+        Result<> result = impl_->waitForSubmittedWork(desc.slotWaitTimeoutNanoseconds);
         if (!result) { return result; }
     }
 
@@ -2759,7 +2755,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     Impl::SubmissionSlot& slot = *impl_->submissionSlots[frameIndex % slotCount];
     phase.next("graph.slotWait", frameIndex);
     preparationPhase.next("Submission slot wait");
-    Result result = slot.frame.wait(desc.slotWaitTimeoutNanoseconds);
+    Result<> result = slot.frame.wait(desc.slotWaitTimeoutNanoseconds);
     if (!result) { return result; }
     phase.next("graph.poolReset");
     preparationPhase.next("Command pool reset");
@@ -2810,7 +2806,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             }
         }
     };
-    const auto abort = [&](Result failure) {
+    const auto abort = [&](Result<> failure) {
         impl_->recordingQueue = nullptr;
         impl_->historyResources = nullptr;
         impl_->activeGpuTimingSlot = nullptr;
@@ -2853,10 +2849,10 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     const auto requiredSubsystems = impl_->requiredSubsystemViews();
     std::vector<Impl::SubmissionSegment> segments;
     const bool graphicsTimings = desc.graphicsQueue && impl_->gpuTimestampQueryPools[0];
-    const auto beginSegment = [&](QueueType type) -> Result {
+    const auto beginSegment = [&](QueueType type) -> Result<> {
         Queue* queue = selectedQueue(type);
         CommandPool* pool = nullptr;
-        Result created = impl_->prepareCommandPool(slot, type, *queue, pool);
+        Result<> created = impl_->prepareCommandPool(slot, type, *queue, pool);
         if (!created) { return created; }
         auto& tracker = impl_->submissionTrackers[queue];
         if (tracker == nullptr) {
@@ -2865,7 +2861,7 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             if (!created) { tracker.reset(); return created; }
         }
         std::unique_ptr<CommandBuffer> buffer;
-        created = pool->createCommandBuffer(buffer);
+        created = pool->createCommandBuffer().transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
         if (!created) { return created; }
         slot.commandBuffers.push_back(std::move(buffer));
         CommandBuffer* commands = slot.commandBuffers.back().get();
@@ -2891,11 +2887,11 @@ Result RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         !desc.computeQueue->sameQueue(*desc.graphicsQueue)) {
         parallel = [&](RenderGraphExecutionContext& context,
             const RenderGraphExecutionContext::CommandRecorder& compute,
-            const RenderGraphExecutionContext::CommandRecorder& graphics) -> Result {
+            const RenderGraphExecutionContext::CommandRecorder& graphics) -> Result<> {
             const size_t producer = segments.size() - 1;
             if (segments[producer].queue != desc.graphicsQueue ||
                 segments[producer].commandBuffer != &context.commandBuffer()) { return makeError(Error::InvalidArgument); }
-            Result result = segments[producer].commandBuffer->end();
+            Result<> result = segments[producer].commandBuffer->end();
             if (!result) { return result; }
             result = beginSegment(QueueType::Compute);
             if (!result) { return result; }
@@ -3055,7 +3051,7 @@ void RenderGraphExecutor::setDebugObserver(IRenderDebugObserver* observer)
     impl_->debugObserver = observer;
 }
 
-Result RenderGraphExecutor::waitForSubmittedWork(uint64_t timeoutNanoseconds)
+Result<> RenderGraphExecutor::waitForSubmittedWork(uint64_t timeoutNanoseconds)
 {
     return impl_->waitForSubmittedWork(timeoutNanoseconds);
 }
@@ -3099,7 +3095,7 @@ bool RenderGraphExecutor::syncRuntimeProperties(const RenderGraph& graph)
     return synced;
 }
 
-Result RenderGraphExecutor::transitionOutput(
+Result<> RenderGraphExecutor::transitionOutput(
     CommandBuffer& commandBuffer,
     std::string_view fullName,
     ResourceState state)
@@ -3109,7 +3105,7 @@ Result RenderGraphExecutor::transitionOutput(
         return makeError(Error::InvalidArgument);
     }
     if (impl_->lastSubmittedCompletion.valid()) {
-        Result result = commandBuffer.addDependency(impl_->lastSubmittedCompletion);
+        Result<> result = commandBuffer.addDependency(impl_->lastSubmittedCompletion);
         if (!result) { return result; }
         if (auto* frame = commandBuffer.frameContext()) {
             if (std::none_of(impl_->externalCompletions.begin(), impl_->externalCompletions.end(),
@@ -3140,11 +3136,11 @@ const RenderGraphExecutionStats& RenderGraphExecutor::executionStats() const
     return impl_->lastExecutionStats;
 }
 
-Result RenderGraphExecutor::collectCompletedGpuExecutionStats(
+Result<> RenderGraphExecutor::collectCompletedGpuExecutionStats(
     std::vector<RenderGraphExecutionStats>& outStats)
 {
     outStats.clear();
-    Result result = impl_->resolveGpuTimings();
+    Result<> result = impl_->resolveGpuTimings();
     if (!result) {
         return result;
     }
@@ -3212,7 +3208,7 @@ struct RenderGraphPreviewRenderer::Impl {
     uint64_t historyFrameIndex = 0;
     std::string lastLog;
 
-    Result ensureReadback(uint32_t newWidth, uint32_t newHeight, uint32_t texelByteSize)
+    Result<> ensureReadback(uint32_t newWidth, uint32_t newHeight, uint32_t texelByteSize)
     {
         if (device == nullptr || newWidth == 0 || newHeight == 0 || texelByteSize == 0) {
             return makeError(Error::InvalidArgument);
@@ -3229,13 +3225,11 @@ struct RenderGraphPreviewRenderer::Impl {
             static_cast<uint64_t>(newWidth) *
             static_cast<uint64_t>(newHeight) *
             allocationTexelByteSize;
-        Result result = device->createBuffer(
-            BufferDesc{
+        Result<> result = device->createBuffer(BufferDesc{
                 .size = byteSize,
                 .usage = BufferUsageBits::TransferDestination,
                 .memoryLocation = MemoryLocation::HostReadback,
-            },
-            readbackBuffer);
+            }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
         if (!result) {
             return result;
         }
@@ -3296,10 +3290,9 @@ const RenderGraphExecutionStats& RenderGraphPreviewRenderer::executionStats() co
     return impl_->executor.executionStats();
 }
 
-Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enableRayQuery, bool enableAftermath)
+Result<> RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enableRayQuery, bool enableAftermath)
 {
-    Result result = createDevice(
-        DeviceDesc{
+    Result<> result = createDevice(DeviceDesc{
             .applicationName = "Metallic RenderGraph Preview",
             .enableValidation = enableValidation,
             .enableBindlessDescriptorHeap = true,
@@ -3317,8 +3310,7 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
             .enableClusterAccelerationStructure = enableRayQuery,
             .enableAftermath = enableAftermath,
             .enableAsyncCompute = true,
-        },
-        impl_->device);
+        }).transform([&](auto rhiValue) { impl_->device = std::move(rhiValue); });
     if (!result) {
         return result;
     }
@@ -3328,11 +3320,11 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
         return makeError(Error::Unsupported);
     }
 
-    result = impl_->device->createCommandPool(*impl_->graphicsQueue, impl_->commandPool);
+    result = impl_->device->createCommandPool(*impl_->graphicsQueue).transform([&](auto rhiValue) { impl_->commandPool = std::move(rhiValue); });
     if (!result) {
         return result;
     }
-    result = impl_->commandPool->createCommandBuffer(impl_->commandBuffer);
+    result = impl_->commandPool->createCommandBuffer().transform([&](auto rhiValue) { impl_->commandBuffer = std::move(rhiValue); });
     if (!result) {
         return result;
     }
@@ -3343,12 +3335,12 @@ Result RenderGraphPreviewRenderer::initialize(bool enableValidation, bool enable
     return impl_->submissions.initialize(*impl_->device, *impl_->graphicsQueue);
 }
 
-Result RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth, uint32_t newHeight)
+Result<> RenderGraphPreviewRenderer::render(RenderGraph& graph, uint32_t newWidth, uint32_t newHeight)
 {
     return render(graph, newWidth, newHeight, graph.firstOutputName());
 }
 
-Result RenderGraphPreviewRenderer::render(
+Result<> RenderGraphPreviewRenderer::render(
     RenderGraph& graph,
     uint32_t newWidth,
     uint32_t newHeight,
@@ -3373,7 +3365,7 @@ Result RenderGraphPreviewRenderer::render(
     }
 
     phase.next("preview.previousReadbackWait");
-    Result result = impl_->frameContext.wait();
+    Result<> result = impl_->frameContext.wait();
     if (!result) {
         return result;
     }
@@ -3550,7 +3542,7 @@ Result RenderGraphPreviewRenderer::render(
     impl_->height = outputHeight;
     return {};
 }
-Result RenderGraphPreviewRenderer::collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats)
+Result<> RenderGraphPreviewRenderer::collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats)
 {
     return impl_->executor.collectCompletedGpuExecutionStats(outStats);
 }

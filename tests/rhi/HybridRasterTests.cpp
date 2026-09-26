@@ -25,7 +25,7 @@ public:
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Hybrid raster regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
-            .enableMeshShader = true}, device);
+            .enableMeshShader = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders and bindless heap"); }
         HYBRID_REQUIRE(created);
         if (!device->capabilities().shaderBufferInt64Atomics || device->capabilities().subPixelPrecisionBits > 8) {
@@ -69,14 +69,14 @@ public:
 
         std::unique_ptr<Buffer> input;
         HYBRID_REQUIRE(device->createBuffer({.size = vertices.size() * 16, .structureStride = 16,
-            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, input));
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { input = std::move(rhiValue); }));
         void* mapped = input->map();
         if (!mapped) { return RhiTestResult::fail("Vertex upload map failed"); }
         std::memcpy(mapped, vertices.data(), vertices.size() * 16); input->flush(); input->unmap();
         std::unique_ptr<BindlessHeap> heap;
-        HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}, heap));
+        HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         BindlessHandle inputHandle, queueHandle;
-        HYBRID_REQUIRE(heap->allocateBuffer(inputHandle)); HYBRID_REQUIRE(heap->allocateBuffer(queueHandle));
+        HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); })); HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { queueHandle = std::move(rhiValue); }));
         HYBRID_REQUIRE(heap->writeStorageBuffer(inputHandle, *input));
         // Compare the new shared-vertex/integer-step SW kernel to the legacy
         // kernel before testing either against HW. Include both subpixel grids.
@@ -88,15 +88,15 @@ public:
             log=compiled.diagnostics;
             std::unique_ptr<ShaderModule> shader;
             std::unique_ptr<ComputePipeline> compute;
-            HYBRID_REQUIRE(device->createShaderModule({.code=compiled.spirv.data(),.byteSize=compiled.spirv.size()*4},shader));
-            HYBRID_REQUIRE(device->createComputePipeline({.computeShader=shader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40},compute));
+            HYBRID_REQUIRE(device->createShaderModule({.code=compiled.spirv.data(),.byteSize=compiled.spirv.size()*4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
+            HYBRID_REQUIRE(device->createComputePipeline({.computeShader=shader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40}).transform([&](auto rhiValue) { compute = std::move(rhiValue); }));
             ShaderCompileResult workCompiled;
             HYBRID_REQUIRE(compileSlangShaderToSpirv({.moduleName="PreparedRasterProbe", .entryPointName="compareWorkBinsMain",
                 .searchPath=PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths=paths, .additionalSearchPathCount=1}, workCompiled));
             std::unique_ptr<ShaderModule> workShader;
             std::unique_ptr<ComputePipeline> workCompute;
-            HYBRID_REQUIRE(device->createShaderModule({.code=workCompiled.spirv.data(),.byteSize=workCompiled.spirv.size()*4},workShader));
-            HYBRID_REQUIRE(device->createComputePipeline({.computeShader=workShader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40},workCompute));
+            HYBRID_REQUIRE(device->createShaderModule({.code=workCompiled.spirv.data(),.byteSize=workCompiled.spirv.size()*4}).transform([&](auto rhiValue) { workShader = std::move(rhiValue); }));
+            HYBRID_REQUIRE(device->createComputePipeline({.computeShader=workShader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40}).transform([&](auto rhiValue) { workCompute = std::move(rhiValue); }));
             ShaderCompileResult workloadCompiled;
             const auto workloadResult = compileSlangShaderToSpirv({.moduleName="PreparedRasterProbe", .entryPointName="verifyWorkloadMain",
                 .searchPath=PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths=paths, .additionalSearchPathCount=1}, workloadCompiled);
@@ -104,27 +104,27 @@ public:
             HYBRID_REQUIRE(workloadResult);
             std::unique_ptr<ShaderModule> workloadShader;
             std::unique_ptr<ComputePipeline> workloadCompute;
-            HYBRID_REQUIRE(device->createShaderModule({.code=workloadCompiled.spirv.data(),.byteSize=workloadCompiled.spirv.size()*4},workloadShader));
-            HYBRID_REQUIRE(device->createComputePipeline({.computeShader=workloadShader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40},workloadCompute));
+            HYBRID_REQUIRE(device->createShaderModule({.code=workloadCompiled.spirv.data(),.byteSize=workloadCompiled.spirv.size()*4}).transform([&](auto rhiValue) { workloadShader = std::move(rhiValue); }));
+            HYBRID_REQUIRE(device->createComputePipeline({.computeShader=workloadShader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40}).transform([&](auto rhiValue) { workloadCompute = std::move(rhiValue); }));
             std::unique_ptr<BindlessHeap> compareHeap;
-            HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers=3},compareHeap));
+            HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers=3}).transform([&](auto rhiValue) { compareHeap = std::move(rhiValue); }));
             BindlessHandle vertexHandle;
-            HYBRID_REQUIRE(compareHeap->allocateBuffer(vertexHandle));
+            HYBRID_REQUIRE(compareHeap->allocateBuffer().transform([&](auto rhiValue) { vertexHandle = std::move(rhiValue); }));
             HYBRID_REQUIRE(compareHeap->writeStorageBuffer(vertexHandle,*input));
             std::array<std::unique_ptr<Buffer>,2> pixels;
             std::array<BindlessHandle,2> handles;
             for (size_t i=0;i<2;++i) {
                 HYBRID_REQUIRE(device->createBuffer({.size=pixelCount*8,.structureStride=8,.usage=BufferUsageBits::Storage | BufferUsageBits::TransferSource,
-                    .memoryLocation=MemoryLocation::HostUpload},pixels[i]));
-                HYBRID_REQUIRE(compareHeap->allocateBuffer(handles[i]));
+                    .memoryLocation=MemoryLocation::HostUpload}).transform([&](auto rhiValue) { pixels[i] = std::move(rhiValue); }));
+                HYBRID_REQUIRE(compareHeap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
                 HYBRID_REQUIRE(compareHeap->writeStorageBuffer(handles[i],*pixels[i]));
             }
             auto* queue=device->getQueue(QueueType::Graphics);
             std::unique_ptr<CommandPool> pool;
             std::unique_ptr<CommandBuffer> commands;
             std::unique_ptr<Fence> fence;
-            HYBRID_REQUIRE(device->createCommandPool(*queue,pool)); HYBRID_REQUIRE(pool->createCommandBuffer(commands));
-            HYBRID_REQUIRE(device->createFence(false,fence));
+            HYBRID_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); })); HYBRID_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
+            HYBRID_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
             bool submitted=false;
             size_t written=0;
             for (uint32_t bits : {4u,8u}) for (uint32_t reversed : {0u,1u}) for (uint32_t sided : {0u,1u}) for (uint32_t plane : {0u,1u,2u,3u,4u}) for (uint32_t count : {0u,1u,127u,128u,129u,uint32_t(vertices.size()/3)}) {
@@ -172,7 +172,7 @@ public:
             const auto compiled = compileSlangShaderToSpirv({.moduleName = "HybridRasterProbe", .entryPointName = entries[i],
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .capabilities = capabilities, .capabilityCount = 1}, shader);
             log = shader.diagnostics; HYBRID_REQUIRE(compiled);
-            HYBRID_REQUIRE(device->createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4}, shaders[i]));
+            HYBRID_REQUIRE(device->createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4}).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
         }
         std::array<std::unique_ptr<Texture>, 2> textures;
         std::array<std::unique_ptr<TextureView>, 2> views;
@@ -181,22 +181,22 @@ public:
             const auto format = i == 0 ? Format::R32Uint : Format::D32Sfloat;
             HYBRID_REQUIRE(device->createTexture({.usage = TextureUsageBits::TransferSource |
                 (i == 0 ? TextureUsageBits::ColorAttachment : TextureUsageBits::DepthStencilAttachment),
-                .format = format, .width = width, .height = height}, textures[i]));
-            HYBRID_REQUIRE(device->createTextureView(*textures[i], {.format = format}, views[i]));
+                .format = format, .width = width, .height = height}).transform([&](auto rhiValue) { textures[i] = std::move(rhiValue); }));
+            HYBRID_REQUIRE(device->createTextureView(*textures[i], {.format = format}).transform([&](auto rhiValue) { views[i] = std::move(rhiValue); }));
             HYBRID_REQUIRE(device->createBuffer({.size = pixelCount * 4, .usage = BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::HostReadback}, readback[i]));
+                .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback[i] = std::move(rhiValue); }));
         }
         std::unique_ptr<Buffer> queueReadback, pixelReadback;
         HYBRID_REQUIRE(device->createBuffer({.size = 32, .usage = BufferUsageBits::TransferDestination,
-            .memoryLocation = MemoryLocation::HostReadback}, queueReadback));
+            .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { queueReadback = std::move(rhiValue); }));
         HYBRID_REQUIRE(device->createBuffer({.size = pixelCount * 8, .usage = BufferUsageBits::TransferDestination,
-            .memoryLocation = MemoryLocation::HostReadback}, pixelReadback));
+            .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { pixelReadback = std::move(rhiValue); }));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         std::unique_ptr<Fence> fence;
-        HYBRID_REQUIRE(device->createCommandPool(*queue, pool));
-        HYBRID_REQUIRE(pool->createCommandBuffer(commands)); HYBRID_REQUIRE(device->createFence(false, fence));
+        HYBRID_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        HYBRID_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })); HYBRID_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         bool submitted = false;
         size_t softwarePixels = 0, overflows = 0, cases = 0;
         for (bool reversed : {false, true}) {
@@ -206,7 +206,7 @@ public:
                     .colorFormat = Format::R32Uint, .depthStencilFormat = Format::D32Sfloat,
                     .rasterization = {.cullMode = doubleSided ? CullMode::None : CullMode::Back, .frontFace = FrontFace::CounterClockwise},
                     .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,
-                        .depthCompareOp = reversed ? CompareOp::GreaterEqual : CompareOp::LessEqual}, .usesBindlessHeap = true}, pipeline));
+                        .depthCompareOp = reversed ? CompareOp::GreaterEqual : CompareOp::LessEqual}, .usesBindlessHeap = true}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
                 std::vector<uint32_t> referenceIds;
                 std::vector<float> referenceDepth;
                 for (uint32_t configuration = 0; configuration < 5; ++configuration) {
@@ -311,31 +311,31 @@ public:
         std::string log;
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Hybrid cluster bin regression",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless heap"); }
         HYBRID_REQUIRE(created);
         if (!device->capabilities().shaderBufferInt64Atomics || device->capabilities().subPixelPrecisionBits > 8) {
             return RhiTestResult::skip("Requires hybrid raster capabilities");
         }
         std::unique_ptr<BindlessHeap> heap;
-        HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}, heap));
+        HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         BindlessHandle inputHandle, binHandle;
-        HYBRID_REQUIRE(heap->allocateBuffer(inputHandle)); HYBRID_REQUIRE(heap->allocateBuffer(binHandle));
+        HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); })); HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { binHandle = std::move(rhiValue); }));
         ShaderCompileResult compiled;
         const auto compile = compileSlangShaderToSpirv({.moduleName = "HybridClusterProbe", .entryPointName = "classifyMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled);
         log = compiled.diagnostics; HYBRID_REQUIRE(compile);
         std::unique_ptr<ShaderModule> shader;
         std::unique_ptr<ComputePipeline> pipeline;
-        HYBRID_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}, shader));
+        HYBRID_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
         HYBRID_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = 12}, pipeline));
+            .bindlessUserPushDataSize = 12}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         std::unique_ptr<Fence> fence;
-        HYBRID_REQUIRE(device->createCommandPool(*queue, pool));
-        HYBRID_REQUIRE(pool->createCommandBuffer(commands)); HYBRID_REQUIRE(device->createFence(false, fence));
+        HYBRID_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        HYBRID_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })); HYBRID_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         struct Case { uint32_t count; uint32_t mode; bool stream; };
         const Case cases[] = {{0, 0, false}, {513, 0, false}, {65537, 1, false},
             {65537, 2, true}, {65535u * 32u + 1u, 2, false}, {129, 3, true}};
@@ -355,7 +355,7 @@ public:
             }
             std::unique_ptr<Buffer> input, readback, arguments;
             HYBRID_REQUIRE(device->createBuffer({.size = capacity * 8ull, .structureStride = 8,
-                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, input));
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { input = std::move(rhiValue); }));
             void* mapped = input->map();
             if (!mapped) { return RhiTestResult::fail("Cluster input map failed"); }
             std::memcpy(mapped, candidates.data(), candidates.size() * 8); input->flush(); input->unmap();
@@ -363,9 +363,9 @@ public:
             HYBRID_REQUIRE(heap->writeStorageBuffer(binHandle, rasterizer.clusterBuffer()));
             const uint64_t readbackBytes = (16ull + 5ull * capacity) * 4u;
             HYBRID_REQUIRE(device->createBuffer({.size = readbackBytes, .usage = BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::HostReadback}, readback));
+                .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
             HYBRID_REQUIRE(device->createBuffer({.size = 60, .usage = BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::HostReadback}, arguments));
+                .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { arguments = std::move(rhiValue); }));
             if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
             HYBRID_REQUIRE(commands->begin());
             // Capacity validation must reject oversized dispatches before recording GPU work.

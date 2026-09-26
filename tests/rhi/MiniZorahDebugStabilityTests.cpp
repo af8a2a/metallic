@@ -47,7 +47,7 @@ public:
             auto& copy = copies[resource.id];
             if (!copy || copy->desc().size != bytes) {
                 checkDebug(bool(device->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
-                    .memoryLocation = MemoryLocation::HostReadback}, copy)), "Cannot allocate identity snapshot");
+                    .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { copy = std::move(rhiValue); })), "Cannot allocate identity snapshot");
             }
             if (color) {
                 checkDebug(resource.texture->desc().format == Format::Rgba8Unorm, "Unexpected debug color format");
@@ -110,7 +110,7 @@ public:
                     observer.copies.clear();
                 }
             } readbackLifetime{preview, observer};
-            const Result initialized = preview.initialize(context.enableValidation, false, false);
+            const Result<> initialized = preview.initialize(context.enableValidation, false, false);
             if (hasError(initialized, Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders and bindless heap"); }
             checkDebug(bool(initialized), preview.lastLog());
             preview.bindRenderView(&view); preview.setDebugObserver(&observer);

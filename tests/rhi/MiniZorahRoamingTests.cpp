@@ -68,7 +68,7 @@ public:
         if (stage != stages.end()) {
             if (!timestamps) {
                 checkRoam(bool(device->createTimestampQueryPool(*device->getQueue(QueueType::Graphics),
-                    {.queryCount = static_cast<uint32_t>(stages.size())}, timestamps)), "Cannot allocate checkpoint timestamps");
+                    {.queryCount = static_cast<uint32_t>(stages.size())}).transform([&](auto rhiValue) { timestamps = std::move(rhiValue); })), "Cannot allocate checkpoint timestamps");
             }
             const uint32_t index = static_cast<uint32_t>(stage - stages.begin());
             if (index == 0) { checkRoam(bool(commands.resetTimestampQueries(*timestamps, 0, static_cast<uint32_t>(stages.size()))), "Cannot reset checkpoint timestamps"); }
@@ -102,7 +102,7 @@ public:
             auto& buffer = copies[key];
             if (!buffer || buffer->desc().size != size) {
                 checkRoam(bool(device->createBuffer({.size = size, .usage = BufferUsageBits::TransferDestination,
-                    .memoryLocation = MemoryLocation::HostReadback}, buffer)), "Cannot allocate roaming snapshot");
+                    .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); })), "Cannot allocate roaming snapshot");
             }
             BufferBarrierDesc barrier{.buffer = resource.buffer, .before = resource.state,
                 .after = ResourceState::TransferSource, .offset = resource.offset, .size = size};
@@ -825,7 +825,7 @@ public:
             desc.enableClusterAccelerationStructure = true;
             auto start = Clock::now();
             if (!realtime) {
-                const auto result = createDevice(desc, device);
+                const auto result = createDevice(desc).transform([&](auto rhiValue) { device = std::move(rhiValue); });
                 checkRoam(bool(result), std::string("Baseline device: ") + toString(result));
             }
             Device* replayDevice = realtime ? &context.device : device.get();

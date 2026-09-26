@@ -81,7 +81,7 @@ public:
     RhiTestResult initialize()
     {
         const auto result = render::createDevice({.applicationName = "ClusterLightGrid GPU tests",
-            .enableValidation = enableValidation_, .enableBindlessDescriptorHeap = true}, device_);
+            .enableValidation = enableValidation_, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) {
             return RhiTestResult::skip("ClusterLightGrid compute program requires bindless descriptors");
         }
@@ -90,8 +90,8 @@ public:
         GRID_CHECK(queue_ != nullptr);
         GRID_CHECK(host_.initialize(*device_, 2, log_));
         GRID_CHECK(tracker_.initialize(*device_, *queue_));
-        GRID_CHECK(device_->createCommandPool(*queue_, pool_));
-        GRID_CHECK(pool_->createCommandBuffer(commands_));
+        GRID_CHECK(device_->createCommandPool(*queue_).transform([&](auto rhiValue) { pool_ = std::move(rhiValue); }));
+        GRID_CHECK(pool_->createCommandBuffer().transform([&](auto rhiValue) { commands_ = std::move(rhiValue); }));
         for (uint32_t slot = 0; slot < frames_.size(); ++slot) {
             frames_[slot] = std::make_unique<render::RenderFrameContext>(slot);
         }
@@ -141,7 +141,7 @@ public:
         std::unique_ptr<render::Buffer> probe;
         GRID_CHECK(device_->createBuffer({.size = sizeof(output.lookup),
             .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource,
-            .memoryLocation = render::MemoryLocation::Device}, probe));
+            .memoryLocation = render::MemoryLocation::Device}).transform([&](auto rhiValue) { probe = std::move(rhiValue); }));
         const render::BufferBarrierDesc probeToWrite{.buffer = probe.get(),
             .before = render::ResourceState::Undefined, .after = render::ResourceState::General};
         commands_->barrier({.buffers = &probeToWrite, .bufferCount = 1});
@@ -158,7 +158,7 @@ public:
         std::unique_ptr<render::Buffer> readback;
         GRID_CHECK(device_->createBuffer({.size = cellBytes + indexBytes + sizeof(output.lookup),
             .usage = render::BufferUsageBits::TransferDestination,
-            .memoryLocation = render::MemoryLocation::HostReadback}, readback));
+            .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         const std::array barriers{
             render::BufferBarrierDesc{.buffer = output.snapshot.cells,
                 .before = render::ResourceState::ShaderRead,
@@ -276,7 +276,7 @@ public:
         // Recording another legacy command must not overwrite the first one's
         // buffers or descriptor table, even if the first submission is in flight.
         std::unique_ptr<render::CommandBuffer> secondCommands;
-        GRID_CHECK(pool_->createCommandBuffer(secondCommands));
+        GRID_CHECK(pool_->createCommandBuffer().transform([&](auto rhiValue) { secondCommands = std::move(rhiValue); }));
         GRID_CHECK(scene.prepareView(view, 0, {.width = desc.width, .height = desc.height}));
         GRID_CHECK(secondCommands->begin());
         GRID_CHECK(grid.record(*device_, *secondCommands, host_, scene, view, 0, desc, log_));

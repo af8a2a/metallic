@@ -22,7 +22,7 @@ public:
         using namespace render;
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Recursive tessellation topology",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless compute"); }
         TESS_REQUIRE(created);
         constexpr uint32_t count = 512, poison = 0xa5a5a5a5u;
@@ -50,15 +50,15 @@ public:
             }
         }
         std::unique_ptr<BindlessHeap> heap;
-        TESS_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}, heap));
+        TESS_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<std::unique_ptr<Buffer>, 2> buffers;
         std::array<BindlessHandle, 2> handles;
         const uint64_t sizes[] = {input.size() * sizeof(Input), output.size() * sizeof(Record)};
         const void* initial[] = {input.data(), output.data()};
         for (uint32_t i = 0; i < 2; ++i) {
             TESS_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = i == 0 ? 96u : 16u,
-                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, buffers[i]));
-            TESS_REQUIRE(heap->allocateBuffer(handles[i]));
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
+            TESS_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
             TESS_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
             void* p = buffers[i]->map();
             if (!p) { return RhiTestResult::fail("Cannot map split probe buffer"); }
@@ -69,16 +69,16 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled);
         if (!compilation) { return RhiTestResult::fail(compiled.diagnostics); }
         std::unique_ptr<ShaderModule> shader;
-        TESS_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}, shader));
+        TESS_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> pipeline;
         TESS_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = 8}, pipeline));
+            .bindlessUserPushDataSize = 8}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         std::unique_ptr<Fence> fence;
-        TESS_REQUIRE(device->createCommandPool(*queue, pool));
-        TESS_REQUIRE(pool->createCommandBuffer(commands)); TESS_REQUIRE(device->createFence(false, fence));
+        TESS_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        TESS_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })); TESS_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         TESS_REQUIRE(commands->begin()); commands->hostWriteBarrier();
         const BufferBarrierDesc barriers[] = {
             {.buffer = buffers[0].get(), .before = ResourceState::Undefined, .after = ResourceState::General},

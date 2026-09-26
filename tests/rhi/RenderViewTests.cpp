@@ -20,7 +20,7 @@ public:
         output.memoryLocation = render::MemoryLocation::HostReadback;
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "ViewConstantsProbe",
@@ -30,7 +30,7 @@ public:
         return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
             .bindings = bindings, .bindingCount = 2, .requiresRayQuery = false}, log);
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         if (context.viewConstants() == nullptr || context.viewConstantsBuffer() == nullptr ||
             context.properties().at("camera").at("eye")[0].get<float>() != context.viewConstants()->current.eye[0]) {
@@ -131,7 +131,7 @@ public:
             restored.viewProperties() != graph.viewProperties()) { return RhiTestResult::fail("View serialization: " + log); }
         std::unique_ptr<render::Device> device;
         auto created = render::createDevice({.applicationName = "Shared RenderView test",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(created, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
         if (!created) { return RhiTestResult::fail("Create view test device"); }
         render::RenderGraphExecutor executor, secondExecutor;

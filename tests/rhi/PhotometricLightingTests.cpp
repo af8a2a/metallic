@@ -29,7 +29,7 @@ public:
         reflection.addBufferOutput("data").buffer(12 * 16, 16).storageReadWrite();
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         device_ = context.device;
         render::ShaderCompileResult shader;
@@ -44,7 +44,7 @@ public:
             .byteSize = shader.spirv.size() * sizeof(uint32_t), .bindings = bindings,
             .bindingCount = 3, .requiresRayQuery = false}, log);
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         auto result = lights_.update(*device_, context.commandBuffer(), *context.subsystems(),
             nullptr, context.world()->lighting());
@@ -69,7 +69,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         auto deviceResult = render::createDevice({.applicationName = "GPU photometry",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(deviceResult, render::Error::Unsupported)) {
             return RhiTestResult::skip("requires bindless descriptors");
         }

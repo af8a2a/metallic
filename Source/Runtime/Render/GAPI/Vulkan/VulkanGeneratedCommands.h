@@ -26,7 +26,7 @@ struct GeneratedCommandsArguments {
     uint64_t countOffset = 0;
 };
 
-Result queryGeneratedCommandsProperties(Device& device, VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT& properties);
+[[nodiscard]] Result<VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT> queryGeneratedCommandsProperties(Device& device);
 
 // Device, referenced pipelines/shaders/layouts, and argument buffers must outlive
 // submitted work. One instance owns one scratch allocation: synchronize reuse or
@@ -40,23 +40,23 @@ public:
     GeneratedCommands(const GeneratedCommands&) = delete;
     GeneratedCommands& operator=(const GeneratedCommands&) = delete;
 
-    Result initialize(Device& device, const GeneratedCommandsDesc& desc);
+    Result<> initialize(Device& device, const GeneratedCommandsDesc& desc);
     void reset();
-    Result updatePipelines(std::span<const VkWriteIndirectExecutionSetPipelineEXT> writes);
-    Result updateShaders(std::span<const VkWriteIndirectExecutionSetShaderEXT> writes);
+    Result<> updatePipelines(std::span<const VkWriteIndirectExecutionSetPipelineEXT> writes);
+    Result<> updateShaders(std::span<const VkWriteIndirectExecutionSetShaderEXT> writes);
     // Requery and reallocate after execution-set updates, before recording commands.
-    Result prepare();
+    Result<> prepare();
     VkMemoryRequirements memoryRequirements() const;
 
     // Explicit preprocessing must be outside rendering. state must be recording
     // with the state that will be used for execution. Synchronize GPU-written
     // arguments to COMMAND_PREPROCESS/COMMAND_PREPROCESS_READ before this call.
-    Result preprocess(CommandBuffer& commands, const GeneratedCommandsArguments& args, CommandBuffer& state);
+    Result<> preprocess(CommandBuffer& commands, const GeneratedCommandsArguments& args, CommandBuffer& state);
     // Same-queue dependency between explicit preprocessing and execution.
-    Result preprocessBarrier(CommandBuffer& commands);
+    Result<> preprocessBarrier(CommandBuffer& commands);
     // Bind initial pipeline/shaders and all non-token state first. For graphics,
     // execute inside rendering. Rebind affected state after execution.
-    Result execute(CommandBuffer& commands, const GeneratedCommandsArguments& args, bool isPreprocessed = false);
+    Result<> execute(CommandBuffer& commands, const GeneratedCommandsArguments& args, bool isPreprocessed = false);
 
 private:
     struct Impl;

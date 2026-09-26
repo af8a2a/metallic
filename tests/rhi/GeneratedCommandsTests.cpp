@@ -79,9 +79,9 @@ public:
     {
         auto& device = context.device;
         if (!device.capabilities().deviceGeneratedCommands) { return RhiTestResult::skip("DGC unsupported"); }
-        VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT properties{};
-        if (!rv::queryGeneratedCommandsProperties(device, properties) ||
-            !(properties.supportedIndirectCommandsShaderStagesPipelineBinding & VK_SHADER_STAGE_COMPUTE_BIT)) {
+        const auto properties = rv::queryGeneratedCommandsProperties(device);
+        if (!properties ||
+            !(properties->supportedIndirectCommandsShaderStagesPipelineBinding & VK_SHADER_STAGE_COMPUTE_BIT)) {
             return RhiTestResult::skip("DGC compute pipeline binding unsupported");
         }
         const auto native = rv::nativeDevice(device);
@@ -116,9 +116,9 @@ public:
         }
         std::unique_ptr<render::Buffer> output, arguments;
         DGC_RHI(device.createBuffer({.size = 12, .usage = render::BufferUsageBits::Storage,
-            .memoryLocation = render::MemoryLocation::HostReadback}, output));
+            .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         DGC_RHI(device.createBuffer({.size = 80, .usage = render::BufferUsageBits::Indirect,
-            .memoryLocation = render::MemoryLocation::HostUpload}, arguments));
+            .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { arguments = std::move(rhiValue); }));
         const VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
         const VkDescriptorPoolCreateInfo poolInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &poolSize};
@@ -172,9 +172,9 @@ public:
             std::unique_ptr<render::CommandPool> pool;
             std::unique_ptr<render::CommandBuffer> commands;
             std::unique_ptr<render::Fence> fence;
-            DGC_RHI(device.createCommandPool(context.graphicsQueue, pool));
-            DGC_RHI(pool->createCommandBuffer(commands));
-            DGC_RHI(device.createFence(false, fence));
+            DGC_RHI(device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+            DGC_RHI(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
+            DGC_RHI(device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
             DGC_RHI(commands->begin());
             const auto cmd = rv::nativeCommandBuffer(*commands);
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);

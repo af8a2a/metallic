@@ -53,7 +53,7 @@ static_assert(sizeof(ClusterLightGridCell) == 16);
 
 // Camera/configuration math only. Cell-light intersection and list construction
 // have no CPU implementation or readback in the runtime.
-Result buildClusterLightGridParams(const ClusterLightGridDesc& desc,
+Result<> buildClusterLightGridParams(const ClusterLightGridDesc& desc,
     ClusterLightGridParams& params, std::string& log);
 float clusterLightGridSliceDepth(const ClusterLightGridParams& params, uint32_t slice);
 bool clusterLightGridCellIndex(const ClusterLightGridParams& params,
@@ -82,13 +82,13 @@ public:
     // Tracked frames permit completed-allocation reuse. Untracked commands own
     // immutable resources/programs until reset; callers must finish GPU work
     // before resetting the command pool, as required by the underlying RHI.
-    Result record(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
+    Result<> record(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
         const GPUScene& scene, GPUSceneViewId view, uint32_t frameSlot,
         const ClusterLightGridDesc& desc, std::string& log);
     const ClusterLightGridSnapshot* snapshot(const GPUScene& scene) const;
     // The owner must outlive the staged reload. Preparation leaves its current
     // program and snapshot intact; commit invalidates the snapshot, not buffers.
-    Result prepareShaderReload(Device& device,
+    Result<> prepareShaderReload(Device& device,
         std::unique_ptr<RenderSubsystemShaderReload>& outReload, std::string& log);
     void clear(RenderSubsystemHost* host = nullptr);
 

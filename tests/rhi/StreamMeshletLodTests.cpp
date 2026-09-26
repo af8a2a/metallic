@@ -533,18 +533,18 @@ private:
             (kMeshletStreamDemandStatsWords + (kGroupCount + tiles.size() + 31) / 32) * 4, demandRoots.size() * sizeof(MeshletStreamGpuTraversalWorkItem)};
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Stream LOD frontier regression",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless compute"); }
         STREAM_LOD_REQUIRE(created);
         std::unique_ptr<BindlessHeap> heap;
-        STREAM_LOD_REQUIRE(device->createBindlessHeap({.maxBuffers = BufferCount}, heap));
+        STREAM_LOD_REQUIRE(device->createBindlessHeap({.maxBuffers = BufferCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<std::unique_ptr<Buffer>, BufferCount> buffers;
         std::array<BindlessHandle, BufferCount> handles;
         for (uint32_t index = 0; index < BufferCount; ++index) {
             STREAM_LOD_REQUIRE(device->createBuffer({.size = sizes[index], .structureStride = strides[index],
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
-                .memoryLocation = MemoryLocation::HostUpload}, buffers[index]));
-            STREAM_LOD_REQUIRE(heap->allocateBuffer(handles[index]));
+                .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[index] = std::move(rhiValue); }));
+            STREAM_LOD_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[index] = std::move(rhiValue); }));
             STREAM_LOD_REQUIRE(heap->writeStorageBuffer(handles[index], *buffers[index]));
         }
         const auto upload = [&](BufferIndex index, const void* source, size_t size) {
@@ -566,39 +566,39 @@ private:
             .entryPointName = kMeshletStreamActiveBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, compiled);
         if (!compile) { return RhiTestResult::fail("stream frontier shader compile: " + compiled.diagnostics); }
         std::unique_ptr<ShaderModule> shader;
-        STREAM_LOD_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}, shader));
+        STREAM_LOD_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> pipeline;
         STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .computeEntryPoint = "main",
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, pipeline));
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
         ShaderCompileResult cooperativeCompiled;
         const auto cooperativeCompile = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
             .entryPointName = kMeshletStreamCooperativeBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, cooperativeCompiled);
         if (!cooperativeCompile) { return RhiTestResult::fail(cooperativeCompiled.diagnostics); }
         std::unique_ptr<ShaderModule> cooperativeShader;
         STREAM_LOD_REQUIRE(device->createShaderModule({.code = cooperativeCompiled.spirv.data(),
-            .byteSize = cooperativeCompiled.spirv.size() * 4}, cooperativeShader));
+            .byteSize = cooperativeCompiled.spirv.size() * 4}).transform([&](auto rhiValue) { cooperativeShader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> cooperativePipeline;
         STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = cooperativeShader.get(), .computeEntryPoint = "main",
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, cooperativePipeline));
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { cooperativePipeline = std::move(rhiValue); }));
         ShaderCompileResult traversalCompiled;
         STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
             .entryPointName = kMeshletStreamTraversalEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, traversalCompiled));
         std::unique_ptr<ShaderModule> traversalShader;
         STREAM_LOD_REQUIRE(device->createShaderModule({.code = traversalCompiled.spirv.data(),
-            .byteSize = traversalCompiled.spirv.size() * 4}, traversalShader));
+            .byteSize = traversalCompiled.spirv.size() * 4}).transform([&](auto rhiValue) { traversalShader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> traversalPipeline;
         STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = traversalShader.get(), .computeEntryPoint = "main",
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, traversalPipeline));
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { traversalPipeline = std::move(rhiValue); }));
         ShaderCompileResult demandCompiled;
         const auto demandCompile = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
             .entryPointName = kMeshletStreamDemandEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, demandCompiled);
         if (!demandCompile) { return RhiTestResult::fail(demandCompiled.diagnostics); }
         std::unique_ptr<ShaderModule> demandShader;
         STREAM_LOD_REQUIRE(device->createShaderModule({.code = demandCompiled.spirv.data(),
-            .byteSize = demandCompiled.spirv.size() * 4}, demandShader));
+            .byteSize = demandCompiled.spirv.size() * 4}).transform([&](auto rhiValue) { demandShader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> demandPipeline;
         STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = demandShader.get(), .computeEntryPoint = "main",
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, demandPipeline));
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { demandPipeline = std::move(rhiValue); }));
         uint32_t positivePriorities = 0;
         uint32_t viewDemandReductions = 0;
         uint32_t speculativeRequests = 0;
@@ -626,14 +626,14 @@ private:
         const uint64_t tailOffset = outputBytes;
         if (large) { outputBytes += 3 * sizeof(uint32_t); }
         STREAM_LOD_REQUIRE(device->createBuffer({.size = outputBytes, .usage = BufferUsageBits::TransferDestination,
-            .memoryLocation = MemoryLocation::HostReadback}, readback));
+            .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         Queue* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         std::unique_ptr<Fence> fence;
-        STREAM_LOD_REQUIRE(device->createCommandPool(*queue, pool));
-        STREAM_LOD_REQUIRE(pool->createCommandBuffer(commands));
-        STREAM_LOD_REQUIRE(device->createFence(false, fence));
+        STREAM_LOD_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         const uint32_t caseCount = large ? 36u : 37u;
         for (uint32_t frame = 0; frame < caseCount * 8; ++frame) {
             const uint32_t test = frame % caseCount;
@@ -1046,37 +1046,37 @@ public:
     {
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Stream capacity regression",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless compute"); }
         STREAM_LOD_REQUIRE(created);
         constexpr uint32_t count = 257;
         std::unique_ptr<BindlessHeap> heap;
-        STREAM_LOD_REQUIRE(device->createBindlessHeap({.maxBuffers = 3}, heap));
+        STREAM_LOD_REQUIRE(device->createBindlessHeap({.maxBuffers = 3}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<std::unique_ptr<Buffer>, 3> buffers;
         std::array<BindlessHandle, 3> handles;
         const uint64_t sizes[] = {sizeof(MeshletStreamGpuParams), count * 16u, sizeof(MeshletStreamGpuActiveHeader)};
         const uint32_t strides[] = {sizeof(MeshletStreamGpuParams), 4u, sizeof(MeshletStreamGpuActiveHeader)};
         for (uint32_t i = 0; i < 3; ++i) {
             STREAM_LOD_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = strides[i],
-                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, buffers[i]));
-            STREAM_LOD_REQUIRE(heap->allocateBuffer(handles[i]));
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
+            STREAM_LOD_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
             STREAM_LOD_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
         }
         ShaderCompileResult compiled;
         STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
             .entryPointName = kMeshletStreamActiveBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, compiled));
         std::unique_ptr<ShaderModule> shader;
-        STREAM_LOD_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}, shader));
+        STREAM_LOD_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> pipeline;
         STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .computeEntryPoint = "main",
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}, pipeline));
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         std::unique_ptr<Fence> fence;
-        STREAM_LOD_REQUIRE(device->createCommandPool(*queue, pool));
-        STREAM_LOD_REQUIRE(pool->createCommandBuffer(commands));
-        STREAM_LOD_REQUIRE(device->createFence(false, fence));
+        STREAM_LOD_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         const auto write = [&](uint32_t index, const void* source) {
             auto* data = buffers[index]->map();
             if (!data) { return false; }

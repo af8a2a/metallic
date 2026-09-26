@@ -116,7 +116,7 @@ debug::DebugResult<std::vector<PreparedDebugProbe>> prepareDebugProbes(
     catch (const std::exception& error) { return std::unexpected(debug::DebugError{"InvalidArgument", error.what()}); }
 }
 
-Result initializeDebugProbe(Device& device, ComputeProgram& program, std::string& log)
+Result<> initializeDebugProbe(Device& device, ComputeProgram& program, std::string& log)
 {
     if (program.valid()) { return {}; }
     ShaderCompileResult shader;
@@ -129,7 +129,7 @@ Result initializeDebugProbe(Device& device, ComputeProgram& program, std::string
         .debugName = "DebugGpuProbe", .requiresRayQuery = false}, log);
 }
 
-Result recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
+Result<> recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
     const PreparedDebugProbe& probe, Buffer& output, Buffer& readback)
 {
     BufferBarrierDesc source{.buffer = probe.source->buffer, .before = probe.source->state, .after = ResourceState::ShaderRead,

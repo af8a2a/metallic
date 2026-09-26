@@ -33,7 +33,7 @@ public:
         return reflection;
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr || context.runtimeScene == nullptr) { return makeError(Error::InvalidArgument); }
         // Texture sampling/transmission belong to the full OpenPBR consumer.
@@ -68,7 +68,7 @@ public:
             .debugName = "VisibilityBufferMaterial", .requiresRayQuery = false}, log);
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         const auto visibility = context.inputTexture("visibility");
         const auto infoBuffer = context.inputBuffer("rasterInfo");

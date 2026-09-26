@@ -45,7 +45,7 @@ uint64_t alignUp(uint64_t value, uint64_t alignment)
     return alignment > 1 ? (value + alignment - 1) & ~(alignment - 1) : value;
 }
 
-std::string resultMessage(const char* action, Result result)
+std::string resultMessage(const char* action, Result<> result)
 {
     return std::string(action) + " returned " + resultToString(result);
 }
@@ -66,7 +66,7 @@ void copyTransform(float (&destination)[3][4], const float4x4& source)
     destination[2][3] = source.a23;
 }
 
-Result createBuffer(
+Result<> createBuffer(
     Device& device,
     uint64_t size,
     BufferUsageBits usage,
@@ -75,14 +75,12 @@ Result createBuffer(
     const char* label,
     std::string& log)
 {
-    const Result result = device.createBuffer(
-        BufferDesc{
+    const Result<> result = device.createBuffer(BufferDesc{
             .size = size,
             .usage = usage,
             .memoryLocation = memoryLocation,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
-        },
-        outBuffer);
+        }).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
     if (!result) {
         log = resultMessage(label, result);
     }
@@ -90,7 +88,7 @@ Result createBuffer(
 }
 
 template <typename T>
-Result uploadVector(Buffer& buffer, const std::vector<T>& values, const char* label, std::string& log)
+Result<> uploadVector(Buffer& buffer, const std::vector<T>& values, const char* label, std::string& log)
 {
     if (values.empty()) {
         return {};
@@ -202,7 +200,7 @@ struct SceneAccelerationStructureBuilder::Impl {
         buildState = SceneAccelerationStructureBuildState::Idle;
     }
 
-    void markFailed(const Result& result, std::string message)
+    void markFailed(const Result<>& result, std::string message)
     {
         const Error error = result ? Error::Failure : result.error();
         destroy();
@@ -211,8 +209,8 @@ struct SceneAccelerationStructureBuilder::Impl {
         buildState = SceneAccelerationStructureBuildState::Failed;
     }
 
-    Result startTopLevelSubmission(std::string& log);
-    Result poll(bool waitForFence, bool& complete, std::string& log);
+    Result<> startTopLevelSubmission(std::string& log);
+    Result<> poll(bool waitForFence, bool& complete, std::string& log);
 
     ~Impl()
     {
@@ -220,7 +218,7 @@ struct SceneAccelerationStructureBuilder::Impl {
     }
 };
 
-Result SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::string& log)
+Result<> SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::string& log)
 {
     if (buildDevice == nullptr || buildQueue == nullptr || blases.empty() ||
         originalBlasSizes.size() != blases.size() || tlas == nullptr ||
@@ -233,7 +231,7 @@ Result SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::str
     std::vector<uint64_t> compactedSizes(blases.size(), 0);
     bool compactedSizesAvailable = false;
     if (compactionQueryPool != nullptr && compactionQueriesRecorded) {
-        const Result queryResult = compactionQueryPool->readResults(
+        const Result<> queryResult = compactionQueryPool->readResults(
             0,
             static_cast<uint32_t>(compactedSizes.size()),
             compactedSizes.data());
@@ -263,13 +261,11 @@ Result SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::str
                 continue;
             }
 
-            Result result = buildDevice->createRayTracingAccelerationStructure(
-                RayTracingAccelerationStructureDesc{
+            Result<> result = buildDevice->createRayTracingAccelerationStructure(RayTracingAccelerationStructureDesc{
                     .type = blases[index]->desc().type,
                     .buildFlags = blases[index]->desc().buildFlags,
                     .size = compactedSize,
-                },
-                compactedBlases[index]);
+                }).transform([&](auto rhiValue) { compactedBlases[index] = std::move(rhiValue); });
             if (!result || compactedBlases[index] == nullptr) {
                 appendWarning(
                     "Allocating compact BLAS " + std::to_string(index) +
@@ -286,7 +282,7 @@ Result SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::str
         stats.peakAccelerationStructureBytes,
         stats.originalBlasBytes + compactDestinationBytes + tlasBytes + stats.opacityMicromapBytes);
 
-    auto submitTopLevel = [&](bool useCompactedBlases) -> Result {
+    auto submitTopLevel = [&](bool useCompactedBlases) -> Result<> {
         std::vector<RayTracingInstanceDesc> instances = pendingInstances;
         for (size_t index = 0; index < instances.size(); ++index) {
             const uint32_t blasIndex = pendingInstanceBlasIndices[index];
@@ -300,10 +296,8 @@ Result SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::str
         }
 
         std::unique_ptr<Buffer> newInstanceBuffer;
-        Result result = buildDevice->createRayTracingInstanceBuffer(
-            instances.data(),
-            static_cast<uint32_t>(instances.size()),
-            newInstanceBuffer);
+        Result<> result = buildDevice->createRayTracingInstanceBuffer(instances.data(),
+            static_cast<uint32_t>(instances.size())).transform([&](auto rhiValue) { newInstanceBuffer = std::move(rhiValue); });
         if (!result || newInstanceBuffer == nullptr) {
             return result ? makeError(Error::Failure) : result;
         }
@@ -311,9 +305,9 @@ Result SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::str
         std::unique_ptr<CommandPool> commandPool;
         std::unique_ptr<CommandBuffer> commandBuffer;
         std::unique_ptr<Fence> fence;
-        if (!(result = buildDevice->createCommandPool(*buildQueue, commandPool)) ||
-            !(result = commandPool->createCommandBuffer(commandBuffer)) ||
-            !(result = buildDevice->createFence(false, fence)) ||
+        if (!(result = buildDevice->createCommandPool(*buildQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); })) ||
+            !(result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); })) ||
+            !(result = buildDevice->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); })) ||
             !(result = commandBuffer->begin())) {
             return result;
         }
@@ -368,7 +362,7 @@ Result SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::str
         [](const std::unique_ptr<RayTracingAccelerationStructure>& blas) {
             return blas != nullptr;
         });
-    Result result = submitTopLevel(hasCompactDestinations);
+    Result<> result = submitTopLevel(hasCompactDestinations);
     if (!result && hasCompactDestinations && !hasError(result, Error::DeviceLost)) {
         appendWarning(
             "Recording or allocating the compact BLAS/TLAS phase failed (" +
@@ -400,7 +394,7 @@ Result SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::str
     return {};
 }
 
-Result SceneAccelerationStructureBuilder::Impl::poll(
+Result<> SceneAccelerationStructureBuilder::Impl::poll(
     bool waitForFence,
     bool& complete,
     std::string& log)
@@ -420,7 +414,7 @@ Result SceneAccelerationStructureBuilder::Impl::poll(
         return {};
     }
     if (buildFence == nullptr) {
-        const Result result = makeError(Error::Failure);
+        const Result<> result = makeError(Error::Failure);
         const std::string message = "Scene acceleration-structure build has no completion fence.";
         markFailed(result, message);
         complete = true;
@@ -429,7 +423,7 @@ Result SceneAccelerationStructureBuilder::Impl::poll(
     }
 
     if (waitForFence) {
-        const Result result = buildFence->wait();
+        const Result<> result = buildFence->wait();
         if (!result) {
             const std::string message = resultMessage(
                 "Fence::wait(scene acceleration-structure phase)",
@@ -444,7 +438,7 @@ Result SceneAccelerationStructureBuilder::Impl::poll(
     }
 
     if (buildPhase == BuildPhase::BuildBottomLevels) {
-        Result result = startTopLevelSubmission(log);
+        Result<> result = startTopLevelSubmission(log);
         if (!result) {
             const std::string message = log.empty()
                 ? resultMessage("start compact BLAS/TLAS phase", result)
@@ -458,7 +452,7 @@ Result SceneAccelerationStructureBuilder::Impl::poll(
     }
 
     if (buildPhase != BuildPhase::CompactAndBuildTopLevel) {
-        const Result result = makeError(Error::Failure);
+        const Result<> result = makeError(Error::Failure);
         const std::string message = "Scene acceleration-structure build phase is invalid.";
         markFailed(result, message);
         complete = true;
@@ -522,7 +516,7 @@ SceneAccelerationStructureBuilder::SceneAccelerationStructureBuilder(
 SceneAccelerationStructureBuilder& SceneAccelerationStructureBuilder::operator=(
     SceneAccelerationStructureBuilder&&) noexcept = default;
 
-Result SceneAccelerationStructureBuilder::build(
+Result<> SceneAccelerationStructureBuilder::build(
     Device& device,
     Queue& queue,
     const scene::Scene& scene,
@@ -531,7 +525,7 @@ Result SceneAccelerationStructureBuilder::build(
     return buildInternal(device, queue, scene, true, log);
 }
 
-Result SceneAccelerationStructureBuilder::beginBuild(
+Result<> SceneAccelerationStructureBuilder::beginBuild(
     Device& device,
     Queue& queue,
     const scene::Scene& scene,
@@ -540,7 +534,7 @@ Result SceneAccelerationStructureBuilder::beginBuild(
     return buildInternal(device, queue, scene, false, log);
 }
 
-Result SceneAccelerationStructureBuilder::buildInternal(
+Result<> SceneAccelerationStructureBuilder::buildInternal(
     Device& device,
     Queue& queue,
     const scene::Scene& scene,
@@ -622,7 +616,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
         return makeError(Error::Unsupported);
     }
 
-    Result result = createBuffer(
+    Result<> result = createBuffer(
         device,
         static_cast<uint64_t>(vertices.size()) * sizeof(RayTracingVertex),
         BufferUsageBits::AccelerationStructureBuildInput |
@@ -651,7 +645,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
 
     RayTracingAccelerationStructureProperties ommProperties;
     std::vector<BakedOpacityMicromap> bakedMicromaps;
-    if (device.capabilities().opacityMicromap && device.queryRayTracingAccelerationStructureProperties(ommProperties)) {
+    if (device.capabilities().opacityMicromap && device.queryRayTracingAccelerationStructureProperties().transform([&](auto rhiValue) { ommProperties = std::move(rhiValue); })) {
         bakedMicromaps = bakeSceneOpacityMicromaps(scene, primitiveOpacity, std::min(4u, ommProperties.maxOpacity4StateSubdivisionLevel));
     }
     impl_->micromaps.resize(primitiveInputs.size());
@@ -672,22 +666,22 @@ Result SceneAccelerationStructureBuilder::buildInternal(
         result = device.queryRayTracingAccelerationStructureBuildSizes({
             .type = RayTracingAccelerationStructureType::OpacityMicromap,
             .micromap = &input,
-        }, sizes);
+        }).transform([&](auto rhiValue) { sizes = std::move(rhiValue); });
         if (result) {
             result = device.createRayTracingAccelerationStructure({
                 .type = RayTracingAccelerationStructureType::OpacityMicromap,
                 .size = sizes.accelerationStructureSize,
-            }, impl_->micromaps[i]);
+            }).transform([&](auto rhiValue) { impl_->micromaps[i] = std::move(rhiValue); });
         }
         if (!result) {
             log = resultMessage("create scene opacity micromap", result);
             clear();
             return result;
         }
-        const auto upload = [&](const auto& values, Buffer*& buffer, uint64_t& offset) -> Result {
+        const auto upload = [&](const auto& values, Buffer*& buffer, uint64_t& offset) -> Result<> {
             const uint64_t bytes = values.size() * sizeof(values[0]);
             std::unique_ptr<Buffer> storage;
-            Result uploadResult = createBuffer(device, bytes + 127,
+            Result<> uploadResult = createBuffer(device, bytes + 127,
                 BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
                 MemoryLocation::HostUpload, storage, "createBuffer(OMM input)", log);
             if (!uploadResult) {
@@ -748,27 +742,23 @@ Result SceneAccelerationStructureBuilder::buildInternal(
             .opacityMicromapUsageCount = micromapInputs[geometries.size()].usageCount,
         });
         RayTracingAccelerationStructureBuildSizes sizes;
-        result = device.queryRayTracingAccelerationStructureBuildSizes(
-            RayTracingAccelerationStructureBuildInputs{
+        result = device.queryRayTracingAccelerationStructureBuildSizes(RayTracingAccelerationStructureBuildInputs{
                 .type = RayTracingAccelerationStructureType::BottomLevel,
                 .flags = blasBuildFlags,
                 .geometries = &geometries.back(),
                 .geometryCount = 1,
-            },
-            sizes);
+            }).transform([&](auto rhiValue) { sizes = std::move(rhiValue); });
         if (!result) {
             log = resultMessage("queryRayTracingAccelerationStructureBuildSizes(BLAS)", result);
             clear();
             return result;
         }
         std::unique_ptr<RayTracingAccelerationStructure> blas;
-        result = device.createRayTracingAccelerationStructure(
-            RayTracingAccelerationStructureDesc{
+        result = device.createRayTracingAccelerationStructure(RayTracingAccelerationStructureDesc{
                 .type = RayTracingAccelerationStructureType::BottomLevel,
                 .buildFlags = blasBuildFlags,
                 .size = sizes.accelerationStructureSize,
-            },
-            blas);
+            }).transform([&](auto rhiValue) { blas = std::move(rhiValue); });
         if (!result) {
             log = resultMessage("createRayTracingAccelerationStructure(BLAS)", result);
             clear();
@@ -820,25 +810,21 @@ Result SceneAccelerationStructureBuilder::buildInternal(
         RayTracingAccelerationStructureBuildFlags::PreferFastTrace |
         RayTracingAccelerationStructureBuildFlags::AllowUpdate;
     RayTracingAccelerationStructureBuildSizes tlasSizes;
-    result = device.queryRayTracingAccelerationStructureBuildSizes(
-        RayTracingAccelerationStructureBuildInputs{
+    result = device.queryRayTracingAccelerationStructureBuildSizes(RayTracingAccelerationStructureBuildInputs{
             .type = RayTracingAccelerationStructureType::TopLevel,
             .flags = kTlasFlags,
             .instanceCount = static_cast<uint32_t>(instances.size()),
-        },
-        tlasSizes);
+        }).transform([&](auto rhiValue) { tlasSizes = std::move(rhiValue); });
     if (!result) {
         log = resultMessage("queryRayTracingAccelerationStructureBuildSizes(TLAS)", result);
         clear();
         return result;
     }
-    result = device.createRayTracingAccelerationStructure(
-        RayTracingAccelerationStructureDesc{
+    result = device.createRayTracingAccelerationStructure(RayTracingAccelerationStructureDesc{
             .type = RayTracingAccelerationStructureType::TopLevel,
             .buildFlags = kTlasFlags,
             .size = tlasSizes.accelerationStructureSize,
-        },
-        impl_->tlas);
+        }).transform([&](auto rhiValue) { impl_->tlas = std::move(rhiValue); });
     if (!result) {
         log = resultMessage("createRayTracingAccelerationStructure(TLAS)", result);
         clear();
@@ -850,7 +836,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
         std::max(tlasSizes.buildScratchSize, tlasSizes.updateScratchSize));
 
     RayTracingAccelerationStructureProperties properties;
-    result = device.queryRayTracingAccelerationStructureProperties(properties);
+    result = device.queryRayTracingAccelerationStructureProperties().transform([&](auto rhiValue) { properties = std::move(rhiValue); });
     if (!result) {
         log = resultMessage("queryRayTracingAccelerationStructureProperties", result);
         clear();
@@ -872,12 +858,10 @@ Result SceneAccelerationStructureBuilder::buildInternal(
     const uint64_t scratchAddress = impl_->scratchBuffer->deviceAddress();
     impl_->scratchOffset = alignUp(scratchAddress, properties.scratchAlignment) - scratchAddress;
 
-    const Result queryPoolResult =
-        device.createRayTracingAccelerationStructureCompactionQueryPool(
-            RayTracingAccelerationStructureCompactionQueryPoolDesc{
+    const Result<> queryPoolResult =
+        device.createRayTracingAccelerationStructureCompactionQueryPool(RayTracingAccelerationStructureCompactionQueryPoolDesc{
                 .queryCount = static_cast<uint32_t>(impl_->blases.size()),
-            },
-            impl_->compactionQueryPool);
+            }).transform([&](auto rhiValue) { impl_->compactionQueryPool = std::move(rhiValue); });
     if (!queryPoolResult || impl_->compactionQueryPool == nullptr) {
         impl_->appendWarning(
             "Creating the BLAS compaction query pool failed (" +
@@ -889,9 +873,9 @@ Result SceneAccelerationStructureBuilder::buildInternal(
     std::unique_ptr<CommandPool> commandPool;
     std::unique_ptr<CommandBuffer> commandBuffer;
     std::unique_ptr<Fence> fence;
-    if (!(result = device.createCommandPool(queue, commandPool)) ||
-        !(result = commandPool->createCommandBuffer(commandBuffer)) ||
-        !(result = device.createFence(false, fence)) ||
+    if (!(result = device.createCommandPool(queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); })) ||
+        !(result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); })) ||
+        !(result = device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); })) ||
         !(result = commandBuffer->begin())) {
         log = resultMessage("create scene RTAS build submission", result);
         clear();
@@ -1029,7 +1013,7 @@ Result SceneAccelerationStructureBuilder::buildInternal(
     return {};
 }
 
-Result SceneAccelerationStructureBuilder::pollBuild(bool& complete, std::string& log)
+Result<> SceneAccelerationStructureBuilder::pollBuild(bool& complete, std::string& log)
 {
     if (impl_ == nullptr) {
         complete = false;
@@ -1043,7 +1027,7 @@ bool SceneAccelerationStructureBuilder::pollBuild()
 {
     bool complete = false;
     std::string log;
-    const Result result = pollBuild(complete, log);
+    const Result<> result = pollBuild(complete, log);
     if (!result && !log.empty()) {
         spdlog::error("[RTAS] {}", log);
     }
@@ -1058,7 +1042,7 @@ SceneAccelerationStructureBuildState SceneAccelerationStructureBuilder::buildSta
     return impl_->buildState;
 }
 
-Result SceneAccelerationStructureBuilder::updateInstanceTransforms(
+Result<> SceneAccelerationStructureBuilder::updateInstanceTransforms(
     Device& device,
     Queue& queue,
     const scene::Scene& scene,
@@ -1109,7 +1093,7 @@ Result SceneAccelerationStructureBuilder::updateInstanceTransforms(
         return {};
     }
 
-    Result result = device.writeRayTracingInstances(
+    Result<> result = device.writeRayTracingInstances(
         *impl_->instanceBuffer,
         instances.data(),
         static_cast<uint32_t>(instances.size()));
@@ -1120,9 +1104,9 @@ Result SceneAccelerationStructureBuilder::updateInstanceTransforms(
     std::unique_ptr<CommandPool> commandPool;
     std::unique_ptr<CommandBuffer> commandBuffer;
     std::unique_ptr<Fence> fence;
-    if (!(result = device.createCommandPool(queue, commandPool)) ||
-        !(result = commandPool->createCommandBuffer(commandBuffer)) ||
-        !(result = device.createFence(false, fence)) ||
+    if (!(result = device.createCommandPool(queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); })) ||
+        !(result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); })) ||
+        !(result = device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); })) ||
         !(result = commandBuffer->begin())) {
         log = resultMessage("create scene TLAS update submission", result);
         return result;

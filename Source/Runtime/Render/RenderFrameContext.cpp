@@ -76,7 +76,7 @@ void detail::CommandSubmissionRegistry::cancel() noexcept
     recordings.clear();
 }
 
-Result CommandBuffer::addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction)
+Result<> CommandBuffer::addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction)
 {
     if (!recording_ || submission_ == nullptr || !submission_->canSubmit() ||
         transaction == nullptr || transaction->resolved() || transaction->attached_) {
@@ -87,7 +87,7 @@ Result CommandBuffer::addSubmissionTransaction(std::shared_ptr<SubmissionTransac
     return {};
 }
 
-Result CommandBuffer::retainResource(std::shared_ptr<void> resource)
+Result<> CommandBuffer::retainResource(std::shared_ptr<void> resource)
 {
     if (!recording_ || !submission_ || submission_->submitted || submission_->cancelled ||
         (frameContext_ && !frameContext_->recording()) || !resource) {
@@ -130,7 +130,7 @@ uint64_t GpuCompletionPoint::value() const
     return state_ != nullptr && state_->signals.size() == 1 ? state_->signals.front().value : 0;
 }
 
-Result GpuCompletionPoint::wait(uint64_t timeoutNanoseconds) const
+Result<> GpuCompletionPoint::wait(uint64_t timeoutNanoseconds) const
 {
     if (state_ == nullptr || isCancelled()) {
         return {};
@@ -146,13 +146,13 @@ Result GpuCompletionPoint::wait(uint64_t timeoutNanoseconds) const
                 std::chrono::steady_clock::now() - begin).count());
             remaining -= std::min(remaining, elapsed);
         }
-        Result result = signal.timeline->wait(signal.value, remaining);
+        Result<> result = signal.timeline->wait(signal.value, remaining);
         if (!result) { return result; }
     }
     return {};
 }
 
-Result GpuCompletionPoint::appendWaits(std::vector<SemaphoreSubmitDesc>& waits) const
+Result<> GpuCompletionPoint::appendWaits(std::vector<SemaphoreSubmitDesc>& waits) const
 {
     if (state_ == nullptr || isCancelled()) { return {}; }
     if (!isSubmitted()) { return makeError(Error::InvalidArgument); }
@@ -170,10 +170,10 @@ Result GpuCompletionPoint::appendWaits(std::vector<SemaphoreSubmitDesc>& waits) 
     return {};
 }
 
-Result CommandBuffer::addDependency(const GpuCompletionPoint& completion)
+Result<> CommandBuffer::addDependency(const GpuCompletionPoint& completion)
 {
     if (!recording_) { return makeError(Error::InvalidArgument); }
-    Result result = completion.appendWaits(dependencyWaits_);
+    Result<> result = completion.appendWaits(dependencyWaits_);
     if (result && completion.valid() &&
         std::find(dependencyLifetimes_.begin(), dependencyLifetimes_.end(), completion.state_) == dependencyLifetimes_.end()) {
         dependencyLifetimes_.push_back(completion.state_);
@@ -186,13 +186,13 @@ RenderFrameContext::~RenderFrameContext()
     (void)reset();
 }
 
-Result RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanoseconds)
+Result<> RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanoseconds)
 {
     profiling::CpuPhase phase("frame.wait", frameIndex);
     if (recording()) {
         return makeError(Error::InvalidArgument);
     }
-    Result result = wait(timeoutNanoseconds);
+    Result<> result = wait(timeoutNanoseconds);
     if (!result) {
         return result;
     }
@@ -206,7 +206,7 @@ Result RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanosecond
     return {};
 }
 
-Result RenderFrameContext::wait(uint64_t timeoutNanoseconds) const
+Result<> RenderFrameContext::wait(uint64_t timeoutNanoseconds) const
 {
     return completion_.wait(timeoutNanoseconds);
 }
@@ -232,7 +232,7 @@ void RenderFrameContext::cancel()
     }
 }
 
-Result RenderFrameContext::finishSubmission()
+Result<> RenderFrameContext::finishSubmission()
 {
     if (completion_.state_ == nullptr ||
         completion_.state_->status != GpuCompletionPoint::State::Status::Submitting) {
@@ -243,11 +243,11 @@ Result RenderFrameContext::finishSubmission()
     return {};
 }
 
-Result RenderFrameContext::reset()
+Result<> RenderFrameContext::reset()
 {
     profiling::CpuPhase phase("frame.resetWait");
     cancel();
-    Result result = wait();
+    Result<> result = wait();
     if (!result && !hasError(result, Error::DeviceLost)) {
         return result;
     }
@@ -269,7 +269,7 @@ void RenderFrameContext::retain(std::shared_ptr<void> resource)
     }
 }
 
-Result RenderFrameContext::addDependency(GpuCompletionPoint completion)
+Result<> RenderFrameContext::addDependency(GpuCompletionPoint completion)
 {
     if (!recording() || (completion.valid() && !completion.isSubmitted() && !completion.isCancelled())) {
         return makeError(Error::InvalidArgument);
@@ -286,14 +286,14 @@ QueueSubmissionTracker::~QueueSubmissionTracker()
     (void)reset();
 }
 
-Result QueueSubmissionTracker::initialize(Device& device, Queue& queue)
+Result<> QueueSubmissionTracker::initialize(Device& device, Queue& queue)
 {
-    Result result = reset();
+    Result<> result = reset();
     if (!result) {
         return result;
     }
     std::unique_ptr<Semaphore> timeline;
-    result = device.createSemaphore(timeline);
+    result = device.createSemaphore().transform([&](auto rhiValue) { timeline = std::move(rhiValue); });
     if (result) {
         timeline_ = std::move(timeline);
         queue_ = &queue;
@@ -301,15 +301,15 @@ Result QueueSubmissionTracker::initialize(Device& device, Queue& queue)
     return result;
 }
 
-Result QueueSubmissionTracker::submit(const QueueSubmitDesc& desc, RenderFrameContext& frame)
+Result<> QueueSubmissionTracker::submit(const QueueSubmitDesc& desc, RenderFrameContext& frame)
 {
     if (!frame.recording()) { return makeError(Error::InvalidArgument); }
     GpuCompletionPoint completion;
-    Result result = submitSegment(desc, frame, completion);
+    Result<> result = submitSegment(desc, frame, completion);
     return result ? frame.finishSubmission() : result;
 }
 
-Result QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame,
+Result<> QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame,
     GpuCompletionPoint& completion)
 {
     using State = GpuCompletionPoint::State;
@@ -342,7 +342,7 @@ Result QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, Render
         waits.assign(desc.waitSemaphores, desc.waitSemaphores + desc.waitSemaphoreCount);
     }
     for (const auto& point : frame.dependencies_) {
-        Result result = point.appendWaits(waits);
+        Result<> result = point.appendWaits(waits);
         if (!result) { return result; }
     }
     QueueSubmitDesc submission = desc;
@@ -354,7 +354,7 @@ Result QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, Render
     segment->signals.push_back({timeline_, nextValue_});
     auto& state = *frame.completion_.state_;
     state.signals.reserve(state.signals.size() + 1);
-    Result result = queue_->submit(submission);
+    Result<> result = queue_->submit(submission);
     if (!result) {
         return result;
     }
@@ -373,14 +373,14 @@ Result QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, Render
     return {};
 }
 
-Result QueueSubmissionTracker::wait(uint64_t timeoutNanoseconds) const
+Result<> QueueSubmissionTracker::wait(uint64_t timeoutNanoseconds) const
 {
     return lastSubmission_.wait(timeoutNanoseconds);
 }
 
-Result QueueSubmissionTracker::reset()
+Result<> QueueSubmissionTracker::reset()
 {
-    Result result = wait();
+    Result<> result = wait();
     if (result || hasError(result, Error::DeviceLost)) {
         lastSubmission_ = {};
         timeline_.reset();
@@ -407,9 +407,9 @@ void DeferredReleaseQueue::collect()
     std::erase_if(entries_, [](const Entry& entry) { return entry.completion.isComplete(); });
 }
 
-Result DeferredReleaseQueue::drain()
+Result<> DeferredReleaseQueue::drain()
 {
-    Result result;
+    Result<> result;
     for (const Entry& entry : entries_) {
         result = entry.completion.wait();
         if (hasError(result, Error::DeviceLost)) {

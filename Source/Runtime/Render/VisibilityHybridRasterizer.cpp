@@ -6,7 +6,7 @@
 
 namespace metallic::render {
 
-Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, uint32_t height,
+Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, uint32_t height,
     std::string& log, uint32_t capacity, uint32_t clusterCapacity)
 {
     if (!device.capabilities().shaderBufferInt64Atomics) { return makeError(Error::Unsupported); }
@@ -24,7 +24,7 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
         return makeError(Error::Unsupported);
     }
     push_.subpixelBits = device.capabilities().subPixelPrecisionBits;
-    auto result = device.createBindlessHeap({.maxBuffers = 5}, heap_);
+    auto result = device.createBindlessHeap({.maxBuffers = 5}).transform([&](auto rhiValue) { heap_ = std::move(rhiValue); });
     if (!result) { return result; }
     const uint64_t sizes[] = {32ull + push_.capacity * 64ull, uint64_t(width) * height * 8, 12};
     const uint32_t strides[] = {16, 8, 4};
@@ -32,10 +32,10 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
         result = device.createBuffer({.size = sizes[i], .structureStride = strides[i],
             .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource |
                 (i == 2 ? BufferUsageBits::Indirect : BufferUsageBits::None),
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, buffers_[i]);
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffers_[i] = std::move(rhiValue); });
         if (!result) { return result; }
         BindlessHandle handle;
-        result = heap_->allocateBuffer(handle);
+        result = heap_->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); });
         if (result) { result = heap_->writeStorageBuffer(handle, *buffers_[i]); }
         if (!result) { return result; }
         if (i == 0) { push_.queueBuffer = handle.shaderIndex; }
@@ -48,10 +48,10 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
         result = device.createBuffer({.size = clusterSizes[i], .structureStride = 4,
             .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource |
                 (i == 1 ? BufferUsageBits::Indirect : BufferUsageBits::None),
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, buffer);
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
         if (!result) { return result; }
         BindlessHandle handle;
-        result = heap_->allocateBuffer(handle);
+        result = heap_->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); });
         if (result) { result = heap_->writeStorageBuffer(handle, *buffer); }
         if (!result) { return result; }
         if (i == 0) { push_.clusterBuffer = handle.shaderIndex; } else { push_.clusterArgumentsBuffer = handle.shaderIndex; }
@@ -60,10 +60,10 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
         "hybridClusterArgumentsMain", "hybridClusterScatterMain"};
     // Classification, stable bins, and active-group count/scatter dispatches.
     result = device.createBuffer({.size = 16 * sizeof(uint64_t), .structureStride = 8,
-        .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource}, workloadBuffer_);
+        .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource}).transform([&](auto rhiValue) { workloadBuffer_ = std::move(rhiValue); });
     if (!result) { return result; }
     result = device.createBuffer({.size = 36, .structureStride = 4,
-        .usage = BufferUsageBits::Storage | BufferUsageBits::Indirect | BufferUsageBits::TransferSource}, candidateArguments_);
+        .usage = BufferUsageBits::Storage | BufferUsageBits::Indirect | BufferUsageBits::TransferSource}).transform([&](auto rhiValue) { candidateArguments_ = std::move(rhiValue); });
     if (!result) { return result; }
     for (size_t i = 0; i < clusterShaders_.size(); ++i) {
         ShaderCompileResult shader;
@@ -71,9 +71,9 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
             .entryPointName = clusterEntries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
         if (!result) { log += shader.diagnostics; return result; }
         result = device.createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .debugName = clusterEntries[i]}, clusterShaders_[i]);
+            .debugName = clusterEntries[i]}).transform([&](auto rhiValue) { clusterShaders_[i] = std::move(rhiValue); });
         if (result) { result = device.createComputePipeline({.computeShader = clusterShaders_[i].get(),
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}, clusterPipelines_[i]); }
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}).transform([&](auto rhiValue) { clusterPipelines_[i] = std::move(rhiValue); }); }
         if (!result) { return result; }
     }
     const char* entries[] = {"hybridResetMain", "hybridArgumentsMain", "hybridRasterMain",
@@ -84,11 +84,11 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
             .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
         if (!result) { log += shader.diagnostics; return result; }
         result = device.createShaderModule({.code = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .debugName = entries[i]}, shaders_[i]);
+            .byteSize = shader.spirv.size() * sizeof(uint32_t), .debugName = entries[i]}).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });
         if (!result) { return result; }
         if (i < compute_.size()) {
             result = device.createComputePipeline({.computeShader = shaders_[i].get(),
-                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}, compute_[i]);
+                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}).transform([&](auto rhiValue) { compute_[i] = std::move(rhiValue); });
             if (!result) { return result; }
         }
     }
@@ -99,7 +99,7 @@ Result VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, ui
             .rasterization = {.cullMode = CullMode::None},
             .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,
                 .depthCompareOp = i == 0 ? CompareOp::LessEqual : CompareOp::GreaterEqual},
-            .usesBindlessHeap = true}, resolve_[i]);
+            .usesBindlessHeap = true}).transform([&](auto rhiValue) { resolve_[i] = std::move(rhiValue); });
         if (!result) { return result; }
     }
     return {};
@@ -111,7 +111,7 @@ bool VisibilityHybridRasterizer::supportsRenderExtent(uint32_t width, uint32_t h
         uint64_t(width) * height * sizeof(uint64_t) <= buffers_[1]->desc().size;
 }
 
-Result VisibilityHybridRasterizer::setRenderExtent(uint32_t width, uint32_t height)
+Result<> VisibilityHybridRasterizer::setRenderExtent(uint32_t width, uint32_t height)
 {
     if (!supportsRenderExtent(width, height)) { return makeError(Error::InvalidArgument); }
     push_.width = width;
@@ -140,7 +140,7 @@ void VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPixels,
     commands.endDebugLabel();
 }
 
-Result VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& visibilityTexture,
+Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& visibilityTexture,
     TextureView& visibility, Texture& depthTexture, TextureView& depth, bool softwareRasterized)
 {
     commands.beginDebugLabel({.name = "Hybrid raster: software triangles"});
@@ -188,7 +188,7 @@ Result VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& vis
     return {};
 }
 
-Result VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
+Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
     uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact, bool tessellation)
 {
     if (inputCount > push_.clusterCapacity) { return makeError(Error::InvalidArgument); }
@@ -227,7 +227,7 @@ void VisibilityHybridRasterizer::prepareClusterCandidates(CommandBuffer& command
     commands.barrier({.buffers = barriers, .bufferCount = 2});
 }
 
-Result VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffer& commands,
+Result<> VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffer& commands,
     ComputePipeline& pipeline, MeshletStreamUserPush push)
 {
     commands.bindComputePipeline(pipeline);
@@ -240,7 +240,7 @@ Result VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffer&
             commands.dispatch(1);
             prepareClusterCandidates(commands);
         } else {
-            const Result result = commands.dispatchIndirect(*candidateArguments_, kCandidateBuildArgumentsOffset);
+            const Result<> result = commands.dispatchIndirect(*candidateArguments_, kCandidateBuildArgumentsOffset);
             if (!result) { return result; }
             const BufferBarrierDesc barriers[] = {
                 {.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General},
@@ -254,13 +254,13 @@ Result VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffer&
     return {};
 }
 
-Result VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
+Result<> VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
     ComputePipeline& pipeline, MeshletStreamUserPush push)
 {
     commands.bindComputePipeline(pipeline);
     push.activeBuildPhase = 0;
     commands.pushBindlessData(&push, sizeof(push));
-    const Result result = commands.dispatchIndirect(*candidateArguments_, 12);
+    const Result<> result = commands.dispatchIndirect(*candidateArguments_, 12);
     if (!result) { return result; }
     const BufferBarrierDesc barriers[] = {
         {.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General},
@@ -273,7 +273,7 @@ Result VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
     return {};
 }
 
-Result VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
+Result<> VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
 {
     commands.beginDebugLabel({.name = "Hybrid raster: stable cluster bins"});
     BufferBarrierDesc barrier{.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General};
@@ -285,7 +285,7 @@ Result VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
         commands.pushBindlessData(&push_, sizeof(push_));
         if (i == 2) { commands.dispatch(5); }
         else if (compactCandidates_) {
-            const Result result = commands.dispatchIndirect(*candidateArguments_, 12);
+            const Result<> result = commands.dispatchIndirect(*candidateArguments_, 12);
             if (!result) { commands.endDebugLabel(); return result; }
         }
         else if (blocks != 0) { commands.dispatch(std::min(blocks, kDispatchWidth), (blocks + kDispatchWidth - 1u) / kDispatchWidth); }

@@ -85,7 +85,7 @@ struct SceneResourceManager::Impl {
     std::vector<std::shared_ptr<SceneResourceSnapshot>> retiredSnapshots;
 };
 
-Result SceneResourceManager::resolveScene(
+Result<> SceneResourceManager::resolveScene(
     const RenderGraphProperties& properties,
     const scene::Scene* runtimeScene,
     const scene::Scene*& outScene,
@@ -126,7 +126,7 @@ Result SceneResourceManager::resolveScene(
     return {};
 }
 
-Result SceneResourceManager::acquire(
+Result<> SceneResourceManager::acquire(
     Device& device,
     Queue& graphicsQueue,
     const RenderGraphProperties& properties,
@@ -146,7 +146,7 @@ Result SceneResourceManager::acquire(
     impl_->device = &device;
 
     const scene::Scene* resolvedScene = nullptr;
-    Result sceneResult = resolveScene(properties, runtimeScene, resolvedScene, log);
+    Result<> sceneResult = resolveScene(properties, runtimeScene, resolvedScene, log);
     if (!sceneResult) {
         return sceneResult;
     }
@@ -186,7 +186,7 @@ Result SceneResourceManager::acquire(
         outSnapshot->features = outSnapshot->features | features;
         if (outSnapshot->pathTraceResources != nullptr &&
             outSnapshot->pathTraceResources->valid()) {
-            const Result result = outSnapshot->pathTraceResources->syncRuntimeScene(resolvedScene, log);
+            const Result<> result = outSnapshot->pathTraceResources->syncRuntimeScene(resolvedScene, log);
             if (result) {
                 stampSnapshot(*outSnapshot, *resolvedScene);
             }
@@ -194,7 +194,7 @@ Result SceneResourceManager::acquire(
         }
     }
 
-    Result result = outSnapshot->pathTraceResources->beginPrepareAsync(
+    Result<> result = outSnapshot->pathTraceResources->beginPrepareAsync(
         device,
         graphicsQueue,
         properties,
@@ -219,7 +219,7 @@ Result SceneResourceManager::acquire(
     return result;
 }
 
-Result SceneResourceManager::beginAcquireAsync(
+Result<> SceneResourceManager::beginAcquireAsync(
     Device& device,
     Queue& graphicsQueue,
     const RenderGraphProperties& properties,
@@ -255,7 +255,7 @@ Result SceneResourceManager::beginAcquireAsync(
             outSnapshot = found->second;
             outSnapshot->features = outSnapshot->features | features;
             if (outSnapshot->pathTraceResources->valid()) {
-                const Result result = outSnapshot->pathTraceResources->syncRuntimeScene(&runtimeScene, log);
+                const Result<> result = outSnapshot->pathTraceResources->syncRuntimeScene(&runtimeScene, log);
                 if (result) {
                     stampSnapshot(*outSnapshot, runtimeScene);
                 }
@@ -281,7 +281,7 @@ Result SceneResourceManager::beginAcquireAsync(
         impl_->snapshots.emplace(key, outSnapshot);
     }
 
-    Result result = outSnapshot->pathTraceResources->beginPrepareAsync(
+    Result<> result = outSnapshot->pathTraceResources->beginPrepareAsync(
         device,
         graphicsQueue,
         properties,
@@ -294,7 +294,7 @@ Result SceneResourceManager::beginAcquireAsync(
     return result;
 }
 
-Result SceneResourceManager::pumpAsync(
+Result<> SceneResourceManager::pumpAsync(
     const std::shared_ptr<SceneResourceSnapshot>& snapshot,
     const scene::Scene& runtimeScene,
     double budgetMilliseconds,
@@ -316,7 +316,7 @@ Result SceneResourceManager::pumpAsync(
     if (impl_ != nullptr) {
         impl_->collectRetired();
     }
-    Result result = snapshot->pathTraceResources->pumpPrepareAsync(
+    Result<> result = snapshot->pathTraceResources->pumpPrepareAsync(
         budgetMilliseconds,
         complete,
         progress,

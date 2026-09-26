@@ -55,14 +55,14 @@ public:
     EnvironmentLightingSubsystem();
     ~EnvironmentLightingSubsystem() override;
 
-    Result initialize(const RenderSubsystemInitContext& context, std::string& log) override;
+    Result<> initialize(const RenderSubsystemInitContext& context, std::string& log) override;
     void onWorldChanged(RenderWorld* world) override;
-    Result beginFrame(
+    Result<> beginFrame(
         const RenderSubsystemFrameContext& context,
         RenderChangeBits& changes,
         std::string& log) override;
-    Result recordPreGraph(const RenderSubsystemFrameContext& context, std::string& log) override;
-    Result prepareShaderReload(
+    Result<> recordPreGraph(const RenderSubsystemFrameContext& context, std::string& log) override;
+    Result<> prepareShaderReload(
         const RenderSubsystemInitContext& context,
         std::unique_ptr<RenderSubsystemShaderReload>& outReload,
         std::string& log) override;
@@ -81,7 +81,7 @@ private:
     void requestEnvironment(const EnvironmentSettings& settings, uint64_t settingsRevision);
     void startDecodeJob(const std::filesystem::path& path, uint64_t generation);
     void pollDecodeJobs(RenderChangeBits& changes);
-    Result publishDecoded(
+    Result<> publishDecoded(
         const RenderSubsystemFrameContext& context,
         const DecodedEnvironment& decoded,
         std::string& log);

@@ -18,7 +18,7 @@ public:
         return reflection;
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -78,7 +78,7 @@ public:
             buildParams(context.width, context.height, drawBounds_, params);
         }
 
-        Result result = uploadStorageBuffer(
+        Result<> result = uploadStorageBuffer(
             *context.device,
             positions.data(),
             static_cast<uint64_t>(positions.size() * sizeof(MaterialShaderObjectGpuPosition)),
@@ -129,11 +129,9 @@ public:
             return result;
         }
 
-        result = context.device->createBindlessHeap(
-            BindlessHeapDesc{
+        result = context.device->createBindlessHeap(BindlessHeapDesc{
                 .maxBuffers = 5,
-            },
-            bindlessHeap_);
+            }).transform([&](auto rhiValue) { bindlessHeap_ = std::move(rhiValue); });
         if (!result || bindlessHeap_ == nullptr) {
             log += resultMessage("createBindlessHeap(SceneMaterialShaderObjectPass)", result);
             log += '\n';
@@ -207,9 +205,9 @@ public:
         return {};
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
-        Result syncResult = syncRuntimeGeometry(context.runtimeScene());
+        Result<> syncResult = syncRuntimeGeometry(context.runtimeScene());
         if (!syncResult) {
             return syncResult;
         }
@@ -224,7 +222,7 @@ public:
         }
 
         if (!batches_.empty()) {
-            Result result = updateParamsBuffer(context.width(), context.height());
+            Result<> result = updateParamsBuffer(context.width(), context.height());
             if (!result) {
                 return result;
             }
@@ -310,7 +308,7 @@ public:
     }
 
 private:
-    Result syncRuntimeGeometry(const scene::Scene* runtimeScene)
+    Result<> syncRuntimeGeometry(const scene::Scene* runtimeScene)
     {
         runtimeScene = runtimeSceneForPath(runtimeScene, scenePathFromProperties(properties()));
         if (runtimeScene == nullptr) {
@@ -345,7 +343,7 @@ private:
         return {};
     }
 
-    Result rebuildRuntimeGeometry(const scene::Scene& runtimeScene)
+    Result<> rebuildRuntimeGeometry(const scene::Scene& runtimeScene)
     {
         if (device_ == nullptr || bindlessHeap_ == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -380,7 +378,7 @@ private:
         }
 
         std::unique_ptr<Buffer> positionBuffer;
-        Result result = uploadStorageBuffer(
+        Result<> result = uploadStorageBuffer(
             *device_,
             positions.data(),
             static_cast<uint64_t>(positions.size() * sizeof(MaterialShaderObjectGpuPosition)),
@@ -455,7 +453,7 @@ private:
         return {};
     }
 
-    static Result uploadStorageBuffer(
+    static Result<> uploadStorageBuffer(
         Device& device,
         const void* data,
         uint64_t byteSize,
@@ -468,14 +466,12 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        Result result = device.createBuffer(
-            BufferDesc{
+        Result<> result = device.createBuffer(BufferDesc{
                 .size = byteSize,
                 .structureStride = 0,
                 .usage = BufferUsageBits::Storage,
                 .memoryLocation = MemoryLocation::HostUpload,
-            },
-            outBuffer);
+            }).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
         if (!result || outBuffer == nullptr) {
             log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
             log += '\n';
@@ -493,14 +489,14 @@ private:
         return {};
     }
 
-    static Result allocateAndWriteBuffer(
+    static Result<> allocateAndWriteBuffer(
         BindlessHeap& heap,
         Buffer& buffer,
         BindlessHandle& outHandle,
         std::string& log,
         std::string_view label)
     {
-        Result result = heap.allocateBuffer(outHandle);
+        Result<> result = heap.allocateBuffer().transform([&](BindlessHandle handle) { outHandle = handle; });
         if (!result || !outHandle.valid()) {
             log += resultMessage(std::string("allocateBuffer(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
             log += '\n';
@@ -515,7 +511,7 @@ private:
         return result;
     }
 
-    static Result createProgram(
+    static Result<> createProgram(
         Device& device,
         const ShaderCompileResult& vertexCompile,
         const ShaderCompileResult& fragmentCompile,
@@ -523,16 +519,14 @@ private:
         std::string& log,
         std::string_view label)
     {
-        Result result = device.createGraphicsShaderObjectProgram(
-            GraphicsShaderObjectProgramDesc{
+        Result<> result = device.createGraphicsShaderObjectProgram(GraphicsShaderObjectProgramDesc{
                 .vertexCode = vertexCompile.spirv.data(),
                 .vertexByteSize = static_cast<uint64_t>(vertexCompile.spirv.size() * sizeof(uint32_t)),
                 .fragmentCode = fragmentCompile.spirv.data(),
                 .fragmentByteSize = static_cast<uint64_t>(fragmentCompile.spirv.size() * sizeof(uint32_t)),
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MaterialShaderObjectUserPush),
-            },
-            outProgram);
+            }).transform([&](auto rhiValue) { outProgram = std::move(rhiValue); });
         if (!result || outProgram == nullptr) {
             log += resultMessage(std::string("createGraphicsShaderObjectProgram(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
             log += '\n';
@@ -732,7 +726,7 @@ private:
         outParams.clipOrtho[3] = kDefaultReversedZ ? 1.0f : 0.0f;
     }
 
-    Result updateParamsBuffer(uint32_t width, uint32_t height)
+    Result<> updateParamsBuffer(uint32_t width, uint32_t height)
     {
         if (paramsBuffer_ == nullptr || !drawBounds_.valid) {
             return makeError(Error::InvalidArgument);

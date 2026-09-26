@@ -40,17 +40,17 @@ RhiTestResult createCommandResources(
     std::unique_ptr<render::CommandBuffer>& outCommandBuffer,
     std::unique_ptr<render::Fence>& outFence)
 {
-    render::Result result = device.createCommandPool(queue, outCommandPool);
+    render::Result<> result = device.createCommandPool(queue).transform([&](auto rhiValue) { outCommandPool = std::move(rhiValue); });
     if (!result || outCommandPool == nullptr) {
         return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
     }
 
-    result = outCommandPool->createCommandBuffer(outCommandBuffer);
+    result = outCommandPool->createCommandBuffer().transform([&](auto rhiValue) { outCommandBuffer = std::move(rhiValue); });
     if (!result || outCommandBuffer == nullptr) {
         return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
     }
 
-    result = device.createFence(false, outFence);
+    result = device.createFence(false).transform([&](auto rhiValue) { outFence = std::move(rhiValue); });
     if (!result || outFence == nullptr) {
         return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
     }
@@ -64,7 +64,7 @@ RhiTestResult submitAndWait(
     render::Fence& fence)
 {
     render::CommandBuffer* commandBuffers[] = {&commandBuffer};
-    render::Result result = queue.submit(render::QueueSubmitDesc{
+    render::Result<> result = queue.submit(render::QueueSubmitDesc{
         .commandBuffers = commandBuffers,
         .commandBufferCount = 1,
         .signalFence = &fence,
@@ -513,7 +513,7 @@ public:
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Metallic Stream LOD Cache Test",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
-            .enableShaderObject = true}, device);
+            .enableShaderObject = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!created) {
             return hasError(created, Error::Unsupported) ? RhiTestResult::skip("Bindless device unavailable")
                 : RhiTestResult::fail("Cannot create LOD cache test device");
@@ -545,8 +545,7 @@ public:
         // Fresh runtime and cache objects: the warm pass must use serialized
         // driver data and PSO keys, not retained pipeline objects.
         for (uint32_t pass = 0; pass < 2; ++pass) {
-            auto result = device->createPipelineCache(
-                {.filePath = cacheName.c_str(), .saveOnDestroy = false}, cache);
+            auto result = device->createPipelineCache({.filePath = cacheName.c_str(), .saveOnDestroy = false}).transform([&](auto rhiValue) { cache = std::move(rhiValue); });
             if (!result || !cache) { return RhiTestResult::fail("Cannot create LOD test cache"); }
             const auto expectedLoad = pass == 0 ? PipelineCacheLoadStatus::NotFound : PipelineCacheLoadStatus::Loaded;
             if (cache->stats().loadStatus != expectedLoad) { return RhiTestResult::fail("LOD cache load status mismatch"); }
@@ -589,7 +588,7 @@ public:
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Stream CLAS lifecycle",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
-            .enableShaderObject = true, .enableClusterAccelerationStructure = true}, device);
+            .enableShaderObject = true, .enableClusterAccelerationStructure = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!created) {
             return hasError(created, Error::Unsupported) ? RhiTestResult::skip("Requires CLAS and bindless support")
                 : RhiTestResult::fail("CLAS device creation failed");
@@ -618,7 +617,7 @@ public:
         const auto setup = createCommandResources(*device, *queue, pool, commands, fence);
         if (!setup.passed) { return setup; }
         std::unique_ptr<Streamer> streamer;
-        if (!device->createStreamer(makeTestStreamerDesc(), streamer)) { return RhiTestResult::fail("Cannot create streamer"); }
+        if (!device->createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) { return RhiTestResult::fail("Cannot create streamer"); }
         MeshletStreamFrameDesc frame{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
         frame.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f},
             .znear = .001f, .zfar = 10.f};
@@ -717,7 +716,7 @@ public:
         const auto created = createDevice({.applicationName = "Stream BLAS reuse regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
             .enableShaderObject = true, .enableRayTracingAccelerationStructure = true,
-            .enableRayQuery = true, .enableClusterAccelerationStructure = true}, device);
+            .enableRayQuery = true, .enableClusterAccelerationStructure = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!created) { return hasError(created, Error::Unsupported) ? RhiTestResult::skip("CLAS unavailable")
             : RhiTestResult::fail("Device creation failed"); }
         const auto path = std::filesystem::absolute(context.outputDirectory / "blas_cache.meshstream.bin");
@@ -747,10 +746,10 @@ public:
             std::unique_ptr<CommandBuffer> commands;
             std::unique_ptr<Streamer> streamer;
             std::unique_ptr<Buffer> readback;
-            require(bool(tracker.initialize(*device, *queue)) && bool(device->createCommandPool(*queue, pool)) &&
-                bool(pool->createCommandBuffer(commands)) && bool(device->createStreamer(makeTestStreamerDesc(), streamer)) &&
+            require(bool(tracker.initialize(*device, *queue)) && bool(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); })) &&
+                bool(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })) && bool(device->createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) &&
                 bool(device->createBuffer({.size = sizeof(MeshletStreamGpuBlasHeader), .usage = BufferUsageBits::TransferDestination,
-                    .memoryLocation = MemoryLocation::HostReadback}, readback)), "Frame resources failed");
+                    .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); })), "Frame resources failed");
             MeshletStreamFrameDesc view{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
             view.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f}, .znear = .001f, .zfar = 10.f};
             uint64_t frameId = 0;
@@ -882,19 +881,17 @@ public:
         constexpr uint64_t kByteSize = kExpected.size() * sizeof(uint32_t);
 
         std::unique_ptr<render::Streamer> streamer;
-        render::Result result = context.device.createStreamer(makeTestStreamerDesc(), streamer);
+        render::Result<> result = context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
             return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> readbackBuffer;
-        result = context.device.createBuffer(
-            render::BufferDesc{
+        result = context.device.createBuffer(render::BufferDesc{
                 .size = kByteSize,
                 .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback,
-            },
-            readbackBuffer);
+            }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
         if (!result || readbackBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
@@ -1025,14 +1022,13 @@ public:
         }
 
         std::unique_ptr<render::Streamer> streamer;
-        render::Result result = context.device.createStreamer(makeTestStreamerDesc(), streamer);
+        render::Result<> result = context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
             return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
 
         std::unique_ptr<render::Texture> texture;
-        result = context.device.createTexture(
-            render::TextureDesc{
+        result = context.device.createTexture(render::TextureDesc{
                 .type = render::TextureType::Texture2D,
                 .usage = render::TextureUsageBits::TransferDestination | render::TextureUsageBits::TransferSource,
                 .format = render::Format::Rgba8Unorm,
@@ -1042,20 +1038,17 @@ public:
                 .mipCount = 1,
                 .layerCount = 1,
                 .memoryLocation = render::MemoryLocation::Device,
-            },
-            texture);
+            }).transform([&](auto rhiValue) { texture = std::move(rhiValue); });
         if (!result || texture == nullptr) {
             return RhiTestResult::fail(std::string("createTexture returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> readbackBuffer;
-        result = context.device.createBuffer(
-            render::BufferDesc{
+        result = context.device.createBuffer(render::BufferDesc{
                 .size = kPixelByteSize,
                 .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback,
-            },
-            readbackBuffer);
+            }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
         if (!result || readbackBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
@@ -1170,7 +1163,7 @@ public:
         std::unique_ptr<render::Streamer> streamer;
         render::StreamerDesc desc = makeTestStreamerDesc();
         desc.constantBufferSize = 4096;
-        render::Result result = context.device.createStreamer(desc, streamer);
+        render::Result<> result = context.device.createStreamer(desc).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr || streamer->constantBuffer() == nullptr) {
             return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
@@ -1248,7 +1241,7 @@ public:
         return reflection;
     }
 
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         render::Streamer* streamer = context.streamer();
         render::BufferHandle output = context.outputBuffer("data");
@@ -1267,7 +1260,7 @@ public:
             .dstBuffer = output.buffer(),
             .dstOffset = 0,
         });
-        return streamed.valid() ? render::Result{} : render::makeError(render::Error::Failure);
+        return streamed.valid() ? render::Result<>{} : render::makeError(render::Error::Failure);
     }
 
     static constexpr std::array<uint32_t, 4> kExpected{
@@ -1289,7 +1282,7 @@ public:
         return reflection;
     }
 
-    render::Result execute(render::RenderGraphExecutionContext&) override
+    render::Result<> execute(render::RenderGraphExecutionContext&) override
     {
         return render::makeError(render::Error::Failure);
     }
@@ -1309,7 +1302,7 @@ public:
         return reflection;
     }
 
-    render::Result execute(render::RenderGraphExecutionContext&) override
+    render::Result<> execute(render::RenderGraphExecutionContext&) override
     {
         return render::makeError(render::Error::Failure);
     }
@@ -1355,7 +1348,7 @@ public:
 
         render::RenderGraphExecutor executor;
         std::string log;
-        render::Result result = executor.compile(context.device, graph, 1, 1, log);
+        render::Result<> result = executor.compile(context.device, graph, 1, 1, log);
         if (!result) {
             return RhiTestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
         }
@@ -1458,7 +1451,7 @@ public:
 
         render::RenderGraphExecutor executor;
         std::string log;
-        render::Result result = executor.compile(context.device, graph, 1, 1, log);
+        render::Result<> result = executor.compile(context.device, graph, 1, 1, log);
         if (!result) {
             return RhiTestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
         }
@@ -1555,19 +1548,17 @@ public:
         }
 
         std::unique_ptr<render::Streamer> streamer;
-        render::Result result = context.device.createStreamer(makeTestStreamerDesc(), streamer);
+        render::Result<> result = context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
             return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> pageBuffer;
-        result = context.device.createBuffer(
-            render::BufferDesc{
+        result = context.device.createBuffer(render::BufferDesc{
                 .size = residency.pageBufferSize(),
                 .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback,
-            },
-            pageBuffer);
+            }).transform([&](auto rhiValue) { pageBuffer = std::move(rhiValue); });
         if (!result || pageBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createBuffer(pageBuffer) returned ") + toString(result));
         }
@@ -2236,9 +2227,9 @@ public:
         const uint64_t capacity = alignStreamStorageBytes(asset.maxPagePayloadBytes()) * 4u;
         std::unique_ptr<Streamer> streamer;
         std::unique_ptr<Buffer> destination;
-        if (!context.device.createStreamer(makeTestStreamerDesc(capacity + 4096), streamer) ||
+        if (!context.device.createStreamer(makeTestStreamerDesc(capacity + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }) ||
             !context.device.createBuffer({.size = capacity, .usage = BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::HostReadback}, destination)) {
+                .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { destination = std::move(rhiValue); })) {
             return RhiTestResult::fail("Cannot create latency lifecycle upload resources");
         }
         MeshletStreamResidencyManager residency;
@@ -2640,19 +2631,17 @@ public:
         render::StreamerDesc streamerDesc = makeTestStreamerDesc(
             (static_cast<uint64_t>(fallbackPages.size()) + 1ull) * asset.maxPagePayloadBytes() + 4096ull);
         std::unique_ptr<render::Streamer> streamer;
-        render::Result result = context.device.createStreamer(streamerDesc, streamer);
+        render::Result<> result = context.device.createStreamer(streamerDesc).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
             return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> pageBuffer;
-        result = context.device.createBuffer(
-            render::BufferDesc{
+        result = context.device.createBuffer(render::BufferDesc{
                 .size = residency.pageBufferSize(),
                 .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback,
-            },
-            pageBuffer);
+            }).transform([&](auto rhiValue) { pageBuffer = std::move(rhiValue); });
         if (!result || pageBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createBuffer(pageBuffer) returned ") + toString(result));
         }
@@ -2955,11 +2944,11 @@ public:
                 .unloadDelayFrames = 1, .evictionAgeThresholdFrames = 1}, reason) ||
             !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
         std::unique_ptr<Streamer> streamer;
-        auto result = context.device.createStreamer(makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096), streamer);
+        auto result = context.device.createStreamer(makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result) { return RhiTestResult::fail(toString(result)); }
         std::unique_ptr<Buffer> destination;
         result = context.device.createBuffer({.size = residency.pageBufferSize(),
-            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, destination);
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { destination = std::move(rhiValue); });
         if (!result) { return RhiTestResult::fail(toString(result)); }
         residency.beginFrame();
         (void)residency.requestPage(pages[0]); (void)residency.requestPage(pages[1]);
@@ -3066,11 +3055,11 @@ public:
                 .unloadDelayFrames = 1, .evictionAgeThresholdFrames = 1}, reason) ||
             !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
         std::unique_ptr<Streamer> streamer;
-        auto result = context.device.createStreamer(makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096), streamer);
+        auto result = context.device.createStreamer(makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result) { return RhiTestResult::fail(toString(result)); }
         std::unique_ptr<Buffer> destination;
         result = context.device.createBuffer({.size = residency.pageBufferSize(),
-            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, destination);
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { destination = std::move(rhiValue); });
         if (!result) { return RhiTestResult::fail(toString(result)); }
         residency.beginFrame();
         (void)residency.requestPage(pages[0]); (void)residency.requestPage(pages[1]);
@@ -3248,14 +3237,14 @@ public:
 #define UPLOAD_REQUIRE(expression) \
         if (!(expression)) { return RhiTestResult::fail("Upload completion: " #expression); }
         UPLOAD_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
-        UPLOAD_REQUIRE(context.device.createStreamer(makeTestStreamerDesc(), streamer));
-        UPLOAD_REQUIRE(context.device.createCommandPool(context.graphicsQueue, pool));
-        UPLOAD_REQUIRE(pool->createCommandBuffer(commands));
-        UPLOAD_REQUIRE(pool->createCommandBuffer(prefix));
-        UPLOAD_REQUIRE(context.device.createSemaphore(gate));
+        UPLOAD_REQUIRE(context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
+        UPLOAD_REQUIRE(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        UPLOAD_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
+        UPLOAD_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { prefix = std::move(rhiValue); }));
+        UPLOAD_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         const uint64_t capacity = alignStreamStorageBytes(asset.maxPagePayloadBytes()) * 4u;
         UPLOAD_REQUIRE(context.device.createBuffer({.size = capacity,
-            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, destination));
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { destination = std::move(rhiValue); }));
         uint64_t frameIndex = 0;
         // Gate completion, drop an unflushed upload, cancel its recording, then
         // cancel only the copy tail of a batch whose prefix has been accepted.
@@ -3401,7 +3390,7 @@ public:
                 if (message.messageIdName && std::strstr(message.messageIdName, "VUID-")) {
                     ++*static_cast<std::atomic_uint*>(data);
                 }
-            }, .context = &validationMessages}}, ownedDevice);
+            }, .context = &validationMessages}}).transform([&](auto rhiValue) { ownedDevice = std::move(rhiValue); });
         if (!created) {
             return hasError(created, Error::Unsupported) ? RhiTestResult::skip("Bindless device unavailable") :
                 RhiTestResult::fail("Cannot create ordered publication device");
@@ -3434,12 +3423,12 @@ public:
             .maxActiveGroups = 4096, .maxTraversalWorkers = 64, .maxTraversalWorkItems = 4096,
             .pageLoadConcurrency = 0, .queuedFrameCount = 2}, log));
         ORDERED_REQUIRE(!runtime.sceneReadiness().ready);
-        ORDERED_REQUIRE(device.createStreamer(makeTestStreamerDesc(), streamer));
-        ORDERED_REQUIRE(device.createCommandPool(queue, pool));
-        ORDERED_REQUIRE(pool->createCommandBuffer(commands));
+        ORDERED_REQUIRE(device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
+        ORDERED_REQUIRE(device.createCommandPool(queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        ORDERED_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
         ORDERED_REQUIRE(tracker.initialize(device, queue));
         ORDERED_REQUIRE(device.createBuffer({.size = sizeof(MeshletStreamGpuActiveHeader),
-            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, readback));
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         MeshletStreamFrameDesc view{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
         view.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f},
             .znear = .001f, .zfar = 10.f};
@@ -3527,7 +3516,7 @@ public:
         const uint64_t capacity = uint64_t(asset.maxPagePayloadBytes()) * 8;
         std::unique_ptr<Buffer> destination;
         auto result = context.device.createBuffer({.size = capacity,
-            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}, destination);
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { destination = std::move(rhiValue); });
         if (!result) { return RhiTestResult::fail(toString(result)); }
         for (bool asynchronous : {false, true}) {
             for (uint64_t budget : {0ull, 1ull, uint64_t(asset.maxPagePayloadBytes())}) {
@@ -3537,7 +3526,7 @@ public:
                         .pageLoadConcurrency = asynchronous ? 2u : 0u, .maxPageLoadsInFlight = 4,
                         .completionDrivenUploads = false}, reason)) { return RhiTestResult::fail(reason); }
                 std::unique_ptr<Streamer> streamer;
-                result = context.device.createStreamer(makeTestStreamerDesc(capacity + 4096), streamer);
+                result = context.device.createStreamer(makeTestStreamerDesc(capacity + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
                 if (!result) { return RhiTestResult::fail(toString(result)); }
                 residency.beginFrame();
                 for (uint32_t page = 0; page < 4; ++page) { (void)residency.requestPage(page); }

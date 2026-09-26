@@ -9,7 +9,7 @@ struct ComputeKernel::Impl {
     std::unique_ptr<ComputePipeline> pipeline;
 };
 
-Result ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc, std::string& log)
+Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc, std::string& log)
 {
     clear();
     if (desc.spirv.empty() || !desc.parameters.id || !desc.parameters.size || !desc.parameters.alignment) {
@@ -17,11 +17,11 @@ Result ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc, 
     }
     auto impl = std::make_shared<Impl>();
     auto result = device.createShaderModule({.code = desc.spirv.data(), .byteSize = desc.spirv.size_bytes(),
-        .debugName = desc.debugName}, impl->shader);
+        .debugName = desc.debugName}).transform([&](auto rhiValue) { impl->shader = std::move(rhiValue); });
     if (result) {
         result = device.createComputePipeline({.computeShader = impl->shader.get(), .computeEntryPoint = "main",
             .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(uint64_t),
-            .pipelineCache = desc.pipelineCache}, impl->pipeline);
+            .pipelineCache = desc.pipelineCache}).transform([&](auto rhiValue) { impl->pipeline = std::move(rhiValue); });
     }
     if (!result) {
         log += "ComputeKernel creation failed: "; log += resultToString(result); return result;
@@ -31,7 +31,7 @@ Result ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc, 
     return {};
 }
 
-Result ComputeKernel::bind(CommandBuffer& commands, const EncodedParameters& params) const
+Result<> ComputeKernel::bind(CommandBuffer& commands, const EncodedParameters& params) const
 {
     if (!impl_ || commands.deviceIdentity() != impl_->device || !params.compatible(commands, impl_->parameters)) {
         return makeError(Error::InvalidArgument);
@@ -45,7 +45,7 @@ Result ComputeKernel::bind(CommandBuffer& commands, const EncodedParameters& par
     return {};
 }
 
-Result ComputeKernel::dispatch(CommandBuffer& commands, const EncodedParameters& params,
+Result<> ComputeKernel::dispatch(CommandBuffer& commands, const EncodedParameters& params,
     uint32_t x, uint32_t y, uint32_t z) const
 {
     if (!x || !y || !z || (uint32_t(commands.queueCapabilities()) & uint32_t(QueueAccessBits::Compute)) == 0) {
@@ -57,15 +57,15 @@ Result ComputeKernel::dispatch(CommandBuffer& commands, const EncodedParameters&
     return {};
 }
 
-Result ComputeKernel::dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
+Result<> ComputeKernel::dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
     Buffer& arguments, uint64_t offset) const
 {
     BufferSlice slice;
-    auto result = arguments.slice(slice, offset, 12);
+    auto result = arguments.slice(offset, 12).transform([&](auto rhiValue) { slice = std::move(rhiValue); });
     return result ? dispatchIndirect(commands, params, slice) : result;
 }
 
-Result ComputeKernel::dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
+Result<> ComputeKernel::dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
     const BufferSlice& arguments) const
 {
     if (!arguments.validate(commands.deviceIdentity(), BufferUsageBits::Indirect, 4, 12) ||

@@ -33,13 +33,11 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result result = render::createDevice(
-            render::DeviceDesc{
+        render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic Scene Acceleration Structure Test",
                 .enableValidation = context.enableValidation,
                 .enableRayTracingAccelerationStructure = true,
-            },
-            device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
@@ -388,7 +386,7 @@ public:
             .applicationName = "Non-geometry transform sync test",
             .enableValidation = context.enableValidation,
             .enableRayTracingAccelerationStructure = true,
-        }, device);
+        }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             return render::hasError(result, render::Error::Unsupported)
                 ? RhiTestResult::skip("ray tracing acceleration structures unavailable")
@@ -494,13 +492,11 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result result = render::createDevice(
-            render::DeviceDesc{
+        render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic Scene Cluster Acceleration Structure Test",
                 .enableValidation = context.enableValidation,
                 .enableClusterAccelerationStructure = true,
-            },
-            device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
@@ -574,13 +570,11 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result result = render::createDevice(
-            render::DeviceDesc{
+        render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic Scene Partitioned Acceleration Structure Test",
                 .enableValidation = context.enableValidation,
                 .enablePartitionedAccelerationStructure = true,
-            },
-            device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
@@ -656,13 +650,11 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::unique_ptr<render::Device> device;
-        render::Result result = render::createDevice(
-            render::DeviceDesc{
+        render::Result<> result = render::createDevice(render::DeviceDesc{
                 .applicationName = "Metallic Meshlet Stream CLAS Pool Test",
                 .enableValidation = context.enableValidation,
                 .enableClusterAccelerationStructure = true,
-            },
-            device);
+            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
                 return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
@@ -725,15 +717,13 @@ public:
         }
 
         std::unique_ptr<render::Buffer> pageBuffer;
-        result = device->createBuffer(
-            render::BufferDesc{
+        result = device->createBuffer(render::BufferDesc{
                 .size = decodedPayload.size(),
                 .usage = render::BufferUsageBits::Storage |
                     render::BufferUsageBits::ShaderDeviceAddress |
                     render::BufferUsageBits::AccelerationStructureBuildInput,
                 .memoryLocation = render::MemoryLocation::HostUpload,
-            },
-            pageBuffer);
+            }).transform([&](auto rhiValue) { pageBuffer = std::move(rhiValue); });
         if (!result || pageBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createBuffer(stream CLAS page) returned ") + toString(result));
         }
@@ -767,17 +757,17 @@ public:
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
-        result = device->createCommandPool(*graphicsQueue, commandPool);
+        result = device->createCommandPool(*graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
             return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
         std::unique_ptr<render::CommandBuffer> commandBuffer;
-        result = commandPool->createCommandBuffer(commandBuffer);
+        result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
             return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
         std::unique_ptr<render::Fence> fence;
-        result = device->createFence(false, fence);
+        result = device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
             return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
         }

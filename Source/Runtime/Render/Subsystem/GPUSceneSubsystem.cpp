@@ -718,7 +718,7 @@ struct GPUSceneSubsystem::UploadResources {
     std::vector<std::unique_ptr<Buffer>> stagingBuffers;
 };
 
-Result GPUSceneSubsystem::initialize(
+Result<> GPUSceneSubsystem::initialize(
     const RenderSubsystemInitContext& context,
     std::string&)
 {
@@ -750,7 +750,7 @@ GPUSceneViewId GPUSceneSubsystem::createView(const GPUSceneViewDesc& desc)
     return createView(desc, view, ignoredLog) ? view : GPUSceneViewId{};
 }
 
-Result GPUSceneSubsystem::createView(
+Result<> GPUSceneSubsystem::createView(
     const GPUSceneViewDesc& desc,
     GPUSceneViewId& view,
     std::string& log)
@@ -770,7 +770,7 @@ Result GPUSceneSubsystem::createView(
         return {};
     }
 
-    Result result = ensureViewGpuResources(view, desc, log);
+    Result<> result = ensureViewGpuResources(view, desc, log);
     if (!result) {
         scene_.destroyView(view);
         view = {};
@@ -800,7 +800,7 @@ bool GPUSceneSubsystem::destroyView(GPUSceneViewId view)
     return true;
 }
 
-Result GPUSceneSubsystem::ensureViewGpuResources(
+Result<> GPUSceneSubsystem::ensureViewGpuResources(
     GPUSceneViewId view,
     const GPUSceneViewDesc& requestedDesc,
     std::string& log)
@@ -913,17 +913,15 @@ Result GPUSceneSubsystem::ensureViewGpuResources(
                                     uint32_t structureStride,
                                     BufferUsageBits usage,
                                     GpuBufferResource& resource,
-                                    const char* label) -> Result {
-        Result result = device_->createBuffer(
-            BufferDesc{
+                                    const char* label) -> Result<> {
+        Result<> result = device_->createBuffer(BufferDesc{
                 .size = byteSize,
                 .structureStride = structureStride,
                 .usage = debugReadbackEnabled_ ? usage | BufferUsageBits::TransferSource : usage,
                 .memoryLocation = MemoryLocation::Device,
                 .queueAccess = QueueAccessBits::Graphics |
                     QueueAccessBits::Compute,
-            },
-            resource.buffer);
+            }).transform([&](auto rhiValue) { resource.buffer = std::move(rhiValue); });
         if (!result || resource.buffer == nullptr) {
             log = std::string("GPUSceneSubsystem failed to create View ") +
                 label + " buffer: " + resultToString(result);
@@ -932,7 +930,7 @@ Result GPUSceneSubsystem::ensureViewGpuResources(
         resource.byteSize = byteSize;
         resource.structureStride = structureStride;
         std::shared_ptr<ResourceRegistry> registry;
-        result = device_->resourceRegistry(registry);
+        result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (result) { result = registry->storageBuffer(*resource.buffer, resource.resource); }
         if (!result) { return result; }
         return {};
@@ -945,7 +943,7 @@ Result GPUSceneSubsystem::ensureViewGpuResources(
     constexpr uint64_t kIndirectByteSize =
         kGPUSceneRasterDrawBucketCount * 4u * sizeof(uint32_t);
     const uint64_t hzbByteSize = desc.hzbElementCount * sizeof(float);
-    Result result;
+    Result<> result;
     for (uint32_t frameSlot = 0;
          frameSlot < desc.frameSlotCount && result;
          ++frameSlot) {
@@ -1037,7 +1035,7 @@ bool GPUSceneSubsystem::viewGpuResources(
     return resources.sourceView == view;
 }
 
-Result GPUSceneSubsystem::recordInitialize(
+Result<> GPUSceneSubsystem::recordInitialize(
     CommandBuffer& commandBuffer,
     GPUSceneViewId view,
     uint32_t frameSlot,
@@ -1055,7 +1053,7 @@ Result GPUSceneSubsystem::recordInitialize(
     const auto owned = found->second;
     const bool initialized = slot.initialized;
     const bool hzbInitialized = resources.hzbInitialized;
-    Result result = host_->deferSubmission(commandBuffer, {},
+    Result<> result = host_->deferSubmission(commandBuffer, {},
         [this, owned, frameSlot, initialized, hzbInitialized]() {
             owned->frameSlots[frameSlot].initialized = initialized;
             owned->hzbInitialized = hzbInitialized;
@@ -1104,7 +1102,7 @@ Result GPUSceneSubsystem::recordInitialize(
     return {};
 }
 
-Result GPUSceneSubsystem::publishViewGpuResources(
+Result<> GPUSceneSubsystem::publishViewGpuResources(
     GPUSceneViewId view,
     uint32_t frameSlot,
     uint32_t hzbWriteIndex,
@@ -1179,7 +1177,7 @@ void GPUSceneSubsystem::sourceOverrideChanged(const scene::Scene* previousOverri
     sourceDirty_ = true;
 }
 
-Result GPUSceneSubsystem::acquireSourceOverride(
+Result<> GPUSceneSubsystem::acquireSourceOverride(
     const scene::Scene* scene,
     GPUSceneSourceOverrideToken& token,
     std::string& log)
@@ -1248,7 +1246,7 @@ bool GPUSceneSubsystem::clearSourceOverride(const scene::Scene* scene)
     return true;
 }
 
-Result GPUSceneSubsystem::beginFrame(
+Result<> GPUSceneSubsystem::beginFrame(
     const RenderSubsystemFrameContext& context,
     RenderChangeBits& changes,
     std::string& log)
@@ -1290,7 +1288,7 @@ Result GPUSceneSubsystem::beginFrame(
             return {};
         }
 
-        Result result = scene_.rebuild(
+        Result<> result = scene_.rebuild(
             GPUSceneSourceView::fromScene(*sourceScene_, externalRevision, virtualLights),
             log);
         if (!result) {
@@ -1314,7 +1312,7 @@ Result GPUSceneSubsystem::beginFrame(
         GPUSceneSourceView::fromScene(*sourceScene_, externalRevision, virtualLights);
     const GPUSceneSyncResult syncResult = scene_.sync(source);
     if (syncResult == GPUSceneSyncResult::RebuildRequired) {
-        Result result = scene_.rebuild(source, log);
+        Result<> result = scene_.rebuild(source, log);
         if (!result) {
             return result;
         }
@@ -1333,7 +1331,7 @@ Result GPUSceneSubsystem::beginFrame(
     return {};
 }
 
-Result GPUSceneSubsystem::recordPreGraph(
+Result<> GPUSceneSubsystem::recordPreGraph(
     const RenderSubsystemFrameContext& context,
     std::string& log)
 {
@@ -1365,7 +1363,7 @@ Result GPUSceneSubsystem::recordPreGraph(
         upload = PendingUpload::Instances;
     }
 
-    Result result;
+    Result<> result;
     if (upload != PendingUpload::None) {
         const auto previousResources = gpuResources_;
         const auto previousRevision = gpuResources_ != nullptr ? gpuResources_->revision : 0;
@@ -1402,7 +1400,7 @@ Result GPUSceneSubsystem::recordPreGraph(
     return result;
 }
 
-Result GPUSceneSubsystem::uploadFullScene(
+Result<> GPUSceneSubsystem::uploadFullScene(
     const RenderSubsystemFrameContext& context,
     std::string& log)
 {
@@ -1441,7 +1439,7 @@ Result GPUSceneSubsystem::uploadFullScene(
     auto createResource = [&]<typename T>(
                               GPUSceneGlobalBufferKind kind,
                               const std::vector<T>& records,
-                              const char* label) -> Result {
+                              const char* label) -> Result<> {
         if (records.empty()) {
             return {};
         }
@@ -1451,8 +1449,7 @@ Result GPUSceneSubsystem::uploadFullScene(
         }
         const uint64_t byteSize = static_cast<uint64_t>(records.size()) * sizeof(T);
         GpuBufferResource& resource = next->resource(kind);
-        Result result = device_->createBuffer(
-            BufferDesc{
+        Result<> result = device_->createBuffer(BufferDesc{
                 .size = byteSize,
                 .structureStride = sizeof(T),
                 .usage = BufferUsageBits::Storage |
@@ -1461,8 +1458,7 @@ Result GPUSceneSubsystem::uploadFullScene(
                 .memoryLocation = MemoryLocation::Device,
                 .queueAccess = QueueAccessBits::Graphics |
                     QueueAccessBits::Compute,
-            },
-            resource.buffer);
+            }).transform([&](auto rhiValue) { resource.buffer = std::move(rhiValue); });
         if (!result || resource.buffer == nullptr) {
             log = std::string("GPUScene failed to create device-local ") + label +
                 " buffer: " + resultToString(result);
@@ -1471,20 +1467,18 @@ Result GPUSceneSubsystem::uploadFullScene(
         resource.byteSize = byteSize;
         resource.structureStride = sizeof(T);
         std::shared_ptr<ResourceRegistry> registry;
-        result = device_->resourceRegistry(registry);
+        result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (result) { result = registry->storageBuffer(*resource.buffer, resource.resource); }
         if (!result) { return result; }
 
         std::unique_ptr<Buffer> staging;
-        result = device_->createBuffer(
-            BufferDesc{
+        result = device_->createBuffer(BufferDesc{
                 .size = byteSize,
                 .structureStride = sizeof(T),
                 .usage = BufferUsageBits::TransferSource,
                 .memoryLocation = MemoryLocation::HostUpload,
                 .queueAccess = QueueAccessBits::Graphics,
-            },
-            staging);
+            }).transform([&](auto rhiValue) { staging = std::move(rhiValue); });
         if (!result || staging == nullptr) {
             log = std::string("GPUScene failed to create ") + label +
                 " staging buffer: " + resultToString(result);
@@ -1507,7 +1501,7 @@ Result GPUSceneSubsystem::uploadFullScene(
         return {};
     };
 
-    Result result = createResource(
+    Result<> result = createResource(
         GPUSceneGlobalBufferKind::Geometries, data.geometries, "geometry");
     if (result) {
         result = createResource(
@@ -1643,7 +1637,7 @@ Result GPUSceneSubsystem::uploadFullScene(
     return {};
 }
 
-Result GPUSceneSubsystem::uploadInstances(
+Result<> GPUSceneSubsystem::uploadInstances(
     const RenderSubsystemFrameContext& context,
     std::string& log)
 {
@@ -1667,15 +1661,13 @@ Result GPUSceneSubsystem::uploadInstances(
 
     auto uploads = std::make_shared<UploadResources>();
     std::unique_ptr<Buffer> staging;
-    Result result = device_->createBuffer(
-        BufferDesc{
+    Result<> result = device_->createBuffer(BufferDesc{
             .size = byteSize,
             .structureStride = sizeof(GPUSceneGpuInstanceRecord),
             .usage = BufferUsageBits::TransferSource,
             .memoryLocation = MemoryLocation::HostUpload,
             .queueAccess = QueueAccessBits::Graphics,
-        },
-        staging);
+        }).transform([&](auto rhiValue) { staging = std::move(rhiValue); });
     if (!result || staging == nullptr) {
         log = "GPUScene failed to create instance staging buffer: ";
         log += resultToString(result);
@@ -1735,7 +1727,7 @@ Result GPUSceneSubsystem::uploadInstances(
     return {};
 }
 
-Result GPUSceneSubsystem::createBindings(
+Result<> GPUSceneSubsystem::createBindings(
     GPUSceneConsumerBindings& bindings,
     std::string& log) const
 {
@@ -1790,7 +1782,7 @@ void GPUSceneSubsystem::releaseBindings(
     bindings = {};
 }
 
-Result GPUSceneSubsystem::prepareShaderReload(
+Result<> GPUSceneSubsystem::prepareShaderReload(
     const RenderSubsystemInitContext& context,
     std::unique_ptr<RenderSubsystemShaderReload>& outReload,
     std::string& log)
@@ -1805,7 +1797,7 @@ Result GPUSceneSubsystem::prepareShaderReload(
         for (const auto& grid : grids) {
             if (grid == nullptr) { continue; }
             std::unique_ptr<RenderSubsystemShaderReload> gridReload;
-            Result result = grid->prepareShaderReload(context.device, gridReload, log);
+            Result<> result = grid->prepareShaderReload(context.device, gridReload, log);
             if (!result) { return result; }
             if (gridReload != nullptr) {
                 reload->entries.push_back({grid, std::move(gridReload)});
@@ -1864,7 +1856,7 @@ void GPUSceneSubsystem::shutdown()
     sourceDirty_ = true;
 }
 
-Result GPUSceneSubsystem::recordLightGrid(CommandBuffer& commandBuffer, GPUSceneViewId view,
+Result<> GPUSceneSubsystem::recordLightGrid(CommandBuffer& commandBuffer, GPUSceneViewId view,
     uint32_t frameSlot, const ClusterLightGridDesc& desc, std::string& log)
 {
     const uint32_t slots = scene_.viewFrameSlotCount(view);
@@ -1888,7 +1880,7 @@ const ClusterLightGridSnapshot* GPUSceneSubsystem::lightGrid(GPUSceneViewId view
     return found->second[frameSlot]->snapshot(scene_);
 }
 
-Result GPUSceneSubsystem::recordCull(
+Result<> GPUSceneSubsystem::recordCull(
     CommandBuffer& commandBuffer,
     GPUSceneViewId view,
     uint32_t frameSlot,
@@ -2031,7 +2023,7 @@ Result GPUSceneSubsystem::recordCull(
     return {};
 }
 
-Result GPUSceneSubsystem::recordInstanceCull(
+Result<> GPUSceneSubsystem::recordInstanceCull(
     CommandBuffer& commandBuffer,
     GPUSceneViewId view,
     uint32_t frameSlot,
@@ -2107,7 +2099,7 @@ Result GPUSceneSubsystem::recordInstanceCull(
     return {};
 }
 
-Result GPUSceneSubsystem::recordBuildHzb(
+Result<> GPUSceneSubsystem::recordBuildHzb(
     CommandBuffer& commandBuffer,
     GPUSceneViewId view,
     uint32_t frameSlot,
@@ -2151,7 +2143,7 @@ Result GPUSceneSubsystem::recordBuildHzb(
 
     const auto owned = viewGpuResources_.find(viewResourceKey(view));
     if (owned == viewGpuResources_.end()) { return makeError(Error::InvalidArgument); }
-    Result result = host_->deferSubmission(commandBuffer, {},
+    Result<> result = host_->deferSubmission(commandBuffer, {},
         [this, resources = owned->second, view]() {
             const auto current = viewGpuResources_.find(viewResourceKey(view));
             if (current != viewGpuResources_.end() && current->second == resources) {

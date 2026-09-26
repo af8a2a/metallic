@@ -91,7 +91,7 @@ void ScreenSpaceShadows::clear()
     for (auto& trace : traces_) { trace.clear(); }
 }
 
-Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Streamer& streamer,
+Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Streamer& streamer,
     TextureView& depth, const ViewConstants& view, std::span<const GpuPunctualLight> lights,
     uint64_t sceneRevision, uint64_t transformRevision, const ScreenSpaceShadowSettings& settings,
     ScreenSpaceShadowResult& output, std::string& log, ScenePathTraceResources* geometry,
@@ -193,9 +193,9 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
         for (size_t i = 0; i < next->textures.size(); ++i) {
             auto result = device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::Storage |
                 TextureUsageBits::TransferDestination | TextureUsageBits::TransferSource,
-                .format = formats[i], .width = width, .height = height}, next->textures[i]);
+                .format = formats[i], .width = width, .height = height}).transform([&](auto rhiValue) { next->textures[i] = std::move(rhiValue); });
             if (!result) { return result; }
-            result = device.createTextureView(*next->textures[i], {.format = formats[i]}, next->views[i]);
+            result = device.createTextureView(*next->textures[i], {.format = formats[i]}).transform([&](auto rhiValue) { next->views[i] = std::move(rhiValue); });
             if (!result) { return result; }
         }
         next->width = width;
@@ -213,7 +213,7 @@ Result ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Strea
         std::unique_ptr<Buffer> buffer;
         auto allocated = device.createBuffer({.size = sizeof(ScreenSpaceShadowParameters),
             .structureStride = sizeof(ScreenSpaceShadowParameters), .usage = BufferUsageBits::Storage,
-            .memoryLocation = MemoryLocation::HostUpload}, buffer);
+            .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
         if (!allocated) { return allocated; }
         state->parameters = std::move(buffer);
         state->parameterPool.push_back(state->parameters);

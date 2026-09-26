@@ -19,7 +19,7 @@
 
 namespace metallic::render::vulkan {
 
-Result validateDlssNrDesc(const DlssNrDesc& desc, std::string& log)
+Result<> validateDlssNrDesc(const DlssNrDesc& desc, std::string& log)
 {
     log.clear();
     const std::array refs{desc.inputColor, desc.outputColor, desc.motionVectors, desc.depth};
@@ -172,7 +172,7 @@ private:
     DWORD protection_ = 0;
 };
 
-Result ngxResult(NVSDK_NGX_Result result, const char* operation, std::string& log)
+Result<> ngxResult(NVSDK_NGX_Result result, const char* operation, std::string& log)
 {
     if (NVSDK_NGX_SUCCEED(result)) { return {}; }
     std::ostringstream message;
@@ -275,7 +275,7 @@ DlssNrContext::~DlssNrContext()
     impl_.reset();
 }
 
-Result DlssNrContext::initialize(Device& device, std::string& log)
+Result<> DlssNrContext::initialize(Device& device, std::string& log)
 {
     log.clear();
 #if METALLIC_HAS_DLSS_NR
@@ -370,7 +370,7 @@ Result DlssNrContext::initialize(Device& device, std::string& log)
 #endif
 }
 
-Result DlssNrContext::evaluate(CommandBuffer& commandBuffer, const DlssNrDesc& desc, std::string& log)
+Result<> DlssNrContext::evaluate(CommandBuffer& commandBuffer, const DlssNrDesc& desc, std::string& log)
 {
     auto valid = validateDlssNrDesc(desc, log);
     if (!valid) { return valid; }

@@ -22,7 +22,7 @@ public:
             runtimeColor4Setting("color", "Color", std::array<float, 4>{0.04f, 0.06f, 0.09f, 1.0f}),
         };
     }
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle color = context.outputTexture("color");
         if (!color.valid()) {

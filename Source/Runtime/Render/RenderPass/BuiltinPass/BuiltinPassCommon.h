@@ -926,7 +926,7 @@ struct RtxdiCompositePush {
 
 static_assert(sizeof(RtxdiCompositePush) == 16);
 
-inline std::string resultMessage(std::string_view label, const Result& result)
+inline std::string resultMessage(std::string_view label, const Result<>& result)
 {
     std::string message(label);
     message += " returned ";
@@ -958,7 +958,7 @@ inline CompareOp depthCompareOp(bool reversedZ)
     return reversedZ ? CompareOp::GreaterEqual : CompareOp::LessEqual;
 }
 
-inline Result createSlangShaderModule(
+inline Result<> createSlangShaderModule(
     Device& device,
     const char* moduleName,
     const char* entryPointName,
@@ -966,7 +966,7 @@ inline Result createSlangShaderModule(
     std::string& log)
 {
     ShaderCompileResult compileResult;
-    Result result = compileSlangShaderToSpirv(
+    Result<> result = compileSlangShaderToSpirv(
         SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPointName,
@@ -989,13 +989,11 @@ inline Result createSlangShaderModule(
     }
 
     const std::string shaderDebugName = std::string(moduleName) + "." + entryPointName;
-    result = device.createShaderModule(
-        ShaderModuleDesc{
+    result = device.createShaderModule(ShaderModuleDesc{
             .code = compileResult.spirv.data(),
             .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
             .debugName = shaderDebugName.c_str(),
-        },
-        outShaderModule);
+        }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
     if (!result) {
         log += resultMessage("createShaderModule", result);
         log += '\n';
@@ -1003,13 +1001,13 @@ inline Result createSlangShaderModule(
     return result;
 }
 
-inline Result compileSlangShader(
+inline Result<> compileSlangShader(
     const char* moduleName,
     const char* entryPointName,
     ShaderCompileResult& outCompileResult,
     std::string& log)
 {
-    Result result = compileSlangShaderToSpirv(
+    Result<> result = compileSlangShaderToSpirv(
         SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPointName,

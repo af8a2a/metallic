@@ -6,7 +6,7 @@
 namespace metallic::render::vulkan {
 namespace {
 
-Result convertResult(VkResult result)
+Result<> convertResult(VkResult result)
 {
     if (result == VK_SUCCESS) { return {}; }
     if (result == VK_ERROR_OUT_OF_HOST_MEMORY || result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
@@ -21,15 +21,16 @@ Result convertResult(VkResult result)
 
 } // namespace
 
-Result queryGeneratedCommandsProperties(Device& device, VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT& properties)
+Result<VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT> queryGeneratedCommandsProperties(Device& device)
 {
-    properties = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT};
+    VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT properties{
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_PROPERTIES_EXT};
     const auto native = nativeDevice(device);
     if (!native.device) { return makeError(Error::InvalidArgument); }
     if (!device.capabilities().deviceGeneratedCommands) { return makeError(Error::Unsupported); }
     VkPhysicalDeviceProperties2 query{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &properties};
     vkGetPhysicalDeviceProperties2(native.physicalDevice, &query);
-    return {};
+    return properties;
 }
 
 struct GeneratedCommands::Impl {
@@ -93,7 +94,7 @@ struct GeneratedCommands::Impl {
             : hasFlag(capabilities, QueueAccessBits::Graphics);
     }
 
-    Result fillInfo(CommandBuffer& commands, const GeneratedCommandsArguments& args, VkGeneratedCommandsInfoEXT& info)
+    Result<> fillInfo(CommandBuffer& commands, const GeneratedCommandsArguments& args, VkGeneratedCommandsInfoEXT& info)
     {
         if (!ready || !owns(commands) || !supportsQueue(commands) || !args.commands || args.sequenceCount == 0 ||
             args.sequenceCount > maxSequences || (args.offset & 3) != 0 ||
@@ -146,12 +147,13 @@ void GeneratedCommands::reset()
     impl_.reset();
 }
 
-Result GeneratedCommands::initialize(Device& device, const GeneratedCommandsDesc& desc)
+Result<> GeneratedCommands::initialize(Device& device, const GeneratedCommandsDesc& desc)
 {
     reset();
-    VkPhysicalDeviceDeviceGeneratedCommandsPropertiesEXT properties{};
-    auto result = queryGeneratedCommandsProperties(device, properties);
-    if (!result) { return result; }
+    const auto queriedProperties = queryGeneratedCommandsProperties(device);
+    if (!queriedProperties) { return makeError(queriedProperties.error()); }
+    const auto& properties = *queriedProperties;
+    Result<> result;
     if (!desc.layout.pTokens || desc.layout.tokenCount == 0 || desc.maxSequenceCount == 0 ||
         desc.layout.shaderStages == 0 || desc.layout.indirectStride == 0 || (desc.layout.indirectStride & 3) != 0 ||
         desc.layout.tokenCount > properties.maxIndirectCommandsTokenCount ||
@@ -231,7 +233,7 @@ Result GeneratedCommands::initialize(Device& device, const GeneratedCommandsDesc
     return result;
 }
 
-Result GeneratedCommands::prepare()
+Result<> GeneratedCommands::prepare()
 {
     if (!impl_) { return makeError(Error::InvalidArgument); }
     auto& impl = *impl_;
@@ -303,7 +305,7 @@ VkMemoryRequirements GeneratedCommands::memoryRequirements() const
     return impl_ ? impl_->requirements : VkMemoryRequirements{};
 }
 
-Result GeneratedCommands::updatePipelines(std::span<const VkWriteIndirectExecutionSetPipelineEXT> writes)
+Result<> GeneratedCommands::updatePipelines(std::span<const VkWriteIndirectExecutionSetPipelineEXT> writes)
 {
     if (!impl_ || !impl_->executionSet || impl_->setType != VK_INDIRECT_EXECUTION_SET_INFO_TYPE_PIPELINES_EXT ||
         writes.empty() || writes.size() > impl_->setCapacity) { return makeError(Error::InvalidArgument); }
@@ -319,7 +321,7 @@ Result GeneratedCommands::updatePipelines(std::span<const VkWriteIndirectExecuti
     return {};
 }
 
-Result GeneratedCommands::updateShaders(std::span<const VkWriteIndirectExecutionSetShaderEXT> writes)
+Result<> GeneratedCommands::updateShaders(std::span<const VkWriteIndirectExecutionSetShaderEXT> writes)
 {
     if (!impl_ || !impl_->executionSet || impl_->setType != VK_INDIRECT_EXECUTION_SET_INFO_TYPE_SHADER_OBJECTS_EXT ||
         writes.empty() || writes.size() > impl_->setCapacity) { return makeError(Error::InvalidArgument); }
@@ -335,7 +337,7 @@ Result GeneratedCommands::updateShaders(std::span<const VkWriteIndirectExecution
     return {};
 }
 
-Result GeneratedCommands::preprocess(CommandBuffer& commands, const GeneratedCommandsArguments& args, CommandBuffer& state)
+Result<> GeneratedCommands::preprocess(CommandBuffer& commands, const GeneratedCommandsArguments& args, CommandBuffer& state)
 {
     if (!impl_ || !impl_->explicitPreprocess || !impl_->owns(state) || !impl_->supportsQueue(state)) {
         return makeError(Error::InvalidArgument);
@@ -347,7 +349,7 @@ Result GeneratedCommands::preprocess(CommandBuffer& commands, const GeneratedCom
     return {};
 }
 
-Result GeneratedCommands::preprocessBarrier(CommandBuffer& commands)
+Result<> GeneratedCommands::preprocessBarrier(CommandBuffer& commands)
 {
     if (!impl_ || !impl_->explicitPreprocess || !impl_->owns(commands) || !impl_->supportsQueue(commands)) {
         return makeError(Error::InvalidArgument);
@@ -365,7 +367,7 @@ Result GeneratedCommands::preprocessBarrier(CommandBuffer& commands)
     return {};
 }
 
-Result GeneratedCommands::execute(CommandBuffer& commands, const GeneratedCommandsArguments& args, bool isPreprocessed)
+Result<> GeneratedCommands::execute(CommandBuffer& commands, const GeneratedCommandsArguments& args, bool isPreprocessed)
 {
     if (!impl_ || isPreprocessed != impl_->explicitPreprocess) { return makeError(Error::InvalidArgument); }
     VkGeneratedCommandsInfoEXT info{};

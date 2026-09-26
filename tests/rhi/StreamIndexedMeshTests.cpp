@@ -26,7 +26,7 @@ public:
         const auto created = createDevice({.applicationName = "Indexed stream mesh regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
             // Match VisibilityBufferPass: Slang emits Geometry for fragment SV_PrimitiveID.
-            .enableMeshShader = true, .enableGeometryShader = true}, device);
+            .enableMeshShader = true, .enableGeometryShader = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires mesh/primitive-ID features and bindless heap"); }
         MESH_REQUIRE(created);
         if (!device->capabilities().shaderBufferInt64Atomics || device->capabilities().subPixelPrecisionBits > 8) {
@@ -39,16 +39,16 @@ public:
             4, sizeof(VisibleClusterRecord), sizeof(GPUSceneGpuInstanceRecord), 4};
         const uint32_t counts[] = {1, 2, 1, pageBytes / 4, 1, 1, 2, capacity, 2, 16 + 5 * capacity};
         std::unique_ptr<BindlessHeap> heap;
-        MESH_REQUIRE(device->createBindlessHeap({.maxBuffers = InputCount}, heap));
+        MESH_REQUIRE(device->createBindlessHeap({.maxBuffers = InputCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<BindlessHandle, InputCount> handles;
-        for (auto& handle : handles) { MESH_REQUIRE(heap->allocateBuffer(handle)); }
+        for (auto& handle : handles) { MESH_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
         std::array<std::unique_ptr<Buffer>, Queue> inputs;
         for (size_t i = 0; i < inputs.size(); ++i) {
             MESH_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
-                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, inputs[i]));
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[i] = std::move(rhiValue); }));
             MESH_REQUIRE(heap->writeStorageBuffer(handles[i], *inputs[i]));
         }
-        const auto upload = [&](size_t index, const void* data, size_t size) -> Result {
+        const auto upload = [&](size_t index, const void* data, size_t size) -> Result<> {
             void* mapped = inputs[index]->map();
             if (!mapped) { return makeError(Error::Failure); }
             std::memcpy(mapped, data, size); inputs[index]->flush(); inputs[index]->unmap(); return {};
@@ -69,7 +69,7 @@ public:
                 .additionalSearchPaths = paths, .additionalSearchPathCount = 1,
                 .capabilities = capabilities, .capabilityCount = 1}, compiled);
             log = compiled.diagnostics; MESH_REQUIRE(result);
-            MESH_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}, shaders[i]));
+            MESH_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
         }
         std::array<std::unique_ptr<GraphicsPipeline>, 4> pipelines;
         for (uint32_t reversed = 0; reversed < 2; ++reversed) {
@@ -80,7 +80,7 @@ public:
                     .rasterization = {.cullMode = CullMode::None, .frontFace = FrontFace::CounterClockwise},
                     .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,
                         .depthCompareOp = reversed ? CompareOp::GreaterEqual : CompareOp::LessEqual},
-                    .usesBindlessHeap = true}, pipelines[reversed * 2 + indexed]));
+                    .usesBindlessHeap = true}).transform([&](auto rhiValue) { pipelines[reversed * 2 + indexed] = std::move(rhiValue); }));
             }
         }
         std::array<std::unique_ptr<Texture>, 2> textures;
@@ -90,20 +90,20 @@ public:
             const auto format = i == 0 ? Format::R32Uint : Format::D32Sfloat;
             MESH_REQUIRE(device->createTexture({.usage = TextureUsageBits::TransferSource |
                 (i == 0 ? TextureUsageBits::ColorAttachment : TextureUsageBits::DepthStencilAttachment),
-                .format = format, .width = width, .height = height}, textures[i]));
-            MESH_REQUIRE(device->createTextureView(*textures[i], {.format = format}, views[i]));
+                .format = format, .width = width, .height = height}).transform([&](auto rhiValue) { textures[i] = std::move(rhiValue); }));
+            MESH_REQUIRE(device->createTextureView(*textures[i], {.format = format}).transform([&](auto rhiValue) { views[i] = std::move(rhiValue); }));
             MESH_REQUIRE(device->createBuffer({.size = pixels * 4, .usage = BufferUsageBits::TransferDestination,
-                .memoryLocation = MemoryLocation::HostReadback}, readbacks[i]));
+                .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readbacks[i] = std::move(rhiValue); }));
         }
         std::unique_ptr<Buffer> queueReadback;
         MESH_REQUIRE(device->createBuffer({.size = 4, .usage = BufferUsageBits::TransferDestination,
-            .memoryLocation = MemoryLocation::HostReadback}, queueReadback));
+            .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { queueReadback = std::move(rhiValue); }));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         std::unique_ptr<Fence> fence;
-        MESH_REQUIRE(device->createCommandPool(*queue, pool));
-        MESH_REQUIRE(pool->createCommandBuffer(commands)); MESH_REQUIRE(device->createFence(false, fence));
+        MESH_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        MESH_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })); MESH_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         bool submitted = false, sawSecondChunk = false, sawHighId = false;
         uint32_t softwareTriangles = 0, comparisons = 0;
         const uint32_t partialCounts[] = {0, 1, 63, 64, 65, 127, 128, 65};

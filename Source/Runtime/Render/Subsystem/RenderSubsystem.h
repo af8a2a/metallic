@@ -47,18 +47,18 @@ class IRenderSubsystem {
 public:
     virtual ~IRenderSubsystem() = default;
 
-    virtual Result initialize(const RenderSubsystemInitContext&, std::string&) { return {}; }
+    virtual Result<> initialize(const RenderSubsystemInitContext&, std::string&) { return {}; }
     virtual void onWorldChanged(RenderWorld*) {}
-    virtual Result beginFrame(
+    virtual Result<> beginFrame(
         const RenderSubsystemFrameContext&,
         RenderChangeBits&,
         std::string&)
     {
         return {};
     }
-    virtual Result recordPreGraph(const RenderSubsystemFrameContext&, std::string&) { return {}; }
-    virtual Result recordPostGraph(const RenderSubsystemFrameContext&, std::string&) { return {}; }
-    virtual Result prepareShaderReload(
+    virtual Result<> recordPreGraph(const RenderSubsystemFrameContext&, std::string&) { return {}; }
+    virtual Result<> recordPostGraph(const RenderSubsystemFrameContext&, std::string&) { return {}; }
+    virtual Result<> prepareShaderReload(
         const RenderSubsystemInitContext&,
         std::unique_ptr<RenderSubsystemShaderReload>& outReload,
         std::string&)
@@ -131,30 +131,30 @@ public:
         return std::any_cast<typename T::Desc>(&iter->second);
     }
 
-    Result initialize(Device& device, uint32_t frameSlotCount, std::string& log);
-    Result activate(std::span<const RenderSubsystemId> ids, std::string& log);
-    Result activate(RenderSubsystemId id, std::string& log);
+    Result<> initialize(Device& device, uint32_t frameSlotCount, std::string& log);
+    Result<> activate(std::span<const RenderSubsystemId> ids, std::string& log);
+    Result<> activate(RenderSubsystemId id, std::string& log);
     void setWorld(RenderWorld* world);
 
     // The previous CPU recording must have been submitted or cancelled; its GPU
     // completion may still be pending in another slot.
-    Result beginFrame(
+    Result<> beginFrame(
         uint64_t frameIndex,
         uint32_t frameSlot,
         HistoryResourceManager* historyResources,
         std::string& log,
         RenderFrameContext* frameResources = nullptr);
-    Result recordPreGraph(
+    Result<> recordPreGraph(
         CommandBuffer& commandBuffer,
         Streamer* streamer,
         std::span<const RenderSubsystemId> requiredSubsystems,
         std::string& log);
-    Result recordPostGraph(
+    Result<> recordPostGraph(
         CommandBuffer& commandBuffer,
         Streamer* streamer,
         std::span<const RenderSubsystemId> requiredSubsystems,
         std::string& log);
-    Result reloadShaders(std::string& log);
+    Result<> reloadShaders(std::string& log);
     void endFrame();
     void shutdown();
 
@@ -183,14 +183,14 @@ public:
     void retire(std::shared_ptr<void> resource);
     // Register before publishing state. endFrame only closes CPU recording;
     // Queue::submit commits, and frame/pool cancellation rolls back in reverse order.
-    Result deferSubmission(CommandBuffer& commandBuffer,
+    Result<> deferSubmission(CommandBuffer& commandBuffer,
         std::function<void()> submitted, std::function<void()> cancelled,
         std::shared_ptr<SubmissionTransaction>* outTransaction = nullptr);
 
 private:
     struct Record;
 
-    Result activateRecursive(const std::string& id, std::vector<std::string>& stack, std::string& log);
+    Result<> activateRecursive(const std::string& id, std::vector<std::string>& stack, std::string& log);
     bool dependencyClosure(
         std::span<const RenderSubsystemId> ids,
         std::vector<std::string>& outIds,

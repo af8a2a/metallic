@@ -21,7 +21,7 @@ public:
         reflection.addTextureOutput("color").storageReadWrite().format = render::Format::Rgba32Sfloat;
         return reflection;
     }
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "AutoExposureFixture",
@@ -32,7 +32,7 @@ public:
             .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = 16,
             .bindings = &binding, .bindingCount = 1, .requiresRayQuery = false}, log);
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         struct Push { uint32_t width, height; float luminance; uint32_t outliers; };
         const Push push{context.width(), context.height(), context.properties().value("luminance", 0.18f),
@@ -53,7 +53,7 @@ public:
     {
         std::unique_ptr<render::Device> device;
         auto deviceResult = render::createDevice({.applicationName = "Auto exposure GPU test",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(deviceResult, render::Error::Unsupported)) {
             return RhiTestResult::skip("requires bindless descriptors");
         }

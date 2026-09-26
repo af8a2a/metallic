@@ -23,7 +23,7 @@ void require(bool okay, const std::string& message)
         throw std::runtime_error(message);
     }
 }
-void require(Result result, const std::string& message)
+void require(Result<> result, const std::string& message)
 {
     require(bool(result), message + ": " + std::string(resultToString(result)));
 }
@@ -163,15 +163,14 @@ std::array<float, 12> sampleTexture(RhiTestContext& context, ScenePathTraceResou
     require(context.device.createBuffer({.size = 48,
                                          .structureStride = 16,
                                          .usage = BufferUsageBits::Storage,
-                                         .memoryLocation = MemoryLocation::HostReadback},
-                                        output),
+                                         .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }),
             "sample buffer");
     std::unique_ptr<CommandPool> pool;
     std::unique_ptr<CommandBuffer> commands;
     std::unique_ptr<Fence> fence;
-    require(context.device.createCommandPool(context.graphicsQueue, pool), "sample pool");
-    require(pool->createCommandBuffer(commands), "sample commands");
-    require(context.device.createFence({}, fence), "sample fence");
+    require(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }), "sample pool");
+    require(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }), "sample commands");
+    require(context.device.createFence({}).transform([&](auto rhiValue) { fence = std::move(rhiValue); }), "sample fence");
     require(commands->begin(), "sample begin");
     const BufferBarrierDesc ready{
         .buffer = output.get(), .before = ResourceState::Undefined, .after = ResourceState::General};
@@ -429,7 +428,7 @@ class KtxTextureResourcesTest final : public RhiTest {
                 damaged.put(0);
             }
             complete = false;
-            Result outcome;
+            Result<> outcome;
             while (outcome && !complete) {
                 outcome = cancelled.pumpPrepareAsync(5, complete, progress, log);
                 std::this_thread::yield();
@@ -573,8 +572,8 @@ public:
         std::unique_ptr<CommandBuffer> commands;
         QueueSubmissionTracker tracker;
         RenderFrameContext frame;
-        require(context.device.createCommandPool(context.graphicsQueue,pool),"stream test pool");
-        require(pool->createCommandBuffer(commands),"stream test commands");
+        require(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }),"stream test pool");
+        require(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }),"stream test commands");
         require(tracker.initialize(context.device,context.graphicsQueue),"stream test tracker");
         uint64_t index = 0;
         CpuProfileRecorder textureProfile;
@@ -699,7 +698,7 @@ class ZorahTextureResourcesTest final : public RhiTest {
             policy.deviceLocalHeapLimitBytes = initialBudget.heaps[heap].usageBytes +
                 uint64_t(std::max(1, std::atoi(testLimit))) * 1024 * 1024 + policy.safetyBytes;
             context.device.setMemoryBudgetPolicy(policy);
-            require(context.device.reserveMemoryBudget(128ull * 1024 * 1024, futureResources), "Cannot reserve future feature budget");
+            require(context.device.reserveMemoryBudget(128ull * 1024 * 1024).transform([&](auto rhiValue) { futureResources = std::move(rhiValue); }), "Cannot reserve future feature budget");
         }
         const bool firstFrame = std::getenv("METALLIC_TEST_FIRST_FRAME_TEXTURES") != nullptr;
         RenderGraphProperties textureProps{{"path", path.string()}, {"materialTextureMaxDimension", 512},
@@ -815,16 +814,14 @@ class BcTextureUploadTest final : public RhiTest {
                     }
                 }
                 std::unique_ptr<Streamer> streamer;
-                require(context.device.createStreamer(
-                            {.constantBufferSize = 4096, .dynamicBufferSizePerFrame = 1024}, streamer),
+                require(context.device.createStreamer({.constantBufferSize = 4096, .dynamicBufferSizePerFrame = 1024}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }),
                         "BC streamer");
                 std::unique_ptr<Texture> texture;
                 require(context.device.createTexture({.usage = TextureUsageBits::TransferDestination |
                                                                TextureUsageBits::TransferSource,
                                                       .format = format,
                                                       .width = width,
-                                                      .height = height},
-                                                     texture),
+                                                      .height = height}).transform([&](auto rhiValue) { texture = std::move(rhiValue); }),
                         "BC texture");
                 if (width == 7) {
                     require(!streamer
@@ -855,15 +852,14 @@ class BcTextureUploadTest final : public RhiTest {
                 std::unique_ptr<Buffer> readback;
                 require(context.device.createBuffer({.size = expected.size(),
                                                      .usage = BufferUsageBits::TransferDestination,
-                                                     .memoryLocation = MemoryLocation::HostReadback},
-                                                    readback),
+                                                     .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }),
                         "BC readback");
                 std::unique_ptr<CommandPool> pool;
                 std::unique_ptr<CommandBuffer> commands;
                 std::unique_ptr<Fence> fence;
-                require(context.device.createCommandPool(context.graphicsQueue, pool), "BC pool");
-                require(pool->createCommandBuffer(commands), "BC commands");
-                require(context.device.createFence({}, fence), "BC fence");
+                require(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }), "BC pool");
+                require(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }), "BC commands");
+                require(context.device.createFence({}).transform([&](auto rhiValue) { fence = std::move(rhiValue); }), "BC fence");
                 require(commands->begin(), "BC begin");
                 TextureBarrierDesc barrier{.texture = texture.get(),
                                            .before = ResourceState::Undefined,

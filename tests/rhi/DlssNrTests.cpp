@@ -23,7 +23,7 @@ public:
         reflection.addTextureOutput("depth").transferWrite().format = render::Format::R32Sfloat;
         return reflection;
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         auto& command = context.commandBuffer();
         command.clearColorTexture(*context.outputTexture("color").texture(), render::ResourceState::TransferDestination,
@@ -46,7 +46,7 @@ public:
             .transferWrite().hostReadback();
         return reflection;
     }
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         context.commandBuffer().copyTextureToBuffer({
             .texture = context.inputTexture("color").texture(), .buffer = context.outputBuffer("pixels").buffer(),
@@ -97,8 +97,8 @@ public:
             render::Format::Rg16Sfloat, render::Format::R32Sfloat};
         for (size_t i = 0; i < 4; ++i) {
             if (!context.device.createTexture({.usage = render::TextureUsageBits::Storage | render::TextureUsageBits::Sampled, .format = formats[i],
-                    .width = 32, .height = 24}, textures[i]) ||
-                !context.device.createTextureView(*textures[i], {}, views[i])) {
+                    .width = 32, .height = 24}).transform([&](auto rhiValue) { textures[i] = std::move(rhiValue); }) ||
+                !context.device.createTextureView(*textures[i], {}).transform([&](auto rhiValue) { views[i] = std::move(rhiValue); })) {
                 return RhiTestResult::fail("NR test texture creation failed");
             }
         }
@@ -126,8 +126,8 @@ public:
         std::unique_ptr<render::Texture> unsampled;
         std::unique_ptr<render::TextureView> unsampledView;
         if (!context.device.createTexture({.usage = render::TextureUsageBits::Storage,
-                .format = render::Format::Rgba16Sfloat, .width = 32, .height = 24}, unsampled) ||
-            !context.device.createTextureView(*unsampled, {}, unsampledView)) {
+                .format = render::Format::Rgba16Sfloat, .width = 32, .height = 24}).transform([&](auto rhiValue) { unsampled = std::move(rhiValue); }) ||
+            !context.device.createTextureView(*unsampled, {}).transform([&](auto rhiValue) { unsampledView = std::move(rhiValue); })) {
             return RhiTestResult::fail("NR invalid-input fixture creation failed");
         }
         desc = good; desc.inputColor = {unsampled.get(), unsampledView.get()};
@@ -135,8 +135,8 @@ public:
         std::unique_ptr<render::Texture> upscaled;
         std::unique_ptr<render::TextureView> upscaledView;
         if (!context.device.createTexture({.usage = render::TextureUsageBits::Storage,
-                .format = render::Format::Rgba16Sfloat, .width = 64, .height = 48}, upscaled) ||
-            !context.device.createTextureView(*upscaled, {}, upscaledView)) {
+                .format = render::Format::Rgba16Sfloat, .width = 64, .height = 48}).transform([&](auto rhiValue) { upscaled = std::move(rhiValue); }) ||
+            !context.device.createTextureView(*upscaled, {}).transform([&](auto rhiValue) { upscaledView = std::move(rhiValue); })) {
             return RhiTestResult::fail("NR upscaling fixture creation failed");
         }
         desc = good; desc.outputColor = {upscaled.get(), upscaledView.get()}; desc.settings.upscaling = true;

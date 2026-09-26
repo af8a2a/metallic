@@ -18,16 +18,16 @@ struct ComputeKernelDesc {
 // Owns executable code and its parameter ABI only. Resource identity belongs to ResourceRegistry.
 class ComputeKernel {
 public:
-    Result initialize(Device& device, const ComputeKernelDesc& desc, std::string& log);
+    Result<> initialize(Device& device, const ComputeKernelDesc& desc, std::string& log);
     bool valid() const { return impl_ != nullptr; }
     void clear() { impl_.reset(); }
-    Result dispatch(CommandBuffer& commands, const EncodedParameters& params,
+    Result<> dispatch(CommandBuffer& commands, const EncodedParameters& params,
         uint32_t x, uint32_t y = 1, uint32_t z = 1) const;
-    Result dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params, const BufferSlice& arguments) const;
-    Result dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
+    Result<> dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params, const BufferSlice& arguments) const;
+    Result<> dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
         Buffer& arguments, uint64_t offset = 0) const;
 private:
-    Result bind(CommandBuffer& commands, const EncodedParameters& params) const;
+    Result<> bind(CommandBuffer& commands, const EncodedParameters& params) const;
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

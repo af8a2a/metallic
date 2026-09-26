@@ -142,7 +142,7 @@ struct StreamerImpl {
         if (pendingCompletion) { pendingCompletion->submission_->cancel(); }
     }
 
-    Result create(const StreamerDesc& streamerDesc)
+    Result<> create(const StreamerDesc& streamerDesc)
     {
         if (device == nullptr || streamerDesc.queuedFrameCount == 0) {
             return makeError(Error::InvalidArgument);
@@ -174,7 +174,7 @@ struct StreamerImpl {
                 .queueAccess = desc.constantBufferQueueAccess,
             };
             std::unique_ptr<Buffer> buffer;
-            Result result = device->createBuffer(bufferDesc, buffer);
+            Result<> result = device->createBuffer(bufferDesc).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
             if (!result || buffer == nullptr) {
                 return result ? makeError(Error::Failure) : result;
             }
@@ -183,7 +183,7 @@ struct StreamerImpl {
         return {};
     }
 
-    Result beginFrame(RenderFrameContext& frame)
+    Result<> beginFrame(RenderFrameContext& frame)
     {
         std::lock_guard lock(mutex);
         if (!frame.recording() || frame.slotIndex() >= desc.queuedFrameCount ||
@@ -212,7 +212,7 @@ struct StreamerImpl {
         return {};
     }
 
-    Result ensureDynamicBuffer(uint64_t requiredSizePerFrame)
+    Result<> ensureDynamicBuffer(uint64_t requiredSizePerFrame)
     {
         if (device == nullptr) {
             return makeError(Error::InvalidArgument);
@@ -242,7 +242,7 @@ struct StreamerImpl {
 
         profiling::CpuPhase allocationPhase("stream.grow", bufferDesc.size);
         std::unique_ptr<Buffer> newBuffer;
-        Result result = device->createBuffer(bufferDesc, newBuffer);
+        Result<> result = device->createBuffer(bufferDesc).transform([&](auto rhiValue) { newBuffer = std::move(rhiValue); });
         if (!result || newBuffer == nullptr) {
             return result ? makeError(Error::Failure) : result;
         }
@@ -302,7 +302,7 @@ struct StreamerImpl {
             device != nullptr ? device->capabilities().bufferCopyOffsetAlignment : 1);
         const uint64_t localOffset = alignUp(dynamicBufferOffset, alignment);
         const uint64_t requiredSizePerFrame = localOffset + dataSize;
-        Result result = ensureDynamicBuffer(requiredSizePerFrame);
+        Result<> result = ensureDynamicBuffer(requiredSizePerFrame);
         if (!result || dynamicBuffer == nullptr) {
             return {};
         }
@@ -445,7 +445,7 @@ struct StreamerImpl {
             dynamicBufferOffset,
             std::max<uint64_t>(capabilities.textureUploadBufferOffsetAlignment, bytesPerTexel));
         const uint64_t requiredSizePerFrame = localOffset + dataSize;
-        Result result = ensureDynamicBuffer(requiredSizePerFrame);
+        Result<> result = ensureDynamicBuffer(requiredSizePerFrame);
         if (!result || dynamicBuffer == nullptr) {
             return {};
         }
@@ -584,7 +584,7 @@ struct StreamerImpl {
             std::unique_ptr<Buffer> buffer;
             if (!device->createBuffer({.size = capacity,
                     .usage = BufferUsageBits::TransferDestination | BufferUsageBits::MemoryDecompression,
-                    .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, buffer)) { return false; }
+                    .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); })) { return false; }
             slot.compressed = std::move(buffer);
         }
         const StreamDataChunk chunk{stored.data(), stored.size()};
@@ -900,7 +900,7 @@ void Streamer::endFrame()
     }
 }
 
-Result Streamer::beginFrame(RenderFrameContext& frame)
+Result<> Streamer::beginFrame(RenderFrameContext& frame)
 {
     return impl_ != nullptr ? impl_->beginFrame(frame) : makeError(Error::InvalidArgument);
 }
@@ -910,21 +910,19 @@ void CommandBuffer::copyStreamedData(Streamer& streamer)
     streamer.copyStreamedData(*this);
 }
 
-Result Device::createStreamer(const StreamerDesc& desc, std::unique_ptr<Streamer>& outStreamer)
+Result<std::unique_ptr<Streamer>> Device::createStreamer(const StreamerDesc& desc)
 {
-    outStreamer.reset();
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
 
     auto streamerImpl = std::make_unique<detail::StreamerImpl>(*this);
-    Result result = streamerImpl->create(desc);
+    Result<> result = streamerImpl->create(desc);
     if (!result) {
-        return result;
+        return std::unexpected(result.error());
     }
 
-    outStreamer.reset(new Streamer(std::move(streamerImpl)));
-    return {};
+    return std::unique_ptr<Streamer>(new Streamer(std::move(streamerImpl)));
 }
 
 } // namespace metallic::render

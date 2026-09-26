@@ -27,11 +27,11 @@ public:
         reflection.addBufferOutput("values").buffer(16, 4).transferWrite();
         return reflection;
     }
-    Result compile(const RenderGraphCompileContext& context, std::string&) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string&) override
     {
-        Result result = context.device->createBuffer({.size = 32, .usage = BufferUsageBits::TransferSource,
+        Result<> result = context.device->createBuffer({.size = 32, .usage = BufferUsageBits::TransferSource,
             .memoryLocation = MemoryLocation::HostUpload,
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy}, upload_);
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy}).transform([&](auto rhiValue) { upload_ = std::move(rhiValue); });
         if (!result) { return result; }
         void* mapped = upload_->map();
         if (!mapped) { return makeError(Error::Failure); }
@@ -39,7 +39,7 @@ public:
         std::memcpy(mapped, words, sizeof(words)); upload_->flush(); upload_->unmap();
         return {};
     }
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         auto* output = context.output("values");
         auto& commands = context.commandBuffer();
@@ -50,7 +50,7 @@ public:
         commands.barrier({.buffers = &barrier, .bufferCount = 1});
         commands.copyBuffer({.source = upload_.get(), .destination = output->buffer, .sourceOffset = 16, .size = 16});
         context.debugCheckpoint("Late", std::span(&binding, 1), {{"sourcePhase", "Late"}});
-        return context.properties().value("fail", false) ? makeError(Error::Failure) : Result{};
+        return context.properties().value("fail", false) ? makeError(Error::Failure) : Result<>{};
     }
 private:
     std::unique_ptr<Buffer> upload_;
@@ -79,19 +79,19 @@ struct FrameCommands {
         if (pool) { (void)pool->reset(); }
         (void)frame.reset();
     }
-    Result initialize(Device& device, Queue& queue)
+    Result<> initialize(Device& device, Queue& queue)
     {
-        auto result = device.createCommandPool(queue, pool);
-        if (result) { result = pool->createCommandBuffer(commands); }
+        auto result = device.createCommandPool(queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); });
+        if (result) { result = pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }); }
         return result ? tracker.initialize(device, queue) : result;
     }
-    Result begin(uint64_t index)
+    Result<> begin(uint64_t index)
     {
         auto result = frame.begin(index);
         if (result) { result = pool->reset(); }
         return result ? commands->begin(&frame) : result;
     }
-    Result submit()
+    Result<> submit()
     {
         auto result = commands->end();
         if (!result) { return result; }
@@ -240,7 +240,7 @@ public:
         std::unique_ptr<Device> device;
         RenderDebugRuntime runtime;
         auto setup = createDevice({.applicationName = "Debug GPU Probe", .enableValidation = context.enableValidation,
-            .enableBindlessDescriptorHeap = true, .validationSink = runtime.validationSink()}, device);
+            .enableBindlessDescriptorHeap = true, .validationSink = runtime.validationSink()}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!setup && hasError(setup, Error::Unsupported)) { return RhiTestResult::skip("Descriptor heap unavailable"); }
         DEBUG_REQUIRE(setup);
         auto& queue = *device->getQueue(QueueType::Graphics);
@@ -249,10 +249,10 @@ public:
         runtime.compiled({{"id", "probe-graph"}, {"generation", 1}, {"passes", {{{"name", "Probe"},
             {"active", true}, {"checkpoints", {"Early", "Late", "AfterPass"}}}}}});
         std::unique_ptr<Buffer> upload, ids, floats, signedValues, records, sentinel;
-        const auto hostBuffer = [&](const void* data, uint64_t bytes, std::unique_ptr<Buffer>& output) -> Result {
+        const auto hostBuffer = [&](const void* data, uint64_t bytes, std::unique_ptr<Buffer>& output) -> Result<> {
             auto result = device->createBuffer({.size = bytes, .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                 .memoryLocation = MemoryLocation::HostUpload,
-                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}, output);
+                .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { output = std::move(rhiValue); });
             if (!result) { return result; }
             auto* mapped = output->map(); if (!mapped) { return makeError(Error::Failure); }
             std::memcpy(mapped, data, bytes); output->flush(); output->unmap(); return {};
@@ -269,8 +269,8 @@ public:
         const uint32_t cluster[] = {0, 0, 0, 0x10000003, 0, 0, 0, 0x00000001};
         DEBUG_REQUIRE(hostBuffer(cluster, sizeof(cluster), records));
         DEBUG_REQUIRE(device->createBuffer({.size = kCount * 4, .usage = BufferUsageBits::Storage |
-            BufferUsageBits::TransferDestination | BufferUsageBits::TransferSource}, ids));
-        DEBUG_REQUIRE(device->createBuffer({.size = 4, .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource}, sentinel));
+            BufferUsageBits::TransferDestination | BufferUsageBits::TransferSource}).transform([&](auto rhiValue) { ids = std::move(rhiValue); }));
+        DEBUG_REQUIRE(device->createBuffer({.size = 4, .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource}).transform([&](auto rhiValue) { sentinel = std::move(rhiValue); }));
         const DebugResourceBinding bindings[] = {
             {.id = "Ids", .buffer = ids.get(), .state = ResourceState::ShaderRead, .size = kCount * 4},
             {.id = "Floats", .buffer = floats.get(), .state = ResourceState::ShaderRead, .layout = "f32"},

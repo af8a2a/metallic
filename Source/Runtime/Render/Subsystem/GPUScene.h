@@ -538,7 +538,7 @@ public:
     // Establish a valid empty DrawSet for source-independent GPU views.
     // Does not import geometry or create a source/material record.
     void ensureDrawSet();
-    Result rebuild(const GPUSceneSourceView& source, std::string& log);
+    Result<> rebuild(const GPUSceneSourceView& source, std::string& log);
     GPUSceneSyncResult sync(const GPUSceneSourceView& source);
     // Also supports worlds containing only virtual lights, without a Scene.
     bool syncLights(std::span<const scene::RenderLight> renderLights,

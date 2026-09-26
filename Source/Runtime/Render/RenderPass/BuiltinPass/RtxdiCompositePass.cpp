@@ -35,7 +35,7 @@ public:
         };
     }
 
-    Result compile(const RenderGraphCompileContext& context, std::string& log) override
+    Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         if (context.device == nullptr) {
             log = "RtxdiCompositePass requires a device";
@@ -46,7 +46,7 @@ public:
         }
 
         ShaderCompileResult compileResult;
-        Result result = compileSlangShaderToSpirv(
+        Result<> result = compileSlangShaderToSpirv(
             SlangShaderDesc{
                 .moduleName = kRtxdiCompositeShaderModuleName,
                 .entryPointName = kRtxdiCompositeEntryPoint,
@@ -90,7 +90,7 @@ public:
         return result;
     }
 
-    Result execute(RenderGraphExecutionContext& context) override
+    Result<> execute(RenderGraphExecutionContext& context) override
     {
         TextureHandle denoisedDiffuse = context.inputTexture("denoisedDiffuse");
         TextureHandle denoisedSpecular = context.inputTexture("denoisedSpecular");

@@ -79,7 +79,7 @@ public:
             auto& copy = copies[key];
             if (!copy || copy->desc().size != bytes) {
                 checkRaster(bool(device->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferDestination,
-                    .memoryLocation = MemoryLocation::HostReadback}, copy)), "Cannot allocate raster diagnostic readback");
+                    .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { copy = std::move(rhiValue); })), "Cannot allocate raster diagnostic readback");
             }
             if (resource.texture) {
                 TextureBarrierDesc barrier{.texture = resource.texture, .before = resource.state, .after = ResourceState::TransferSource};

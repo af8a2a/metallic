@@ -42,11 +42,11 @@ public:
         return reflection;
     }
 
-    render::Result compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         const auto values = probeInput();
         auto result = context.device->createBuffer({.size = sizeof(values), .structureStride = sizeof(ProbeValue),
-            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostUpload}, input_);
+            .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { input_ = std::move(rhiValue); });
         if (!result) { return result; }
         void* mapped = input_->map();
         if (mapped == nullptr) { log = "SH fixture input map failed"; return render::makeError(render::Error::Failure); }
@@ -66,7 +66,7 @@ public:
             .bindingCount = 2, .requiresRayQuery = false}, log);
     }
 
-    render::Result execute(render::RenderGraphExecutionContext& context) override
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
@@ -94,7 +94,7 @@ public:
 
         std::unique_ptr<render::Device> device;
         result = render::createDevice({.applicationName = "SH math probe", .enableValidation = context.enableValidation,
-            .enableBindlessDescriptorHeap = true}, device);
+            .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("requires bindless descriptors"); }
         if (!result) { return RhiTestResult::fail("SH probe device creation failed"); }
         render::registerRenderGraphPassType("SphericalHarmonicsProbePass", "SH math probe",

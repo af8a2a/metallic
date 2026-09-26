@@ -60,10 +60,10 @@ public:
     bool isComplete() const;
     bool sameSubmission(const GpuCompletionPoint& other) const { return state_ == other.state_; }
     uint64_t value() const;
-    Result wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
+    Result<> wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
     // Append/coalesce timeline waits. Keep this point alive until the waiting
     // submission completes. value() is zero for a point covering multiple queues.
-    Result appendWaits(std::vector<SemaphoreSubmitDesc>& waits) const;
+    Result<> appendWaits(std::vector<SemaphoreSubmitDesc>& waits) const;
 
 private:
     struct State;
@@ -82,17 +82,17 @@ public:
     RenderFrameContext(const RenderFrameContext&) = delete;
     RenderFrameContext& operator=(const RenderFrameContext&) = delete;
 
-    Result begin(uint64_t frameIndex, uint64_t timeoutNanoseconds = UINT64_MAX);
-    Result wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
+    Result<> begin(uint64_t frameIndex, uint64_t timeoutNanoseconds = UINT64_MAX);
+    Result<> wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
     // Roll back unsubmitted recordings in reverse order. They become invalid for
     // submission and must be reset before reuse. Accepted segments remain alive.
     void cancel();
     // Seal a batch after its final successful segment, including partial failure.
-    Result finishSubmission();
-    Result reset();
+    Result<> finishSubmission();
+    Result<> reset();
     bool recording() const;
     void retain(std::shared_ptr<void> resource);
-    Result addDependency(GpuCompletionPoint completion);
+    Result<> addDependency(GpuCompletionPoint completion);
     uint64_t frameIndex() const { return frameIndex_; }
     uint32_t slotIndex() const { return slotIndex_; }
     const GpuCompletionPoint& completion() const { return completion_; }
@@ -116,14 +116,14 @@ public:
     ~QueueSubmissionTracker();
     QueueSubmissionTracker(const QueueSubmissionTracker&) = delete;
     QueueSubmissionTracker& operator=(const QueueSubmissionTracker&) = delete;
-    Result initialize(Device& device, Queue& queue);
-    Result submit(const QueueSubmitDesc& desc, RenderFrameContext& frame);
+    Result<> initialize(Device& device, Queue& queue);
+    Result<> submit(const QueueSubmitDesc& desc, RenderFrameContext& frame);
     // All command buffers must be recorded before the first segment is submitted.
     // The returned point covers this segment; frame.completion() covers the batch.
-    Result submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame,
+    Result<> submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame,
         GpuCompletionPoint& completion);
-    Result wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
-    Result reset();
+    Result<> wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
+    Result<> reset();
 
 private:
     Queue* queue_ = nullptr;
@@ -137,7 +137,7 @@ public:
     ~DeferredReleaseQueue();
     void retire(GpuCompletionPoint completion, std::shared_ptr<void> resource);
     void collect();
-    Result drain();
+    Result<> drain();
     size_t size() const { return entries_.size(); }
 
 private:

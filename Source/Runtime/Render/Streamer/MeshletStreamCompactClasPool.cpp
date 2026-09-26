@@ -75,12 +75,11 @@ struct MeshletStreamCompactClasPool::Impl {
     // Shared with cancellation callbacks; never capture a pool's lifetime.
     std::shared_ptr<Publications> publications = std::make_shared<Publications>();
 
-    Result buffer(uint64_t bytes, MemoryLocation location, std::unique_ptr<Buffer>& output,
+    Result<> buffer(uint64_t bytes, MemoryLocation location, std::unique_ptr<Buffer>& output,
         MemoryBudgetDomain domain = MemoryBudgetDomain::ClasScratch)
     {
-        return device->createBuffer(
-            {.size = std::max(bytes, uint64_t(8)), .usage = kCompactBufferUsage, .memoryLocation = location,
-                .memoryDomain = domain}, output);
+        return device->createBuffer({.size = std::max(bytes, uint64_t(8)), .usage = kCompactBufferUsage, .memoryLocation = location,
+                .memoryDomain = domain}).transform([&](auto rhiValue) { output = std::move(rhiValue); });
     }
     void publish(uint32_t id, const Page* page, bool orderedMove = false)
     {
@@ -97,7 +96,7 @@ struct MeshletStreamCompactClasPool::Impl {
         }
         (*publications)[id] = std::move(update);
     }
-    Result flushPublications(CommandBuffer& cmd)
+    Result<> flushPublications(CommandBuffer& cmd)
     {
         if (publications->empty()) { return {}; }
         auto updates = std::make_shared<Publications>(*publications);
@@ -183,7 +182,7 @@ struct MeshletStreamCompactClasPool::Impl {
         batch.submission.reset();
         batch.phase = Phase::Free;
     }
-    Result track(CommandBuffer& cmd, Batch& batch)
+    Result<> track(CommandBuffer& cmd, Batch& batch)
     {
         batch.completion = cmd.frameContext()->completion();
         batch.submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
@@ -264,7 +263,7 @@ MeshletStreamCompactClasPool::MeshletStreamCompactClasPool() : impl_(std::make_u
 }
 MeshletStreamCompactClasPool::~MeshletStreamCompactClasPool() = default;
 
-Result MeshletStreamCompactClasPool::initialize(Device& device, const MeshletStreamClasPoolDesc& desc, std::string& log)
+Result<> MeshletStreamCompactClasPool::initialize(Device& device, const MeshletStreamClasPoolDesc& desc, std::string& log)
 {
     log.clear();
     auto& p = *impl_;
@@ -275,7 +274,7 @@ Result MeshletStreamCompactClasPool::initialize(Device& device, const MeshletStr
         return makeError(Error::InvalidArgument);
     }
     ClusterAccelerationStructureProperties properties;
-    auto result = device.queryClusterAccelerationStructureProperties(properties);
+    auto result = device.queryClusterAccelerationStructureProperties().transform([&](auto rhiValue) { properties = std::move(rhiValue); });
     if (!result) {
         return result;
     }
@@ -286,16 +285,14 @@ Result MeshletStreamCompactClasPool::initialize(Device& device, const MeshletStr
     p.maxBuild = desc.maxBuildClusters;
     p.queuedFrames = desc.queuedFrameCount;
     ClusterAccelerationStructureBuildSizes single, move;
-    if (!(result = device.queryClusterAccelerationStructureTriangleBuildSizes(
-              {.maxClusterTriangleCount = p.asset->maxClusterTriangles(),
+    if (!(result = device.queryClusterAccelerationStructureTriangleBuildSizes({.maxClusterTriangleCount = p.asset->maxClusterTriangles(),
                .maxClusterVertexCount = p.asset->maxClusterVertices(),
                .maxTotalTriangleCount = p.asset->maxClusterTriangles(),
-               .maxTotalVertexCount = p.asset->maxClusterVertices()},
-              single))) {
+               .maxTotalVertexCount = p.asset->maxClusterVertices()}).transform([&](auto rhiValue) { single = std::move(rhiValue); }))) {
         return result;
     }
     p.stride = compactAlign(single.accelerationStructureSize, p.alignment);
-    if (!(result = device.queryClusterAccelerationStructureMoveSizes(p.maxBuild, p.stride * p.maxBuild, move))) {
+    if (!(result = device.queryClusterAccelerationStructureMoveSizes(p.maxBuild, p.stride * p.maxBuild).transform([&](auto rhiValue) { move = std::move(rhiValue); }))) {
         return result;
     }
     const uint64_t capacity = desc.maxStorageBytes / p.alignment * p.alignment;
@@ -386,7 +383,7 @@ void MeshletStreamCompactClasPool::beginFrame(CpuProfileRecorder* profiler)
     }
 }
 
-Result MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer& geometry,
+Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer& geometry,
                                                    std::span<const MeshletStreamClasPageBuild> requests,
                                                    std::string& log)
 {

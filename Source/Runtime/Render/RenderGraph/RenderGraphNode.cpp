@@ -277,7 +277,7 @@ Format resolveFormat(Format format, Format defaultFormat)
     return format == Format::Unknown ? defaultFormat : format;
 }
 
-std::string resultMessage(std::string_view label, const Result& result)
+std::string resultMessage(std::string_view label, const Result<>& result)
 {
     std::string message(label);
     message += " returned ";

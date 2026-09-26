@@ -25,8 +25,8 @@ public:
     {
         std::string log;
         std::unique_ptr<Device> device;
-        const Result created = createDevice({.applicationName = "Visibility debug stability",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, device);
+        const Result<> created = createDevice({.applicationName = "Visibility debug stability",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless heap"); }
         DEBUG_REQUIRE(created);
         constexpr uint32_t width = 12, capacity = 32;
@@ -35,16 +35,16 @@ public:
             80, sizeof(VisibleClusterRecord), sizeof(MeshletStreamGpuActiveGroup)};
         const uint32_t counts[] = {1, capacity, 8, capacity, 8};
         std::unique_ptr<BindlessHeap> heap;
-        DEBUG_REQUIRE(device->createBindlessHeap({.maxSampledImages = 2, .maxBuffers = InputCount}, heap));
+        DEBUG_REQUIRE(device->createBindlessHeap({.maxSampledImages = 2, .maxBuffers = InputCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<BindlessHandle, InputCount> handles;
         std::array<std::unique_ptr<Buffer>, InputCount> buffers;
         for (uint32_t i = 0; i < InputCount; ++i) {
             DEBUG_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
-                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}, buffers[i]));
-            DEBUG_REQUIRE(heap->allocateBuffer(handles[i]));
+                .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
+            DEBUG_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
             DEBUG_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
         }
-        const auto upload = [](Buffer& buffer, const void* data, size_t size) -> Result {
+        const auto upload = [](Buffer& buffer, const void* data, size_t size) -> Result<> {
             void* mapped = buffer.map();
             if (!mapped) { return makeError(Error::Failure); }
             std::memcpy(mapped, data, size);
@@ -53,16 +53,15 @@ public:
         std::unique_ptr<ShaderModule> vertex, fragment;
         for (uint32_t i = 0; i < 2; ++i) {
             ShaderCompileResult compiled;
-            const Result result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityBufferComposite",
+            const Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityBufferComposite",
                 .entryPointName = i == 0 ? "visibilityBufferCompositeVertexMain" : "visibilityBufferCompositeFragmentMain",
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled);
             log = compiled.diagnostics; DEBUG_REQUIRE(result);
-            DEBUG_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4},
-                i == 0 ? vertex : fragment));
+            DEBUG_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { i == 0 ? vertex : fragment = std::move(rhiValue); }));
         }
         std::unique_ptr<GraphicsPipeline> pipeline;
         DEBUG_REQUIRE(device->createGraphicsPipeline({.vertexShader = vertex.get(), .fragmentShader = fragment.get(),
-            .colorFormat = Format::Rgba8Unorm, .rasterization = {.cullMode = CullMode::None}, .usesBindlessHeap = true}, pipeline));
+            .colorFormat = Format::Rgba8Unorm, .rasterization = {.cullMode = CullMode::None}, .usesBindlessHeap = true}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
         std::array<std::unique_ptr<Texture>, 3> textures;
         std::array<std::unique_ptr<TextureView>, 3> views;
         std::array<std::unique_ptr<Buffer>, 2> uploads;
@@ -71,25 +70,25 @@ public:
             const Format format = i == 0 ? Format::R32Uint : i == 1 ? Format::R32Sfloat : Format::Rgba8Unorm;
             DEBUG_REQUIRE(device->createTexture({.usage = i < 2 ? TextureUsageBits::Sampled | TextureUsageBits::TransferDestination :
                 TextureUsageBits::ColorAttachment | TextureUsageBits::TransferSource,
-                .format = format, .width = width, .height = 1}, textures[i]));
-            DEBUG_REQUIRE(device->createTextureView(*textures[i], {.format = format}, views[i]));
+                .format = format, .width = width, .height = 1}).transform([&](auto rhiValue) { textures[i] = std::move(rhiValue); }));
+            DEBUG_REQUIRE(device->createTextureView(*textures[i], {.format = format}).transform([&](auto rhiValue) { views[i] = std::move(rhiValue); }));
             if (i < 2) {
-                DEBUG_REQUIRE(heap->allocateSampledImage(images[i]));
+                DEBUG_REQUIRE(heap->allocateSampledImage().transform([&](auto rhiValue) { images[i] = std::move(rhiValue); }));
                 DEBUG_REQUIRE(heap->writeSampledImage(images[i], *views[i], ResourceState::ShaderRead));
                 DEBUG_REQUIRE(device->createBuffer({.size = width * 4, .usage = BufferUsageBits::TransferSource,
-                    .memoryLocation = MemoryLocation::HostUpload}, uploads[i]));
+                    .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { uploads[i] = std::move(rhiValue); }));
             }
         }
         std::unique_ptr<Buffer> readback;
         DEBUG_REQUIRE(device->createBuffer({.size = width * 4, .usage = BufferUsageBits::TransferDestination,
-            .memoryLocation = MemoryLocation::HostReadback}, readback));
+            .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         std::unique_ptr<Fence> fence;
-        DEBUG_REQUIRE(device->createCommandPool(*queue, pool));
-        DEBUG_REQUIRE(pool->createCommandBuffer(commands));
-        DEBUG_REQUIRE(device->createFence(false, fence));
+        DEBUG_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
+        DEBUG_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
+        DEBUG_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         bool submitted = false;
         std::array<float, width> depth;
         depth.fill(.25f);

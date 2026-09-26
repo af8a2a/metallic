@@ -79,8 +79,8 @@ std::vector<std::string> pollSlangShaderChanges(
 void acknowledgeSlangShaderChanges();
 void resetSlangShaderHotReloadTracking();
 
-Result compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult);
-Result compileSlangShaderToSpirv(
+Result<> compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult);
+Result<> compileSlangShaderToSpirv(
     const SlangShaderDesc& desc,
     const SlangShaderCacheOptions& cacheOptions,
     ShaderCompileResult& outResult);

@@ -36,13 +36,11 @@ RhiTestResult setupBindlessDevice(bool enableValidation, BindlessDeviceSetup& se
 {
     setup = {};
 
-    render::Result result = render::createDevice(
-        render::DeviceDesc{
+    render::Result<> result = render::createDevice(render::DeviceDesc{
             .applicationName = "Metallic RHI Bindless Buffer Test",
             .enableValidation = enableValidation,
             .enableBindlessDescriptorHeap = true,
-        },
-        setup.device);
+        }).transform([&](auto rhiValue) { setup.device = std::move(rhiValue); });
     if (!result) {
         if (render::hasError(result, render::Error::Unsupported)) {
             return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
@@ -68,7 +66,7 @@ RhiTestResult createShaderModule(
     std::unique_ptr<render::ShaderModule>& outShaderModule)
 {
     render::ShaderCompileResult compileResult;
-    render::Result result = render::compileSlangShaderToSpirv(
+    render::Result<> result = render::compileSlangShaderToSpirv(
         render::SlangShaderDesc{
             .moduleName = kBindlessBufferShaderModuleName,
             .entryPointName = entryPointName,
@@ -85,12 +83,10 @@ RhiTestResult createShaderModule(
         return RhiTestResult::fail(std::move(message));
     }
 
-    result = device.createShaderModule(
-        render::ShaderModuleDesc{
+    result = device.createShaderModule(render::ShaderModuleDesc{
             .code = compileResult.spirv.data(),
             .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
-        },
-        outShaderModule);
+        }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
     if (!result || outShaderModule == nullptr) {
         return RhiTestResult::fail(std::string("createShaderModule returned ") + toString(result));
     }
@@ -104,7 +100,7 @@ RhiTestResult createBuffer(
     const char* label,
     std::unique_ptr<render::Buffer>& outBuffer)
 {
-    render::Result result = device.createBuffer(desc, outBuffer);
+    render::Result<> result = device.createBuffer(desc).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
     if (!result || outBuffer == nullptr) {
         return RhiTestResult::fail(std::string("createBuffer(") + label + ") returned " + toString(result));
     }
@@ -118,7 +114,7 @@ RhiTestResult createBufferView(
     const char* label,
     std::unique_ptr<render::BufferView>& outBufferView)
 {
-    render::Result result = device.createBufferView(buffer, desc, outBufferView);
+    render::Result<> result = device.createBufferView(buffer, desc).transform([&](auto rhiValue) { outBufferView = std::move(rhiValue); });
     if (!result || outBufferView == nullptr) {
         return RhiTestResult::fail(std::string("createBufferView(") + label + ") returned " + toString(result));
     }
@@ -132,17 +128,17 @@ RhiTestResult createCommandObjects(
     std::unique_ptr<render::CommandBuffer>& outCommandBuffer,
     std::unique_ptr<render::Fence>& outFence)
 {
-    render::Result result = device.createCommandPool(queue, outCommandPool);
+    render::Result<> result = device.createCommandPool(queue).transform([&](auto rhiValue) { outCommandPool = std::move(rhiValue); });
     if (!result || outCommandPool == nullptr) {
         return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
     }
 
-    result = outCommandPool->createCommandBuffer(outCommandBuffer);
+    result = outCommandPool->createCommandBuffer().transform([&](auto rhiValue) { outCommandBuffer = std::move(rhiValue); });
     if (!result || outCommandBuffer == nullptr) {
         return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
     }
 
-    result = device.createFence(false, outFence);
+    result = device.createFence(false).transform([&](auto rhiValue) { outFence = std::move(rhiValue); });
     if (!result || outFence == nullptr) {
         return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
     }
@@ -153,7 +149,7 @@ RhiTestResult createCommandObjects(
 RhiTestResult submitAndWait(render::Queue& queue, render::CommandBuffer& commandBuffer, render::Fence& fence)
 {
     render::CommandBuffer* commandBuffers[] = {&commandBuffer};
-    render::Result result = queue.submit(
+    render::Result<> result = queue.submit(
         render::QueueSubmitDesc{
             .commandBuffers = commandBuffers,
             .commandBufferCount = 1,
@@ -284,24 +280,22 @@ public:
         }
 
         std::unique_ptr<render::BindlessHeap> bindlessHeap;
-        render::Result result = setup.device->createBindlessHeap(
-            render::BindlessHeapDesc{
+        render::Result<> result = setup.device->createBindlessHeap(render::BindlessHeapDesc{
                 .maxSamplers = 0,
                 .maxSampledImages = 0,
                 .maxBuffers = 2,
-            },
-            bindlessHeap);
+            }).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
         if (!result || bindlessHeap == nullptr) {
             return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
         }
 
         render::BindlessHandle constantHandle;
-        result = bindlessHeap->allocateBuffer(constantHandle);
+        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { constantHandle = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(std::string("allocateBuffer(constant) returned ") + toString(result));
         }
         render::BindlessHandle outputHandle;
-        result = bindlessHeap->allocateBuffer(outputHandle);
+        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { outputHandle = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(std::string("allocateBuffer(output) returned ") + toString(result));
         }
@@ -322,14 +316,12 @@ public:
         }
 
         std::unique_ptr<render::ComputePipeline> pipeline;
-        result = setup.device->createComputePipeline(
-            render::ComputePipelineDesc{
+        result = setup.device->createComputePipeline(render::ComputePipelineDesc{
                 .computeShader = shader.get(),
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            },
-            pipeline);
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }
@@ -485,20 +477,18 @@ public:
         }
 
         std::unique_ptr<render::BindlessHeap> bindlessHeap;
-        render::Result result = setup.device->createBindlessHeap(
-            render::BindlessHeapDesc{.maxBuffers = 2},
-            bindlessHeap);
+        render::Result<> result = setup.device->createBindlessHeap(render::BindlessHeapDesc{.maxBuffers = 2}).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
         if (!result || bindlessHeap == nullptr) {
             return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
         }
 
         render::BindlessHandle inputHandle;
-        result = bindlessHeap->allocateBuffer(inputHandle);
+        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(std::string("allocateBuffer(input) returned ") + toString(result));
         }
         render::BindlessHandle outputHandle;
-        result = bindlessHeap->allocateBuffer(outputHandle);
+        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { outputHandle = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(std::string("allocateBuffer(output) returned ") + toString(result));
         }
@@ -519,14 +509,12 @@ public:
         }
 
         std::unique_ptr<render::ComputePipeline> pipeline;
-        result = setup.device->createComputePipeline(
-            render::ComputePipelineDesc{
+        result = setup.device->createComputePipeline(render::ComputePipelineDesc{
                 .computeShader = shader.get(),
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            },
-            pipeline);
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }
@@ -668,20 +656,18 @@ public:
         }
 
         std::unique_ptr<render::BindlessHeap> bindlessHeap;
-        render::Result result = setup.device->createBindlessHeap(
-            render::BindlessHeapDesc{.maxBuffers = 2},
-            bindlessHeap);
+        render::Result<> result = setup.device->createBindlessHeap(render::BindlessHeapDesc{.maxBuffers = 2}).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
         if (!result || bindlessHeap == nullptr) {
             return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
         }
 
         render::BindlessHandle rwHandle;
-        result = bindlessHeap->allocateBuffer(rwHandle);
+        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { rwHandle = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(std::string("allocateBuffer(rw) returned ") + toString(result));
         }
         render::BindlessHandle outputHandle;
-        result = bindlessHeap->allocateBuffer(outputHandle);
+        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { outputHandle = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(std::string("allocateBuffer(output) returned ") + toString(result));
         }
@@ -702,14 +688,12 @@ public:
         }
 
         std::unique_ptr<render::ComputePipeline> pipeline;
-        result = setup.device->createComputePipeline(
-            render::ComputePipelineDesc{
+        result = setup.device->createComputePipeline(render::ComputePipelineDesc{
                 .computeShader = shader.get(),
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            },
-            pipeline);
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }
@@ -886,20 +870,18 @@ public:
         }
 
         std::unique_ptr<render::BindlessHeap> bindlessHeap;
-        render::Result result = setup.device->createBindlessHeap(
-            render::BindlessHeapDesc{.maxBuffers = 2},
-            bindlessHeap);
+        render::Result<> result = setup.device->createBindlessHeap(render::BindlessHeapDesc{.maxBuffers = 2}).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
         if (!result || bindlessHeap == nullptr) {
             return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
         }
 
         render::BindlessHandle inputHandle;
-        result = bindlessHeap->allocateBuffer(inputHandle);
+        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(std::string("allocateBuffer(input) returned ") + toString(result));
         }
         render::BindlessHandle outputHandle;
-        result = bindlessHeap->allocateBuffer(outputHandle);
+        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { outputHandle = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(std::string("allocateBuffer(output) returned ") + toString(result));
         }
@@ -920,14 +902,12 @@ public:
         }
 
         std::unique_ptr<render::ComputePipeline> pipeline;
-        result = setup.device->createComputePipeline(
-            render::ComputePipelineDesc{
+        result = setup.device->createComputePipeline(render::ComputePipelineDesc{
                 .computeShader = shader.get(),
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            },
-            pipeline);
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }
@@ -1068,24 +1048,22 @@ public:
         }
 
         std::unique_ptr<render::BindlessHeap> bindlessHeap;
-        render::Result result = setup.device->createBindlessHeap(
-            render::BindlessHeapDesc{
+        render::Result<> result = setup.device->createBindlessHeap(render::BindlessHeapDesc{
                 .maxSamplers = 0,
                 .maxSampledImages = 0,
                 .maxBuffers = 2,
-            },
-            bindlessHeap);
+            }).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
         if (!result || bindlessHeap == nullptr) {
             return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
         }
 
         render::BindlessHandle rwHandle;
-        result = bindlessHeap->allocateBuffer(rwHandle);
+        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { rwHandle = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(std::string("allocateBuffer(rw) returned ") + toString(result));
         }
         render::BindlessHandle outputHandle;
-        result = bindlessHeap->allocateBuffer(outputHandle);
+        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { outputHandle = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(std::string("allocateBuffer(output) returned ") + toString(result));
         }
@@ -1106,14 +1084,12 @@ public:
         }
 
         std::unique_ptr<render::ComputePipeline> pipeline;
-        result = setup.device->createComputePipeline(
-            render::ComputePipelineDesc{
+        result = setup.device->createComputePipeline(render::ComputePipelineDesc{
                 .computeShader = shader.get(),
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            },
-            pipeline);
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }
@@ -1257,15 +1233,13 @@ public:
         }
 
         std::unique_ptr<render::BindlessHeap> bindlessHeap;
-        render::Result result = setup.device->createBindlessHeap(
-            render::BindlessHeapDesc{.maxBuffers = 1},
-            bindlessHeap);
+        render::Result<> result = setup.device->createBindlessHeap(render::BindlessHeapDesc{.maxBuffers = 1}).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
         if (!result || bindlessHeap == nullptr) {
             return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
         }
 
         render::BindlessHandle bufferHandle;
-        result = bindlessHeap->allocateBuffer(bufferHandle);
+        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { bufferHandle = std::move(rhiValue); });
         if (!result) {
             return RhiTestResult::fail(std::string("allocateBuffer(atomic) returned ") + toString(result));
         }
@@ -1282,14 +1256,12 @@ public:
         }
 
         std::unique_ptr<render::ComputePipeline> pipeline;
-        result = setup.device->createComputePipeline(
-            render::ComputePipelineDesc{
+        result = setup.device->createComputePipeline(render::ComputePipelineDesc{
                 .computeShader = shader.get(),
                 .computeEntryPoint = "main",
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            },
-            pipeline);
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }

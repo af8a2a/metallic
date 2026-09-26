@@ -56,7 +56,7 @@ public:
     SceneClusterAccelerationStructureBuilder& operator=(
         const SceneClusterAccelerationStructureBuilder&) = delete;
 
-    Result build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
+    Result<> build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
     void clear();
 
     bool valid() const;
@@ -83,7 +83,7 @@ public:
     ScenePartitionedAccelerationStructureBuilder& operator=(
         const ScenePartitionedAccelerationStructureBuilder&) = delete;
 
-    Result build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
+    Result<> build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
     void clear();
 
     bool valid() const;
