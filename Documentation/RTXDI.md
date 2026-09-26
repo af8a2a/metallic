@@ -156,7 +156,7 @@ build\Source\Debug\MetallicRtxdiSample.exe --smoke-test
 ```
 
 The sample graph is
-`Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json`. It explicitly selects
+`../Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json`. It explicitly selects
 `lightSource = "bench"` to preserve the animated many-light test bench. This
 mode creates ordinary native point-light records on the host and sends them
 through the same GPU power, ReGIR and transport path; shaders no longer generate

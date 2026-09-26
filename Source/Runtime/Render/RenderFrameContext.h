@@ -3,6 +3,7 @@
 #include "Runtime/Render/GAPI/Rhi.h"
 
 #include <functional>
+#include <atomic>
 #include <memory>
 #include <vector>
 
@@ -39,6 +40,7 @@ struct CommandSubmissionState {
     void cancel() noexcept;
     bool submitted = false;
     bool cancelled = false;
+    std::atomic<bool> finished = false;
     std::vector<std::shared_ptr<SubmissionTransaction>> transactions;
     std::vector<std::shared_ptr<void>> resources;
 };
@@ -71,10 +73,13 @@ private:
     friend class RenderFrameContext;
     friend class QueueSubmissionTracker;
     friend class CommandBuffer;
+    friend class CommandRecordingContext;
 };
 
 // CPU recording lifetime and GPU submission lifetime are deliberately separate.
 // Device and Queue must outlive their contexts, completion points and resources.
+// Lifecycle/retain calls belong to the coordinator. Join all recording workers
+// before cancel/reset/submit; workers retain through their CommandBuffer only.
 class RenderFrameContext {
 public:
     explicit RenderFrameContext(uint32_t slotIndex = 0) : slotIndex_(slotIndex) {}
@@ -91,6 +96,8 @@ public:
     Result<> finishSubmission();
     Result<> reset();
     bool recording() const;
+    // Coordinator only. All native recordings must finish before any submission.
+    bool recordingsFinished() const;
     void retain(std::shared_ptr<void> resource);
     Result<> addDependency(GpuCompletionPoint completion);
     uint64_t frameIndex() const { return frameIndex_; }
@@ -106,6 +113,27 @@ private:
     detail::CommandSubmissionRegistry recordings_;
     friend class CommandBuffer;
     friend class QueueSubmissionTracker;
+    friend class Queue;
+};
+
+// One pool per frame slot / queue / recording lane. The coordinator prepares
+// command buffers in graph order, then hands the entire context to one worker.
+// record() rejects overlapping ownership; reset never waits implicitly.
+class CommandRecordingContext {
+public:
+    ~CommandRecordingContext();
+    Result<> initialize(Device& device, Queue& queue);
+    Result<CommandBuffer*> prepare(RenderFrameContext& frame);
+    Result<> record(const std::function<Result<>()>& callback);
+    Result<> reset();
+    Queue* queue() const { return queue_; }
+
+private:
+    std::atomic_flag ownership_ = ATOMIC_FLAG_INIT;
+    Queue* queue_ = nullptr;
+    GpuCompletionPoint completion_;
+    std::unique_ptr<CommandPool> pool_;
+    std::vector<std::unique_ptr<CommandBuffer>> commands_;
 };
 
 // One tracker per submitting queue. Calls are externally serialized, just like

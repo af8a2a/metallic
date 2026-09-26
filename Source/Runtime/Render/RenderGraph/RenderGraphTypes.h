@@ -388,6 +388,8 @@ struct RenderGraphSceneDependency {
     bool operator==(const RenderGraphSceneDependency&) const = default;
 };
 
+enum class CpuRecordingPolicy { Serial, ParallelJoined };
+
 class RenderGraphPass {
 public:
     virtual ~RenderGraphPass() = default;
@@ -412,6 +414,12 @@ public:
     // private resources support the selected queue family. Other passes execute
     // on graphics and form an ordering boundary for independent graph branches.
     virtual bool supportsAsyncQueue() const { return false; }
+    // Independent of GPU queue selection and frame overlap. ParallelJoined may
+    // touch only this pass's private state, immutable prepared inputs and its
+    // command buffer. No frame/global mutation, SDK hooks or nested task waits.
+    // prepareExecution remains on the coordinator; execute is joined before submit.
+    virtual CpuRecordingPolicy cpuRecordingPolicy() const { return CpuRecordingPolicy::Serial; }
+    virtual uint32_t recordingWorkload() const { return 1; }
     virtual Result<> prepare(const RenderGraphCompileContext& context, std::string& log);
     virtual Result<> compile(const RenderGraphCompileContext& context, std::string& log);
     virtual Result<> execute(RenderGraphExecutionContext& context) = 0;

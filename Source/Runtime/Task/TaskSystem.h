@@ -80,6 +80,9 @@ private:
 
 std::expected<void, TaskError> initializeTaskSystem(const TaskSystemDesc& desc = {});
 TaskSystem* tryGetTaskSystem() noexcept;
+// A joined child graph cannot be waited from a task callback. Callers may run
+// their work inline instead of risking thread-pool starvation.
+bool isInsideTaskCallback() noexcept;
 TaskSystem& taskSystem();
 void shutdownTaskSystem();
 

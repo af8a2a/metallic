@@ -15,6 +15,10 @@ struct RenderGraphSubmitDesc {
     // Dependencies supplied by the caller, retained until this graph completes.
     std::span<const GpuCompletionPoint> waitCompletions;
     uint64_t slotWaitTimeoutNanoseconds = UINT64_MAX;
+    // 0 uses up to eight TaskSystem workers; 1 records inline. Native submission
+    // always starts after every batch has joined. A queue change starts a batch.
+    uint32_t recordingWorkerLimit = 0;
+    uint32_t recordingBatchWorkload = 8;
 };
 
 struct RenderGraphCompileOptions {
@@ -48,6 +52,9 @@ struct RenderGraphExecutionStats {
     std::vector<std::string> overlapBlockingPasses;
     uint32_t drainReasonMask = 0; // 1: pass contract, 2: scene revision; legacy bit 4 no longer drains
     uint32_t externalCompletionCount = 0; // Unfinished external consumers carried as GPU dependencies
+    uint32_t recordingBatchCount = 0;
+    uint32_t parallelRecordedPassCount = 0;
+    uint32_t recordingTaskCount = 0;
 };
 
 class RenderGraphExecutor {

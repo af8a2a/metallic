@@ -389,7 +389,8 @@ Result<> NrdRuntime::record(uint32_t index, CommandBuffer& commands)
         impl_->clearPending = false;
     }
     const auto dispatches = impl_->plan.schedule(index);
-    commands.frameContext()->retain(impl_);
+    result = commands.retainResource(impl_);
+    if (!result) { return result; }
     for (const auto& stage : dispatches) {
         result = impl_->pipeline(stage.pipelineIndex);
         if (!result)

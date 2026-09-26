@@ -7,6 +7,17 @@
 
 namespace metallic::render {
 
+namespace {
+struct RecordingOwnership {
+    std::atomic_flag& flag;
+    bool acquired;
+    explicit RecordingOwnership(std::atomic_flag& ownership)
+        : flag(ownership), acquired(!flag.test_and_set(std::memory_order_acquire)) {}
+    ~RecordingOwnership() { if (acquired) { flag.clear(std::memory_order_release); } }
+    explicit operator bool() const { return acquired; }
+};
+} // namespace
+
 SubmissionTransaction::SubmissionTransaction(std::function<void()> submitted, std::function<void()> cancelled)
     : submitted_(std::move(submitted)), cancelled_(std::move(cancelled))
 {
@@ -57,6 +68,8 @@ void detail::CommandSubmissionState::cancel() noexcept
     if (submitted || cancelled) { return; }
     cancelled = true;
     for (auto iter = transactions.rbegin(); iter != transactions.rend(); ++iter) { (*iter)->cancel(); }
+    resources.clear();
+    finished.store(true, std::memory_order_release);
 }
 
 void detail::CommandSubmissionRegistry::add(const std::shared_ptr<CommandSubmissionState>& recording)
@@ -93,8 +106,7 @@ Result<> CommandBuffer::retainResource(std::shared_ptr<void> resource)
         (frameContext_ && !frameContext_->recording()) || !resource) {
         return makeError(Error::InvalidArgument);
     }
-    if (frameContext_) { frameContext_->retain(std::move(resource)); }
-    else { submission_->resources.push_back(std::move(resource)); }
+    submission_->resources.push_back(std::move(resource));
     return {};
 }
 
@@ -217,6 +229,81 @@ bool RenderFrameContext::recording() const
         completion_.state_->status == GpuCompletionPoint::State::Status::Recording;
 }
 
+bool RenderFrameContext::recordingsFinished() const
+{
+    return std::all_of(recordings_.recordings.begin(), recordings_.recordings.end(), [](const auto& entry) {
+        auto state = entry.lock();
+        return !state || state->finished.load(std::memory_order_acquire);
+    });
+}
+
+CommandRecordingContext::~CommandRecordingContext()
+{
+    // A caller may unwind after accepting a prefix but before sealing the frame.
+    // The public completion wait deliberately rejects that state; native pool
+    // destruction must still wait for all signals already accepted by queues.
+    if (completion_.state_) {
+        for (const auto& signal : completion_.state_->signals) { (void)signal.timeline->wait(signal.value); }
+    }
+    // Cancel before destroying wrappers, preserving reverse recording order.
+    if (pool_) { (void)pool_->reset(); }
+}
+
+Result<> CommandRecordingContext::initialize(Device& device, Queue& queue)
+{
+    RecordingOwnership lock(ownership_);
+    if (!lock || pool_) { return makeError(Error::InvalidArgument); }
+    auto created = device.createCommandPool(queue);
+    if (!created) { return std::unexpected(created.error()); }
+    pool_ = std::move(*created);
+    queue_ = &queue;
+    return {};
+}
+
+Result<CommandBuffer*> CommandRecordingContext::prepare(RenderFrameContext& frame)
+{
+    RecordingOwnership lock(ownership_);
+    if (!lock || !pool_ || !frame.recording() ||
+        (completion_.valid() && !completion_.sameSubmission(frame.completion()))) {
+        return makeError(Error::InvalidArgument);
+    }
+    auto created = pool_->createCommandBuffer();
+    if (!created) { return std::unexpected(created.error()); }
+    auto result = (*created)->begin(&frame);
+    if (!result) { return std::unexpected(result.error()); }
+    completion_ = frame.completion();
+    commands_.push_back(std::move(*created));
+    return commands_.back().get();
+}
+
+Result<> CommandRecordingContext::record(const std::function<Result<>()>& callback)
+{
+    RecordingOwnership lock(ownership_);
+    if (!lock || !pool_ || !callback || !completion_.valid() ||
+        completion_.isSubmitted() || completion_.isCancelled()) { return makeError(Error::InvalidArgument); }
+    if (std::none_of(commands_.begin(), commands_.end(), [](const auto& commands) { return commands->recording(); })) {
+        return makeError(Error::InvalidArgument);
+    }
+    auto result = callback();
+    if (result && std::any_of(commands_.begin(), commands_.end(), [](const auto& commands) { return commands->recording(); })) {
+        return makeError(Error::InvalidArgument);
+    }
+    return result;
+}
+
+Result<> CommandRecordingContext::reset()
+{
+    RecordingOwnership lock(ownership_);
+    if (!lock || !completion_.isComplete()) { return makeError(Error::InvalidArgument); }
+    if (pool_) {
+        auto result = pool_->reset();
+        if (!result) { return result; }
+    }
+    commands_.clear();
+    completion_ = {};
+    return {};
+}
+
 void RenderFrameContext::cancel()
 {
     recordings_.cancel();
@@ -316,7 +403,7 @@ Result<> QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, Rend
     if (queue_ == nullptr || timeline_ == nullptr || frame.completion_.state_ == nullptr ||
         (frame.completion_.state_->status != State::Status::Recording &&
             frame.completion_.state_->status != State::Status::Submitting) ||
-        nextValue_ == UINT64_MAX ||
+        nextValue_ == UINT64_MAX || !frame.recordingsFinished() ||
         (desc.waitSemaphoreCount != 0 && desc.waitSemaphores == nullptr) ||
         (desc.signalSemaphoreCount != 0 && desc.signalSemaphores == nullptr) ||
         (desc.commandBufferCount != 0 && desc.commandBuffers == nullptr)) {

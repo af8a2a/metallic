@@ -125,7 +125,8 @@ struct MeshletStreamCompactClasPool::Impl {
                 }
             }));
         if (!result) { return result; }
-        cmd.frameContext()->retain(upload);
+        result = cmd.retainResource(upload);
+        if (!result) { return result; }
         for (Buffer* target : {addresses.get(), pageTable.get()}) {
             publicationBarrier(cmd, *target, ResourceState::General, ResourceState::TransferDestination);
         }

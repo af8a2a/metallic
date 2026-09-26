@@ -248,6 +248,7 @@ add_executable(MetallicRhiTests
     rhi/EditorProfilerTests.cpp
     "${CMAKE_SOURCE_DIR}/Source/Editor/EditorProfiler.cpp"
     rhi/FrameContextTests.cpp
+    rhi/ParallelRecordingTests.cpp
     rhi/FinalBlitTests.cpp
     rhi/DisplayOutputTests.cpp
     rhi/EditorDisplayTests.cpp

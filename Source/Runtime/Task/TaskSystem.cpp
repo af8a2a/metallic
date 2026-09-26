@@ -690,6 +690,11 @@ std::expected<TaskGraphSnapshot, TaskError> TaskGraphRun::wait() const
     return state_->snapshot();
 }
 
+bool isInsideTaskCallback() noexcept
+{
+    return gInsideTaskCallback;
+}
+
 TaskSystem::TaskSystem(const TaskSystemDesc& desc)
     : impl_(std::make_unique<Impl>(desc.workerCount))
 {

@@ -38,9 +38,10 @@ Result<> ComputeKernel::bind(CommandBuffer& commands, const EncodedParameters& p
     if (!impl_ || commands.deviceIdentity() != impl_->device || !params.compatible(commands, impl_->parameters)) {
         return makeError(Error::InvalidArgument);
     }
-    commands.frameContext()->retain(impl_);
+    auto result = commands.retainResource(impl_);
+    if (!result) { return result; }
     // The packet binds its heap before this prepared pipeline is selected.
-    auto result = params.bindResources(commands);
+    result = params.bindResources(commands);
     if (!result) { return result; }
     const uint64_t root = params.address();
     return commands.bindExecution(impl_->execution, &root, sizeof(root));

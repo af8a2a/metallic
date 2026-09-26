@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstring>
+#include <thread>
 
 namespace metallic::tests {
 namespace {
@@ -83,11 +84,13 @@ struct Drain {
     }
 };
 
-render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kernel, std::string& log)
+render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kernel, std::string& log,
+    render::SlangDescriptorHeapMode mode = render::SlangDescriptorHeapMode::Default)
 {
     render::ShaderCompileResult shader;
     auto result = render::compileSlangShaderToSpirv({.moduleName = "RegistryProbe",
-        .entryPointName = "registryProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+        .entryPointName = "registryProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+        .descriptorHeapMode = mode}, shader);
     if (!result) { log = shader.diagnostics; return result; }
     return kernel.initialize(device, {.spirv = shader.spirv, .parameters = render::parameterAbi<ProbeParams>(kAbi)}, log);
 }
@@ -826,6 +829,80 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(PreparedExecutionViewsTest);
+
+class ParallelRegistryTest final : public RhiTest {
+public:
+    ParallelRegistryTest() { type = RhiTestType::Command; name = "parallel_registry_packets"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
+            auto result = runMode(context, mode);
+            if (!result.passed) { return result; }
+        }
+        return RhiTestResult::pass("Four concurrent writers sharing a registry and kernel in mapped/native modes");
+    }
+private:
+    static RhiTestResult runMode(RhiTestContext& context, render::SlangDescriptorHeapMode mode)
+    {
+        std::unique_ptr<render::Device> device;
+        REG_REQUIRE(render::createDevice({.applicationName = "Parallel registry", .enableValidation = context.enableValidation,
+            .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
+        auto& queue = *device->getQueue(render::QueueType::Graphics);
+        std::shared_ptr<render::ResourceRegistry> registry;
+        REG_REQUIRE(device->resourceRegistry().transform([&](auto value) { registry = std::move(value); }));
+        render::ComputeKernel kernel;
+        std::string log;
+        REG_REQUIRE(makeKernel(*device, kernel, log, mode));
+        std::unique_ptr<render::Buffer> source, output;
+        REG_REQUIRE(makeBuffer(*device, source, 73));
+        REG_REQUIRE(makeBuffer(*device, output));
+        std::weak_ptr<void> allocation = source->retainAllocation();
+        render::RenderFrameContext frame;
+        std::array<render::CommandRecordingContext, 4> contexts;
+        std::array<render::CommandBuffer*, 4> commands{};
+        std::array<render::Result<>, 4> results;
+        render::QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(*device, queue));
+        REG_REQUIRE(frame.begin(0));
+        for (uint32_t i = 0; i < contexts.size(); ++i) {
+            REG_REQUIRE(contexts[i].initialize(*device, queue));
+            REG_REQUIRE(contexts[i].prepare(frame).transform([&](auto value) { commands[i] = value; }));
+        }
+        std::vector<std::jthread> workers;
+        for (uint32_t i = 0; i < contexts.size(); ++i) {
+            workers.emplace_back([&, i] {
+                results[i] = contexts[i].record([&]() -> render::Result<> {
+                    render::ParameterWriter writer(*device, frame, *registry);
+                    ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), i, i};
+                    render::EncodedParameters encoded;
+                    auto result = writer.encode(params, kAbi, encoded);
+                    if (result) { result = kernel.dispatch(*commands[i], encoded, 1); }
+                    return result ? commands[i]->end() : result;
+                });
+            });
+        }
+        workers.clear(); // jthread joins every local resource/parameter writer.
+        for (const auto& recorded : results) { REG_REQUIRE(recorded); }
+        source.reset();
+        kernel.clear();
+        REG_CHECK(!allocation.expired());
+        REG_REQUIRE(tracker.submit({.commandBuffers = commands.data(), .commandBufferCount = uint32_t(commands.size())}, frame));
+        REG_REQUIRE(frame.wait(5'000'000'000ull));
+        output->invalidate();
+        auto* mapped = output->map();
+        REG_CHECK(mapped != nullptr);
+        std::array<uint32_t, 4> actual{};
+        std::memcpy(actual.data(), mapped, sizeof(actual));
+        output->unmap();
+        REG_CHECK((actual == std::array<uint32_t, 4>{73, 74, 75, 76}));
+        for (auto& recording : contexts) { REG_REQUIRE(recording.reset()); }
+        REG_REQUIRE(frame.reset());
+        registry->collect();
+        REG_CHECK(allocation.expired());
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(ParallelRegistryTest);
 
 #undef REG_REQUIRE
 #undef REG_CHECK

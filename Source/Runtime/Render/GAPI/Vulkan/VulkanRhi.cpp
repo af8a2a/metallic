@@ -4453,12 +4453,18 @@ Result<> Queue::submit(const QueueSubmitDesc& desc)
     }
 
     std::vector<VkCommandBufferSubmitInfo> commandBuffers;
+    std::unordered_map<RenderFrameContext*, size_t> retentionCounts;
     commandBuffers.reserve(desc.commandBufferCount);
     for (uint32_t index = 0; index < desc.commandBufferCount; ++index) {
         CommandBuffer* commandBuffer = desc.commandBuffers[index];
-        if (commandBuffer == nullptr || commandBuffer->impl_ == nullptr || commandBuffer->recording_ ||
-            commandBuffer->submission_ == nullptr || !commandBuffer->submission_->canSubmit()) {
+        if (commandBuffer == nullptr || commandBuffer->impl_ == nullptr ||
+            commandBuffer->submission_ == nullptr || !commandBuffer->submission_->finished.load(std::memory_order_acquire) ||
+            !commandBuffer->submission_->canSubmit() || commandBuffer->recording_) {
             return makeError(Error::InvalidArgument);
+        }
+        if (auto* frame = commandBuffer->frameContext_) {
+            if (!frame->recordingsFinished()) { return makeError(Error::InvalidArgument); }
+            retentionCounts[frame] += commandBuffer->submission_->resources.size();
         }
         for (const auto& wait : commandBuffer->dependencyWaits_) {
             const VkSemaphore semaphore = wait.semaphore->impl_->semaphore;
@@ -4522,13 +4528,23 @@ Result<> Queue::submit(const QueueSubmitDesc& desc)
         fence = desc.signalFence->impl_->fence;
     }
 
+    // Allocate before queue acceptance. The successful ownership handoff below
+    // cannot allocate or release GPU resources, including after partial failure.
+    for (const auto& [frame, count] : retentionCounts) {
+        frame->resources_.reserve(frame->resources_.size() + count);
+    }
     profiling::pacingTrace("QueueSubmitBegin", UINT64_MAX, impl_->familyIndex);
     const Result<> result = resultFromVk(vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence));
     profiling::pacingTrace("QueueSubmitEnd", UINT64_MAX, impl_->familyIndex);
     if (result) {
         // Mark the whole accepted batch before invoking any CPU publication hooks.
         for (uint32_t index = 0; index < desc.commandBufferCount; ++index) {
-            desc.commandBuffers[index]->submission_->submitted = true;
+            auto& commands = *desc.commandBuffers[index];
+            commands.submission_->submitted = true;
+            if (auto* frame = commands.frameContext_) {
+                for (auto& resource : commands.submission_->resources) { frame->resources_.push_back(std::move(resource)); }
+                commands.submission_->resources.clear();
+            }
         }
         for (uint32_t index = 0; index < desc.commandBufferCount; ++index) {
             desc.commandBuffers[index]->submission_->submit();
@@ -5761,11 +5777,14 @@ Result<> CommandBuffer::begin(RenderFrameContext* frameContext)
 
 Result<> CommandBuffer::end()
 {
-    if (impl_ == nullptr) {
+    if (impl_ == nullptr || !recording_ || !submission_) {
         return makeError(Error::InvalidArgument);
     }
     Result<> result = resultFromVk(vkEndCommandBuffer(impl_->commandBuffer));
-    if (result) { recording_ = false; }
+    if (result) {
+        recording_ = false;
+        submission_->finished.store(true, std::memory_order_release);
+    }
     return result;
 }
 

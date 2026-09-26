@@ -2055,7 +2055,8 @@ public:
     // timeline lifetimes until its next recording. Call while recording.
     Result<> addDependency(const GpuCompletionPoint& completion);
     Result<> addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction);
-    // Frames retain through completion; standalone callers retain until command reset.
+    // Local while recording. Queue acceptance transfers ownership to the frame
+    // through completion; standalone callers retain until command reset.
     Result<> retainResource(std::shared_ptr<void> resource);
     Result<> end();
     void beginDebugLabel(const DebugLabelDesc& desc);

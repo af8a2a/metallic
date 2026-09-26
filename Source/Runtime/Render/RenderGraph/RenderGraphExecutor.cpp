@@ -12,6 +12,7 @@
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Render/Subsystem/BuiltinRenderSubsystems.h"
+#include "Runtime/Task/TaskSystem.h"
 
 #include <spdlog/spdlog.h>
 
@@ -288,6 +289,7 @@ struct RenderGraphExecutor::Impl {
         RenderFrameContext frame;
         std::array<QueueCommandContext, 3> queues;
         std::vector<std::unique_ptr<CommandBuffer>> commandBuffers;
+        std::array<std::vector<std::unique_ptr<CommandRecordingContext>>, 3> recordingContexts;
         explicit SubmissionSlot(uint32_t index) : frame(index) {}
     };
 
@@ -317,6 +319,40 @@ struct RenderGraphExecutor::Impl {
     struct TimerRef {
         uint32_t queue = UINT32_MAX;
         uint32_t begin = 0;
+    };
+    struct NodeRecording {
+        CompiledNode* node = nullptr;
+        RenderGraphProperties properties;
+        std::vector<RenderGraphResource> resources;
+        std::unique_ptr<RenderGraphExecutionContext> context;
+        RenderGraphNodeExecutionStat stats;
+        std::vector<SceneStreamingProfile> streaming;
+        profiling::GpuProfileFrame profile;
+        TimerRef passTimer;
+        std::vector<TimerRef> sectionTimers;
+        TimestampQueryPool* queryPool = nullptr;
+        uint32_t queueIndex = 0;
+        uint32_t firstQuery = 0;
+        uint32_t nextQuery = 0;
+        uint32_t endQuery = 0;
+        bool timingValid = true;
+        bool profilingOverflow = false;
+        Result<> result = makeError(Error::Failure);
+
+        TimerRef beginInterval(CommandBuffer& commands)
+        {
+            if (!queryPool || !timingValid) { return {}; }
+            if (nextQuery + 2 > endQuery) { profilingOverflow = true; return {}; }
+            TimerRef timer{queueIndex, nextQuery};
+            nextQuery += 2;
+            timingValid = commands.writeTimestamp(*queryPool, firstQuery + timer.begin, PipelineStageBits::BottomOfPipe).has_value();
+            return timer;
+        }
+        void endInterval(CommandBuffer& commands, TimerRef timer)
+        {
+            if (!timingValid || timer.queue == UINT32_MAX) { return; }
+            timingValid = commands.writeTimestamp(*queryPool, firstQuery + timer.begin + 1, PipelineStageBits::BottomOfPipe).has_value();
+        }
     };
     struct GpuTimingSlot {
         uint32_t firstQuery = 0;
@@ -1438,7 +1474,15 @@ struct RenderGraphExecutor::Impl {
         // command buffers even after GPU completion. Drop completed recordings
         // before recompile/scene refresh can recycle their heap addresses.
         phase.next("drain.releaseCommands");
-        for (const auto& slot : submissionSlots) { slot->commandBuffers.clear(); }
+        for (const auto& slot : submissionSlots) {
+            slot->commandBuffers.clear();
+            for (auto& contexts : slot->recordingContexts) {
+                for (auto& context : contexts) {
+                    auto result = context->reset();
+                    if (!result) { return result; }
+                }
+            }
+        }
         hasSubmittedWork = false;
         // Also flush the last frames at shutdown/recompile; no additional wait
         // is introduced beyond the caller's existing completion wait above.
@@ -1472,7 +1516,12 @@ struct RenderGraphExecutor::Impl {
         activeGpuTimingValid = false;
         if (executionList.empty() || !graphDevice.capabilities().timestampQueries) { return; }
         // Bounded dynamic scope space per queue, in addition to every pass and frame.
-        const uint64_t perSlot = (executionList.size() + 1ull) * 2ull + 512ull;
+        const auto parallelNodes = std::count_if(executionList.begin(), executionList.end(), [](const auto& node) {
+            return node.pass->cpuRecordingPolicy() == CpuRecordingPolicy::ParallelJoined;
+        });
+        // Parallel nodes own a bounded range for their 256 nested scopes. Only
+        // actual intervals are resolved; unused reserved queries stay unwritten.
+        const uint64_t perSlot = (executionList.size() + 1ull) * 2ull + 512ull * (parallelNodes + 1);
         if (perSlot * kGpuTimingSlotCount > UINT32_MAX) { return; }
         constexpr std::array types{QueueType::Graphics, QueueType::Compute, QueueType::Copy};
         for (uint32_t i = 0; i < types.size(); ++i) {
@@ -1533,7 +1582,15 @@ struct RenderGraphExecutor::Impl {
                 values[q].resize(slot.used[q]);
                 const auto result = gpuTimestampQueryPools[q]->readResults(slot.firstQuery, slot.used[q], values[q].data());
                 if (!result) { return result; }
-                ready &= std::all_of(values[q].begin(), values[q].end(), [](const auto& v) { return v.available; });
+            }
+            const auto intervalReady = [&](TimerRef timer) {
+                return timer.queue == UINT32_MAX ||
+                    (values[timer.queue][timer.begin].available && values[timer.queue][timer.begin + 1].available);
+            };
+            ready &= intervalReady(slot.frameTimer);
+            for (auto timer : slot.nodeTimers) { ready &= intervalReady(timer); }
+            for (const auto& sections : slot.sectionTimers) {
+                for (auto timer : sections) { ready &= intervalReady(timer); }
             }
             if (!ready) { break; }
             const auto resolve = [&](TimerRef timer, double& ms, bool& available) {
@@ -1721,8 +1778,9 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    Result<> executeNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
-        const RenderGraphExecutionContext::ParallelRecorder& parallel = {})
+    Result<> prepareNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
+        RenderGraphProperties& executionProperties, std::unique_ptr<RenderGraphExecutionContext>& prepared,
+        std::vector<RenderGraphResource>* snapshots = nullptr)
     {
         std::vector<RenderGraphExecutionContext::Binding> bindings;
         std::vector<TextureBarrierDesc> pendingTextures;
@@ -1786,14 +1844,27 @@ struct RenderGraphExecutor::Impl {
 
         StreamerSubsystem* upload = streamerSubsystem();
         const bool usesView = frameViewBuffer != nullptr && !node.sceneBinding.localView;
-        auto executionProperties = node.effectiveProperties;
+        executionProperties = node.effectiveProperties;
         if (usesView) {
             // Compatibility adapter for passes still using the packed camera ABI.
             // Authored node properties remain untouched; RenderView is authoritative.
             executionProperties["camera"] = frameCameraProperties;
             executionProperties["temporalJitter"] = frameView.frame[2] != 0;
         }
-        RenderGraphExecutionContext context(
+        if (snapshots) {
+            snapshots->reserve(bindings.size());
+            std::unordered_map<RenderGraphResource*, RenderGraphResource*> copies;
+            for (auto& binding : bindings) {
+                if (!binding.resource) { continue; }
+                auto [entry, inserted] = copies.try_emplace(binding.resource);
+                if (inserted) {
+                    snapshots->push_back(*binding.resource);
+                    entry->second = &snapshots->back();
+                }
+                binding.resource = entry->second;
+            }
+        }
+        prepared.reset(new RenderGraphExecutionContext(
             commandBuffer,
             frameIndex,
             node.executionWidth,
@@ -1805,12 +1876,119 @@ struct RenderGraphExecutor::Impl {
             upload != nullptr ? upload->streamer() : nullptr,
             node.sceneBinding.source != nullptr ? node.sceneBinding.source : runtimeScene,
             world,
-            subsystemHost);
+            subsystemHost));
+        auto& context = *prepared;
         context.preparedScene_ = node.preparedScene;
         context.viewConstants_ = usesView ? &frameView : nullptr;
         context.viewConstantsBuffer_ = usesView ? frameViewBuffer : nullptr;
         context.debugObserver_ = debugObserver;
         context.debugPassId_ = node.id;
+        return {};
+    }
+
+    Result<> prepareRecording(NodeRecording& recording, CommandBuffer& commands, CompiledNode& node, uint64_t frameIndex)
+    {
+        recording.node = &node;
+        recording.stats = {.id = node.id, .name = node.name, .type = node.type, .queue = recordingQueue->type()};
+        auto result = prepareNode(commands, node, frameIndex, recording.properties, recording.context, &recording.resources);
+        if (!result) { return result; }
+        if (activeGpuTimingSlot && activeGpuTimingValid) {
+            auto& slot = *activeGpuTimingSlot;
+            const uint32_t queue = timingQueueIndex();
+            constexpr uint32_t queries = 2 * (256 + 1);
+            if (gpuTimestampQueryPools[queue] && slot.used[queue] + queries <= slot.queryCount) {
+                recording.queryPool = gpuTimestampQueryPools[queue].get();
+                recording.queueIndex = queue;
+                recording.firstQuery = slot.firstQuery;
+                recording.nextQuery = slot.used[queue];
+                slot.used[queue] += queries;
+                recording.endQuery = slot.used[queue];
+            } else if (gpuTimestampQueryPools[queue]) { recording.profilingOverflow = true; }
+            recording.profile.active = slot.profile.active;
+        }
+        recording.passTimer = recording.beginInterval(commands);
+        const auto begin = std::chrono::steady_clock::now();
+        result = node.pass->prepareExecution(*recording.context);
+        recording.stats.cpuMilliseconds = renderGraphElapsedMilliseconds(begin);
+        return result;
+    }
+
+    // Only the batch worker touches this result. Merge statistics, query metadata
+    // and CPU publication order on the coordinator after every task has joined.
+    Result<> recordNode(NodeRecording& recording)
+    {
+        auto& context = *recording.context;
+        auto& commands = context.commandBuffer();
+        auto& stats = recording.stats;
+        const std::string marker = passProfileMarkerName(stats.name, stats.type);
+        METALLIC_TRACY_CPU_SCOPE(marker.c_str());
+        const profiling::NsightProfileRange passMarker(profiling::NsightDomain::Render, marker.c_str(),
+            profiling::NsightCategory::RenderPass, stats.id, profiling::nsightColorFromName(stats.type));
+        RenderGraphGpuLabels<CommandBuffer> labels(marker, debugLabelColorFromArgb(profiling::nsightColorFromName(stats.type)));
+        labels.resume(commands);
+        tracyGpuProfiler.beginZone(recording.profile, marker);
+        context.beginProfile_ = [&](CommandBuffer& buffer, std::string_view name, uint32_t parent) {
+            if (stats.sections.size() >= 256) { recording.profilingOverflow = true; return UINT32_MAX; }
+            const auto index = uint32_t(stats.sections.size());
+            stats.sections.push_back({.name = std::string(name), .parent = parent, .queue = stats.queue});
+            labels.begin(name, debugLabelColorFromArgb(profiling::nsightColorFromName(name)));
+            recording.sectionTimers.push_back(recording.beginInterval(buffer));
+            return index;
+        };
+        context.endProfile_ = [&](CommandBuffer& buffer, uint32_t index, double cpuMs) {
+            stats.sections[index].cpuMilliseconds = cpuMs;
+            recording.endInterval(buffer, recording.sectionTimers[index]);
+            labels.end();
+        };
+        context.cpuProfile_ = [&](std::span<const RenderGraphProfileSection> samples, uint32_t parent) {
+            if (stats.sections.size() + samples.size() > 256) { recording.profilingOverflow = true; return; }
+            const uint32_t base = uint32_t(stats.sections.size());
+            for (uint32_t i = 0; i < samples.size(); ++i) {
+                auto section = samples[i];
+                section.parent = section.parent < i ? base + section.parent : parent;
+                section.cpuOnly = true;
+                section.gpuTimingAvailable = false;
+                section.gpuMilliseconds = 0;
+                stats.sections.push_back(std::move(section));
+                recording.sectionTimers.push_back({});
+            }
+        };
+        context.streamingProfile_ = [&](SceneStreamingProfile sample) { recording.streaming.push_back(std::move(sample)); };
+        const auto begin = std::chrono::steady_clock::now();
+        recording.result = recording.node->pass->execute(context);
+        stats.cpuMilliseconds += renderGraphElapsedMilliseconds(begin);
+        tracyGpuProfiler.endZone(recording.profile);
+        if (recording.result) { recording.endInterval(commands, recording.passTimer); }
+        labels.suspend();
+        if (recording.result) { recording.result = commands.end(); }
+        return recording.result;
+    }
+
+    void mergeRecording(NodeRecording& recording)
+    {
+        lastExecutionStats.profilingOverflow |= recording.profilingOverflow;
+        activeGpuTimingValid &= recording.timingValid;
+        if (activeGpuTimingSlot) {
+            activeGpuTimingSlot->nodeTimers.push_back(recording.passTimer);
+            activeGpuTimingSlot->sectionTimers.push_back(std::move(recording.sectionTimers));
+            for (auto& zone : recording.profile.zones) { activeGpuTimingSlot->profile.zones.push_back(std::move(zone)); }
+        }
+        for (auto& sample : recording.streaming) { lastExecutionStats.streaming.push_back(std::move(sample)); }
+        if (!recording.result) {
+            spdlog::error("[RenderGraph] Parallel recording of '{}' failed: {}", recording.stats.name, resultToString(recording.result));
+        }
+        lastExecutionStats.nodes.push_back(std::move(recording.stats));
+    }
+
+    Result<> executeNode(CommandBuffer& commandBuffer, CompiledNode& node, uint64_t frameIndex,
+        const RenderGraphExecutionContext::ParallelRecorder& parallel = {})
+    {
+        RenderGraphProperties executionProperties;
+        std::unique_ptr<RenderGraphExecutionContext> prepared;
+        auto preparation = prepareNode(commandBuffer, node, frameIndex, executionProperties, prepared);
+        if (!preparation) { return preparation; }
+        auto& context = *prepared;
+        StreamerSubsystem* upload = streamerSubsystem();
         const std::string markerName = passProfileMarkerName(node.name, node.type);
         METALLIC_TRACY_CPU_SCOPE(markerName.c_str());
         const uint32_t markerColor = profiling::nsightColorFromName(node.type);
@@ -2793,6 +2971,12 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     phase.next("graph.poolReset");
     preparationPhase.next("Command pool reset");
     slot.commandBuffers.clear();
+    for (auto& contexts : slot.recordingContexts) {
+        for (auto& context : contexts) {
+            result = context->reset();
+            if (!result) { return result; }
+        }
+    }
     for (auto& context : slot.queues) {
         if (context.commandPool != nullptr) {
             result = context.commandPool->reset();
@@ -2850,6 +3034,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         slot.frame.cancel(); // Preserves resources for any accepted prefix.
         if (discardAll) {
             slot.commandBuffers.clear();
+            for (auto& contexts : slot.recordingContexts) {
+                for (auto& context : contexts) { (void)context->reset(); }
+            }
             for (auto& context : slot.queues) {
                 if (context.commandPool != nullptr) { (void)context.commandPool->reset(); }
             }
@@ -2882,23 +3069,29 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     const auto requiredSubsystems = impl_->requiredSubsystemViews();
     std::vector<Impl::SubmissionSegment> segments;
     const bool graphicsTimings = desc.graphicsQueue && impl_->gpuTimestampQueryPools[0];
-    const auto beginSegment = [&](QueueType type) -> Result<> {
+    const auto beginSegment = [&](QueueType type, CommandRecordingContext* recording = nullptr) -> Result<> {
         Queue* queue = selectedQueue(type);
-        CommandPool* pool = nullptr;
-        Result<> created = impl_->prepareCommandPool(slot, type, *queue, pool);
-        if (!created) { return created; }
+        Result<> created;
         auto& tracker = impl_->submissionTrackers[queue];
         if (tracker == nullptr) {
             tracker = std::make_unique<QueueSubmissionTracker>();
             created = tracker->initialize(*impl_->device, *queue);
             if (!created) { tracker.reset(); return created; }
         }
-        std::unique_ptr<CommandBuffer> buffer;
-        created = pool->createCommandBuffer().transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
-        if (!created) { return created; }
-        slot.commandBuffers.push_back(std::move(buffer));
-        CommandBuffer* commands = slot.commandBuffers.back().get();
-        created = commands->begin(&slot.frame);
+        CommandBuffer* commands = nullptr;
+        if (recording) {
+            created = recording->prepare(slot.frame).transform([&](auto value) { commands = value; });
+        } else {
+            CommandPool* pool = nullptr;
+            created = impl_->prepareCommandPool(slot, type, *queue, pool);
+            if (!created) { return created; }
+            std::unique_ptr<CommandBuffer> buffer;
+            created = pool->createCommandBuffer().transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
+            if (!created) { return created; }
+            slot.commandBuffers.push_back(std::move(buffer));
+            commands = slot.commandBuffers.back().get();
+            created = commands->begin(&slot.frame);
+        }
         if (!created) { return created; }
         segments.push_back({.queue = queue, .commandBuffer = commands});
         impl_->recordingQueue = queue;
@@ -2979,8 +3172,94 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     }
     std::unordered_map<std::string, size_t> lastResourceUse;
     size_t orderingBoundary = segments.empty() ? SIZE_MAX : 0;
+    const auto taskSystem = task::detail::tryAcquireTaskSystem();
+    const uint32_t workerLimit = taskSystem && !task::isInsideTaskCallback() && !impl_->debugObserver
+        ? std::max(1u, std::min(taskSystem->workerCount(), desc.recordingWorkerLimit ? desc.recordingWorkerLimit : 8u)) : 1u;
+    struct RecordingBatch {
+        CommandRecordingContext* context = nullptr;
+        uint64_t workload = 0;
+        std::vector<std::unique_ptr<Impl::NodeRecording>> nodes;
+        Result<> result = makeError(Error::Failure);
+    };
+    std::vector<std::unique_ptr<RecordingBatch>> batches;
+    const auto flushRecordings = [&]() -> Result<> {
+        if (batches.empty()) { return {}; }
+        phase.next("graph.recordBatches", batches.size());
+        const auto record = [&](RecordingBatch& batch) {
+            try {
+                batch.result = batch.context->record([&]() -> Result<> {
+                    for (auto& node : batch.nodes) {
+                        auto recorded = impl_->recordNode(*node);
+                        if (!recorded) { return recorded; }
+                    }
+                    return {};
+                });
+            } catch (const std::exception& error) {
+                spdlog::error("[RenderGraph] Recording task failed: {}", error.what());
+                batch.result = makeError(Error::Failure);
+            } catch (...) { batch.result = makeError(Error::Failure); }
+        };
+        bool completed = true;
+        if (batches.size() > 1) {
+            task::TaskGraph graph("Render graph recording");
+            for (auto& batch : batches) {
+                auto* work = batch.get();
+                graph.addTask({.name = "Record " + work->nodes.front()->node->name, .category = "Render recording",
+                    .userTag = work->workload}, [&, work] { record(*work); });
+            }
+            auto run = taskSystem->submit(std::move(graph));
+            if (!run) { return makeError(Error::Failure); }
+            impl_->lastExecutionStats.recordingTaskCount += uint32_t(batches.size());
+            for (const auto& batch : batches) { impl_->lastExecutionStats.parallelRecordedPassCount += uint32_t(batch->nodes.size()); }
+            auto joined = run->wait();
+            completed = joined && joined->status == task::TaskGraphStatus::Succeeded;
+        } else { record(*batches.front()); }
+        // Task completion order never changes submission/cancellation order.
+        Result<> result = completed ? Result<>{} : makeError(Error::Failure);
+        for (auto& batch : batches) {
+            ++impl_->lastExecutionStats.recordingBatchCount;
+            if (result && !batch->result) { result = batch->result; }
+            for (auto& node : batch->nodes) { impl_->mergeRecording(*node); }
+        }
+        batches.clear();
+        return result;
+    };
     for (auto& node : impl_->executionList) {
-        result = beginSegment(selectedType(node));
+        const QueueType type = selectedType(node);
+        const bool recordOnWorker = workerLimit > 1 &&
+            node.pass->cpuRecordingPolicy() == CpuRecordingPolicy::ParallelJoined &&
+            !node.preparedScene && node.sceneDependency.source == RenderGraphSceneSource::None &&
+            node.pass->requiredSubsystems().empty() && !impl_->firstFeatureReservations.contains(node.name);
+        RecordingBatch* batch = nullptr;
+        if (recordOnWorker) {
+            const uint32_t workload = std::max(1u, node.pass->recordingWorkload());
+            const uint32_t target = std::max(1u, desc.recordingBatchWorkload);
+            if (batches.empty() || batches.back()->context->queue() != selectedQueue(type) ||
+                batches.back()->workload + workload > target) {
+                if (batches.size() == workerLimit) {
+                    result = flushRecordings();
+                    if (!result) { return abort(result); }
+                }
+                auto& contexts = slot.recordingContexts[Impl::queueContextIndex(type)];
+                const size_t lane = batches.size();
+                while (contexts.size() <= lane) { contexts.push_back(std::make_unique<CommandRecordingContext>()); }
+                auto& context = contexts[lane];
+                if (context->queue() != selectedQueue(type)) {
+                    context = std::make_unique<CommandRecordingContext>();
+                    result = context->initialize(*impl_->device, *selectedQueue(type));
+                    if (!result) { return abort(result); }
+                }
+                auto created = std::make_unique<RecordingBatch>();
+                created->context = context.get();
+                batches.push_back(std::move(created));
+            }
+            batch = batches.back().get();
+            batch->workload += workload;
+        } else {
+            result = flushRecordings();
+            if (!result) { return abort(result); }
+        }
+        result = beginSegment(type, batch ? batch->context : nullptr);
         if (!result) { return abort(result); }
         const size_t index = segments.size() - 1;
         if (orderingBoundary != SIZE_MAX) { addDependency(index, orderingBoundary); }
@@ -3002,6 +3281,13 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             if (previous != lastResourceUse.end()) { addDependency(index, previous->second); }
             lastResourceUse[name] = index;
         }
+        if (batch) {
+            auto recording = std::make_unique<Impl::NodeRecording>();
+            result = impl_->prepareRecording(*recording, *segments[index].commandBuffer, node, frameIndex);
+            if (!result) { return abort(result); }
+            batch->nodes.push_back(std::move(recording));
+            continue;
+        }
         result = impl_->executeNode(*segments[index].commandBuffer, node, frameIndex,
             segments[index].queue == desc.graphicsQueue ? parallel : RenderGraphExecutionContext::ParallelRecorder{});
         if (!result) {
@@ -3018,6 +3304,8 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         result = segments[completedIndex].commandBuffer->end();
         if (!result) { return abort(result); }
     }
+    result = flushRecordings();
+    if (!result) { return abort(result); }
     if (subsystemCommands) {
         result = beginSegment(QueueType::Graphics);
         if (!result) { return abort(result); }

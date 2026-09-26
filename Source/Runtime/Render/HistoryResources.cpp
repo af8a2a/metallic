@@ -520,7 +520,8 @@ Result<> HistoryResourceManager::transitionTexture(
         return makeError(Error::InvalidArgument);
     }
     if (commandBuffer.frameContext() != nullptr) {
-        commandBuffer.frameContext()->retain(impl_->records.at(std::string(name)));
+        auto retained = commandBuffer.retainResource(impl_->records.at(std::string(name)));
+        if (!retained) { return retained; }
     }
     // General history contains cross-frame read/write dependencies even without
     // a layout change. Do not rely on a host wait to order these GPU accesses.
@@ -562,7 +563,8 @@ Result<> HistoryResourceManager::transitionBuffer(
         return makeError(Error::InvalidArgument);
     }
     if (commandBuffer.frameContext() != nullptr) {
-        commandBuffer.frameContext()->retain(impl_->records.at(std::string(name)));
+        auto retained = commandBuffer.retainResource(impl_->records.at(std::string(name)));
+        if (!retained) { return retained; }
     }
     if (bufferSlot.state == after && after != ResourceState::General && !forceBarrier) {
         return {};

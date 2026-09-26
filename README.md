@@ -377,7 +377,7 @@ build\Source\Debug\Metallic.exe --smoke-test
 | [`Documentation/DebugControlPlane.md`](Documentation/DebugControlPlane.md) | Agent 调试控制面与 Probe/Watch |
 | [`Documentation/ScreenSpaceShadows.md`](Documentation/ScreenSpaceShadows.md) | 屏幕空间阴影 |
 | [`Documentation/TracyGpuProfiling.md`](Documentation/TracyGpuProfiling.md) | Tracy CPU/GPU 分析 |
-| [`RTXDI.md`](RTXDI.md) | 原生 ReSTIR DI / RTXDI 风格实现说明 |
+| [`Documentation/RTXDI.md`](Documentation/RTXDI.md) | 原生 ReSTIR DI / RTXDI 风格实现说明 |
 | [`Shaders/README.md`](Shaders/README.md) | Shader 目录组织与模块加载规则 |
 
 ## 许可证

@@ -639,10 +639,15 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
             return result;
         }
         tables = retainedTables.get();
-        frame->retain(retainedTables);
-        frame->retain(impl_);
+        result = desc.commandBuffer->retainResource(retainedTables);
+        if (!result) { return result; }
+        result = desc.commandBuffer->retainResource(impl_);
+        if (!result) { return result; }
         for (const auto& item : dispatches) {
-            if (item.program != nullptr && item.program != this) { frame->retain(item.program->impl_); }
+            if (item.program != nullptr && item.program != this) {
+                result = desc.commandBuffer->retainResource(item.program->impl_);
+                if (!result) { return result; }
+            }
         }
     }
 
@@ -787,9 +792,10 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
                 return makeError(Error::InvalidArgument);
             }
             if (snapshot) {
-                if (auto* frame = desc.commandBuffer->frameContext()) {
+                if (desc.commandBuffer->frameContext()) {
                     // Retention erases constness but never mutates the published snapshot.
-                    frame->retain(std::const_pointer_cast<ComputeSampledImageSnapshot>(snapshot));
+                    result = desc.commandBuffer->retainResource(std::const_pointer_cast<ComputeSampledImageSnapshot>(snapshot));
+                    if (!result) { return result; }
                 }
                 expectedBinding.sampledImages.resize(expectedBinding.handles.size());
                 expectedBinding.sampledSnapshots.resize(impl_->resourceTableCount);

@@ -8,6 +8,7 @@ class CopyColorPass final : public UnsafePass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
+    CpuRecordingPolicy cpuRecordingPolicy() const override { return CpuRecordingPolicy::ParallelJoined; }
     QueueType queueType() const override { return QueueType::Copy; }
 
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override

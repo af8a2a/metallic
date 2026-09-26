@@ -8,6 +8,7 @@ class ClearColorPass final : public RasterPass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
+    CpuRecordingPolicy cpuRecordingPolicy() const override { return CpuRecordingPolicy::ParallelJoined; }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;

@@ -141,7 +141,8 @@ bool EncodedParameters::compatible(const CommandBuffer& commands, ParameterAbi a
 Result<> EncodedParameters::bindResources(CommandBuffer& commands) const
 {
     if (!compatible(commands, abi())) { return makeError(Error::InvalidArgument); }
-    commands.frameContext()->retain(packet_);
+    auto retained = commands.retainResource(packet_);
+    if (!retained) { return retained; }
     commands.bindBindlessHeap(*packet_->registry->heap);
     return {};
 }
