@@ -80,4 +80,15 @@ TEST(ShaderPrintf, DrainReusesSlotsWithoutBorrowedOrStaleData)
     EXPECT_STREQ(reused[0].text.data(),""); EXPECT_STREQ(reused[0].idName.data(),"");
     EXPECT_STREQ(drained[0].text.data(),"original"); EXPECT_EQ(capture.dropped(),0u);
 }
+TEST(ShaderPrintf, FileTransportDoesNotRequestProgrammaticExtension)
+{
+    ShaderPrintf normal;
+    ShaderPrintf isolated({.settingsViaFile=true});
+    ASSERT_NE(normal.settings(),nullptr);
+    EXPECT_EQ(normal.settings()->settingCount,9u);
+    EXPECT_EQ(isolated.settings(),nullptr);
+    EXPECT_TRUE(isolated.valid());
+    EXPECT_TRUE(isolated.options().subscribeInfo);
+    EXPECT_FALSE(isolated.options().toStdout);
+}
 } // namespace

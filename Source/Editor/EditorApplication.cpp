@@ -2037,7 +2037,7 @@ int EditorApplication::run(
 
     initializeNsightGraphicsCapture();
 
-    if (enableDebugControl || environmentFlagEnabled("METALLIC_DEBUG_CONTROL")) {
+    if (enableDebugControl || environmentFlagEnabled("METALLIC_DEBUG_CONTROL") || environmentFlagEnabled("METALLIC_SHADER_TRACE")) {
         try {
             debug::DebugLimits limits;
             if (const char* config = std::getenv("METALLIC_DEBUG_LIMITS")) {
@@ -2059,6 +2059,12 @@ int EditorApplication::run(
                 return 1;
             }
             spdlog::info("Debug control started (session {})", debugRuntime_->core().session());
+            if (environmentFlagEnabled("METALLIC_SHADER_TRACE")) {
+                if (!std::getenv("METALLIC_FULL_ROAM_CONFIG") || !std::getenv("METALLIC_FULL_ROAM_OUTPUT")) {
+                    throw std::runtime_error("P2 shader trace requires a bounded workload config and output");
+                }
+                shaderTrace_ = std::make_unique<render::WorkControlShaderTrace>(debugRuntime_->core(),std::getenv("METALLIC_FULL_ROAM_OUTPUT"));
+            }
         } catch (const std::exception& error) {
             spdlog::error("Debug control configuration failed: {}", error.what());
             return 1;
@@ -2440,6 +2446,8 @@ bool EditorApplication::initializeRhi()
     // Streamline has to hook Vulkan before the device is created. Interactive
     // editor sessions can switch to any built-in sample at runtime, including
     // DLSS-RR, while an explicit DLSS-RR smoke test also needs the integration.
+    // The bundled Streamline interposer rejects layer-owned instance extensions.
+    // P2 is a separate diagnostic process; its VBuffer inputs/outputs are requalified.
     const bool enableStreamline = !smokeTest_ || startupSampleRequiresStreamline ||
         environmentFlagEnabled("METALLIC_SMOKE_TEST_REFLEX");
     spdlog::info(
@@ -2473,6 +2481,7 @@ bool EditorApplication::initializeRhi()
                 .validationSink = debugRuntime_ ? debugRuntime_->validationSink() : render::ValidationSink{},
                 .enableAsyncCompute = true,
                 .memoryBudget = {.enabled = gpuDrivenScenesOnly_},
+                .shaderPrintf = shaderTrace_ ? &shaderTrace_->capture() : nullptr,
             }).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });
     }
     if (!result || device_ == nullptr) {
@@ -2810,7 +2819,9 @@ void EditorApplication::shutdown()
     destroySwapchainResources();
     graphicsQueue_ = nullptr;
     stage("device destroy");
+    if (shaderTrace_) { shaderTrace_->releaseGpu(); }
     device_.reset();
+    if (shaderTrace_) { shaderTrace_->finishAfterDevice(); shaderTrace_.reset(); }
     debugRuntime_.reset();
 
     if (window_ != nullptr) {

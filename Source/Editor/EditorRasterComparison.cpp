@@ -44,15 +44,29 @@ public:
     Device* device = nullptr;
     std::map<std::string, std::unique_ptr<Buffer>> copies;
     Json dispatches = Json::array();
-    void compiled(Json) override {}
-    void beginExecution(Device& d, debug::DebugEvidenceStamp stamp, RenderSubsystemHost* host) override { device = &d; workload.beginExecution(d, stamp, host); }
+    Json graph;
+    WorkControlShaderTrace* trace = nullptr;
+    void compiled(Json value) override { graph=std::move(value); }
+    void beginExecution(Device& d, debug::DebugEvidenceStamp stamp, RenderSubsystemHost* host) override
+    {
+        device=&d; workload.beginExecution(d,stamp,host);
+        graph["id"]=stamp.graph; graph["generation"]=stamp.generation;
+        if (trace) { trace->beginExecution(stamp); }
+    }
     void endExecution(bool) override {}
     void boundary(CommandBuffer& commands, std::string_view checkpoint, uint32_t,
         std::string_view pass, std::span<const DebugResourceBinding> resources, const Json& values) override
     {
         if (!capture || pass != "VBuffer") { return; }
         if (checkpoint == "BeforeStreamEarlySoftware" || checkpoint == "BeforeStreamLateSoftware") {
-            dispatches.push_back(values);
+            auto binding = values;
+            if (trace && trace->bind(commands,pass,values)) {
+                binding["scope"]="diagnostic-dispatch"; binding["instrumentation"]="Printf";
+                binding["dispatchToken"]=trace->plan().at("dispatchToken");
+                binding["uninstrumentedSpirvFnv1a64"]=binding.at("spirvFnv1a64"); binding.erase("spirvFnv1a64");
+                binding["diagnosticCompilerSpirvSha256"]=trace->variant().at("compilerSpirvSha256");
+            }
+            dispatches.push_back(std::move(binding));
         }
         workload.capture = true;
         workload.boundary(commands, checkpoint, 0, pass, resources, values);
@@ -171,6 +185,8 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         for (const auto& stats : completed) { profiler_.updateRenderGraphGpuStats(stats); }
     };
     try {
+        checkRaster(config.contains("shaderTrace") == bool(shaderTrace_),"Shader trace startup/config mismatch");
+        if (shaderTrace_) { shaderTrace_->qualify(*device_,*graphicsQueue_,output); }
         const uint32_t samples = config.value("sampleFrames",64u);
         const uint32_t settle = config.value("settleFrames",8u);
         const uint32_t rounds = config.value("rounds",3u);
@@ -266,7 +282,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         report["config"] = config;
         // Version the expected behavior so older causal captures remain readable.
         report["historyInvalidationPolicy"] = "reprojection-v1";
-        report["validationRequested"] = debugRuntime_ && std::getenv("METALLIC_DEBUG_VALIDATION");
+        report["validationRequested"] = bool(shaderTrace_) || (debugRuntime_ && std::getenv("METALLIC_DEBUG_VALIDATION"));
         report["hidden"] = std::getenv("METALLIC_FULL_ROAM_HIDDEN") != nullptr;
         report["graphicsCaptureInjected"] = profiling::NsightGraphicsCapture::vulkanInjectionActive();
 #ifdef _WIN32
@@ -277,13 +293,20 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         const bool pipelineStatisticsRequested = pipelineStatistics && std::strcmp(pipelineStatistics, "1") == 0;
         report["pipelineStatisticsRequested"] = pipelineStatisticsRequested;
         report["nvPerfRequested"] = nvPerfRequested;
+        report["shaderTraceRequested"] = bool(shaderTrace_);
+        if (shaderTrace_) {
+            checkRaster(workloadCase && selectedMode==15 && rounds==1 && primeHistory && !traceFrames &&
+                profileHoldSeconds==0 && !pipelineStatisticsRequested && !nvPerfRequested &&
+                !report["graphicsCaptureInjected"].get<bool>() && !report.value("gpuTraceInjected",false) &&
+                !report.value("renderDocInjected",false),"Shader trace requires one primed WorkControl case without other profilers");
+        }
         if (nvPerfRequested) {
             checkRaster(workloadCase && selectedMode == 15 && rounds == 1 && primeHistory && !traceFrames &&
                 profileHoldSeconds == 0 && !pipelineStatisticsRequested && !report["validationRequested"].get<bool>() &&
                 !report["graphicsCaptureInjected"].get<bool>() && !report.value("gpuTraceInjected", false) &&
                 !report.value("renderDocInjected", false), "NvPerf needs one primed WorkControl round without other instrumentation");
         }
-        report["measurementKind"] = nvPerfRequested || profileHoldSeconds > 0 || traceFrames || pipelineStatisticsRequested
+        report["measurementKind"] = shaderTrace_ || nvPerfRequested || profileHoldSeconds > 0 || traceFrames || pipelineStatisticsRequested
             ? "diagnostic" : "normal-timing";
         report["camera"] = viewportCameraProperties();
         const auto targetCamera = viewportCameraProperties();
@@ -364,6 +387,47 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                 // Readback/copy cache effects are outside measurement, followed
                 // by the same unmeasured recovery frames in every variant.
                 for (uint32_t i=0; i<settle; ++i) { draw(); }
+                if (shaderTrace_) {
+                    const auto& selection=config.at("shaderTrace");
+                    checkRaster(selection.is_object(),"Shader trace selection must be an object");
+                    for (auto field=selection.begin();field!=selection.end();++field) {
+                        checkRaster(field.key()=="phase" || field.key()=="group" || field.key()=="localIndex" || field.key()=="predicate", "Unknown shader trace selection field");
+                    }
+                    const std::string phase=selection.at("phase");
+                    checkRaster(phase=="early" || phase=="late","Shader trace phase must be early or late");
+                    shaderTrace_->configure(observer.graph);
+                    const auto& site=shaderTrace_->sites().at(phase=="early" ? 0 : 1);
+                    Json watch{{"version",1},{"generation",observer.graph.at("generation")},
+                        {"target",{{"site",site.at("name")},{"phase",phase},{"expectedSiteSchemaHash",site.at("schemaHash")}}},
+                        {"invocation",{{"group",selection.value("group",Json::array({0,0,0}))},{"localIndex",selection.value("localIndex",0u)}}},
+                        {"limits",{{"targetFrames",1},{"maxRecords",16},{"timeoutMs",30000}}}};
+                    if (selection.contains("predicate")) { watch["predicate"]=selection.at("predicate"); }
+                    shaderTrace_->prepare(*device_,watch,{{"workloadCase",report.at("workloadCase")},{"baseline",before},
+                        {"camera",targetCamera},{"renderExtent",report.at("renderExtent")}});
+                    observer.trace=shaderTrace_.get();
+                    const auto diagnostic=checkpoint(name+"-diagnostic");
+                    shaderTrace_->targetDrained(*graphicsQueue_);
+                    const auto restored=checkpoint(name+"-restored");
+                    const auto equalReadback = [&](const Json& snapshot) {
+                        for (const char* key : {"cutHash","pageMappingsHash","AfterStreamEarlyBins","AfterStreamLateBins",
+                            "AfterStreamEarlyClusterCull","AfterStreamLateClusterCull"}) {
+                            if (snapshot.at(key)!=before.at(key)) { return false; }
+                        }
+                        for (const char* key : {"VBuffer.visibility","VBuffer.depth"}) {
+                            if (snapshot.at(key).at("hash")!=before.at(key).at("hash") || snapshot.at(key).at("pixels")!=before.at(key).at("pixels")) { return false; }
+                        }
+                        return true;
+                    };
+                    const bool same=equalReadback(diagnostic) && equalReadback(restored) && restored.at("productionDispatches")==before.at("productionDispatches");
+                    shaderTrace_->restoration({{"before",before},{"diagnostic",diagnostic},{"after",restored},
+                        {"productionBindingRestored",restored.at("productionDispatches")==before.at("productionDispatches")},
+                        {"readbacksIdentical",same}},same);
+                    observer.trace=nullptr;
+                    checkRaster(same,"Shader observation perturbed input/output or production restoration failed");
+                    report["cases"].push_back({{"name",name},{"variant",variant},{"before",before},{"diagnostic",diagnostic},{"after",restored}});
+                    report["shaderTrace"]={{"job",shaderTrace_->job()},{"phase",phase},{"collectionBoundary","case-process-instance-destroyed"}};
+                    continue; // No timing samples from an instrumented process.
+                }
                 if (nvPerfRequested) {
                     primeTarget(); drain();
                     std::string error;
@@ -486,6 +550,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         set("VBuffer","softwareRasterIncrementalDepth",false);
         report["status"]="capture_complete"; passed=true;
     } catch (const std::exception& e) {
+        if (shaderTrace_) { shaderTrace_->abort(e.what()); }
         report["error"]=e.what();
         spdlog::error("[Raster Comparison] {}",e.what());
     }

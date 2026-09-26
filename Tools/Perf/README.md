@@ -1,4 +1,8 @@
-# Performance evidence tools (M0 / M1 / M2 / M3)
+# Performance evidence and shader debugging tools
+
+P2 production Shader Printf observations use [ShaderTrace.py](ShaderTrace.py). See
+[commands and the evidence contract](ShaderTrace.md). This is a separate diagnostic
+process with exact WorkControl input/output checks; it is not eligible for timing acceptance.
 
 M3's bounded shader candidate loop is implemented in
 [ExperimentRunner.py](ExperimentRunner.py). See [commands, gates and recovery](ExperimentRunner.md):

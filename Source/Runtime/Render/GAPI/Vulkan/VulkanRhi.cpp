@@ -10823,16 +10823,18 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
             spdlog::error("Shader Printf requires a valid buffer budget, Khronos validation and debug utils.");
             return makeError(Error::Unsupported);
         }
-        uint32_t count = 0;
-        vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &count, nullptr);
-        std::vector<VkExtensionProperties> layerExtensions(count);
-        if (vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &count, layerExtensions.data()) != VK_SUCCESS ||
-            (!hasName(layerExtensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) &&
-             !hasName(availableExtensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME))) {
-            spdlog::error("Shader Printf requires VK_EXT_layer_settings.");
-            return makeError(Error::Unsupported);
+        if (!printf.options().settingsViaFile) {
+            uint32_t count = 0;
+            vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &count, nullptr);
+            std::vector<VkExtensionProperties> layerExtensions(count);
+            if (vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &count, layerExtensions.data()) != VK_SUCCESS ||
+                (!hasName(layerExtensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) &&
+                 !hasName(availableExtensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME))) {
+                spdlog::error("Shader Printf requires VK_EXT_layer_settings.");
+                return makeError(Error::Unsupported);
+            }
+            instanceExtensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
         }
-        instanceExtensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
     }
     if (validationRequested && hasName(availableLayers, "VK_LAYER_KHRONOS_validation")) {
         instanceLayers.push_back("VK_LAYER_KHRONOS_validation");

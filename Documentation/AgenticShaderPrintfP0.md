@@ -113,7 +113,8 @@ ctest --test-dir build-pass-stages-nrd -R '^MetallicShaderPrintf(Tests|EvidenceT
 
 后续 P1 已实现 job/token/source mapping、typed event decoder、export/offline verifier，
 并增加 `metallicctl shader watch`；详见 [P1 验收记录](AgenticShaderPrintfP1.md)。
-P2 尚未实现：WorkControl 生产站点、variant lease 与生产恢复；editor 尚无 `--shader-trace`。
+后续 [P2](AgenticShaderPrintfP2.md) 已验收独立进程中的 WorkControl 生产站点、variant lease 与恢复，
+并通过本页七项 GPU 回归；入口为 ShaderTrace.py runner，editor 尚无 `--shader-trace`。
 本轮未验证 graphics shader object、mesh/task、fragment、ray query/ray tracing 中的 Printf。
 
 依据：[Slang printf](https://docs.shader-slang.org/en/latest/external/core-module-reference/global-decls/printf.html)、

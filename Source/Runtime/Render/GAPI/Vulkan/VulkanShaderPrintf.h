@@ -14,6 +14,9 @@ struct ShaderPrintfOptions {
     // Fault injection for capability probes. Normal callers retain both defaults.
     bool subscribeInfo = true;
     bool toStdout = false;
+    // The dedicated workload process supplies an isolated vk_layer_settings.txt.
+    // Needed by interposers that reject layer-owned instance extensions.
+    bool settingsViaFile = false;
 };
 
 struct ShaderPrintfMessage {
@@ -32,7 +35,7 @@ public:
     ShaderPrintf(const ShaderPrintf&) = delete;
     ShaderPrintf& operator=(const ShaderPrintf&) = delete;
     const ShaderPrintfOptions& options() const { return options_; }
-    const VkLayerSettingsCreateInfoEXT* settings() const { return &settingsInfo_; }
+    const VkLayerSettingsCreateInfoEXT* settings() const { return options_.settingsViaFile ? nullptr : &settingsInfo_; }
     bool valid() const { return options_.bufferBytes >= 128 && options_.bufferBytes <= 1048576; }
     void capture(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
         const VkDebugUtilsMessengerCallbackDataEXT& data) noexcept;

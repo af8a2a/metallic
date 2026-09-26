@@ -18,6 +18,7 @@ class ShaderTraceCore {
 public:
     explicit ShaderTraceCore(std::string session, uint64_t firstToken = 1);
     DebugResult<DebugValue> begin(DebugValue request, DebugValue site, DebugValue identity);
+    void recorded(DebugValue identity);
     void compiledVariant(DebugValue variant);
     void submitted(DebugValue queue, DebugValue submit);
     void ingest(DebugValue raw);

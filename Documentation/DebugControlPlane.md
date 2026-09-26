@@ -6,6 +6,11 @@ CPU analysis offline. Bounded watches retain evidence when a probe matches.
 It is opt-in and independent of ImGui. It does not pause passes or execute user
 code in the engine.
 
+Shader Printf adds the bounded `shader.capabilities/sites/watch` and `shader verify` interfaces.
+[P1](AgenticShaderPrintfP1.md) documents the fixture/CLI protocol;
+[P2](AgenticShaderPrintfP2.md) documents the production WorkControl batch runner and offline artifacts.
+Production collection is currently one watch in a dedicated workload process, closed after instance destruction.
+
 ## Build and start
 
 Build from the normal configured MSVC environment:

@@ -1,8 +1,9 @@
 # Shader Printf Agentic Debugger 设计
 
-状态：P0 与 P1 已实现并完成本机验证；生产站点与 variant lease 属于 P2。日期：2026-09-26。
+状态：P0–P2 已实现并完成本机验收。P2 提供独立进程批处理生产 logpoint；P3/P4 仍为设计。日期：2026-09-27。
 输入为用户提供的 Shader Debug Printf 讨论。本文保留完整路线设计；当前可运行接口与验证范围见
-[P0 验收](AgenticShaderPrintfP0.md)和 [P1 验收](AgenticShaderPrintfP1.md)，其余设计不代表已交付。
+[P0 验收](AgenticShaderPrintfP0.md)、[P1 验收](AgenticShaderPrintfP1.md)和 [P2 使用与验收](AgenticShaderPrintfP2.md)。
+本文保留后续架构草案；任意常驻编辑器 watch、多站点/表达式等不代表已交付。
 本文结合当前 Metallic 源码、Debug Control Plane v2 和官方 Vulkan/Slang 文档制定。
 
 ## 1. 决策与首个交付
@@ -25,7 +26,7 @@ shader 原本没有读取的资源，不为了输出而重新计算一次生产�
 
 | 已核实的现状 | 设计影响 |
 |---|---|
-| `VulkanRhi.cpp::createDebugMessenger` 只订阅 Warning/Error | Printf 模式必须订阅 INFO，同时检查 VVL 自身的 severity/filter 设置 |
+| 普通 Vulkan 模式订阅 Warning/Error，P0 起 Printf 另订阅 INFO | 验证 VVL severity/filter；P2 为 Streamline 使用独立进程 layer-settings 文件 |
 | `RenderDebugRuntime::validationSink` 在 callback 构造 JSON，文本截到 4096 字符；`DebugCore::pushEvent` 每 provider 保留 256 项 | 新建独立有界 raw-message 通道，逐类记录丢弃/截断；不把通用 validation ring 当 trace 存储 |
 | `ValidationSink` 从任意 validation 线程调用，参数只在调用期间有效 | callback 必须复制消息与对象名；不借用指针，不在回调里操作渲染器 |
 | DebugCore 已有 session、jobs、schema、capture/export、typed eval、限制和 stale generation 语义 | 扩展现有控制面和证据类型；不再建立另一套 IPC 或任意代码执行接口 |
@@ -121,7 +122,7 @@ MVP 只承诺验证通过的生产 compute 路径。若需要的 layer feature/h
 
 ## 5. Shader Watch 请求与 variant 计划
 
-### 5.1 对外方法（P1 已接通控制面；生产请求结构属于 P2）
+### 5.1 对外方法（P1 控制面与 P2 批处理 adapter）
 
 | Method | 语义 |
 |---|---|
@@ -134,7 +135,7 @@ MVP 只承诺验证通过的生产 compute 路径。若需要的 layer feature/h
 CLI 外观建议：
 
 ```powershell
-# P1 已支持这些命令；当前只在独立 fixture 服务启用。PID/session/job 由控制面查询获得。
+# 这组在线交互由 P1 fixture 验证；P2 生产观察使用 ShaderTrace.py runner。PID/session/job 由控制面查询获得。
 metallicctl --pid 1234 --session SESSION --json shader capabilities
 metallicctl --pid 1234 --session SESSION --json shader sites
 metallicctl --pid 1234 --session SESSION --json shader watch --spec watch.json --wait
@@ -142,7 +143,9 @@ metallicctl --pid 1234 capture export JOB --out .tmp/shader-watch-new
 metallicctl --capture .tmp/shader-watch-new --json eval 'shaderTrace.records[0].fields'
 ```
 
-以下是 **P2 生产请求设计**，不能直接提交给 P1；P1 的最小请求见验收文档。
+以下保留 **后续扩展请求草案**，不是当前 P2 接收的结构。当前 P2 固定完整字段集，
+只接收 phase、group/localIndex 和 triangleId eq u32 谓词，由 runner 生成内部 watch；
+具体命令见 [P2 文档](AgenticShaderPrintfP2.md)。P1 的最小请求见 P1 验收文档。
 hash/graph 标识必须从当前 `shader.sites` / `hello` 获取：
 
 ```json
@@ -328,9 +331,10 @@ NativeTrace 同样属于插桩；没有 DebugPrintf 指令也不自动合格。
 
 ## 10. 分阶段实施与验收
 
-2026-09-26 更新：P0 已完成七项真实 GPU 正负验收；P1 已完成有界协议、job/CLI/export/offline，
-以及 mapped/native 各五项真实 GPU fixture 验收。详见 [P0 验收](AgenticShaderPrintfP0.md)、
-[P1 验收](AgenticShaderPrintfP1.md)。P2–P4 仍为设计，不能据此宣称生产调试闭环已交付。
+2026-09-27 更新：P0/P1 回归通过；P2 完成真实 WorkControl 站点、一次性 variant lease、
+独立 case 进程与离线证据复核。early/late 各三个独立目标帧逐位复现，NoMatch/SiteNotReached
+可区分，生产绑定与 depth/visibility 恢复通过。收集边界为 case 进程 instance 销毁，
+尚未推广到任意常驻编辑器连续 watch。详见 [P2 验收](AgenticShaderPrintfP2.md)。P3/P4 仍待推进。
 
 下表保留阶段规划；当前完成状态以上述更新和各阶段验收记录为准。工期按单一开发主线粗估，驱动/SDK 兼容故障另计。
 
@@ -342,7 +346,7 @@ NativeTrace 同样属于插桩；没有 DebugPrintf 指令也不自动合格。
 | P3 Agent 调试闭环 | 添加真实 triangle reject 或 HZB decision 站点；声明式计划、结果比较、回归/性能门禁 | 用可控故障定位最早有证据的分歧并在无插桩版本确认修复；Printf-only 插桩不能进入 M3；日志消失不被当修复 | 2–3 天 |
 | P4 按需扩展 | Native Trace Buffer、多 invocation 摘要、运行时 TraceParams、其他 stage 与受限表达式 | 每种 stage/descriptor/object 路径单独验收；原子配额、同步与生命周期不丢证据；旧 artifact 仍可离线解码 | 按具体需求 |
 
-建议先验收 P0–P2，约 5–8 个开发日形成首个可用闭环，再根据真实问题决定 P3/P4。
+P0–P2 的上述固定工作负载范围已验收；后续根据真实问题选择 P3/P4 站点和扩展。
 P0 若生产 heap 路径不支持，记录准确的组合与错误；不能用传统 descriptor fixture
 通过代替生产链路验收，也不先承诺完整系统工期。
 

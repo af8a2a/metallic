@@ -249,3 +249,77 @@ TEST(ShaderTrace, HostArtifactQueueIsBoundedAndAccountsDroppedRecords)
     EXPECT_EQ(b["rawMessages"].size(),256u); EXPECT_EQ(b["health"]["hostDropped"],4u);
     EXPECT_EQ(analyzeShaderTrace(b)->at("selectedScopeComplete"),false);
 }
+
+TEST(ShaderTrace, WorkControlSelectorsAndPhaseAreBounded)
+{
+    auto production = site();
+    production.erase("fixture"); production["name"]="stream.after-triangle-prepare";
+    production["adapter"]="work-control-v1"; production["phase"]="early";
+    production=shaderTraceSite(production);
+    auto request=watch(); request["target"]={{"site",production["name"]},{"phase","early"},
+        {"expectedSiteSchemaHash",production["schemaHash"]}};
+    request["invocation"]={{"group",{0,0,0}},{"localIndex",127}};
+    request["predicate"]={{"field","triangleId"},{"op","eq"},{"value",UINT32_MAX}};
+    ASSERT_TRUE(validateShaderWatch(request,production,1));
+    for (int fault=0;fault<9;++fault) {
+        auto invalid=request;
+        if (fault==0) { invalid["target"]["phase"]="late"; }
+        if (fault==1) { invalid["target"].erase("phase"); }
+        if (fault==2) { invalid["invocation"]["group"]={65535,0,0}; }
+        if (fault==3) { invalid["invocation"]["group"]={0,1,0}; }
+        if (fault==4) { invalid["invocation"]["localIndex"]=128; }
+        if (fault==5) { invalid["predicate"]["value"]=-1; }
+        if (fault==6) { invalid["predicate"]["op"]="expression"; }
+        if (fault==7) { invalid["predicate"]["expression"]="anything"; }
+        if (fault==8) { invalid["fixtureScenario"]="site-not-reached"; }
+        EXPECT_FALSE(validateShaderWatch(invalid,production,1)) << fault;
+    }
+}
+
+TEST(ShaderTrace, PhaseRegistrySelectsTheMatchingSchema)
+{
+    DebugCore core; core.setGraph({{"id","graph"},{"generation",1}});
+    auto early=site(); early.erase("fixture"); early["adapter"]="work-control-v1"; early["phase"]="early";
+    early=shaderTraceSite(early);
+    auto late=early; late["phase"]="late"; late=shaderTraceSite(late);
+    ASSERT_NE(early["schemaHash"],late["schemaHash"]);
+    core.configureShaderTrace({{"configured",true},{"smokeVerified",true}},DebugValue::array({early,late}));
+    auto request=watch(); request["target"]["phase"]="late";
+    request["target"]["expectedSiteSchemaHash"]=early["schemaHash"];
+    EXPECT_EQ(call(core,"shader.watch",request)["error"]["code"],"StaleHandle");
+    request["target"]["expectedSiteSchemaHash"]=late["schemaHash"];
+    ASSERT_EQ(call(core,"shader.watch",request)["status"],"ok");
+    const auto queued=core.takeShaderRequests("graph",1);
+    ASSERT_EQ(queued.size(),1u);
+}
+
+TEST(ShaderTrace, ActualRecordingIdentityFreezesAtSubmission)
+{
+    ShaderTraceCore trace("session");
+    ASSERT_TRUE(trace.begin(watch(),site(),identity()));
+    trace.recorded({{"execution",888u},{"commandBufferRecording",999u},{"frameSlot",2u},
+        {"dispatchToken",77u},{"generation",9u}});
+    trace.submitted({{"family",0}},{{"scope","tracked frame completion"}});
+    EXPECT_THROW(trace.recorded({{"execution",123u}}),std::logic_error);
+    trace.completion(true,true,true);
+    const auto b=trace.seal().value();
+    EXPECT_EQ(b["dispatch"]["execution"],888u); EXPECT_EQ(b["dispatch"]["commandBufferRecording"],999u);
+    EXPECT_EQ(b["dispatch"]["frameSlot"],2u); EXPECT_EQ(b["dispatch"]["dispatchToken"],1u);
+    EXPECT_EQ(b["dispatch"]["generation"],1u);
+}
+
+TEST(ShaderTrace, ProductionFallbackCannotBecomeAnEmptySuccess)
+{
+    for (uint32_t reason : {1u,2u}) {
+        auto b=bundle(0,0,0);
+        auto production=b["site"]; production.erase("fixture");
+        production["adapter"]="work-control-v1"; production["phase"]="early";
+        b["site"]=shaderTraceSite(production);
+        b["request"]["target"]["phase"]="early";
+        b["request"]["target"]["expectedSiteSchemaHash"]=b["site"]["schemaHash"];
+        b["rawMessages"][0]=raw(b["dispatch"],2,1,{0,0,0,reason,0});
+        const auto decoded=analyzeShaderTrace(b); ASSERT_TRUE(decoded);
+        EXPECT_FALSE(decoded->at("selectedScopeComplete").get<bool>());
+        EXPECT_EQ(decoded->at("outcome"),reason==1 ? "UnsupportedPath" : "Incomplete");
+    }
+}

@@ -139,10 +139,11 @@ P0 [七项真实 GPU 回归](../build-release/shader-printf-p1-regression-202609
 public，作业正确导出 ExecutionFailed 而非 NoMatch。修复后第二轮通过；最终证据以
 verified 目录为准，原始失败未改写。
 
-## P2 边界
+## 后续生产接入
 
-尚未提供 WorkControl 生产站点、图像正确性对照、在线 variant 恢复、多 invocation、
-graphics shader object、fragment/mesh/task/ray-tracing 的验证。所有 Printf capture 均为
-performanceEligible=false，不能用于无插桩 A/B 性能结论。
-P2 应在可信 WorkloadCase 的真实 bind 点接入具名站点与 completion lease，证明持久
-instance 的消息回收边界，并验证取消后的下一次生产绑定。
+2026-09-27 的 [P2](AgenticShaderPrintfP2.md) 已提供 WorkControl after-triangle-prepare、
+command recording 持有的 variant lease、真实输入/图像回读对照与生产恢复。
+其 collector 复用一个独立 case 进程的 instance，并在销毁 instance 后封存；未推广成任意常驻
+编辑器连续 watch。P2 再次通过本页的 mapped/native 十项 GPU 回归。
+多 invocation、其他 shader stage、真实 GPU 中途取消/热重载故障注入仍未验收。
+所有 Printf capture 均 performanceEligible=false，不能用于无插桩 A/B 性能结论。

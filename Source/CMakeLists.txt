@@ -47,6 +47,7 @@ endif()
 add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Debug/RenderDebug.cpp
     Runtime/Render/Debug/ShaderTraceRuntime.cpp
+    Runtime/Render/Debug/WorkControlShaderTrace.cpp
     Runtime/Render/Debug/RenderDebugProviders.cpp
     Runtime/Render/Debug/GpuDebugProbe.cpp
     Runtime/Render/ComputeProgram.cpp

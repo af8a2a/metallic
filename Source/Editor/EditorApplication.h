@@ -4,6 +4,7 @@
 #include "Editor/EditorRenderGraphViewer.h"
 #include "Editor/EditorDisplayRenderer.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
+#include "Runtime/Render/Debug/WorkControlShaderTrace.h"
 #include "Editor/NvmlMonitor.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -269,6 +270,7 @@ private:
     render::RenderView viewportView_;
     std::unique_ptr<render::RenderGraphExecutor> graphExecutor_;
     std::unique_ptr<render::RenderDebugRuntime> debugRuntime_;
+    std::unique_ptr<render::WorkControlShaderTrace> shaderTrace_;
     render::HistoryResourceManager historyResources_;
     std::unique_ptr<render::SceneAccelerationStructureBuilder> sceneAccelerationStructure_;
     EditorProfiler profiler_;

@@ -12,6 +12,7 @@ public:
     debug::DebugResult<void> begin(debug::DebugCaptureRequest request, debug::DebugValue site, debug::DebugValue identity);
     const debug::DebugValue& plan() const { return plan_; }
     bool maySubmit();
+    void recorded(debug::DebugValue identity) { trace_.recorded(std::move(identity)); }
     void compiledVariant(debug::DebugValue variant) { trace_.compiledVariant(std::move(variant)); }
     void stop(std::string reason) { trace_.stop(std::move(reason)); }
     void submitted(debug::DebugValue queue, debug::DebugValue submit);

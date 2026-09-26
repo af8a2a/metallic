@@ -417,7 +417,8 @@ DebugValue DebugCore::route(std::string_view method, const DebugValue& params)
             }
         }
         const auto found = std::find_if(shaderSites_.begin(), shaderSites_.end(), [&](const auto& site) {
-            return site.at("name") == params.at("target").at("site");
+            return site.at("name") == params.at("target").at("site") &&
+                (!site.contains("phase") || site.at("phase") == params.at("target").value("phase", ""));
         });
         if (found == shaderSites_.end()) { reject("Unsupported", "Shader site is not registered"); }
         auto valid = validateShaderWatch(params, *found, graph_.value("generation", uint64_t(0)));

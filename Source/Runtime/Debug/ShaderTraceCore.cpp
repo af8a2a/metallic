@@ -77,7 +77,7 @@ DebugResult<void> validateShaderWatch(const DebugValue& request, const DebugValu
 {
     try {
         knownKeys(request, {"version", "generation", "target", "invocation", "limits", "fixtureScenario", "predicate", "fields"});
-        knownKeys(request.at("target"), {"site", "expectedSiteSchemaHash"});
+        knownKeys(request.at("target"), {"site", "expectedSiteSchemaHash", "phase"});
         knownKeys(request.at("invocation"), {"group", "localIndex"});
         knownKeys(request.at("limits"), {"targetFrames", "maxRecords", "timeoutMs"});
         if (request.at("version") != 1 || number(request.at("generation")) != generation) {
@@ -87,15 +87,29 @@ DebugResult<void> validateShaderWatch(const DebugValue& request, const DebugValu
             request.at("target").at("expectedSiteSchemaHash") != site.at("schemaHash")) {
             return std::unexpected(DebugError{"StaleHandle", "Site or schema changed"});
         }
+        if (site.contains("phase")) {
+            if (request.at("target").at("phase") != site.at("phase")) { return std::unexpected(invalid("Phase mismatch")); }
+        } else if (request.at("target").contains("phase")) { return std::unexpected(invalid("Site has no phase selector")); }
         const auto& invocation = request.at("invocation");
-        if (invocation.at("group") != site.at("invocation").at("group") || invocation.at("localIndex") != site.at("invocation").at("localIndex")) {
+        if (site.value("adapter", "") == "work-control-v1") {
+            const auto& group = invocation.at("group");
+            if (!group.is_array() || group.size() != 3 || number(group[0],65534) > 65534 ||
+                number(group[1]) != 0 || number(group[2]) != 0 || number(invocation.at("localIndex"),127) > 127) {
+                return std::unexpected(invalid("P2 supports one group on the first dispatch row and local index 0..127"));
+            }
+        } else if (invocation.at("group") != site.at("invocation").at("group") || invocation.at("localIndex") != site.at("invocation").at("localIndex")) {
             return std::unexpected(DebugError{"Unsupported", "This site adapter supports only its declared invocation"});
         }
         const auto& limits = request.at("limits");
         if (number(limits.at("targetFrames")) != 1 || number(limits.at("maxRecords"), 16) < 2 ||
             number(limits.at("timeoutMs"), 30000) == 0) { return std::unexpected(invalid("Invalid limits")); }
-        if (request.contains("predicate") || request.contains("fields")) {
-            return std::unexpected(DebugError{"Unsupported", "P1 transports the complete declared schema; predicates/field selection require a site adapter"});
+        if (request.contains("fields")) { return std::unexpected(DebugError{"Unsupported", "Select the complete declared schema"}); }
+        if (request.contains("predicate")) {
+            const auto& predicate = request.at("predicate");
+            if (site.value("adapter", "") != "work-control-v1") { return std::unexpected(DebugError{"Unsupported", "Site has no predicate adapter"}); }
+            knownKeys(predicate,{"field","op","value"});
+            if (predicate.at("field") != "triangleId" || predicate.at("op") != "eq") { return std::unexpected(invalid("Only triangleId eq u32 is supported")); }
+            (void)number(predicate.at("value"),UINT32_MAX);
         }
         const std::string scenario = request.value("fixtureScenario", "matched");
         const std::set<std::string> scenarios{"matched", "no-match", "site-not-reached", "missing-end", "quota"};
@@ -128,6 +142,14 @@ DebugResult<DebugValue> ShaderTraceCore::begin(DebugValue request, DebugValue si
         {"health", {{"submitted", false}, {"gpuComplete", false}, {"backendClosed", false}, {"readbackValid", false},
             {"hostDropped", 0u}, {"hostTruncated", 0u}, {"stopReason", ""}}}};
     return active_->at("dispatch");
+}
+
+void ShaderTraceCore::recorded(DebugValue identity)
+{
+    if (!active_ || (*active_)["health"]["submitted"] == true) { throw std::logic_error("Dispatch identity is frozen at submission"); }
+    for (const char* key : {"execution", "commandBufferRecording", "frameSlot", "pass", "phase", "dispatchOrdinal"}) {
+        if (identity.contains(key)) { (*active_)["dispatch"][key] = identity.at(key); }
+    }
 }
 
 void ShaderTraceCore::compiledVariant(DebugValue variant)
@@ -270,11 +292,16 @@ DebugResult<DebugValue> analyzeShaderTrace(const DebugValue& bundle)
         } else { sequenceComplete = false; }
         const std::string stop = health.at("stopReason");
         const bool submitted = health.at("submitted"), gpu = health.at("gpuComplete"), closed = health.at("backendClosed"), readback = health.at("readbackValid");
-        const bool complete = sequenceComplete && submitted && gpu && closed && readback && stop.empty() && !backendError && !gpuOverflow &&
+        // The production adapter uses exitReason=1 for the uninstrumented small-wave fallback.
+        // It is outside the declared site path, never a successful empty observation.
+        const bool workControl = site.value("adapter", "") == "work-control-v1";
+        const bool supportedPath = !workControl || (!end.empty() && number(end.at("exitReason")) == 0);
+        const bool complete = sequenceComplete && supportedPath && submitted && gpu && closed && readback && stop.empty() && !backendError && !gpuOverflow &&
             !quota && !number(health.at("hostDropped")) && !truncated && !decodeErrors && !duplicates && orphans.empty();
         std::string outcome = "Incomplete";
         if (!stop.empty()) { outcome = stop; }
         else if (!submitted) { outcome = "TargetNotExecuted"; }
+        else if (workControl && sequenceComplete && number(end.at("exitReason")) == 1) { outcome = "UnsupportedPath"; }
         else if (complete) { outcome = number(end.at("siteEvaluationCount")) == 0 ? "SiteNotReached" : dataCount == 0 ? "NoMatch" : "Matched"; }
         return DebugValue{{"parserVersion",kShaderTraceParserVersion}, {"dispatch",identity}, {"site",site}, {"records",records},
             {"orphans",orphans}, {"decodeErrors",errors}, {"summary",end}, {"outcome",outcome}, {"selectedScopeComplete",complete},
