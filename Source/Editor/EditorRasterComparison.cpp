@@ -1,4 +1,5 @@
 #include "Runtime/Render/Profiling/NvPerf.h"
+#include "Runtime/Render/Profiling/WorkControlReplay.h"
 #include "Editor/EditorApplication.h"
 #include "Editor/EditorRasterWorkload.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
@@ -293,6 +294,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         const bool pipelineStatisticsRequested = pipelineStatistics && std::strcmp(pipelineStatistics, "1") == 0;
         report["pipelineStatisticsRequested"] = pipelineStatisticsRequested;
         report["nvPerfRequested"] = nvPerfRequested;
+        report["workControlReplayRequested"] = profiling::workControlReplayRequested();
         report["shaderTraceRequested"] = bool(shaderTrace_);
         if (shaderTrace_) {
             checkRaster(workloadCase && selectedMode==15 && rounds==1 && primeHistory && !traceFrames &&
@@ -352,9 +354,11 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         constexpr uint32_t metadataOrders[3][3] = {{0,8,9},{9,8,0},{8,0,9}};
         constexpr uint32_t orders[3][5] = {{0,1,2,4,8},{8,4,2,1,0},{2,0,8,1,4}};
         std::string cutHash, mappingHash;
+        profiling::WorkControlReplay* replayToArm = nullptr;
         const auto checkpoint = [&](const std::string& name) {
             drain();
             primeTarget();
+            if (replayToArm) { replayToArm->arm(); replayToArm = nullptr; }
             graphExecutor_->setDebugObserver(&observer); observer.capture=true;
             set("VBuffer", "softwareRasterWorkload", config.value("workloadCounters", false));
             observer.workload.editorFrame = profiler_.nextFrameIndex();
@@ -384,6 +388,25 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                 set("VBuffer","softwareRasterMaxPixels",(metadataComparison || swComparison) ? 8u : mode ? mode : 8u);
                 for (uint32_t i=0; i<settle; ++i) { draw(); }
                 const auto before = checkpoint(name+"-before");
+                if (profiling::workControlReplayRequested()) {
+                    checkRaster(workloadCase && primeHistory && rounds == 1 && mode == 15 &&
+                        !shaderTrace_ && !traceFrames && !pipelineStatisticsRequested,
+                        "Isolated correctness replay requires one frozen primed WorkControl round without another profiler");
+                    report["measurementKind"] = "diagnostic";
+                    report["normalTimingEligible"] = false;
+                    const char* phase = std::getenv("METALLIC_WORK_CONTROL_REPLAY_PHASE");
+                    profiling::WorkControlReplay replay(*device_, phase ? phase : "early", output / "replay");
+                    replayToArm = &replay;
+                    const auto control = checkpoint(name+"-control");
+                    // checkpoint drained the exact captured frame. No draw, frame
+                    // slot rotation or streamer publication occurs inside run().
+                    report["replay"] = replay.run(*graphicsQueue_, {{"workloadCase", report.at("workloadCase")},
+                        {"snapshot", control}, {"camera", targetCamera}, {"renderExtent", report.at("renderExtent")}});
+                    const auto restored = checkpoint(name+"-restored");
+                    report["cases"].push_back({{"name", name}, {"variant", variant},
+                        {"before", before}, {"control", control}, {"after", restored}});
+                    continue;
+                }
                 // Readback/copy cache effects are outside measurement, followed
                 // by the same unmeasured recovery frames in every variant.
                 for (uint32_t i=0; i<settle; ++i) { draw(); }

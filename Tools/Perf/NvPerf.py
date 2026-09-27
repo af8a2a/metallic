@@ -18,6 +18,8 @@ RAW_FILES = ("CounterAvailability.bin", "ConfigImage.bin", "CounterDataPrefix.bi
 
 
 def validate_profile(profile, metrics):
+    w.require(profile.get("scope", "in-frame-command-ranges-on-graphics-queue") ==
+              "in-frame-command-ranges-on-graphics-queue", "Legacy NvPerf evidence cannot claim isolated attribution")
     w.require(profile.get("protocol") == "metallic-nvperf-v1" and profile.get("status") == "complete",
               "Incomplete NvPerf collection")
     w.require(profile.get("backend") == "nvperf-vulkan-range" and

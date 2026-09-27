@@ -1,5 +1,8 @@
 # NvPerf Vulkan backend
 
+本文命令保留原 in-frame 单 pass 契约。新增的生产隔离和恢复后多 pass 入口见
+[WorkControlReplay.md](WorkControlReplay.md)，它使用独立协议，不升级旧 evidence。
+
 直接在 Metallic 进程内通过 Nsight Perf SDK 采集，不启动 Nsight UI，也不依赖
 `.ngfx-gputrace` 或 CSV 导出。当前仅支持 Windows x64、NVIDIA GPU，以及经过
 availability 检查的单 pass 指标集。

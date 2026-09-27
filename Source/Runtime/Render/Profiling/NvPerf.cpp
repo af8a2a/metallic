@@ -113,6 +113,9 @@ bool nvPerfDeviceExtensions(VkInstance instance, VkPhysicalDevice physicalDevice
 }
 
 struct NvPerfSession::Impl {
+    std::string isolatedPhase;
+    uint32_t passes = 0;
+    bool complete = false;
     std::unique_lock<std::mutex> lock;
     std::filesystem::path output;
     Json report{{"protocol", "metallic-nvperf-v1"}, {"status", "uninitialized"},
@@ -169,6 +172,18 @@ struct NvPerfSession::Impl {
 
 NvPerfSession::NvPerfSession() : impl_(std::make_unique<Impl>()) {}
 NvPerfSession::~NvPerfSession() { cancel(); }
+
+bool NvPerfSession::beginIsolated(Device& device, Queue& queue, const std::filesystem::path& output,
+    std::string phase, std::string& error)
+{
+    if (phase != "early" && phase != "late") { error = "Invalid isolated phase"; return false; }
+    impl_->isolatedPhase = std::move(phase);
+    impl_->report["protocol"] = "metallic-nvperf-isolated-v1";
+    impl_->report["scope"] = "isolated-dispatch-RHI-exclusive";
+    return begin(device, queue, output, error);
+}
+
+bool NvPerfSession::complete() const { return impl_->complete; }
 
 bool NvPerfSession::begin(Device& device, Queue& queue, const std::filesystem::path& output, std::string& error)
 {
@@ -236,12 +251,27 @@ bool NvPerfSession::begin(Device& device, Queue& queue, const std::filesystem::p
         NVPW_RawCounterConfig_SetCounterAvailability_Params setAvailability{NVPW_RawCounterConfig_SetCounterAvailability_Params_STRUCT_SIZE};
         setAvailability.pRawCounterConfig = raw; setAvailability.pCounterAvailabilityImage = s.availability.data();
         check(NVPW_RawCounterConfig_SetCounterAvailability(&setAvailability), "SetCounterAvailability");
-        require(builder.AddMetrics(s.requests.data(), s.requests.size()), "Metric counters unavailable");
+        const char* split = std::getenv("METALLIC_NVPERF_SPLIT_METRIC_PASSES");
+        if (split && std::strcmp(split, "1") == 0) {
+            require(!s.isolatedPhase.empty() && s.requests.size() > 1, "Split pass groups require isolated replay and multiple metrics");
+            for (size_t i = 0; i < s.requests.size(); ++i) {
+                require(builder.AddMetrics(&s.requests[i], 1), "Metric counters unavailable");
+                if (i + 1 < s.requests.size()) { require(builder.PrepareConfigImage(), "NvPerf split pass group failed"); }
+            }
+            s.report["passScheduling"] = "one-metric-per-pass-group";
+        } else {
+            require(builder.AddMetrics(s.requests.data(), s.requests.size()), "Metric counters unavailable");
+            if (!s.isolatedPhase.empty()) { s.report["passScheduling"] = "SDK-optimized"; }
+        }
         require(nv::perf::CreateConfiguration(builder, s.configuration), "NvPerf configuration failed");
+        require(!split || std::strcmp(split, "1") != 0 || s.configuration.numPasses >= 2,
+            "SDK did not schedule multiple passes for split groups");
         s.report["requiredPasses"] = s.configuration.numPasses;
         s.bytes("ConfigImage.bin", s.configuration.configImage);
         s.bytes("CounterDataPrefix.bin", s.configuration.counterDataPrefix);
-        require(s.configuration.numPasses == 1, "multipass_requires_restored_workload: choose a single-pass metric set");
+        require(s.configuration.numPasses >= 1 && s.configuration.numPasses <= 16, "NvPerf pass budget exceeded");
+        require(!s.isolatedPhase.empty() || s.configuration.numPasses == 1,
+            "multipass_requires_restored_workload: choose a single-pass metric set");
 
         NVPW_VK_Profiler_CounterDataImageOptions options{NVPW_VK_Profiler_CounterDataImageOptions_STRUCT_SIZE};
         options.pCounterDataPrefix = s.configuration.counterDataPrefix.data();
@@ -302,13 +332,15 @@ bool NvPerfSession::finish(std::string& error)
     auto& s = *impl_;
     try {
 #if METALLIC_HAS_NVPERF
-        require(s.inPass && rangeCount == 2 && !rangeFailed, "Missing/failed production range commands");
+        const uint32_t expectedRanges = s.isolatedPhase.empty() ? 2u : 1u;
+        require(s.inPass && rangeCount == expectedRanges && !rangeFailed, "Missing/failed production range commands");
         passActive = false;
         NVPW_VK_Profiler_Queue_EndPass_Params end{NVPW_VK_Profiler_Queue_EndPass_Params_STRUCT_SIZE};
         end.queue = s.queue;
         check(NVPW_VK_Profiler_Queue_EndPass(&end), "EndPass");
         s.inPass = false;
-        require(end.allPassesSubmitted, "NvPerf unexpectedly requires another pass");
+        ++s.passes;
+        require(end.allPassesSubmitted || !s.isolatedPhase.empty(), "NvPerf unexpectedly requires another pass");
         NVPW_VK_Profiler_Queue_DecodeCounters_Params decode{NVPW_VK_Profiler_Queue_DecodeCounters_Params_STRUCT_SIZE};
         decode.queue = s.queue; decode.counterDataImageSize = s.image.size(); decode.pCounterDataImage = s.image.data();
         decode.counterDataScratchBufferSize = s.scratch.size(); decode.pCounterDataScratchBuffer = s.scratch.data();
@@ -316,17 +348,29 @@ bool NvPerfSession::finish(std::string& error)
         do {
             check(NVPW_VK_Profiler_Queue_DecodeCounters(&decode), "DecodeCounters");
             require(!decode.numRangesDropped && !decode.numTraceBytesDropped, "NvPerf counter buffer overflow");
-            if (decode.allPassesCollected) { break; }
+            if (decode.onePassCollected || decode.allPassesCollected) { break; }
             require(std::chrono::steady_clock::now() < deadline, "NvPerf decode timed out");
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         } while (true);
+        if (!decode.allPassesCollected) {
+            require(!s.isolatedPhase.empty() && !end.allPassesSubmitted && s.passes < s.configuration.numPasses && s.passes < 16,
+                "NvPerf incomplete or inconsistent pass plan");
+            NVPW_VK_Profiler_Queue_BeginPass_Params begin{NVPW_VK_Profiler_Queue_BeginPass_Params_STRUCT_SIZE};
+            begin.queue = s.queue;
+            check(NVPW_VK_Profiler_Queue_BeginPass(&begin), "BeginPass");
+            s.inPass = true; rangeCount = 0; rangeFailed = false; passActive = true;
+            s.report["passesCollected"] = s.passes; s.save();
+            return true; // Only the isolated owner may restore and issue another pass.
+        }
+        require(end.allPassesSubmitted && s.passes == s.configuration.numPasses, "NvPerf pass completion mismatch");
         s.bytes("CounterDataImage.bin", s.image);
         require(s.evaluator.MetricsEvaluatorSetDeviceAttributes(s.image.data(), s.image.size()), "Metric device attributes failed");
-        require(nv::perf::CounterDataGetNumRanges(s.image.data()) == 2, "NvPerf decoded range count mismatch");
+        require(nv::perf::CounterDataGetNumRanges(s.image.data()) == expectedRanges, "NvPerf decoded range count mismatch");
         Json ranges = Json::array(); std::set<std::string> names;
-        for (size_t i = 0; i < 2; ++i) {
+        for (size_t i = 0; i < expectedRanges; ++i) {
             const auto name = nv::perf::profiler::CounterDataGetRangeName(s.image.data(), i, '/');
-            require((name == "WorkControl/early" || name == "WorkControl/late") && names.insert(name).second, "Wrong/duplicate NvPerf range");
+            require((s.isolatedPhase.empty() ? (name == "WorkControl/early" || name == "WorkControl/late") :
+                name == "WorkControl/isolated/" + s.isolatedPhase) && names.insert(name).second, "Wrong/duplicate NvPerf range");
             std::vector<double> values(s.metrics.size());
             require(s.evaluator.EvaluateToGpuValues(s.image.data(), s.image.size(), i, s.requests.size(), s.requests.data(), values.data()), "Metric evaluation failed");
             Json metrics = Json::array();
@@ -345,7 +389,8 @@ bool NvPerfSession::finish(std::string& error)
             ranges.push_back({{"name", name}, {"index", i}, {"metrics", metrics}});
         }
         s.endSession();
-        s.report.update({{"status", "complete"}, {"ranges", ranges}, {"passesCollected", 1},
+        s.complete = true;
+        s.report.update({{"status", "complete"}, {"ranges", ranges}, {"passesCollected", s.passes},
             {"numRangesDropped", 0}, {"numTraceBytesDropped", 0}});
         s.save(); s.lock.unlock();
         return true;

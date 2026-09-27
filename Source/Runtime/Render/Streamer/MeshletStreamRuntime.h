@@ -37,6 +37,7 @@ struct StreamSceneReadiness {
     float fraction() const { return requiredPages ? float(completedPages) / float(requiredPages) : 0.f; }
 };
 struct DebugResourceBinding;
+namespace profiling { struct WorkControlReplayBinding; }
 
 inline constexpr const char* kMeshletStreamShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
 inline constexpr const char* kMeshletStreamShaderModuleName = "Features/GPUDriven/GPUDrivenStreamAsset";
@@ -568,6 +569,7 @@ public:
     const MeshletStreamResidencyManager& residency() const { return residency_; }
     void setDebugReadbackEnabled(bool enabled) { debugReadbackEnabled_ = enabled; }
     void appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& prefix) const;
+    void appendReplayBindings(std::vector<profiling::WorkControlReplayBinding>& bindings) const;
     nlohmann::json debugSnapshot(bool includePages = true) const;
     SceneStreamingProfile profilingStats() const;
     MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }

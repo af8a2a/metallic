@@ -55,6 +55,8 @@ NativeDevice nativeDevice(Device& device);
 NativeQueue nativeQueue(Queue& queue);
 NativeBuffer nativeBuffer(Buffer& buffer);
 NativePipeline nativePipeline(ComputePipeline& pipeline);
+// Available only when diagnostic replay was enabled at shader creation.
+std::vector<uint8_t> nativeComputeSpirv(ComputePipeline& pipeline, bool deviceCode);
 NativePipeline nativePipeline(GraphicsPipeline& pipeline);
 NativeGraphicsShaders nativeShaders(GraphicsShaderObjectProgram& program);
 NativeTexture nativeTexture(Texture& texture);

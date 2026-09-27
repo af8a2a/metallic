@@ -126,6 +126,13 @@ flowchart TD
 early/late dispatch range 单 pass 采集和三次真实 GPU 验证，普通计时显式排除采集运行。
 多 pass 状态恢复、生产 isolated replay 与 SASS 依赖视图继续按归因需要推进。
 
+2026-09-27：[WorkControl isolated replay](AgenticShaderOptimizationReplay.md)
+已在冻结 MiniZorah 的 early/late 各三进程验证同帧直接输出、私有资源恢复及生产
+状态不变，并在这些门禁之后完成 SDK 实际 2-pass 采集。该限定范围的 replay/
+多 pass 不再是未实现项；低 subgroup fallback、Full Zorah、跨进程重建和 SASS
+依赖视图仍未完成。in-frame 与 isolated 使用不同证据协议和归因范围；late
+duration 的 10.64% 波动不满足既有 10% 稳定性门槛，不声称全部指标稳定。
+
 预期 4–7 个工作日取得“Agent 可以深入 Nsight 源码分析”的首个演示，约 2–4 周完成一次完整优化闭环。若 M0/M1 发现桌面运行时或 UI 导出不可行，明确记录 source automation 阻塞，继续用人工导出的文件验证 importer 与 M2/M3；不能把这个降级路径宣布为全自动 Nsight 已完成。
 
 **M0/M1 的具体工作顺序**

@@ -164,6 +164,7 @@ def analyze_run(directory, case):
               and not capture.get("gpuTraceInjected", False) and not capture.get("renderDocInjected", False)
               and not capture.get("pipelineStatisticsRequested", False)
               and not capture.get("nvPerfRequested", False)
+              and not capture.get("workControlReplayRequested", False)
               and not capture.get("shaderTraceRequested", False))
     require(len(capture["cases"]) == case["rounds"], "Missing workload rounds")
     reference, residency = None, None

@@ -1,4 +1,5 @@
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
+#include "Runtime/Render/Profiling/WorkControlReplay.h"
 #include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -3977,6 +3978,21 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profile
     profile.next("Unmap feedback");
     readback->unmap();
     requestReadbackValid_ = false;
+}
+
+void MeshletStreamRuntime::appendReplayBindings(std::vector<profiling::WorkControlReplayBinding>& bindings) const
+{
+    bindings.insert(bindings.end(), {
+        {"pages", pageBuffer_.get(), pageHandle_.shaderIndex()},
+        {"groups", activeGroupBuffer_.get(), activeGroupHandle_.shaderIndex()},
+        {"header", activeHeaderBuffer_.get(), activeHeaderHandle_.shaderIndex()},
+        {"pageTable", pageTableBuffer_.get(), pageTableHandle_.shaderIndex()},
+        {"params", paramsBuffer_.get(), paramsHandle_.shaderIndex()},
+        {"rasterBindings", rasterBindingsBuffer_.get(), rasterBindingsHandle_.shaderIndex()},
+        {"requests", requestBuffer_.get(), UINT32_MAX},
+        {"visibleRecords", visibleClusterBuffer_.get(), UINT32_MAX},
+        {"lodState", lodStateBuffer_.get(), UINT32_MAX},
+    });
 }
 
 void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>& bindings, const std::string& prefix) const

@@ -1,4 +1,5 @@
 #include "Runtime/Render/Profiling/NvPerf.h"
+#include "Runtime/Render/Profiling/WorkControlReplay.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderFrameContext.h"
@@ -2890,11 +2891,32 @@ private:
 
             commands.pushBindlessData(&push, sizeof(push));
             Result<> result;
+            auto* replay = profiling::WorkControlReplay::selected(phase == GPUSceneCullPhase::Early ? "early" : "late");
+            if (replay) {
+                std::vector<profiling::WorkControlReplayBinding> bindings;
+                streamRuntime_->appendReplayBindings(bindings);
+                bindings.push_back({"bins", &hybridRasterizer_->clusterBuffer(), streamHybridClusterHandle_.shaderIndex()});
+                bindings.push_back({"pixels", &hybridRasterizer_->pixelBuffer(), streamHybridPixelHandle_.shaderIndex()});
+                bindings.push_back({"instances", gpuSceneSubsystem_->globalBufferViews().instances.buffer,
+                    streamGPUSceneInstanceHandle_.shaderIndex()});
+                GPUSceneViewGpuResourcesView guards;
+                if (!gpuSceneSubsystem_->viewGpuResources(gpuSceneView_, activeFrameSlot_, guards)) {
+                    return makeError(Error::InvalidArgument);
+                }
+                bindings.push_back({"hzb0", guards.hzbHistory[0].buffer, UINT32_MAX});
+                bindings.push_back({"hzb1", guards.hzbHistory[1].buffer, UINT32_MAX});
+                bindings.push_back({"instanceVisibility", guards.instanceVisibilityStates.buffer, UINT32_MAX});
+                bindings.push_back({"visibleInstanceIds", guards.visibleInstanceIds.buffer, UINT32_MAX});
+                bindings.push_back({"visibleInstanceCounter", guards.visibleInstanceCounter.buffer, UINT32_MAX});
+                replay->before(commands, *streamClusterRasterPipelines_[rasterMode], *streamRuntime_->bindlessHeap(),
+                    bindings, hybridRasterizer_->clusterArguments(), &push, sizeof(push), softwareRasterIdentity());
+            }
             {
                 profiling::NvPerfRange range(commands, phase == GPUSceneCullPhase::Early ? "WorkControl/early" : "WorkControl/late");
                 result = commands.dispatchIndirect(hybridRasterizer_->clusterArguments(),
                     VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
             }
+            if (replay && result) { replay->after(commands); }
             commands.endDebugLabel();
             return result;
         };

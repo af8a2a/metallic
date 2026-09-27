@@ -1,0 +1,277 @@
+{
+  "protocol": "metallic-work-control-replay-acceptance-v1",
+  "baseCommit": "515fbc11c4e3a57860ce6df514de930faf041240",
+  "date": "2026-09-27",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti, GPU-864725dc-8de5-5018-485e-e3a9465f4083, 616.92",
+  "archives": [
+    {
+      "path": "build-release\\work-control-replay-early-multipass-01",
+      "manifestSha256": "e352886a22a520ea561a3ddae95474ef7c4dc87bff6a68e11be102b1aa90de46",
+      "verification": {
+        "status": "verified",
+        "runs": 3,
+        "scope": "isolated-dispatch-RHI-exclusive",
+        "counterEligible": true,
+        "counterImageReevaluated": false,
+        "candidateAccepted": false
+      },
+      "requiredPasses": [
+        2,
+        2,
+        2
+      ],
+      "passesCollected": [
+        2,
+        2,
+        2
+      ],
+      "metrics": {
+        "gpu__time_duration.sum": {
+          "values": [
+            167416.66666666666,
+            165222.22222222222,
+            169907.40740740742
+          ],
+          "median": 167416.66666666666,
+          "relativeSpread": 0.027985177810961857,
+          "repeatabilityEvaluated": true
+        },
+        "sm__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+          "values": [
+            95.65241221540661,
+            95.46656969337984,
+            95.52245721418011
+          ],
+          "median": 95.52245721418011,
+          "relativeSpread": 0.0019455374939746297,
+          "repeatabilityEvaluated": true
+        }
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-late-multipass-01",
+      "manifestSha256": "f059d0df400c083cfd145bb9be4dacd80169a371477bbdecdd09dc1883813b7b",
+      "verification": {
+        "status": "verified",
+        "runs": 3,
+        "scope": "isolated-dispatch-RHI-exclusive",
+        "counterEligible": true,
+        "counterImageReevaluated": false,
+        "candidateAccepted": false
+      },
+      "requiredPasses": [
+        2,
+        2,
+        2
+      ],
+      "passesCollected": [
+        2,
+        2,
+        2
+      ],
+      "metrics": {
+        "gpu__time_duration.sum": {
+          "values": [
+            42805.555555555555,
+            43546.2962962963,
+            38990.740740740745
+          ],
+          "median": 42805.555555555555,
+          "relativeSpread": 0.10642439974042828,
+          "repeatabilityEvaluated": true
+        },
+        "sm__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+          "values": [
+            81.37802295441097,
+            80.623755609429,
+            82.30329683020626
+          ],
+          "median": 81.37802295441097,
+          "relativeSpread": 0.020638756752768102,
+          "repeatabilityEvaluated": true
+        }
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-final-early-01",
+      "manifestSha256": "d44cff37db6bb5438e5e421f2b84b1a1b4ba99f577a20722bd3678a2b2b22be6",
+      "verification": {
+        "status": "verified",
+        "runs": 1,
+        "scope": "isolated-dispatch-RHI-exclusive",
+        "counterEligible": true,
+        "counterImageReevaluated": false,
+        "candidateAccepted": false
+      },
+      "requiredPasses": [
+        2
+      ],
+      "passesCollected": [
+        2
+      ],
+      "metrics": {
+        "gpu__time_duration.sum": {
+          "values": [
+            159046.2962962963
+          ],
+          "median": 159046.2962962963,
+          "relativeSpread": 0.0,
+          "repeatabilityEvaluated": false
+        },
+        "sm__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+          "values": [
+            95.01043079548171
+          ],
+          "median": 95.01043079548171,
+          "relativeSpread": 0.0,
+          "repeatabilityEvaluated": false
+        }
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-final-late-01",
+      "manifestSha256": "405f560aeec0e1fff9f62426ba74c508ad150e0275a0cf188cb64af04c0075c9",
+      "verification": {
+        "status": "verified",
+        "runs": 1,
+        "scope": "isolated-dispatch-RHI-exclusive",
+        "counterEligible": true,
+        "counterImageReevaluated": false,
+        "candidateAccepted": false
+      },
+      "requiredPasses": [
+        2
+      ],
+      "passesCollected": [
+        2
+      ],
+      "metrics": {
+        "gpu__time_duration.sum": {
+          "values": [
+            47972.222222222226
+          ],
+          "median": 47972.222222222226,
+          "relativeSpread": 0.0,
+          "repeatabilityEvaluated": false
+        },
+        "sm__cycles_active.avg.pct_of_peak_sustained_elapsed": {
+          "values": [
+            77.9855269596982
+          ],
+          "median": 77.9855269596982,
+          "relativeSpread": 0.0,
+          "repeatabilityEvaluated": false
+        }
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-late-pilot-01",
+      "manifestSha256": "428e7e4909eb21f6ebe7142887d3fdff4bfa80aa28ebc0643feefba5e5cbd665",
+      "verification": {
+        "status": "verified",
+        "runs": 1,
+        "scope": "isolated-correctness-only",
+        "counterEligible": false,
+        "counterImageReevaluated": false,
+        "candidateAccepted": false
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-fault-cancel-before-submit-01",
+      "manifestSha256": "af8edd4355a63c730cf7bf565599bd4f8d6e857594eba9824c427356ec1996fe",
+      "verification": {
+        "status": "expected-failure-verified",
+        "fault": "cancel-before-submit",
+        "injected": true,
+        "counterEligible": false
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-fault-cancel-after-submit-01",
+      "manifestSha256": "a879db1532cf28a2538e8b73ece8a016da9ce888f4d89b58e7dfb546f8e4fd64",
+      "verification": {
+        "status": "expected-failure-verified",
+        "fault": "cancel-after-submit",
+        "injected": true,
+        "counterEligible": false
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-fault-submit-failure-02",
+      "manifestSha256": "bcd4bf63f44b9ababaf79d43ad68a5d1691627fa3ba201f647ada96f91c37a80",
+      "verification": {
+        "status": "expected-failure-verified",
+        "fault": "submit-failure",
+        "injected": true,
+        "counterEligible": false
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-fault-device-error-02",
+      "manifestSha256": "99571a7424d988f187e106b417264b8bea2bb0f77fb1eed08887a711dda1a81f",
+      "verification": {
+        "status": "expected-failure-verified",
+        "fault": "device-error",
+        "injected": true,
+        "counterEligible": false
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-fault-timeout-02",
+      "manifestSha256": "a92f82445fd9e4e6df57f86d20728aba037cf2dbb6b25bc4f9c2a0dc6b92ccf0",
+      "verification": {
+        "status": "expected-failure-verified",
+        "fault": "timeout",
+        "injected": true,
+        "counterEligible": false
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-fault-restore-failure-02",
+      "manifestSha256": "000fb48c899113240b730412e6a7882d80ed4d2de551a8052c4b0fec55ad0b29",
+      "verification": {
+        "status": "expected-failure-verified",
+        "fault": "restore-failure",
+        "injected": true,
+        "counterEligible": false
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-fault-state-leak-01",
+      "manifestSha256": "d9c2287eaf1a08e7066988695ced919a244b15cc931b508dc9937538cfad1e2b",
+      "verification": {
+        "status": "expected-failure-verified",
+        "fault": "state-leak",
+        "injected": true,
+        "counterEligible": false
+      }
+    },
+    {
+      "path": "build-release\\work-control-replay-inframe-regression-01",
+      "manifestSha256": "e63df8ce2c51fd29f3835fb185915fcf0dfdde3ff9d0ea633d7ac21836ef3d9f",
+      "verification": {
+        "verified": true,
+        "runs": 3,
+        "rawHashesVerified": true,
+        "counterImageReevaluated": false,
+        "verifierSha256": "197d9bebba2ea23d4ced2fa397bb60deaf71eed4d22dd0dade9423378e0dfc86"
+      },
+      "scope": "in-frame-command-ranges-on-graphics-queue"
+    }
+  ],
+  "validation": {
+    "pythonTestsPassed": 115,
+    "ctestGroupsPassed": 8,
+    "rhiTestsPassed": 14,
+    "nvperfEnabledBuild": "build-release/Source/MetallicGPUDrivenSample.exe",
+    "nvperfDisabledBuild": "build-pass-stages-nrd/tests/MetallicRhiTests.exe"
+  },
+  "limitations": [
+    "Late duration relative spread 10.64% exceeds 10% gate; no performance acceptance",
+    "Historical 2026-09-25 raw in-frame archive unavailable",
+    "Faults are injected; no actual device loss or hung GPU induced",
+    "Counter images hash-checked but not decoded again offline",
+    "RHI submission exclusion is not system-wide GPU exclusivity",
+    "MiniZorah, minimum subgroup >=32, serial graphics path only"
+  ]
+}

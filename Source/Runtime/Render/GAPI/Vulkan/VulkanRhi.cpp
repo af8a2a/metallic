@@ -1,5 +1,6 @@
 #include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/Profiling/WorkControlReplay.h"
 #include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
@@ -3344,6 +3345,7 @@ struct ShaderModuleImpl {
     uint64_t contentHash = 0;
     uint64_t inputSpirvFnv1a64 = 0;
     uint64_t deviceSpirvFnv1a64 = 0;
+    std::vector<uint8_t> replayInputSpirv, replayDeviceSpirv;
     std::string diagnosticName;
 };
 
@@ -3383,6 +3385,7 @@ struct ComputePipelineImpl {
     bool usesBindlessHeap = false;
     uint64_t psoHash = 0;
     bool pipelineCacheHit = false;
+    std::vector<uint8_t> replayInputSpirv, replayDeviceSpirv;
     ~ComputePipelineImpl();
 };
 
@@ -4446,6 +4449,8 @@ Result<> Queue::submit(const QueueSubmitDesc& desc)
 
 Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
 {
+    std::unique_lock replayLease(profiling::workControlReplaySubmissionMutex(), std::defer_lock);
+    if (profiling::workControlReplayRequested()) { replayLease.lock(); }
     METALLIC_TRACY_CPU_SCOPE("Queue Submit");
     if (impl_ == nullptr || impl_->queue == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
@@ -9442,8 +9447,15 @@ Result<std::unique_ptr<SwapchainSemaphore>> Device::createSwapchainSemaphore()
     return std::unique_ptr<SwapchainSemaphore>(new SwapchainSemaphore(std::move(semaphoreImpl)));
 }
 
-Result<std::unique_ptr<Buffer>> Device::createBuffer(const BufferDesc& desc)
+Result<std::unique_ptr<Buffer>> Device::createBuffer(const BufferDesc& requestedDesc)
 {
+    auto desc = requestedDesc;
+    // Opt-in diagnostic snapshots need to copy the actual bound allocations,
+    // including host-upload frame slots. Ordinary buffer usage is unchanged.
+    const char* replay = std::getenv("METALLIC_WORK_CONTROL_REPLAY");
+    if (replay && std::strcmp(replay, "1") == 0 && hasFlag(desc.usage, BufferUsageBits::Storage)) {
+        desc.usage = desc.usage | BufferUsageBits::TransferSource;
+    }
     if (impl_ == nullptr || desc.size == 0) {
         return makeError(Error::InvalidArgument);
     }
@@ -9824,6 +9836,13 @@ Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderMod
     shaderImpl->hasDescriptorBindings = spirvHasDescriptorBindings(deviceDesc.code, deviceDesc.byteSize);
     shaderImpl->module = module;
     shaderImpl->contentHash = detail::shaderContentHash(deviceDesc);
+    const char* replayCode = std::getenv("METALLIC_WORK_CONTROL_REPLAY");
+    if (replayCode && std::strcmp(replayCode, "1") == 0) {
+        const auto* input = reinterpret_cast<const uint8_t*>(desc.code);
+        const auto* actual = reinterpret_cast<const uint8_t*>(deviceDesc.code);
+        shaderImpl->replayInputSpirv.assign(input, input + desc.byteSize);
+        shaderImpl->replayDeviceSpirv.assign(actual, actual + deviceDesc.byteSize);
+    }
     if (impl_->pipelineExecutableStatistics) {
         const auto fingerprint = [](const ShaderModuleDesc& source) {
             uint64_t hash = 14695981039346656037ull;
@@ -10509,6 +10528,8 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
         }
     }
     auto pipelineImpl = std::make_unique<detail::ComputePipelineImpl>();
+    pipelineImpl->replayInputSpirv = desc.computeShader->impl_->replayInputSpirv;
+    pipelineImpl->replayDeviceSpirv = desc.computeShader->impl_->replayDeviceSpirv;
     pipelineImpl->device = impl_.get();
     pipelineImpl->layout = layout;
     pipelineImpl->pipeline = pipeline;
@@ -11636,6 +11657,12 @@ struct VulkanNativeAccess {
             pipeline.impl_->pipeline, pipeline.impl_->layout} : vulkan::NativePipeline{};
     }
 
+    static std::vector<uint8_t> nativeComputeSpirv(ComputePipeline& pipeline, bool deviceCode)
+    {
+        if (!pipeline.impl_) { return {}; }
+        return deviceCode ? pipeline.impl_->replayDeviceSpirv : pipeline.impl_->replayInputSpirv;
+    }
+
     static vulkan::NativePipeline nativePipeline(GraphicsPipeline& pipeline)
     {
         return pipeline.impl_ ? vulkan::NativePipeline{pipeline.impl_->device->device,
@@ -11736,6 +11763,11 @@ void notifyExternalDescriptorSetBinding(CommandBuffer& commandBuffer)
 NativePipeline nativePipeline(ComputePipeline& pipeline)
 {
     return detail::VulkanNativeAccess::nativePipeline(pipeline);
+}
+
+std::vector<uint8_t> nativeComputeSpirv(ComputePipeline& pipeline, bool deviceCode)
+{
+    return detail::VulkanNativeAccess::nativeComputeSpirv(pipeline, deviceCode);
 }
 
 NativePipeline nativePipeline(GraphicsPipeline& pipeline)

@@ -133,3 +133,13 @@ Nsight Perf SDK 2025.1 配套头文件与运行库，直接标注生产 WorkCont
 这一扩展不改变上面 M3 候选已拒绝的结论，也未完成 isolated replay 或多 pass 状态恢复。
 详见 [NvPerf 验收记录](AgenticShaderOptimizationNvPerf.md) 与
 [运行方式和证据契约](../Tools/Perf/NvPerf.md)。
+
+## 后续：isolated production replay
+
+2026-09-27：[隔离重放验收](AgenticShaderOptimizationReplay.md)完成 MiniZorah
+early/late 各三进程、相同生产 executable/逻辑 bindings 的同帧逐字节输出验证，
+并在完整 scratch 恢复与生产状态不变门禁之后完成 SDK 实际 2-pass 采集。
+该新证据与本文及旧 NvPerf in-frame range 证据分开；不追溯升级旧归因。
+late 诊断 duration 相对极差 10.64%，未通过 10% 稳定性门槛，原样保留。
+支持范围、物理 binding relocation、错误路径与未覆盖项见专门记录及
+[最小 replay contract](WorkControlReplayContract.md)。
