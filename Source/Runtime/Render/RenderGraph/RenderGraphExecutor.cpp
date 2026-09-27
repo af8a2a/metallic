@@ -1669,10 +1669,10 @@ struct RenderGraphExecutor::Impl {
             slot.nodeTimers.clear(); slot.sectionTimers.clear();
             activeGpuTimingSlot = &slot; activeGpuTimingValid = true;
             slot.completion = commands.frameContext()->completion();
-            // vkCmdResetQueryPool cannot run on a transfer-only queue. Reset every
-            // queue's range in this graphics prologue; all branches depend on it.
+            // Only reuse ranges after resolveGpuTimings has observed completion.
+            // Host reset allows transfer timestamps without a graphics dependency.
             for (const auto& pool : gpuTimestampQueryPools) {
-                if (pool && !commands.resetTimestampQueries(*pool, slot.firstQuery, slot.queryCount)) {
+                if (pool && !pool->reset(slot.firstQuery, slot.queryCount)) {
                     activeGpuTimingValid = false;
                 }
             }
@@ -3489,8 +3489,8 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         if (!result) { return abort(result); }
     }
 
-    // A graphics start/join pair measures elapsed graph time even with independent
-    // compute/copy passes. Each pass and inner scope uses its own queue's pool.
+    // Keep graph timestamps on graphics and join other queues at the end.
+    // The start timestamp must not gate independent compute/copy work.
     if (!subsystemCommands && graphicsTimings) {
         result = beginSegment(QueueType::Graphics);
         if (result) { result = segments.back().commandBuffer->end(); }
@@ -3500,7 +3500,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     result = sealRange(0, segments.size());
     if (result && pipelined) { result = submitReady(); }
     if (!result) { return abort(result); }
-    size_t orderingBoundary = segments.empty() ? SIZE_MAX : 0;
+    // Subsystem hooks can write private GPU resources, so their prologue is an
+    // ordering boundary. A timing-only prologue has no such producer accesses.
+    size_t orderingBoundary = subsystemCommands ? 0 : SIZE_MAX;
     const auto taskSystem = task::detail::tryAcquireTaskSystem();
     const uint32_t workerLimit = taskSystem && !task::isInsideTaskCallback() && !impl_->debugObserver
         ? std::max(1u, std::min(taskSystem->workerCount(), desc.recordingWorkerLimit ? desc.recordingWorkerLimit : 8u)) : 1u;

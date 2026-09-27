@@ -1927,6 +1927,7 @@ struct VulkanDeviceFeatureProbe {
     {
         return vulkan11Features.shaderDrawParameters == VK_TRUE &&
             vulkan12Features.timelineSemaphore == VK_TRUE &&
+            vulkan12Features.hostQueryReset == VK_TRUE &&
             vulkan13Features.dynamicRendering == VK_TRUE &&
             vulkan13Features.synchronization2 == VK_TRUE;
     }
@@ -2428,6 +2429,7 @@ struct VulkanEnabledFeatureChain {
         vulkan12Features.runtimeDescriptorArray = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         vulkan12Features.bufferDeviceAddress = selection.usesBufferDeviceAddress() ? VK_TRUE : VK_FALSE;
         vulkan12Features.timelineSemaphore = VK_TRUE;
+        vulkan12Features.hostQueryReset = VK_TRUE;
         vulkan12Features.scalarBlockLayout = selection.scalarBlockLayout ? VK_TRUE : VK_FALSE;
         vulkan12Features.uniformBufferStandardLayout = selection.uniformBufferStandardLayout ? VK_TRUE : VK_FALSE;
         vulkan12Features.shaderBufferInt64Atomics = selection.shaderBufferInt64Atomics ? VK_TRUE : VK_FALSE;
@@ -4691,6 +4693,18 @@ const TimestampQueryPoolDesc& TimestampQueryPool::desc() const
 {
     static const TimestampQueryPoolDesc kEmptyDesc;
     return impl_ != nullptr ? impl_->desc : kEmptyDesc;
+}
+
+Result<> TimestampQueryPool::reset(uint32_t firstQuery, uint32_t queryCount)
+{
+    if (impl_ == nullptr || queryCount == 0 ||
+        firstQuery >= impl_->desc.queryCount ||
+        queryCount > impl_->desc.queryCount - firstQuery) {
+        return makeError(Error::InvalidArgument);
+    }
+    activateVolkDevice(impl_->device->device);
+    vkResetQueryPool(impl_->device->device, impl_->queryPool, firstQuery, queryCount);
+    return {};
 }
 
 Result<> TimestampQueryPool::readResults(

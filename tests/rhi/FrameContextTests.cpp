@@ -1252,7 +1252,11 @@ METALLIC_REGISTER_RHI_TEST(FrameOutputConsumerOverlapTest);
 
 class FrameSelfSubmitTwoSlotTest : public RhiTest {
 public:
-    FrameSelfSubmitTwoSlotTest() { type = RhiTestType::Rendering; name = "frame_self_submit_two_slots"; }
+    explicit FrameSelfSubmitTwoSlotTest(bool joined = false) : joined_(joined)
+    {
+        type = RhiTestType::Rendering;
+        name = joined ? "frame_self_submit_two_slots_joined" : "frame_self_submit_two_slots";
+    }
     RhiTestResult run(RhiTestContext& context) override
     {
         auto* copyQueue = context.device.getQueue(render::QueueType::Copy);
@@ -1264,6 +1268,7 @@ public:
         graph.markOutput("Triangle.color");
         graph.markOutput("Upload.data");
         render::RenderGraphExecutor executor;
+        executor.setExecutionCaptureEnabled(true);
         Commands blockedGraphics, consumer;
         render::QueueSubmissionTracker blocker, consumerTracker;
         std::unique_ptr<render::Buffer> consumerReadback;
@@ -1284,8 +1289,25 @@ public:
         FRAME_REQUIRE(blockedGraphics.begin(0));
         FRAME_REQUIRE(blockedGraphics.submit(blocker, gate.get()));
         render::RenderGraphSubmitDesc submit{.graphicsQueue = &context.graphicsQueue,
-            .copyQueue = copyQueue, .slotWaitTimeoutNanoseconds = 0};
+            .copyQueue = copyQueue, .slotWaitTimeoutNanoseconds = 0,
+            .submissionMode = joined_ ? render::FrameSubmissionMode::Joined : render::FrameSubmissionMode::Pipelined};
         FRAME_REQUIRE(executor.execute(submit));
+        const auto snapshot = executor.executionSnapshot();
+        const uint32_t uploadId = graph.findNode("Upload")->id;
+        if (!snapshot) { return RhiTestResult::fail("missing independent-queue execution snapshot"); }
+        const auto uploadSegment = std::find_if(snapshot->segments.begin(), snapshot->segments.end(),
+            [uploadId](const auto& segment) { return segment.passId == uploadId; });
+        if (uploadSegment == snapshot->segments.end() || !uploadSegment->predecessors.empty()) {
+            return RhiTestResult::fail("independent copy segment acquired an unrelated prologue dependency");
+        }
+        if (context.device.capabilities().timestampQueries) {
+            const auto join = std::find_if(snapshot->segments.begin(), snapshot->segments.end(),
+                [](const auto& segment) { return segment.role == render::RenderGraphSegmentRole::Epilogue; });
+            if (join == snapshot->segments.end() ||
+                std::find(join->predecessors.begin(), join->predecessors.end(), uploadSegment->id) == join->predecessors.end()) {
+                return RhiTestResult::fail("graph timing epilogue no longer joins the independent copy branch");
+            }
+        }
         const auto first = executor.lastSubmittedCompletion();
         std::vector<render::SemaphoreSubmitDesc> waits;
         FRAME_REQUIRE(first.appendWaits(waits));
@@ -1342,6 +1364,13 @@ public:
         FRAME_REQUIRE(executor.compile(context.device, graph, 24, 24, log));
         return RhiTestResult::pass();
     }
+private:
+    bool joined_;
+};
+
+class FrameSelfSubmitTwoSlotJoinedTest final : public FrameSelfSubmitTwoSlotTest {
+public:
+    FrameSelfSubmitTwoSlotJoinedTest() : FrameSelfSubmitTwoSlotTest(true) {}
 };
 
 class FrameCrossQueueGraphTest : public RhiTest {
@@ -1456,6 +1485,7 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(FrameMultiQueueCompletionTest);
 METALLIC_REGISTER_RHI_TEST(FrameSelfSubmitTwoSlotTest);
+METALLIC_REGISTER_RHI_TEST(FrameSelfSubmitTwoSlotJoinedTest);
 METALLIC_REGISTER_RHI_TEST(FrameCrossQueueGraphTest);
 
 METALLIC_REGISTER_RHI_TEST(FrameTwoSlotGraphTest);

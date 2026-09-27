@@ -180,6 +180,17 @@ public:
         if (!std::isfinite(milliseconds) || milliseconds < 0.0) {
             return RhiTestResult::fail("timestamp duration was invalid");
         }
+        if (queryPool->reset(0, 0) || queryPool->reset(2, 1) || queryPool->reset(1, UINT32_MAX)) {
+            return RhiTestResult::fail("host timestamp reset accepted an invalid range");
+        }
+        result = queryPool->reset(0, 1);
+        if (!result) {
+            return RhiTestResult::fail(std::string("TimestampQueryPool::reset returned ") + toString(result));
+        }
+        result = queryPool->readResults(0, timestamps);
+        if (!result || timestamps[0].available || !timestamps[1].available) {
+            return RhiTestResult::fail("host reset did not invalidate only the selected completed query");
+        }
         return RhiTestResult::pass();
     }
 };

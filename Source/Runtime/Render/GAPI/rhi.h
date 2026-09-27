@@ -1675,6 +1675,9 @@ public:
     TimestampQueryPool& operator=(const TimestampQueryPool&) = delete;
 
     const TimestampQueryPoolDesc& desc() const;
+    // All submitted work using this range must be complete. Externally synchronize
+    // host resets and result reads for the same range.
+    Result<> reset(uint32_t firstQuery, uint32_t queryCount);
     Result<> readResults(
         uint32_t firstQuery,
         std::span<TimestampQueryResult> outResults) const;
