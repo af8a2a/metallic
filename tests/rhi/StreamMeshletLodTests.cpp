@@ -563,7 +563,7 @@ private:
             !upload(Topology, topology.data(), sizes[Topology])) { return RhiTestResult::fail("stream topology map"); }
         ShaderCompileResult compiled;
         const auto compile = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-            .entryPointName = kMeshletStreamActiveBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, compiled);
+            .entryPointName = kMeshletStreamActiveBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
         if (!compile) { return RhiTestResult::fail("stream frontier shader compile: " + compiled.diagnostics); }
         std::unique_ptr<ShaderModule> shader;
         STREAM_LOD_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
@@ -572,7 +572,7 @@ private:
             .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
         ShaderCompileResult cooperativeCompiled;
         const auto cooperativeCompile = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-            .entryPointName = kMeshletStreamCooperativeBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, cooperativeCompiled);
+            .entryPointName = kMeshletStreamCooperativeBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, cooperativeCompiled.diagnostics).transform([&](auto value) { cooperativeCompiled = std::move(value); });
         if (!cooperativeCompile) { return RhiTestResult::fail(cooperativeCompiled.diagnostics); }
         std::unique_ptr<ShaderModule> cooperativeShader;
         STREAM_LOD_REQUIRE(device->createShaderModule({.code = cooperativeCompiled.spirv.data(),
@@ -582,7 +582,7 @@ private:
             .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { cooperativePipeline = std::move(rhiValue); }));
         ShaderCompileResult traversalCompiled;
         STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-            .entryPointName = kMeshletStreamTraversalEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, traversalCompiled));
+            .entryPointName = kMeshletStreamTraversalEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, traversalCompiled.diagnostics).transform([&](auto value) { traversalCompiled = std::move(value); }));
         std::unique_ptr<ShaderModule> traversalShader;
         STREAM_LOD_REQUIRE(device->createShaderModule({.code = traversalCompiled.spirv.data(),
             .byteSize = traversalCompiled.spirv.size() * 4}).transform([&](auto rhiValue) { traversalShader = std::move(rhiValue); }));
@@ -591,7 +591,7 @@ private:
             .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { traversalPipeline = std::move(rhiValue); }));
         ShaderCompileResult demandCompiled;
         const auto demandCompile = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-            .entryPointName = kMeshletStreamDemandEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, demandCompiled);
+            .entryPointName = kMeshletStreamDemandEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, demandCompiled.diagnostics).transform([&](auto value) { demandCompiled = std::move(value); });
         if (!demandCompile) { return RhiTestResult::fail(demandCompiled.diagnostics); }
         std::unique_ptr<ShaderModule> demandShader;
         STREAM_LOD_REQUIRE(device->createShaderModule({.code = demandCompiled.spirv.data(),
@@ -1073,7 +1073,7 @@ public:
         }
         ShaderCompileResult compiled;
         STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
-            .entryPointName = kMeshletStreamActiveBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, compiled));
+            .entryPointName = kMeshletStreamActiveBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
         std::unique_ptr<ShaderModule> shader;
         STREAM_LOD_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> pipeline;

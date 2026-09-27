@@ -85,7 +85,7 @@ public:
             ShaderCompileResult compiled;
             const char* paths[] = {PROJECT_SOURCE_DIR "/Shaders"};
             HYBRID_REQUIRE(compileSlangShaderToSpirv({.moduleName="PreparedRasterProbe", .entryPointName="compareMain",
-                .searchPath=PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths=paths, .additionalSearchPathCount=1}, compiled));
+                .searchPath=PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths=paths, .additionalSearchPathCount=1}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
             log=compiled.diagnostics;
             std::unique_ptr<ShaderModule> shader;
             std::unique_ptr<ComputePipeline> compute;
@@ -93,14 +93,14 @@ public:
             HYBRID_REQUIRE(device->createComputePipeline({.computeShader=shader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40}).transform([&](auto rhiValue) { compute = std::move(rhiValue); }));
             ShaderCompileResult workCompiled;
             HYBRID_REQUIRE(compileSlangShaderToSpirv({.moduleName="PreparedRasterProbe", .entryPointName="compareWorkBinsMain",
-                .searchPath=PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths=paths, .additionalSearchPathCount=1}, workCompiled));
+                .searchPath=PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths=paths, .additionalSearchPathCount=1}, workCompiled.diagnostics).transform([&](auto value) { workCompiled = std::move(value); }));
             std::unique_ptr<ShaderModule> workShader;
             std::unique_ptr<ComputePipeline> workCompute;
             HYBRID_REQUIRE(device->createShaderModule({.code=workCompiled.spirv.data(),.byteSize=workCompiled.spirv.size()*4}).transform([&](auto rhiValue) { workShader = std::move(rhiValue); }));
             HYBRID_REQUIRE(device->createComputePipeline({.computeShader=workShader.get(),.usesBindlessHeap=true,.bindlessUserPushDataSize=40}).transform([&](auto rhiValue) { workCompute = std::move(rhiValue); }));
             ShaderCompileResult workloadCompiled;
             const auto workloadResult = compileSlangShaderToSpirv({.moduleName="PreparedRasterProbe", .entryPointName="verifyWorkloadMain",
-                .searchPath=PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths=paths, .additionalSearchPathCount=1}, workloadCompiled);
+                .searchPath=PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths=paths, .additionalSearchPathCount=1}, workloadCompiled.diagnostics).transform([&](auto value) { workloadCompiled = std::move(value); });
             log=workloadCompiled.diagnostics;
             HYBRID_REQUIRE(workloadResult);
             std::unique_ptr<ShaderModule> workloadShader;
@@ -171,7 +171,7 @@ public:
         for (size_t i = 0; i < shaders.size(); ++i) {
             ShaderCompileResult shader;
             const auto compiled = compileSlangShaderToSpirv({.moduleName = "HybridRasterProbe", .entryPointName = entries[i],
-                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .capabilities = capabilities, .capabilityCount = 1}, shader);
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .capabilities = capabilities, .capabilityCount = 1}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             log = shader.diagnostics; HYBRID_REQUIRE(compiled);
             HYBRID_REQUIRE(device->createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4}).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
         }
@@ -336,7 +336,7 @@ public:
         HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); })); HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { binHandle = std::move(rhiValue); }));
         ShaderCompileResult compiled;
         const auto compile = compileSlangShaderToSpirv({.moduleName = "HybridClusterProbe", .entryPointName = "classifyMain",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled);
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
         log = compiled.diagnostics; HYBRID_REQUIRE(compile);
         std::unique_ptr<ShaderModule> shader;
         std::unique_ptr<ComputePipeline> pipeline;

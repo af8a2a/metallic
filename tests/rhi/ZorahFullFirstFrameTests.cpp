@@ -174,13 +174,11 @@ public:
                 std::shared_ptr<SceneResourceSnapshot> materials;
                 const scene::Scene* renderedScene=&scene;
                 if (!worldBinding) {
-                    requireFull(bool(streamer->manager().resolveScene(graph.findNode("VBuffer")->properties,
-                        nullptr,renderedScene,log)),log);
+                    requireFull(bool(streamer->manager().resolveScene(graph.findNode("VBuffer")->properties, nullptr, log).transform([&](auto value) { renderedScene = std::move(value); })),log);
                     requireFull(renderedScene && renderedScene->hasStreamGeometry() &&
                         renderedScene->renderNodes().size()==asset.instanceCount(),"Asset entry did not resolve Full metadata");
                 }
-                requireFull(bool(streamer->manager().acquire(*device,*device->getQueue(QueueType::Graphics),
-                    graph.findNode("Deferred")->properties,renderedScene,SceneResourceFeatureBits::Materials,materials,log)),log);
+                requireFull(bool(streamer->manager().acquire(*device, *device->getQueue(QueueType::Graphics), graph.findNode("Deferred")->properties, renderedScene, SceneResourceFeatureBits::Materials, log).transform([&](auto value) { materials = std::move(value); })),log);
                 const auto tex=materials->pathTraceResources->textureStats();
                 const auto memory = device->memoryBudget();
                 const auto& textureDomain = memory.domains[size_t(MemoryBudgetDomain::MaterialTextures)];

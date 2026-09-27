@@ -10,32 +10,28 @@ namespace metallic::render {
 
 class SceneResourceManager {
 public:
-    Result<> acquire(
+    [[nodiscard]] Result<std::shared_ptr<SceneResourceSnapshot>> acquire(
         Device& device,
         Queue& graphicsQueue,
         const RenderGraphProperties& properties,
         const scene::Scene* runtimeScene,
         SceneResourceFeatureBits features,
-        std::shared_ptr<SceneResourceSnapshot>& outSnapshot,
         std::string& log);
-    Result<> resolveScene(
+    [[nodiscard]] Result<const scene::Scene*> resolveScene(
         const RenderGraphProperties& properties,
         const scene::Scene* runtimeScene,
-        const scene::Scene*& outScene,
         std::string& log);
-    Result<> beginAcquireAsync(
+    [[nodiscard]] Result<std::shared_ptr<SceneResourceSnapshot>> beginAcquireAsync(
         Device& device,
         Queue& graphicsQueue,
         const RenderGraphProperties& properties,
         const scene::Scene& runtimeScene,
         SceneResourceFeatureBits features,
-        std::shared_ptr<SceneResourceSnapshot>& outSnapshot,
         std::string& log);
-    Result<> pumpAsync(
+    [[nodiscard]] Result<bool> pumpAsync(
         const std::shared_ptr<SceneResourceSnapshot>& snapshot,
         const scene::Scene& runtimeScene,
         double budgetMilliseconds,
-        bool& complete,
         scene::SceneLoadProgress& progress,
         std::string& log);
     void discard(const std::shared_ptr<SceneResourceSnapshot>& snapshot);

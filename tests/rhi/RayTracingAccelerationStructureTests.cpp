@@ -102,7 +102,7 @@ public:
         bool clearProbeComplete = false;
         while (!clearProbeComplete && builder.stats().compactedBlasBytes == 0 &&
                std::chrono::steady_clock::now() < clearDeadline) {
-            result = builder.pollBuild(clearProbeComplete, log);
+            result = builder.pollBuild(log).transform([&](auto value) { clearProbeComplete = std::move(value); });
             if (!result) {
                 return RhiTestResult::fail(
                     std::string("SceneAccelerationStructureBuilder clear probe returned ") +
@@ -159,7 +159,7 @@ public:
         bool buildComplete = false;
         bool observedIncompletePoll = false;
         while (!buildComplete && std::chrono::steady_clock::now() < deadline) {
-            result = builder.pollBuild(buildComplete, log);
+            result = builder.pollBuild(log).transform([&](auto value) { buildComplete = std::move(value); });
             if (!result) {
                 return RhiTestResult::fail(
                     std::string("SceneAccelerationStructureBuilder::pollBuild returned ") +
@@ -304,11 +304,7 @@ public:
                 std::chrono::steady_clock::now() + std::chrono::seconds(30);
             while (result && !resourcesComplete &&
                    std::chrono::steady_clock::now() < resourceDeadline) {
-                result = resources.pumpPrepareAsync(
-                    10.0,
-                    resourcesComplete,
-                    progress,
-                    log);
+                result = resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { resourcesComplete = std::move(value); });
                 if (result && !resourcesComplete) {
                     std::this_thread::yield();
                 }
@@ -454,7 +450,7 @@ public:
         scene::SceneLoadProgress progress;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         while (result && !complete && std::chrono::steady_clock::now() < deadline) {
-            result = resources.pumpPrepareAsync(10.0, complete, progress, log);
+            result = resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { complete = std::move(value); });
             if (!complete) { std::this_thread::yield(); }
         }
         if (!result || !complete || !resources.valid()) {

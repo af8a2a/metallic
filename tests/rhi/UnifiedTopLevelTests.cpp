@@ -104,7 +104,7 @@ public:
         ShaderCompileResult shader;
         const auto compiled = compileSlangShaderToSpirv({.moduleName = "UnifiedTopLevelProbe", .entryPointName = "unifiedTopLevelMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .capabilities = capabilities, .capabilityCount = 1,
-            .descriptorHeapMode = native_ ? SlangDescriptorHeapMode::Native : SlangDescriptorHeapMode::Mapped}, shader);
+            .descriptorHeapMode = native_ ? SlangDescriptorHeapMode::Native : SlangDescriptorHeapMode::Mapped}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         log = shader.diagnostics;
         TLAS_REQUIRE(compiled);
         const ComputeProgramBindingDesc layout[] = {{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
@@ -125,7 +125,7 @@ public:
         TLAS_REQUIRE(handle);
         TLAS_CHECK(handle->kind == BindlessHandleKind::AccelerationStructure);
         ResourceLease lease;
-        TLAS_CHECK(hasError(registry.accelerationStructure(**blas, lease), Error::InvalidArgument));
+        TLAS_CHECK(hasError(registry.accelerationStructure(**blas).transform([&](auto value) { lease = std::move(value); }), Error::InvalidArgument));
         TLAS_CHECK(hasError((*heap)->writeAccelerationStructure(*handle, **blas), Error::InvalidArgument));
         auto queries = device.createRayTracingAccelerationStructureCompactionQueryPool({.queryCount = 1});
         TLAS_REQUIRE(queries);
@@ -177,7 +177,7 @@ public:
             TLAS_CHECK(!structure.valid() && structure.deviceAddress() == 0 && moved.deviceAddress() == address);
             structure = std::move(moved);
             TLAS_REQUIRE((*heap)->writeAccelerationStructure(*handle, structure));
-            TLAS_REQUIRE(registry.accelerationStructure(structure, lease));
+            TLAS_REQUIRE(registry.accelerationStructure(structure).transform([&](auto value) { lease = std::move(value); }));
             TLAS_CHECK(lease.kind() == ShaderResourceKind::AccelerationStructure && lease.shaderValue() == address);
             const ComputeDispatchBinding bindings[] = {{.binding = 0, .accelerationStructure = &structure}, {.binding = 1, .buffer = output->get()}};
             TLAS_REQUIRE(program.dispatch({.commandBuffer = commands->get(), .bindings = bindings, .bindingCount = 2}));

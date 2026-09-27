@@ -833,15 +833,15 @@ public:
         render::GPUSceneSourceOverrideToken second;
         render::GPUSceneSourceOverrideToken conflict;
 
-        if (!subsystem.acquireSourceOverride(&sceneA, first, log) || !first ||
+        if (!subsystem.acquireSourceOverride(&sceneA, log).transform([&](auto value) { first = std::move(value); }) || !first ||
             subsystem.sourceOverride() != &sceneA) {
             return RhiTestResult::fail("GPUScene failed to acquire the first source override lease: " + log);
         }
-        if (!subsystem.acquireSourceOverride(&sceneA, second, log) || !second ||
+        if (!subsystem.acquireSourceOverride(&sceneA, log).transform([&](auto value) { second = std::move(value); }) || !second ||
             second == first) {
             return RhiTestResult::fail("GPUScene failed to share a source override lease for the same Scene: " + log);
         }
-        if (subsystem.acquireSourceOverride(&sceneB, conflict, log) || conflict ||
+        if (subsystem.acquireSourceOverride(&sceneB, log).transform([&](auto value) { conflict = std::move(value); }) || conflict ||
             subsystem.sourceOverride() != &sceneA) {
             return RhiTestResult::fail("GPUScene accepted concurrent source override leases for different Scenes");
         }
@@ -1178,7 +1178,7 @@ public:
             firstDrawKeys = views.drawKeys.buffer;
             log.clear();
             render::Result<> bindingResult =
-                subsystem->createBindings(bindings, log);
+                subsystem->createBindings(log).transform([&](auto value) { bindings = std::move(value); });
             if (!bindingResult || !bindings.validFor(views) ||
                 !bindings[render::GPUSceneGlobalBufferKind::Geometries].valid() ||
                 !bindings[render::GPUSceneGlobalBufferKind::Instances].valid() ||
@@ -1188,7 +1188,7 @@ public:
             }
             const auto writesBeforeConsumer = registry->stats().descriptorWrites;
             render::GPUSceneConsumerBindings secondConsumer;
-            if (!subsystem->createBindings(secondConsumer, log) ||
+            if (!subsystem->createBindings(log).transform([&](auto value) { secondConsumer = std::move(value); }) ||
                 registry->stats().descriptorWrites != writesBeforeConsumer ||
                 secondConsumer[render::GPUSceneGlobalBufferKind::Instances].shaderValue() != views.instances.resource.shaderValue()) {
                 return RhiTestResult::fail("GPUScene consumers duplicated the producer's descriptor identity");
@@ -1502,7 +1502,7 @@ public:
             }
             subsystem->releaseBindings(bindings);
             log.clear();
-            if (!subsystem->createBindings(bindings, log) ||
+            if (!subsystem->createBindings(log).transform([&](auto value) { bindings = std::move(value); }) ||
                 !bindings.validFor(views)) {
                 return RhiTestResult::fail("GPUScene rebuild binding creation failed: " + log);
             }
@@ -1600,9 +1600,9 @@ public:
         };
         render::GPUSceneViewId firstView;
         render::GPUSceneViewId secondView;
-        result = subsystem->createView(viewDesc, firstView, log);
+        result = subsystem->createView(viewDesc, log).transform([&](auto value) { firstView = std::move(value); });
         if (result) {
-            result = subsystem->createView(viewDesc, secondView, log);
+            result = subsystem->createView(viewDesc, log).transform([&](auto value) { secondView = std::move(value); });
         }
         if (!result || !firstView || !secondView) {
             return RhiTestResult::fail(
@@ -1924,7 +1924,7 @@ public:
         const render::GPUSceneViewDesc viewDesc{
             .frameSlotCount = 2, .instanceCapacity = 1, .visibleMeshletCapacity = {1, 1, 1, 1},
             .hzbWidth = 1, .hzbHeight = 1, .hzbMipCount = 1, .hzbElementCount = 1};
-        SUBMISSION_CHECK(subsystem->createView(viewDesc, view, log));
+        SUBMISSION_CHECK(subsystem->createView(viewDesc, log).transform([&](auto value) { view = std::move(value); }));
         render::RenderFrameContext frame;
         render::QueueSubmissionTracker tracker;
         SUBMISSION_CHECK(tracker.initialize(*device, *queue));
@@ -2506,7 +2506,7 @@ public:
         // active world's independent virtual lights.
         scene::Scene overrideScene;
         render::GPUSceneSourceOverrideToken token;
-        if (!subsystem.acquireSourceOverride(&overrideScene, token, log)) {
+        if (!subsystem.acquireSourceOverride(&overrideScene, log).transform([&](auto value) { token = std::move(value); })) {
             return RhiTestResult::fail("light sync could not acquire a source override: " + log);
         }
         frame.world = &replacement;

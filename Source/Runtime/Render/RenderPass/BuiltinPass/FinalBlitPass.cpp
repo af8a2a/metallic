@@ -148,7 +148,7 @@ private:
             .moduleName = "Features/PostProcess/FinalBlit",
             .entryPointName = entryPoint,
             .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-        }, shader);
+        }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) {
             log += std::string("FinalBlit shader compilation failed: ") + shader.diagnostics;
             return result;

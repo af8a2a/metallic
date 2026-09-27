@@ -99,13 +99,11 @@ private:
         std::string& log)
     {
         ShaderCompileResult compileResult;
-        Result<> result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
+        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
                 .moduleName = kTriangleShaderModuleName,
                 .entryPointName = entryPointName,
                 .searchPath = kTriangleShaderSearchPath,
-            },
-            compileResult);
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(";
             log += entryPointName;

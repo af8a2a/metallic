@@ -54,7 +54,7 @@ public:
         auto result = compileSlangShaderToSpirv({
             .moduleName = "Features/VisibilityBuffer/VisibilityBufferMaterial",
             .entryPointName = "visibilityBufferMaterialMain",
-            .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         std::array<ComputeProgramBindingDesc, 15> bindings;
         for (uint32_t slot = 0; slot < bindings.size(); ++slot) {
@@ -133,7 +133,7 @@ private:
         ComputeDispatchDesc desc{.bindings = bindings,
             .bindingCount = uint32_t(std::size(bindings)), .pushData = &push, .pushDataSize = sizeof(push),
             .groupCountX = (info.width + 7) / 8, .groupCountY = (info.height + 7) / 8};
-        if (prepare) { return program_.prepareDispatch(*context.commandBuffer().frameContext(), desc, prepared_); }
+        if (prepare) { return program_.prepareDispatch(*context.commandBuffer().frameContext(), desc).transform([&](auto value) { prepared_ = std::move(value); }); }
         desc.commandBuffer = &context.commandBuffer();
         return program_.dispatch(desc);
     }

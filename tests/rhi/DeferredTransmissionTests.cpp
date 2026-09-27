@@ -131,12 +131,14 @@ public:
                 std::vector<double> elapsed;
                 std::vector<double> gpuDeferred;
                 std::vector<render::RenderGraphExecutionStats> completed;
-                preview.collectCompletedGpuExecutionStats(completed);
+                if (auto drained = preview.collectCompletedGpuExecutionStats(); !drained) {
+                    return RhiTestResult::fail("GPU timestamp readback failed after warmup");
+                }
                 for (int frame = 0; frame < 12; ++frame) {
                     const auto start = std::chrono::steady_clock::now();
                     if (!renderFrame(extent[0], extent[1])) { return RhiTestResult::fail(log); }
                     elapsed.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
-                    if (!preview.collectCompletedGpuExecutionStats(completed)) {
+                    if (!preview.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); })) {
                         return RhiTestResult::fail("GPU timestamp readback failed");
                     }
                     for (const auto& stats : completed) {

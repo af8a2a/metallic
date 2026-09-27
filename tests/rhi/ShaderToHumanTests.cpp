@@ -32,7 +32,7 @@ public:
                 .moduleName = entry.module,
                 .entryPointName = entry.entry,
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-            }, shader);
+            }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result || shader.spirv.empty()) {
                 return RhiTestResult::fail(std::string(entry.entry) + ": " + shader.diagnostics);
             }

@@ -15,7 +15,10 @@ public:
     static constexpr RenderSubsystemId kSubsystemId = "render.streamer";
 
     Result<> initialize(const RenderSubsystemInitContext& context, std::string& log) override;
-    Result<> beginFrame(const RenderSubsystemFrameContext& context, RenderChangeBits& changes, std::string& log) override;
+    Result<> beginFrame(
+        const RenderSubsystemFrameContext& context,
+        RenderChangeBits& changes,
+        std::string& log) override;
     void endFrame(const RenderSubsystemFrameContext& context) override;
     void shutdown() override;
 
@@ -28,8 +31,11 @@ public:
         const MeshletStreamFrameDesc& view, const MeshletStreamRuntime::TraversalCheckpoint& checkpoint);
     Result<> recordSceneEnd(PreparedSceneResources& prepared, RenderGraphExecutionContext& context);
 
-    Result<> acquireStream(const MeshletStreamRuntimeDesc& desc, bool debugReadback,
-        std::shared_ptr<MeshletStreamRuntime>& outSession, std::string& log, PipelineCache* cache = nullptr);
+    [[nodiscard]] Result<std::shared_ptr<MeshletStreamRuntime>> acquireStream(
+        const MeshletStreamRuntimeDesc& desc,
+        bool debugReadback,
+        std::string& log,
+        PipelineCache* cache = nullptr);
     size_t streamCount() const { return streams_.size(); }
     StreamSceneReadiness sceneReadiness() const;
     void collectReleasedStreams();

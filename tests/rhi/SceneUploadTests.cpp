@@ -130,19 +130,19 @@ public:
         bool complete = false;
         scene::SceneLoadProgress progress;
         for (uint32_t pump = 0; pump < 20 && resources.uploadStats().submittedBatches < 3; ++pump) {
-            UPLOAD_REQUIRE(resources.pumpPrepareAsync(10.0, complete, progress, log));
+            UPLOAD_REQUIRE(resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { complete = std::move(value); }));
         }
         auto stats = resources.uploadStats();
         if (stats.submittedBatches != 3 || stats.inFlightBatches != 3 || stats.completedBatches != 0 ||
             complete || resources.textureUploadsReady()) {
             return RhiTestResult::fail("Expected three concurrent batches before releasing the GPU gate");
         }
-        for (uint32_t pump = 0; pump < 3; ++pump) { UPLOAD_REQUIRE(resources.pumpPrepareAsync(10.0, complete, progress, log)); }
+        for (uint32_t pump = 0; pump < 3; ++pump) { UPLOAD_REQUIRE(resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { complete = std::move(value); })); }
         if (resources.uploadStats().submittedBatches != 3) { return RhiTestResult::fail("Upload backpressure exceeded three batches"); }
         UPLOAD_REQUIRE(gate->signal(1));
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         while (!complete && std::chrono::steady_clock::now() < deadline) {
-            UPLOAD_REQUIRE(resources.pumpPrepareAsync(10.0, complete, progress, log));
+            UPLOAD_REQUIRE(resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { complete = std::move(value); }));
             if (!complete) { std::this_thread::yield(); }
         }
         stats = resources.uploadStats();
@@ -154,7 +154,7 @@ public:
 
         ShaderCompileResult shader;
         UPLOAD_REQUIRE(compileSlangShaderToSpirv({.moduleName = "SceneUploadProbe", .entryPointName = "sceneUploadProbeMain",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader));
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         ComputeProgram program;
         const ComputeProgramBindingDesc layout[] = {{0, ComputeResourceBindingKind::SampledImage}, {1}};
         UPLOAD_REQUIRE(program.initialize(*device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
@@ -213,7 +213,7 @@ public:
         UPLOAD_REQUIRE(copy->submit({.waitSemaphores = &nextWait, .waitSemaphoreCount = 1}));
         UPLOAD_REQUIRE(resources.beginPrepareAsync(*device, *graphics, {{"path", path.string()}}, scene, log));
         for (uint32_t pump = 0; pump < 20 && resources.uploadStats().submittedBatches < 3; ++pump) {
-            UPLOAD_REQUIRE(resources.pumpPrepareAsync(10.0, complete, progress, log));
+            UPLOAD_REQUIRE(resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { complete = std::move(value); }));
         }
         if (resources.uploadStats().inFlightBatches != 3) { return RhiTestResult::fail("Cancel probe did not fill upload window"); }
         std::jthread release([&] { std::this_thread::sleep_for(std::chrono::milliseconds(10)); (void)gate->signal(2); });
@@ -257,7 +257,7 @@ public:
         scene::SceneLoadProgress progress;
         bool complete = false;
         while (!complete && std::chrono::steady_clock::now() < deadline) {
-            UPLOAD_REQUIRE(resources.pumpPrepareAsync(8.0, complete, progress, log));
+            UPLOAD_REQUIRE(resources.pumpPrepareAsync(8.0, progress, log).transform([&](auto value) { complete = std::move(value); }));
             if (!complete) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
         }
         if (!complete || !resources.valid() || !resources.gpuWorkComplete()) { return RhiTestResult::fail("GPU preparation timed out: " + log); }
@@ -296,7 +296,7 @@ public:
         scene::SceneLoadProgress progress;
         bool complete = false;
         while (!complete && std::chrono::steady_clock::now() < deadline) {
-            UPLOAD_REQUIRE(resources.pumpPrepareAsync(8.0, complete, progress, log));
+            UPLOAD_REQUIRE(resources.pumpPrepareAsync(8.0, progress, log).transform([&](auto value) { complete = std::move(value); }));
             // Also surfaces device loss when an asynchronous fence poll is not ready.
             UPLOAD_REQUIRE(context.graphicsQueue.waitIdle());
         }

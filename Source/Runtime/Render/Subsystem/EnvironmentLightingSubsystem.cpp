@@ -129,13 +129,11 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
     Result<> initialize(Device& device, std::string& log)
     {
         ShaderCompileResult compileResult;
-        Result<> result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
+        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
                 .moduleName = "Features/Environment/EnvironmentLightingPrecompute",
                 .entryPointName = "environmentLightingPrecomputeMain",
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-            },
-            compileResult);
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             log = "EnvironmentLightingSubsystem failed to compile GPU SH precompute";
             if (!compileResult.diagnostics.empty()) {
@@ -497,18 +495,18 @@ Result<> EnvironmentLightingSubsystem::recordPreGraph(
                 if (readyDecode_ == nullptr) { readyDecode_ = decoded; }
             }
             refreshSnapshot();
-        }, &pendingPublication_);
+        }).transform([&](auto transaction) { pendingPublication_ = std::move(transaction); });
     if (!result) { return result; }
     result = publishDecoded(context, *decoded, log);
     if (result && readyDecode_ == decoded) { readyDecode_.reset(); }
     return result;
 }
 
-Result<> EnvironmentLightingSubsystem::prepareShaderReload(
+Result<std::unique_ptr<RenderSubsystemShaderReload>> EnvironmentLightingSubsystem::prepareShaderReload(
     const RenderSubsystemInitContext& context,
-    std::unique_ptr<RenderSubsystemShaderReload>& outReload,
     std::string& log)
 {
+    std::unique_ptr<RenderSubsystemShaderReload> outReload{};
     outReload.reset();
     if (device_ != &context.device) {
         log = "EnvironmentLightingSubsystem belongs to another Device";
@@ -518,12 +516,12 @@ Result<> EnvironmentLightingSubsystem::prepareShaderReload(
     ImportancePdfCompute nextPdfCompute;
     Result<> result = nextPdfCompute.initialize(context.device, log);
     if (!result) {
-        return result;
+        return makeError(result.error());
     }
     auto nextGpuPrecompute = std::make_unique<GpuPrecompute>();
     result = nextGpuPrecompute->initialize(context.device, log);
     if (!result) {
-        return result;
+        return makeError(result.error());
     }
 
     outReload = std::make_unique<ShaderReload>(
@@ -531,7 +529,7 @@ Result<> EnvironmentLightingSubsystem::prepareShaderReload(
         std::move(nextPdfCompute),
         std::move(nextGpuPrecompute));
     log = "reloaded environment importance and spherical-harmonics shaders";
-    return {};
+    return outReload;
 }
 
 Result<> EnvironmentLightingSubsystem::publishDecoded(

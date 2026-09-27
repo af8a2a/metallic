@@ -91,12 +91,14 @@ public:
     ResourceRegistry() = default;
     Result<> initialize(Device& device, const BindlessHeapDesc& capacity = {
         .maxSamplers = 64, .maxSampledImages = 8192, .maxStorageImages = 1024, .maxBuffers = 8192});
-    Result<> storageBuffer(Buffer& buffer, ResourceLease& out);
-    Result<> sampledImage(TextureView& view, ResourceLease& out, ResourceState layout = ResourceState::ShaderRead,
+    [[nodiscard]] Result<ResourceLease> storageBuffer(Buffer& buffer);
+    [[nodiscard]] Result<ResourceLease> sampledImage(
+        TextureView& view,
+        ResourceState layout = ResourceState::ShaderRead,
         bool* descriptorWritten = nullptr);
-    Result<> storageImage(TextureView& view, ResourceLease& out);
-    Result<> sampler(const SamplerDesc& sampler, ResourceLease& out);
-    Result<> accelerationStructure(RayTracingAccelerationStructure& structure, ResourceLease& out);
+    [[nodiscard]] Result<ResourceLease> storageImage(TextureView& view);
+    [[nodiscard]] Result<ResourceLease> sampler(const SamplerDesc& sampler);
+    [[nodiscard]] Result<ResourceLease> accelerationStructure(RayTracingAccelerationStructure& structure);
     void collect();
     ResourceRegistryStats stats() const;
     // Borrowed heap for prepared raster/SDK pipelines. Only registry registration writes descriptors.
@@ -106,7 +108,10 @@ public:
     Result<> bind(CommandBuffer& commands) const;
     Result<> retain(CommandBuffer& commands, const ResourceLease& lease) const;
 private:
-    Result<> image(TextureView& view, ResourceLease& out, ShaderResourceKind kind, ResourceState layout,
+    [[nodiscard]] Result<ResourceLease> image(
+        TextureView& view,
+        ShaderResourceKind kind,
+        ResourceState layout,
         bool* descriptorWritten = nullptr);
     std::shared_ptr<detail::RegistryState> state_;
     friend class ParameterWriter;
@@ -141,15 +146,15 @@ public:
     Result<> status() const { return result_; }
 
     template<typename T>
-    Result<> encode(const T& params, uint64_t abiId, EncodedParameters& out)
+    [[nodiscard]] Result<EncodedParameters> encode(const T& params, uint64_t abiId)
     {
-        return encodeBytes(&params, parameterAbi<T>(abiId), out);
+        return encodeBytes(&params, parameterAbi<T>(abiId));
     }
 private:
-    Result<> encodeBytes(const void* params, ParameterAbi abi, EncodedParameters& out);
+    [[nodiscard]] Result<EncodedParameters> encodeBytes(const void* params, ParameterAbi abi);
     Result<> upload(const void* data, uint64_t size, uint64_t alignment,
         uint64_t& address, std::shared_ptr<void>& allocation);
-    uint64_t append(Result<> result, ResourceLease lease);
+    uint64_t append(Result<ResourceLease> lease);
     Device& device_;
     RenderFrameContext& frame_;
     GpuCompletionPoint completion_;

@@ -88,7 +88,7 @@ public:
         render::ShaderCompileResult shader;
         const auto compiled = render::compileSlangShaderToSpirv({.moduleName = "ReGIRVirtualLightProbe",
             .entryPointName = "reGIRVirtualLightProbeMain",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!compiled) { return RhiTestResult::fail(shader.diagnostics); }
         const std::array<render::ComputeProgramBindingDesc, 4> bindings{{
             {.binding = 0}, {.binding = 50}, {.binding = 52},

@@ -3494,7 +3494,10 @@ struct DeviceImpl {
     mutable uint32_t budgetRefreshIndex = 0;
     DeviceMemoryBudget memoryBudgetLocked() const;
     bool admitMemoryLocked(uint32_t memoryType, uint64_t bytes, MemoryBudgetDomain domain);
-    Result<> prepareBufferAllocationLocked(const VkBufferCreateInfo& info, VmaAllocationCreateInfo& allocationInfo, MemoryBudgetDomain domain);
+    Result<> prepareBufferAllocationLocked(
+        const VkBufferCreateInfo& info,
+        VmaAllocationCreateInfo& allocationInfo,
+        MemoryBudgetDomain domain);
     void trackMemoryLocked(MemoryBudgetDomain domain, uint64_t bytes, bool local, bool add);
     DeviceCapabilities capabilities;
     PipelineCacheFileIdentity pipelineCacheFileIdentity;
@@ -3623,7 +3626,10 @@ void DeviceImpl::trackMemoryLocked(MemoryBudgetDomain domain, uint64_t bytes, bo
     }
 }
 
-Result<> DeviceImpl::prepareBufferAllocationLocked(const VkBufferCreateInfo& info, VmaAllocationCreateInfo& allocationInfo, MemoryBudgetDomain domain)
+Result<> DeviceImpl::prepareBufferAllocationLocked(
+    const VkBufferCreateInfo& info,
+    VmaAllocationCreateInfo& allocationInfo,
+    MemoryBudgetDomain domain)
 {
     uint32_t memoryType = 0;
     const VkResult result = vmaFindMemoryTypeIndexForBufferInfo(allocator, &info, &allocationInfo, &memoryType);
@@ -5026,7 +5032,11 @@ Result<BufferSlice> BufferSlice::subslice(uint64_t offset, uint64_t size) const
     return next;
 }
 
-Result<> BufferSlice::validate(const void* device, BufferUsageBits usage, uint64_t alignment, uint64_t minimumSize) const
+Result<> BufferSlice::validate(
+    const void* device,
+    BufferUsageBits usage,
+    uint64_t alignment,
+    uint64_t minimumSize) const
 {
     const auto address = deviceAddress();
     if (!allocation_ || !device || deviceIdentity() != device || size_ == 0 || size_ < minimumSize ||
@@ -6623,7 +6633,11 @@ Result<> CommandBuffer::bindExecution(const PreparedExecution& execution)
     return bindExecutionImpl(execution, nullptr, 0, false);
 }
 
-Result<> CommandBuffer::bindExecutionImpl(const PreparedExecution& execution, const void* data, uint32_t byteSize, bool replaceData)
+Result<> CommandBuffer::bindExecutionImpl(
+    const PreparedExecution& execution,
+    const void* data,
+    uint32_t byteSize,
+    bool replaceData)
 {
     if (!impl_ || !recording_ || !execution.valid() || execution.deviceIdentity() != deviceIdentity() ||
         (execution.kind() == ExecutionKind::Compute && !(impl_->queueFlags & VK_QUEUE_COMPUTE_BIT)) ||
@@ -7594,7 +7608,9 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
 #endif
 }
 
-Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationStructureMoveSizes(uint32_t maxCount, uint64_t maxBytes) const
+Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationStructureMoveSizes(
+    uint32_t maxCount,
+    uint64_t maxBytes) const
 {
     ClusterAccelerationStructureBuildSizes buildSizes{};
 #ifndef VK_NV_cluster_acceleration_structure
@@ -8405,7 +8421,8 @@ Result<RayTracingAccelerationStructureProperties> Device::queryRayTracingAcceler
     return queriedProperties;
 }
 
-Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAccelerationStructureBuildSizes(const RayTracingAccelerationStructureBuildInputs& inputs) const
+Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAccelerationStructureBuildSizes(
+    const RayTracingAccelerationStructureBuildInputs& inputs) const
 {
     RayTracingAccelerationStructureBuildSizes buildSizes{};
     if (impl_ == nullptr) {
@@ -8586,7 +8603,8 @@ Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAcceler
     return buildSizes;
 }
 
-Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracingAccelerationStructure(const RayTracingAccelerationStructureDesc& desc)
+Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracingAccelerationStructure(
+    const RayTracingAccelerationStructureDesc& desc)
 {
     if (impl_ == nullptr || desc.size == 0 ||
         desc.topLevelBackend != RayTracingTopLevelBackend::Standard) {
@@ -8809,7 +8827,8 @@ Result<ClusterAccelerationStructureProperties> Device::queryClusterAccelerationS
 #endif
 }
 
-Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationStructureTriangleBuildSizes(const ClusterAccelerationStructureTriangleBuildSizesDesc& desc) const
+Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationStructureTriangleBuildSizes(
+    const ClusterAccelerationStructureTriangleBuildSizesDesc& desc) const
 {
     ClusterAccelerationStructureBuildSizes buildSizes{};
     if (impl_ == nullptr) {
@@ -8871,7 +8890,8 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
 #endif
 }
 
-Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationStructureBottomLevelBuildSizes(const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc) const
+Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationStructureBottomLevelBuildSizes(
+    const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc) const
 {
     ClusterAccelerationStructureBuildSizes buildSizes{};
     if (impl_ == nullptr ||
@@ -8921,7 +8941,8 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
 #endif
 }
 
-Result<PartitionedAccelerationStructureBuildSizes> Device::queryPartitionedAccelerationStructureBuildSizes(const PartitionedAccelerationStructureBuildInputs& inputs) const
+Result<PartitionedAccelerationStructureBuildSizes> Device::queryPartitionedAccelerationStructureBuildSizes(
+    const PartitionedAccelerationStructureBuildInputs& inputs) const
 {
     PartitionedAccelerationStructureBuildSizes buildSizes{};
     if (impl_ == nullptr || inputs.instanceCount == 0 ||
@@ -8982,7 +9003,8 @@ Result<PartitionedAccelerationStructureBuildSizes> Device::queryPartitionedAccel
 #endif
 }
 
-Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createPartitionedAccelerationStructure(const PartitionedAccelerationStructureDesc& desc)
+Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createPartitionedAccelerationStructure(
+    const PartitionedAccelerationStructureDesc& desc)
 {
     if (impl_ == nullptr || desc.sizes.accelerationStructureSize == 0 ||
         desc.sizes.operationInfoSize == 0 || desc.sizes.operationCountSize == 0) {
@@ -9256,7 +9278,8 @@ Result<std::unique_ptr<TimestampQueryPool>> Device::createTimestampQueryPool(Que
     return std::unique_ptr<TimestampQueryPool>(new TimestampQueryPool(std::move(queryPoolImpl)));
 }
 
-Result<std::unique_ptr<RayTracingAccelerationStructureCompactionQueryPool>> Device::createRayTracingAccelerationStructureCompactionQueryPool(const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc)
+Result<std::unique_ptr<RayTracingAccelerationStructureCompactionQueryPool>> Device::createRayTracingAccelerationStructureCompactionQueryPool(
+    const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc)
 {
     if (impl_ == nullptr || desc.queryCount == 0) {
         return makeError(Error::InvalidArgument);
@@ -10434,7 +10457,8 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
     return std::unique_ptr<ComputePipeline>(new ComputePipeline(std::move(pipelineImpl)));
 }
 
-Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShaderObjectProgram(const GraphicsShaderObjectProgramDesc& desc)
+Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShaderObjectProgram(
+    const GraphicsShaderObjectProgramDesc& desc)
 {
     if (impl_ == nullptr ||
         desc.vertexCode == nullptr ||
@@ -11733,13 +11757,11 @@ Result<> createSlangShaderModule(
     std::unique_ptr<ShaderModule>& outShaderModule)
 {
     ShaderCompileResult compileResult;
-    Result<> result = compileSlangShaderToSpirv(
-        SlangShaderDesc{
+    Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPointName,
             .searchPath = kTriangleShaderSearchPath,
-        },
-        compileResult);
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
     if (!result) {
         spdlog::error("Slang compile failed for {}.{}", moduleName, entryPointName);
         if (!compileResult.diagnostics.empty()) {
@@ -11759,7 +11781,10 @@ Result<> createSlangShaderModule(
         }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
 }
 
-Result<> createTriangleShaderModule(Device& device, const char* entryPointName, std::unique_ptr<ShaderModule>& outShaderModule)
+Result<> createTriangleShaderModule(
+    Device& device,
+    const char* entryPointName,
+    std::unique_ptr<ShaderModule>& outShaderModule)
 {
     return createSlangShaderModule(device, kTriangleShaderModuleName, entryPointName, outShaderModule);
 }

@@ -66,7 +66,7 @@ public:
         }
         ShaderCompileResult compiled;
         const auto compilation = compileSlangShaderToSpirv({.moduleName = "TessellationSplitProbe", .entryPointName = "main",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled);
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
         if (!compilation) { return RhiTestResult::fail(compiled.diagnostics); }
         std::unique_ptr<ShaderModule> shader;
         TESS_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));

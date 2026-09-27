@@ -3322,7 +3322,7 @@ public:
                         CommandBuffer* prefixBuffers[] = {prefix.get()};
                         GpuCompletionPoint prefixCompletion;
                         UPLOAD_REQUIRE(tracker.submitSegment({.commandBuffers = prefixBuffers,
-                            .commandBufferCount = 1}, frame, prefixCompletion));
+                            .commandBufferCount = 1}, frame).transform([&](auto value) { prefixCompletion = std::move(value); }));
                     }
                     frame.cancel();
                     if (scenario == 3) {

@@ -158,7 +158,7 @@ public:
             scene::SceneLoadProgress progress;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
             while (!complete && std::chrono::steady_clock::now() < deadline) {
-                OMM_REQUIRE(resources.pumpPrepareAsync(10.0, complete, progress, log));
+                OMM_REQUIRE(resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { complete = std::move(value); }));
                 if (!complete) { std::this_thread::yield(); }
             }
             OMM_EXPECT(complete && resources.valid(), "scene preparation timed out: " + log);
@@ -168,7 +168,7 @@ public:
             render::ShaderCompileResult compiled;
             const auto compile = render::compileSlangShaderToSpirv({.moduleName = "Features/SmokeTests/OpacityMicromapProbe",
                 .entryPointName = "opacityMicromapProbeMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-                .capabilities = capabilities, .capabilityCount = 1}, compiled);
+                .capabilities = capabilities, .capabilityCount = 1}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
             log = compiled.diagnostics;
             OMM_REQUIRE(compile);
             std::vector<uint32_t> patched, twice;
@@ -243,7 +243,7 @@ public:
                     bool ready = false;
                     const auto switchDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
                     while (!ready && std::chrono::steady_clock::now() < switchDeadline) {
-                        OMM_REQUIRE(resources.pumpPrepareAsync(10.0, ready, progress, log));
+                        OMM_REQUIRE(resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { ready = std::move(value); }));
                         if (!ready) { std::this_thread::yield(); }
                     }
                     OMM_EXPECT(ready && resources.valid(), "backend switch did not finish");

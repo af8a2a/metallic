@@ -165,7 +165,7 @@ public:
             result = preview.render(graph, size, size);
             if (!result) { return RhiTestResult::fail(toString(result)); }
             std::vector<render::RenderGraphExecutionStats> completed;
-            result = preview.collectCompletedGpuExecutionStats(completed);
+            result = preview.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); });
             if (!result || completed.size() != 1) {
                 return RhiTestResult::fail("completed frame did not resolve exactly one GPU timing sample");
             }
@@ -186,7 +186,7 @@ public:
                 return RhiTestResult::fail("frame GPU interval does not enclose its passes");
             }
             completed.clear();
-            result = preview.collectCompletedGpuExecutionStats(completed);
+            result = preview.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); });
             if (!result || !completed.empty()) {
                 return RhiTestResult::fail("GPU timing sample was published twice");
             }
@@ -236,7 +236,7 @@ public:
             if (result) { result = executor.waitForSubmittedWork(5'000'000'000ull); }
             if (!result) { return RhiTestResult::fail(toString(result)); }
             std::vector<render::RenderGraphExecutionStats> completed;
-            result = executor.collectCompletedGpuExecutionStats(completed);
+            result = executor.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); });
             if (!result || completed.size() != 1 || !completed[0].gpuTimingAvailable || completed[0].profilingOverflow != overflow) {
                 return RhiTestResult::fail("scope overflow lost frame timing or contaminated a later ring slot");
             }
@@ -309,7 +309,7 @@ public:
                 frame.cancel();
             }
             std::vector<render::RenderGraphExecutionStats> completed;
-            result = executor.collectCompletedGpuExecutionStats(completed);
+            result = executor.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); });
             if (!result || completed.size() != (submit ? 1u : 0u)) {
                 return RhiTestResult::fail("cancelled recording published stale timing or leaked a query slot");
             }
@@ -361,7 +361,7 @@ public:
                 return RhiTestResult::fail("self-submitted profiling frame failed");
             }
             std::vector<render::RenderGraphExecutionStats> completed;
-            if (!executor.collectCompletedGpuExecutionStats(completed) || completed.size() != 1 ||
+            if (!executor.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); }) || completed.size() != 1 ||
                 !validSample(completed.front(), executor.executionStats().executionId)) {
                 return RhiTestResult::fail("query ring lost the self-submitted sample after an external recording");
             }
@@ -375,11 +375,11 @@ public:
                 return RhiTestResult::fail("raw external recording lost CPU scopes or advertised GPU timing without completion");
             }
             completed.clear();
-            if (!executor.collectCompletedGpuExecutionStats(completed) || !completed.empty()) {
+            if (!executor.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); }) || !completed.empty()) {
                 return RhiTestResult::fail("unsubmitted timestamps were queried or published");
             }
             if (index % 3u != 0u) {
-                if (!pool->reset() || !executor.collectCompletedGpuExecutionStats(completed) || !completed.empty()) {
+                if (!pool->reset() || !executor.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); }) || !completed.empty()) {
                     return RhiTestResult::fail("cancelled raw timestamps were queried or published");
                 }
                 continue;
@@ -399,7 +399,7 @@ public:
             // keeps execution incomplete. Never infer completion from query
             // availability, which can still belong to a prior reset generation.
             const bool incomplete = !fence->isSignaled();
-            const auto collected = executor.collectCompletedGpuExecutionStats(completed);
+            const auto collected = executor.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); });
             const auto released = gate->signal(1);
             if (!released || !fence->wait(5'000'000'000ull)) {
                 (void)context.graphicsQueue.waitIdle();
@@ -408,7 +408,7 @@ public:
             if (!incomplete || !collected || !completed.empty()) {
                 return RhiTestResult::fail("accepted but incomplete raw recording published GPU timestamps");
             }
-            if (!executor.collectCompletedGpuExecutionStats(completed) || !completed.empty()) {
+            if (!executor.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); }) || !completed.empty()) {
                 return RhiTestResult::fail("raw recording without an exposed completion published GPU timestamps");
             }
         }

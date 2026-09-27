@@ -86,12 +86,12 @@ struct SceneResourceManager::Impl {
     std::vector<std::shared_ptr<SceneResourceSnapshot>> retiredSnapshots;
 };
 
-Result<> SceneResourceManager::resolveScene(
+Result<const scene::Scene*> SceneResourceManager::resolveScene(
     const RenderGraphProperties& properties,
     const scene::Scene* runtimeScene,
-    const scene::Scene*& outScene,
     std::string& log)
 {
+    const scene::Scene* outScene{};
     if (impl_ == nullptr) {
         impl_ = std::make_shared<Impl>();
     }
@@ -101,7 +101,7 @@ Result<> SceneResourceManager::resolveScene(
     outScene = runtimeSceneForPath(runtimeScene, scenePath);
     if (outScene != nullptr && (!properties.contains("streamAssetOnly") ||
         outScene->hasStreamGeometry() == streamMetadata)) {
-        return {};
+        return outScene;
     }
 
     const std::string key = normalizedScenePath(scenePath).generic_string() +
@@ -109,7 +109,7 @@ Result<> SceneResourceManager::resolveScene(
     const auto found = impl_->scenes.find(key);
     if (found != impl_->scenes.end()) {
         outScene = found->second.get();
-        return {};
+        return outScene;
     }
 
     auto loadedScene = std::make_shared<scene::SceneDocument>();
@@ -124,18 +124,18 @@ Result<> SceneResourceManager::resolveScene(
     }
     outScene = loadedScene.get();
     impl_->scenes.emplace(key, std::move(loadedScene));
-    return {};
+    return outScene;
 }
 
-Result<> SceneResourceManager::acquire(
+Result<std::shared_ptr<SceneResourceSnapshot>> SceneResourceManager::acquire(
     Device& device,
     Queue& graphicsQueue,
     const RenderGraphProperties& properties,
     const scene::Scene* runtimeScene,
     SceneResourceFeatureBits features,
-    std::shared_ptr<SceneResourceSnapshot>& outSnapshot,
     std::string& log)
 {
+    std::shared_ptr<SceneResourceSnapshot> outSnapshot{};
     if (impl_ == nullptr) {
         impl_ = std::make_shared<Impl>();
     }
@@ -146,11 +146,11 @@ Result<> SceneResourceManager::acquire(
     }
     impl_->device = &device;
 
-    const scene::Scene* resolvedScene = nullptr;
-    Result<> sceneResult = resolveScene(properties, runtimeScene, resolvedScene, log);
+    auto sceneResult = resolveScene(properties, runtimeScene, log);
     if (!sceneResult) {
-        return sceneResult;
+        return makeError(sceneResult.error());
     }
+    const scene::Scene* resolvedScene = *sceneResult;
     if (resolvedScene->hasStreamGeometry() && requiresResidentGeometry(features)) {
         log = "SceneResourceManager cannot build resident geometry or RTAS from StreamAsset metadata";
         return makeError(Error::InvalidArgument);
@@ -191,7 +191,7 @@ Result<> SceneResourceManager::acquire(
             if (result) {
                 stampSnapshot(*outSnapshot, *resolvedScene);
             }
-            return result;
+            return result.transform([&] { return std::move(outSnapshot); });
         }
     }
 
@@ -204,11 +204,7 @@ Result<> SceneResourceManager::acquire(
     bool complete = false;
     scene::SceneLoadProgress progress;
     while (result && !complete) {
-        result = outSnapshot->pathTraceResources->pumpPrepareAsync(
-            std::numeric_limits<double>::max(),
-            complete,
-            progress,
-            log);
+        result = outSnapshot->pathTraceResources->pumpPrepareAsync(std::numeric_limits<double>::max(), progress, log).transform([&](auto value) { complete = std::move(value); });
         if (result && !complete) {
             std::this_thread::yield();
         }
@@ -217,18 +213,18 @@ Result<> SceneResourceManager::acquire(
         impl_->snapshots.erase(key);
         outSnapshot.reset();
     }
-    return result;
+    return result.transform([&] { return std::move(outSnapshot); });
 }
 
-Result<> SceneResourceManager::beginAcquireAsync(
+Result<std::shared_ptr<SceneResourceSnapshot>> SceneResourceManager::beginAcquireAsync(
     Device& device,
     Queue& graphicsQueue,
     const RenderGraphProperties& properties,
     const scene::Scene& runtimeScene,
     SceneResourceFeatureBits features,
-    std::shared_ptr<SceneResourceSnapshot>& outSnapshot,
     std::string& log)
 {
+    std::shared_ptr<SceneResourceSnapshot> outSnapshot{};
     if (runtimeScene.hasStreamGeometry() && requiresResidentGeometry(features)) {
         log = "SceneResourceManager cannot build resident geometry or RTAS from StreamAsset metadata";
         return makeError(Error::InvalidArgument);
@@ -260,10 +256,10 @@ Result<> SceneResourceManager::beginAcquireAsync(
                 if (result) {
                     stampSnapshot(*outSnapshot, runtimeScene);
                 }
-                return result;
+                return result.transform([&] { return std::move(outSnapshot); });
             }
             if (outSnapshot->pathTraceResources->preparing()) {
-                return {};
+                return outSnapshot;
             }
         } else {
             if (found->second != nullptr) {
@@ -292,17 +288,17 @@ Result<> SceneResourceManager::beginAcquireAsync(
         impl_->snapshots.erase(key);
         outSnapshot.reset();
     }
-    return result;
+    return result.transform([&] { return std::move(outSnapshot); });
 }
 
-Result<> SceneResourceManager::pumpAsync(
+Result<bool> SceneResourceManager::pumpAsync(
     const std::shared_ptr<SceneResourceSnapshot>& snapshot,
     const scene::Scene& runtimeScene,
     double budgetMilliseconds,
-    bool& complete,
     scene::SceneLoadProgress& progress,
     std::string& log)
 {
+    bool complete{};
     if (snapshot == nullptr || snapshot->pathTraceResources == nullptr) {
         return makeError(Error::InvalidArgument);
     }
@@ -317,11 +313,7 @@ Result<> SceneResourceManager::pumpAsync(
     if (impl_ != nullptr) {
         impl_->collectRetired();
     }
-    Result<> result = snapshot->pathTraceResources->pumpPrepareAsync(
-        budgetMilliseconds,
-        complete,
-        progress,
-        log);
+    Result<> result = snapshot->pathTraceResources->pumpPrepareAsync(budgetMilliseconds, progress, log).transform([&](auto value) { complete = std::move(value); });
     if (result && complete && snapshot->pathTraceResources->valid() &&
         (snapshot->sourceTransformRevision != runtimeScene.transformRevision() ||
          snapshot->sourceMaterialRevision != runtimeScene.materialRevision())) {
@@ -332,7 +324,7 @@ Result<> SceneResourceManager::pumpAsync(
             stampSnapshot(*snapshot, runtimeScene);
         }
     }
-    return result;
+    return result.transform([&] { return std::move(complete); });
 }
 
 void SceneResourceManager::discard(const std::shared_ptr<SceneResourceSnapshot>& snapshot)

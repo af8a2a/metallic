@@ -115,10 +115,9 @@ public:
         const RenderGraphProperties& properties,
         const scene::Scene& scene,
         std::string& log);
-    Result<> pumpSceneResourcePreparation(
+    [[nodiscard]] Result<bool> pumpSceneResourcePreparation(
         const scene::Scene& scene,
         double budgetMilliseconds,
-        bool& complete,
         scene::SceneLoadProgress& progress,
         std::string& log);
     void cancelSceneResourcePreparation();
@@ -139,7 +138,7 @@ public:
     // returned immutable values can outlive the executor and its GPU resources.
     void setExecutionCaptureEnabled(bool enabled);
     std::shared_ptr<const RenderGraphExecutionSnapshot> executionSnapshot() const;
-    Result<> collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats);
+    [[nodiscard]] Result<std::vector<RenderGraphExecutionStats>> collectCompletedGpuExecutionStats();
     const RenderGraphStreamingStats& streamingStats() const;
     bool compiled() const;
     uint32_t width() const;
@@ -164,7 +163,12 @@ public:
     Result<> initialize(bool enableValidation = false, bool enableRayQuery = false, bool enableAftermath = true);
     Result<> render(RenderGraph& graph, uint32_t width, uint32_t height);
     // Disabling readback still completes the frame, but leaves pixels() empty.
-    Result<> render(RenderGraph& graph, uint32_t width, uint32_t height, std::string_view outputName, bool readback = true);
+    Result<> render(
+        RenderGraph& graph,
+        uint32_t width,
+        uint32_t height,
+        std::string_view outputName,
+        bool readback = true);
     // Bind before rendering; the scene must outlive the preview renderer.
     // This keeps scene-owned lighting and world overrides in the same scene.
     void bindRuntimeScene(const scene::Scene* scene);
@@ -185,7 +189,7 @@ public:
     const RenderGraphExecutionStats& executionStats() const;
     void setExecutionCaptureEnabled(bool enabled);
     std::shared_ptr<const RenderGraphExecutionSnapshot> executionSnapshot() const;
-    Result<> collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats);
+    [[nodiscard]] Result<std::vector<RenderGraphExecutionStats>> collectCompletedGpuExecutionStats();
 
 private:
     struct Impl;

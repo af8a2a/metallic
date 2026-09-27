@@ -79,10 +79,13 @@ std::vector<std::string> pollSlangShaderChanges(
 void acknowledgeSlangShaderChanges();
 void resetSlangShaderHotReloadTracking();
 
-Result<> compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult);
-Result<> compileSlangShaderToSpirv(
+// Diagnostics remain available on failure, when no compiled shader is returned.
+[[nodiscard]] Result<ShaderCompileResult> compileSlangShaderToSpirv(
+    const SlangShaderDesc& desc,
+    std::string& diagnostics);
+[[nodiscard]] Result<ShaderCompileResult> compileSlangShaderToSpirv(
     const SlangShaderDesc& desc,
     const SlangShaderCacheOptions& cacheOptions,
-    ShaderCompileResult& outResult);
+    std::string& diagnostics);
 
 } // namespace metallic::render

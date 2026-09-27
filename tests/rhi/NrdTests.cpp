@@ -131,8 +131,7 @@ TEST(NrdShaders, EverySupportedPermutationUsesNativeHandles)
                                                .additionalSearchPaths = includes,
                                                .additionalSearchPathCount = 1,
                                                .macroDefines = defines.data(),
-                                               .macroDefineCount = static_cast<uint32_t>(defines.size())},
-                                              compiled))
+                                               .macroDefineCount = static_cast<uint32_t>(defines.size())}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }))
             << compiled.diagnostics;
         // Slang lowers DescriptorHandle to runtime heap arrays at set 0,
         // bindings 0 (samplers) and 2 (resources), which the RHI maps once.
@@ -452,7 +451,7 @@ TEST_F(NrdGpu, SharedRegistryAndRetiredRuntimeSubmission)
     require(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
     const auto before = registry->stats().descriptorWrites;
     render::ResourceLease output;
-    require(registry->storageImage(*pool[static_cast<size_t>(rd::ResourceType::OUT_DIFF_RADIANCE_HITDIST)].view, output));
+    require(registry->storageImage(*pool[static_cast<size_t>(rd::ResourceType::OUT_DIFF_RADIANCE_HITDIST)].view).transform([&](auto value) { output = std::move(value); }));
     EXPECT_EQ(registry->stats().descriptorWrites, before);
     // The frame, rather than the SDK wrapper, owns the old pipelines, internal
     // images and parameter data until this queued recording completes.
@@ -590,10 +589,8 @@ TEST_F(NrdRayTracingGpu, RayTracedShadowOcclusionAndHistory)
         ASSERT_TRUE(scenes[i].load(path)) << scenes[i].lastLoadResult().error;
         std::string log;
         std::shared_ptr<render::SceneResourceSnapshot> snapshot;
-        ASSERT_TRUE(sceneResources.acquire(*device, *queue, {{"path", path.generic_string()}}, &scenes[i],
-            render::SceneResourceFeatureBits::Geometry | render::SceneResourceFeatureBits::Materials |
-            render::SceneResourceFeatureBits::MaterialTextures | render::SceneResourceFeatureBits::StandardAccelerationStructure,
-            snapshot, log)) << log;
+        ASSERT_TRUE(sceneResources.acquire(*device, *queue, {{"path", path.generic_string()}}, &scenes[i], render::SceneResourceFeatureBits::Geometry | render::SceneResourceFeatureBits::Materials |
+            render::SceneResourceFeatureBits::MaterialTextures | render::SceneResourceFeatureBits::StandardAccelerationStructure, log).transform([&](auto value) { snapshot = std::move(value); })) << log;
         ASSERT_NE(snapshot, nullptr);
         ASSERT_NE(snapshot->pathTraceResources, nullptr);
         geometry[i] = *snapshot->pathTraceResources;
@@ -652,9 +649,7 @@ TEST_F(NrdRayTracingGpu, RayTracedShadowOcclusionAndHistory)
         if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         render::ScreenSpaceShadowResult output;
         std::string log;
-        auto result = shadows.record(*device, *command, *streamer, *depthView, view, lights,
-            blocker ? (alphaCutout ? 3 : 1) : 2, 0, settings, output, log,
-            &geometry[blocker ? (alphaCutout ? 2 : 1) : 0]);
+        auto result = shadows.record(*device, *command, *streamer, *depthView, view, lights, blocker ? (alphaCutout ? 3 : 1) : 2, 0, settings, log, &geometry[blocker ? (alphaCutout ? 2 : 1) : 0]).transform([&](auto value) { output = std::move(value); });
         if (!result) { throw std::runtime_error(log + render::resultToString(result)); }
         barrier.texture = output.texture;
         barrier.before = render::ResourceState::ShaderRead;

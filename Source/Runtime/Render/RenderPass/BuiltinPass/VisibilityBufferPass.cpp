@@ -373,13 +373,11 @@ public:
             gpuSceneView_ = {};
         }
         if (!gpuSceneView_.valid()) {
-            gpuSceneView_ = gpuSceneSubsystem_->createView(GPUSceneViewDesc{
+            auto view = gpuSceneSubsystem_->createView(GPUSceneViewDesc{
                 .frameSlotCount = requestedFrameSlotCount,
-            });
-            if (!gpuSceneView_.valid()) {
-                log = "VisibilityBufferPass failed to allocate a GPUScene View";
-                return makeError(Error::Failure);
-            }
+            }, log);
+            if (!view) { return makeError(view.error()); }
+            gpuSceneView_ = *view;
         }
         device_ = context.device;
         const scene::Scene* runtimeScene = runtimeSceneForPath(
@@ -399,10 +397,7 @@ public:
             releaseGPUSceneSourceLease();
             gpuSceneSource_ = runtimeScene;
             if (gpuSceneSource_ != nullptr) {
-                Result<> leaseResult = gpuSceneSubsystem_->acquireSourceOverride(
-                    gpuSceneSource_,
-                    gpuSceneSourceToken_,
-                    log);
+                Result<> leaseResult = gpuSceneSubsystem_->acquireSourceOverride(gpuSceneSource_, log).transform([&](auto value) { gpuSceneSourceToken_ = std::move(value); });
                 if (!leaseResult) {
                     gpuSceneSource_ = nullptr;
                     return leaseResult;
@@ -815,8 +810,8 @@ public:
             spdlog::error("[VisibilityBufferPass] {}", gpuSceneLog);
             return result;
         }
-        result = registry_->sampledImage(*depth.view(), depthImageHandle_, ResourceState::ShaderRead);
-        if (result) { result = registry_->sampledImage(*visibility.view(), visibilityImageHandle_, ResourceState::ShaderRead); }
+        result = registry_->sampledImage(*depth.view(), ResourceState::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
+        if (result) { result = registry_->sampledImage(*visibility.view(), ResourceState::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); }); }
         std::shared_ptr<PreparedBindings> bindings;
         if (result) { result = prepareFrame(context, bindings); }
         if (!result) { return result; }
@@ -1383,8 +1378,7 @@ private:
             "spvMeshShadingEXT",
             "spvGroupNonUniformBallot",
         };
-        Result<> result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
+        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
                 .moduleName = moduleName,
                 .entryPointName = entryPoint,
                 .searchPath = kTriangleShaderSearchPath,
@@ -1394,8 +1388,7 @@ private:
                     : 0u,
                 .macroDefines = macroDefines,
                 .macroDefineCount = macroDefineCount,
-            },
-            compileResult);
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(";
             log += moduleName;
@@ -1936,7 +1929,7 @@ private:
             !remapLayoutChanged &&
             !streamEnabled_ &&
             !ownerMaskLayoutChanged) {
-            return subsystem.createBindings(gpuSceneBindings_, log);
+            return subsystem.createBindings(log).transform([&](auto value) { gpuSceneBindings_ = std::move(value); });
         }
         const auto streamDebugResources = streamEnabled_
             ? streamRuntime_->deferredGpuResources() : MeshletStreamDeferredGpuResourcesView{};
@@ -2551,42 +2544,42 @@ private:
         }
 
         ResourceRegistry& heap = *streamRuntime_->resourceRegistry();
-        Result<> instanceBinding = heap.storageBuffer(*subsystem.globalBufferViews().instances.buffer, streamGPUSceneInstanceHandle_);
+        Result<> instanceBinding = heap.storageBuffer(*subsystem.globalBufferViews().instances.buffer).transform([&](auto value) { streamGPUSceneInstanceHandle_ = std::move(value); });
         if (!instanceBinding) { return instanceBinding; }
-        instanceBinding = heap.storageBuffer(*subsystem.globalBufferViews().materials.buffer, streamMaterialHandle_);
+        instanceBinding = heap.storageBuffer(*subsystem.globalBufferViews().materials.buffer).transform([&](auto value) { streamMaterialHandle_ = std::move(value); });
         if (instanceBinding && materialTextureRemapBuffer_) {
-            instanceBinding = heap.storageBuffer(*materialTextureRemapBuffer_, streamMaterialTextureRemapHandle_);
+            instanceBinding = heap.storageBuffer(*materialTextureRemapBuffer_).transform([&](auto value) { streamMaterialTextureRemapHandle_ = std::move(value); });
         }
         if (!instanceBinding) { return instanceBinding; }
         if (hybridRasterizer_) {
-            Result<> hybridResult = heap.storageBuffer(hybridRasterizer_->queueBuffer(), streamHybridQueueHandle_);
-            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->clusterBuffer(), streamHybridClusterHandle_); }
-            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->workloadBuffer(), streamWorkloadHandle_); }
-            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->pixelBuffer(), streamHybridPixelHandle_); }
-            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->candidateArguments(), streamCandidateArgumentsHandle_); }
+            Result<> hybridResult = heap.storageBuffer(hybridRasterizer_->queueBuffer()).transform([&](auto value) { streamHybridQueueHandle_ = std::move(value); });
+            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->clusterBuffer()).transform([&](auto value) { streamHybridClusterHandle_ = std::move(value); }); }
+            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->workloadBuffer()).transform([&](auto value) { streamWorkloadHandle_ = std::move(value); }); }
+            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->pixelBuffer()).transform([&](auto value) { streamHybridPixelHandle_ = std::move(value); }); }
+            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->candidateArguments()).transform([&](auto value) { streamCandidateArgumentsHandle_ = std::move(value); }); }
             if (!hybridResult) { return hybridResult; }
         }
         if (tessellationEnabled()) {
-            Result<> tessResult = heap.storageBuffer(*tessellationBuffer_, streamTessellationHandle_);
+            Result<> tessResult = heap.storageBuffer(*tessellationBuffer_).transform([&](auto value) { streamTessellationHandle_ = std::move(value); });
             if (!tessResult) { return tessResult; }
         }
-        Result<> result = heap.sampledImage(*visibility.view(), streamVisibilityImageHandle_, ResourceState::ShaderRead);
+        Result<> result = heap.sampledImage(*visibility.view(), ResourceState::ShaderRead).transform([&](auto value) { streamVisibilityImageHandle_ = std::move(value); });
         if (result) {
-            result = heap.sampledImage(*depth.view(), streamDepthImageHandle_, ResourceState::ShaderRead);
+            result = heap.sampledImage(*depth.view(), ResourceState::ShaderRead).transform([&](auto value) { streamDepthImageHandle_ = std::move(value); });
         }
         if (result) {
-            result = heap.storageBuffer(*resources.instanceVisibilityStates.buffer, streamInstanceVisibilityHandle_);
+            result = heap.storageBuffer(*resources.instanceVisibilityStates.buffer).transform([&](auto value) { streamInstanceVisibilityHandle_ = std::move(value); });
         }
         if (result) {
-            result = heap.storageBuffer(*resources.visibleInstanceIds.buffer, streamVisibleInstanceIdsHandle_);
+            result = heap.storageBuffer(*resources.visibleInstanceIds.buffer).transform([&](auto value) { streamVisibleInstanceIdsHandle_ = std::move(value); });
         }
         if (result) {
-            result = heap.storageBuffer(*resources.visibleInstanceCounter.buffer, streamVisibleInstanceCounterHandle_);
+            result = heap.storageBuffer(*resources.visibleInstanceCounter.buffer).transform([&](auto value) { streamVisibleInstanceCounterHandle_ = std::move(value); });
         }
         for (uint32_t historyIndex = 0;
              historyIndex < streamHzbHandles_.size() && result;
              ++historyIndex) {
-            result = heap.storageBuffer(*resources.hzbHistory[historyIndex].buffer, streamHzbHandles_[historyIndex]);
+            result = heap.storageBuffer(*resources.hzbHistory[historyIndex].buffer).transform([&](auto value) { streamHzbHandles_[historyIndex] = std::move(value); });
         }
         if (!result) {
             return result;
@@ -3065,7 +3058,7 @@ private:
         std::string& log,
         std::string_view label)
     {
-        Result<> result = heap.storageBuffer(buffer, outHandle);
+        Result<> result = heap.storageBuffer(buffer).transform([&](auto value) { outHandle = std::move(value); });
         if (!result) {
             log += resultMessage(std::string("writeStorageBuffer(VisibilityBufferPass ") +
                                      std::string(label) + ")",
@@ -3116,7 +3109,7 @@ private:
         auto writeImage = [&](ResourceLease& handle, TextureView& view,
                               std::string_view label) -> Result<> {
             Result<> writeResult =
-                bundle.registry->sampledImage(view, handle, ResourceState::ShaderRead);
+                bundle.registry->sampledImage(view, ResourceState::ShaderRead).transform([&](auto value) { handle = std::move(value); });
             if (!writeResult) {
                 log += resultMessage(std::string("writeSampledImage(VisibilityBufferPass ") +
                                          std::string(label) + ")",
@@ -3344,9 +3337,7 @@ private:
         }
 
         if (includeGPUSceneBindings) {
-            result = gpuSceneSubsystem_->createBindings(
-                bundle.gpuSceneBindings,
-                log);
+            result = gpuSceneSubsystem_->createBindings(log).transform([&](auto value) { bundle.gpuSceneBindings = std::move(value); });
             if (!result) {
                 return result;
             }

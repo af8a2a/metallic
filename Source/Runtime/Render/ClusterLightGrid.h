@@ -53,8 +53,9 @@ static_assert(sizeof(ClusterLightGridCell) == 16);
 
 // Camera/configuration math only. Cell-light intersection and list construction
 // have no CPU implementation or readback in the runtime.
-Result<> buildClusterLightGridParams(const ClusterLightGridDesc& desc,
-    ClusterLightGridParams& params, std::string& log);
+[[nodiscard]] Result<ClusterLightGridParams> buildClusterLightGridParams(
+    const ClusterLightGridDesc& desc,
+    std::string& log);
 float clusterLightGridSliceDepth(const ClusterLightGridParams& params, uint32_t slice);
 bool clusterLightGridCellIndex(const ClusterLightGridParams& params,
     uint32_t pixelX, uint32_t pixelY, float viewDepth, uint32_t& cellIndex);
@@ -88,8 +89,9 @@ public:
     const ClusterLightGridSnapshot* snapshot(const GPUScene& scene) const;
     // The owner must outlive the staged reload. Preparation leaves its current
     // program and snapshot intact; commit invalidates the snapshot, not buffers.
-    Result<> prepareShaderReload(Device& device,
-        std::unique_ptr<RenderSubsystemShaderReload>& outReload, std::string& log);
+    [[nodiscard]] Result<std::unique_ptr<RenderSubsystemShaderReload>> prepareShaderReload(
+        Device& device,
+        std::string& log);
     void clear(RenderSubsystemHost* host = nullptr);
 
 private:

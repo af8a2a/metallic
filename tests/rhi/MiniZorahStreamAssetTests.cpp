@@ -689,7 +689,7 @@ public:
             require(classifyGPUSceneMaterial(material, true) == GPUSceneDrawBucket::Blend, "Real transparency incorrectly promoted");
             SceneResourceManager manager;
             const scene::Scene* resolved = nullptr;
-            require(bool(manager.resolveScene({{"path", path.generic_string()}}, &source, resolved, log)) && resolved == &source,
+            require(bool(manager.resolveScene({{"path", path.generic_string()}}, &source, log).transform([&](auto value) { resolved = std::move(value); })) && resolved == &source,
                 "Metadata source fell back to resident import");
             metadata["images"] = {{{"uri", "unsupported.png"}}};
             { std::ofstream file(path); file << metadata.dump(); }

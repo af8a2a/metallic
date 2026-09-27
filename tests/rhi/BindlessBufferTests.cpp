@@ -66,13 +66,11 @@ RhiTestResult createShaderModule(
     std::unique_ptr<render::ShaderModule>& outShaderModule)
 {
     render::ShaderCompileResult compileResult;
-    render::Result<> result = render::compileSlangShaderToSpirv(
-        render::SlangShaderDesc{
+    render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
             .moduleName = kBindlessBufferShaderModuleName,
             .entryPointName = entryPointName,
             .searchPath = kShaderSearchPath,
-        },
-        compileResult);
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
     if (!result) {
         std::string message = std::string("compileSlangShaderToSpirv(") + entryPointName + ") returned ";
         message += toString(result);

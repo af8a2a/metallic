@@ -73,7 +73,7 @@ public:
             if (programs_[i].valid()) { continue; }
             ShaderCompileResult shader;
             Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/AutoExposure",
-                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
+                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { log += shader.diagnostics; return result; }
             result = programs_[i].initialize(*context.device, {.spirv = shader.spirv.data(),
                 .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = sizeof(AutoExposurePush),

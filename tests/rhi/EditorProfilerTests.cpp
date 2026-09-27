@@ -359,7 +359,7 @@ public:
                     profiler.addRenderGraphStats(preview.executionStats());
                 }
                 std::vector<RenderGraphExecutionStats> completed;
-                checkProfile(bool(preview.collectCompletedGpuExecutionStats(completed)) && completed.size() == 1, "missing GPU frame sample");
+                checkProfile(bool(preview.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); })) && completed.size() == 1, "missing GPU frame sample");
                 const auto& stats = completed.front(); profiler.updateRenderGraphGpuStats(stats);
                 checkProfile(stats.gpuTimingAvailable && !stats.profilingOverflow, "GPU envelope unavailable or scope overflow");
                 checkProfile(stats.streaming.size() == 1, "streaming sample missing without debug observer");

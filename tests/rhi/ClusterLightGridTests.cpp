@@ -129,7 +129,7 @@ public:
             render::ShaderCompileResult shader;
             const auto compiled = render::compileSlangShaderToSpirv({.moduleName = "ClusterLightGridLookupProbe",
                 .entryPointName = "clusterLightGridLookupProbeMain",
-                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!compiled) { return RhiTestResult::fail("ClusterLightGrid lookup probe: " + shader.diagnostics); }
             const std::array<render::ComputeProgramBindingDesc, 6> bindings{{
                 {.binding = 0}, {.binding = 1}, {.binding = 2},
@@ -322,12 +322,12 @@ public:
         GRID_CHECK(grid.snapshot(scene) != nullptr);
         const auto revision = grid.snapshot(scene)->buildRevision;
         std::unique_ptr<render::RenderSubsystemShaderReload> staged;
-        GRID_CHECK(grid.prepareShaderReload(*device_, staged, log_));
+        GRID_CHECK(grid.prepareShaderReload(*device_, log_).transform([&](auto value) { staged = std::move(value); }));
         GRID_CHECK(staged != nullptr);
         GRID_CHECK(grid.snapshot(scene) != nullptr && grid.snapshot(scene)->buildRevision == revision);
         staged.reset();
         GRID_CHECK(grid.snapshot(scene) != nullptr);
-        GRID_CHECK(grid.prepareShaderReload(*device_, staged, log_));
+        GRID_CHECK(grid.prepareShaderReload(*device_, log_).transform([&](auto value) { staged = std::move(value); }));
         GRID_CHECK(staged != nullptr);
         staged->commit();
         GRID_CHECK(grid.snapshot(scene) == nullptr);
@@ -364,7 +364,7 @@ public:
         desc.aspect = 2.0f;
         render::ClusterLightGridParams params;
         std::string log;
-        GRID_CHECK(render::buildClusterLightGridParams(desc, params, log));
+        GRID_CHECK(render::buildClusterLightGridParams(desc, log).transform([&](auto value) { params = std::move(value); }));
         GRID_CHECK((params.grid == std::array<uint32_t, 4>{3, 2, 4, 64}));
         GRID_CHECK((params.viewport == std::array<uint32_t, 4>{129, 65, 8, 0}));
         GRID_CHECK(std::abs(params.upExtent[3] - 1.0f) < 0.00001f);
@@ -389,7 +389,7 @@ public:
         desc.orthoHeight = 4.0f;
         desc.eye = float3(1.0f, 2.0f, 3.0f);
         desc.center = float3(2.0f, 2.0f, 3.0f);
-        GRID_CHECK(render::buildClusterLightGridParams(desc, params, log));
+        GRID_CHECK(render::buildClusterLightGridParams(desc, log).transform([&](auto value) { params = std::move(value); }));
         GRID_CHECK(params.viewport[3] == 1);
         GRID_CHECK(params.upExtent[3] == 2.0f && params.forwardExtent[3] == 4.0f);
         GRID_CHECK(params.forwardExtent[0] == 1.0f && params.rightFar[2] == 1.0f);
@@ -404,7 +404,7 @@ public:
         auto invalid = [&](auto edit) {
             auto candidate = validDesc;
             edit(candidate);
-            return !render::buildClusterLightGridParams(candidate, params, log);
+            return !render::buildClusterLightGridParams(candidate, log).transform([&](auto value) { params = std::move(value); });
         };
         GRID_CHECK(invalid([](auto& d) { d.width = 0; }));
         GRID_CHECK(invalid([](auto& d) { d.height = 0; }));

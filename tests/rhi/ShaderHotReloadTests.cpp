@@ -38,14 +38,11 @@ struct ShaderHotReloadFixture {
     render::Result<> compile()
     {
         const std::string searchPath = sourceDirectory.string();
-        return render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        return render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "HotReloadTest",
                 .entryPointName = "main",
                 .searchPath = searchPath.c_str(),
-            },
-            render::SlangShaderCacheOptions{.enableDiskCache = false},
-            compiled);
+            }, render::SlangShaderCacheOptions{.enableDiskCache = false}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
     }
 
     bool initialize()

@@ -62,9 +62,8 @@ public:
         RenderChangeBits& changes,
         std::string& log) override;
     Result<> recordPreGraph(const RenderSubsystemFrameContext& context, std::string& log) override;
-    Result<> prepareShaderReload(
+    [[nodiscard]] Result<std::unique_ptr<RenderSubsystemShaderReload>> prepareShaderReload(
         const RenderSubsystemInitContext& context,
-        std::unique_ptr<RenderSubsystemShaderReload>& outReload,
         std::string& log) override;
     void shutdown() override;
 

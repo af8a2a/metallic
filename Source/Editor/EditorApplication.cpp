@@ -2992,7 +2992,7 @@ bool EditorApplication::renderFrame()
             std::vector<render::RenderGraphExecutionStats> completedGpuStats;
             {
                 auto profileScope = profiler_.scope("Resolve GPU Queries");
-                result = graphExecutor_->collectCompletedGpuExecutionStats(completedGpuStats);
+                result = graphExecutor_->collectCompletedGpuExecutionStats().transform([&](auto value) { completedGpuStats = std::move(value); });
             }
             if (!result) {
                 spdlog::warn(
@@ -6949,7 +6949,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             .signalSwapchainSemaphoreCount = renderMainViewport ? 1u : 0u,
         };
         result = hasPlatformWindows
-            ? frameSubmissions_.submitSegment(submitDesc, frame.context, segmentCompletion)
+            ? frameSubmissions_.submitSegment(submitDesc, frame.context).transform([&](auto value) { segmentCompletion = std::move(value); })
             : frameSubmissions_.submit(submitDesc, frame.context);
     }
     if (!result) {
@@ -6963,7 +6963,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
         if (hasPlatformWindows) {
             // The ImGui backend submits directly to our graphics queue. Seal the
             // frame after those draws so preview resources outlive every window.
-            result = frameSubmissions_.submitSegment({}, frame.context, segmentCompletion);
+            result = frameSubmissions_.submitSegment({}, frame.context).transform([&](auto value) { segmentCompletion = std::move(value); });
             if (result) {
                 result = frame.context.finishSubmission();
             }
@@ -7451,12 +7451,7 @@ void EditorApplication::pollSceneLoad()
     if (pendingSceneResourcePreparation_) {
         bool resourcesComplete = false;
         std::string log;
-        const render::Result<> result = graphExecutor_->pumpSceneResourcePreparation(
-            *readySceneLoad_,
-            2.0,
-            resourcesComplete,
-            pendingSceneResourceProgress_,
-            log);
+        const render::Result<> result = graphExecutor_->pumpSceneResourcePreparation(*readySceneLoad_, 2.0, pendingSceneResourceProgress_, log).transform([&](auto value) { resourcesComplete = std::move(value); });
         if (!result) {
             pendingSceneResourcePreparation_ = false;
             graphExecutor_->cancelSceneResourcePreparation();

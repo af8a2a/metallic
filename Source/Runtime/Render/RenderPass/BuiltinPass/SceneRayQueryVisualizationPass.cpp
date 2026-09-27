@@ -127,8 +127,7 @@ public:
         const uint32_t capabilityCount = clusterIdSupported
             ? static_cast<uint32_t>(std::size(clusterIdCapabilities))
             : static_cast<uint32_t>(std::size(rayQueryCapabilities));
-        result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
+        result = compileSlangShaderToSpirv(SlangShaderDesc{
                 .moduleName = kSceneRayQueryVisualizationShaderModuleName,
                 .entryPointName = kSceneRayQueryVisualizationEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
@@ -136,8 +135,7 @@ public:
                 .capabilityCount = capabilityCount,
                 .macroDefines = clusterIdSupported ? clusterIdMacros : nullptr,
                 .macroDefineCount = clusterIdSupported ? static_cast<uint32_t>(std::size(clusterIdMacros)) : 0u,
-            },
-            computeCompile);
+            }, computeCompile.diagnostics).transform([&](auto value) { computeCompile = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(";
             log += kSceneRayQueryVisualizationShaderModuleName;

@@ -1203,8 +1203,7 @@ public:
             }
 #endif
             ShaderCompileResult permutationCompile;
-            Result<> permutationResult = compileSlangShaderToSpirv(
-                SlangShaderDesc{
+            Result<> permutationResult = compileSlangShaderToSpirv(SlangShaderDesc{
                     .moduleName = moduleName,
                     .entryPointName = entryPointName,
                     .searchPath = kTriangleShaderSearchPath,
@@ -1215,8 +1214,7 @@ public:
                     .capabilityCount = static_cast<uint32_t>(capabilities.size()),
                     .macroDefines = defines.data(),
                     .macroDefineCount = static_cast<uint32_t>(defines.size()),
-                },
-                permutationCompile);
+                }, permutationCompile.diagnostics).transform([&](auto value) { permutationCompile = std::move(value); });
             if (!permutationResult) {
                 log += "compileSlangShaderToSpirv(";
                 log += moduleName;
@@ -1372,15 +1370,13 @@ public:
             auto compileMaintenance =
                 [&](const char* entryPointName, ComputeProgram& outProgram) -> Result<> {
                 ShaderCompileResult maintenanceCompile;
-                Result<> maintenanceResult = compileSlangShaderToSpirv(
-                    SlangShaderDesc{
+                Result<> maintenanceResult = compileSlangShaderToSpirv(SlangShaderDesc{
                         .moduleName = kSceneSharcMaintenanceShaderModuleName,
                         .entryPointName = entryPointName,
                         .searchPath = kTriangleShaderSearchPath,
                         .capabilities = capabilities.data(),
                         .capabilityCount = static_cast<uint32_t>(capabilities.size()),
-                    },
-                    maintenanceCompile);
+                    }, maintenanceCompile.diagnostics).transform([&](auto value) { maintenanceCompile = std::move(value); });
                 if (!maintenanceResult) {
                     log += "compileSlangShaderToSpirv(";
                     log += kSceneSharcMaintenanceShaderModuleName;
@@ -1509,15 +1505,13 @@ public:
                     },
                 };
                 ShaderCompileResult tonemapCompile;
-                Result<> tonemapResult = compileSlangShaderToSpirv(
-                    SlangShaderDesc{
+                Result<> tonemapResult = compileSlangShaderToSpirv(SlangShaderDesc{
                         .moduleName = kScenePathTraceTonemapShaderModuleName,
                         .entryPointName = kScenePathTraceTonemapEntryPointName,
                         .searchPath = kTriangleShaderSearchPath,
                         .capabilities = capabilities.data(),
                         .capabilityCount = static_cast<uint32_t>(capabilities.size()),
-                    },
-                    tonemapCompile);
+                    }, tonemapCompile.diagnostics).transform([&](auto value) { tonemapCompile = std::move(value); });
                 if (!tonemapResult) {
                     log += "compileSlangShaderToSpirv(";
                     log += kScenePathTraceTonemapShaderModuleName;
@@ -2001,10 +1995,7 @@ public:
                     const auto settings = screenSpaceShadowSettings(context.properties());
                     const auto lightRecords = buildScreenSpaceShadowLightRecords(lightScene, resolvedLighting);
                     std::string shadowLog;
-                    result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(),
-                        *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(),
-                        lightScene->transformRevision(), settings, shadow, shadowLog, &sceneResources_,
-                        streamMaterials_ ? deferredStream : nullptr, profiler);
+                    result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(), *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(), lightScene->transformRevision(), settings, shadowLog, &sceneResources_, streamMaterials_ ? deferredStream : nullptr, profiler).transform([&](auto value) { shadow = std::move(value); });
                     if (!result) { spdlog::error("Ray-traced shadows: {} ({})", shadowLog, resultToString(result)); return result; }
                     previousShadowJitter_ = {shadowView.jitter[0], shadowView.jitter[1]};
                 }
@@ -2060,8 +2051,7 @@ public:
                     .shadingMaterials = sceneResources_.materialBuffer(),
                     .width = push.width, .height = push.height,
                     .streamRecords = deferredStream ? deferredStream->visibleClusterBuffer : nullptr,
-                    .residentRecordCount = info.residentRecordCount},
-                    materialBins, binningLog);
+                    .residentRecordCount = info.residentRecordCount}, binningLog).transform([&](auto value) { materialBins = std::move(value); });
                 if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
                 bindings.push_back({.binding = 70, .buffer = materialBins.bins});
                 bindings.push_back({.binding = 71, .buffer = materialBins.tiles});

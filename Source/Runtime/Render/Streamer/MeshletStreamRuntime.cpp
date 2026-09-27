@@ -184,7 +184,7 @@ Result<> createAndPopulateHostStorageBuffer(
 Result<> allocateAndWriteBuffer(ResourceRegistry& registry, Buffer& buffer,
     ResourceLease& outHandle, std::string& log, std::string_view label)
 {
-    auto result = registry.storageBuffer(buffer, outHandle);
+    auto result = registry.storageBuffer(buffer).transform([&](auto value) { outHandle = std::move(value); });
     if (!result) { log += resultMessage(std::string("register buffer ") + std::string(label), result); }
     return result;
 }
@@ -222,13 +222,11 @@ Result<> createSlangShaderModule(
     std::string& log)
 {
     ShaderCompileResult compileResult;
-    Result<> result = compileSlangShaderToSpirv(
-        SlangShaderDesc{
+    Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPoint,
             .searchPath = kMeshletStreamShaderSearchPath,
-        },
-        compileResult);
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
     if (!result) {
         log += "compileSlangShaderToSpirv(";
         log += moduleName;

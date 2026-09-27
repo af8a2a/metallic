@@ -90,7 +90,7 @@ render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kerne
     render::ShaderCompileResult shader;
     auto result = render::compileSlangShaderToSpirv({.moduleName = "RegistryProbe",
         .entryPointName = "registryProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-        .descriptorHeapMode = mode}, shader);
+        .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     if (!result) { log = shader.diagnostics; return result; }
     return kernel.initialize(device, {.spirv = shader.spirv, .parameters = render::parameterAbi<ProbeParams>(kAbi)}, log);
 }
@@ -111,20 +111,21 @@ public:
         REG_REQUIRE(makeBuffer(*device, b));
         REG_REQUIRE(makeBuffer(*device, c));
         render::ResourceLease aLease, bLease, duplicate, cLease;
-        REG_REQUIRE(registry.storageBuffer(*a, aLease));
-        REG_REQUIRE(registry.storageBuffer(*b, bLease));
-        REG_REQUIRE(registry.storageBuffer(*b, duplicate));
+        REG_REQUIRE(registry.storageBuffer(*a).transform([&](auto value) { aLease = std::move(value); }));
+        REG_REQUIRE(registry.storageBuffer(*b).transform([&](auto value) { bLease = std::move(value); }));
+        REG_REQUIRE(registry.storageBuffer(*b).transform([&](auto value) { duplicate = std::move(value); }));
         REG_CHECK(bLease.shaderValue() == duplicate.shaderValue());
         REG_CHECK(registry.stats().descriptorWrites == 2 && registry.stats().cacheHits == 1);
         std::weak_ptr<void> oldAllocation = a->retainAllocation();
         a.reset();
         REG_CHECK(!oldAllocation.expired());
-        REG_CHECK(render::hasError(registry.storageBuffer(*c, cLease), render::Error::OutOfMemory));
-        REG_CHECK(!cLease.valid());
+        const auto exhausted = registry.storageBuffer(*c);
+        REG_CHECK(render::hasError(exhausted, render::Error::OutOfMemory));
+        REG_CHECK(!exhausted.has_value());
         const auto releasedIndex = aLease.shaderValue();
         aLease = {};
         REG_CHECK(oldAllocation.expired());
-        REG_REQUIRE(registry.storageBuffer(*c, cLease));
+        REG_REQUIRE(registry.storageBuffer(*c).transform([&](auto value) { cLease = std::move(value); }));
         REG_CHECK(cLease.shaderValue() == releasedIndex);
         REG_CHECK(registry.stats().liveDescriptors == 2);
 
@@ -136,14 +137,14 @@ public:
         REG_REQUIRE(device->createTextureView(*texture, {.format = render::Format::Rgba8Unorm}).transform([&](auto rhiValue) { second = std::move(rhiValue); }));
         render::ResourceLease imageA, imageB, generalImage, storageImage;
         bool written = false;
-        REG_REQUIRE(registry.sampledImage(*first, imageA, render::ResourceState::ShaderRead, &written));
+        REG_REQUIRE(registry.sampledImage(*first, render::ResourceState::ShaderRead, &written).transform([&](auto value) { imageA = std::move(value); }));
         REG_CHECK(written);
-        REG_REQUIRE(registry.sampledImage(*second, imageB, render::ResourceState::ShaderRead, &written));
+        REG_REQUIRE(registry.sampledImage(*second, render::ResourceState::ShaderRead, &written).transform([&](auto value) { imageB = std::move(value); }));
         REG_CHECK(!written);
         REG_CHECK(imageA.shaderValue() == imageB.shaderValue());
-        REG_REQUIRE(registry.sampledImage(*second, generalImage, render::ResourceState::General));
+        REG_REQUIRE(registry.sampledImage(*second, render::ResourceState::General).transform([&](auto value) { generalImage = std::move(value); }));
         REG_CHECK(generalImage.shaderValue() != imageA.shaderValue());
-        REG_REQUIRE(registry.storageImage(*second, storageImage));
+        REG_REQUIRE(registry.storageImage(*second).transform([&](auto value) { storageImage = std::move(value); }));
         REG_CHECK(storageImage.kind() == render::ShaderResourceKind::StorageImage);
         REG_CHECK(!first->hasNativeView() && !second->hasNativeView());
         std::weak_ptr<void> textureAllocation = first->retainTexture();
@@ -154,8 +155,8 @@ public:
         registry.collect();
         REG_CHECK(registry.stats().liveDescriptors == 2);
         render::ResourceLease samplerA, samplerB;
-        REG_REQUIRE(registry.sampler({}, samplerA));
-        REG_REQUIRE(registry.sampler({}, samplerB));
+        REG_REQUIRE(registry.sampler({}).transform([&](auto value) { samplerA = std::move(value); }));
+        REG_REQUIRE(registry.sampler({}).transform([&](auto value) { samplerB = std::move(value); }));
         REG_CHECK(samplerA.shaderValue() == samplerB.shaderValue());
 
         render::ResourceRegistry other;
@@ -166,14 +167,16 @@ public:
         REG_REQUIRE(frame.begin(0));
         render::ParameterWriter writer(*device, frame, other);
         REG_CHECK(render::hasError(writer.use(bLease), render::Error::InvalidArgument));
-        render::EncodedParameters invalid;
-        REG_CHECK(!writer.encode(ProbeParams{}, kAbi, invalid) && !invalid.valid());
+        const auto invalid = writer.encode(ProbeParams{}, kAbi);
+        REG_CHECK(render::hasError(invalid, render::Error::InvalidArgument));
         render::ParameterWriter staleWriter(*device, frame, registry);
-        REG_REQUIRE(staleWriter.encode(ProbeParams{}, kAbi, invalid));
+        const auto encoded = staleWriter.encode(ProbeParams{}, kAbi);
+        REG_CHECK(encoded && encoded->valid());
         frame.cancel();
         REG_REQUIRE(frame.begin(1));
-        REG_CHECK(render::hasError(staleWriter.encode(ProbeParams{}, kAbi, invalid), render::Error::InvalidArgument));
-        REG_CHECK(!invalid.valid());
+        const auto stale = staleWriter.encode(ProbeParams{}, kAbi);
+        REG_CHECK(render::hasError(stale, render::Error::InvalidArgument));
+        REG_CHECK(encoded->valid()); // A failed encode cannot overwrite an earlier packet.
         frame.cancel();
         return RhiTestResult::pass();
     }
@@ -214,11 +217,11 @@ public:
             render::ParameterWriter writer(*device, first.frame, *registry);
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 100, 0};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi, encoded));
+            REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); }));
             stale = encoded;
             REG_REQUIRE(firstKernel.dispatch(*first.commands, encoded, 1));
             params.add = 200; params.index = 1;
-            REG_REQUIRE(writer.encode(params, kAbi, encoded));
+            REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); }));
             render::BufferBarrierDesc barrier{.buffer = output.get(),
                 .before = render::ResourceState::General, .after = render::ResourceState::General};
             if (auto commandResult = first.commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
@@ -226,11 +229,11 @@ public:
             // Force the parameter arena to grow without moving already encoded roots.
             std::array<uint32_t, 17000> burst{};
             render::EncodedParameters oversized;
-            REG_REQUIRE(writer.encode(burst, kAbi + 2, oversized));
+            REG_REQUIRE(writer.encode(burst, kAbi + 2).transform([&](auto value) { oversized = std::move(value); }));
             REG_CHECK(oversized.address() != stale.address());
             params.add = 999; // Encoded packets must not reference this mutable CPU struct.
             render::EncodedParameters wrong;
-            REG_REQUIRE(writer.encode(params, kAbi + 1, wrong));
+            REG_REQUIRE(writer.encode(params, kAbi + 1).transform([&](auto value) { wrong = std::move(value); }));
             REG_CHECK(render::hasError(firstKernel.dispatch(*first.commands, wrong, 1), render::Error::InvalidArgument));
         }
         source.reset();
@@ -245,7 +248,7 @@ public:
             render::ParameterWriter writer(*device, second.frame, *registry);
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 300, 2};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi, encoded));
+            REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); }));
             REG_CHECK(encoded.address() != stale.address());
             REG_REQUIRE(secondKernel.dispatch(*second.commands, encoded, 1));
         }
@@ -278,7 +281,7 @@ public:
             render::ParameterWriter writer(*device, first.frame, *registry);
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 1, 0};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi, encoded));
+            REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); }));
             REG_REQUIRE(firstKernel.dispatch(*first.commands, encoded, 1));
             cancelled = encoded;
         }
@@ -335,7 +338,7 @@ public:
                 // iteration 2 appends after prior batches complete, frame open.
                 params.add = (i + 1) * 100;
                 params.index = i;
-                REG_REQUIRE(writer.encode(params, kAbi, packets[i]));
+                REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { packets[i] = std::move(value); }));
                 if (i) { REG_CHECK(packets[i].address() > packets[i - 1].address()); }
                 REG_REQUIRE(recordings[i].initialize(*device, queue));
                 render::CommandBuffer* commands = nullptr;
@@ -357,7 +360,7 @@ public:
                 render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
                 render::SubmissionReceipt receipt;
                 REG_REQUIRE(tracker.submitBatch(batch, {.waitSemaphores = i == 0 ? &wait : nullptr,
-                    .waitSemaphoreCount = i == 0 ? 1u : 0u}, frame, receipt));
+                    .waitSemaphoreCount = i == 0 ? 1u : 0u}, frame).transform([&](auto value) { receipt = std::move(value); }));
                 REG_CHECK(receipt.accepted() && frame.recording() && !frame.completion().isSubmitted());
                 if (i == 0) { REG_CHECK(!receipt.completion().isComplete()); }
                 if (i == 1) {
@@ -368,7 +371,7 @@ public:
             }
             REG_REQUIRE(frame.sealRecording());
             render::EncodedParameters rejected;
-            REG_CHECK(!writer.encode(params, kAbi, rejected));
+            REG_CHECK(!writer.encode(params, kAbi).transform([&](auto value) { rejected = std::move(value); }));
             REG_REQUIRE(frame.finishSubmission());
             REG_REQUIRE(frame.wait(5'000'000'000ull));
             output->invalidate();
@@ -420,19 +423,17 @@ public:
             writer.retain(owner);
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 1, 0};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi, encoded));
+            REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); }));
             REG_REQUIRE(kernel.dispatch(*recording.commands, encoded, 1));
         }
         REG_REQUIRE(recording.commands->end());
         source.reset(); owner.reset(); kernel.clear();
         render::CommandBuffer* buffers[] = {recording.commands.get()};
         render::GpuCompletionPoint graphicsDone, copyDone, rejected;
-        REG_REQUIRE(graphicsTracker.submitSegment({.commandBuffers = buffers, .commandBufferCount = 1},
-            recording.frame, graphicsDone));
+        REG_REQUIRE(graphicsTracker.submitSegment({.commandBuffers = buffers, .commandBufferCount = 1}, recording.frame).transform([&](auto value) { graphicsDone = std::move(value); }));
         render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
-        REG_REQUIRE(copyTracker.submitSegment({.waitSemaphores = &wait, .waitSemaphoreCount = 1},
-            recording.frame, copyDone));
-        REG_CHECK(!copyTracker.submitSegment({.commandBufferCount = 1}, recording.frame, rejected));
+        REG_REQUIRE(copyTracker.submitSegment({.waitSemaphores = &wait, .waitSemaphoreCount = 1}, recording.frame).transform([&](auto value) { copyDone = std::move(value); }));
+        REG_CHECK(!copyTracker.submitSegment({.commandBufferCount = 1}, recording.frame).transform([&](auto value) { rejected = std::move(value); }));
         recording.frame.cancel(); // Must seal accepted segments, not release their packets.
         REG_REQUIRE(graphicsDone.wait(5'000'000'000ull));
         registry->collect();
@@ -467,7 +468,7 @@ public:
         for (size_t i = 0; i < kernels.size(); ++i) {
             render::ShaderCompileResult shader;
             REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "RegistryTextureProbe",
-                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader));
+                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             REG_REQUIRE(kernels[i].initialize(*device, {.spirv = shader.spirv,
                 .parameters = render::parameterAbi<Params>(kAbi + 3)}, log));
         }
@@ -492,7 +493,7 @@ public:
             const std::array<render::TextureView*, 3> views{view.get(), view.get(), view.get()};
             Params params{writer.storageImage(view.get()), writer.sampledImages(views), writer.buffer(output.get())};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi + 3, encoded));
+            REG_REQUIRE(writer.encode(params, kAbi + 3).transform([&](auto value) { encoded = std::move(value); }));
             REG_CHECK(registry->stats().descriptorWrites == 3); // storage image, sampled image, output
             render::TextureBarrierDesc barrier{.texture = image.get(),
                 .before = render::ResourceState::Undefined, .after = render::ResourceState::General};
@@ -583,11 +584,11 @@ public:
             render::ParameterWriter invalidWriter(*other, frame, *registry);
             invalidWriter.dataBuffer<uint32_t>(child);
             REG_CHECK(!invalidWriter.status());
-            REG_CHECK(!invalidWriter.encode(render::ShaderDataSpan{}, kAbi + 4, packet) && !packet.valid());
+            REG_CHECK(!invalidWriter.encode(render::ShaderDataSpan{}, kAbi + 4).transform([&](auto value) { packet = std::move(value); }) && !packet.valid());
             render::ParameterWriter writer(*device, frame, *registry);
             const auto data = writer.dataBuffer<uint32_t>(child);
             REG_CHECK(data.address == address && data.count == 2 && data.stride == 4);
-            REG_REQUIRE(writer.encode(data, kAbi + 4, packet));
+            REG_REQUIRE(writer.encode(data, kAbi + 4).transform([&](auto value) { packet = std::move(value); }));
         }
         child = {};
         REG_CHECK(!allocation.expired());
@@ -620,14 +621,14 @@ public:
         for (size_t i = 0; i < kernels.size(); ++i) {
             render::ShaderCompileResult shader;
             auto result = render::compileSlangShaderToSpirv({.moduleName = "DataSliceProbe",
-                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { return RhiTestResult::fail(shader.diagnostics); }
             REG_REQUIRE(kernels[i].initialize(*device, {.spirv = shader.spirv,
                 .parameters = render::parameterAbi<Params>(kAbi + 5)}, log));
         }
         render::ShaderCompileResult shader;
         REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "DataSliceProbe",
-            .entryPointName = "dataAdapterMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader));
+            .entryPointName = "dataAdapterMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         render::ComputeProgram adapter;
         const render::ComputeProgramBindingDesc layout{.binding = 0,
             .kind = render::ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4};
@@ -685,7 +686,7 @@ public:
             const Params params{writer.dataBuffer<uint32_t>(data), writer.dataBuffer<uint32_t>(to),
                 writer.dataBuffer<uint32_t>(arguments), 7};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi + 5, encoded));
+            REG_REQUIRE(writer.encode(params, kAbi + 5).transform([&](auto value) { encoded = std::move(value); }));
             REG_REQUIRE(kernels[0].dispatch(*recording.commands, encoded, 1));
             outputBarrier.before = render::ResourceState::General;
             workBarrier.before = render::ResourceState::General; workBarrier.after = render::ResourceState::IndirectArgument;
@@ -808,7 +809,7 @@ public:
             const char* entries[] = {"triangleVertexMain", "triangleFragmentMain"};
             for (uint32_t i = 0; i < modules.size(); ++i) {
                 REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "Features/Samples/Triangle",
-                    .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled[i]));
+                    .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled[i].diagnostics).transform([&](auto value) { compiled[i] = std::move(value); }));
                 REG_REQUIRE(device->createShaderModule({.code = compiled[i].spirv.data(),
                     .byteSize = compiled[i].spirv.size() * sizeof(uint32_t)}).transform([&](auto value) { modules[i] = std::move(value); }));
             }
@@ -962,7 +963,7 @@ private:
                     render::ParameterWriter writer(*device, frame, *registry);
                     ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), i, i};
                     render::EncodedParameters encoded;
-                    auto result = writer.encode(params, kAbi, encoded);
+                    auto result = writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); });
                     if (result) { result = kernel.dispatch(*commands[i], encoded, 1); }
                     return result ? commands[i]->end() : result;
                 });
@@ -1003,7 +1004,7 @@ public:
             auto& queue = *device->getQueue(render::QueueType::Graphics);
             render::ShaderCompileResult shader;
             REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "FrameResourceProbe", .entryPointName = "copyValue",
-                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader));
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             render::ComputeProgram programs[2];
             const render::ComputeProgramBindingDesc layout[] = {
                 {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
@@ -1036,19 +1037,19 @@ public:
             const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = input.get()}, {.binding = 1, .buffer = output.get()}};
             std::jthread first([&] {
                 outcomes[0] = programs[0].prepareDispatch(frame, {.bindings = bindings, .bindingCount = 2,
-                    .pushData = &indices[0], .pushDataSize = 4}, packets[0]);
+                    .pushData = &indices[0], .pushDataSize = 4}).transform([&](auto value) { packets[0] = std::move(value); });
             });
             std::jthread second([&] {
                 const render::ComputeIndirectDispatch items[] = {
                     {.pushData = &indices[1]}, {.pushData = &indices[2], .argumentOffset = 12, .program = &programs[1]}};
                 outcomes[1] = programs[0].prepareIndirectBatch(frame, {.bindings = bindings, .bindingCount = 2,
-                    .pushDataSize = 4, .indirectArguments = arguments.get()}, items, packets[1]);
+                    .pushDataSize = 4, .indirectArguments = arguments.get()}, items).transform([&](auto value) { packets[1] = std::move(value); });
             });
             first.join(); second.join();
             for (const auto& outcome : outcomes) { REG_REQUIRE(outcome); }
-            render::PreparedComputeDispatch failed = packets[0];
-            REG_CHECK(!programs[0].prepareDispatch(frame, {.bindings = bindings, .bindingCount = 2,
-                .pushData = &indices[0], .pushDataSize = 3}, failed) && !failed.valid());
+            const auto failed = programs[0].prepareDispatch(frame, {.bindings = bindings, .bindingCount = 2,
+                .pushData = &indices[0], .pushDataSize = 3});
+            REG_CHECK(render::hasError(failed, render::Error::InvalidArgument) && packets[0].valid());
             // Preparation owns constant bytes, permutations, descriptors and argument ranges.
             indices[0] = indices[1] = indices[2] = 15;
             input.reset(); arguments.reset(); programs[0].clear(); programs[1].clear();
@@ -1112,7 +1113,7 @@ public:
             REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "BatchBarrierProbe",
                 .entryPointName = "batchBarrierMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
                 .macroDefines = &macro, .macroDefineCount = 1,
-                .descriptorHeapMode = path == 2 ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped}, shader));
+                .descriptorHeapMode = path == 2 ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             const render::ComputeProgramBindingDesc layout{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer};
             render::ComputeProgram program;
             std::string log;

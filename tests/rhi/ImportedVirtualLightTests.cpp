@@ -274,7 +274,7 @@ public:
         render::SceneResourceManager manager;
         const scene::Scene* actualScene = nullptr;
         std::string log;
-        if (!manager.resolveScene({{"path", path.string()}}, nullptr, actualScene, log) ||
+        if (!manager.resolveScene({{"path", path.string()}}, nullptr, log).transform([&](auto value) { actualScene = std::move(value); }) ||
             actualScene == nullptr || actualScene->lights().size() != 1 ||
             actualScene->lights()[0].virtualLightSceneIdentity == 0) {
             return RhiTestResult::fail("resource manager failed to resolve a native-light document: " + log);

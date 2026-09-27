@@ -102,9 +102,8 @@ public:
     Result<> recordPreGraph(
         const RenderSubsystemFrameContext& context,
         std::string& log) override;
-    Result<> prepareShaderReload(
+    [[nodiscard]] Result<std::unique_ptr<RenderSubsystemShaderReload>> prepareShaderReload(
         const RenderSubsystemInitContext& context,
-        std::unique_ptr<RenderSubsystemShaderReload>& outReload,
         std::string& log) override;
     void shutdown() override;
 
@@ -152,20 +151,15 @@ public:
     uint32_t currentFrameSlot() const { return currentFrameSlot_; }
     uint32_t frameSlotCount() const { return frameSlotCount_; }
 
-    Result<> acquireSourceOverride(
+    [[nodiscard]] Result<GPUSceneSourceOverrideToken> acquireSourceOverride(
         const scene::Scene* scene,
-        GPUSceneSourceOverrideToken& token,
         std::string& log);
     bool releaseSourceOverride(GPUSceneSourceOverrideToken token);
     void setSourceOverride(const scene::Scene* scene);
     bool clearSourceOverride(const scene::Scene* scene);
     const scene::Scene* sourceOverride() const;
 
-    GPUSceneViewId createView(const GPUSceneViewDesc& desc = {});
-    Result<> createView(
-        const GPUSceneViewDesc& desc,
-        GPUSceneViewId& view,
-        std::string& log);
+    [[nodiscard]] Result<GPUSceneViewId> createView(const GPUSceneViewDesc& desc, std::string& log);
     bool destroyView(GPUSceneViewId view);
     // Borrowed from the raster producer for consumers in this execution only.
     // View generation and frame identity prevent reuse after resize/scene switch.
@@ -259,9 +253,7 @@ public:
         return rasterDrawLayout_;
     }
 
-    Result<> createBindings(
-        GPUSceneConsumerBindings& bindings,
-        std::string& log) const;
+    [[nodiscard]] Result<GPUSceneConsumerBindings> createBindings(std::string& log) const;
     void releaseBindings(GPUSceneConsumerBindings& bindings) const;
 
     Result<> recordCull(

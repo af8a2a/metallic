@@ -44,7 +44,7 @@ Result<> SceneLightResources::buildSampling(Device& device, CommandBuffer& comma
     // PDF layout state is advanced while recording. If any later pass cancels
     // this recording, recreate it instead of assuming those GPU transitions ran.
     Result<> transaction = host.deferSubmission(commands, []() {},
-        [state = sampling_]() { state->cancelled = true; });
+        [state = sampling_]() { state->cancelled = true; }).transform([](auto) {});
     if (!transaction) { return transaction; }
     Result<> result = sampling_->compute.buildLocalLights(commands, environment, sampling_->pdf, *buffer_, lightCount());
     if (!result || !buildGrid) { return result; }

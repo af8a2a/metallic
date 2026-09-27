@@ -58,13 +58,11 @@ RhiTestResult createTriangleShaderModule(
     std::unique_ptr<render::ShaderModule>& outShaderModule)
 {
     render::ShaderCompileResult compileResult;
-    render::Result<> result = render::compileSlangShaderToSpirv(
-        render::SlangShaderDesc{
+    render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
             .moduleName = kTriangleShaderModuleName,
             .entryPointName = entryPointName,
             .searchPath = kTriangleShaderSearchPath,
-        },
-        compileResult);
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
     if (!result) {
         std::string message = std::string("compileSlangShaderToSpirv(") + entryPointName + ") returned " + toString(result);
         if (!compileResult.diagnostics.empty()) {
@@ -89,13 +87,11 @@ RhiTestResult compileMaterialShader(
     const char* entryPointName,
     render::ShaderCompileResult& outCompileResult)
 {
-    render::Result<> result = render::compileSlangShaderToSpirv(
-        render::SlangShaderDesc{
+    render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
             .moduleName = kMaterialShaderModuleName,
             .entryPointName = entryPointName,
             .searchPath = kTriangleShaderSearchPath,
-        },
-        outCompileResult);
+        }, outCompileResult.diagnostics).transform([&](auto value) { outCompileResult = std::move(value); });
     if (!result) {
         std::string message = std::string("compileSlangShaderToSpirv(") + entryPointName + ") returned ";
         message += toString(result);

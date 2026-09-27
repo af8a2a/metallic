@@ -966,13 +966,11 @@ inline Result<> createSlangShaderModule(
     std::string& log)
 {
     ShaderCompileResult compileResult;
-    Result<> result = compileSlangShaderToSpirv(
-        SlangShaderDesc{
+    Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPointName,
             .searchPath = kTriangleShaderSearchPath,
-        },
-        compileResult);
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
     if (!result) {
         log += "compileSlangShaderToSpirv(";
         log += moduleName;
@@ -1007,13 +1005,11 @@ inline Result<> compileSlangShader(
     ShaderCompileResult& outCompileResult,
     std::string& log)
 {
-    Result<> result = compileSlangShaderToSpirv(
-        SlangShaderDesc{
+    Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPointName,
             .searchPath = kTriangleShaderSearchPath,
-        },
-        outCompileResult);
+        }, outCompileResult.diagnostics).transform([&](auto value) { outCompileResult = std::move(value); });
     if (!result) {
         log += "compileSlangShaderToSpirv(";
         log += moduleName;

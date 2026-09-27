@@ -740,7 +740,7 @@ struct RenderGraphExecutor::Impl {
             } else {
                 const scene::Scene* source = nullptr;
                 // Only an explicit asset binding or an absent world may resolve path.
-                Result<> result = resources->manager().resolveScene(properties, nullptr, source, log);
+                Result<> result = resources->manager().resolveScene(properties, nullptr, log).transform([&](auto value) { source = std::move(value); });
                 if (!result) { log = "Pass '" + node.name + "' scene resolution failed: " + log; return result; }
                 bindings[index] = captureSceneBinding(source);
             }
@@ -2028,7 +2028,11 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
-    Result<> prepareRecording(NodeRecording& recording, CommandBuffer& commands, CompiledNode& node, uint64_t frameIndex)
+    Result<> prepareRecording(
+        NodeRecording& recording,
+        CommandBuffer& commands,
+        CompiledNode& node,
+        uint64_t frameIndex)
     {
         recording.node = &node;
         recording.stats = {.id = node.id, .name = node.name, .type = node.type, .queue = recordingQueue->type()};
@@ -3017,24 +3021,16 @@ Result<> RenderGraphExecutor::beginSceneResourcePreparation(
         return makeError(Error::Failure);
     }
     cancelSceneResourcePreparation();
-    return sceneResources->manager().beginAcquireAsync(
-        device,
-        *graphicsQueue,
-        properties,
-        scene,
-        SceneResourceFeatureBits::Geometry |
+    return sceneResources->manager().beginAcquireAsync(device, *graphicsQueue, properties, scene, SceneResourceFeatureBits::Geometry |
             SceneResourceFeatureBits::Materials |
             SceneResourceFeatureBits::MaterialTextures |
             SceneResourceFeatureBits::Meshlets |
-            SceneResourceFeatureBits::StandardAccelerationStructure,
-        impl_->pendingSceneResourceSnapshot,
-        log);
+            SceneResourceFeatureBits::StandardAccelerationStructure, log).transform([&](auto value) { impl_->pendingSceneResourceSnapshot = std::move(value); });
 }
 
-Result<> RenderGraphExecutor::pumpSceneResourcePreparation(
+Result<bool> RenderGraphExecutor::pumpSceneResourcePreparation(
     const scene::Scene& scene,
     double budgetMilliseconds,
-    bool& complete,
     scene::SceneLoadProgress& progress,
     std::string& log)
 {
@@ -3045,14 +3041,8 @@ Result<> RenderGraphExecutor::pumpSceneResourcePreparation(
     if (sceneResources == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    Result<> result = sceneResources->manager().pumpAsync(
-        impl_->pendingSceneResourceSnapshot,
-        scene,
-        budgetMilliseconds,
-        complete,
-        progress,
-        log);
-    return result;
+    return sceneResources->manager().pumpAsync(
+        impl_->pendingSceneResourceSnapshot, scene, budgetMilliseconds, progress, log);
 }
 
 void RenderGraphExecutor::cancelSceneResourcePreparation()
@@ -3416,7 +3406,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             if (capturedBatch) { capturedBatch->semaphoreWaitCount = uint32_t(waits.size()); }
             auto accepted = impl_->submissionTrackers.at(queue)->submitBatch(ready->second.commands, {
                 .waitSemaphores = waits.data(), .waitSemaphoreCount = uint32_t(waits.size()),
-            }, slot.frame, receipt);
+            }, slot.frame).transform([&](auto value) { receipt = std::move(value); });
             if (!accepted) { return accepted; }
             if (capturedBatch) {
                 capturedBatch->accepted = true;
@@ -3891,17 +3881,15 @@ std::shared_ptr<const RenderGraphExecutionSnapshot> RenderGraphExecutor::executi
     return impl_->capturedExecution;
 }
 
-Result<> RenderGraphExecutor::collectCompletedGpuExecutionStats(
-    std::vector<RenderGraphExecutionStats>& outStats)
+Result<std::vector<RenderGraphExecutionStats>> RenderGraphExecutor::collectCompletedGpuExecutionStats()
 {
-    outStats.clear();
     Result<> result = impl_->resolveGpuTimings();
     if (!result) {
-        return result;
+        return makeError(result.error());
     }
-    outStats = std::move(impl_->completedGpuExecutionStats);
+    auto outStats = std::move(impl_->completedGpuExecutionStats);
     impl_->completedGpuExecutionStats.clear();
-    return {};
+    return outStats;
 }
 
 const RenderGraphStreamingStats& RenderGraphExecutor::streamingStats() const
@@ -4305,9 +4293,9 @@ Result<> RenderGraphPreviewRenderer::render(
     impl_->height = outputHeight;
     return {};
 }
-Result<> RenderGraphPreviewRenderer::collectCompletedGpuExecutionStats(std::vector<RenderGraphExecutionStats>& outStats)
+Result<std::vector<RenderGraphExecutionStats>> RenderGraphPreviewRenderer::collectCompletedGpuExecutionStats()
 {
-    return impl_->executor.collectCompletedGpuExecutionStats(outStats);
+    return impl_->executor.collectCompletedGpuExecutionStats();
 }
 
 void RenderGraphPreviewRenderer::setExecutionCaptureEnabled(bool enabled)

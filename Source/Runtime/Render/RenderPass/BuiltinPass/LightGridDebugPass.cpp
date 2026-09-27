@@ -136,7 +136,7 @@ public:
         if (program_.valid()) { return {}; }
         ShaderCompileResult shader;
         Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/LightGridDebug",
-            .entryPointName = "lightGridDebugMain", .searchPath = kTriangleShaderSearchPath}, shader);
+            .entryPointName = "lightGridDebugMain", .searchPath = kTriangleShaderSearchPath}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) {
             log = "LightGridDebug shader compilation failed: " + shader.diagnostics;
             return result;
@@ -149,7 +149,7 @@ public:
         // and only fail later during execute().
         for (auto& grid : grids_) {
             std::unique_ptr<RenderSubsystemShaderReload> reload;
-            result = grid->prepareShaderReload(*device_, reload, log);
+            result = grid->prepareShaderReload(*device_, log).transform([&](auto value) { reload = std::move(value); });
             if (!result) {
                 program_.clear();
                 return result;
@@ -187,7 +187,7 @@ public:
         };
         std::string log;
         ClusterLightGridParams checkedParams;
-        Result<> result = buildClusterLightGridParams(desc, checkedParams, log);
+        Result<> result = buildClusterLightGridParams(desc, log).transform([&](auto value) { checkedParams = std::move(value); });
         if (!result) {
             spdlog::error("[LightGridDebugPass] {}", log);
             return result;

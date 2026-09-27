@@ -56,7 +56,7 @@ public:
 
         render::ShaderCompileResult shader;
         result = render::compileSlangShaderToSpirv({.moduleName = "SphericalHarmonicsProbe",
-            .entryPointName = "sphericalHarmonicsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+            .entryPointName = "sphericalHarmonicsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
@@ -89,7 +89,7 @@ public:
         // support from the test device. Runtime readback below uses fp32.
         render::ShaderCompileResult halfShader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "SphericalHarmonicsProbe",
-            .entryPointName = "sphericalHarmonicsHalfCompileMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, halfShader);
+            .entryPointName = "sphericalHarmonicsHalfCompileMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, halfShader.diagnostics).transform([&](auto value) { halfShader = std::move(value); });
         if (!result) { return RhiTestResult::fail(halfShader.diagnostics); }
 
         std::unique_ptr<render::Device> device;

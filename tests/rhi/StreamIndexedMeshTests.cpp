@@ -67,7 +67,7 @@ public:
                 .moduleName = i < 2 ? "StreamMeshProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = entries[i], .searchPath = i < 2 ? PROJECT_SOURCE_DIR "/tests/rhi/shaders" : paths[0],
                 .additionalSearchPaths = paths, .additionalSearchPathCount = 1,
-                .capabilities = capabilities, .capabilityCount = 1}, compiled);
+                .capabilities = capabilities, .capabilityCount = 1}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
             log = compiled.diagnostics; MESH_REQUIRE(result);
             MESH_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
         }

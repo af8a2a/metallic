@@ -329,13 +329,11 @@ Result<> ImportancePdfCompute::initialize(Device& device, std::string& log)
     }
 
     ShaderCompileResult compileResult;
-    const Result<> compile = compileSlangShaderToSpirv(
-        SlangShaderDesc{
+    const Result<> compile = compileSlangShaderToSpirv(SlangShaderDesc{
             .moduleName = kPrepareLightsPdfShaderModuleName,
             .entryPointName = kPrepareLightsPdfEntryPoint,
             .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-        },
-        compileResult);
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
     if (!compile) {
         log = resultMessage("compileSlangShaderToSpirv(PrepareLightsPdf)", compile);
         if (!compileResult.diagnostics.empty()) {

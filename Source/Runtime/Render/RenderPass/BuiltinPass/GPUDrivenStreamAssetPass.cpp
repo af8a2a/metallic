@@ -187,15 +187,13 @@ Result<> createMeshShader(Device& device, std::unique_ptr<ShaderModule>& outShad
 {
     ShaderCompileResult meshCompile;
     const char* capabilities[] = {"spvMeshShadingEXT"};
-    Result<> result = compileSlangShaderToSpirv(
-        SlangShaderDesc{
+    Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
             .moduleName = kMeshletStreamShaderModuleName,
             .entryPointName = kMeshletStreamMeshEntryPoint,
             .searchPath = kMeshletStreamShaderSearchPath,
             .capabilities = capabilities,
             .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-        },
-        meshCompile);
+        }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
     if (!result) {
         log += "compileSlangShaderToSpirv(GPUDrivenStreamAsset.mesh) returned ";
         log += resultToString(result);
@@ -397,10 +395,7 @@ public:
             releaseGPUSceneSourceLease();
             gpuSceneSource_ = runtimeScene;
             if (gpuSceneSource_ != nullptr) {
-                Result<> leaseResult = gpuSceneSubsystem_->acquireSourceOverride(
-                    gpuSceneSource_,
-                    gpuSceneSourceToken_,
-                    log);
+                Result<> leaseResult = gpuSceneSubsystem_->acquireSourceOverride(gpuSceneSource_, log).transform([&](auto value) { gpuSceneSourceToken_ = std::move(value); });
                 if (!leaseResult) {
                     gpuSceneSource_ = nullptr;
                     return leaseResult;
@@ -615,13 +610,11 @@ public:
             gpuSceneView_ = {};
         }
         if (!gpuSceneView_.valid()) {
-            gpuSceneView_ = gpuSceneSubsystem_->createView(GPUSceneViewDesc{
+            auto view = gpuSceneSubsystem_->createView(GPUSceneViewDesc{
                 .frameSlotCount = requestedFrameSlotCount,
-            });
-            if (!gpuSceneView_.valid()) {
-                log = "GPUDrivenStreamAssetPass failed to allocate a GPUScene View";
-                return makeError(Error::Failure);
-            }
+            }, log);
+            if (!view) { return makeError(view.error()); }
+            gpuSceneView_ = *view;
         }
         frameSlotCount_ = requestedFrameSlotCount;
         instanceCapacity_ = std::max<uint32_t>(
@@ -671,7 +664,7 @@ public:
         }
 
         ResourceRegistry* heap = streamRuntime_->resourceRegistry();
-        result = heap->storageBuffer(*deferredColorBuffer_, deferredColorHandle_);
+        result = heap->storageBuffer(*deferredColorBuffer_).transform([&](auto value) { deferredColorHandle_ = std::move(value); });
         if (!result) {
             log += resultMessage("writeStorageBuffer(GPUDrivenStreamAsset deferred color)", result);
             log += '\n';
@@ -759,11 +752,11 @@ public:
         }
 
         const MeshletStreamFrameDesc frame = frameDescFromContext(context);
-        result = streamRuntime_->resourceRegistry()->sampledImage(*visibility.view(), visibilityImageHandle_, ResourceState::ShaderRead);
+        result = streamRuntime_->resourceRegistry()->sampledImage(*visibility.view(), ResourceState::ShaderRead).transform([&](auto value) { visibilityImageHandle_ = std::move(value); });
         if (!result) {
             return result;
         }
-        result = streamRuntime_->resourceRegistry()->sampledImage(*depth.view(), depthImageHandle_, ResourceState::ShaderRead);
+        result = streamRuntime_->resourceRegistry()->sampledImage(*depth.view(), ResourceState::ShaderRead).transform([&](auto value) { depthImageHandle_ = std::move(value); });
         if (!result) {
             return result;
         }
@@ -1023,7 +1016,7 @@ private:
             return result;
         }
 
-        result = streamRuntime_->resourceRegistry()->storageBuffer(*resizedDeferredColorBuffer, deferredColorHandle_);
+        result = streamRuntime_->resourceRegistry()->storageBuffer(*resizedDeferredColorBuffer).transform([&](auto value) { deferredColorHandle_ = std::move(value); });
         if (!result) {
             return result;
         }
@@ -1135,17 +1128,17 @@ private:
         }
 
         ResourceRegistry& heap = *streamRuntime_->resourceRegistry();
-        Result<> result = heap.storageBuffer(*resources.instanceVisibilityStates.buffer, instanceVisibilityHandle_);
+        Result<> result = heap.storageBuffer(*resources.instanceVisibilityStates.buffer).transform([&](auto value) { instanceVisibilityHandle_ = std::move(value); });
         if (result) {
-            result = heap.storageBuffer(*resources.visibleInstanceIds.buffer, visibleInstanceIdsHandle_);
+            result = heap.storageBuffer(*resources.visibleInstanceIds.buffer).transform([&](auto value) { visibleInstanceIdsHandle_ = std::move(value); });
         }
         if (result) {
-            result = heap.storageBuffer(*resources.visibleInstanceCounter.buffer, visibleInstanceCounterHandle_);
+            result = heap.storageBuffer(*resources.visibleInstanceCounter.buffer).transform([&](auto value) { visibleInstanceCounterHandle_ = std::move(value); });
         }
         for (uint32_t historyIndex = 0;
              historyIndex < hzbHandles_.size() && result;
              ++historyIndex) {
-            result = heap.storageBuffer(*resources.hzbHistory[historyIndex].buffer, hzbHandles_[historyIndex]);
+            result = heap.storageBuffer(*resources.hzbHistory[historyIndex].buffer).transform([&](auto value) { hzbHandles_[historyIndex] = std::move(value); });
         }
         if (!result) {
             return result;
@@ -1262,8 +1255,7 @@ private:
             },
         };
         ShaderCompileResult compileResult;
-        Result<> result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
+        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
                 .moduleName = kSceneRayQueryVisualizationShaderModuleName,
                 .entryPointName = kSceneRayQueryVisualizationEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
@@ -1271,8 +1263,7 @@ private:
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
                 .macroDefines = macros,
                 .macroDefineCount = static_cast<uint32_t>(std::size(macros)),
-            },
-            compileResult);
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(stream RTAS visualization) returned ";
             log += resultToString(result);

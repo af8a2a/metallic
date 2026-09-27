@@ -55,7 +55,7 @@ public:
                 render::ShaderCompileResult shader;
                 auto result = render::compileSlangShaderToSpirv({.moduleName = "MaterialBinningProbe",
                     .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-                    .macroDefines = defines, .macroDefineCount = i == 2 ? 2u : 1u}, shader);
+                    .macroDefines = defines, .macroDefineCount = i == 2 ? 2u : 1u}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
                 if (!result) { log = shader.diagnostics; return result; }
                 result = kernels_[i].initialize(*device_, {.spirv = shader.spirv,
                     .parameters = render::parameterAbi<MaterialProbeParams>(kProbeAbi)}, log);
@@ -73,7 +73,7 @@ public:
             const render::SlangMacroDefine alternate[] = {{"PROBE_ALTERNATE", "1"}};
             render::ShaderCompileResult shader;
             auto result = render::compileSlangShaderToSpirv({.moduleName = "MaterialBinningProbe",
-                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .macroDefines = alternate, .macroDefineCount = i == 2 ? 1u : 0u}, shader);
+                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .macroDefines = alternate, .macroDefineCount = i == 2 ? 1u : 0u}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { log = shader.diagnostics; return result; }
             result = programs_[i].initialize(*device_, {.spirv = shader.spirv.data(),
                 .byteSize = shader.spirv.size() * 4, .pushConstantSize = 16,
@@ -108,7 +108,7 @@ public:
             .instances = context.inputBuffer("instances").buffer(),
             .materials = context.inputBuffer("materials").buffer(),
             .shadingMaterials = context.inputBuffer("shadingMaterials").buffer(),
-            .width = push[0], .height = push[1]}, bins, log);
+            .width = push[0], .height = push[1]}, log).transform([&](auto value) { bins = std::move(value); });
         if (!result) { return result; }
         if (typed_) { return executeTyped(context, bins, push, readbackGroups); }
         // Invalid inputs must fail before recording vkCmdDispatchIndirect2KHR.
@@ -178,7 +178,7 @@ private:
         // Ordinary data, including the output, never allocates descriptors.
         if (registry->stats().descriptorWrites != writes) { return render::makeError(render::Error::Failure); }
         render::EncodedParameters encoded;
-        result = writer.encode(params, kProbeAbi, encoded);
+        result = writer.encode(params, kProbeAbi).transform([&](auto value) { encoded = std::move(value); });
         if (!result) { return result; }
         render::BufferBarrierDesc argumentBarrier{.buffer = bins.arguments,
             .before = render::ResourceState::IndirectArgument, .after = render::ResourceState::ShaderRead};
@@ -192,7 +192,7 @@ private:
                 render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
         }
         render::EncodedParameters wrongAbi;
-        result = writer.encode(params, kProbeAbi + 1, wrongAbi);
+        result = writer.encode(params, kProbeAbi + 1).transform([&](auto value) { wrongAbi = std::move(value); });
         if (!result) { return result; }
         if (!render::hasError(kernels_[1].dispatchIndirect(commands, wrongAbi, *bins.arguments),
             render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
@@ -200,7 +200,7 @@ private:
             .before = render::ResourceState::General, .after = render::ResourceState::General};
         for (uint32_t bin = 0; bin < bins.binCount; ++bin) {
             params.bin = bin;
-            result = writer.encode(params, kProbeAbi, encoded);
+            result = writer.encode(params, kProbeAbi).transform([&](auto value) { encoded = std::move(value); });
             if (!result) { return result; }
             if (auto commandResult = commands.synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
             const size_t permutation = (context.frameIndex() & 1u) && (bin & 1u) ? 2 : 1;

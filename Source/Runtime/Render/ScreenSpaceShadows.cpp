@@ -92,12 +92,22 @@ void ScreenSpaceShadows::clear()
     for (auto& trace : traces_) { trace.clear(); }
 }
 
-Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Streamer& streamer,
-    TextureView& depth, const ViewConstants& view, std::span<const GpuPunctualLight> lights,
-    uint64_t sceneRevision, uint64_t transformRevision, const ScreenSpaceShadowSettings& settings,
-    ScreenSpaceShadowResult& output, std::string& log, ScenePathTraceResources* geometry,
-    const MeshletStreamDeferredGpuResourcesView* streamGeometry, CpuProfileRecorder* profiler)
+Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
+    Device& device,
+    CommandBuffer& commands,
+    Streamer& streamer,
+    TextureView& depth,
+    const ViewConstants& view,
+    std::span<const GpuPunctualLight> lights,
+    uint64_t sceneRevision,
+    uint64_t transformRevision,
+    const ScreenSpaceShadowSettings& settings,
+    std::string& log,
+    ScenePathTraceResources* geometry,
+    const MeshletStreamDeferredGpuResourcesView* streamGeometry,
+    CpuProfileRecorder* profiler)
 {
+    ScreenSpaceShadowResult output{};
     CpuProfileScope profile(profiler, "Validate shadow resources");
     output = {};
     const uint32_t width = static_cast<uint32_t>(view.current.viewport[1]);
@@ -151,8 +161,8 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
             .entryPointName = "rayTracedShadowsMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders",
             .additionalSearchPaths = searchPaths.data(), .additionalSearchPathCount = uint32_t(searchPaths.size()),
             .capabilities = capabilities.data(), .capabilityCount = uint32_t(capabilities.size()),
-            .macroDefines = defines, .macroDefineCount = 4}, shader);
-        if (!result) { log = shader.diagnostics; return result; }
+            .macroDefines = defines, .macroDefineCount = 4}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+        if (!result) { log = shader.diagnostics; return result.transform([&] { return std::move(output); }); }
         std::vector<ComputeProgramBindingDesc> layout = {
             {.binding = kShadowBinding}, {.binding = kShadowBinding + 1, .kind = ComputeResourceBindingKind::SampledImage},
         };
@@ -184,7 +194,7 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
             .pushConstantSize = 8u,
             .bindings = layout.data(), .bindingCount = uint32_t(layout.size()),
             .debugName = "Ray-traced shadows", .requiresRayQuery = true}, log);
-        if (!result) { return result; }
+        if (!result) { return makeError(result.error()); }
     }
     profile.next("Prepare shadow images");
     if (!state_ || state_->cancelled || state_->width != width || state_->height != height) {
@@ -195,9 +205,9 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
             auto result = device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::Storage |
                 TextureUsageBits::TransferDestination | TextureUsageBits::TransferSource,
                 .format = formats[i], .width = width, .height = height}).transform([&](auto rhiValue) { next->textures[i] = std::move(rhiValue); });
-            if (!result) { return result; }
+            if (!result) { return makeError(result.error()); }
             result = device.createTextureView(*next->textures[i], {.format = formats[i]}).transform([&](auto rhiValue) { next->views[i] = std::move(rhiValue); });
-            if (!result) { return result; }
+            if (!result) { return makeError(result.error()); }
         }
         next->width = width;
         next->height = height;
@@ -215,14 +225,14 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
         auto allocated = device.createBuffer({.size = sizeof(ScreenSpaceShadowParameters),
             .structureStride = sizeof(ScreenSpaceShadowParameters), .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
-        if (!allocated) { return allocated; }
+        if (!allocated) { return makeError(allocated.error()); }
         state->parameters = std::move(buffer);
         state->parameterPool.push_back(state->parameters);
     }
     if (auto* frame = commands.frameContext()) { frame->retain(state->parameters); }
     auto result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>([] {},
         [state] { state->cancelled = true; }));
-    if (!result) { return result; }
+    if (!result) { return makeError(result.error()); }
 
     // Deferred compares this index with the stable LightGrid source slot.
     const uint32_t selected = selectScreenSpaceShadowLight(lights, settings.lightIndex);
@@ -274,7 +284,7 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
     };
     if (!state->initialized) {
         result = enterStage(0);
-        if (!result) { return result; }
+        if (!result) { return makeError(result.error()); }
         for (size_t i = 0; i < accessResources.size(); ++i) {
             commands.clearColorTexture(*state->textures[i], ResourceState::TransferDestination, {1, 1, 1, 1});
         }
@@ -327,18 +337,18 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
     }
     profile.next("Record trace dispatch");
     result = enterStage(1);
-    if (!result) { return result; }
+    if (!result) { return makeError(result.error()); }
     commands.beginDebugLabel({.name = "Ray-traced shadows"});
     result = trace.dispatch({.commandBuffer = &commands, .bindings = bindings.data(), .bindingCount = uint32_t(bindings.size()),
         .pushData = geometryPush, .pushDataSize = sizeof(geometryPush),
         .groupCountX = (width + 7) / 8, .groupCountY = (height + 7) / 8, .profiler = profiler});
     commands.endDebugLabel();
-    if (!result) { return result; }
+    if (!result) { return makeError(result.error()); }
     profile.next("Record denoising");
 #if METALLIC_HAS_NRD
     if (denoise) {
         result = enterStage(2);
-        if (!result) { return result; }
+        if (!result) { return makeError(result.error()); }
         if (!state->sigma.valid()) {
             NrdUserTexturePool pool{};
             const denoising::ResourceType resources[] = {denoising::ResourceType::IN_PENUMBRA,
@@ -346,7 +356,7 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
                 denoising::ResourceType::IN_MV, denoising::ResourceType::OUT_SHADOW_TRANSLUCENCY};
             for (size_t i = 0; i < 5; ++i) { pool[static_cast<size_t>(resources[i])] = {state->textures[i].get(), state->views[i].get()}; }
             result = state->sigma.initialize(device, static_cast<uint16_t>(width), static_cast<uint16_t>(height), pool, log, true);
-            if (!result) { return result; }
+            if (!result) { return makeError(result.error()); }
         }
         denoising::CommonSettings common;
         writeCameraMatrices(view.current, common.worldToViewMatrix, common.viewToClipMatrix);
@@ -368,7 +378,7 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
             std::memcmp(&parameters.light, &state->light, sizeof(GpuPunctualLight)) != 0
             ? denoising::AccumulationMode::CLEAR_AND_RESTART : denoising::AccumulationMode::CONTINUE;
         result = state->sigma.setCommonSettings(common);
-        if (!result) { return result; }
+        if (!result) { return makeError(result.error()); }
         denoising::SigmaSettings sigma;
         sigma.maxStabilizedFrameNum = std::min(settings.historyLength, denoising::SIGMA_MAX_HISTORY_FRAME_NUM);
         if (parameters.light.directionType[3] < 0.5f) {
@@ -376,12 +386,12 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
         }
         result = state->sigma.setSigmaSettings(sigma);
         if (result) { result = state->sigma.denoise(NrdDenoiserMode::Sigma, commands); }
-        if (!result) { return result; }
+        if (!result) { return makeError(result.error()); }
     }
 #endif
     profile.next("Finalize shadow state");
     result = enterStage(3);
-    if (!result) { return result; }
+    if (!result) { return makeError(result.error()); }
     state->initialized = true;
     state->sceneRevision = sceneRevision;
     state->transformRevision = transformRevision;
@@ -390,7 +400,7 @@ Result<> ScreenSpaceShadows::record(Device& device, CommandBuffer& commands, Str
     state->settings = settings;
     state->traceEnabled = parameters.control[0] != 0;
     output = {.texture = state->textures[4].get(), .shadow = state->views[4].get(), .parameters = state->parameters.get()};
-    return {};
+    return output;
 }
 
 } // namespace metallic::render

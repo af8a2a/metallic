@@ -58,13 +58,11 @@ public:
     }
     virtual Result<> recordPreGraph(const RenderSubsystemFrameContext&, std::string&) { return {}; }
     virtual Result<> recordPostGraph(const RenderSubsystemFrameContext&, std::string&) { return {}; }
-    virtual Result<> prepareShaderReload(
+    [[nodiscard]] virtual Result<std::unique_ptr<RenderSubsystemShaderReload>> prepareShaderReload(
         const RenderSubsystemInitContext&,
-        std::unique_ptr<RenderSubsystemShaderReload>& outReload,
         std::string&)
     {
-        outReload.reset();
-        return {};
+        return nullptr;
     }
     virtual void endFrame(const RenderSubsystemFrameContext&) {}
     virtual void shutdown() {}
@@ -183,9 +181,8 @@ public:
     void retire(std::shared_ptr<void> resource);
     // Register before publishing state. endFrame only closes CPU recording;
     // Queue::submit commits, and frame/pool cancellation rolls back in reverse order.
-    Result<> deferSubmission(CommandBuffer& commandBuffer,
-        std::function<void()> submitted, std::function<void()> cancelled,
-        std::shared_ptr<SubmissionTransaction>* outTransaction = nullptr);
+    [[nodiscard]] Result<std::shared_ptr<SubmissionTransaction>> deferSubmission(
+        CommandBuffer& commandBuffer, std::function<void()> submitted, std::function<void()> cancelled);
 
 private:
     struct Record;

@@ -21,6 +21,11 @@ public:
 
     RhiTestResult run(RhiTestContext& context) override
     {
+        std::string invalidDiagnostics = "stale diagnostics";
+        const auto invalid = render::compileSlangShaderToSpirv({}, invalidDiagnostics);
+        if (!render::hasError(invalid, render::Error::InvalidArgument) || !invalidDiagnostics.empty()) {
+            return RhiTestResult::fail("invalid shader request did not return an error and clear stale diagnostics");
+        }
         struct TrackingGuard {
             TrackingGuard()
             {
@@ -85,7 +90,7 @@ public:
             .outCacheHit = &cacheHit,
         };
         render::ShaderCompileResult first;
-        if (!render::compileSlangShaderToSpirv(desc, cache, first)) {
+        if (!render::compileSlangShaderToSpirv(desc, cache, first.diagnostics).transform([&](auto value) { first = std::move(value); })) {
             return RhiTestResult::fail(first.diagnostics);
         }
         for (const char* dependency : {"Modules/ModuleMath.slang", "Modules/Math/Value.slang",
@@ -97,7 +102,7 @@ public:
             }
         }
         render::ShaderCompileResult cached;
-        if (!render::compileSlangShaderToSpirv(desc, cache, cached) || !cacheHit ||
+        if (!render::compileSlangShaderToSpirv(desc, cache, cached.diagnostics).transform([&](auto value) { cached = std::move(value); }) || !cacheHit ||
             first.spirv != cached.spirv || first.dependencies != cached.dependencies) {
             return RhiTestResult::fail("module dependency cache did not round trip");
         }
@@ -114,7 +119,7 @@ public:
                 return RhiTestResult::fail("module or vendor edit was not tracked precisely");
             }
             render::ShaderCompileResult changed;
-            if (!render::compileSlangShaderToSpirv(desc, cache, changed) || cacheHit ||
+            if (!render::compileSlangShaderToSpirv(desc, cache, changed.diagnostics).transform([&](auto value) { changed = std::move(value); }) || cacheHit ||
                 changed.spirv == cached.spirv) {
                 return RhiTestResult::fail("module or vendor edit reused stale IR/SPIR-V: " + changed.diagnostics);
             }
@@ -129,12 +134,12 @@ public:
         variantDesc.macroDefines = &macro;
         variantDesc.macroDefineCount = 1;
         render::ShaderCompileResult variant;
-        if (!render::compileSlangShaderToSpirv(variantDesc, cache, variant) ||
+        if (!render::compileSlangShaderToSpirv(variantDesc, cache, variant.diagnostics).transform([&](auto value) { variant = std::move(value); }) ||
             variant.spirv == cached.spirv) {
             return RhiTestResult::fail("SDK macro variant reused the wrong module: " + variant.diagnostics);
         }
         render::ShaderCompileResult variantCached;
-        if (!render::compileSlangShaderToSpirv(variantDesc, cache, variantCached) || !cacheHit ||
+        if (!render::compileSlangShaderToSpirv(variantDesc, cache, variantCached.diagnostics).transform([&](auto value) { variantCached = std::move(value); }) || !cacheHit ||
             variantCached.spirv != variant.spirv) {
             return RhiTestResult::fail("SDK macro variant did not retain its own cache entry");
         }
@@ -144,9 +149,10 @@ public:
                 "void main() { outputBuffer[0] = decodeSceneOctahedron(float2(0)); }\n")) {
             return RhiTestResult::fail("could not write access control probe");
         }
-        render::ShaderCompileResult inaccessible;
-        if (render::compileSlangShaderToSpirv(desc, cache, inaccessible) ||
-            inaccessible.diagnostics.find("not accessible") == std::string::npos) {
+        std::string diagnostics;
+        const auto inaccessible = render::compileSlangShaderToSpirv(desc, cache, diagnostics);
+        if (!render::hasError(inaccessible, render::Error::Failure) ||
+            diagnostics.find("not accessible") == std::string::npos) {
             return RhiTestResult::fail("Core implementation detail escaped its module boundary");
         }
         return RhiTestResult::pass("validated module ownership, visibility, SDK macro isolation, cache and hot reload");

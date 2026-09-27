@@ -39,7 +39,7 @@ Result<> ResidentMeshletLod::initialize(Device& device, uint32_t capacity, std::
     for (size_t i = 0; i < shaders_.size(); ++i) {
         ShaderCompileResult shader;
         result = compileSlangShaderToSpirv({.moduleName = "Features/GPUDriven/ResidentMeshletLod",
-            .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
+            .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
         result = device.createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4u,
             .debugName = entries[i]}).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });

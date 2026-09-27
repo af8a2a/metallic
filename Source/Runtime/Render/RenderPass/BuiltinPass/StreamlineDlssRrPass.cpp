@@ -214,7 +214,7 @@ public:
         if (boolProperty(&properties(), "exportOutputGuides", false)) {
             ShaderCompileResult shader;
             auto result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/UpscalerGuideResolve",
-                .entryPointName = "upscalerGuideResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
+                .entryPointName = "upscalerGuideResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { log = shader.diagnostics; return result; }
             const ComputeProgramBindingDesc bindings[] = {
                 {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},

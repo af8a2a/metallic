@@ -41,7 +41,7 @@ public:
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
                 .capabilities = rayCapabilities, .capabilityCount = 1,
                 .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
-            }, {.enableDiskCache = false}, rejected) || !rejected.spirv.empty() ||
+            }, {.enableDiskCache = false}, rejected.diagnostics).transform([&](auto value) { rejected = std::move(value); }) || !rejected.spirv.empty() ||
             rejected.diagnostics.find("resolveDescriptor") == std::string::npos) {
             return RhiTestResult::fail("unsafe native AS lowering was not rejected: " + rejected.diagnostics);
         }
@@ -56,7 +56,7 @@ public:
             NATIVE_REQUIRE(render::compileSlangShaderToSpirv({
                 .moduleName = "NativeDescriptorHandles", .entryPointName = "nestedBufferMain",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode,
-            }, {.enableDiskCache = false}, shader));
+            }, {.enableDiskCache = false}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             std::vector<uint32_t> normalized;
             if (!render::normalizeNativeDescriptorHeapSpirv(shader.spirv, normalized, log) || normalized != shader.spirv) {
                 return RhiTestResult::fail("normalization is not idempotent: " + log);
@@ -152,7 +152,7 @@ public:
             NATIVE_REQUIRE(render::compileSlangShaderToSpirv({
                 .moduleName = "FinalDescriptorIndices", .entryPointName = "main",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode,
-            }, compiled));
+            }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
             std::unique_ptr<render::ShaderModule> shader;
             const auto moduleResult = device->createShaderModule({.code = compiled.spirv.data(),
                 .byteSize = compiled.spirv.size() * sizeof(uint32_t)}).transform([&](auto rhiValue) { shader = std::move(rhiValue); });
@@ -273,8 +273,7 @@ public:
         for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             render::ShaderCompileResult compiled;
             NATIVE_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "NativeDescriptorAtomics", .entryPointName = "main",
-                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode},
-                {.enableDiskCache = false}, compiled));
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, {.enableDiskCache = false}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
             std::vector<uint32_t> normalized;
             if (!render::normalizeNativeDescriptorHeapSpirv(compiled.spirv, normalized, log) || normalized != compiled.spirv) {
                 return RhiTestResult::fail("mixed atomic normalization is not idempotent: " + log);

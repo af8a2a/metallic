@@ -116,7 +116,7 @@ public:
             scene::SceneLoadProgress progress;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
             while (!complete && std::chrono::steady_clock::now() < deadline) {
-                FETCH_REQUIRE(resources.pumpPrepareAsync(10.0, complete, progress, log));
+                FETCH_REQUIRE(resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { complete = std::move(value); }));
                 if (!complete) { std::this_thread::yield(); }
             }
             if (!complete || !resources.valid()) { return RhiTestResult::fail("scene preparation timed out: " + log); }
@@ -150,7 +150,7 @@ public:
                 .macroDefines = defines,
                 .macroDefineCount = 1,
                 .descriptorHeapMode = native_ ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Default,
-            }, shader);
+            }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             log = shader.diagnostics;
             FETCH_REQUIRE(compiled);
             std::vector<render::ComputeProgramBindingDesc> layout = {
@@ -337,7 +337,7 @@ public:
         const auto compiled = render::compileSlangShaderToSpirv({
             .moduleName = "Features/SmokeTests/SceneShadingVertexProbe", .entryPointName = "sceneShadingVertexProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-        }, shader);
+        }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         log = shader.diagnostics;
         FETCH_REQUIRE(compiled);
         const render::ComputeProgramBindingDesc layout[] = {{2}, {63}};

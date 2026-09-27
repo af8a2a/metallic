@@ -359,6 +359,10 @@ TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进�
 
 命令同步统一使用返回 `Result<>` 的 `synchronize()`；pipeline 与 shader object 通过 `execution()` 快照交给 `bindExecution()`；buffer copy 使用两个经过范围校验的 `BufferSlice`。这些入口的失败必须传回调用方，禁止用忽略结果的兼容包装。`Streamer::copyStreamedData()` 和上传 flush 同样返回结果；失败会取消对应上传发布事务，调用方必须放弃失败的录制。
 
+RHI 上层同样用 `Result<T>` 返回一次操作产生的值：资源注册返回 `ResourceLease`，参数编码返回 `EncodedParameters`，Compute 预录制返回 `PreparedComputeDispatch`，批次提交返回 `SubmissionReceipt`。场景资源获取、GPUScene View/绑定创建、着色器重载准备、编译产物和 GPU 统计也直接返回值；没有产物的操作继续返回 `Result<>`。失败时只有 `Error`，不会产生可误用的默认句柄、回执或部分产物，也不会覆盖调用方已有的成功值。异步轮询返回 `Result<bool>`：`false` 表示尚未完成，错误分支表示失败。日志、编译诊断、进度和统计信息仍可独立传出，原地更新的输入输出对象保持原语义。
+
+`ParameterWriter` 的资源字段构造仍保留首个错误，以便直接组装 Shader 参数结构；必须检查最终的 `encode()` 或 `status()`。`encode()` 只有在所有资源注册和上传成功时才返回不可变参数包。着色器编译通过独立诊断字符串保留失败详情，不能只在成功结果中保存错误日志。
+
 ### 10.2 Vulkan 实现
 
 `VulkanRhi.cpp` 使用 Volk 加载 Vulkan，并用 VMA 管理资源内存。PImpl 隔离大多数 Vulkan 类型，但以下位置仍显式依赖 Vulkan：

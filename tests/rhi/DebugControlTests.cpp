@@ -185,8 +185,8 @@ public:
         DEBUG_REQUIRE(frame.commands->end());
         CommandBuffer* raw = frame.commands.get();
         GpuCompletionPoint prefix, failed;
-        DEBUG_REQUIRE(frame.tracker.submitSegment({.commandBuffers = &raw, .commandBufferCount = 1}, frame.frame, prefix));
-        if (frame.tracker.submitSegment({.commandBufferCount = 1}, frame.frame, failed)) { return RhiTestResult::fail("Expected rejected tail submission"); }
+        DEBUG_REQUIRE(frame.tracker.submitSegment({.commandBuffers = &raw, .commandBufferCount = 1}, frame.frame).transform([&](auto value) { prefix = std::move(value); }));
+        if (frame.tracker.submitSegment({.commandBufferCount = 1}, frame.frame).transform([&](auto value) { failed = std::move(value); })) { return RhiTestResult::fail("Expected rejected tail submission"); }
         frame.frame.cancel(); DEBUG_REQUIRE(frame.frame.wait()); runtime.poll();
         const auto prefixResult = call(runtime, "eval", {{"job", prefixJob}, {"expression", "buffers[\"Ids\"][0]"}});
         if (prefixResult["status"] != "ok" || prefixResult["result"]["value"] != 11 ||
@@ -305,7 +305,7 @@ public:
             {"trigger", {{"probe", "bounds"}, {"value", 0}}}})["result"]["watch"];
         ShaderCompileResult shader;
         DEBUG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "FrameResourceProbe", .entryPointName = "copyValue",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader));
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         ComputeProgram original;
         const ComputeProgramBindingDesc programBindings[] = {{0}, {1}};
         std::string log;

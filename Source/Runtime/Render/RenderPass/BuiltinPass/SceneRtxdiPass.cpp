@@ -245,8 +245,7 @@ public:
             additionalSearchPaths.push_back(METALLIC_NTC_SHADER_INCLUDE_DIR);
         }
 #endif
-        result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
+        result = compileSlangShaderToSpirv(SlangShaderDesc{
                 .moduleName = kSceneRtxdiShaderModuleName,
                 .entryPointName = kSceneRtxdiEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
@@ -257,8 +256,7 @@ public:
                 .capabilityCount = static_cast<uint32_t>(capabilities.size()),
                 .macroDefines = defines,
                 .macroDefineCount = static_cast<uint32_t>(std::size(defines)),
-            },
-            computeCompile);
+            }, computeCompile.diagnostics).transform([&](auto value) { computeCompile = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(SceneRtxdi.sceneRtxdiMain) returned ";
             log += resultToString(result);

@@ -847,17 +847,18 @@ void resetSlangShaderHotReloadTracking()
     shaderHotReloadTracker().reset();
 }
 
-Result<> compileSlangShaderToSpirv(const SlangShaderDesc& desc, ShaderCompileResult& outResult)
+Result<ShaderCompileResult> compileSlangShaderToSpirv(const SlangShaderDesc& desc, std::string& log)
 {
-    return compileSlangShaderToSpirv(desc, SlangShaderCacheOptions{}, outResult);
+    return compileSlangShaderToSpirv(desc, SlangShaderCacheOptions{}, log);
 }
 
-Result<> compileSlangShaderToSpirv(
+Result<ShaderCompileResult> compileSlangShaderToSpirv(
     const SlangShaderDesc& desc,
     const SlangShaderCacheOptions& cacheOptions,
-    ShaderCompileResult& outResult)
+    std::string& log)
 {
-    outResult = {};
+    ShaderCompileResult outResult;
+    log.clear();
     if (cacheOptions.outCacheHit != nullptr) {
         *cacheOptions.outCacheHit = false;
     }
@@ -888,7 +889,8 @@ Result<> compileSlangShaderToSpirv(
             desc.moduleName,
             desc.entryPointName,
             cachePath.string());
-        return {};
+        outResult.diagnostics = log;
+        return outResult;
     }
 
     const auto compileStart = std::chrono::steady_clock::now();
@@ -904,9 +906,9 @@ Result<> compileSlangShaderToSpirv(
     const char* profileName = desc.profileName != nullptr ? desc.profileName : kDefaultSlangProfileName;
     targetDesc.profile = globalSession->findProfile(profileName);
     if (targetDesc.profile == SLANG_PROFILE_UNKNOWN) {
-        outResult.diagnostics = "Unknown Slang target profile: ";
-        outResult.diagnostics += profileName;
-        outResult.diagnostics += '\n';
+        log = "Unknown Slang target profile: ";
+        log += profileName;
+        log += '\n';
         return makeError(Error::InvalidArgument);
     }
 
@@ -1029,7 +1031,7 @@ Result<> compileSlangShaderToSpirv(
 
     Slang::ComPtr<slang::IBlob> diagnostics;
     Slang::ComPtr<slang::IModule> module(session->loadModule(desc.moduleName, diagnostics.writeRef()));
-    appendDiagnostics(diagnostics, outResult.diagnostics);
+    appendDiagnostics(diagnostics, log);
     if (module == nullptr) {
         return makeError(Error::Failure);
     }
@@ -1038,7 +1040,7 @@ Result<> compileSlangShaderToSpirv(
         normalizedSearchPaths);
     std::vector<ShaderDependencySnapshot> dependencySnapshots;
     if (!snapshotShaderDependencies(dependencies, dependencySnapshots)) {
-        outResult.diagnostics += "Could not snapshot every Slang source dependency.\n";
+        log += "Could not snapshot every Slang source dependency.\n";
         return makeError(Error::Failure);
     }
     // Register the discovered files before later compilation stages. This lets
@@ -1049,9 +1051,9 @@ Result<> compileSlangShaderToSpirv(
     diagnostics.setNull();
     Slang::ComPtr<slang::IEntryPoint> entryPoint;
     if (SLANG_FAILED(module->findEntryPointByName(desc.entryPointName, entryPoint.writeRef())) || entryPoint == nullptr) {
-        outResult.diagnostics += "Slang entry point not found: ";
-        outResult.diagnostics += desc.entryPointName;
-        outResult.diagnostics += '\n';
+        log += "Slang entry point not found: ";
+        log += desc.entryPointName;
+        log += '\n';
         return makeError(Error::Failure);
     }
 
@@ -1059,31 +1061,31 @@ Result<> compileSlangShaderToSpirv(
     Slang::ComPtr<slang::IComponentType> program;
     if (SLANG_FAILED(session->createCompositeComponentType(componentTypes, 2, program.writeRef(), diagnostics.writeRef()))
         || program == nullptr) {
-        appendDiagnostics(diagnostics, outResult.diagnostics);
+        appendDiagnostics(diagnostics, log);
         return makeError(Error::Failure);
     }
-    appendDiagnostics(diagnostics, outResult.diagnostics);
+    appendDiagnostics(diagnostics, log);
 
     diagnostics.setNull();
     Slang::ComPtr<slang::IComponentType> linkedProgram;
     if (SLANG_FAILED(program->link(linkedProgram.writeRef(), diagnostics.writeRef())) || linkedProgram == nullptr) {
-        appendDiagnostics(diagnostics, outResult.diagnostics);
+        appendDiagnostics(diagnostics, log);
         return makeError(Error::Failure);
     }
-    appendDiagnostics(diagnostics, outResult.diagnostics);
+    appendDiagnostics(diagnostics, log);
 
     diagnostics.setNull();
     Slang::ComPtr<slang::IBlob> shaderCode;
     if (SLANG_FAILED(linkedProgram->getEntryPointCode(0, 0, shaderCode.writeRef(), diagnostics.writeRef()))
         || shaderCode == nullptr) {
-        appendDiagnostics(diagnostics, outResult.diagnostics);
+        appendDiagnostics(diagnostics, log);
         return makeError(Error::Failure);
     }
-    appendDiagnostics(diagnostics, outResult.diagnostics);
+    appendDiagnostics(diagnostics, log);
 
     const size_t byteSize = shaderCode->getBufferSize();
     if (byteSize == 0 || (byteSize % sizeof(uint32_t)) != 0) {
-        outResult.diagnostics += "Slang produced invalid SPIR-V bytecode size.\n";
+        log += "Slang produced invalid SPIR-V bytecode size.\n";
         return makeError(Error::Failure);
     }
 
@@ -1092,12 +1094,12 @@ Result<> compileSlangShaderToSpirv(
     std::string normalizationError;
     if (!normalizeNativeDescriptorHeapSpirv(outResult.spirv, outResult.spirv, normalizationError)) {
         outResult.spirv.clear();
-        outResult.diagnostics += normalizationError + "\n";
+        log += normalizationError + "\n";
         return makeError(Error::Failure);
     }
     if (!shaderDependencySnapshotsMatch(dependencySnapshots)) {
         outResult.spirv.clear();
-        outResult.diagnostics +=
+        log +=
             "A Slang source dependency changed during compilation; retry after the save completes.\n";
         return makeError(Error::Failure);
     }
@@ -1115,7 +1117,8 @@ Result<> compileSlangShaderToSpirv(
         desc.moduleName, desc.entryPointName,
         std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - compileStart).count(), byteSize);
-    return {};
+    outResult.diagnostics = log;
+    return outResult;
 }
 
 } // namespace metallic::render

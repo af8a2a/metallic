@@ -42,7 +42,7 @@ TEST(DeviceGeneratedCommands, ProbeShaderCompiles)
 {
     render::ShaderCompileResult shader;
     const auto result = render::compileSlangShaderToSpirv({.moduleName = "GeneratedCommandsProbe",
-        .entryPointName = "generatedCommandsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+        .entryPointName = "generatedCommandsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     EXPECT_TRUE(result.has_value()) << shader.diagnostics;
     EXPECT_FALSE(shader.spirv.empty());
 }
@@ -102,7 +102,7 @@ public:
             render::ShaderCompileResult shader;
             DGC_RHI(render::compileSlangShaderToSpirv({.moduleName = "GeneratedCommandsProbe",
                 .entryPointName = "generatedCommandsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-                .macroDefines = &macro, .macroDefineCount = 1}, shader));
+                .macroDefines = &macro, .macroDefineCount = 1}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             const VkShaderModuleCreateInfo shaderInfo{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                 .codeSize = shader.spirv.size() * 4, .pCode = shader.spirv.data()};
             DGC_VK(vkCreateShaderModule(native.device, &shaderInfo, nullptr, &resources.shaders[i]));

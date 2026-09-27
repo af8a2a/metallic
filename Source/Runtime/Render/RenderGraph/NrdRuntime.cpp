@@ -170,8 +170,7 @@ struct NrdRuntime::Impl {
             defines.push_back({define.name, define.value});
         const char* searchPaths[] = {PROJECT_SOURCE_DIR "/External/MathLib"};
         ShaderCompileResult compiled;
-        Result<> result = compileSlangShaderToSpirv(
-            {
+        Result<> result = compileSlangShaderToSpirv({
                 .moduleName = recipe.shaderName.c_str(),
                 .entryPointName = "main",
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders/Interop/Denoising/NRD",
@@ -179,8 +178,7 @@ struct NrdRuntime::Impl {
                 .additionalSearchPathCount = 1,
                 .macroDefines = defines.data(),
                 .macroDefineCount = static_cast<uint32_t>(defines.size()),
-            },
-            compiled);
+            }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
         if (!result) {
             spdlog::error("NRD {}: {}", recipe.shaderName, compiled.diagnostics);
             return result;
@@ -567,7 +565,7 @@ Result<> NrdRuntime::dispatch(CommandBuffer& commands, const denoising::Dispatch
     const NrdPushData params{stage.constantBufferDataSize ? writer.data(stage.constantBufferData, stage.constantBufferDataSize) : 0,
         writer.data(&indices, sizeof(indices))};
     EncodedParameters encoded;
-    auto result = writer.encode(params, kNrdAbi, encoded);
+    auto result = writer.encode(params, kNrdAbi).transform([&](auto value) { encoded = std::move(value); });
     if (!result) { return result; }
     return impl_->pipelines[stage.pipelineIndex].dispatch(commands, encoded, stage.gridWidth, stage.gridHeight);
 }

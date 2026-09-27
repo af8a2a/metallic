@@ -1112,26 +1112,17 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
     return {};
 }
 
-Result<> SceneAccelerationStructureBuilder::pollBuild(bool& complete, std::string& log)
+Result<bool> SceneAccelerationStructureBuilder::pollBuild(std::string& log)
 {
+    bool complete{};
     if (impl_ == nullptr) {
         complete = false;
         log = "Scene acceleration-structure builder is unavailable.";
         return makeError(Error::Failure);
     }
-    return impl_->poll(false, complete, log);
+    return impl_->poll(false, complete, log).transform([&] { return complete; });
 }
 
-bool SceneAccelerationStructureBuilder::pollBuild()
-{
-    bool complete = false;
-    std::string log;
-    const Result<> result = pollBuild(complete, log);
-    if (!result && !log.empty()) {
-        spdlog::error("[RTAS] {}", log);
-    }
-    return result && complete;
-}
 
 SceneAccelerationStructureBuildState SceneAccelerationStructureBuilder::buildState() const
 {

@@ -94,7 +94,7 @@ void WorkControlShaderTrace::qualify(Device& device, Queue& queue, const std::fi
     require(slangShaderDebugMode() == SlangShaderDebugMode::Disabled,"P2 requires normal optimization/debug mode");
     ShaderCompileResult code;
     const auto compiled = compileSlangShaderToSpirv({.moduleName="Features/Debug/ShaderTraceBackend",.entryPointName="echoMain",
-        .searchPath=PROJECT_SOURCE_DIR "/Shaders"},{.enableDiskCache=false},code);
+        .searchPath=PROJECT_SOURCE_DIR "/Shaders"}, {.enableDiskCache=false}, code.diagnostics).transform([&](auto value) { code = std::move(value); });
     require(bool(compiled),code.diagnostics.c_str());
     auto shader = device.createShaderModule({.code=code.spirv.data(),.byteSize=code.spirv.size()*4});
     require(bool(shader),"Backend echo shader creation failed");
@@ -221,7 +221,7 @@ void WorkControlShaderTrace::prepare(Device& device, const DebugValue& specifica
     ShaderCompileResult code;
     const auto compiled = compileSlangShaderToSpirv({.moduleName="Features/GPUDriven/GPUDrivenStreamWorkRaster",
         .entryPointName="streamClusterRasterWorkControlMain",.searchPath=PROJECT_SOURCE_DIR "/Shaders",
-        .macroDefines=macros.data(),.macroDefineCount=uint32_t(macros.size())},{.enableDiskCache=false},code);
+        .macroDefines=macros.data(),.macroDefineCount=uint32_t(macros.size())}, {.enableDiskCache=false}, code.diagnostics).transform([&](auto value) { code = std::move(value); });
     if (!compiled) { runtime_.stop("CompileFailed"); evidence_["diagnostics"]=code.diagnostics; throw std::runtime_error(code.diagnostics); }
     DebugValue variant{{"instrumentation","Printf"},{"module",site.at("module")},{"entry",site.at("entry")},
         {"compilerSpirvSha256",debug::debugSha256(bytes(code.spirv))},{"compilerSpirvHex",debug::hexEncode(bytes(code.spirv))},

@@ -57,18 +57,17 @@ CompileOutcome compileRequest(const metallic::tools::ShaderWarmupRequest& reques
         .cacheDirectory = cacheDirectory.empty() ? nullptr : cacheDirectory.c_str(),
         .outCacheHit = &cacheHit,
     };
-    ShaderCompileResult compiled;
-    const auto result = compileSlangShaderToSpirv(desc, options, compiled);
-    if (!result) {
-        return {false, std::string(resultToString(result)) + "\n" + compiled.diagnostics};
+    std::string diagnostics;
+    const auto compiled = compileSlangShaderToSpirv(desc, options, diagnostics);
+    if (!compiled) {
+        return {false, std::string(resultToString(compiled)) + "\n" + diagnostics};
     }
     const bool existingCacheHit = cacheHit;
     // Every worker owns its compiler sessions and output. Keep cache read-back
     // validation identical to the serial warmup.
     if (!cacheHit) {
-        ShaderCompileResult cached;
-        const auto verified = compileSlangShaderToSpirv(desc, options, cached);
-        if (!verified || !cacheHit || cached.spirv != compiled.spirv) {
+        const auto cached = compileSlangShaderToSpirv(desc, options, diagnostics);
+        if (!cached || !cacheHit || cached->spirv != compiled->spirv) {
             return {false, "cache read-back verification failed"};
         }
     }

@@ -141,8 +141,7 @@ std::array<float, 12> sampleTexture(RhiTestContext& context, ScenePathTraceResou
     std::string log;
     require(compileSlangShaderToSpirv({.moduleName = "Features/Debug/TextureResourceProbe",
                                        .entryPointName = "main",
-                                       .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-                                      shader),
+                                       .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),
             shader.diagnostics);
     const ComputeProgramBindingDesc layout[] = {
         {.binding = 0,
@@ -273,7 +272,7 @@ class KtxTextureResourcesTest final : public RhiTest {
         RenderGraphProperties props{
             {"path", path.string()}, {"materialTextureMaxDimension", 512}, {"materialTextureBudgetMiB", 16}};
         std::string log;
-        require(manager.acquire(context.device, context.graphicsQueue, props, &scene, features, first, log),
+        require(manager.acquire(context.device, context.graphicsQueue, props, &scene, features, log).transform([&](auto value) { first = std::move(value); }),
                 log);
         auto& r = *first->pathTraceResources;
         require(r.materialTextureCount() == 301 && r.logicalTextureIndices().size() == 300,
@@ -281,7 +280,7 @@ class KtxTextureResourcesTest final : public RhiTest {
         for (uint32_t i = 0; i < 300; ++i) {
             require(r.logicalTextureIndices()[i] == i + 1, "unstable logical mapping");
         }
-        require(manager.acquire(context.device, context.graphicsQueue, props, &scene, features, same, log),
+        require(manager.acquire(context.device, context.graphicsQueue, props, &scene, features, log).transform([&](auto value) { same = std::move(value); }),
                 log);
         require(same->pathTraceResources == first->pathTraceResources, "texture owner not shared");
         const auto near = [](float a, float b) { return std::isfinite(a) && std::abs(a - b) < 0.003f; };
@@ -411,7 +410,7 @@ class KtxTextureResourcesTest final : public RhiTest {
             require(cancelled.beginPrepareAsync(context.device, context.graphicsQueue, props, scene, log, true), log);
             bool complete = false;
             scene::SceneLoadProgress progress;
-            require(cancelled.pumpPrepareAsync(0.1, complete, progress, log), log);
+            require(cancelled.pumpPrepareAsync(0.1, progress, log).transform([&](auto value) { complete = std::move(value); }), log);
             cancelled.clear();
             require(cancelled.prepare(context.device, context.graphicsQueue, props, &scene, log), log);
             require(cancelled.logicalTextureIndices().size() == r.logicalTextureIndices().size() &&
@@ -430,7 +429,7 @@ class KtxTextureResourcesTest final : public RhiTest {
             complete = false;
             Result<> outcome;
             while (outcome && !complete) {
-                outcome = cancelled.pumpPrepareAsync(5, complete, progress, log);
+                outcome = cancelled.pumpPrepareAsync(5, progress, log).transform([&](auto value) { complete = std::move(value); });
                 std::this_thread::yield();
             }
             makeKtx(directory, "299.ktx2", 146, "rgba");
@@ -456,7 +455,7 @@ class KtxTextureResourcesTest final : public RhiTest {
         makeKtx(directory, "0.ktx2", 139, "111r");
         props["materialTextureMaxDimension"] = 1;
         lower = first;
-        require(manager.acquire(context.device, context.graphicsQueue, props, &scene, features, lower, log),
+        require(manager.acquire(context.device, context.graphicsQueue, props, &scene, features, log).transform([&](auto value) { lower = std::move(value); }),
                 log);
         require(lower != first && lower->pathTraceResources->textureStats().selectedMaxDimension == 1,
                 "budget settings reused stale resources");
@@ -472,11 +471,9 @@ class KtxTextureResourcesTest final : public RhiTest {
         scene::Scene pressureScene;
         require(pressureScene.loadStreamMetadata(pressurePath), pressureScene.lastLoadResult().error);
         std::shared_ptr<SceneResourceSnapshot> pressure;
-        require(manager.acquire(context.device, context.graphicsQueue,
-                                {{"path", pressurePath.string()},
+        require(manager.acquire(context.device, context.graphicsQueue, {{"path", pressurePath.string()},
                                  {"materialTextureMaxDimension", 1024},
-                                 {"materialTextureBudgetMiB", 1}},
-                                &pressureScene, features, pressure, log),
+                                 {"materialTextureBudgetMiB", 1}}, &pressureScene, features, log).transform([&](auto value) { pressure = std::move(value); }),
                 log);
         const auto pressureStats = pressure->pathTraceResources->textureStats();
         require(pressureStats.selectedMaxDimension < 1024 &&
@@ -497,8 +494,8 @@ class KtxTextureResourcesTest final : public RhiTest {
         RenderGraphProperties maskProps{{"path", maskPath.string()}, {"materialTextureMaxDimension", 1},
             {"materialTextureMaskMaxDimension", 4}, {"materialTextureBudgetMiB", 16}};
         std::shared_ptr<SceneResourceSnapshot> mask, maskSame, unprotected;
-        require(manager.acquire(context.device, context.graphicsQueue, maskProps, &maskScene, features, mask, log), log);
-        require(manager.acquire(context.device, context.graphicsQueue, maskProps, &maskScene, features, maskSame, log), log);
+        require(manager.acquire(context.device, context.graphicsQueue, maskProps, &maskScene, features, log).transform([&](auto value) { mask = std::move(value); }), log);
+        require(manager.acquire(context.device, context.graphicsQueue, maskProps, &maskScene, features, log).transform([&](auto value) { maskSame = std::move(value); }), log);
         require(mask == maskSame, "MASK policy did not share its owner");
         const auto& tails = mask->pathTraceResources->materialTextureFirstMips();
         require(tails[299] == 1 && tails[0] == 2, "MASK floor or ordinary tail selection failed");
@@ -508,7 +505,7 @@ class KtxTextureResourcesTest final : public RhiTest {
             require(near(protectedSample[i], referenceSample[i]), "MASK mip rebase changed GPU sampling");
         }
         maskProps["materialTextureMaskMaxDimension"] = 0;
-        require(manager.acquire(context.device, context.graphicsQueue, maskProps, &maskScene, features, unprotected, log), log);
+        require(manager.acquire(context.device, context.graphicsQueue, maskProps, &maskScene, features, log).transform([&](auto value) { unprotected = std::move(value); }), log);
         require(mask != unprotected && unprotected->pathTraceResources->materialTextureFirstMips()[299] == 2,
             "MASK floor change reused stale texture resources");
         report["maskFloor"] = statsJson(*mask->pathTraceResources);
@@ -563,7 +560,7 @@ public:
         const auto imageSlot = logical[1];
         ShaderCompileResult shader;
         require(compileSlangShaderToSpirv({.moduleName="Features/Debug/TextureResidencyProbe",.entryPointName="main",
-            .searchPath=PROJECT_SOURCE_DIR "/Shaders"},shader),shader.diagnostics);
+            .searchPath=PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),shader.diagnostics);
         ComputeProgram program;
         const ComputeProgramBindingDesc binding{.binding=0};
         require(program.initialize(context.device,{.spirv=shader.spirv.data(),.byteSize=shader.spirv.size()*4,

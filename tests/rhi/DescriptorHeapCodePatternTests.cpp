@@ -247,7 +247,7 @@ public:
             .moduleName = environment ? "Features/Environment/EnvironmentLightingPrecompute" : "DescriptorHeapCodePattern",
             .entryPointName = environment ? "environmentLightingPrecomputeMain" : "descriptorHeapCodePatternMain",
             .searchPath = environment ? PROJECT_SOURCE_DIR "/Shaders" : PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-            .macroDefines = environment ? nullptr : &macro, .macroDefineCount = environment ? 0u : 1u}, shader);
+            .macroDefines = environment ? nullptr : &macro, .macroDefineCount = environment ? 0u : 1u}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { return RhiTestResult::fail(shader.diagnostics); }
         if (shader.spirv.size() < 5 || shader.spirv[0] != 0x07230203u) {
             return RhiTestResult::fail("Pattern shader has an invalid SPIR-V header");

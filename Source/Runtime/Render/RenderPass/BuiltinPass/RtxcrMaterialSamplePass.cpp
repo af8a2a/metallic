@@ -141,15 +141,13 @@ public:
 
         const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
         ShaderCompileResult compileResult;
-        Result<> result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
+        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
                 .moduleName = kRtxcrMaterialSampleShaderModuleName,
                 .entryPointName = kRtxcrMaterialSampleEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
                 .additionalSearchPaths = additionalSearchPaths,
                 .additionalSearchPathCount = static_cast<uint32_t>(std::size(additionalSearchPaths)),
-            },
-            compileResult);
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             log = "compileSlangShaderToSpirv(RtxcrMaterialSample.rtxcrMaterialSampleMain) returned ";
             log += resultToString(result);

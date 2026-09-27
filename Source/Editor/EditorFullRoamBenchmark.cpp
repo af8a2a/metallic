@@ -257,7 +257,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         // Resolve outstanding queries after measurement; no per-frame readback wait.
         if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { throw std::runtime_error("GPU drain failed"); }
         std::vector<render::RenderGraphExecutionStats> completed;
-        if (!graphExecutor_->collectCompletedGpuExecutionStats(completed)) { throw std::runtime_error("GPU query resolve failed"); }
+        if (!graphExecutor_->collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); })) { throw std::runtime_error("GPU query resolve failed"); }
         for (const auto& stats : completed) { profiler_.updateRenderGraphGpuStats(stats); }
         if (workloadEvery) {
             report["workloads"] = workloadObserver.takeAfterDrain();

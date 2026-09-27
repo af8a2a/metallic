@@ -17,9 +17,13 @@ void MaterialBinning::clear()
     allocations_.clear();
 }
 
-Result<> MaterialBinning::record(Device& device, CommandBuffer& commands,
-    const MaterialBinningDesc& desc, MaterialBinningResult& output, std::string& log)
+Result<MaterialBinningResult> MaterialBinning::record(
+    Device& device,
+    CommandBuffer& commands,
+    const MaterialBinningDesc& desc,
+    std::string& log)
 {
+    MaterialBinningResult output{};
     output = {};
     // RHI compute stages do not enable ALLOW_VARYING_SUBGROUP_SIZE. Their native
     // subgroupSize is fixed; one 32-thread workgroup is exactly one NVIDIA warp.
@@ -47,11 +51,11 @@ Result<> MaterialBinning::record(Device& device, CommandBuffer& commands,
         auto result = compileSlangShaderToSpirv({
             .moduleName = "Features/VisibilityBuffer/VisibilityMaterialBinning",
             .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-            .capabilities = capabilities, .capabilityCount = 2}, shader);
-        if (!result) { log = shader.diagnostics; return result; }
+            .capabilities = capabilities, .capabilityCount = 2}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+        if (!result) { log = shader.diagnostics; return result.transform([&] { return std::move(output); }); }
         result = programs_[i].initialize(device, {.spirv = shader.spirv,
             .parameters = parameterAbi<MaterialBinningParams>(kMaterialBinningAbi), .debugName = entries[i]}, log);
-        if (!result) { return result; }
+        if (!result) { return makeError(result.error()); }
     }
 
     std::shared_ptr<Allocation> allocation;
@@ -72,7 +76,7 @@ Result<> MaterialBinning::record(Device& device, CommandBuffer& commands,
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource |
                     (i == 2 ? BufferUsageBits::Indirect : BufferUsageBits::None),
                 .memoryLocation = MemoryLocation::Device}).transform([&](auto rhiValue) { allocation->buffers[i] = std::move(rhiValue); });
-            if (!result) { return result; }
+            if (!result) { return makeError(result.error()); }
         }
         allocation->tileCount = static_cast<uint32_t>(tileCount);
     }
@@ -86,10 +90,10 @@ Result<> MaterialBinning::record(Device& device, CommandBuffer& commands,
             .before = allocation->initialized ? finalStates[i] : ResourceState::Undefined,
             .after = ResourceState::General};
     }
-    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult.transform([&] { return std::move(output); }); }
     std::shared_ptr<ResourceRegistry> registry;
     auto result = device.resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
-    if (!result) { return result; }
+    if (!result) { return makeError(result.error()); }
     ParameterWriter writer(device, *frame, *registry);
     const MaterialBinningParams params{
         .visibility = writer.sampledImage(desc.visibility),
@@ -102,22 +106,22 @@ Result<> MaterialBinning::record(Device& device, CommandBuffer& commands,
         .residentRecordCount = desc.residentRecordCount,
     };
     EncodedParameters encoded;
-    result = writer.encode(params, kMaterialBinningAbi, encoded);
-    if (!result) { return result; }
+    result = writer.encode(params, kMaterialBinningAbi).transform([&](auto value) { encoded = std::move(value); });
+    if (!result) { return makeError(result.error()); }
     for (size_t i = 0; i < programs_.size(); ++i) {
         result = programs_[i].dispatch(commands, encoded, i == 1 ? static_cast<uint32_t>(columns) : 1,
             i == 1 ? static_cast<uint32_t>(rows) : 1);
-        if (!result) { return result; }
+        if (!result) { return makeError(result.error()); }
         for (size_t b = 0; b < 3; ++b) {
             barriers[b] = {.buffer = buffers[b].get(), .before = ResourceState::General,
                 .after = i == 2 ? finalStates[b] : ResourceState::General};
         }
-        if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult.transform([&] { return std::move(output); }); }
     }
     allocation->initialized = true;
     output = {.bins = buffers[0].get(), .tiles = buffers[1].get(),
         .arguments = buffers[2].get(), .binCount = kMaterialClassCount};
-    return {};
+    return output;
 }
 
 } // namespace metallic::render

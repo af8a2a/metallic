@@ -71,10 +71,9 @@ Key keyFor(ShaderResourceKind kind, const std::shared_ptr<void>& allocation)
     return {uint64_t(kind), reinterpret_cast<uintptr_t>(allocation.get())};
 }
 
-Result<> acquire(const std::shared_ptr<detail::RegistryState>& state, const Key& key,
+Result<std::shared_ptr<detail::ResourceLeaseState>> acquire(const std::shared_ptr<detail::RegistryState>& state, const Key& key,
     ShaderResourceKind kind, std::shared_ptr<void> allocation, bool permanent,
-    const std::function<Result<>(detail::RegistryEntry&)>& write,
-    std::shared_ptr<detail::ResourceLeaseState>& out)
+    const std::function<Result<>(detail::RegistryEntry&)>& write)
 {
     if (!state || (!allocation && !permanent)) { return makeError(Error::InvalidArgument); }
     std::lock_guard lock(state->mutex);
@@ -99,13 +98,12 @@ Result<> acquire(const std::shared_ptr<detail::RegistryState>& state, const Key&
         }
         if (!result) {
             if (entry->handle.valid()) { state->heap->release(entry->handle); }
-            return result;
+            return makeError(result.error());
         }
         if (entry->handle.valid()) { ++state->stats.descriptorWrites; ++state->stats.liveDescriptors; }
         it = state->entries.emplace(key, std::move(entry)).first;
     } else { ++state->stats.cacheHits; }
-    out = std::make_shared<detail::ResourceLeaseState>(state, it->second, std::move(allocation));
-    return {};
+    return std::make_shared<detail::ResourceLeaseState>(state, it->second, std::move(allocation));
 }
 
 } // namespace
@@ -158,9 +156,8 @@ Result<> ResourceRegistry::initialize(Device& device, const BindlessHeapDesc& ca
     return {};
 }
 
-Result<> ResourceRegistry::storageBuffer(Buffer& buffer, ResourceLease& out)
+Result<ResourceLease> ResourceRegistry::storageBuffer(Buffer& buffer)
 {
-    out = {};
     if (!state_ || buffer.deviceIdentity() != state_->device ||
         (uint32_t(buffer.desc().usage) & uint32_t(BufferUsageBits::Storage)) == 0) {
         return makeError(Error::InvalidArgument);
@@ -172,13 +169,19 @@ Result<> ResourceRegistry::storageBuffer(Buffer& buffer, ResourceLease& out)
             if (!result) { return result; }
             entry.value = entry.handle.shaderIndex;
             return state_->heap->writeStorageBuffer(entry.handle, buffer);
-        }, out.state_);
+        }).transform([](auto state) {
+        ResourceLease lease;
+        lease.state_ = std::move(state);
+        return lease;
+    });
 }
 
-Result<> ResourceRegistry::image(TextureView& view, ResourceLease& out, ShaderResourceKind kind, ResourceState layout,
+Result<ResourceLease> ResourceRegistry::image(
+    TextureView& view,
+    ShaderResourceKind kind,
+    ResourceState layout,
     bool* descriptorWritten)
 {
-    out = {};
     if (descriptorWritten) { *descriptorWritten = false; }
     if (!state_ || view.deviceIdentity() != state_->device) { return makeError(Error::InvalidArgument); }
     auto allocation = view.retainTexture();
@@ -196,26 +199,29 @@ Result<> ResourceRegistry::image(TextureView& view, ResourceLease& out, ShaderRe
             : state_->heap->writeStorageImage(entry.handle, view);
         if (descriptorWritten) { *descriptorWritten = bool(result); }
         return result;
-    }, out.state_);
+    }).transform([](auto state) {
+        ResourceLease lease;
+        lease.state_ = std::move(state);
+        return lease;
+    });
 }
 
-Result<> ResourceRegistry::sampledImage(TextureView& view, ResourceLease& out, ResourceState layout, bool* descriptorWritten)
+Result<ResourceLease> ResourceRegistry::sampledImage(TextureView& view, ResourceState layout, bool* descriptorWritten)
 {
     if (descriptorWritten) { *descriptorWritten = false; }
     if (layout != ResourceState::ShaderRead && layout != ResourceState::General) {
-        out = {}; return makeError(Error::InvalidArgument);
+        return makeError(Error::InvalidArgument);
     }
-    return image(view, out, ShaderResourceKind::SampledImage, layout, descriptorWritten);
+    return image(view, ShaderResourceKind::SampledImage, layout, descriptorWritten);
 }
 
-Result<> ResourceRegistry::storageImage(TextureView& view, ResourceLease& out)
+Result<ResourceLease> ResourceRegistry::storageImage(TextureView& view)
 {
-    return image(view, out, ShaderResourceKind::StorageImage, ResourceState::General);
+    return image(view, ShaderResourceKind::StorageImage, ResourceState::General);
 }
 
-Result<> ResourceRegistry::sampler(const SamplerDesc& sampler, ResourceLease& out)
+Result<ResourceLease> ResourceRegistry::sampler(const SamplerDesc& sampler)
 {
-    out = {};
     Key key{uint64_t(ShaderResourceKind::Sampler), uint64_t(sampler.minFilter), uint64_t(sampler.magFilter),
         uint64_t(sampler.mipFilter), uint64_t(sampler.addressU), uint64_t(sampler.addressV), uint64_t(sampler.addressW),
         std::bit_cast<uint32_t>(sampler.minLod), std::bit_cast<uint32_t>(sampler.maxLod)};
@@ -224,12 +230,15 @@ Result<> ResourceRegistry::sampler(const SamplerDesc& sampler, ResourceLease& ou
         if (!result) { return result; }
         entry.value = entry.handle.shaderIndex;
         return state_->heap->writeSampler(entry.handle, sampler);
-    }, out.state_);
+    }).transform([](auto state) {
+        ResourceLease lease;
+        lease.state_ = std::move(state);
+        return lease;
+    });
 }
 
-Result<> ResourceRegistry::accelerationStructure(RayTracingAccelerationStructure& structure, ResourceLease& out)
+Result<ResourceLease> ResourceRegistry::accelerationStructure(RayTracingAccelerationStructure& structure)
 {
-    out = {};
     if (!state_ || structure.deviceIdentity() != state_->device || !structure.valid() ||
         structure.desc().type != RayTracingAccelerationStructureType::TopLevel) {
         return makeError(Error::InvalidArgument);
@@ -240,7 +249,11 @@ Result<> ResourceRegistry::accelerationStructure(RayTracingAccelerationStructure
             // Matches Core.resolveDescriptor's explicit AS address contract in both modes.
             entry.value = structure.deviceAddress();
             return Result<>{};
-        }, out.state_);
+        }).transform([](auto state) {
+        ResourceLease lease;
+        lease.state_ = std::move(state);
+        return lease;
+    });
 }
 
 void ResourceRegistry::collect()
@@ -296,18 +309,17 @@ Result<> ParameterWriter::use(const ResourceLease& lease)
     return result_;
 }
 
-uint64_t ParameterWriter::append(Result<> result, ResourceLease lease)
+uint64_t ParameterWriter::append(Result<ResourceLease> lease)
 {
-    if (result_ && !result) { result_ = result; }
-    return use(lease) ? lease.shaderValue() : UINT64_MAX;
+    if (result_ && !lease) { result_ = makeError(lease.error()); }
+    return result_ && use(*lease) ? lease->shaderValue() : UINT64_MAX;
 }
 
 ShaderBuffer ParameterWriter::buffer(Buffer* buffer)
 {
     ResourceRegistry registry; registry.state_ = registry_;
-    ResourceLease lease;
-    auto result = result_ && buffer ? registry.storageBuffer(*buffer, lease) : makeError(Error::InvalidArgument);
-    return {append(result, std::move(lease))};
+    auto result = result_ && buffer ? registry.storageBuffer(*buffer) : makeError(Error::InvalidArgument);
+    return {append(std::move(result))};
 }
 
 ShaderDataSpan ParameterWriter::dataBuffer(const BufferSlice& slice, uint32_t stride, uint32_t alignment)
@@ -333,33 +345,29 @@ ShaderDataSpan ParameterWriter::dataBuffer(Buffer* buffer, uint32_t stride, uint
 ShaderSampledImage ParameterWriter::sampledImage(TextureView* view, ResourceState layout)
 {
     ResourceRegistry registry; registry.state_ = registry_;
-    ResourceLease lease;
-    auto result = result_ && view ? registry.sampledImage(*view, lease, layout) : makeError(Error::InvalidArgument);
-    return {append(result, std::move(lease))};
+    auto result = result_ && view ? registry.sampledImage(*view, layout) : makeError(Error::InvalidArgument);
+    return {append(std::move(result))};
 }
 
 ShaderStorageImage ParameterWriter::storageImage(TextureView* view)
 {
     ResourceRegistry registry; registry.state_ = registry_;
-    ResourceLease lease;
-    auto result = result_ && view ? registry.storageImage(*view, lease) : makeError(Error::InvalidArgument);
-    return {append(result, std::move(lease))};
+    auto result = result_ && view ? registry.storageImage(*view) : makeError(Error::InvalidArgument);
+    return {append(std::move(result))};
 }
 
 ShaderSampler ParameterWriter::sampler(const SamplerDesc& sampler)
 {
     ResourceRegistry registry; registry.state_ = registry_;
-    ResourceLease lease;
-    const auto result = result_ ? registry.sampler(sampler, lease) : result_;
-    return {append(result, std::move(lease))};
+    auto result = result_ ? registry.sampler(sampler) : makeError(result_.error());
+    return {append(std::move(result))};
 }
 
 ShaderAccelerationStructure ParameterWriter::accelerationStructure(RayTracingAccelerationStructure* structure)
 {
     ResourceRegistry registry; registry.state_ = registry_;
-    ResourceLease lease;
-    auto result = result_ && structure ? registry.accelerationStructure(*structure, lease) : makeError(Error::InvalidArgument);
-    return {append(result, std::move(lease))};
+    auto result = result_ && structure ? registry.accelerationStructure(*structure) : makeError(Error::InvalidArgument);
+    return {append(std::move(result))};
 }
 
 Result<> ParameterWriter::upload(const void* data, uint64_t size, uint64_t alignment,
@@ -435,18 +443,18 @@ uint64_t ParameterWriter::data(const void* bytes, uint64_t size, uint64_t alignm
     return address;
 }
 
-Result<> ParameterWriter::encodeBytes(const void* params, ParameterAbi abi, EncodedParameters& out)
+Result<EncodedParameters> ParameterWriter::encodeBytes(const void* params, ParameterAbi abi)
 {
-    out = {};
-    if (!result_) { return result_; }
-    if (!abi.id) { result_ = makeError(Error::InvalidArgument); return result_; }
+    EncodedParameters out;
+    if (!result_) { return makeError(result_.error()); }
+    if (!abi.id) { result_ = makeError(Error::InvalidArgument); return makeError(result_.error()); }
     auto packet = std::make_shared<detail::ParameterPacket>();
     result_ = upload(params, abi.size, abi.alignment, packet->address, packet->allocation);
-    if (!result_) { return result_; }
+    if (!result_) { return makeError(result_.error()); }
     packet->registry = registry_; packet->completion = frame_.completion(); packet->abi = abi;
     packet->resources = resources_; packet->arrays = arrays_;
     out.packet_ = std::move(packet);
-    return {};
+    return out;
 }
 
 } // namespace metallic::render

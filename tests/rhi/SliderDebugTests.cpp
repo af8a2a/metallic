@@ -35,7 +35,7 @@ public:
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "SliderDebugFixture",
             .entryPointName = readback_ ? "sliderReadbackMain" : "sliderFixtureMain",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},

@@ -76,8 +76,7 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
         }
     }
     if (requirements.features != SceneResourceFeatureBits::None) {
-        const auto result = resources_.acquire(*device_, *device_->getQueue(QueueType::Graphics),
-            properties, scene, requirements.features, prepared->snapshot, log);
+        const auto result = resources_.acquire(*device_, *device_->getQueue(QueueType::Graphics), properties, scene, requirements.features, log).transform([&](auto value) { prepared->snapshot = std::move(value); });
         if (!result) { return result; }
     }
     if ((uint32_t(requirements.features) & uint32_t(SceneResourceFeatureBits::ClusterAccelerationStructure)) != 0) {
@@ -120,7 +119,7 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
         auto result = device_->createPipelineCache({.filePath = PROJECT_SOURCE_DIR "/.cache/pso/SceneStreaming.pso"}).transform([&](auto rhiValue) { cache = std::move(rhiValue); });
         if (!result) { return result; }
         std::shared_ptr<MeshletStreamRuntime> stream;
-        result = acquireStream(desc, debugReadback, stream, log, cache.get());
+        result = acquireStream(desc, debugReadback, log, cache.get()).transform([&](auto value) { stream = std::move(value); });
         if (!result) { return result; }
         prepared->geometry = std::move(stream);
         prepared->state = std::make_shared<SceneStreamingState>(SceneStreamingState{desc, requirements.geometry, identity, structural, debugReadback});
@@ -283,18 +282,22 @@ Result<> StreamerSubsystem::recordSceneEnd(PreparedSceneResources& prepared, Ren
     return result;
 }
 
-Result<> StreamerSubsystem::acquireStream(const MeshletStreamRuntimeDesc& desc, bool debugReadback,
-    std::shared_ptr<MeshletStreamRuntime>& outSession, std::string& log, PipelineCache* cache)
+Result<std::shared_ptr<MeshletStreamRuntime>> StreamerSubsystem::acquireStream(
+    const MeshletStreamRuntimeDesc& desc,
+    bool debugReadback,
+    std::string& log,
+    PipelineCache* cache)
 {
+    std::shared_ptr<MeshletStreamRuntime> outSession{};
     if (!device_) { return makeError(Error::InvalidArgument); }
     collectReleasedStreams();
     auto session = std::make_shared<MeshletStreamRuntime>();
     session->setDebugReadbackEnabled(debugReadback);
     Result<> result = session->initialize(*device_, desc, log, cache);
-    if (!result) { return result; }
+    if (!result) { return makeError(result.error()); }
     streams_.push_back(session);
     outSession = std::move(session);
-    return {};
+    return outSession;
 }
 
 StreamSceneReadiness StreamerSubsystem::sceneReadiness() const

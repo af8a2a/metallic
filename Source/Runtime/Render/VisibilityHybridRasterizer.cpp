@@ -68,7 +68,7 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
     for (size_t i = 0; i < clusterShaders_.size(); ++i) {
         ShaderCompileResult shader;
         result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityHybridRaster",
-            .entryPointName = clusterEntries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
+            .entryPointName = clusterEntries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
         result = device.createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
             .debugName = clusterEntries[i]}).transform([&](auto rhiValue) { clusterShaders_[i] = std::move(rhiValue); });
@@ -81,7 +81,7 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
     for (size_t i = 0; i < shaders_.size(); ++i) {
         ShaderCompileResult shader;
         result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityHybridRaster",
-            .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader);
+            .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
         result = device.createShaderModule({.code = shader.spirv.data(),
             .byteSize = shader.spirv.size() * sizeof(uint32_t), .debugName = entries[i]}).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });

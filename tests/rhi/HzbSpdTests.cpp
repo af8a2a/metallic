@@ -46,7 +46,7 @@ public:
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "HzbSpdFixture",
-            .entryPointName = "hzbSpdFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+            .entryPointName = "hzbSpdFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage}, {.binding = 1}};
@@ -57,7 +57,7 @@ public:
             properties().value("waveOps", true) ? "1" : "0"};
         result = render::compileSlangShaderToSpirv({.moduleName = render::kHzbSpdModule,
             .entryPointName = render::kHzbSpdEntryPoint, .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-            .macroDefines = &waveDefine, .macroDefineCount = 1}, shader);
+            .macroDefines = &waveDefine, .macroDefineCount = 1}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         // Wave indexing relies on full subgroups, guaranteed by SPIR-V 1.6
         // with numthreads.x=256 and the supported subgroup-size range.
@@ -242,7 +242,7 @@ public:
                     if (frame == 47 && !spd) { reference = preview.pixels(); }
                     if (spd && preview.pixels() != reference) { return RhiTestResult::fail("SPD changed visible Sponza triangles"); }
                     std::vector<render::RenderGraphExecutionStats> completed;
-                    if (!preview.collectCompletedGpuExecutionStats(completed)) { return RhiTestResult::fail("SPD timing readback failed"); }
+                    if (!preview.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); })) { return RhiTestResult::fail("SPD timing readback failed"); }
                     if (frame >= 16) {
                         for (const auto& execution : completed) {
                             for (const auto& pass : execution.nodes) {

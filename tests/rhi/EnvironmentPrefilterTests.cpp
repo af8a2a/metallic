@@ -38,7 +38,7 @@ public:
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "EnvironmentPrefilterFieldProbe",
-            .entryPointName = "environmentPrefilterFieldProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+            .entryPointName = "environmentPrefilterFieldProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}, {.binding = 1},
             {.binding = 2, .kind = render::ComputeResourceBindingKind::SampledImage}};

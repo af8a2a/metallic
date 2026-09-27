@@ -152,15 +152,15 @@ public:
             if (!mapped) { return RhiTestResult::fail("input map"); }
             std::memcpy(mapped, data[i], counts[i] * strides[i]); buffers[i]->flush(); buffers[i]->unmap();
             auto& handle = bindings.buffers[static_cast<size_t>(kinds[i])];
-            LOD_REQUIRE(registry->storageBuffer(*buffers[i], handle));
+            LOD_REQUIRE(registry->storageBuffer(*buffers[i]).transform([&](auto value) { handle = std::move(value); }));
         }
         ResidentMeshletLod selector;
         const uint32_t capacity = static_cast<uint32_t>(f.candidates.size());
         LOD_REQUIRE(selector.initialize(*device, capacity, log));
         ResourceLease selections, arguments, scratch;
-        LOD_REQUIRE(registry->storageBuffer(selector.selections(), selections));
-        LOD_REQUIRE(registry->storageBuffer(selector.arguments(), arguments));
-        LOD_REQUIRE(registry->storageBuffer(selector.scratch(), scratch));
+        LOD_REQUIRE(registry->storageBuffer(selector.selections()).transform([&](auto value) { selections = std::move(value); }));
+        LOD_REQUIRE(registry->storageBuffer(selector.arguments()).transform([&](auto value) { arguments = std::move(value); }));
+        LOD_REQUIRE(registry->storageBuffer(selector.scratch()).transform([&](auto value) { scratch = std::move(value); }));
         std::unique_ptr<Buffer> readback;
         const uint64_t selectionBytes = (uint64_t(capacity) + 1u) * 16u;
         LOD_REQUIRE(device->createBuffer({.size = selectionBytes + 24, .usage = BufferUsageBits::TransferDestination,

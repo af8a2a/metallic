@@ -322,10 +322,7 @@ Result<> RenderSubsystemHost::reloadShaders(std::string& log)
     for (const std::string& id : activeOrder_) {
         std::string subsystemLog;
         std::unique_ptr<RenderSubsystemShaderReload> preparedReload;
-        Result<> result = records_.at(id)->instance->prepareShaderReload(
-            RenderSubsystemInitContext{*device_, *this},
-            preparedReload,
-            subsystemLog);
+        Result<> result = records_.at(id)->instance->prepareShaderReload(RenderSubsystemInitContext{*device_, *this}, subsystemLog).transform([&](auto value) { preparedReload = std::move(value); });
         if (!result) {
             log = "Render subsystem '" + id + "' shader reload failed";
             if (!subsystemLog.empty()) {
@@ -415,18 +412,15 @@ bool RenderSubsystemHost::isActive(RenderSubsystemId id) const
     return get(id) != nullptr;
 }
 
-Result<> RenderSubsystemHost::deferSubmission(CommandBuffer& commandBuffer,
-    std::function<void()> submitted, std::function<void()> cancelled,
-    std::shared_ptr<SubmissionTransaction>* outTransaction)
+Result<std::shared_ptr<SubmissionTransaction>> RenderSubsystemHost::deferSubmission(
+    CommandBuffer& commandBuffer, std::function<void()> submitted, std::function<void()> cancelled)
 {
     std::erase_if(pendingTransactions_, [](const auto& transaction) { return transaction->resolved(); });
     auto transaction = std::make_shared<SubmissionTransaction>(std::move(submitted), std::move(cancelled));
     Result<> result = commandBuffer.addSubmissionTransaction(transaction);
-    if (result) {
-        pendingTransactions_.push_back(transaction);
-        if (outTransaction != nullptr) { *outTransaction = transaction; }
-    }
-    return result;
+    if (!result) { return makeError(result.error()); }
+    pendingTransactions_.push_back(transaction);
+    return transaction;
 }
 
 void RenderSubsystemHost::retire(std::shared_ptr<void> resource)

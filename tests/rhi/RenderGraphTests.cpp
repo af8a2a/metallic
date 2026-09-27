@@ -268,13 +268,11 @@ render::Result<> createSlangShaderModule(
     std::string& log)
 {
     render::ShaderCompileResult compileResult;
-    render::Result<> result = render::compileSlangShaderToSpirv(
-        render::SlangShaderDesc{
+    render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
             .moduleName = moduleName,
             .entryPointName = entryPointName,
             .searchPath = kShaderSearchPath,
-        },
-        compileResult);
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
     if (!result) {
         log += std::string("compileSlangShaderToSpirv(") + moduleName + "." + entryPointName + ") returned ";
         log += toString(result);
@@ -3435,10 +3433,7 @@ public:
         };
 
         render::ShaderCompileResult firstCompile;
-        render::Result<> result = render::compileSlangShaderToSpirv(
-            shaderDesc,
-            cacheOptions,
-            firstCompile);
+        render::Result<> result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, firstCompile.diagnostics).transform([&](auto value) { firstCompile = std::move(value); });
         if (!result || firstCompile.spirv.empty() || cacheHit) {
             return RhiTestResult::fail(
                 std::string("initial shader cache compile returned ") +
@@ -3460,7 +3455,7 @@ public:
 
         render::resetSlangShaderHotReloadTracking();
         render::ShaderCompileResult cachedCompile;
-        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedCompile);
+        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedCompile.diagnostics).transform([&](auto value) { cachedCompile = std::move(value); });
         if (!result || !cacheHit ||
             cachedCompile.spirv != firstCompile.spirv) {
             return RhiTestResult::fail("unchanged shader source did not hit the SPIR-V disk cache");
@@ -3500,14 +3495,14 @@ public:
                 "acknowledged shader edit remained pending");
         }
         render::ShaderCompileResult changedCompile;
-        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, changedCompile);
+        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, changedCompile.diagnostics).transform([&](auto value) { changedCompile = std::move(value); });
         if (!result || changedCompile.spirv.empty() || cacheHit ||
             changedCompile.spirv == firstCompile.spirv) {
             return RhiTestResult::fail("changed shader dependency did not invalidate the SPIR-V cache");
         }
 
         render::ShaderCompileResult changedCachedCompile;
-        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, changedCachedCompile);
+        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, changedCachedCompile.diagnostics).transform([&](auto value) { changedCachedCompile = std::move(value); });
         if (!result || !cacheHit ||
             changedCachedCompile.spirv != changedCompile.spirv) {
             return RhiTestResult::fail("rebuilt shader did not become the new disk cache entry");
@@ -3515,7 +3510,7 @@ public:
 
         render::setSlangShaderDebugMode(render::SlangShaderDebugMode::CaptureSymbols);
         render::ShaderCompileResult symbolCompile;
-        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, symbolCompile);
+        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, symbolCompile.diagnostics).transform([&](auto value) { symbolCompile = std::move(value); });
         if (!result || symbolCompile.spirv.empty() || cacheHit ||
             !spirvContainsCaptureDebugInfo(
                 symbolCompile.spirv, "ShaderCacheTest.slang", "shaderCacheMain")) {
@@ -3523,17 +3518,14 @@ public:
                 "capture-symbol shader must embed source, function and line debug information");
         }
         render::ShaderCompileResult cachedSymbolCompile;
-        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedSymbolCompile);
+        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedSymbolCompile.diagnostics).transform([&](auto value) { cachedSymbolCompile = std::move(value); });
         if (!result || !cacheHit || cachedSymbolCompile.spirv != symbolCompile.spirv) {
             return RhiTestResult::fail("capture-symbol shader did not use its isolated cache entry");
         }
 
         render::setSlangShaderDebugMode(render::SlangShaderDebugMode::ShaderDebug);
         render::ShaderCompileResult unoptimizedDebugCompile;
-        result = render::compileSlangShaderToSpirv(
-            shaderDesc,
-            cacheOptions,
-            unoptimizedDebugCompile);
+        result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, unoptimizedDebugCompile.diagnostics).transform([&](auto value) { unoptimizedDebugCompile = std::move(value); });
         if (!result || unoptimizedDebugCompile.spirv.empty() || cacheHit ||
             !spirvContainsExtendedInstructionSet(
                 unoptimizedDebugCompile.spirv,
@@ -3619,16 +3611,14 @@ public:
     {
         render::ShaderCompileResult compileResult;
         const char* capabilities[] = {"spvRayQueryKHR"};
-        render::Result<> result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/PathTracing/OpenPBRRayQueryPathTrace",
                 .entryPointName = "openPbrRayQueryPathTraceMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
                 .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
-            },
-            compileResult);
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("OpenPBR RayQuery path tracing shader compile returned ") +
@@ -3714,15 +3704,13 @@ public:
             "spvMeshShadingEXT",
             "spvGroupNonUniformBallot",
         };
-        render::Result<> result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
                 .entryPointName = "visibilityBufferAmplificationMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-            },
-            amplificationCompile);
+            }, amplificationCompile.diagnostics).transform([&](auto value) { amplificationCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("VisibilityBuffer amplification shader compile returned ") +
@@ -3743,8 +3731,7 @@ public:
             "spvMeshShadingEXT",
         };
         render::ShaderCompileResult atomicFallbackCompile;
-        result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
                 .entryPointName = "visibilityBufferAmplificationMain",
                 .searchPath = kShaderSearchPath,
@@ -3753,8 +3740,7 @@ public:
                     std::size(atomicFallbackCapabilities)),
                 .macroDefines = &atomicFallbackDefine,
                 .macroDefineCount = 1u,
-            },
-            atomicFallbackCompile);
+            }, atomicFallbackCompile.diagnostics).transform([&](auto value) { atomicFallbackCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("VisibilityBuffer atomic amplification fallback compile returned ") +
@@ -3768,15 +3754,13 @@ public:
         }
 
         render::ShaderCompileResult meshCompile;
-        result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
                 .entryPointName = "visibilityBufferMeshMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-            },
-            meshCompile);
+            }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("VisibilityBuffer mesh shader compile returned ") +
@@ -3792,8 +3776,7 @@ public:
             "VISIBILITY_BUFFER_ALPHA_MASKED", "1",
         };
         render::ShaderCompileResult maskedMeshCompile;
-        result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
                 .entryPointName = "visibilityBufferMeshMain",
                 .searchPath = kShaderSearchPath,
@@ -3802,8 +3785,7 @@ public:
                     std::size(atomicFallbackCapabilities)),
                 .macroDefines = &maskedMeshDefine,
                 .macroDefineCount = 1u,
-            },
-            maskedMeshCompile);
+            }, maskedMeshCompile.diagnostics).transform([&](auto value) { maskedMeshCompile = std::move(value); });
         if (!result || maskedMeshCompile.spirv.empty()) {
             return RhiTestResult::fail(
                 "VisibilityBuffer masked mesh compile failed: " +
@@ -3840,13 +3822,11 @@ public:
         }
 
         render::ShaderCompileResult fragmentCompile;
-        result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
                 .entryPointName = "visibilityBufferFragmentMain",
                 .searchPath = kShaderSearchPath,
-            },
-            fragmentCompile);
+            }, fragmentCompile.diagnostics).transform([&](auto value) { fragmentCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("VisibilityBuffer fragment shader compile returned ") +
@@ -3874,13 +3854,11 @@ public:
         for (const ShaderEntry& shaderEntry : additionalEntryPoints) {
             const char* entryPoint = shaderEntry.entry;
             render::ShaderCompileResult compile;
-            result = render::compileSlangShaderToSpirv(
-                render::SlangShaderDesc{
+            result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                     .moduleName = shaderEntry.module,
                     .entryPointName = entryPoint,
                     .searchPath = kShaderSearchPath,
-                },
-                compile);
+                }, compile.diagnostics).transform([&](auto value) { compile = std::move(value); });
             if (!result) {
                 return RhiTestResult::fail(
                     std::string("VisibilityBuffer shader compile returned ") +
@@ -3921,15 +3899,13 @@ public:
     {
         render::ShaderCompileResult meshCompile;
         const char* capabilities[] = {"spvMeshShadingEXT"};
-        render::Result<> result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetMeshMain",
                 .searchPath = kShaderSearchPath,
                 .capabilities = capabilities,
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-            },
-            meshCompile);
+            }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("GPUDrivenStreamAsset mesh shader compile returned ") +
@@ -3942,13 +3918,11 @@ public:
         }
 
         render::ShaderCompileResult fragmentCompile;
-        result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetFragmentMain",
                 .searchPath = kShaderSearchPath,
-            },
-            fragmentCompile);
+            }, fragmentCompile.diagnostics).transform([&](auto value) { fragmentCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("GPUDrivenStreamAsset fragment shader compile returned ") +
@@ -3970,13 +3944,11 @@ public:
         };
         for (const char* entryPoint : kRasterEntryPoints) {
             render::ShaderCompileResult rasterCompile;
-            result = render::compileSlangShaderToSpirv(
-                render::SlangShaderDesc{
+            result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                     .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                     .entryPointName = entryPoint,
                     .searchPath = kShaderSearchPath,
-                },
-                rasterCompile);
+                }, rasterCompile.diagnostics).transform([&](auto value) { rasterCompile = std::move(value); });
             if (!result) {
                 return RhiTestResult::fail(
                     std::string("GPUDrivenStreamAsset shader compile returned ") +
@@ -3994,13 +3966,11 @@ public:
         }
 
         render::ShaderCompileResult updateCompile;
-        result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetApplyUpdatesMain",
                 .searchPath = kShaderSearchPath,
-            },
-            updateCompile);
+            }, updateCompile.diagnostics).transform([&](auto value) { updateCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("GPUDrivenStreamAsset update shader compile returned ") +
@@ -4013,13 +3983,11 @@ public:
         }
 
         render::ShaderCompileResult traversalCompile;
-        result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetTraversalMain",
                 .searchPath = kShaderSearchPath,
-            },
-            traversalCompile);
+            }, traversalCompile.diagnostics).transform([&](auto value) { traversalCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("GPUDrivenStreamAsset traversal shader compile returned ") +
@@ -4032,13 +4000,11 @@ public:
         }
 
         render::ShaderCompileResult activeBuildCompile;
-        result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetBuildActiveMain",
                 .searchPath = kShaderSearchPath,
-            },
-            activeBuildCompile);
+            }, activeBuildCompile.diagnostics).transform([&](auto value) { activeBuildCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("GPUDrivenStreamAsset active build shader compile returned ") +
@@ -4763,13 +4729,11 @@ public:
         }
 
         render::ShaderCompileResult compileResult;
-        result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetTraversalMain",
                 .searchPath = kShaderSearchPath,
-            },
-            compileResult);
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("compileSlangShaderToSpirv(traversal) returned ") +
@@ -4798,13 +4762,11 @@ public:
         }
 
         render::ShaderCompileResult activeBuildCompileResult;
-        result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = "gpuDrivenStreamAssetBuildActiveMain",
                 .searchPath = kShaderSearchPath,
-            },
-            activeBuildCompileResult);
+            }, activeBuildCompileResult.diagnostics).transform([&](auto value) { activeBuildCompileResult = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("compileSlangShaderToSpirv(active build) returned ") +
@@ -5385,16 +5347,14 @@ public:
     {
         const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
         render::ShaderCompileResult compileResult;
-        render::Result<> result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/Samples/RtxcrMaterialSample",
                 .entryPointName = "rtxcrMaterialSampleMain",
                 .searchPath = kShaderSearchPath,
                 .additionalSearchPaths = additionalSearchPaths,
                 .additionalSearchPathCount =
                     static_cast<uint32_t>(std::size(additionalSearchPaths)),
-            },
-            compileResult);
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result || compileResult.spirv.empty()) {
             return RhiTestResult::fail(
                 std::string("RTXCR material shader compile returned ") +
@@ -5487,8 +5447,7 @@ public:
         };
         for (const ShaderEntry& entry : entries) {
             render::ShaderCompileResult compileResult;
-            render::Result<> result = render::compileSlangShaderToSpirv(
-                render::SlangShaderDesc{
+            render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                     .moduleName = entry.moduleName,
                     .entryPointName = entry.entryPointName,
                     .searchPath = kShaderSearchPath,
@@ -5497,8 +5456,7 @@ public:
                         ? static_cast<uint32_t>(std::size(capabilities))
                         : 0u,
                     .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
-                },
-                compileResult);
+                }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
             if (!result) {
                 return RhiTestResult::fail(
                     std::string("RTXDI shader compile returned ") +
@@ -5541,8 +5499,7 @@ public:
             };
             for (const ShaderEntry& entry : entries) {
                 render::ShaderCompileResult compileResult;
-                render::Result<> result = render::compileSlangShaderToSpirv(
-                    render::SlangShaderDesc{
+                render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                         .moduleName = entry.moduleName,
                         .entryPointName = entry.entryPointName,
                         .searchPath = kShaderSearchPath,
@@ -5551,8 +5508,7 @@ public:
                         .macroDefines = defines,
                         .macroDefineCount = static_cast<uint32_t>(std::size(defines)),
                         .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
-                    },
-                    compileResult);
+                    }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
                 if (!result || compileResult.spirv.empty()) {
                     return RhiTestResult::fail(
                         std::string("Path tracing guide shader compile failed for ") +
@@ -5594,13 +5550,11 @@ public:
         };
         for (const char* entryPoint : entryPoints) {
             render::ShaderCompileResult compileResult;
-            render::Result<> result = render::compileSlangShaderToSpirv(
-                render::SlangShaderDesc{
+            render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                     .moduleName = "Features/PostProcess/StreamlineDlssSupport",
                     .entryPointName = entryPoint,
                     .searchPath = kShaderSearchPath,
-                },
-                compileResult);
+                }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
             if (!result) {
                 return RhiTestResult::fail(
                     std::string("Streamline DLSS support shader compile returned ") +
@@ -5642,8 +5596,7 @@ public:
             },
         };
         render::ShaderCompileResult compileResult;
-        render::Result<> result = render::compileSlangShaderToSpirv(
-            render::SlangShaderDesc{
+        render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/Debug/SceneRayQueryVisualize",
                 .entryPointName = "sceneRayQueryVisualizeMain",
                 .searchPath = kShaderSearchPath,
@@ -5651,8 +5604,7 @@ public:
                 .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
                 .macroDefines = macros,
                 .macroDefineCount = static_cast<uint32_t>(std::size(macros)),
-            },
-            compileResult);
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("Cluster ray-query shader compile returned ") +
@@ -7226,7 +7178,7 @@ public:
             return RhiTestResult::fail(std::string("RecordedBatch::seal returned ") + toString(result));
         }
         render::SubmissionReceipt receipt;
-        result = submissions.submitBatch(batch, {}, frame, receipt);
+        result = submissions.submitBatch(batch, {}, frame).transform([&](auto value) { receipt = std::move(value); });
         if (!result || !receipt.accepted()) {
             return RhiTestResult::fail(std::string("QueueSubmissionTracker::submitBatch returned ") + toString(result));
         }
@@ -7241,7 +7193,7 @@ public:
 
         if (device->capabilities().timestampQueries) {
             std::vector<render::RenderGraphExecutionStats> completedGpuStats;
-            result = executor.collectCompletedGpuExecutionStats(completedGpuStats);
+            result = executor.collectCompletedGpuExecutionStats().transform([&](auto value) { completedGpuStats = std::move(value); });
             if (!result) {
                 return RhiTestResult::fail(
                     std::string("collectCompletedGpuExecutionStats returned ") + toString(result));

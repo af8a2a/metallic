@@ -191,11 +191,12 @@ public:
     Result<> submit(const QueueSubmitDesc& desc, RenderFrameContext& frame);
     // synchronization contains waits/signals only. Receipts cover exactly this
     // batch; frame.completion() covers every accepted batch on every queue.
-    Result<> submitBatch(const RecordedBatch& batch, const QueueSubmitDesc& synchronization,
-        RenderFrameContext& frame, SubmissionReceipt& receipt);
+    [[nodiscard]] Result<SubmissionReceipt> submitBatch(
+        const RecordedBatch& batch,
+        const QueueSubmitDesc& synchronization,
+        RenderFrameContext& frame);
     // Compatibility adapter: seals these commands and returns their GPU point.
-    Result<> submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame,
-        GpuCompletionPoint& completion);
+    [[nodiscard]] Result<GpuCompletionPoint> submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame);
     Result<> wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
     Result<> reset();
 

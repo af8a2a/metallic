@@ -87,7 +87,7 @@ public:
                 .moduleName = (i == 5 || i == 6) ? "Features/GPUDriven/GPUDrivenStreamWorkload" : (i == 3 || i == 4) ? "StreamClusterClassificationProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
                 .entryPointName = entries[i],
                 .searchPath = i >= 3 ? PROJECT_SOURCE_DIR "/tests/rhi/shaders" : PROJECT_SOURCE_DIR "/Shaders",
-                .additionalSearchPaths = additional, .additionalSearchPathCount = 1}, compiled);
+                .additionalSearchPaths = additional, .additionalSearchPathCount = 1}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
             log = compiled.diagnostics;
             CLASSIFY_REQUIRE(result);
             CLASSIFY_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
@@ -112,7 +112,7 @@ public:
                         "Features/GPUDriven/GPUDrivenStreamWorkRaster" : std::strcmp(entry, "legacyStreamClusterBinMain") == 0 ?
                         "StreamClusterClassificationProbe" : "Features/GPUDriven/GPUDrivenStreamAsset",
                         .entryPointName = entry, .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-                        .additionalSearchPaths = additionalStatsPaths, .additionalSearchPathCount = 1}, compiled));
+                        .additionalSearchPaths = additionalStatsPaths, .additionalSearchPathCount = 1}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
                     std::unique_ptr<ShaderModule> shader;
                     std::unique_ptr<ComputePipeline> pipeline;
                     CLASSIFY_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));

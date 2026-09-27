@@ -923,25 +923,26 @@ Result<> PreparedComputeDispatch::record(CommandBuffer& commands, const BarrierD
     return {};
 }
 
-Result<> ComputeProgram::prepareDispatch(RenderFrameContext& frame, const ComputeDispatchDesc& desc,
-    PreparedComputeDispatch& out) const
+Result<PreparedComputeDispatch> ComputeProgram::prepareDispatch(
+    RenderFrameContext& frame,
+    const ComputeDispatchDesc& desc) const
 {
-    out = {};
     if (desc.commandBuffer || !frame.recording()) { return makeError(Error::InvalidArgument); }
-    return prepareShared(&frame, desc, {}, out);
+    return prepareShared(&frame, desc, {});
 }
 
-Result<> ComputeProgram::prepareIndirectBatch(RenderFrameContext& frame, const ComputeDispatchDesc& desc,
-    std::span<const ComputeIndirectDispatch> dispatches, PreparedComputeDispatch& out) const
+Result<PreparedComputeDispatch> ComputeProgram::prepareIndirectBatch(
+    RenderFrameContext& frame,
+    const ComputeDispatchDesc& desc,
+    std::span<const ComputeIndirectDispatch> dispatches) const
 {
-    out = {};
     if (desc.commandBuffer || !frame.recording() || !desc.indirectArguments || dispatches.empty()) {
         return makeError(Error::InvalidArgument);
     }
     auto first = desc;
     first.pushData = dispatches.front().pushData;
     first.indirectOffset = dispatches.front().argumentOffset;
-    return prepareShared(&frame, first, dispatches, out);
+    return prepareShared(&frame, first, dispatches);
 }
 
 Result<> ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
@@ -950,17 +951,19 @@ Result<> ComputeProgram::dispatchShared(const ComputeDispatchDesc& desc,
     if (!desc.commandBuffer->recording() || desc.commandBuffer->deviceIdentity() != impl_->device->identity()) {
         return makeError(Error::InvalidArgument);
     }
-    PreparedComputeDispatch prepared;
-    auto result = prepareShared(desc.commandBuffer->frameContext(), desc, dispatches, prepared);
-    return result ? prepared.record(*desc.commandBuffer, betweenDispatches) : result;
+    auto prepared = prepareShared(desc.commandBuffer->frameContext(), desc, dispatches);
+    if (!prepared) { return makeError(prepared.error()); }
+    return prepared->record(*desc.commandBuffer, betweenDispatches);
 }
 
-Result<> ComputeProgram::prepareShared(RenderFrameContext* frame, const ComputeDispatchDesc& desc,
-    std::span<const ComputeIndirectDispatch> dispatches, PreparedComputeDispatch& out) const
+Result<PreparedComputeDispatch> ComputeProgram::prepareShared(
+    RenderFrameContext* frame,
+    const ComputeDispatchDesc& desc,
+    std::span<const ComputeIndirectDispatch> dispatches) const
 {
-    out = {};
+    PreparedComputeDispatch out;
     auto result = validateDispatch(desc, dispatches);
-    if (!result) { return result; }
+    if (!result) { return makeError(result.error()); }
     if (!impl_->usesResourceTable) { return makeError(Error::Unsupported); }
     auto prepared = std::make_shared<PreparedComputeDispatch::Impl>();
     prepared->registry = impl_->registry;
@@ -976,7 +979,7 @@ Result<> ComputeProgram::prepareShared(RenderFrameContext* frame, const ComputeD
             result = desc.indirectArguments->slice(dispatches.empty() ? desc.indirectOffset : dispatches[i].argumentOffset,
                 3 * sizeof(uint32_t)).transform([&](auto slice) { prepared->items[i].arguments = std::move(slice); });
             if (result) { result = prepared->items[i].arguments.validate(impl_->device->identity(), BufferUsageBits::Indirect, 4, 12); }
-            if (!result) { return result; }
+            if (!result) { return makeError(result.error()); }
         }
     }
     auto& registry = *impl_->registry;
@@ -1023,10 +1026,10 @@ Result<> ComputeProgram::prepareShared(RenderFrameContext* frame, const ComputeD
             } else {
                 if (!binding->buffer) { return makeError(Error::InvalidArgument); }
                 result = binding->buffer->slice(binding->offset, binding->size).transform([&](auto rhiValue) { slice = std::move(rhiValue); });
-                if (!result) { return result; }
+                if (!result) { return makeError(result.error()); }
             }
             result = slice.validateData(impl_->device->identity(), expected.desc.dataStride, expected.desc.dataAlignment);
-            if (!result) { return result; }
+            if (!result) { return makeError(result.error()); }
             prepared->owners.push_back(slice.retainAllocation());
             auto& slot = slots[expected.desc.binding];
             slot.handle = slice.deviceAddress();
@@ -1041,7 +1044,7 @@ Result<> ComputeProgram::prepareShared(RenderFrameContext* frame, const ComputeD
         std::vector<uint64_t> handles;
         handles.reserve(count);
         for (uint32_t i = 0; i < count; ++i) {
-            ResourceLease lease;
+            Result<ResourceLease> lease;
             switch (expected.desc.kind) {
             case ComputeResourceBindingKind::DataBuffer:
                 return makeError(Error::InvalidArgument);
@@ -1050,15 +1053,15 @@ Result<> ComputeProgram::prepareShared(RenderFrameContext* frame, const ComputeD
                     (binding->size != UINT64_MAX && binding->size != binding->buffer->desc().size)) {
                     return makeError(Error::InvalidArgument);
                 }
-                result = registry.storageBuffer(*binding->buffer, lease);
+                lease = registry.storageBuffer(*binding->buffer);
                 break;
             case ComputeResourceBindingKind::AccelerationStructure:
                 if (!binding->accelerationStructure) { return makeError(Error::InvalidArgument); }
-                result = registry.accelerationStructure(*binding->accelerationStructure, lease);
+                lease = registry.accelerationStructure(*binding->accelerationStructure);
                 break;
             case ComputeResourceBindingKind::Sampler:
                 if (!binding->sampler) { return makeError(Error::InvalidArgument); }
-                result = registry.sampler(*binding->sampler, lease);
+                lease = registry.sampler(*binding->sampler);
                 break;
             case ComputeResourceBindingKind::SampledImage:
             case ComputeResourceBindingKind::StorageImage: {
@@ -1071,23 +1074,23 @@ Result<> ComputeProgram::prepareShared(RenderFrameContext* frame, const ComputeD
                 } else if (count == 1) { view = binding->textureView; }
                 if (!view) { return makeError(Error::InvalidArgument); }
                 bool written = false;
-                result = expected.desc.kind == ComputeResourceBindingKind::SampledImage
-                    ? registry.sampledImage(*view, lease, ResourceState::ShaderRead, &written) : registry.storageImage(*view, lease);
-                if (result && desc.stats && expected.desc.kind == ComputeResourceBindingKind::SampledImage) {
+                lease = expected.desc.kind == ComputeResourceBindingKind::SampledImage
+                    ? registry.sampledImage(*view, ResourceState::ShaderRead, &written) : registry.storageImage(*view);
+                if (lease && desc.stats && expected.desc.kind == ComputeResourceBindingKind::SampledImage) {
                     if (written) { ++desc.stats->sampledImageWrites; }
                     else { ++desc.stats->sampledImageCacheHits; }
                 }
                 break;
             }
             }
-            if (!result) { return result; }
-            prepared->leases.push_back(lease);
-            handles.push_back(lease.shaderValue());
+            if (!lease) { return makeError(lease.error()); }
+            prepared->leases.push_back(*lease);
+            handles.push_back(lease->shaderValue());
         }
         auto& slot = slots[expected.desc.binding];
         slot.handle = handles.front();
         if (usesImageHeap(expected.desc.kind)) { slot.payload = upload(handles.data(), handles.size() * sizeof(uint64_t)); }
-        if (!result) { return result; }
+        if (!result) { return makeError(result.error()); }
     }
     ComputeResourcePush push;
     push.resources = upload(slots.data(), slots.size() * sizeof(ResourceSlot));
@@ -1102,16 +1105,17 @@ Result<> ComputeProgram::prepareShared(RenderFrameContext* frame, const ComputeD
         }
         push.constants = upload(constants.data(), constants.size());
     }
-    if (!result) { return result; }
+    if (!result) { return makeError(result.error()); }
     if (writer) {
-        result = writer->encode(push, 0x434f4d5055544502ull, prepared->parameters);
-        if (!result) { return result; }
+        auto parameters = writer->encode(push, 0x434f4d5055544502ull);
+        if (!parameters) { return makeError(parameters.error()); }
+        prepared->parameters = std::move(*parameters);
     }
     for (size_t i = 0; i < itemCount; ++i) {
         prepared->items[i].push = {push.resources, push.constants ? push.constants + stride * i : 0};
     }
     out.impl_ = std::move(prepared);
-    return {};
+    return out;
 }
 
 } // namespace metallic::render

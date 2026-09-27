@@ -46,13 +46,11 @@ public:
         }
 
         ShaderCompileResult compileResult;
-        Result<> result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
+        Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
                 .moduleName = kRtxdiCompositeShaderModuleName,
                 .entryPointName = kRtxdiCompositeEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
-            },
-            compileResult);
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             log = resultMessage("compileSlangShaderToSpirv(RtxdiComposite.rtxdiCompositeMain)", result);
             if (!compileResult.diagnostics.empty()) {

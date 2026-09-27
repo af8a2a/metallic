@@ -418,7 +418,7 @@ render::Result<> createProbe(render::Device& device, const char* entry,
     render::Result<> result = render::compileSlangShaderToSpirv({
         .moduleName = "FrameResourceProbe", .entryPointName = entry,
         .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-    }, shader);
+    }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     if (!result) { log = shader.diagnostics; return result; }
     return program.initialize(device, {
         .spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * sizeof(uint32_t),
@@ -820,15 +820,15 @@ public:
         render::GpuCompletionPoint graphicsPoint, copyPoint;
         render::SemaphoreSubmitDesc graphicsWait{.semaphore = graphicsGate.get(), .value = 1};
         render::SemaphoreSubmitDesc copyWait{.semaphore = copyGate.get(), .value = 1};
-        FRAME_REQUIRE(graphics.submitSegment({.waitSemaphores = &graphicsWait, .waitSemaphoreCount = 1}, frame, graphicsPoint));
-        FRAME_REQUIRE(copy.submitSegment({.waitSemaphores = &copyWait, .waitSemaphoreCount = 1}, frame, copyPoint));
+        FRAME_REQUIRE(graphics.submitSegment({.waitSemaphores = &graphicsWait, .waitSemaphoreCount = 1}, frame).transform([&](auto value) { graphicsPoint = std::move(value); }));
+        FRAME_REQUIRE(copy.submitSegment({.waitSemaphores = &copyWait, .waitSemaphoreCount = 1}, frame).transform([&](auto value) { copyPoint = std::move(value); }));
         std::vector<render::SemaphoreSubmitDesc> waits;
         if (batch.isSubmitted() || batch.isComplete() || batch.wait(0) || batch.appendWaits(waits) || frame.begin(1, 0)) {
             return RhiTestResult::fail("open submission batch was reusable or waitable");
         }
         // Simulate a later submission rejected before reaching the driver.
         render::GpuCompletionPoint failed;
-        if (copy.submitSegment({.commandBufferCount = 1}, frame, failed) || failed.valid()) {
+        if (copy.submitSegment({.commandBufferCount = 1}, frame).transform([&](auto value) { failed = std::move(value); }) || failed.valid()) {
             return RhiTestResult::fail("failed segment acquired a completion value");
         }
         frame.cancel();
@@ -853,9 +853,9 @@ public:
         }
         // Two signals from one queue collapse to the final value, while old
         // segment points continue identifying their original submission.
-        FRAME_REQUIRE(copy.submitSegment({}, frame, copyPoint));
+        FRAME_REQUIRE(copy.submitSegment({}, frame).transform([&](auto value) { copyPoint = std::move(value); }));
         const auto oldCopy = copyPoint;
-        FRAME_REQUIRE(copy.submitSegment({}, frame, copyPoint));
+        FRAME_REQUIRE(copy.submitSegment({}, frame).transform([&](auto value) { copyPoint = std::move(value); }));
         FRAME_REQUIRE(frame.finishSubmission());
         FRAME_REQUIRE(frame.wait(kWaitTimeout));
         if (oldCopy.value() != 2 || copyPoint.value() != 3 || frame.completion().value() != 3) {
@@ -960,7 +960,7 @@ public:
                 FRAME_REQUIRE(result);
                 FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
                 std::vector<render::RenderGraphExecutionStats> timings;
-                FRAME_REQUIRE(executor.collectCompletedGpuExecutionStats(timings));
+                FRAME_REQUIRE(executor.collectCompletedGpuExecutionStats().transform([&](auto value) { timings = std::move(value); }));
                 if (device->capabilities().timestampQueries) {
                     if (timings.size() != 1 || !timings[0].gpuTimingAvailable || timings[0].nodes.size() != 1 ||
                         timings[0].nodes[0].sections.size() != 4) {
@@ -1349,7 +1349,7 @@ public:
         for (uint32_t index = 0; index < 6; ++index) { FRAME_REQUIRE(executor.execute(submit)); }
         FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
         std::vector<render::RenderGraphExecutionStats> timings;
-        FRAME_REQUIRE(executor.collectCompletedGpuExecutionStats(timings));
+        FRAME_REQUIRE(executor.collectCompletedGpuExecutionStats().transform([&](auto value) { timings = std::move(value); }));
         if (context.device.capabilities().timestampQueries) {
             if (timings.size() != 6) { return RhiTestResult::fail("mixed queue query ring lost completed frames"); }
             for (const auto& frame : timings) {
@@ -1452,7 +1452,7 @@ public:
         auto registerEvent = [&](render::CommandBuffer& buffer, int event) {
             return host.deferSubmission(buffer,
                 [&, event]() { events.push_back(event); },
-                [&, event]() { events.push_back(-event); });
+                [&, event]() { events.push_back(-event); }).transform([](auto) {});
         };
         render::CommandBuffer* buffers[] = {commands.buffer.get()};
         const render::QueueSubmitDesc submit{.commandBuffers = buffers, .commandBufferCount = 1};
@@ -1512,7 +1512,7 @@ public:
         FRAME_REQUIRE(registerEvent(*tail, 7));
         FRAME_REQUIRE(tail->end());
         render::GpuCompletionPoint prefix;
-        FRAME_REQUIRE(tracker.submitSegment(submit, commands.frame, prefix));
+        FRAME_REQUIRE(tracker.submitSegment(submit, commands.frame).transform([&](auto value) { prefix = std::move(value); }));
         commands.frame.cancel();
         FRAME_REQUIRE(commands.frame.wait(kWaitTimeout));
         if (!commands.frame.completion().isSubmitted() || events != std::vector<int>{1, -3, -2, -4, -5, 6, -7}) {
@@ -1552,7 +1552,7 @@ public:
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "FrameEnvironmentProbe",
-            .entryPointName = "readEnvironment", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+            .entryPointName = "readEnvironment", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},

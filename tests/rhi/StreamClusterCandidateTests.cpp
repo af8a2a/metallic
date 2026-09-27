@@ -64,7 +64,7 @@ public:
             const auto result = compileSlangShaderToSpirv({
                 .moduleName = i == 0 ? "Features/GPUDriven/GPUDrivenStreamAsset" : "HybridClusterProbe",
                 .entryPointName = i == 0 ? "streamClusterPrepareMain" : "seedStreamCandidatesMain",
-                .searchPath = i == 0 ? PROJECT_SOURCE_DIR "/Shaders" : PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled);
+                .searchPath = i == 0 ? PROJECT_SOURCE_DIR "/Shaders" : PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
             log = compiled.diagnostics;
             CANDIDATE_REQUIRE(result);
             CANDIDATE_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(),

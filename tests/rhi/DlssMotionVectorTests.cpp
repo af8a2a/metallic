@@ -32,7 +32,7 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
             .capabilities = capabilities,
             .capabilityCount = 1,
-        }, shader);
+        }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc binding{
             .binding = 63, .kind = render::ComputeResourceBindingKind::StorageBuffer};

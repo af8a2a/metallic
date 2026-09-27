@@ -92,9 +92,9 @@ public:
         render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
         render::GpuCompletionPoint prefix;
         RECORD_REQUIRE(tracker.submitSegment({.waitSemaphores = &wait, .waitSemaphoreCount = 1,
-            .commandBuffers = &a, .commandBufferCount = 1}, frame, prefix));
+            .commandBuffers = &a, .commandBufferCount = 1}, frame).transform([&](auto value) { prefix = std::move(value); }));
         // An invalid tail after an accepted prefix must keep only accepted owners.
-        RECORD_CHECK(!tracker.submitSegment({.commandBuffers = &a, .commandBufferCount = 1}, frame, prefix));
+        RECORD_CHECK(!tracker.submitSegment({.commandBuffers = &a, .commandBufferCount = 1}, frame).transform([&](auto value) { prefix = std::move(value); }));
         frame.cancel();
         RECORD_CHECK(frame.completion().isSubmitted() && !frame.completion().isComplete());
         RECORD_CHECK(!acceptedWeak.expired() && cancelledWeak.expired() && !first.reset());
@@ -126,7 +126,7 @@ public:
         RECORD_REQUIRE(unsealed->record([&] { return a->end(); }));
         wait.value = 2;
         RECORD_REQUIRE(tracker.submitSegment({.waitSemaphores = &wait, .waitSemaphoreCount = 1,
-            .commandBuffers = &a, .commandBufferCount = 1}, frame, prefix));
+            .commandBuffers = &a, .commandBufferCount = 1}, frame).transform([&](auto value) { prefix = std::move(value); }));
         std::jthread releaseGate([&] {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             (void)gate->signal(2);
@@ -379,7 +379,7 @@ public:
             RECORD_CHECK((actual == std::array<uint32_t, 4>{17, 23, 42, 99}));
             for (const auto& owner : probe.owners) { RECORD_CHECK(owner.expired()); }
             std::vector<render::RenderGraphExecutionStats> timings;
-            RECORD_REQUIRE(executor.collectCompletedGpuExecutionStats(timings));
+            RECORD_REQUIRE(executor.collectCompletedGpuExecutionStats().transform([&](auto value) { timings = std::move(value); }));
             if (context.device.capabilities().timestampQueries) {
                 RECORD_CHECK(timings.size() == 1 && timings[0].nodes.size() == 5);
                 for (const auto& node : timings[0].nodes) {
@@ -458,7 +458,7 @@ public:
         for (const auto& owner : firstOwners) { RECORD_CHECK(owner.expired()); }
         for (const auto& owner : probe.owners) { RECORD_CHECK(owner.expired()); }
         std::vector<render::RenderGraphExecutionStats> timings;
-        RECORD_REQUIRE(executor.collectCompletedGpuExecutionStats(timings));
+        RECORD_REQUIRE(executor.collectCompletedGpuExecutionStats().transform([&](auto value) { timings = std::move(value); }));
         if (context.device.capabilities().timestampQueries) { RECORD_CHECK(timings.size() == 2); }
         // The same lane pools must also work in the next frame generation.
         probe.finished = 0;
@@ -620,14 +620,16 @@ public:
         RECORD_CHECK(!a->begin(&frame) && !frame.sealRecording());
         RECORD_CHECK(!context.graphicsQueue.submit({.commandBuffers = &a, .commandBufferCount = 1}));
         render::SubmissionReceipt receipt;
-        RECORD_CHECK(!tracker.submitBatch(batch, {.commandBuffers = &a, .commandBufferCount = 1}, frame, receipt));
+        RECORD_CHECK(!tracker.submitBatch(batch, {.commandBuffers = &a, .commandBufferCount = 1}, frame).transform([&](auto value) { receipt = std::move(value); }));
         RECORD_CHECK(!receipt.accepted() && batch.valid());
         render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
-        RECORD_REQUIRE(tracker.submitBatch(batch, {.waitSemaphores = &wait, .waitSemaphoreCount = 1}, frame, receipt));
+        RECORD_REQUIRE(tracker.submitBatch(batch, {.waitSemaphores = &wait, .waitSemaphoreCount = 1}, frame).transform([&](auto value) { receipt = std::move(value); }));
         const auto prefix = receipt.completion();
         RECORD_CHECK(receipt.accepted() && !prefix.isComplete() && frame.recording() && frame.hasAcceptedWork());
         RECORD_CHECK(!frame.completion().isSubmitted() && frame.completion().value() == 0 && !frame.wait(0));
-        RECORD_CHECK(!tracker.submitBatch(batch, {}, frame, receipt) && !receipt.accepted());
+        const auto duplicateSubmit = tracker.submitBatch(batch, {}, frame);
+        RECORD_CHECK(render::hasError(duplicateSubmit, render::Error::InvalidArgument) && receipt.accepted());
+        RECORD_CHECK(receipt.completion().sameSubmission(prefix));
         auto tailOwner = std::make_shared<int>(2);
         std::weak_ptr<int> tailWeak = tailOwner;
         RECORD_REQUIRE(b->retainResource(std::move(tailOwner)));
@@ -640,7 +642,7 @@ public:
         RECORD_REQUIRE(last.seal(frame, {&c, 1}));
         RECORD_REQUIRE(frame.sealRecording());
         RECORD_CHECK(!frame.recording() && !first.prepare(frame) && !frame.completion().isSubmitted());
-        RECORD_REQUIRE(tracker.submitBatch(last, {}, frame, receipt));
+        RECORD_REQUIRE(tracker.submitBatch(last, {}, frame).transform([&](auto value) { receipt = std::move(value); }));
         RECORD_REQUIRE(frame.finishSubmission()); // Cancels unaccepted b only.
         RECORD_CHECK(frame.completion().isSubmitted() && !frame.completion().isComplete());
         RECORD_CHECK(!acceptedWeak.expired() && tailWeak.expired() && !first.reset());
@@ -673,13 +675,13 @@ public:
             render::RecordedBatch prefixBatch;
             RECORD_REQUIRE(prefixBatch.seal(frame, {&a, 1}));
             wait.semaphore = partialGate.get();
-            RECORD_REQUIRE(tracker.submitBatch(prefixBatch, {.waitSemaphores = &wait, .waitSemaphoreCount = 1}, frame, receipt));
+            RECORD_REQUIRE(tracker.submitBatch(prefixBatch, {.waitSemaphores = &wait, .waitSemaphoreCount = 1}, frame).transform([&](auto value) { receipt = std::move(value); }));
             render::CommandBuffer* copy = nullptr;
             RECORD_REQUIRE(copyContext.prepare(frame).transform([&](auto value) { copy = value; }));
             RECORD_REQUIRE(copyContext.record([&] { return copy->end(); }));
             render::RecordedBatch copyBatch;
             RECORD_REQUIRE(copyBatch.seal(frame, {&copy, 1}));
-            RECORD_REQUIRE(copyTracker.submitBatch(copyBatch, {}, frame, receipt));
+            RECORD_REQUIRE(copyTracker.submitBatch(copyBatch, {}, frame).transform([&](auto value) { receipt = std::move(value); }));
             if (!copyQueue->sameQueue(context.graphicsQueue)) { RECORD_REQUIRE(receipt.completion().wait(kTimeout)); }
             auto rejected = std::make_shared<render::SubmissionTransaction>(nullptr, nullptr);
             RECORD_REQUIRE(b->addSubmissionTransaction(rejected));
@@ -687,7 +689,8 @@ public:
             render::RecordedBatch tailBatch;
             RECORD_REQUIRE(tailBatch.seal(frame, {&b, 1}));
             rejected->cancel();
-            RECORD_CHECK(!tracker.submitBatch(tailBatch, {}, frame, receipt) && !receipt.accepted());
+            const auto rejectedTail = tracker.submitBatch(tailBatch, {}, frame);
+            RECORD_CHECK(render::hasError(rejectedTail, render::Error::InvalidArgument) && receipt.accepted());
             frame.cancel();
             RECORD_CHECK(frame.completion().isSubmitted() && !frame.completion().isComplete() &&
                 frame.completion().value() == 0 && !weak.expired());
@@ -707,13 +710,13 @@ public:
         RECORD_REQUIRE(movedBatch.seal(frame, {&a, 1}));
         {
             render::CommandBuffer moved(std::move(*a));
-            RECORD_CHECK(!movedBatch.valid() && !tracker.submitBatch(movedBatch, {}, frame, receipt));
+            RECORD_CHECK(!movedBatch.valid() && !tracker.submitBatch(movedBatch, {}, frame).transform([&](auto value) { receipt = std::move(value); }));
         }
         RECORD_CHECK(!movedBatch.valid());
         frame.cancel();
         RECORD_REQUIRE(first.reset());
         RECORD_REQUIRE(frame.begin(2));
-        RECORD_CHECK(!tracker.submitBatch(last, {}, frame, receipt));
+        RECORD_CHECK(!tracker.submitBatch(last, {}, frame).transform([&](auto value) { receipt = std::move(value); }));
         frame.cancel();
         return RhiTestResult::pass();
     }

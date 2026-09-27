@@ -64,8 +64,7 @@ public:
         const SceneAccelerationStructureBuildOptions& options = {});
     Result<> beginBuild(Device& device, Queue& queue, const scene::Scene& scene, std::string& log,
         const SceneAccelerationStructureBuildOptions& options = {});
-    Result<> pollBuild(bool& complete, std::string& log);
-    bool pollBuild();
+    [[nodiscard]] Result<bool> pollBuild(std::string& log);
     SceneAccelerationStructureBuildState buildState() const;
     Result<> updateInstanceTransforms(
         Device& device,

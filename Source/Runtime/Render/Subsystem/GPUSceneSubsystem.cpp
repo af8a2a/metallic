@@ -743,18 +743,10 @@ void GPUSceneSubsystem::retireViewGpuResources(
     }
 }
 
-GPUSceneViewId GPUSceneSubsystem::createView(const GPUSceneViewDesc& desc)
-{
-    GPUSceneViewId view;
-    std::string ignoredLog;
-    return createView(desc, view, ignoredLog) ? view : GPUSceneViewId{};
-}
 
-Result<> GPUSceneSubsystem::createView(
-    const GPUSceneViewDesc& desc,
-    GPUSceneViewId& view,
-    std::string& log)
+Result<GPUSceneViewId> GPUSceneSubsystem::createView(const GPUSceneViewDesc& desc, std::string& log)
 {
+    GPUSceneViewId view{};
     view = scene_.createView(desc);
     if (!view) {
         log = "GPUSceneSubsystem failed to allocate a CPU View slot";
@@ -767,15 +759,15 @@ Result<> GPUSceneSubsystem::createView(
         desc.hzbWidth != 0 || desc.hzbHeight != 0 ||
         desc.hzbMipCount != 0 || desc.hzbElementCount != 0;
     if (!requestsGpuResources) {
-        return {};
+        return view;
     }
 
     Result<> result = ensureViewGpuResources(view, desc, log);
     if (!result) {
         scene_.destroyView(view);
-        view = {};
+        return makeError(result.error());
     }
-    return result;
+    return view;
 }
 
 bool GPUSceneSubsystem::destroyView(GPUSceneViewId view)
@@ -931,7 +923,7 @@ Result<> GPUSceneSubsystem::ensureViewGpuResources(
         resource.structureStride = structureStride;
         std::shared_ptr<ResourceRegistry> registry;
         result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
-        if (result) { result = registry->storageBuffer(*resource.buffer, resource.resource); }
+        if (result) { result = registry->storageBuffer(*resource.buffer).transform([&](auto value) { resource.resource = std::move(value); }); }
         if (!result) { return result; }
         return {};
     };
@@ -1061,7 +1053,7 @@ Result<> GPUSceneSubsystem::recordInitialize(
             if (current != viewGpuResources_.end() && current->second == owned) {
                 scene_.invalidateViewGpuResources(owned->sourceView, true);
             }
-        });
+        }).transform([](auto) {});
     if (!result) { return result; }
     host_->retire(std::static_pointer_cast<void>(owned));
     std::vector<BufferBarrierDesc> barriers;
@@ -1177,11 +1169,11 @@ void GPUSceneSubsystem::sourceOverrideChanged(const scene::Scene* previousOverri
     sourceDirty_ = true;
 }
 
-Result<> GPUSceneSubsystem::acquireSourceOverride(
+Result<GPUSceneSourceOverrideToken> GPUSceneSubsystem::acquireSourceOverride(
     const scene::Scene* scene,
-    GPUSceneSourceOverrideToken& token,
     std::string& log)
 {
+    GPUSceneSourceOverrideToken token{};
     token = {};
     if (scene == nullptr) {
         log = "GPUScene source override lease requires a non-null Scene";
@@ -1208,7 +1200,7 @@ Result<> GPUSceneSubsystem::acquireSourceOverride(
     leasedSourceOverride_ = scene;
     token.value = tokenValue;
     sourceOverrideChanged(previousOverride);
-    return {};
+    return token;
 }
 
 bool GPUSceneSubsystem::releaseSourceOverride(GPUSceneSourceOverrideToken token)
@@ -1378,7 +1370,7 @@ Result<> GPUSceneSubsystem::recordPreGraph(
                 scene_.invalidateGpuResources();
                 if (gpuResources_ != nullptr) { scene_.setGlobalBufferViews(gpuResources_->views()); }
                 requestUpload(upload);
-            }, &pendingPublication_);
+            }).transform([&](auto transaction) { pendingPublication_ = std::move(transaction); });
         if (!result) { return result; }
     }
     if (upload == PendingUpload::Full) {
@@ -1468,7 +1460,7 @@ Result<> GPUSceneSubsystem::uploadFullScene(
         resource.structureStride = sizeof(T);
         std::shared_ptr<ResourceRegistry> registry;
         result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
-        if (result) { result = registry->storageBuffer(*resource.buffer, resource.resource); }
+        if (result) { result = registry->storageBuffer(*resource.buffer).transform([&](auto value) { resource.resource = std::move(value); }); }
         if (!result) { return result; }
 
         std::unique_ptr<Buffer> staging;
@@ -1727,10 +1719,9 @@ Result<> GPUSceneSubsystem::uploadInstances(
     return {};
 }
 
-Result<> GPUSceneSubsystem::createBindings(
-    GPUSceneConsumerBindings& bindings,
-    std::string& log) const
+Result<GPUSceneConsumerBindings> GPUSceneSubsystem::createBindings(std::string& log) const
 {
+    GPUSceneConsumerBindings bindings{};
     releaseBindings(bindings);
     const GPUSceneGlobalBufferViews& views = scene_.globalBufferViews();
     const uint32_t generation = scene_.drawSet().generation;
@@ -1773,7 +1764,7 @@ Result<> GPUSceneSubsystem::createBindings(
         releaseBindings(bindings);
         return makeError(Error::Failure);
     }
-    return {};
+    return bindings;
 }
 
 void GPUSceneSubsystem::releaseBindings(
@@ -1782,11 +1773,11 @@ void GPUSceneSubsystem::releaseBindings(
     bindings = {};
 }
 
-Result<> GPUSceneSubsystem::prepareShaderReload(
+Result<std::unique_ptr<RenderSubsystemShaderReload>> GPUSceneSubsystem::prepareShaderReload(
     const RenderSubsystemInitContext& context,
-    std::unique_ptr<RenderSubsystemShaderReload>& outReload,
     std::string& log)
 {
+    std::unique_ptr<RenderSubsystemShaderReload> outReload{};
     outReload.reset();
     if (device_ != &context.device || host_ != &context.host) {
         log = "GPUSceneSubsystem shader reload requires its initialized Device and host";
@@ -1797,8 +1788,8 @@ Result<> GPUSceneSubsystem::prepareShaderReload(
         for (const auto& grid : grids) {
             if (grid == nullptr) { continue; }
             std::unique_ptr<RenderSubsystemShaderReload> gridReload;
-            Result<> result = grid->prepareShaderReload(context.device, gridReload, log);
-            if (!result) { return result; }
+            Result<> result = grid->prepareShaderReload(context.device, log).transform([&](auto value) { gridReload = std::move(value); });
+            if (!result) { return makeError(result.error()); }
             if (gridReload != nullptr) {
                 reload->entries.push_back({grid, std::move(gridReload)});
             }
@@ -1809,7 +1800,7 @@ Result<> GPUSceneSubsystem::prepareShaderReload(
             std::to_string(reload->entries.size()) + " View/frame-slot grids";
         outReload = std::move(reload);
     }
-    return {};
+    return outReload;
 }
 
 void GPUSceneSubsystem::publishVisibilityStream(GPUSceneViewId view, uint64_t frameIndex,
@@ -2149,7 +2140,7 @@ Result<> GPUSceneSubsystem::recordBuildHzb(
             if (current != viewGpuResources_.end() && current->second == resources) {
                 scene_.invalidateViewGpuResources(view, true);
             }
-        });
+        }).transform([](auto) {});
     if (!result) { return result; }
     host_->retire(std::static_pointer_cast<void>(owned->second));
     if (desc.singleDispatch) {

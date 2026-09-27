@@ -188,7 +188,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
     const auto drain = [&]() {
         checkRaster(bool(frameSubmissions_.wait()) && bool(graphExecutor_->waitForSubmittedWork()), "Raster benchmark GPU drain failed");
         std::vector<RenderGraphExecutionStats> completed;
-        checkRaster(bool(graphExecutor_->collectCompletedGpuExecutionStats(completed)), "Raster benchmark query resolve failed");
+        checkRaster(bool(graphExecutor_->collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); })), "Raster benchmark query resolve failed");
         for (const auto& stats : completed) { profiler_.updateRenderGraphGpuStats(stats); }
     };
     try {

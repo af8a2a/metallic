@@ -48,10 +48,18 @@ uint32_t selectScreenSpaceShadowLight(std::span<const GpuPunctualLight> lights, 
 // One shadow history for the selected punctual light. The owner serializes frames.
 class ScreenSpaceShadows {
 public:
-    Result<> record(Device& device, CommandBuffer& commands, Streamer& streamer,
-        TextureView& depth, const ViewConstants& view, std::span<const GpuPunctualLight> lights,
-        uint64_t sceneRevision, uint64_t transformRevision, const ScreenSpaceShadowSettings& settings,
-        ScreenSpaceShadowResult& output, std::string& log, ScenePathTraceResources* geometry,
+    [[nodiscard]] Result<ScreenSpaceShadowResult> record(
+        Device& device,
+        CommandBuffer& commands,
+        Streamer& streamer,
+        TextureView& depth,
+        const ViewConstants& view,
+        std::span<const GpuPunctualLight> lights,
+        uint64_t sceneRevision,
+        uint64_t transformRevision,
+        const ScreenSpaceShadowSettings& settings,
+        std::string& log,
+        ScenePathTraceResources* geometry,
         const MeshletStreamDeferredGpuResourcesView* streamGeometry = nullptr,
         CpuProfileRecorder* profiler = nullptr);
     void clear();

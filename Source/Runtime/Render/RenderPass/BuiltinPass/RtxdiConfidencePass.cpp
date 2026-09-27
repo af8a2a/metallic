@@ -107,13 +107,11 @@ public:
         }
 
         ShaderCompileResult compileResult;
-        result = compileSlangShaderToSpirv(
-            SlangShaderDesc{
+        result = compileSlangShaderToSpirv(SlangShaderDesc{
                 .moduleName = kRtxdiConfidenceShaderModuleName,
                 .entryPointName = kRtxdiConfidenceEntryPoint,
                 .searchPath = kTriangleShaderSearchPath,
-            },
-            compileResult);
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             log = resultMessage(
                 "compileSlangShaderToSpirv(RtxdiConfidence.rtxdiConfidenceMain)",

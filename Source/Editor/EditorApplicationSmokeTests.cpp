@@ -315,8 +315,7 @@ bool EditorApplication::runSceneSwitchSmokeTest()
             auto* streamer = subsystemHost_.get<render::StreamerSubsystem>();
             std::shared_ptr<render::SceneResourceSnapshot> materials;
             std::string textureLog;
-            if (!streamer->manager().acquire(*device_, *graphicsQueue_, renderGraph_.findNode("Deferred")->properties,
-                source, render::SceneResourceFeatureBits::Materials, materials, textureLog)) { return false; }
+            if (!streamer->manager().acquire(*device_, *graphicsQueue_, renderGraph_.findNode("Deferred")->properties, source, render::SceneResourceFeatureBits::Materials, textureLog).transform([&](auto value) { materials = std::move(value); })) { return false; }
             const auto textures = materials->pathTraceResources->textureStats();
             spdlog::info("[Smoke Full Switch] Texture streaming cycle={} resident={} pending={} retired={} upgrades={} feedback={}",
                 cycle,textures.residentAllocationBytes,textures.pendingAllocationBytes,textures.retiredAllocationBytes,

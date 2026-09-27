@@ -562,7 +562,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
                 }
                 const Json stageTimes = observer.readTimings();
                 std::vector<RenderGraphExecutionStats> capturedTimings;
-                checkRoam(bool(preview.collectCompletedGpuExecutionStats(capturedTimings)), "Cannot collect checkpoint GPU timings");
+                checkRoam(bool(preview.collectCompletedGpuExecutionStats().transform([&](auto value) { capturedTimings = std::move(value); })), "Cannot collect checkpoint GPU timings");
                 Json nodeTimes;
                 for (const auto& timing : capturedTimings) {
                     if (timing.executionId == preview.executionStats().executionId) {
@@ -607,7 +607,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
                 checkRoam(elapsed < convergenceDeadline || cut.at("visibleOverTargetRefinements") == 0,
                     "Visible refinements failed the 1.5 px convergence deadline");
                 std::vector<RenderGraphExecutionStats> checkpointTimings;
-                checkRoam(bool(preview.collectCompletedGpuExecutionStats(checkpointTimings)), "Cannot retire checkpoint timings");
+                checkRoam(bool(preview.collectCompletedGpuExecutionStats().transform([&](auto value) { checkpointTimings = std::move(value); })), "Cannot retire checkpoint timings");
             }
             preview.setDebugObserver(nullptr);
             const auto start = Clock::now();
@@ -618,7 +618,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
             cpuTimes.push_back(preview.executionStats().cpuMilliseconds);
             checkRoam(preview.pixels().empty(), "Timed frame performed an output readback");
             std::vector<RenderGraphExecutionStats> timings;
-            checkRoam(bool(preview.collectCompletedGpuExecutionStats(timings)), "Cannot collect GPU timings");
+            checkRoam(bool(preview.collectCompletedGpuExecutionStats().transform([&](auto value) { timings = std::move(value); })), "Cannot collect GPU timings");
             for (const auto& timing : timings) {
                 if (timing.gpuTimingAvailable) { gpuTimes.push_back(timing.gpuMilliseconds); }
                 if (startupTrace && timing.executionId <= startupTraceFrames) {
@@ -883,7 +883,7 @@ public:
             std::unordered_map<uint64_t, uint32_t> executionFrames;
             const auto collect = [&]() {
                 std::vector<RenderGraphExecutionStats> completed;
-                checkRoam(bool(executor.collectCompletedGpuExecutionStats(completed)), "GPU timing collection failed");
+                checkRoam(bool(executor.collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); })), "GPU timing collection failed");
                 for (auto& stats : completed) {
                     const auto found = executionFrames.find(stats.executionId);
                     if (found == executionFrames.end()) { continue; } // Final diagnostic frame is untimed.

@@ -154,7 +154,7 @@ public:
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "RealtimeGuideProbe",
-            .entryPointName = "environmentPrefilterProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+            .entryPointName = "environmentPrefilterProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {{.binding = 2}, {.binding = 3}};
         return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
@@ -239,7 +239,7 @@ public:
     {
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "RealtimeGuideProbe",
-            .entryPointName = "realtimeGuideProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader);
+            .entryPointName = "realtimeGuideProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
@@ -680,21 +680,19 @@ public:
             require(!streamer->sceneReadiness().ready && streamer->sceneReadiness().requiredPages != 0,
                 "Scene became presentable before fallback uploads");
             const scene::Scene* metadata = nullptr;
-            require(bool(streamer->manager().resolveScene(graph.findNode("VBuffer")->properties, nullptr, metadata, log)), log);
+            require(bool(streamer->manager().resolveScene(graph.findNode("VBuffer")->properties, nullptr, log).transform([&](auto value) { metadata = std::move(value); })), log);
             require(metadata && metadata->hasStreamGeometry(), "Default producer must resolve streaming metadata");
             for (const auto& primitive : metadata->renderPrimitives()) {
                 require(primitive.positions.empty() && primitive.indices.empty(), "Full source geometry became resident");
             }
             std::shared_ptr<SceneResourceSnapshot> materials;
-            require(bool(streamer->manager().acquire(context.device, context.graphicsQueue,
-                graph.findNode("Deferred")->properties, metadata, SceneResourceFeatureBits::Materials, materials, log)), log);
+            require(bool(streamer->manager().acquire(context.device, context.graphicsQueue, graph.findNode("Deferred")->properties, metadata, SceneResourceFeatureBits::Materials, log).transform([&](auto value) { materials = std::move(value); })), log);
             require(materials->pathTraceResources->valid() && materials->pathTraceResources->materialBuffer() != nullptr &&
                 materials->pathTraceResources->shadingVertexBuffer() == nullptr &&
                 materials->pathTraceResources->indexBuffer() == nullptr &&
                 !materials->pathTraceResources->accelerationStructure().valid(), "Material acquisition imported resident geometry/RTAS");
             std::shared_ptr<SceneResourceSnapshot> rejected;
-            require(!streamer->manager().acquire(context.device, context.graphicsQueue,
-                graph.findNode("Deferred")->properties, metadata, SceneResourceFeatureBits::Geometry, rejected, log),
+            require(!streamer->manager().acquire(context.device, context.graphicsQueue, graph.findNode("Deferred")->properties, metadata, SceneResourceFeatureBits::Geometry, log).transform([&](auto value) { rejected = std::move(value); }),
                 "Metadata must not silently fall back to resident import");
             const auto draw = [&]() {
                 require(bool(executor.execute({.graphicsQueue = &context.graphicsQueue,

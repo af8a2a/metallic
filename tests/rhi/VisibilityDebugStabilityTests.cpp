@@ -55,7 +55,7 @@ public:
             ShaderCompileResult compiled;
             const Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityBufferComposite",
                 .entryPointName = i == 0 ? "visibilityBufferCompositeVertexMain" : "visibilityBufferCompositeFragmentMain",
-                .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled);
+                .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
             log = compiled.diagnostics; DEBUG_REQUIRE(result);
             DEBUG_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { i == 0 ? vertex : fragment = std::move(rhiValue); }));
         }

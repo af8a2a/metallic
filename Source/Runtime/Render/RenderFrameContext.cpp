@@ -408,26 +408,26 @@ Result<> QueueSubmissionTracker::initialize(Device& device, Queue& queue)
 Result<> QueueSubmissionTracker::submit(const QueueSubmitDesc& desc, RenderFrameContext& frame)
 {
     if (!frame.recording() || !frame.recordingsFinished()) { return makeError(Error::InvalidArgument); }
-    GpuCompletionPoint completion;
-    Result<> result = submitSegment(desc, frame, completion);
-    return result ? frame.finishSubmission() : result;
+    auto completion = submitSegment(desc, frame);
+    if (!completion) { return makeError(completion.error()); }
+    return frame.finishSubmission();
 }
 
-Result<> QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame,
-    GpuCompletionPoint& completion)
+Result<GpuCompletionPoint> QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame)
 {
     if (desc.commandBufferCount && !desc.commandBuffers) { return makeError(Error::InvalidArgument); }
     RecordedBatch batch;
     auto result = batch.seal(frame, {desc.commandBuffers, desc.commandBufferCount});
-    if (!result) { return result; }
+    if (!result) { return makeError(result.error()); }
     QueueSubmitDesc synchronization = desc;
     synchronization.commandBuffers = nullptr;
     synchronization.commandBufferCount = 0;
-    SubmissionReceipt receipt;
-    result = submitBatch(batch, synchronization, frame, receipt);
-    if (result) { completion = receipt.completion(); }
-    else { for (auto& state : batch.states_) { state->sealed = false; } }
-    return result;
+    auto receipt = submitBatch(batch, synchronization, frame);
+    if (!receipt) {
+        for (auto& state : batch.states_) { state->sealed = false; }
+        return makeError(receipt.error());
+    }
+    return receipt->completion();
 }
 
 Result<> RecordedBatch::seal(RenderFrameContext& frame, std::span<CommandBuffer* const> commands)
@@ -463,11 +463,12 @@ bool RecordedBatch::valid() const
     return true;
 }
 
-Result<> QueueSubmissionTracker::submitBatch(const RecordedBatch& batch, const QueueSubmitDesc& synchronization,
-    RenderFrameContext& frame, SubmissionReceipt& receipt)
+Result<SubmissionReceipt> QueueSubmissionTracker::submitBatch(
+    const RecordedBatch& batch,
+    const QueueSubmitDesc& synchronization,
+    RenderFrameContext& frame)
 {
     profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::submitNs);
-    receipt = {};
     using State = GpuCompletionPoint::State;
     if (!batch.valid() || batch.frame_ != &frame || !batch.generation_.sameSubmission(frame.completion()) ||
         synchronization.commandBufferCount || synchronization.commandBuffers) { return makeError(Error::InvalidArgument); }
@@ -503,7 +504,7 @@ Result<> QueueSubmissionTracker::submitBatch(const RecordedBatch& batch, const Q
     }
     for (const auto& point : frame.dependencies_) {
         Result<> result = point.appendWaits(waits);
-        if (!result) { return result; }
+        if (!result) { return makeError(result.error()); }
     }
     QueueSubmitDesc submission = desc;
     submission.waitSemaphores = waits.data();
@@ -516,7 +517,7 @@ Result<> QueueSubmissionTracker::submitBatch(const RecordedBatch& batch, const Q
     state.signals.reserve(state.signals.size() + 1);
     Result<> result = queue_->submitImpl(submission, true);
     if (!result) {
-        return result;
+        return makeError(result.error());
     }
     const auto existing = std::find_if(state.signals.begin(), state.signals.end(),
         [&](const auto& signal) { return signal.timeline == timeline_; });
@@ -527,9 +528,10 @@ Result<> QueueSubmissionTracker::submitBatch(const RecordedBatch& batch, const Q
     }
     ++nextValue_;
     segment->status = State::Status::Submitted;
+    SubmissionReceipt receipt;
     receipt.completion_.state_ = std::move(segment);
     lastSubmission_ = receipt.completion_;
-    return {};
+    return receipt;
 }
 
 Result<> QueueSubmissionTracker::wait(uint64_t timeoutNanoseconds) const

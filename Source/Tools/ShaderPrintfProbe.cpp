@@ -127,8 +127,7 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     render::setSlangShaderDebugMode(render::SlangShaderDebugMode::Disabled);
     const auto result = render::compileSlangShaderToSpirv({.moduleName = trace ? "ShaderTraceFixture" : "ShaderPrintfEcho", .entryPointName = entry,
         .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .macroDefines = macros.data(), .macroDefineCount = uint32_t(macros.size()),
-        .descriptorHeapMode = mode == "heap-native" ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped},
-        {.enableDiskCache = false}, compiled);
+        .descriptorHeapMode = mode == "heap-native" ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped}, {.enableDiskCache = false}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
     report["compiler"] = {{"profile", "spirv_1_6"}, {"diskCache", false}, {"shaderDebugMode", "Disabled"},
         {"diagnostics", compiled.diagnostics}, {"dependencies", compiled.dependencies}, {"sourceEntryPoint", entry}, {"spirvEntryPoint", "main"},
         {"macro", {{"PRINTF_RECORD_COUNT", macroValue}}}};

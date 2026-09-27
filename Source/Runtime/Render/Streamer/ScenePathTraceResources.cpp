@@ -164,7 +164,11 @@ Result<> createSharedTexture(Device& device, const TextureDesc& desc, std::share
     output = std::move(texture);
     return result;
 }
-Result<> createSharedTextureView(Device& device, Texture& texture, const TextureViewDesc& desc, std::shared_ptr<TextureView>& output)
+Result<> createSharedTextureView(
+    Device& device,
+    Texture& texture,
+    const TextureViewDesc& desc,
+    std::shared_ptr<TextureView>& output)
 {
     std::unique_ptr<TextureView> view;
     auto result = device.createTextureView(texture, desc).transform([&](auto rhiValue) { view = std::move(rhiValue); });
@@ -1259,7 +1263,8 @@ bool buildGpuScene(
     return true;
 }
 
-Result<SceneAccelerationStructureBuildOptions> sceneAccelerationStructureOptions(const RenderGraphProperties& properties)
+Result<SceneAccelerationStructureBuildOptions> sceneAccelerationStructureOptions(
+    const RenderGraphProperties& properties)
 {
     const auto value = properties.find("topLevelBackend");
     if (value == properties.end()) { return SceneAccelerationStructureBuildOptions{}; }
@@ -1671,7 +1676,12 @@ struct ScenePathTraceResources::Impl {
         textureMigration = std::move(migration);
     }
 
-    Result<> beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler, bool freezePublication)
+    Result<> beginTextureStreaming(
+        CommandBuffer& commands,
+        uint64_t frameIndex,
+        Buffer*& feedback,
+        CpuProfileRecorder* profiler,
+        bool freezePublication)
     {
         if (!emptyTextureFeedback) {
             std::unique_ptr<Buffer> buffer;
@@ -2778,7 +2788,7 @@ Result<> ScenePathTraceResources::prepare(
         bool complete = false;
         scene::SceneLoadProgress progress;
         while (result && !complete) {
-            result = pumpPrepareAsync(std::numeric_limits<double>::max(), complete, progress, log);
+            result = pumpPrepareAsync(std::numeric_limits<double>::max(), progress, log).transform([&](auto value) { complete = std::move(value); });
             if (result && !complete) {
                 if (impl_->textureDecodePending) { impl_->ktxPrefetch->wait(); }
                 else { std::this_thread::yield(); }
@@ -3055,12 +3065,12 @@ Result<> ScenePathTraceResources::beginPrepareAsync(
     return {};
 }
 
-Result<> ScenePathTraceResources::pumpPrepareAsync(
+Result<bool> ScenePathTraceResources::pumpPrepareAsync(
     double budgetMilliseconds,
-    bool& complete,
     scene::SceneLoadProgress& progress,
     std::string& log)
 {
+    bool complete{};
     complete = false;
     progress.status = scene::SceneLoadStatus::Running;
     if (impl_->asyncPrepareStage == Impl::AsyncPrepareStage::Ready || impl_->valid()) {
@@ -3068,7 +3078,7 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
         progress.status = scene::SceneLoadStatus::Succeeded;
         progress.phase = scene::SceneLoadPhase::Completed;
         progress.fraction = 1.0f;
-        return {};
+        return complete;
     }
     if (impl_->asyncPrepareStage == Impl::AsyncPrepareStage::Idle ||
         impl_->asyncPrepareStage == Impl::AsyncPrepareStage::Failed ||
@@ -3108,7 +3118,7 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
         case Impl::AsyncPrepareStage::MaterialTextures: {
             if (impl_->uploadBatches.size() >= Impl::kMaxUploadBatchesInFlight) {
                 if (!impl_->backpressureBegin) { impl_->backpressureBegin = SceneResourceLogClock::now(); }
-                return {};
+                return complete;
             }
             const uint64_t nextUploadBytes =
                 impl_->nextMaterialTextureUploadByteSize(*impl_->asyncScene);
@@ -3127,10 +3137,10 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
                 log);
             if (!result) {
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
-                return result;
+                return result.transform([&] { return std::move(complete); });
             }
             progress.phase = scene::SceneLoadPhase::GpuUpload;
-            if (impl_->textureDecodePending) { return {}; }
+            if (impl_->textureDecodePending) { return complete; }
             progress.completedUnits = impl_->asyncTextureCursor;
             progress.totalUnits = impl_->asyncScene->textures().size();
             progress.fraction = 0.65f + 0.10f * static_cast<float>(impl_->asyncTextureCursor) /
@@ -3160,7 +3170,7 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
             impl_->asyncPrepareStage = Impl::AsyncPrepareStage::AccelerationStructure;
             progress.phase = scene::SceneLoadPhase::GpuUpload;
             progress.fraction = 0.82f;
-            return {};
+            return complete;
         case Impl::AsyncPrepareStage::AccelerationStructure: {
             if (impl_->materialOnly) {
                 impl_->asyncBufferStep = 4; // Only material payload; no resident buffers or RTAS.
@@ -3178,17 +3188,17 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
                 log, impl_->accelerationOptions);
             if (!result) {
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
-                return result;
+                return result.transform([&] { return std::move(complete); });
             }
             impl_->asyncBufferStep = 0;
             impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Buffers;
             progress.phase = scene::SceneLoadPhase::AccelerationStructures;
             progress.fraction = 0.87f;
-            return {};
+            return complete;
         }
         case Impl::AsyncPrepareStage::Buffers: {
             if (impl_->uploadBatches.size() >= Impl::kMaxUploadBatchesInFlight) {
-                return {};
+                return complete;
             }
             const void* data = nullptr;
             uint64_t byteSize = 0;
@@ -3264,7 +3274,7 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
                 &impl_->stagingArena);
             if (!result) {
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
-                return result;
+                return result.transform([&] { return std::move(complete); });
             }
             ++impl_->asyncBufferStep;
             progress.phase = scene::SceneLoadPhase::GpuUpload;
@@ -3277,7 +3287,7 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
         }
         case Impl::AsyncPrepareStage::SubmitPartialUploads:
             if (impl_->uploadBatches.size() >= Impl::kMaxUploadBatchesInFlight) {
-                return {};
+                return complete;
             }
             result = impl_->submitTextureUploads(
                 *impl_->device,
@@ -3286,7 +3296,7 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
             if (!result) {
                 impl_->ktxPrefetch.reset();
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
-                return result;
+                return result.transform([&] { return std::move(complete); });
             }
             progress.phase = scene::SceneLoadPhase::GpuUpload;
             impl_->asyncPrepareStage = impl_->partialUploadResumeStage;
@@ -3294,7 +3304,7 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
             continue;
         case Impl::AsyncPrepareStage::SubmitUploads:
             if (impl_->uploadBatches.size() >= Impl::kMaxUploadBatchesInFlight) {
-                return {};
+                return complete;
             }
             result = impl_->submitTextureUploads(
                 *impl_->device,
@@ -3302,22 +3312,20 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
                 log);
             if (!result) {
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
-                return result;
+                return result.transform([&] { return std::move(complete); });
             }
             impl_->asyncPrepareStage = Impl::AsyncPrepareStage::WaitForGpu;
             impl_->finalWaitBegin = SceneResourceLogClock::now();
             progress.phase = scene::SceneLoadPhase::AccelerationStructures;
             progress.fraction = 0.94f;
-            return {};
+            return complete;
         case Impl::AsyncPrepareStage::WaitForGpu:
             progress.phase = scene::SceneLoadPhase::AccelerationStructures;
             progress.fraction = 0.97f;
             {
                 bool accelerationStructuresComplete = impl_->materialOnly;
                 std::string rtxLog;
-                result = impl_->materialOnly ? Result<>{} : impl_->rtxBuilder.pollBuild(
-                    accelerationStructuresComplete,
-                    rtxLog);
+                result = impl_->materialOnly ? Result<>{} : impl_->rtxBuilder.pollBuild(rtxLog).transform([&](auto value) { accelerationStructuresComplete = std::move(value); });
                 appendLogBlock(log, rtxLog);
                 if (!result) {
                     impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
@@ -3326,10 +3334,10 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
                     progress.error = rtxLog.empty()
                         ? "Scene acceleration-structure build failed."
                         : rtxLog;
-                    return result;
+                    return result.transform([&] { return std::move(complete); });
                 }
                 if (!impl_->textureUploadsReady() || !accelerationStructuresComplete) {
-                    return {};
+                    return complete;
                 }
             }
             impl_->retireCompletedTextureUploads();
@@ -3357,7 +3365,7 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
             progress.status = scene::SceneLoadStatus::Succeeded;
             progress.phase = scene::SceneLoadPhase::Finalizing;
             progress.fraction = 0.97f;
-            return {};
+            return complete;
         case Impl::AsyncPrepareStage::Ready:
         case Impl::AsyncPrepareStage::Idle:
         case Impl::AsyncPrepareStage::Failed:
@@ -3365,7 +3373,7 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
         }
         break;
     }
-    return {};
+    return complete;
 }
 
 bool ScenePathTraceResources::preparing() const
@@ -3434,9 +3442,7 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
             }
             bool accelerationStructuresComplete = false;
             std::string rtxLog;
-            result = impl_->rtxBuilder.pollBuild(
-                accelerationStructuresComplete,
-                rtxLog);
+            result = impl_->rtxBuilder.pollBuild(rtxLog).transform([&](auto value) { accelerationStructuresComplete = std::move(value); });
             appendLogBlock(log, rtxLog);
             if (!result) {
                 impl_->clear();
@@ -3550,7 +3556,12 @@ Result<> ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandB
     return impl_->uploadMaterialTextures(commandBuffer);
 }
 
-Result<> ScenePathTraceResources::beginTextureStreaming(CommandBuffer& commands, uint64_t frameIndex, Buffer*& feedback, CpuProfileRecorder* profiler, bool freezePublication)
+Result<> ScenePathTraceResources::beginTextureStreaming(
+    CommandBuffer& commands,
+    uint64_t frameIndex,
+    Buffer*& feedback,
+    CpuProfileRecorder* profiler,
+    bool freezePublication)
 {
     return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler, freezePublication);
 }
@@ -3655,7 +3666,7 @@ bool ScenePathTraceResources::gpuWorkComplete()
     Result<> result;
     if (!accelerationStructureComplete) {
         std::string log;
-        result = impl_->rtxBuilder.pollBuild(accelerationStructureComplete, log);
+        result = impl_->rtxBuilder.pollBuild(log).transform([&](auto value) { accelerationStructureComplete = std::move(value); });
         if (!result && !log.empty()) {
             spdlog::error("[SceneResources] {}", log);
         }
