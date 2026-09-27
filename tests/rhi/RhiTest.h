@@ -57,6 +57,7 @@ struct RhiTestContext {
     std::atomic_uint* validationMessageCount = nullptr;
     render::profiling::NsightGraphicsCapture* nsightCapture = nullptr;
     bench::Evidence* evidence = nullptr;
+    const render::DeviceDesc* deviceDesc = nullptr;
 };
 
 class RhiTest {

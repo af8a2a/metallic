@@ -3,6 +3,7 @@
 #include <string>
 
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 
 #include "Runtime/Render/Core/HistoryResources.h"
 
@@ -31,6 +32,11 @@ render::TextureDesc makeHistoryTextureDesc(uint32_t width, uint32_t height)
 
 class HistoryTextureLifecycleTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"history.texture.lifecycle.contract"}, bench::Layer::Core, "core", "core");
+    }
+
     HistoryTextureLifecycleTest()
     {
         type = RhiTestType::Resource;
@@ -113,6 +119,11 @@ public:
 
 class HistoryBufferLifecycleTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"history.buffer.lifecycle.contract"}, bench::Layer::Core, "core", "core");
+    }
+
     HistoryBufferLifecycleTest()
     {
         type = RhiTestType::Resource;
@@ -271,6 +282,11 @@ public:
 
 class HistoryResourceTransitionSmokeTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"history.transition.rollback.contract"}, bench::Layer::Core, "core", "core");
+    }
+
     HistoryResourceTransitionSmokeTest()
     {
         type = RhiTestType::Command;
@@ -420,6 +436,11 @@ public:
 
 class HistoryTexturePlannedStateTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"history.plannedState.transaction.contract"}, bench::Layer::Core, "core", "core");
+    }
+
     HistoryTexturePlannedStateTest()
     {
         type = RhiTestType::Command;

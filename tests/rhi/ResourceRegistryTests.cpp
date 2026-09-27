@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -99,11 +100,16 @@ render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kerne
 
 class RegistryIdentityTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"registry.identity.capacity.contract", "registry.descriptor.recycle.contract"}, bench::Layer::Core, "binding", "binding");
+    }
+
     RegistryIdentityTest() { type = RhiTestType::Resource; name = "registry_identity_capacity_and_views"; }
     RhiTestResult run(RhiTestContext& context) override
     {
-        std::unique_ptr<render::Device> device;
-        REG_REQUIRE(render::createDevice({.applicationName = "Registry identity", .enableValidation = context.enableValidation,
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Registry identity", .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         render::ResourceRegistry registry;
         REG_REQUIRE(registry.initialize(*device, {.maxSamplers = 2, .maxSampledImages = 2,
@@ -186,11 +192,16 @@ public:
 
 class RegistrySubmissionTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"parameters.submission.lifetime.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
+    }
+
     RegistrySubmissionTest() { type = RhiTestType::Command; name = "registry_typed_submission_lifetime"; }
     RhiTestResult run(RhiTestContext& context) override
     {
-        std::unique_ptr<render::Device> device;
-        REG_REQUIRE(render::createDevice({.applicationName = "Registry lifetime", .enableValidation = context.enableValidation,
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Registry lifetime", .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry, sameRegistry;
@@ -267,6 +278,7 @@ public:
         void* mapped = output->map();
         REG_CHECK(mapped != nullptr);
         std::memcpy(values.data(), mapped, sizeof(values));
+        bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(values));
         output->unmap();
         REG_CHECK((values == std::array<uint32_t, 3>{111, 211, 322}));
         REG_REQUIRE(first.pool->reset());
@@ -311,12 +323,17 @@ METALLIC_REGISTER_RHI_TEST(RegistrySubmissionTest);
 
 class RegistryPipelinedParametersTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"parameters.pipelined.append.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
+    }
+
     RegistryPipelinedParametersTest() { type = RhiTestType::Command; name = "registry_pipelined_parameter_append"; }
     RhiTestResult run(RhiTestContext& context) override
     {
         for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
-            std::unique_ptr<render::Device> device;
-            REG_REQUIRE(render::createDevice({.applicationName = "Pipelined parameters", .enableValidation = context.enableValidation,
+            bench::TestDevice device;
+            REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Pipelined parameters", .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
             auto& queue = *device->getQueue(render::QueueType::Graphics);
             std::shared_ptr<render::ResourceRegistry> registry;
@@ -388,6 +405,7 @@ public:
             REG_CHECK(mapped);
             std::array<uint32_t, 3> values;
             std::memcpy(values.data(), mapped, sizeof(values));
+            bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(values));
             output->unmap();
             REG_CHECK((values == std::array<uint32_t, 3>{111, 211, 311}));
         }
@@ -398,11 +416,18 @@ METALLIC_REGISTER_RHI_TEST(RegistryPipelinedParametersTest);
 
 class RegistryPartialSubmissionTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        auto metadata = bench::gpuMetadata({"parameters.partialSubmission.retention.contract"}, bench::Layer::Core, "async", "sync");
+        metadata.requirements.queues.push_back(render::QueueType::Copy);
+        return metadata;
+    }
+
     RegistryPartialSubmissionTest() { type = RhiTestType::Command; name = "registry_partial_multi_queue_retention"; }
     RhiTestResult run(RhiTestContext& context) override
     {
-        std::unique_ptr<render::Device> device;
-        REG_REQUIRE(render::createDevice({.applicationName = "Registry partial submission",
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Registry partial submission",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& graphics = *device->getQueue(render::QueueType::Graphics);
         auto* copy = device->getQueue(render::QueueType::Copy);
@@ -460,11 +485,16 @@ METALLIC_REGISTER_RHI_TEST(RegistryPartialSubmissionTest);
 
 class RegistryTextureSubmissionTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"binding.texture.array.lifetime.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
+    }
+
     RegistryTextureSubmissionTest() { type = RhiTestType::Rendering; name = "registry_texture_array_submission_lifetime"; }
     RhiTestResult run(RhiTestContext& context) override
     {
-        std::unique_ptr<render::Device> device;
-        REG_REQUIRE(render::createDevice({.applicationName = "Registry texture array",
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Registry texture array",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
@@ -528,6 +558,7 @@ public:
         REG_CHECK(mapped != nullptr);
         std::array<uint32_t, 3> values;
         std::memcpy(values.data(), mapped, sizeof(values));
+        bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(values));
         output->unmap();
         REG_CHECK((values == std::array<uint32_t, 3>{1001, 1001, 1001}));
         REG_REQUIRE(recording.pool->reset());
@@ -540,14 +571,19 @@ METALLIC_REGISTER_RHI_TEST(RegistryTextureSubmissionTest);
 // Native provenance and narrowing are checked without creating descriptors.
 class BufferSliceValidationTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"bufferSlice.range.provenance.contract"}, bench::Layer::Core, "binding", "binding");
+    }
+
     BufferSliceValidationTest() { type = RhiTestType::Resource; name = "buffer_slice_range_and_provenance"; }
     RhiTestResult run(RhiTestContext& context) override
     {
-        std::unique_ptr<render::Device> device, other;
-        REG_REQUIRE(render::createDevice({.applicationName = "Buffer slice ranges",
+        bench::TestDevice device, other;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Buffer slice ranges",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
-        REG_REQUIRE(render::createDevice({.applicationName = "Buffer slice foreign source",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { other = std::move(rhiValue); }));
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Buffer slice foreign source",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}, true).transform([&](auto rhiValue) { other = std::move(rhiValue); }));
         std::unique_ptr<render::Buffer> buffer;
         REG_REQUIRE(makeBuffer(*device, buffer));
         render::BufferSlice parent, child, invalid, empty;
@@ -618,11 +654,16 @@ METALLIC_REGISTER_RHI_TEST(BufferSliceValidationTest);
 
 class BufferSliceSubmissionTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"bufferSlice.bda.copy.indirect.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
+    }
+
     BufferSliceSubmissionTest() { type = RhiTestType::Rendering; name = "buffer_slice_bda_copy_compute_indirect_lifetime"; }
     RhiTestResult run(RhiTestContext& context) override
     {
-        std::unique_ptr<render::Device> device;
-        REG_REQUIRE(render::createDevice({.applicationName = "Buffer slice data chain",
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Buffer slice data chain",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
@@ -738,6 +779,7 @@ public:
         REG_CHECK(outputWords);
         std::array<uint32_t, 16> values;
         std::memcpy(values.data(), outputWords, sizeof(values));
+        bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(values));
         output->unmap();
         for (uint32_t i = 0; i < values.size(); ++i) {
             const auto expected = i >= 5 && i < 9 ? 221 + (i - 5) * 2 : 0xdeadbeef;
@@ -753,6 +795,11 @@ METALLIC_REGISTER_RHI_TEST(BufferSliceSubmissionTest);
 
 class ResourceRangeContractTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"resource.range.shaderInput.contract"}, bench::Layer::Rhi, "binding", "binding");
+    }
+
     ResourceRangeContractTest() { type = RhiTestType::Resource; name = "resource_range_and_shader_input_contract"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -814,6 +861,11 @@ METALLIC_REGISTER_RHI_TEST(ResourceRangeContractTest);
 
 class SynchronizationScopesTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"synchronization.atomic.validation.contract"}, bench::Layer::Rhi, "core", "sync");
+    }
+
     SynchronizationScopesTest() { type = RhiTestType::Command; name = "synchronization_scopes_batch_and_validation"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -902,6 +954,11 @@ struct BarrierEncodingCapture {
 
 class SynchronizationEncodingTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"synchronization.explicitScopes.encoding"}, bench::Layer::Rhi, "core", "sync");
+    }
+
     SynchronizationEncodingTest() { type = RhiTestType::Command; name = "synchronization_explicit_scopes_and_layouts"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -1134,6 +1191,11 @@ METALLIC_REGISTER_RHI_TEST(PreparedExecutionViewsTest);
 
 class ParallelRegistryTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"parameters.parallel.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
+    }
+
     ParallelRegistryTest() { type = RhiTestType::Command; name = "parallel_registry_packets"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -1146,8 +1208,8 @@ public:
 private:
     static RhiTestResult runMode(RhiTestContext& context, render::SlangDescriptorHeapMode mode)
     {
-        std::unique_ptr<render::Device> device;
-        REG_REQUIRE(render::createDevice({.applicationName = "Parallel registry", .enableValidation = context.enableValidation,
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Parallel registry", .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
@@ -1195,6 +1257,7 @@ private:
         REG_CHECK(mapped != nullptr);
         std::array<uint32_t, 4> actual{};
         std::memcpy(actual.data(), mapped, sizeof(actual));
+        bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(actual));
         output->unmap();
         REG_CHECK((actual == std::array<uint32_t, 4>{73, 74, 75, 76}));
         for (auto& recording : contexts) { REG_REQUIRE(recording.reset()); }
@@ -1208,12 +1271,17 @@ METALLIC_REGISTER_RHI_TEST(ParallelRegistryTest);
 
 class PreparedDispatchParallelTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"compute.prepared.parallel.lifetime.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"}, true);
+    }
+
     PreparedDispatchParallelTest() { type = RhiTestType::Rendering; name = "prepared_dispatch_parallel_snapshot_lifetime"; }
     RhiTestResult run(RhiTestContext& context) override
     {
         for (const auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
-            std::unique_ptr<render::Device> device;
-            REG_REQUIRE(render::createDevice({.applicationName = "Prepared dispatch snapshot",
+            bench::TestDevice device;
+            REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Prepared dispatch snapshot",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
             auto& queue = *device->getQueue(render::QueueType::Graphics);
             render::ShaderCompileResult shader;
@@ -1311,6 +1379,7 @@ public:
             output->invalidate();
             auto* values = static_cast<uint32_t*>(output->map());
             REG_CHECK(values);
+            bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(values, 16));
             const bool correct = values[0] == 137 && values[1] == 137 && values[2] == 137 && values[15] == 0;
             output->unmap(); REG_CHECK(correct);
             for (auto& recording : contexts) { REG_REQUIRE(recording.reset()); }
@@ -1331,12 +1400,17 @@ METALLIC_REGISTER_RHI_TEST(PreparedDispatchParallelTest);
 // recorded after the writer, source wrappers and kernel wrappers are destroyed.
 class KernelPreparedDispatchTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"compute.prepared.direct.indirectBatch.readback", "compute.abi.staleTail.contract"}, bench::Layer::Core, "binding", "binding", {"readback.bin"}, true);
+    }
+
     KernelPreparedDispatchTest() { type = RhiTestType::Rendering; name = "compute_kernel_prepared_standalone_batch"; }
     RhiTestResult run(RhiTestContext& context) override
     {
         for (const auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
-            std::unique_ptr<render::Device> device;
-            REG_REQUIRE(render::createDevice({.applicationName = "Kernel prepared dispatch",
+            bench::TestDevice device;
+            REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Kernel prepared dispatch",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
                 .transform([&](auto value) { device = std::move(value); }));
             auto registry = device->resourceRegistry();
@@ -1408,6 +1482,7 @@ public:
             output->invalidate();
             const auto* actual = static_cast<const uint32_t*>(output->map());
             REG_CHECK(actual);
+            bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(actual, 16));
             const bool correct = actual[0] == 10 && actual[1] == 11 && actual[2] == 12 && actual[15] == 0;
             output->unmap();
             REG_CHECK(correct);
@@ -1425,12 +1500,17 @@ METALLIC_REGISTER_RHI_TEST(KernelPreparedDispatchTest);
 // Two writes to the same word require a memory-only dependency between dispatches.
 class BatchMemoryBarrierTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"compute.batch.memoryBarrier.readback", "compute.batch.error.contract"}, bench::Layer::Core, "binding", "sync", {"readback.bin"}, true);
+    }
+
     BatchMemoryBarrierTest() { type = RhiTestType::Rendering; name = "compute_batch_memory_barrier_and_error_propagation"; }
     RhiTestResult run(RhiTestContext& context) override
     {
         for (uint32_t path = 0; path < 2; ++path) {
-            std::unique_ptr<render::Device> device;
-            REG_REQUIRE(render::createDevice({.applicationName = "Batch barriers",
+            bench::TestDevice device;
+            REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Batch barriers",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
                 .transform([&](auto value) { device = std::move(value); }));
             auto& queue = *device->getQueue(render::QueueType::Graphics);
@@ -1483,6 +1563,7 @@ public:
             const auto* value = static_cast<const uint32_t*>(output->map());
             REG_CHECK(value);
             const auto actual = *value;
+            bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(value, 16));
             output->unmap();
             REG_CHECK(actual == 2);
 

@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -131,6 +132,11 @@ RhiTestResult createUploadStorageBuffer(
 
 class OffscreenTriangleTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graphics.pipeline.triangle.readback"}, bench::Layer::Rhi, "core", "core", {"readback.bin"});
+    }
+
     OffscreenTriangleTest()
     {
         type = RhiTestType::Rendering;
@@ -317,6 +323,7 @@ public:
 
         std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * 4u);
         std::memcpy(pixels.data(), mapped, pixels.size());
+        bench::readbackEvidence(context, "readback.bin", std::span<const uint8_t>(pixels));
         readbackBuffer->unmap();
 
         std::string outputMessage;
@@ -348,6 +355,11 @@ public:
 
 class ReversedZDepthRenderingTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graphics.depth.readback"}, bench::Layer::Rhi, "core", "core", {"readback.bin"});
+    }
+
     ReversedZDepthRenderingTest()
     {
         type = RhiTestType::Rendering;
@@ -623,6 +635,7 @@ public:
 
         std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * 4u);
         std::memcpy(pixels.data(), mapped, pixels.size());
+        bench::readbackEvidence(context, "readback.bin", std::span<const uint8_t>(pixels));
         readbackBuffer->unmap();
 
         const size_t centerIndex =
@@ -653,6 +666,11 @@ public:
 
 class ShaderObjectMaterialRenderingTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graphics.shaderObject.materialSwitch.readback"}, bench::Layer::Rhi, "binding", "binding", {"readback.bin"});
+    }
+
     ShaderObjectMaterialRenderingTest()
     {
         type = RhiTestType::Rendering;
@@ -661,8 +679,8 @@ public:
 
     RhiTestResult run(RhiTestContext& context) override
     {
-        std::unique_ptr<render::Device> device;
-        render::Result<> result = render::createDevice(render::DeviceDesc{
+        bench::TestDevice device;
+        render::Result<> result = bench::createTestDevice(context, render::DeviceDesc{
                 .applicationName = "Metallic Shader Object Material Test",
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
@@ -989,6 +1007,7 @@ public:
 
         std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * 4u);
         std::memcpy(pixels.data(), mapped, pixels.size());
+        bench::readbackEvidence(context, "readback.bin", std::span<const uint8_t>(pixels));
         readbackBuffer->unmap();
 
         uint32_t redPixelCount = 0;

@@ -28,14 +28,21 @@ void requirements()
     render::DeviceCapabilities caps;
     caps.shaderObject = true;
     Requirements required{.capabilities = {Capability::Bindless}};
-    EXPECT_EQ(evaluate(required, config, caps, {render::QueueType::Graphics}, true).status, Status::SkipNotEnabled);
+    EXPECT_EQ(evaluate(required, config, caps, {render::QueueType::Graphics}, Validation::Core).status, Status::SkipNotEnabled);
     config = profile("binding", Validation::Core).value();
-    EXPECT_EQ(evaluate(required, config, caps, {render::QueueType::Graphics}, true).status, Status::SkipUnsupported);
+    EXPECT_EQ(evaluate(required, config, caps, {render::QueueType::Graphics}, Validation::Core).status, Status::SkipUnsupported);
     caps.bindlessDescriptorHeap = true;
-    EXPECT_EQ(evaluate(required, config, caps, {render::QueueType::Graphics}, false).status, Status::EnvironmentFailure);
-    EXPECT_EQ(evaluate(required, config, caps, {render::QueueType::Graphics}, true).status, Status::Pass);
-    EXPECT_EQ(evaluate(required, config, caps, {}, true).status, Status::SkipUnsupported);
+    EXPECT_EQ(evaluate(required, config, caps, {render::QueueType::Graphics}, Validation::Off).status, Status::EnvironmentFailure);
+    EXPECT_EQ(evaluate(required, config, caps, {render::QueueType::Graphics}, Validation::Core).status, Status::Pass);
+    EXPECT_EQ(evaluate(required, config, caps, {}, Validation::Core).status, Status::SkipUnsupported);
     EXPECT_FALSE(profile("typo", Validation::Core));
+    required.validation = Validation::Synchronization;
+    EXPECT_EQ(evaluate(required, config, caps, {render::QueueType::Graphics}, Validation::Core).status, Status::EnvironmentFailure);
+    EXPECT_EQ(evaluate(required, config, caps, {render::QueueType::Graphics}, Validation::Synchronization).status, Status::Pass);
+    const auto sync = profile("core", parseValidation("sync")).value();
+    EXPECT_TRUE(sync.desc.enableValidation && sync.desc.enableSynchronizationValidation);
+    EXPECT_EQ(std::string(name(Validation::Synchronization)), "sync");
+    EXPECT_THROW(parseValidation("typo"), std::invalid_argument);
 }
 
 void recorderLifetime()
@@ -128,7 +135,7 @@ void replayAndPaths()
 {
     const auto root = outputDirectory() / u8"space path 中文";
     const auto output = root / "original";
-    const auto result = runProcess(executablePath(), {"--tb-run", "--tb-suite", "contract", "--tb-repeat", "2",
+    const auto result = runProcess(executablePath(), {"--tb-run", "--tb-suite", "contract", "--tb-filter", "*buffer_range_cpu_contract", "--tb-repeat", "2",
         "--output-dir", pathArgument(output)}, root / "process", std::chrono::seconds(30));
     ASSERT_EQ(result.exitCode, 0);
     const auto cases = readJson(output / "results.json").at("cases");
@@ -145,7 +152,7 @@ void resultProtocol()
 {
     const auto root = outputDirectory();
     const auto output = root / "results";
-    const auto process = runProcess(executablePath(), {"--tb-run", "--tb-suite", "contract", "--output-dir",
+    const auto process = runProcess(executablePath(), {"--tb-run", "--tb-suite", "contract", "--tb-filter", "*buffer_range_cpu_contract", "--output-dir",
         pathArgument(output)}, root / "process", std::chrono::seconds(30));
     ASSERT_EQ(process.exitCode, 0);
     const auto directory = output / "core/RhiValidation.buffer_range_cpu_contract/0";

@@ -277,7 +277,7 @@ tests/rhi/
 
 GPU CTest 使用统一 `RESOURCE_LOCK MetallicGpu`，或将所有 GPU 作业接入相同 CTest resource 配置；已有 editor/GPU tests 也需遵循同一规则，避免 `ctest -j` 意外并行。进程 watchdog < CTest TIMEOUT，并预留证据落盘/退出时间。GoogleTest skip 一般仍返回 0，不能依赖旧 `SKIP_RETURN_CODE 77` 统计局部覆盖；新 coordinator 的退出码由 required policy 和所有子进程结果决定。
 
-拟议命令（不是当前已可执行命令）：
+M1/M2 已实现的命令（具体覆盖范围见 [使用说明](RhiTestbench.md)）：
 
 ```powershell
 # 列出配置与用例计划，不创建 Device。
@@ -285,7 +285,7 @@ GPU CTest 使用统一 `RESOURCE_LOCK MetallicGpu`，或将所有 GPU 作业接�
 # 运行已迁移的小型正确性集合。
 .\build-pass-stages-nrd\tests\MetallicRhiTests.exe --tb-run --tb-suite core --tb-validation core
 # 运行同步 lane；实际 validation mode 写入 manifest。
-.\build-pass-stages-nrd\tests\MetallicRhiTests.exe --tb-run --tb-suite sync --tb-validation synchronization
+.\build-pass-stages-nrd\tests\MetallicRhiTests.exe --tb-run --tb-suite sync --tb-validation sync
 # 从证据还原指定 case/variant/seed，检查版本差异并记录。
 .\build-pass-stages-nrd\tests\MetallicRhiTests.exe --tb-replay <case-directory>
 ```
@@ -314,4 +314,4 @@ M1 不包含通用 DevicePool、全量目录搬迁、全 API trace、fuzzer 或 
 
 ## 12. 本方案的验证边界
 
-设计阶段读取了现有 harness、CMake、RHI feature 配置、RenderGraph snapshot 及代表性扩展用例，并核对 NRISamples 与 Vulkan 官方资料。本文的完整 milestones、耗时目标和 API 不代表已经全部实现；M1 的运行命令和覆盖范围见使用说明，后续阶段仍需独立实现和验证。
+设计阶段读取了现有 harness、CMake、RHI feature 配置、RenderGraph snapshot 及代表性扩展用例，并核对 NRISamples 与 Vulkan 官方资料。本文的完整 milestones、耗时目标和 API 不代表已经全部实现；M1/M2 的运行命令和实际覆盖范围见使用说明，M3/M4 仍需独立实现和验证。

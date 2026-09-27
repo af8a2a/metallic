@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/NativeDescriptorHeapSpirv.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -134,6 +135,12 @@ METALLIC_REGISTER_RHI_TEST(NativeDescriptorHeapTest);
 
 class FinalDescriptorIndicesTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"binding.lastSlot.heapSwitch.pushData.readback"}, bench::Layer::Rhi,
+            "binding", "binding", {"readback.bin"}, true);
+    }
+
     FinalDescriptorIndicesTest()
     {
         type = RhiTestType::Rendering;
@@ -143,8 +150,8 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         std::string log;
-        std::unique_ptr<render::Device> device;
-        const auto setup = render::createDevice({.applicationName = "Final descriptor indices",
+        bench::TestDevice device;
+        const auto setup = bench::createTestDevice(context, {.applicationName = "Final descriptor indices",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("descriptor heaps unavailable"); }
         NATIVE_REQUIRE(setup);
@@ -177,7 +184,7 @@ public:
             for (uint32_t i = 0; i < heaps.size(); ++i) {
                 // Different image capacities move the buffer partition. Also skip
                 // slot zero so neither a local index nor an implicit slot can pass.
-                NATIVE_REQUIRE(device->createBindlessHeap({.maxSampledImages = 3u + i * 10u, .maxBuffers = 4}).transform([&](auto rhiValue) { heaps[i] = std::move(rhiValue); }));
+                NATIVE_REQUIRE(device->createBindlessHeap({.maxSampledImages = 3u + i * 10u, .maxBuffers = 3}).transform([&](auto rhiValue) { heaps[i] = std::move(rhiValue); }));
                 render::BindlessHandle unused;
                 NATIVE_REQUIRE(heaps[i]->allocateBuffer().transform([&](auto rhiValue) { unused = std::move(rhiValue); }));
                 NATIVE_REQUIRE(heaps[i]->allocateBuffer().transform([&](auto rhiValue) { inputHandles[i] = std::move(rhiValue); }));
@@ -246,6 +253,7 @@ public:
                 outputs[i]->unmap();
                 const std::array<uint32_t, 4> expected{17u + i * 13u, 0x12340000u + i,
                     inputHandles[i].shaderIndex, outputHandles[i].shaderIndex};
+                bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(actual));
                 if (actual != expected) {
                     return RhiTestResult::fail("final index or push ABI mismatch for heap " + std::to_string(i));
                 }

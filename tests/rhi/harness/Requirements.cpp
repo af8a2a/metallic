@@ -1,6 +1,7 @@
 #include "Requirements.h"
 
 #include <algorithm>
+#include <stdexcept>
 
 namespace metallic::tests::bench {
 
@@ -43,6 +44,24 @@ const char* name(Layer value)
     return "Unknown";
 }
 
+const char* name(Validation value)
+{
+    switch (value) {
+    case Validation::Off: return "off";
+    case Validation::Core: return "core";
+    case Validation::Synchronization: return "sync";
+    }
+    return "unknown";
+}
+
+Validation parseValidation(const std::string& value)
+{
+    if (value == "off") { return Validation::Off; }
+    if (value == "core") { return Validation::Core; }
+    if (value == "sync") { return Validation::Synchronization; }
+    throw std::invalid_argument("validation must be off, core or sync");
+}
+
 bool failed(Status value)
 {
     return value != Status::Pass && value != Status::SkipUnsupported && value != Status::SkipNotEnabled;
@@ -56,7 +75,8 @@ render::Result<Profile> profile(std::string id, Validation validation)
     Profile value;
     value.id = std::move(id);
     value.desc.applicationName = "Metallic Testbench";
-    value.desc.enableValidation = validation == Validation::Core;
+    value.desc.enableValidation = validation != Validation::Off;
+    value.desc.enableSynchronizationValidation = validation == Validation::Synchronization;
     value.desc.enableBindlessDescriptorHeap = value.id != "core";
     value.desc.enableAsyncCompute = value.id == "async";
     value.desc.enableOpacityMicromap = false;
@@ -89,10 +109,10 @@ bool requested(Capability capability, const Profile& value)
 
 Verdict evaluate(const Requirements& requirements, const Profile& value,
     const render::DeviceCapabilities& caps, const std::vector<render::QueueType>& queues,
-    bool validationActive)
+    Validation activeValidation)
 {
-    if (requirements.validation == Validation::Core && !validationActive) {
-        return {Status::EnvironmentFailure, "required validation layer/messenger is not active"};
+    if (activeValidation < requirements.validation) {
+        return {Status::EnvironmentFailure, "required validation mode/layer/messenger is not active"};
     }
     for (const auto capability : requirements.capabilities) {
         if (!requested(capability, value)) {

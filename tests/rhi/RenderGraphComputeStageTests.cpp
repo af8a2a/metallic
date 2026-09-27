@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 
 #include <algorithm>
@@ -309,6 +310,11 @@ RhiTestResult runStageProbe(RhiTestContext& context, StageProbeCase mode, uint32
 
 class ComputeStageValidationTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.stages.validation.contract"}, bench::Layer::RenderGraph, "binding", "sync");
+    }
+
     ComputeStageValidationTest() { type = RhiTestType::Command; name = "render_graph_compute_stages_validate_before_recording"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -326,6 +332,11 @@ public:
 
 class ComputeStageAliasesTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.stages.alias.contract"}, bench::Layer::RenderGraph, "binding", "sync");
+    }
+
     ComputeStageAliasesTest() { type = RhiTestType::Command; name = "render_graph_compute_stages_private_allocation_aliases"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -335,6 +346,11 @@ public:
 
 class ComputeStageReentryTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.stages.reentry.contract"}, bench::Layer::RenderGraph, "binding", "sync");
+    }
+
     ComputeStageReentryTest() { type = RhiTestType::Command; name = "render_graph_compute_stages_reject_reentry_and_forks"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -348,6 +364,11 @@ public:
 
 class ComputeStageRawVisibilityTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.stages.raw.encoding"}, bench::Layer::RenderGraph, "binding", "sync");
+    }
+
     ComputeStageRawVisibilityTest() { type = RhiTestType::Command; name = "render_graph_compute_stages_repeated_raw_encoding"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -357,6 +378,11 @@ public:
 
 class GeneralStageRawVisibilityTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.stages.raw.restore.encoding"}, bench::Layer::RenderGraph, "binding", "sync");
+    }
+
     GeneralStageRawVisibilityTest() { type = RhiTestType::Command; name = "render_graph_stages_repeated_raw_no_exit_barrier"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -655,6 +681,7 @@ RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mod
                 matches = matches && bytes[pixel * 4u + channel] == expected[channel];
             }
         }
+        bench::readbackEvidence(context, "readback.bin", std::span<const uint8_t>(bytes, 64));
         output->buffer->unmap();
         if (!matches) { return RhiTestResult::fail(label + ": clear/copy pixels differ"); }
     }
@@ -663,6 +690,11 @@ RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mod
 
 class GeneralStageTransfersTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.stages.transfer.readback"}, bench::Layer::RenderGraph, "binding", "sync", {"readback.bin"});
+    }
+
     GeneralStageTransfersTest() { type = RhiTestType::Command; name = "render_graph_stages_transfer_pixels_and_private_aliases"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -677,6 +709,11 @@ public:
 
 class GeneralStageValidationTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.stages.transfer.contract"}, bench::Layer::RenderGraph, "binding", "sync");
+    }
+
     GeneralStageValidationTest() { type = RhiTestType::Command; name = "render_graph_stages_validate_transfers_imports_and_names"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -693,6 +730,11 @@ public:
 
 class GeneralStageForkTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.stages.forkJoin.contract"}, bench::Layer::RenderGraph, "binding", "sync");
+    }
+
     GeneralStageForkTest() { type = RhiTestType::Command; name = "render_graph_stages_explicit_unsafe_fork_join"; }
     RhiTestResult run(RhiTestContext& context) override
     {

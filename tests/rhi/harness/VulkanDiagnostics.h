@@ -4,5 +4,6 @@
 
 namespace metallic::tests::bench {
 Json describeDevice(render::Device& device, const Profile& profile);
-bool validationActive(render::Device& device);
+bool nativeDescriptorPointersEnabled(render::Device& device);
+Validation activeValidation(render::Device& device);
 } // namespace metallic::tests::bench

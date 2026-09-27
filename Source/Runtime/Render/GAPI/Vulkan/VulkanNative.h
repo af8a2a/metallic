@@ -12,7 +12,9 @@ struct NativeDevice {
     VkDevice device = VK_NULL_HANDLE;
     uint32_t apiVersion = 0;
     bool descriptorHeapEnabled = false;
+    bool shaderUntypedPointersEnabled = false;
     bool validationEnabled = false;
+    bool synchronizationValidationEnabled = false;
     bool validationMessengerActive = false;
 };
 

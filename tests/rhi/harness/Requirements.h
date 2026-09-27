@@ -11,13 +11,15 @@ namespace metallic::tests::bench {
 
 enum class Capability { ShaderObject, TimestampQueries, Bindless, IndependentCopy, IndependentCompute };
 enum class Layer { Rhi, Core, RenderGraph, Harness };
-enum class Validation { Off, Core };
+enum class Validation { Off, Core, Synchronization };
 
 struct Requirements {
     bool requiresDevice = true;
     Validation validation = Validation::Core;
     std::vector<Capability> capabilities;
     std::vector<render::QueueType> queues{render::QueueType::Graphics};
+    std::vector<render::QueueType> timestampQueues;
+    bool nativeDescriptorPointers = false;
 };
 
 struct Metadata {
@@ -45,12 +47,14 @@ struct Verdict {
 const char* name(Capability value);
 const char* name(Status value);
 const char* name(Layer value);
+const char* name(Validation value);
+Validation parseValidation(const std::string& value);
 bool failed(Status value);
 render::Result<Profile> profile(std::string id, Validation validation);
 bool enabled(Capability capability, const render::DeviceCapabilities& caps);
 bool requested(Capability capability, const Profile& profile);
 Verdict evaluate(const Requirements& requirements, const Profile& profile,
     const render::DeviceCapabilities& caps, const std::vector<render::QueueType>& queues,
-    bool validationActive);
+    Validation activeValidation);
 
 } // namespace metallic::tests::bench

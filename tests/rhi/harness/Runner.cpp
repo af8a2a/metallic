@@ -111,8 +111,7 @@ Options parse(int argc, char** argv)
             options.repeat = uint32_t(count);
         } else if (key == "--tb-validation") {
             const auto mode = argument();
-            if (mode != "off" && mode != "core") { throw std::runtime_error("M1 supports validation core/off; synchronization mode belongs to M2"); }
-            options.validation = mode == "core" ? Validation::Core : Validation::Off;
+            options.validation = parseValidation(mode);
         } else if (key == "--tb-require-all") { options.requireAll = true; }
         else if (key == "--tb-allow-version-mismatch") { options.allowMismatch = true; }
         else { throw std::runtime_error("unsupported/conflicting testbench option: " + key); }
@@ -124,20 +123,22 @@ Options parse(int argc, char** argv)
 
 Json metadataJson(const Metadata& value)
 {
-    Json caps = Json::array(), queues = Json::array();
+    Json caps = Json::array(), queues = Json::array(), timestampQueues = Json::array();
     for (auto cap : value.requirements.capabilities) { caps.push_back(name(cap)); }
     for (auto queue : value.requirements.queues) { queues.push_back(int(queue)); }
+    for (auto queue : value.requirements.timestampQueues) { timestampQueues.push_back(int(queue)); }
     return {{"suite", value.suite}, {"layer", name(value.layer)}, {"profile", value.profile},
         {"isolation", "FreshProcess"}, {"requiresDevice", value.requirements.requiresDevice},
-        {"validationRequired", value.requirements.validation == Validation::Core},
-        {"capabilities", caps}, {"queues", queues}, {"coverage", value.coverage}, {"timeoutMs", value.timeout.count()},
+        {"validationRequired", value.requirements.validation != Validation::Off},
+        {"minimumValidation", name(value.requirements.validation)},
+        {"capabilities", caps}, {"queues", queues}, {"timestampQueues", timestampQueues}, {"nativeDescriptorPointers", value.requirements.nativeDescriptorPointers}, {"coverage", value.coverage}, {"timeoutMs", value.timeout.count()},
         {"artifacts", value.artifacts}};
 }
 
 Json profileJson(const Profile& value)
 {
     const auto& desc = value.desc;
-    return {{"id", value.id}, {"validation", desc.enableValidation ? "core" : "off"},
+    return {{"id", value.id}, {"validation", desc.enableSynchronizationValidation ? "sync" : desc.enableValidation ? "core" : "off"},
         {"shaderObject", desc.enableShaderObject}, {"bindless", desc.enableBindlessDescriptorHeap},
         {"asyncCompute", desc.enableAsyncCompute}, {"unifiedLayouts", desc.preferUnifiedImageLayouts},
         {"rayQuery", desc.enableRayQuery}, {"opacityMicromap", desc.enableOpacityMicromap},
@@ -161,7 +162,7 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
 {
     Verdict verdict;
     ValidationRecorder recorder;
-    auto config = profile(input.at("profile").get<std::string>(), input.at("validation") == "core" ? Validation::Core : Validation::Off).value();
+    auto config = profile(input.at("profile").get<std::string>(), parseValidation(input.at("validation").get<std::string>())).value();
     auto test = selected.factory();
     std::unique_ptr<render::Device> device;
     std::unique_ptr<RhiTestContext> context;
@@ -189,9 +190,24 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
         for (const auto* variable : {"VK_LOADER_LAYERS_DISABLE", "VK_LOADER_LAYERS_ENABLE", "VK_INSTANCE_LAYERS",
             "VK_LAYER_DISABLES", "VK_LAYER_ENABLES", "VK_LAYER_SETTINGS_PATH"}) {
             if (const auto* value = std::getenv(variable); value && *value) {
-                issue(verdict, Status::EnvironmentFailure, std::string("external validation override is not supported in M1: ") + variable);
+                issue(verdict, Status::EnvironmentFailure, std::string("external validation override is not supported in conformance: ") + variable);
                 return;
             }
+        }
+        auto* variables = SDL_GetEnvironmentVariables(SDL_GetEnvironment());
+        if (!variables) { issue(verdict, Status::EnvironmentFailure, "cannot inspect validation environment"); return; }
+        std::string overrideName;
+        for (auto** variable = variables; *variable; ++variable) {
+            const std::string_view entry(*variable);
+            if (entry.starts_with("VK_VALIDATION_") || entry.starts_with("VK_KHRONOS_VALIDATION_")) {
+                overrideName = entry.substr(0, entry.find('='));
+                break;
+            }
+        }
+        SDL_free(variables);
+        if (!overrideName.empty()) {
+            issue(verdict, Status::EnvironmentFailure, "external validation override is not supported in conformance: " + overrideName);
+            return;
         }
         const auto layerPath = input.value("layerPath", std::string{});
         if (!layerPath.empty()) {
@@ -224,12 +240,22 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
         for (const auto queue : {render::QueueType::Graphics, render::QueueType::Compute, render::QueueType::Copy}) {
             if (device->getQueue(queue)) { queues.push_back(queue); }
         }
-        verdict = evaluate(selected.metadata.requirements, config, device->capabilities(), queues, validationActive(*device));
+        verdict = evaluate(selected.metadata.requirements, config, device->capabilities(), queues, activeValidation(*device));
         if (verdict.status != Status::Pass) { return; }
+        if (selected.metadata.requirements.nativeDescriptorPointers && !nativeDescriptorPointersEnabled(*device)) {
+            verdict = {Status::SkipUnsupported, "native descriptor pointers are not enabled"}; return;
+        }
+        for (auto type : selected.metadata.requirements.timestampQueues) {
+            auto* queue = device->getQueue(type);
+            if (!queue || !queue->timestampValidBits()) {
+                verdict = {Status::SkipUnsupported, "required queue has no timestamp support"};
+                return;
+            }
+        }
         auto* graphics = device->getQueue(render::QueueType::Graphics);
         if (!graphics) { issue(verdict, Status::EnvironmentFailure, "no graphics queue"); return; }
         context = std::make_unique<RhiTestContext>(RhiTestContext{*device, *graphics, evidence.root(),
-            validationActive(*device), &recorder.messageCount, nullptr, &evidence});
+            activeValidation(*device) != Validation::Off, &recorder.messageCount, nullptr, &evidence, &config.desc});
     });
     if (recorder.failed()) { issue(verdict, Status::EnvironmentFailure, "validation reported a setup error/warning"); }
     if (verdict.status == Status::Pass) {
@@ -398,14 +424,14 @@ int parent(const Options& options)
     Json plan = Json::array();
     for (const auto& selected : cases()) {
         if (replay.is_null()) {
-            if (selected.metadata.suite != options.suite || !matchesFilter(selected.id, options.filter)) { continue; }
+            if ((selected.metadata.suite != options.suite && !(options.suite == "sync" && selected.metadata.suite == "async")) || !matchesFilter(selected.id, options.filter)) { continue; }
         } else if (selected.id != replay.at("id").get<std::string>()) { continue; }
         const auto configId = replay.is_null() ? (options.profile.empty() ? selected.metadata.profile : options.profile) : replay.at("profile").get<std::string>();
-        const auto validation = replay.is_null() ? options.validation : replay.at("validation") == "core" ? Validation::Core : Validation::Off;
+        const auto validation = replay.is_null() ? options.validation : parseValidation(replay.at("validation").get<std::string>());
         if (!profile(configId, validation)) { throw std::runtime_error("invalid replay/profile"); }
         for (uint32_t iteration = 0; iteration < options.repeat; ++iteration) {
             plan.push_back({{"schema", 1}, {"id", selected.id}, {"profile", configId},
-                {"validation", validation == Validation::Core ? "core" : "off"},
+                {"validation", name(validation)},
                 {"seed", replay.is_null() ? options.seed : replay.at("seed").get<uint64_t>()},
                 {"iteration", iteration}, {"metadata", metadataJson(selected.metadata)},
                 {"binaryHash", executableHash}, {"timeoutMs", selected.metadata.timeout.count()}});
@@ -466,7 +492,7 @@ int parent(const Options& options)
         }
     }
     evidence.json("results.json", {{"schema", 1}, {"failed", failure}, {"cases", results}});
-    evidence.json("coverage.json", {{"schema", 1}, {"scope", "selected M1 cases only; iterations are not independent coverage"}, {"observations", coverage}});
+    evidence.json("coverage.json", {{"schema", 1}, {"scope", "selected migrated cases only; iterations are not independent coverage"}, {"observations", coverage}});
     writeReport(root / "gtest.xml", results);
     std::cout << "Evidence: " << root.string() << '\n';
     return failure ? 1 : 0;
@@ -557,11 +583,11 @@ std::optional<int> runIfRequested(int argc, char** argv)
         for (auto& argument : arguments) { pointers.push_back(argument.data()); }
         const auto options = parse(int(pointers.size()), pointers.data());
         if (options.mode == "--tb-help") {
-            std::cout << "Metallic M1 testbench (Windows process isolation)\n"
+            std::cout << "Metallic M1/M2 testbench (Windows process isolation)\n"
                 "  --tb-plan | --tb-run | --tb-replay <case-directory> | --tb-self-test\n"
-                "  --tb-suite core|contract|async  --tb-profile core|binding|async\n"
+                "  --tb-suite core|contract|binding|sync|async  --tb-profile core|binding|async\n"
                 "  --tb-filter <GoogleTest-pattern>  --tb-repeat 1..1000  --tb-seed <uint64>\n"
-                "  --tb-validation core|off  --tb-require-all  --output-dir <empty-directory>\n"
+                "  --tb-validation core|sync|off  --tb-require-all  --output-dir <empty-directory>\n"
                 "  --tb-layer-path <explicit-layer-directory> (isolates implicit layers in child)\n"
                 "  --tb-allow-version-mismatch (replay only; differences remain in evidence)\n";
             return 0;

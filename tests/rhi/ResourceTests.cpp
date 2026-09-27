@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 
 #include <cstdint>
 #include <cstring>
@@ -9,6 +10,11 @@ namespace {
 
 class ResourceLifecycleTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"resource.lifecycle.contract"}, bench::Layer::Rhi, "core", "core");
+    }
+
     ResourceLifecycleTest()
     {
         type = RhiTestType::Resource;

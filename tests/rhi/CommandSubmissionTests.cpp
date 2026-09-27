@@ -108,7 +108,7 @@ public:
 
     std::optional<bench::Metadata> metadata() const override
     {
-        return bench::Metadata{.requirements = {.capabilities = {bench::Capability::TimestampQueries}},
+        return bench::Metadata{.requirements = {.capabilities = {bench::Capability::TimestampQueries}, .timestampQueues = {render::QueueType::Graphics}},
             .coverage = {"query.timestamp.readback", "query.timestamp.hostReset"}, .artifacts = {"timestamps.json"}};
     }
 

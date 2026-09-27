@@ -438,6 +438,8 @@ private:
 struct DeviceDesc {
     const char* applicationName = "Metallic";
     bool enableValidation = false;
+    // Adds synchronization checks and requires validation plus layer settings support.
+    bool enableSynchronizationValidation = false;
     bool enableBindlessDescriptorHeap = false;
     // Required for every device, including tests and pipeline-only workloads.
     // createDevice rejects false to prevent cross-feature pipeline-cache reuse.

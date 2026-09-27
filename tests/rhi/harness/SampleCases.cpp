@@ -1,3 +1,4 @@
+#include "Fixtures.h"
 #include "RhiTest.h"
 #include "Evidence.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -108,6 +109,36 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(BufferCopyReadbackTest);
 
+// Safe activation probe: record a transfer WAW hazard, then discard the
+// command buffer. The invalid sequence is never submitted to the GPU.
+class SyncActivationProbe final : public RhiTest {
+public:
+    SyncActivationProbe() { type = RhiTestType::Validation; name = "sync_activation_probe"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "validation-probe", .layer = bench::Layer::Harness};
+    }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        auto texture = context.device.createTexture({.usage = render::TextureUsageBits::TransferDestination,
+            .format = render::Format::Rgba8Unorm, .width = 4, .height = 4});
+        if (!texture) { return RhiTestResult::fail("probe allocation failed"); }
+        bench::GpuCommands recording(context.graphicsQueue);
+        const auto initialized = recording.initialize(context.device);
+        if (!initialized) { return RhiTestResult::fail(render::resultToString(initialized)); }
+        const render::TextureBarrierDesc barrier{.texture = texture->get(),
+            .oldLayout = render::TextureLayout::Undefined, .newLayout = render::TextureLayout::TransferDestination,
+            .before = {}, .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite}, .range = {0, 1, 0, 1}};
+        const auto transition = recording.commands->synchronize({.textures = {&barrier, 1}});
+        if (!transition) { return RhiTestResult::fail(render::resultToString(transition)); }
+        for (uint32_t i = 0; i < 2; ++i) {
+            recording.commands->clearColorTexture(**texture, render::ResourceState::TransferDestination, {1, 0, 0, 1});
+        }
+        const auto ended = recording.commands->end();
+        return ended ? RhiTestResult::pass() : RhiTestResult::fail(render::resultToString(ended));
+    }
+};
+
 // Explicit harness-fixtures suite only. These never run in the legacy registry.
 class FaultCase final : public RhiTest {
 public:
@@ -147,6 +178,7 @@ private:
 std::vector<RhiTestRegistry::Factory> testbenchFaultFactories()
 {
     std::vector<RhiTestRegistry::Factory> result;
+    result.emplace_back([] { return std::make_unique<SyncActivationProbe>(); });
     for (const auto* mode : {"fixture_pass", "fixture_cleanup", "fixture_fail_cleanup", "fixture_crash",
         "fixture_00_timeout", "fixture_skip", "fixture_shader_failure"}) {
         result.emplace_back([mode] { return std::make_unique<FaultCase>(mode); });

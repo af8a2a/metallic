@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -28,17 +29,17 @@ struct BindlessBufferUserPush {
 };
 
 struct BindlessDeviceSetup {
-    std::unique_ptr<render::Device> device;
+    bench::TestDevice device;
     render::Queue* computeQueue = nullptr;
 };
 
-RhiTestResult setupBindlessDevice(bool enableValidation, BindlessDeviceSetup& setup)
+RhiTestResult setupBindlessDevice(RhiTestContext& context, BindlessDeviceSetup& setup)
 {
     setup = {};
 
-    render::Result<> result = render::createDevice(render::DeviceDesc{
+    render::Result<> result = bench::createTestDevice(context, render::DeviceDesc{
             .applicationName = "Metallic RHI Bindless Buffer Test",
-            .enableValidation = enableValidation,
+            .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true,
         }).transform([&](auto rhiValue) { setup.device = std::move(rhiValue); });
     if (!result) {
@@ -163,7 +164,7 @@ RhiTestResult submitAndWait(render::Queue& queue, render::CommandBuffer& command
     return RhiTestResult::pass();
 }
 
-RhiTestResult readBufferBytes(render::Buffer& buffer, uint64_t byteSize, std::vector<uint8_t>& outBytes)
+RhiTestResult readBufferBytes(RhiTestContext& context, render::Buffer& buffer, uint64_t byteSize, std::vector<uint8_t>& outBytes)
 {
     buffer.invalidate({0, byteSize});
     void* mapped = buffer.map();
@@ -174,6 +175,7 @@ RhiTestResult readBufferBytes(render::Buffer& buffer, uint64_t byteSize, std::ve
     outBytes.resize(static_cast<size_t>(byteSize));
     std::memcpy(outBytes.data(), mapped, outBytes.size());
     buffer.unmap();
+    bench::readbackEvidence(context, "readback.bin", std::span<const uint8_t>(outBytes));
     return RhiTestResult::pass();
 }
 
@@ -185,6 +187,11 @@ bool equalBytes(const std::vector<uint8_t>& actual, const uint8_t* expected, siz
 
 class BindlessBufferConstantReadTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"binding.constant.readback"}, bench::Layer::Rhi, "binding", "binding", {"readback.bin"});
+    }
+
     BindlessBufferConstantReadTest()
     {
         type = RhiTestType::Command;
@@ -194,7 +201,7 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         BindlessDeviceSetup setup;
-        RhiTestResult testResult = setupBindlessDevice(context.enableValidation, setup);
+        RhiTestResult testResult = setupBindlessDevice(context, setup);
         if (!testResult.passed) {
             return testResult;
         }
@@ -361,7 +368,7 @@ public:
         }
 
         std::vector<uint8_t> readback;
-        testResult = readBufferBytes(*outputBuffer, outputBuffer->desc().size, readback);
+        testResult = readBufferBytes(context, *outputBuffer, outputBuffer->desc().size, readback);
         if (!testResult.passed) {
             return testResult;
         }
@@ -377,6 +384,11 @@ public:
 
 class BindlessBufferStructuredReadTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"binding.structured.readback"}, bench::Layer::Rhi, "binding", "binding", {"readback.bin"});
+    }
+
     BindlessBufferStructuredReadTest()
     {
         type = RhiTestType::Command;
@@ -386,7 +398,7 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         BindlessDeviceSetup setup;
-        RhiTestResult testResult = setupBindlessDevice(context.enableValidation, setup);
+        RhiTestResult testResult = setupBindlessDevice(context, setup);
         if (!testResult.passed) {
             return testResult;
         }
@@ -549,7 +561,7 @@ public:
         }
 
         std::vector<uint8_t> readback;
-        testResult = readBufferBytes(*outputBuffer, outputBuffer->desc().size, readback);
+        testResult = readBufferBytes(context, *outputBuffer, outputBuffer->desc().size, readback);
         if (!testResult.passed) {
             return testResult;
         }
@@ -565,6 +577,11 @@ public:
 
 class BindlessBufferRwStructuredTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"binding.rwStructured.readback"}, bench::Layer::Rhi, "binding", "binding", {"readback.bin"});
+    }
+
     BindlessBufferRwStructuredTest()
     {
         type = RhiTestType::Command;
@@ -574,7 +591,7 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         BindlessDeviceSetup setup;
-        RhiTestResult testResult = setupBindlessDevice(context.enableValidation, setup);
+        RhiTestResult testResult = setupBindlessDevice(context, setup);
         if (!testResult.passed) {
             return testResult;
         }
@@ -741,7 +758,7 @@ public:
             0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u,
         };
         std::vector<uint8_t> readback;
-        testResult = readBufferBytes(*outputBuffer, outputBuffer->desc().size, readback);
+        testResult = readBufferBytes(context, *outputBuffer, outputBuffer->desc().size, readback);
         if (!testResult.passed) {
             return testResult;
         }
@@ -757,6 +774,11 @@ public:
 
 class BindlessBufferByteAddressReadTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"binding.byteAddress.readback"}, bench::Layer::Rhi, "binding", "binding", {"readback.bin"});
+    }
+
     BindlessBufferByteAddressReadTest()
     {
         type = RhiTestType::Command;
@@ -766,7 +788,7 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         BindlessDeviceSetup setup;
-        RhiTestResult testResult = setupBindlessDevice(context.enableValidation, setup);
+        RhiTestResult testResult = setupBindlessDevice(context, setup);
         if (!testResult.passed) {
             return testResult;
         }
@@ -933,7 +955,7 @@ public:
         }
 
         std::vector<uint8_t> readback;
-        testResult = readBufferBytes(*outputBuffer, outputBuffer->desc().size, readback);
+        testResult = readBufferBytes(context, *outputBuffer, outputBuffer->desc().size, readback);
         if (!testResult.passed) {
             return testResult;
         }
@@ -949,6 +971,11 @@ public:
 
 class BindlessBufferRwByteAddressTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"binding.rwByteAddress.readback"}, bench::Layer::Rhi, "binding", "binding", {"readback.bin"});
+    }
+
     BindlessBufferRwByteAddressTest()
     {
         type = RhiTestType::Command;
@@ -958,7 +985,7 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         BindlessDeviceSetup setup;
-        RhiTestResult testResult = setupBindlessDevice(context.enableValidation, setup);
+        RhiTestResult testResult = setupBindlessDevice(context, setup);
         if (!testResult.passed) {
             return testResult;
         }
@@ -1134,7 +1161,7 @@ public:
             4u,
         };
         std::vector<uint8_t> readback;
-        testResult = readBufferBytes(*outputBuffer, outputBuffer->desc().size, readback);
+        testResult = readBufferBytes(context, *outputBuffer, outputBuffer->desc().size, readback);
         if (!testResult.passed) {
             return testResult;
         }
@@ -1150,6 +1177,11 @@ public:
 
 class BindlessBufferRawAtomicsTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"binding.atomics.readback"}, bench::Layer::Rhi, "binding", "binding", {"readback.bin"});
+    }
+
     BindlessBufferRawAtomicsTest()
     {
         type = RhiTestType::Command;
@@ -1159,7 +1191,7 @@ public:
     RhiTestResult run(RhiTestContext& context) override
     {
         BindlessDeviceSetup setup;
-        RhiTestResult testResult = setupBindlessDevice(context.enableValidation, setup);
+        RhiTestResult testResult = setupBindlessDevice(context, setup);
         if (!testResult.passed) {
             return testResult;
         }
@@ -1284,7 +1316,7 @@ public:
         expectedWords[3] = 0xCAFEBABEu;
 
         std::vector<uint8_t> readback;
-        testResult = readBufferBytes(*buffer, buffer->desc().size, readback);
+        testResult = readBufferBytes(context, *buffer, buffer->desc().size, readback);
         if (!testResult.passed) {
             return testResult;
         }

@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -68,8 +69,17 @@ bool hasVisibilityBarrier(const GraphAccessPlan& plan, size_t first, size_t last
 
 class AccessPlanWriterVisibilityTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanWriterVisibilityTest() { name = "render_graph_access_plan_writer_stage_visibility"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array passes{
@@ -92,8 +102,17 @@ public:
 
 class AccessPlanQueueFanoutTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanQueueFanoutTest() { name = "render_graph_access_plan_queue_fanout_and_join"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array passes{
@@ -119,8 +138,17 @@ public:
 
 class AccessPlanWarTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanWarTest() { name = "render_graph_access_plan_read_frontier_execution_dependency"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array passes{
@@ -147,8 +175,17 @@ public:
 
 class AccessPlanImageLayoutTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanImageLayoutTest() { name = "render_graph_access_plan_image_layout_frontier"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array undefinedImage{GraphAccessResource{.type = render::RenderGraphResourceType::Texture2D}};
         const std::array firstReads{
@@ -204,8 +241,17 @@ public:
 
 class AccessPlanAliasesTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanAliasesTest() { name = "render_graph_access_plan_alias_merge_and_rejection"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array buffers{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array aliases{GraphAccessPass{.uses = {
@@ -232,8 +278,17 @@ public:
 
 class AccessPlanInvalidInputTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanInvalidInputTest() { name = "render_graph_access_plan_invalid_resource_is_transactional"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array passes{
@@ -254,8 +309,17 @@ public:
 
 class AccessPlanFrameBoundaryTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanFrameBoundaryTest() { name = "render_graph_access_plan_initial_scope_and_access_types"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array resources{GraphAccessResource{
             .type = render::RenderGraphResourceType::Buffer, .state = ResourceState::General, .scope = kComputeWrite}};
@@ -288,8 +352,17 @@ public:
 
 class AccessPlanInternalBoundaryTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanInternalBoundaryTest() { name = "render_graph_access_plan_internal_boundary_and_stage_hazard"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array resources{
             GraphAccessResource{.type = render::RenderGraphResourceType::Buffer,
@@ -328,8 +401,17 @@ public:
 
 class AccessPlanRawVisibilityReuseTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanRawVisibilityReuseTest() { name = "render_graph_access_plan_raw_visibility_reuse"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         std::array<GraphAccessPass, 7> passes{};
@@ -360,8 +442,17 @@ public:
 
 class AccessPlanRawVisibilityScopePairsTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanRawVisibilityScopePairsTest() { name = "render_graph_access_plan_raw_visibility_scope_pairs"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         constexpr SyncScope fragmentUniform{PipelineStageBits::FragmentShader, AccessBits::UniformRead};
@@ -406,8 +497,17 @@ public:
 
 class AccessPlanRawVisibilityWriterGenerationTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanRawVisibilityWriterGenerationTest() { name = "render_graph_access_plan_raw_visibility_writer_generation"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array passes{
@@ -445,8 +545,17 @@ public:
 
 class AccessPlanRawVisibilityLayoutGenerationTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanRawVisibilityLayoutGenerationTest() { name = "render_graph_access_plan_raw_visibility_layout_generation"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Texture2D}};
         const auto imageUse = [](ResourceState state, SyncScope scope, bool writes = false) {
@@ -496,8 +605,17 @@ public:
 
 class AccessPlanRawVisibilityInitialQueueTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {std::string("graph.plan.contract.") + name}};
+    }
+
     AccessPlanRawVisibilityInitialQueueTest() { name = "render_graph_access_plan_raw_visibility_initial_queue"; }
-    RhiTestResult run(RhiTestContext&) override
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer,
             .state = ResourceState::General, .scope = kComputeWrite}};
@@ -564,6 +682,12 @@ private:
 
 class AccessPlanGpuFanoutTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.fanout.readback", "graph.joined.pipelined.reuse.readback"},
+            bench::Layer::RenderGraph, "async", "sync", {"fanout.bin"});
+    }
+
     AccessPlanGpuFanoutTest() { type = RhiTestType::Rendering; name = "render_graph_access_plan_gpu_fanout"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -571,20 +695,9 @@ public:
         static const bool registered = render::registerRenderGraphPassType("AccessPlanGraphicsCopyPass",
             "Access-plan queue fanout regression", [] { return std::make_unique<AccessPlanGraphicsCopyPass>(); });
         (void)registered;
-        std::atomic_uint validationFailures = 0;
-        auto created = render::createDevice({.applicationName = "Metallic Access Plan Fanout Test",
-            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
-            .validationSink = {.callback = [](void* data, const render::ValidationMessage& message) noexcept {
-                if (message.messageIdName && (std::strstr(message.messageIdName, "VUID-") ||
-                    std::strstr(message.messageIdName, "SYNC-HAZARD"))) {
-                    ++*static_cast<std::atomic_uint*>(data);
-                }
-            }, .context = &validationFailures}, .enableAsyncCompute = true});
-        if (!created) {
-            return render::hasError(created, render::Error::Unsupported)
-                ? RhiTestResult::skip("bindless access-plan workload unsupported")
-                : RhiTestResult::fail(render::resultToString(created));
-        }
+        auto created = bench::createTestDevice(context, {.applicationName = "Access plan fanout",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true, .enableAsyncCompute = true});
+        ACCESS_CHECK(created);
         auto device = std::move(*created);
         auto* graphics = device->getQueue(render::QueueType::Graphics);
         auto* compute = device->getQueue(render::QueueType::Compute);
@@ -620,13 +733,14 @@ public:
                         std::array<uint32_t, 4> actual{};
                         std::memcpy(actual.data(), mapped, sizeof(actual));
                         output->buffer->unmap();
+                        bench::readbackEvidence(context, "fanout.bin", std::span<const uint32_t>(actual));
                         ACCESS_CHECK(actual == expected);
                     }
                 }
             }
         }
         ACCESS_REQUIRE(device->waitIdle());
-        ACCESS_CHECK(validationFailures == 0);
+
         return RhiTestResult::pass(graphics->sameQueue(*compute)
             ? "32 frames, six consumers; device exposes aliased compute and graphics queues"
             : "32 frames, six consumers; distinct compute/graphics queues and explicit queue aliases");

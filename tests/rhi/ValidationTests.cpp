@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 
@@ -314,6 +315,11 @@ public:
 
 class ExpectedResourceResultsTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"result.resource.error.contract"}, bench::Layer::Rhi, "core", "core");
+    }
+
     ExpectedResourceResultsTest()
     {
         type = RhiTestType::Resource;

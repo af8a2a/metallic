@@ -2,6 +2,7 @@
 #include <string>
 
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Core/HistoryResources.h"
@@ -133,6 +134,11 @@ void storageBarrier(render::CommandBuffer& commandBuffer, render::Buffer& buffer
 
 class FrameCompletionLifecycleTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"frame.completion.transaction.contract"}, bench::Layer::RenderGraph, "async", "sync");
+    }
+
     FrameCompletionLifecycleTest() { type = RhiTestType::Command; name = "frame_completion_lifecycle"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -828,6 +834,14 @@ struct DeviceDrain {
 
 class FrameMultiQueueCompletionTest : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        auto metadata = bench::gpuMetadata({"frame.partialSubmit.contract"}, bench::Layer::RenderGraph, "async", "sync");
+        metadata.requirements.capabilities.push_back(bench::Capability::IndependentCopy);
+        metadata.requirements.queues.push_back(render::QueueType::Copy);
+        return metadata;
+    }
+
     FrameMultiQueueCompletionTest() { type = RhiTestType::Command; name = "frame_multi_queue_completion"; }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -960,11 +974,16 @@ private:
 
 class FrameParallelBranchTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.forkJoin.cancel.readback"}, bench::Layer::RenderGraph, "async", "sync");
+    }
+
     FrameParallelBranchTest() { type = RhiTestType::Rendering; name = "frame_parallel_compute_join_and_cancellation"; }
     RhiTestResult run(RhiTestContext& context) override
     {
-        std::unique_ptr<render::Device> device;
-        FRAME_REQUIRE(render::createDevice({.applicationName = "Async branch lifetime regression",
+        bench::TestDevice device;
+        FRAME_REQUIRE(bench::createTestDevice(context, {.applicationName = "Async branch lifetime regression",
             .enableValidation = context.enableValidation, .enableAsyncCompute = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto* graphics = device->getQueue(render::QueueType::Graphics);
         auto* compute = device->getQueue(render::QueueType::Compute);
@@ -1034,6 +1053,7 @@ public:
                 FRAME_REQUIRE(consumer.submit(tracker)); FRAME_REQUIRE(consumer.frame.wait(kWaitTimeout));
                 readback->invalidate(); const auto* words = static_cast<const uint32_t*>(readback->map());
                 const bool correct = words && words[0] == 11 && words[1] == 12 && words[2] == 21 && words[3] == 22;
+                if (words) { bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(words, 4)); }
                 readback->unmap();
                 if (!correct) { return RhiTestResult::fail("Join did not make both branch writes visible"); }
             }
@@ -1262,7 +1282,7 @@ public:
         return bench::Metadata{.suite = "async", .profile = "async", .layer = bench::Layer::RenderGraph,
             .requirements = {.capabilities = {bench::Capability::IndependentCopy},
                 .queues = {render::QueueType::Graphics, render::QueueType::Copy}},
-            .coverage = {"graph.independentCopy.progress", "graph.frameCompletion.join"}};
+            .coverage = {"graph.independentCopy.progress", "graph.frameCompletion.join"}, .artifacts = {"readback.bin"}};
     }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -1330,6 +1350,7 @@ public:
             actual != std::array<uint32_t, 4>{100, 101, 102, 103}) {
             return RhiTestResult::fail("copy-queue upload did not finish while graphics was blocked");
         }
+        bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(actual));
         FRAME_REQUIRE(executor.execute(submit));
         const auto second = executor.lastSubmittedCompletion();
         const uint64_t recorded = executor.streamingStats().frameIndex;
@@ -1360,6 +1381,7 @@ public:
             actual != std::array<uint32_t, 4>{101, 102, 103, 104}) {
             return RhiTestResult::fail("pending self-to-external handoff copied the wrong frame");
         }
+        bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(actual));
         submit.slotWaitTimeoutNanoseconds = kWaitTimeout;
         for (uint32_t index = 2; index < 6; ++index) { FRAME_REQUIRE(executor.execute(submit)); }
         FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
@@ -1386,9 +1408,11 @@ public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::Metadata{.suite = "async", .profile = "async", .layer = bench::Layer::RenderGraph,
-            .requirements = {.capabilities = {bench::Capability::IndependentCopy, bench::Capability::IndependentCompute},
-                .queues = {render::QueueType::Graphics, render::QueueType::Compute, render::QueueType::Copy}},
-            .coverage = {"graph.crossQueue.dependencies", "query.ring.reuse"}};
+            .requirements = {.capabilities = {bench::Capability::IndependentCopy, bench::Capability::IndependentCompute, bench::Capability::TimestampQueries},
+                .queues = {render::QueueType::Graphics, render::QueueType::Compute, render::QueueType::Copy},
+                .timestampQueues = {render::QueueType::Graphics, render::QueueType::Compute, render::QueueType::Copy}},
+            .coverage = {"graph.crossQueue.dependencies", "query.ring.reuse", "history.frame.readback"},
+            .artifacts = {"query-ring.json", "history.bin", "texture.bin"}};
     }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -1426,6 +1450,17 @@ public:
         FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
         std::vector<render::RenderGraphExecutionStats> timings;
         FRAME_REQUIRE(executor.collectCompletedGpuExecutionStats().transform([&](auto value) { timings = std::move(value); }));
+        if (context.evidence) {
+            bench::Json frames = bench::Json::array();
+            for (const auto& frame : timings) {
+                bench::Json nodes = bench::Json::array();
+                for (const auto& node : frame.nodes) {
+                    nodes.push_back({{"queue", int(node.queue)}, {"available", node.gpuTimingAvailable}, {"milliseconds", node.gpuMilliseconds}});
+                }
+                frames.push_back({{"available", frame.gpuTimingAvailable}, {"milliseconds", frame.gpuMilliseconds}, {"nodes", nodes}});
+            }
+            context.evidence->json("query-ring.json", frames);
+        }
         if (context.device.capabilities().timestampQueries) {
             if (timings.size() != 6) { return RhiTestResult::fail("mixed queue query ring lost completed frames"); }
             for (const auto& frame : timings) {
@@ -1457,6 +1492,7 @@ public:
             previous != std::array<uint32_t, 4>{104, 105, 106, 107}) {
             return RhiTestResult::fail("self-submitted history was not advanced/ordered across frames");
         }
+        bench::readbackEvidence(context, "history.bin", std::span<const uint32_t>(previous));
         // Switching to caller-owned graphics commands requires a drain and an
         // acquire barrier for graph outputs last used on the copy queue.
         Commands readback;
@@ -1477,6 +1513,7 @@ public:
         if (!readWords(*pixels, image.data(), image.size()) || image[0] == image[136]) {
             return RhiTestResult::fail("graphics-to-copy texture transition lost rendered contents");
         }
+        bench::readbackEvidence(context, "texture.bin", std::span<const uint32_t>(image));
         // A recording failure must cancel the new slot and require recompilation,
         // without replacing a previously returned successful completion point.
         const auto good = executor.lastSubmittedCompletion();
@@ -1510,6 +1547,11 @@ METALLIC_REGISTER_RHI_TEST(FrameHistoryDependencyTest);
 
 class FrameSubmissionTransactionsTest final : public RhiTest {
 public:
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"graph.submission.rollback.contract"}, bench::Layer::RenderGraph, "async", "sync");
+    }
+
     FrameSubmissionTransactionsTest()
     {
         type = RhiTestType::Command;

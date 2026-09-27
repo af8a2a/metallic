@@ -3470,6 +3470,7 @@ struct DeviceImpl {
     SDL_SharedObject* vulkanLoaderHandle = nullptr;
     bool sdlVulkanLoaded = false;
     bool validationEnabled = false;
+    bool synchronizationValidationEnabled = false;
     bool debugUtilsEnabled = false;
     bool bindlessDescriptorHeapEnabled = false;
     bool shaderUntypedPointersEnabled = false;
@@ -10688,14 +10689,14 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     }
 
     std::string nvPerfError;
-    if ((profiling::nvPerfRequested() && (desc.enableValidation || desc.shaderPrintf != nullptr)) ||
+    if ((profiling::nvPerfRequested() && (desc.enableValidation || desc.enableSynchronizationValidation || desc.shaderPrintf != nullptr)) ||
         !profiling::nvPerfInstanceExtensions(instanceExtensions, kVulkanApiVersion, nvPerfError)) {
         spdlog::error("[NvPerf] {}", nvPerfError.empty() ? "Validation incompatible with NvPerf" : nvPerfError);
         return makeError(Error::Unsupported);
     }
     std::vector<const char*> instanceLayers;
     const std::vector<VkLayerProperties> availableLayers = enumerateInstanceLayers();
-    const bool validationRequested = desc.enableValidation || desc.shaderPrintf != nullptr;
+    const bool validationRequested = desc.enableValidation || desc.enableSynchronizationValidation || desc.shaderPrintf != nullptr;
     if (desc.shaderPrintf) {
         auto& printf = *desc.shaderPrintf;
         for (const auto& layer : availableLayers) {
@@ -10729,6 +10730,30 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         spdlog::warn("Vulkan validation requested but VK_LAYER_KHRONOS_validation is not available.");
     }
 
+    // Keep this mode explicit and fail closed; ShaderPrintf owns a different
+    // validation configuration and cannot be combined with conformance checks.
+    if (desc.enableSynchronizationValidation) {
+        if (!deviceImpl->validationEnabled || !debugUtilsAvailable || desc.shaderPrintf) {
+            return makeError(Error::Unsupported);
+        }
+        uint32_t count = 0;
+        if (vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &count, nullptr) != VK_SUCCESS) {
+            return makeError(Error::Unsupported);
+        }
+        std::vector<VkExtensionProperties> layerExtensions(count);
+        if (vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &count, layerExtensions.data()) != VK_SUCCESS ||
+            (!hasName(layerExtensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME) &&
+             !hasName(availableExtensions, VK_EXT_LAYER_SETTINGS_EXTENSION_NAME))) {
+            return makeError(Error::Unsupported);
+        }
+        instanceExtensions.push_back(VK_EXT_LAYER_SETTINGS_EXTENSION_NAME);
+    }
+    const VkBool32 syncValidation = VK_TRUE;
+    const VkLayerSettingEXT syncSetting{"VK_LAYER_KHRONOS_validation", "validate_sync",
+        VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &syncValidation};
+    const VkLayerSettingsCreateInfoEXT syncSettings{VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT,
+        nullptr, 1, &syncSetting};
+
     VkApplicationInfo applicationInfo{
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = desc.applicationName,
@@ -10741,7 +10766,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     deviceImpl->debugContext = {desc.validationSink, desc.shaderPrintf};
     VkDebugUtilsMessengerCreateInfoEXT earlyMessages{
         .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-        .pNext = desc.shaderPrintf ? desc.shaderPrintf->settings() : nullptr,
+        .pNext = desc.enableSynchronizationValidation ? &syncSettings : desc.shaderPrintf ? desc.shaderPrintf->settings() : nullptr,
         .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
         .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
@@ -10753,7 +10778,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     }
     VkInstanceCreateInfo instanceInfo{
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pNext = desc.shaderPrintf || (validationRequested && debugUtilsAvailable && desc.validationSink.callback)
+        .pNext = desc.enableSynchronizationValidation || desc.shaderPrintf || (validationRequested && debugUtilsAvailable && desc.validationSink.callback)
             ? &earlyMessages : nullptr,
         .pApplicationInfo = &applicationInfo,
         .enabledLayerCount = static_cast<uint32_t>(instanceLayers.size()),
@@ -10770,6 +10795,10 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
 
     if (deviceImpl->validationEnabled && debugUtilsAvailable) {
         deviceImpl->debugMessenger = createDebugMessenger(deviceImpl->instance, &deviceImpl->debugContext);
+    }
+    if (desc.enableSynchronizationValidation) {
+        if (!deviceImpl->debugMessenger) { return makeError(Error::Unsupported); }
+        deviceImpl->synchronizationValidationEnabled = true;
     }
     if (desc.shaderPrintf) {
         desc.shaderPrintf->instanceConfigured = true;
@@ -11446,7 +11475,9 @@ struct VulkanNativeAccess {
             .device = device.impl_->device,
             .apiVersion = kVulkanApiVersion,
             .descriptorHeapEnabled = device.impl_->bindlessDescriptorHeapEnabled,
+            .shaderUntypedPointersEnabled = device.impl_->shaderUntypedPointersEnabled,
             .validationEnabled = device.impl_->validationEnabled,
+            .synchronizationValidationEnabled = device.impl_->synchronizationValidationEnabled,
             .validationMessengerActive = device.impl_->debugMessenger != VK_NULL_HANDLE,
         };
     }

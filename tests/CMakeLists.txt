@@ -233,6 +233,7 @@ add_executable(MetallicRhiTests
     rhi/harness/VulkanDiagnostics.cpp
     rhi/harness/ProcessRunner.cpp
     rhi/harness/Runner.cpp
+    rhi/harness/CoreCases.cpp
     rhi/harness/SampleCases.cpp
     rhi/harness/HarnessTests.cpp
     rhi/NativeDescriptorHeapTests.cpp
@@ -349,10 +350,15 @@ if(WIN32)
     add_test(NAME MetallicTestbench.Harness COMMAND MetallicRhiTests --tb-self-test)
     add_test(NAME MetallicTestbench.Contract COMMAND MetallicRhiTests --tb-run --tb-suite contract --tb-require-all)
     add_test(NAME MetallicTestbench.Core COMMAND MetallicRhiTests --tb-run --tb-suite core --tb-require-all ${_testbench_layer_arguments})
+    add_test(NAME MetallicTestbench.Binding COMMAND MetallicRhiTests --tb-run --tb-suite binding ${_testbench_layer_arguments})
+    add_test(NAME MetallicTestbench.Sync COMMAND MetallicRhiTests --tb-run --tb-suite sync --tb-validation sync ${_testbench_layer_arguments})
+    add_test(NAME MetallicTestbench.SyncActivation COMMAND ${CMAKE_COMMAND}
+        "-DEXECUTABLE=$<TARGET_FILE:MetallicRhiTests>" "-DSOURCE=${CMAKE_SOURCE_DIR}"
+        "-DLAYER_PATH=${METALLIC_TESTBENCH_LAYER_PATH}" -P "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/VerifySyncProbe.cmake")
     add_test(NAME MetallicTestbench.Async COMMAND MetallicRhiTests --tb-run --tb-suite async ${_testbench_layer_arguments})
-    set_tests_properties(MetallicTestbench.Harness MetallicTestbench.Contract MetallicTestbench.Core MetallicTestbench.Async
+    set_tests_properties(MetallicTestbench.Harness MetallicTestbench.Contract MetallicTestbench.Core MetallicTestbench.Async MetallicTestbench.Binding MetallicTestbench.Sync MetallicTestbench.SyncActivation
         PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "testbench" TIMEOUT 180)
-    set_tests_properties(MetallicTestbench.Core MetallicTestbench.Async PROPERTIES RESOURCE_LOCK MetallicGpu)
+    set_tests_properties(MetallicTestbench.Core MetallicTestbench.Async MetallicTestbench.Binding MetallicTestbench.Sync MetallicTestbench.SyncActivation PROPERTIES RESOURCE_LOCK MetallicGpu)
 endif()
 
 if(WIN32)

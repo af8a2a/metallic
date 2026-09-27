@@ -5,10 +5,16 @@
 
 namespace metallic::tests::bench {
 
-bool validationActive(render::Device& device)
+bool nativeDescriptorPointersEnabled(render::Device& device)
+{
+    return render::vulkan::nativeDevice(device).shaderUntypedPointersEnabled;
+}
+
+Validation activeValidation(render::Device& device)
 {
     const auto native = render::vulkan::nativeDevice(device);
-    return native.validationEnabled && native.validationMessengerActive;
+    if (!native.validationEnabled || !native.validationMessengerActive) { return Validation::Off; }
+    return native.synchronizationValidationEnabled ? Validation::Synchronization : Validation::Core;
 }
 
 Json describeDevice(render::Device& device, const Profile& profile)
@@ -47,8 +53,8 @@ Json describeDevice(render::Device& device, const Profile& profile)
     }
     return {{"device", properties.properties.deviceName}, {"uuid", uuid.str()}, {"apiVersion", properties.properties.apiVersion},
         {"driver", driver.driverName}, {"driverInfo", driver.driverInfo}, {"driverVersion", properties.properties.driverVersion},
-        {"validationEnabled", native.validationEnabled}, {"messengerActive", native.validationMessengerActive},
-        {"validationMode", native.validationEnabled ? "core" : "off"}, {"availableLayers", layers},
+        {"nativeDescriptorPointersEnabled", native.shaderUntypedPointersEnabled}, {"validationEnabled", native.validationEnabled}, {"messengerActive", native.validationMessengerActive},
+        {"validationMode", name(activeValidation(device))}, {"availableLayers", layers},
         {"queues", queues}, {"capabilities", capabilities}};
 }
 
