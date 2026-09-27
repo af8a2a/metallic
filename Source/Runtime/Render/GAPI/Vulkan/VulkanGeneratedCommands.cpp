@@ -1,4 +1,5 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.h"
+#include "VulkanTrace.h"
 
 #include <algorithm>
 #include <limits>
@@ -364,6 +365,8 @@ Result<> GeneratedCommands::preprocessBarrier(CommandBuffer& commands)
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
     impl_->vk.vkCmdPipelineBarrier2(nativeCommandBuffer(commands), &dependency);
+    emitTrace({.kind = TraceKind::Barrier, .device = impl_->device.device,
+        .command = nativeCommandBuffer(commands), .dependency = &dependency});
     return {};
 }
 

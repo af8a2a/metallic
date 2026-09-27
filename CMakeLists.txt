@@ -39,6 +39,7 @@ endif()
 option(METALLIC_CLUSTER_LOD_TOPOLOGY_NYX
     "Build ClusterLOD topology with the experimental Nyx-style top-level BVH instead of the selector chain"
     OFF)
+option(METALLIC_RHI_DIAGNOSTICS "Compile optional Vulkan barrier/submit observation hooks" OFF)
 option(METALLIC_BUILD_TESTS "Build Metallic test targets" ON)
 option(METALLIC_ENABLE_TRACY "Enable Tracy CPU/GPU profiling" ON)
 

@@ -314,4 +314,4 @@ M1 不包含通用 DevicePool、全量目录搬迁、全 API trace、fuzzer 或 
 
 ## 12. 本方案的验证边界
 
-设计阶段读取了现有 harness、CMake、RHI feature 配置、RenderGraph snapshot 及代表性扩展用例，并核对 NRISamples 与 Vulkan 官方资料。本文的完整 milestones、耗时目标和 API 不代表已经全部实现；M1/M2/M3 的运行命令、实际覆盖与硬件验证限制见使用说明。M3 已接入隔离 reference/target、解析 RT 和所列扩展比较；本机 OMM target 仍受验证层版本限制。M4 仍需独立实现和验证。
+设计阶段读取了现有 harness、CMake、RHI feature 配置、RenderGraph snapshot 及代表性扩展用例，并核对 NRISamples 与 Vulkan 官方资料。本文的完整 milestones、耗时目标和 API 不代表已经全部实现；M1/M2/M3/M4 的运行命令、实际覆盖与硬件验证限制见使用说明。M3 已接入隔离 reference/target、解析 RT 和所列扩展比较；本机 OMM target 仍受验证层版本限制。M4 已加入生产共用同步编码、有限 barrier/submit trace、合法 Buffer 序列及隔离重放/缩减；范围、预算和实际验证见使用说明，完整 native trace、通用 fuzz 与任意图关联仍不在已实现范围内。

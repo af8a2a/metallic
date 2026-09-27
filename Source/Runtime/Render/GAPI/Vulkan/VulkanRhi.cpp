@@ -1,3 +1,5 @@
+#include "VulkanSynchronization.h"
+#include "VulkanTrace.h"
 #include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
@@ -91,10 +93,7 @@ bool spirvHasDescriptorBindings(const uint32_t* words, uint64_t byteSize)
     return false;
 }
 
-struct VulkanSyncScope {
-    VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
-    VkAccessFlags2 access = VK_ACCESS_2_NONE;
-};
+using vulkan::VulkanSyncScope;
 
 Result<> resultFromVk(VkResult result)
 {
@@ -1073,113 +1072,9 @@ VkCompareOp toVkCompareOp(CompareOp compareOp)
     return VK_COMPARE_OP_LESS_OR_EQUAL;
 }
 
-VkImageLayout imageLayout(ResourceState usage, bool unified)
-{
-    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    switch (usage) {
-    case ResourceState::Undefined: layout = VK_IMAGE_LAYOUT_UNDEFINED; break;
-    case ResourceState::Present: layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; break;
-    case ResourceState::ColorAttachment: layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; break;
-    case ResourceState::DepthStencilAttachment: layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; break;
-    case ResourceState::ShaderRead: layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; break;
-    case ResourceState::TransferSource: layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; break;
-    case ResourceState::TransferDestination: layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; break;
-    case ResourceState::General: layout = VK_IMAGE_LAYOUT_GENERAL; break;
-    default: break;
-    }
-    return unified && layout != VK_IMAGE_LAYOUT_UNDEFINED && layout != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-        ? VK_IMAGE_LAYOUT_GENERAL : layout;
-}
-
-VkImageLayout imageLayout(TextureLayout usage, bool unified)
-{
-    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    switch (usage) {
-    case TextureLayout::Undefined: layout = VK_IMAGE_LAYOUT_UNDEFINED; break;
-    case TextureLayout::Present: layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; break;
-    case TextureLayout::ColorAttachment: layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; break;
-    case TextureLayout::DepthStencilAttachment: layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; break;
-    case TextureLayout::ShaderRead: layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; break;
-    case TextureLayout::TransferSource: layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; break;
-    case TextureLayout::TransferDestination: layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; break;
-    case TextureLayout::General: layout = VK_IMAGE_LAYOUT_GENERAL; break;
-    default: break;
-    }
-    return unified && layout != VK_IMAGE_LAYOUT_UNDEFINED && layout != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-        ? VK_IMAGE_LAYOUT_GENERAL : layout;
-}
-
-VkPipelineStageFlags2 toVkPipelineStages(PipelineStageBits stages)
-{
-    VkPipelineStageFlags2 flags = VK_PIPELINE_STAGE_2_NONE;
-    const auto value = static_cast<uint64_t>(stages);
-    if ((value & static_cast<uint64_t>(PipelineStageBits::TopOfPipe)) != 0) {
-        flags |= VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
-    }
-    if ((value & static_cast<uint64_t>(PipelineStageBits::DrawIndirect)) != 0) {
-        flags |= VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
-    }
-    if ((value & static_cast<uint64_t>(PipelineStageBits::VertexShader)) != 0) {
-        flags |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
-    }
-    if ((value & static_cast<uint64_t>(PipelineStageBits::FragmentShader)) != 0) {
-        flags |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    }
-    if ((value & static_cast<uint64_t>(PipelineStageBits::ComputeShader)) != 0) {
-        flags |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    }
-    if ((value & static_cast<uint64_t>(PipelineStageBits::ColorAttachment)) != 0) {
-        flags |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    }
-    if ((value & static_cast<uint64_t>(PipelineStageBits::Transfer)) != 0) {
-        flags |= VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    }
-    if ((value & static_cast<uint64_t>(PipelineStageBits::BottomOfPipe)) != 0) {
-        flags |= VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT;
-    }
-    if ((value & static_cast<uint64_t>(PipelineStageBits::AllCommands)) != 0) {
-        flags |= VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-    }
-    if (value & uint64_t(PipelineStageBits::DepthStencil)) { flags |= VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT; }
-    if (value & uint64_t(PipelineStageBits::PreRasterization)) { flags |= VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT; }
-    if (value & uint64_t(PipelineStageBits::AccelerationStructureBuild)) { flags |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR; }
-    if (value & uint64_t(PipelineStageBits::RayTracingShader)) { flags |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR; }
-    if (value & uint64_t(PipelineStageBits::MemoryDecompression)) { flags |= VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT; }
-    if (value & uint64_t(PipelineStageBits::Host)) { flags |= VK_PIPELINE_STAGE_2_HOST_BIT; }
-    return flags;
-}
-
-VkAccessFlags2 accessFlags(AccessBits access)
-{
-    VkAccessFlags2 flags = 0;
-    const auto value = uint64_t(access);
-    if (value & uint64_t(AccessBits::ShaderRead)) { flags |= VK_ACCESS_2_SHADER_READ_BIT; }
-    if (value & uint64_t(AccessBits::ShaderWrite)) { flags |= VK_ACCESS_2_SHADER_WRITE_BIT; }
-    if (value & uint64_t(AccessBits::UniformRead)) { flags |= VK_ACCESS_2_UNIFORM_READ_BIT; }
-    if (value & uint64_t(AccessBits::IndirectRead)) { flags |= VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT; }
-    if (value & uint64_t(AccessBits::TransferRead)) { flags |= VK_ACCESS_2_TRANSFER_READ_BIT; }
-    if (value & uint64_t(AccessBits::TransferWrite)) { flags |= VK_ACCESS_2_TRANSFER_WRITE_BIT; }
-    if (value & uint64_t(AccessBits::ColorRead)) { flags |= VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT; }
-    if (value & uint64_t(AccessBits::ColorWrite)) { flags |= VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT; }
-    if (value & uint64_t(AccessBits::DepthStencilRead)) { flags |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT; }
-    if (value & uint64_t(AccessBits::DepthStencilWrite)) { flags |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT; }
-    if (value & uint64_t(AccessBits::AccelerationStructureRead)) { flags |= VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR; }
-    if (value & uint64_t(AccessBits::AccelerationStructureWrite)) { flags |= VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR; }
-    if (value & uint64_t(AccessBits::DecompressionRead)) { flags |= VK_ACCESS_2_MEMORY_DECOMPRESSION_READ_BIT_EXT; }
-    if (value & uint64_t(AccessBits::DecompressionWrite)) { flags |= VK_ACCESS_2_MEMORY_DECOMPRESSION_WRITE_BIT_EXT; }
-    if (value & uint64_t(AccessBits::HostRead)) { flags |= VK_ACCESS_2_HOST_READ_BIT; }
-    if (value & uint64_t(AccessBits::HostWrite)) { flags |= VK_ACCESS_2_HOST_WRITE_BIT; }
-    if (value & uint64_t(AccessBits::MemoryRead)) { flags |= VK_ACCESS_2_MEMORY_READ_BIT; }
-    if (value & uint64_t(AccessBits::MemoryWrite)) { flags |= VK_ACCESS_2_MEMORY_WRITE_BIT; }
-    if (value & uint64_t(AccessBits::DescriptorRead)) { flags |= VK_ACCESS_2_RESOURCE_HEAP_READ_BIT_EXT | VK_ACCESS_2_SAMPLER_HEAP_READ_BIT_EXT; }
-    return flags;
-}
-
-VulkanSyncScope scopeInfo(SyncScope scope)
-{
-    return {toVkPipelineStages(scope.stages),
-        accessFlags(scope.access)};
-}
+using vulkan::imageLayout;
+using vulkan::toVkPipelineStages;
+using vulkan::scopeInfo;
 
 VmaAllocationCreateInfo allocationInfoForMemory(MemoryLocation location)
 {
@@ -3615,6 +3510,7 @@ MicromapIdentityIndexBuffer::~MicromapIdentityIndexBuffer()
 BufferImpl::~BufferImpl()
 {
     if (!device || buffer == VK_NULL_HANDLE) { return; }
+    vulkan::forgetTraceObject(device->device, VK_OBJECT_TYPE_BUFFER, uint64_t(buffer));
     std::lock_guard lock(device->memoryBudgetState->mutex);
     if (mapped) { vmaUnmapMemory(device->allocator, allocation); }
     vmaDestroyBuffer(device->allocator, buffer, allocation);
@@ -3623,7 +3519,9 @@ BufferImpl::~BufferImpl()
 
 TextureImpl::~TextureImpl()
 {
-    if (!device || !ownsImage || image == VK_NULL_HANDLE) { return; }
+    if (!device || image == VK_NULL_HANDLE) { return; }
+    vulkan::forgetTraceObject(device->device, VK_OBJECT_TYPE_IMAGE, uint64_t(image));
+    if (!ownsImage) { return; }
     std::lock_guard lock(device->memoryBudgetState->mutex);
     vmaDestroyImage(device->allocator, image, allocation);
     device->trackMemoryLocked(desc.memoryDomain, allocationSize, deviceLocal, false);
@@ -4548,7 +4446,10 @@ Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
     const Result<> result = [&] {
         profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::nativeSubmitNs);
         if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->nativeSubmits; }
-        return resultFromVk(vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence));
+        const auto nativeResult = vkQueueSubmit2(impl_->queue, 1, &submitInfo, fence);
+        vulkan::emitTrace({.kind = vulkan::TraceKind::Submit, .device = impl_->device->device,
+            .queue = impl_->queue, .queueFamily = impl_->familyIndex, .submit = &submitInfo, .result = nativeResult});
+        return resultFromVk(nativeResult);
     }();
     profiling::pacingTrace("QueueSubmitEnd", UINT64_MAX, impl_->familyIndex);
     if (result) {
@@ -4832,6 +4733,7 @@ Semaphore::Semaphore(std::unique_ptr<detail::SemaphoreImpl> impl)
 Semaphore::~Semaphore()
 {
     if (impl_ != nullptr && impl_->semaphore != VK_NULL_HANDLE) {
+        vulkan::forgetTraceObject(impl_->device->device, VK_OBJECT_TYPE_SEMAPHORE, uint64_t(impl_->semaphore));
         vkDestroySemaphore(impl_->device->device, impl_->semaphore, nullptr);
         impl_->semaphore = VK_NULL_HANDLE;
     }
@@ -4902,6 +4804,7 @@ SwapchainSemaphore::SwapchainSemaphore(std::unique_ptr<detail::SwapchainSemaphor
 SwapchainSemaphore::~SwapchainSemaphore()
 {
     if (impl_ != nullptr && impl_->semaphore != VK_NULL_HANDLE) {
+        vulkan::forgetTraceObject(impl_->device->device, VK_OBJECT_TYPE_SEMAPHORE, uint64_t(impl_->semaphore));
         vkDestroySemaphore(impl_->device->device, impl_->semaphore, nullptr);
         impl_->semaphore = VK_NULL_HANDLE;
     }
@@ -5698,6 +5601,7 @@ CommandBuffer::~CommandBuffer()
 {
     if (submission_) { submission_->owner = nullptr; submission_->cancel(); }
     if (impl_ != nullptr && impl_->commandBuffer != VK_NULL_HANDLE) {
+        vulkan::forgetTraceObject(impl_->device->device, VK_OBJECT_TYPE_COMMAND_BUFFER, uint64_t(impl_->commandBuffer));
         if (impl_->capturePool != nullptr) {
             // Nsight 2026.3.1 retains freed wrappers in its event polling list.
             // Reset alone does not remove those references. Keep native handles
@@ -5769,6 +5673,8 @@ Result<> CommandBuffer::begin(RenderFrameContext* frameContext)
     Result<> result = resultFromVk(vkBeginCommandBuffer(impl_->commandBuffer, &beginInfo));
     recording_ = result.has_value();
     if (result) {
+        vulkan::emitTrace({.kind = vulkan::TraceKind::CommandBegin, .device = impl_->device->device,
+            .command = impl_->commandBuffer});
         if (submission_ != nullptr) { submission_->cancel(); }
         submission_ = std::make_shared<detail::CommandSubmissionState>();
         submission_->owner = this;
@@ -5938,7 +5844,7 @@ Result<> CommandBuffer::writeRayTracingAccelerationStructureCompactedSize(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &barrier,
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
 
     const VkAccelerationStructureKHR nativeAccelerationStructure =
         accelerationStructure.impl_->accelerationStructure;
@@ -5963,43 +5869,10 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
         (desc.buffers.size() > UINT32_MAX) || (desc.memory.size() > UINT32_MAX)) {
         return makeError(Error::InvalidArgument);
     }
-    const auto validScope = [&](SyncScope scope) {
-        const auto stages = uint64_t(scope.stages);
-        const auto access = uint64_t(scope.access);
-        if ((stages & ~((1ull << 15) - 1)) || (access & ~((1ull << 19) - 1)) || (!stages && access)) { return false; }
-        const uint64_t graphics = uint64_t(PipelineStageBits::VertexShader) | uint64_t(PipelineStageBits::FragmentShader) |
-            uint64_t(PipelineStageBits::ColorAttachment) | uint64_t(PipelineStageBits::DepthStencil) | uint64_t(PipelineStageBits::PreRasterization);
-        if ((stages & graphics) && !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT)) { return false; }
-        if ((stages & uint64_t(PipelineStageBits::ComputeShader)) && !(impl_->queueFlags & VK_QUEUE_COMPUTE_BIT)) { return false; }
-        if ((stages & uint64_t(PipelineStageBits::AccelerationStructureBuild)) && !impl_->device->capabilities.rayTracingAccelerationStructure) { return false; }
-        if ((stages & uint64_t(PipelineStageBits::MemoryDecompression)) && !impl_->device->capabilities.memoryDecompression) { return false; }
-        if ((stages & uint64_t(PipelineStageBits::RayTracingShader)) && !impl_->device->rayTracingPipelineEnabled) { return false; }
-        const uint64_t computeQueueStages = uint64_t(PipelineStageBits::AccelerationStructureBuild) |
-            uint64_t(PipelineStageBits::RayTracingShader) | uint64_t(PipelineStageBits::MemoryDecompression);
-        if ((stages & computeQueueStages) && !(impl_->queueFlags & VK_QUEUE_COMPUTE_BIT)) { return false; }
-        if ((stages & uint64_t(PipelineStageBits::DrawIndirect)) && !(impl_->queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) { return false; }
-        if ((access & uint64_t(AccessBits::DescriptorRead)) && !impl_->device->capabilities.bindlessDescriptorHeap) { return false; }
-        if ((access & uint64_t(AccessBits::AccelerationStructureRead | AccessBits::AccelerationStructureWrite)) &&
-            !impl_->device->capabilities.rayTracingAccelerationStructure) { return false; }
-        if ((access & uint64_t(AccessBits::DecompressionRead | AccessBits::DecompressionWrite)) &&
-            !impl_->device->capabilities.memoryDecompression) { return false; }
-        const auto supports = [&](AccessBits mask, PipelineStageBits required, bool allCommands = true) {
-            return !(access & uint64_t(mask)) || (stages & uint64_t(required)) ||
-                (allCommands && (stages & uint64_t(PipelineStageBits::AllCommands)));
-        };
-        const auto shaders = PipelineStageBits::VertexShader | PipelineStageBits::FragmentShader |
-            PipelineStageBits::PreRasterization | PipelineStageBits::ComputeShader | PipelineStageBits::RayTracingShader;
-        return supports(AccessBits::ShaderRead, shaders | PipelineStageBits::AccelerationStructureBuild) &&
-            supports(AccessBits::ShaderWrite | AccessBits::UniformRead | AccessBits::DescriptorRead, shaders) &&
-            supports(AccessBits::IndirectRead, PipelineStageBits::DrawIndirect) &&
-            supports(AccessBits::TransferRead | AccessBits::TransferWrite, PipelineStageBits::Transfer) &&
-            supports(AccessBits::ColorRead | AccessBits::ColorWrite, PipelineStageBits::ColorAttachment) &&
-            supports(AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite, PipelineStageBits::DepthStencil) &&
-            supports(AccessBits::AccelerationStructureRead, shaders | PipelineStageBits::AccelerationStructureBuild) &&
-            supports(AccessBits::AccelerationStructureWrite, PipelineStageBits::AccelerationStructureBuild) &&
-            supports(AccessBits::DecompressionRead | AccessBits::DecompressionWrite, PipelineStageBits::MemoryDecompression) &&
-            supports(AccessBits::HostRead | AccessBits::HostWrite, PipelineStageBits::Host, false);
-    };
+    const vulkan::SyncSupport support{impl_->queueFlags, impl_->device->capabilities.rayTracingAccelerationStructure,
+        impl_->device->capabilities.memoryDecompression, impl_->device->rayTracingPipelineEnabled,
+        impl_->device->capabilities.bindlessDescriptorHeap};
+    const auto validScope = [&](SyncScope scope) { return vulkan::validScope(scope, support); };
     std::vector<VkImageMemoryBarrier2> images;
     std::vector<VkMemoryBarrier2> memory;
     uint64_t coalesced = 0;
@@ -6069,7 +5942,7 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
     const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
         .memoryBarrierCount = uint32_t(memory.size()), .pMemoryBarriers = memory.data(),
         .imageMemoryBarrierCount = uint32_t(images.size()), .pImageMemoryBarriers = images.data()};
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency, &desc);
     auto& stats = impl_->synchronizationStats;
     ++stats.calls; stats.memoryBarriers += memory.size(); stats.imageTransitions += images.size(); stats.coalescedResources += coalesced;
     return {};
@@ -6332,7 +6205,7 @@ void CommandBuffer::hostWriteBarrier()
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &barrier,
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
 }
 
 void CommandBuffer::clearColorTexture(Texture& texture, ResourceState state, const ColorValue& color)
@@ -7161,14 +7034,14 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
             .memoryBarrierCount = 1,
             .pMemoryBarriers = &barrier,
         };
-        vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+        vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
         vkCmdBuildMicromapsEXT(impl_->commandBuffer, 1, &buildInfo);
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT;
         barrier.srcAccessMask = VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT;
         barrier.dstStageMask = VK_PIPELINE_STAGE_2_MICROMAP_BUILD_BIT_EXT | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
         barrier.dstAccessMask = VK_ACCESS_2_MICROMAP_READ_BIT_EXT | VK_ACCESS_2_MICROMAP_WRITE_BIT_EXT |
             VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-        vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+        vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
         return {};
     }
 
@@ -7239,7 +7112,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &barrier,
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
     return {};
 }
 
@@ -7279,7 +7152,7 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &beforeCopyBarrier,
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &beforeCopyDependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, beforeCopyDependency);
 
     const VkCopyAccelerationStructureInfoKHR copyInfo{
         .sType = VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR,
@@ -7303,7 +7176,7 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &afterCopyBarrier,
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &afterCopyDependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, afterCopyDependency);
     return {};
 }
 
@@ -7554,7 +7427,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &inputBarrier,
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &inputDependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, inputDependency);
     vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
 
     const VkMemoryBarrier2 outputBarrier{
@@ -7571,7 +7444,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &outputBarrier,
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &outputDependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, outputDependency);
     return {};
 #endif
 }
@@ -7697,7 +7570,7 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR};
     VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &barrier};
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
     VkClusterAccelerationStructureCommandsInfoNV commands{
         .sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV,
         .input = input, .scratchData = scratchAddress,
@@ -7714,7 +7587,7 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
     barrier.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT;
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &dependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, dependency);
     return {};
 #endif
 }
@@ -7912,7 +7785,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &inputBarrier,
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &inputDependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, inputDependency);
     vkCmdBuildClusterAccelerationStructureIndirectNV(impl_->commandBuffer, &commands);
 
     const VkMemoryBarrier2 outputBarrier{
@@ -7930,7 +7803,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &outputBarrier,
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &outputDependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, outputDependency);
     return {};
 #endif
 }
@@ -8058,7 +7931,7 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &inputBarrier,
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &inputDependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, inputDependency);
     vkCmdBuildPartitionedAccelerationStructuresNV(impl_->commandBuffer, &buildInfo);
 
     const VkMemoryBarrier2 outputBarrier{
@@ -8075,7 +7948,7 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         .memoryBarrierCount = 1,
         .pMemoryBarriers = &outputBarrier,
     };
-    vkCmdPipelineBarrier2(impl_->commandBuffer, &outputDependency);
+    vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, outputDependency);
     return {};
 #endif
 }

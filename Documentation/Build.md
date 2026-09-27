@@ -247,3 +247,13 @@ Validated on Windows x64 with MSVC 19.51.36256 and CMake 4.2.1, Debug:
 - An MSVC build with a custom launcher preserved the launcher and recorded header
   dependencies in Ninja; changing the header scheduled recompilation. Actual
   sccache cache hits were not measured because sccache was not installed.
+
+## Optional RHI diagnostics
+
+`METALLIC_RHI_DIAGNOSTICS` defaults to `OFF`. Enable it in a compatible existing
+build tree to compile the same Vulkan barrier/submit observation hooks into the
+shared render runtime, editor, and tests. It does not change public RHI object
+layouts or enable capture by itself. `MetallicRhiTests --tb-trace` installs the
+bounded recorder; requesting it in an OFF build fails explicitly. See
+[RHI Testbench](RhiTestbench.md#m4-诊断与合法序列) for trace A/B, sequence replay,
+and shrinking commands. The property and shrinker tests do not require this flag.

@@ -232,6 +232,10 @@ add_executable(MetallicRhiTests
     rhi/harness/ValidationRecorder.cpp
     rhi/harness/VulkanDiagnostics.cpp
     rhi/harness/ProcessRunner.cpp
+    rhi/harness/BufferSequence.cpp
+    rhi/harness/SequenceShrinker.cpp
+    rhi/harness/DiagnosticCases.cpp
+    rhi/harness/TraceRecorder.cpp
     rhi/harness/Runner.cpp
     rhi/harness/ExtensionCases.cpp
     rhi/harness/CoreCases.cpp
@@ -484,3 +488,21 @@ foreach(_test IN LISTS _metallic_registered_tests)
         set_property(TEST "${_test}" APPEND PROPERTY RESOURCE_LOCK MetallicGpu)
     endif()
 endforeach()
+
+if(WIN32)
+    # M4 bounded, legal command sequences; no optional SDKs or Python dependency.
+    add_test(NAME MetallicTestbench.Property COMMAND MetallicRhiTests --tb-run --tb-suite property
+        --tb-validation sync --tb-repeat 4 --tb-seed 1592594996 --tb-require-all ${_testbench_layer_arguments})
+    add_test(NAME MetallicTestbench.Shrinker COMMAND ${CMAKE_COMMAND}
+        "-DEXECUTABLE=$<TARGET_FILE:MetallicRhiTests>" "-DSOURCE=${CMAKE_SOURCE_DIR}"
+        "-DLAYER_PATH=${METALLIC_TESTBENCH_LAYER_PATH}" -P "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/VerifySequenceShrinker.cmake")
+    set_tests_properties(MetallicTestbench.Property MetallicTestbench.Shrinker PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "testbench" RESOURCE_LOCK MetallicGpu TIMEOUT 240)
+    if(METALLIC_RHI_DIAGNOSTICS)
+        add_test(NAME MetallicTestbench.Trace COMMAND ${CMAKE_COMMAND}
+            "-DEXECUTABLE=$<TARGET_FILE:MetallicRhiTests>" "-DSOURCE=${CMAKE_SOURCE_DIR}"
+            "-DLAYER_PATH=${METALLIC_TESTBENCH_LAYER_PATH}" -P "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/VerifyTrace.cmake")
+        set_tests_properties(MetallicTestbench.Trace PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            LABELS "testbench" RESOURCE_LOCK MetallicGpu TIMEOUT 300)
+    endif()
+endif()

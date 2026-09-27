@@ -1,4 +1,6 @@
 #include "Runner.h"
+#include "TraceRecorder.h"
+#include "BufferSequence.h"
 #include "RhiTest.h"
 #include "ValidationRecorder.h"
 #include "VulkanDiagnostics.h"
@@ -18,6 +20,7 @@
 
 namespace metallic::tests {
 std::vector<RhiTestRegistry::Factory> testbenchFaultFactories();
+std::vector<RhiTestRegistry::Factory> sequenceFaultFactories();
 }
 
 namespace metallic::tests::bench {
@@ -38,9 +41,12 @@ struct Options {
     std::filesystem::path input;
     std::filesystem::path replay;
     std::filesystem::path layerPath;
+    std::filesystem::path sequence;
     uint32_t repeat = 1;
     uint64_t seed = 1;
+    uint32_t traceLimit = 8192;
     bool requireAll = false;
+    bool trace = false;
     bool allowMismatch = false;
 };
 
@@ -59,6 +65,8 @@ std::vector<Case> cases()
 {
     std::vector<Case> result;
     auto factories = RhiTestRegistry::factories();
+    const auto sequenceFaults = sequenceFaultFactories();
+    factories.insert(factories.end(), sequenceFaults.begin(), sequenceFaults.end());
     const auto faults = testbenchFaultFactories();
     factories.insert(factories.end(), faults.begin(), faults.end());
     for (const auto& factory : factories) {
@@ -97,15 +105,21 @@ Options parse(int argc, char** argv)
         if (key == "--tb-plan" || key == "--tb-run" || key == "--tb-child" || key == "--tb-self-test" || key == "--tb-help") {
             if (!options.mode.empty()) { throw std::runtime_error("choose one testbench mode"); }
             options.mode = key;
-        } else if (key == "--tb-replay") {
+        } else if (key == "--tb-replay" || key == "--tb-shrink") {
             if (!options.mode.empty()) { throw std::runtime_error("choose one testbench mode"); }
             options.mode = key; options.replay = std::filesystem::u8path(argument());
         } else if (key == "--tb-suite") { options.suite = argument(); }
         else if (key == "--tb-profile") { options.profile = argument(); }
         else if (key == "--tb-filter" || key == "--gtest_filter") { options.filter = argument(); }
         else if (key == "--output-dir") { options.output = std::filesystem::u8path(argument()); }
+        else if (key == "--tb-sequence") { options.sequence = std::filesystem::u8path(argument()); }
         else if (key == "--tb-input") { options.input = std::filesystem::u8path(argument()); }
         else if (key == "--tb-layer-path") { options.layerPath = std::filesystem::absolute(std::filesystem::u8path(argument())); }
+        else if (key == "--tb-trace-limit") {
+            const auto limit = number(argument());
+            if (!limit || limit > 8192) { throw std::runtime_error("trace limit must be 1..8192"); }
+            options.traceLimit = uint32_t(limit);
+        }
         else if (key == "--tb-seed") { options.seed = number(argument()); }
         else if (key == "--tb-repeat" || key == "--gtest_repeat") {
             const auto count = number(argument());
@@ -115,9 +129,11 @@ Options parse(int argc, char** argv)
             const auto mode = argument();
             options.validation = parseValidation(mode);
         } else if (key == "--tb-require-all") { options.requireAll = true; }
+        else if (key == "--tb-trace") { options.trace = true; }
         else if (key == "--tb-allow-version-mismatch") { options.allowMismatch = true; }
         else { throw std::runtime_error("unsupported/conflicting testbench option: " + key); }
     }
+    if (!options.replay.empty() && !options.sequence.empty()) { throw std::runtime_error("replay already contains its concrete sequence"); }
     if (options.mode.empty()) { throw std::runtime_error("missing testbench mode"); }
     if (!options.profile.empty() && !profile(options.profile, options.validation)) { throw std::runtime_error("unknown profile"); }
     return options;
@@ -172,6 +188,7 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
 {
     Verdict verdict;
     ValidationRecorder recorder;
+    TraceRecorder trace(input.value("traceLimit", 8192u));
     auto config = profile(input.at("profile").get<std::string>(), parseValidation(input.at("validation").get<std::string>())).value();
     auto test = selected.factory();
     std::unique_ptr<render::Device> device;
@@ -246,6 +263,9 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
         }
         device = std::move(*created);
         evidence.json("capabilities.json", describeDevice(*device, config));
+        if (input.value("trace", false) && !trace.start(*device)) {
+            issue(verdict, Status::EnvironmentFailure, "backend trace unavailable or already active; build with METALLIC_RHI_DIAGNOSTICS=ON"); return;
+        }
         std::vector<render::QueueType> queues;
         for (const auto queue : {render::QueueType::Graphics, render::QueueType::Compute, render::QueueType::Copy}) {
             if (device->getQueue(queue)) { queues.push_back(queue); }
@@ -272,7 +292,7 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
         auto* graphics = device->getQueue(render::QueueType::Graphics);
         if (!graphics) { issue(verdict, Status::EnvironmentFailure, "no graphics queue"); return; }
         context = std::make_unique<RhiTestContext>(RhiTestContext{*device, *graphics, evidence.root(),
-            activeValidation(*device) != Validation::Off, &recorder.messageCount, nullptr, &evidence, &config.desc});
+            activeValidation(*device) != Validation::Off, &recorder.messageCount, nullptr, &evidence, &config.desc, input.value("trace", false) ? &trace : nullptr});
     });
     if (recorder.failed()) { issue(verdict, Status::EnvironmentFailure, "validation reported a setup error/warning"); }
     if (verdict.status == Status::Pass) {
@@ -306,6 +326,11 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
     if (tasks) { task::shutdownTaskSystem(); }
     if (sdl) { SDL_Quit(); }
     if (recorder.failed()) { issue(verdict, Status::Fail, "validation error/warning or recorder overflow; see validation.json"); }
+    trace.stop();
+    if (input.value("trace", false)) {
+        evidence.json("trace.json", trace.snapshot());
+        if (trace.failed()) { issue(verdict, Status::InfrastructureFailure, "backend trace overflow/capture failure"); }
+    }
     evidence.json("validation.json", recorder.snapshot());
     evidence.phase("completed");
     return {{"schema", 1}, {"id", selected.id}, {"profile", config.id}, {"iteration", input.at("iteration")},
@@ -464,6 +489,18 @@ int parent(const Options& options)
                     {"binaryHash", executableHash}, {"timeoutMs", selected.metadata.timeout.count()}});
                 plan.back()["layerPath"] = replay.is_null() ? utf8(options.layerPath) : replay.value("layerPath", std::string{});
                 plan.back()["shaderFingerprint"] = shaderFingerprint;
+                plan.back()["traceLimit"] = replay.is_null() ? options.traceLimit : replay.value("traceLimit", 8192u);
+                plan.back()["trace"] = replay.is_null() ? options.trace : replay.value("trace", false);
+                if (plan.back()["trace"].get<bool>() && selected.metadata.requirements.requiresDevice) {
+                    plan.back()["metadata"]["artifacts"].push_back("trace.json");
+                }
+                if (selected.id.starts_with("RhiCommand.buffer_sequence")) {
+                    auto sequence = replay.is_null() ? (options.sequence.empty() ?
+                        generateBufferSequence(options.seed, iteration, selected.metadata.suite == "sequence-fixtures") : readJson(options.sequence)) : replay.at("sequence");
+                    validateBufferSequence(sequence);
+                    plan.back()["seed"] = sequence.at("seed");
+                    plan.back()["sequence"] = std::move(sequence);
+                } else if (!options.sequence.empty()) { throw std::runtime_error("--tb-sequence requires only a buffer_sequence case"); }
                 if (selected.metadata.comparison) {
                     plan.back()["variant"] = configuration == selected.metadata.profile ? "reference" : "target";
                     if (configuration == selected.metadata.comparison->targetProfile) {
@@ -496,6 +533,10 @@ int parent(const Options& options)
     if (options.mode == "--tb-plan") {
         std::cout << plan.dump(2) << '\n';
         return 0;
+    }
+    if (options.mode == "--tb-shrink") {
+        if (plan.size() != 1 || !plan.front().contains("sequence")) { throw std::runtime_error("shrink requires one buffer sequence replay"); }
+        return shrinkBufferSequence(executable, options.replay, plan.front(), root);
     }
     Json results = Json::array(), coverage = Json::array();
     bool failure = false;
@@ -742,10 +783,14 @@ std::optional<int> runIfRequested(int argc, char** argv)
         for (auto& argument : arguments) { pointers.push_back(argument.data()); }
         const auto options = parse(int(pointers.size()), pointers.data());
         if (options.mode == "--tb-help") {
-            std::cout << "Metallic M1/M2/M3 testbench (Windows process isolation)\n"
+            std::cout << "Metallic M1/M2/M3/M4 testbench (Windows process isolation)\n"
                 "  --tb-plan | --tb-run | --tb-replay <case-directory> | --tb-self-test\n"
-                "  --tb-suite core|contract|binding|sync|async|extensions  --tb-profile <standalone-profile>\n"
+                "  --tb-suite core|contract|binding|sync|async|extensions|property  --tb-profile <standalone-profile>\n"
                 "  --tb-filter <GoogleTest-pattern>  --tb-repeat 1..1000  --tb-seed <uint64>\n"
+                "  --tb-shrink <failed-sequence-directory> (64 children / 120 seconds)\n"
+                "  --tb-sequence <sequence.json> (buffer_sequence only; preserved by replay)\n"
+                "  --tb-trace-limit <1..8192> (optional event budget; overflow fails)\n"
+                "  --tb-trace (requires METALLIC_RHI_DIAGNOSTICS=ON; persisted in replay)\n"
                 "  --tb-validation core|sync|off  --tb-require-all  --output-dir <empty-directory>\n"
                 "  --tb-layer-path <explicit-layer-directory> (isolates implicit layers in child)\n"
                 "  --tb-allow-version-mismatch (replay only; differences remain in evidence)\n";

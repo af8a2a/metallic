@@ -128,6 +128,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Profiling/NvPerf.cpp
     Runtime/Render/Profiling/WorkControlReplay.cpp
     Runtime/Render/Profiling/TracyProfiler.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanSynchronization.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanTrace.cpp
     Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
     Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.cpp
     Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.cpp
@@ -543,3 +545,6 @@ if(WIN32)
     metallic_copy_nrc_runtime(MetallicShaderPrintfProbe)
 endif()
 metallic_copy_spdlog_runtime(MetallicShaderPrintfProbe)
+
+# One definition for the runtime and every consumer; public RHI layouts are unchanged.
+target_compile_definitions(MetallicRuntimeRender PUBLIC METALLIC_RHI_DIAGNOSTICS=$<BOOL:${METALLIC_RHI_DIAGNOSTICS}>)

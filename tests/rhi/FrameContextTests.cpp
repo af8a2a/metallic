@@ -3,6 +3,7 @@
 
 #include "RhiTest.h"
 #include "harness/Fixtures.h"
+#include "harness/GraphEvidence.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Core/HistoryResources.h"
@@ -1063,9 +1064,31 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(FrameParallelBranchTest);
 
+// Diagnostic fixture: immutable pass state, graph-owned image and no private uploads.
+class FrameGraphDiagnosticClearPass final : public render::UnsafePass {
+public:
+    bool supportsFrameOverlap() const override { return true; }
+    bool supportsAsyncQueue() const override { return true; }
+    bool supportsPipelinedSubmission() const override { return true; }
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureOutput("color").transferWrite().format = render::Format::Rgba8Unorm;
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        context.commandBuffer().clearColorTexture(*context.outputTexture("color").texture(),
+            render::ResourceState::TransferDestination, {0.25f, 0.5f, 0.75f, 1.0f});
+        return {};
+    }
+};
+
 class FrameGraphTransferPass final : public render::RenderGraphPass {
 public:
     static inline uint32_t overlapQueryCount = 0;
+    // This fixture uses only frame-local streamer data; other tests retain their original mode.
+    bool supportsPipelinedSubmission() const override { return properties().value("pipelined", false); }
     bool supportsFrameOverlap() const override { ++overlapQueryCount; return true; }
     bool supportsAsyncQueue() const override { return true; }
     render::QueueType queueType() const override
@@ -1157,6 +1180,8 @@ public:
 void registerFrameGraphTransferPass()
 {
     static const bool registered = [] {
+        render::registerRenderGraphPassType("FrameGraphDiagnosticClearPass", "Diagnostic immutable clear",
+            [] { return std::make_unique<FrameGraphDiagnosticClearPass>(); });
         render::registerRenderGraphPassType("FrameGraphHistoryPass", "Self submission test history",
             [] { return std::make_unique<FrameGraphHistoryPass>(); });
         render::registerRenderGraphPassType("FrameGraphTransferPass", "Frame submission test transfer",
@@ -1282,7 +1307,7 @@ public:
         return bench::Metadata{.suite = "async", .profile = "async", .layer = bench::Layer::RenderGraph,
             .requirements = {.capabilities = {bench::Capability::IndependentCopy},
                 .queues = {render::QueueType::Graphics, render::QueueType::Copy}},
-            .coverage = {"graph.independentCopy.progress", "graph.frameCompletion.join"}, .artifacts = {"readback.bin"}};
+            .coverage = {"graph.independentCopy.progress", "graph.frameCompletion.join", "graph.backend.diagnostics"}, .artifacts = {"readback.bin", "graph.json"}};
     }
     RhiTestResult run(RhiTestContext& context) override
     {
@@ -1290,9 +1315,9 @@ public:
         if (copyQueue == nullptr) { return RhiTestResult::skip("independent copy queue unavailable"); }
         registerFrameGraphTransferPass();
         render::RenderGraph graph;
-        graph.addNode("TriangleRasterPass", "Triangle");
-        graph.addNode("FrameGraphTransferPass", "Upload", {{"queue", "copy"}});
-        graph.markOutput("Triangle.color");
+        graph.addNode("FrameGraphDiagnosticClearPass", "Graphics");
+        graph.addNode("FrameGraphTransferPass", "Upload", {{"queue", "copy"}, {"pipelined", true}});
+        graph.markOutput("Graphics.color");
         graph.markOutput("Upload.data");
         render::RenderGraphExecutor executor;
         executor.setExecutionCaptureEnabled(true);
@@ -1322,6 +1347,9 @@ public:
         const auto snapshot = executor.executionSnapshot();
         const uint32_t uploadId = graph.findNode("Upload")->id;
         if (!snapshot) { return RhiTestResult::fail("missing independent-queue execution snapshot"); }
+        if (snapshot->pipelinedSubmission != !joined_) {
+            return RhiTestResult::fail("actual graph submission mode differs from the requested test path");
+        }
         const auto uploadSegment = std::find_if(snapshot->segments.begin(), snapshot->segments.end(),
             [uploadId](const auto& segment) { return segment.passId == uploadId; });
         if (uploadSegment == snapshot->segments.end() || !uploadSegment->predecessors.empty()) {
@@ -1334,6 +1362,9 @@ public:
                 std::find(join->predecessors.begin(), join->predecessors.end(), uploadSegment->id) == join->predecessors.end()) {
                 return RhiTestResult::fail("graph timing epilogue no longer joins the independent copy branch");
             }
+        }
+        if (const auto error = bench::graphEvidence(context, executor, *snapshot); !error.empty()) {
+            return RhiTestResult::fail(error);
         }
         const auto first = executor.lastSubmittedCompletion();
         std::vector<render::SemaphoreSubmitDesc> waits;

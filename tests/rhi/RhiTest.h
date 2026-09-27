@@ -19,7 +19,7 @@ class NsightGraphicsCapture;
 
 namespace metallic::tests {
 
-namespace bench { class Evidence; }
+namespace bench { class Evidence; class TraceRecorder; }
 
 enum class RhiTestType {
     Validation,
@@ -58,6 +58,7 @@ struct RhiTestContext {
     render::profiling::NsightGraphicsCapture* nsightCapture = nullptr;
     bench::Evidence* evidence = nullptr;
     const render::DeviceDesc* deviceDesc = nullptr;
+    bench::TraceRecorder* trace = nullptr;
 };
 
 class RhiTest {

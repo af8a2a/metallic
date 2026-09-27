@@ -1,4 +1,5 @@
 #include "Fixtures.h"
+#include "TraceRecorder.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 
@@ -137,6 +138,42 @@ public:
             if (context.evidence) { context.evidence->json(prefix + "-regions.json", {{"seed", seed}, {"regions", description}}); }
             auto result = compare(context, **readback, expected, prefix);
             if (!result.passed) { return result; }
+            if (context.trace) {
+                const auto identity = context.trace->textureId(**texture);
+                bool initial = false, toRead = false;
+                const bool unified = context.device.capabilities().unifiedImageLayouts;
+                const auto snapshot = context.trace->snapshot();
+                for (const auto& event : snapshot.at("events")) {
+                    if (event.at("kind") != "barrier") { continue; }
+                    for (const auto& encoded : event.at("images")) {
+                        if (encoded.at("resource").get<uint64_t>() != identity) { continue; }
+                        const bench::Json range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 3, 0, layers};
+                        if (encoded.at("range") != range ||
+                            encoded.at("sourceFamily").get<uint32_t>() != VK_QUEUE_FAMILY_IGNORED ||
+                            encoded.at("destinationFamily").get<uint32_t>() != VK_QUEUE_FAMILY_IGNORED) {
+                            return RhiTestResult::fail("encoded texture barrier changed mip/layer range or queue ownership");
+                        }
+                        initial |= encoded.at("oldLayout").get<int>() == VK_IMAGE_LAYOUT_UNDEFINED &&
+                            encoded.at("newLayout").get<int>() == (unified ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) &&
+                            encoded.at("after").at("access").get<uint64_t>() == VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                        toRead |= encoded.at("newLayout").get<int>() == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL &&
+                            encoded.at("before").at("access").get<uint64_t>() == VK_ACCESS_2_TRANSFER_WRITE_BIT &&
+                            encoded.at("after").at("access").get<uint64_t>() == VK_ACCESS_2_TRANSFER_READ_BIT;
+                    }
+                    if (unified) {
+                        for (const auto& requested : event.at("requested")) {
+                            if (requested.value("resource", uint64_t(0)) != identity || requested.at("kind") != "image" ||
+                                requested.at("newLayout").get<int>() != int(TextureLayout::TransferSource)) { continue; }
+                            for (const auto& encoded : event.at("memory")) {
+                                toRead |= (encoded.at("before").at("access").get<uint64_t>() & VK_ACCESS_2_TRANSFER_WRITE_BIT) &&
+                                    (encoded.at("after").at("access").get<uint64_t>() & VK_ACCESS_2_TRANSFER_READ_BIT);
+                            }
+                        }
+                    }
+                }
+                if (context.evidence) { context.evidence->json(prefix + "-trace-checks.json", {{"initialTransition", initial}, {"copyReadVisibility", toRead}}); }
+                if (!initial || !toRead) { return RhiTestResult::fail("encoded texture layout/visibility missing from trace"); }
+            }
         }
         return RhiTestResult::pass();
     }
