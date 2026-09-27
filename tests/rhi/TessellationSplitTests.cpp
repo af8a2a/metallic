@@ -81,8 +81,8 @@ public:
         TESS_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })); TESS_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         TESS_REQUIRE(commands->begin()); commands->hostWriteBarrier();
         const BufferBarrierDesc barriers[] = {
-            {.buffer = buffers[0].get(), .before = ResourceState::Undefined, .after = ResourceState::General},
-            {.buffer = buffers[1].get(), .before = ResourceState::Undefined, .after = ResourceState::General}};
+            {.buffer = buffers[0].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}},
+            {.buffer = buffers[1].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}}};
         if (auto commandResult = commands->synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         const uint32_t push[] = {handles[0].shaderIndex, handles[1].shaderIndex};

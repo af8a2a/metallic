@@ -172,7 +172,10 @@ std::array<float, 12> sampleTexture(RhiTestContext& context, ScenePathTraceResou
     require(context.device.createFence({}).transform([&](auto rhiValue) { fence = std::move(rhiValue); }), "sample fence");
     require(commands->begin(), "sample begin");
     const BufferBarrierDesc ready{
-        .buffer = output.get(), .before = ResourceState::Undefined, .after = ResourceState::General};
+        .buffer = output.get(),
+        .before = {},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+    };
     if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
     const ComputeDispatchBinding bindings[] = {{.binding = 0,
                                                 .textureViews = resources.materialTextureViews().data(),
@@ -858,13 +861,17 @@ class BcTextureUploadTest final : public RhiTest {
                 require(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }), "BC commands");
                 require(context.device.createFence({}).transform([&](auto rhiValue) { fence = std::move(rhiValue); }), "BC fence");
                 require(commands->begin(), "BC begin");
-                TextureBarrierDesc barrier{.texture = texture.get(),
-                                           .before = ResourceState::Undefined,
-                                           .after = ResourceState::TransferDestination};
+                TextureBarrierDesc barrier{
+                    .texture = texture.get(),
+                    .oldLayout = render::TextureLayout::Undefined,
+                    .newLayout = TextureLayout::TransferDestination,
+                    .before = {},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                };
                 if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
-                barrier.before = ResourceState::TransferDestination;
-                barrier.after = ResourceState::TransferSource;
+                barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite};
+                barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                 if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 commands->copyTextureToBuffer(
                     {.texture = texture.get(), .buffer = readback.get(), .width = width, .height = height});

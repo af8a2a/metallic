@@ -336,15 +336,33 @@ public:
         PATTERN_REQUIRE(commands.pool->createCommandBuffer().transform([&](auto rhiValue) { commands.buffer = std::move(rhiValue); }));
         PATTERN_REQUIRE(commands.frame.begin(0));
         PATTERN_REQUIRE(commands.buffer->begin(&commands.frame));
-        const render::TextureBarrierDesc toTransfer{.texture = texture.get(),
-            .before = render::ResourceState::Undefined, .after = render::ResourceState::TransferDestination};
+        const render::TextureBarrierDesc toTransfer{
+            .texture = texture.get(),
+            .oldLayout = render::TextureLayout::Undefined,
+            .newLayout = render::TextureLayout::TransferDestination,
+            .before = {},
+            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
+        };
         const render::BufferBarrierDesc toGeneral[] = {
-            {.buffer = input.get(), .before = render::ResourceState::Undefined, .after = render::ResourceState::General},
-            {.buffer = output.get(), .before = render::ResourceState::Undefined, .after = render::ResourceState::General}};
+            {
+                .buffer = input.get(),
+                .before = {},
+                .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            },
+            {
+                .buffer = output.get(),
+                .before = {},
+                .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            }};
         if (auto commandResult = commands.buffer->synchronize({.textures = &toTransfer, .textureCount = 1, .buffers = toGeneral, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commands.buffer->copyBufferToTexture({.buffer = upload.get(), .texture = texture.get(), .width = 1, .height = 1});
-        const render::TextureBarrierDesc toRead{.texture = texture.get(),
-            .before = render::ResourceState::TransferDestination, .after = render::ResourceState::ShaderRead};
+        const render::TextureBarrierDesc toRead{
+            .texture = texture.get(),
+            .oldLayout = render::TextureLayout::TransferDestination,
+            .newLayout = render::TextureLayout::ShaderRead,
+            .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
+        };
         if (auto commandResult = commands.buffer->synchronize({.textures = &toRead, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         if (prefixPdf) {
             PATTERN_REQUIRE(pdfCompute.buildEnvironment(*commands.buffer, *view, pdfTexture));
@@ -358,9 +376,12 @@ public:
             .bindings = resources, .bindingCount = 3, .pushData = &push, .pushDataSize = sizeof(push),
             .groupCountX = groups}));
         if (environment && !integrateOnly) {
-            const render::BufferBarrierDesc partialsBarrier{.buffer = input.get(),
-                .before = render::ResourceState::General, .after = render::ResourceState::General,
-                .size = inputBytes};
+            const render::BufferBarrierDesc partialsBarrier{
+                .buffer = input.get(),
+                .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+                .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+                .size = inputBytes,
+            };
             if (auto commandResult = commands.buffer->synchronize({.buffers = &partialsBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             PatternValues finalizePush = push;
             finalizePush.a = 1;

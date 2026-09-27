@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/RenderGraph/NrdRuntime.h"
 #include "Runtime/Render/RenderFrameContext.h"
 #include "Runtime/Render/ResourceRegistry.h"
@@ -267,10 +268,15 @@ protected:
         require(recording.begin(frameIndex));
         require(command->begin(&recording));
         for (size_t i = 0; i < textures.size(); ++i) {
-            render::TextureBarrierDesc barrier{.texture = textures[i].get(),
-                                               .before = initialized ? render::ResourceState::General
-                                                                     : render::ResourceState::Undefined,
-                                               .after = render::ResourceState::TransferDestination};
+            render::TextureBarrierDesc barrier{
+                .texture = textures[i].get(),
+                .oldLayout = metallic::render::textureLayoutForResourceState(initialized ? render::ResourceState::General
+                                                                     : render::ResourceState::Undefined),
+                .newLayout = render::TextureLayout::TransferDestination,
+                .before = metallic::render::resourceSyncScope(initialized ? render::ResourceState::General
+                                                                     : render::ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
+                .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
+            };
             if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             render::ColorValue value{0, 0, 0, 0};
             const auto resource = static_cast<rd::ResourceType>(i);
@@ -287,8 +293,8 @@ protected:
             if (resource == rd::ResourceType::IN_PENUMBRA)
                 value = {diffuse, 0, 0, 0};
             command->clearColorTexture(*textures[i], render::ResourceState::TransferDestination, value);
-            barrier.before = render::ResourceState::TransferDestination;
-            barrier.after = render::ResourceState::General;
+            barrier.oldLayout = render::TextureLayout::TransferDestination; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
+            barrier.newLayout = render::TextureLayout::General; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
             if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         }
         auto settings = commonSettings(w, h);
@@ -317,9 +323,13 @@ protected:
             auto output = pool[static_cast<size_t>(mode == render::NrdDenoiserMode::Sigma
                 ? rd::ResourceType::OUT_SHADOW_TRANSLUCENCY : (i ? rd::ResourceType::OUT_SPEC_RADIANCE_HITDIST
                 : rd::ResourceType::OUT_DIFF_RADIANCE_HITDIST))];
-            render::TextureBarrierDesc barrier{.texture = output.texture,
-                                               .before = render::ResourceState::General,
-                                               .after = render::ResourceState::TransferSource};
+            render::TextureBarrierDesc barrier{
+                .texture = output.texture,
+                .oldLayout = render::TextureLayout::General,
+                .newLayout = render::TextureLayout::TransferSource,
+                .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+                .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
+            };
             if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             command->copyTextureToBuffer({.texture = output.texture,
                                           .buffer = readback.get(),
@@ -329,8 +339,8 @@ protected:
                                           .width = 1,
                                           .height = 1,
                                           .depth = 1});
-            barrier.before = render::ResourceState::TransferSource;
-            barrier.after = render::ResourceState::General;
+            barrier.oldLayout = render::TextureLayout::TransferSource; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
+            barrier.newLayout = render::TextureLayout::General; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
             if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         }
         require(command->end());
@@ -639,25 +649,29 @@ TEST_F(NrdRayTracingGpu, RayTracedShadowOcclusionAndHistory)
         require(recording.begin(frameIndex));
         require(command->begin(&recording));
         command->hostWriteBarrier();
-        render::TextureBarrierDesc barrier{.texture = depth.get(),
-            .before = depthReady ? render::ResourceState::ShaderRead : render::ResourceState::Undefined,
-            .after = render::ResourceState::TransferDestination};
+        render::TextureBarrierDesc barrier{
+            .texture = depth.get(),
+            .oldLayout = metallic::render::textureLayoutForResourceState(depthReady ? render::ResourceState::ShaderRead : render::ResourceState::Undefined),
+            .newLayout = render::TextureLayout::TransferDestination,
+            .before = metallic::render::resourceSyncScope(depthReady ? render::ResourceState::ShaderRead : render::ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
+            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
+        };
         if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         command->copyBufferToTexture({.buffer = upload.get(), .texture = depth.get(), .width = w, .height = h});
-        barrier.before = render::ResourceState::TransferDestination;
-        barrier.after = render::ResourceState::ShaderRead;
+        barrier.oldLayout = render::TextureLayout::TransferDestination; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
+        barrier.newLayout = render::TextureLayout::ShaderRead; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
         if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         render::ScreenSpaceShadowResult output;
         std::string log;
         auto result = shadows.record(*device, *command, *streamer, *depthView, view, lights, blocker ? (alphaCutout ? 3 : 1) : 2, 0, settings, log, &geometry[blocker ? (alphaCutout ? 2 : 1) : 0]).transform([&](auto value) { output = std::move(value); });
         if (!result) { throw std::runtime_error(log + render::resultToString(result)); }
         barrier.texture = output.texture;
-        barrier.before = render::ResourceState::ShaderRead;
-        barrier.after = render::ResourceState::TransferSource;
+        barrier.oldLayout = render::TextureLayout::ShaderRead; barrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
+        barrier.newLayout = render::TextureLayout::TransferSource; barrier.after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
         if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         command->copyTextureToBuffer({.texture = output.texture, .buffer = readback.get(), .width = w, .height = h});
-        barrier.before = render::ResourceState::TransferSource;
-        barrier.after = render::ResourceState::ShaderRead;
+        barrier.oldLayout = render::TextureLayout::TransferSource; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
+        barrier.newLayout = render::TextureLayout::ShaderRead; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
         if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         require(command->end());
         if (discard) {

@@ -1,4 +1,6 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
+#include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
 
 #include <algorithm>
 #include <limits>
@@ -135,6 +137,11 @@ SyncScope scopeForGraphAccess(RenderGraphResourceAccess access, RenderGraphPassK
     return {};
 }
 
+GraphAccessUse declaredGraphAccess(size_t resource, RenderGraphResourceAccess access, RenderGraphPassKind kind)
+{
+    return {resource, stateForAccess(access), scopeForGraphAccess(access, kind), accessWrites(access)};
+}
+
 void captureGraphAccessBoundary(const GraphAccessPassPlan& pass, std::span<const uint64_t> resourceIds,
     std::vector<RenderGraphExecutionUseSnapshot>& uses,
     std::vector<RenderGraphExecutionBarrierSnapshot>& barriers)
@@ -216,12 +223,19 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
     for (const auto& barrier : pass.barriers) {
         const auto& binding = bindings[barrier.resource];
         if (binding.texture && !barrier.executionOnly) {
-            textures.push_back({.texture = binding.texture, .before = barrier.before, .after = barrier.after,
-                .baseMip = 0, .mipCount = binding.mipCount, .baseLayer = 0, .layerCount = binding.layerCount,
-                .beforeScope = barrier.beforeScope, .afterScope = barrier.afterScope});
+            textures.push_back({
+                .texture = binding.texture,
+                .oldLayout = textureLayoutForResourceState(barrier.before),
+                .newLayout = textureLayoutForResourceState(barrier.after),
+                .before = barrier.beforeScope,
+                .after = barrier.afterScope,
+                .baseMip = 0,
+                .mipCount = binding.mipCount,
+                .baseLayer = 0,
+                .layerCount = binding.layerCount,
+            });
         } else {
-            // Buffers have no layout. Explicit execution-only dependencies also
-            // need this path because their empty access masks are intentional.
+            // Buffers and execution-only dependencies need no image transition.
             memory.push_back({barrier.beforeScope, barrier.afterScope});
         }
     }
@@ -321,11 +335,6 @@ Result<GraphAccessPlan> buildGraphAccessPlan(
 
             if (layoutChange || before.stages != PipelineStageBits::None) {
                 const bool executionOnly = !layoutChange && !localMemoryProducer;
-                if (before.stages == PipelineStageBits::None) {
-                    // Explicit nonempty scope prevents RHI state inference from
-                    // introducing unsupported stages of a remote source queue.
-                    before = {PipelineStageBits::TopOfPipe, AccessBits::None};
-                }
                 SyncScope after = use.scope;
                 if (executionOnly) {
                     before.access = AccessBits::None;

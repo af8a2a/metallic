@@ -222,8 +222,11 @@ public:
             REG_REQUIRE(firstKernel.dispatch(*first.commands, encoded, 1));
             params.add = 200; params.index = 1;
             REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); }));
-            render::BufferBarrierDesc barrier{.buffer = output.get(),
-                .before = render::ResourceState::General, .after = render::ResourceState::General};
+            render::BufferBarrierDesc barrier{
+                .buffer = output.get(),
+                .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+                .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            };
             if (auto commandResult = first.commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(secondKernel.dispatch(*first.commands, encoded, 1));
             // Force the parameter arena to grow without moving already encoded roots.
@@ -344,8 +347,11 @@ public:
                 render::CommandBuffer* commands = nullptr;
                 REG_REQUIRE(recordings[i].prepare(frame).transform([&](auto value) { commands = value; }));
                 REG_REQUIRE(recordings[i].record([&]() -> render::Result<> {
-                    render::BufferBarrierDesc barrier{.buffer = output.get(),
-                        .before = render::ResourceState::General, .after = render::ResourceState::General};
+                    render::BufferBarrierDesc barrier{
+                        .buffer = output.get(),
+                        .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+                        .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+                    };
                     if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
                     auto result = kernel.dispatch(*commands, packets[i], 1);
                     // Re-read the very first packet after additional uploads.
@@ -495,11 +501,16 @@ public:
             render::EncodedParameters encoded;
             REG_REQUIRE(writer.encode(params, kAbi + 3).transform([&](auto value) { encoded = std::move(value); }));
             REG_CHECK(registry->stats().descriptorWrites == 3); // storage image, sampled image, output
-            render::TextureBarrierDesc barrier{.texture = image.get(),
-                .before = render::ResourceState::Undefined, .after = render::ResourceState::General};
+            render::TextureBarrierDesc barrier{
+                .texture = image.get(),
+                .oldLayout = render::TextureLayout::Undefined,
+                .newLayout = render::TextureLayout::General,
+                .before = {},
+                .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            };
             if (auto commandResult = recording.commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[0].dispatch(*recording.commands, encoded, 1));
-            barrier.before = render::ResourceState::General; barrier.after = render::ResourceState::ShaderRead;
+            barrier.oldLayout = render::TextureLayout::General; barrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite}; barrier.newLayout = render::TextureLayout::ShaderRead; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
             if (auto commandResult = recording.commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[1].dispatch(*recording.commands, encoded, 1));
         }
@@ -673,14 +684,20 @@ public:
             REG_CHECK(!recording.commands->dispatchIndirect(to));
             REG_REQUIRE(arguments.subslice(1, 8).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
             REG_CHECK(!recording.commands->dispatchIndirect(invalid));
-            render::BufferBarrierDesc workBarrier{.buffer = work.get(),
-                .before = render::ResourceState::Undefined, .after = render::ResourceState::TransferDestination};
+            render::BufferBarrierDesc workBarrier{
+                .buffer = work.get(),
+                .before = {},
+                .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
+            };
             if (auto commandResult = recording.commands->synchronize({.buffers = &workBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(recording.commands->copyBuffer(from, data));
-            workBarrier.before = render::ResourceState::TransferDestination; workBarrier.after = render::ResourceState::General;
+            workBarrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite}; workBarrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
             if (auto commandResult = recording.commands->synchronize({.buffers = &workBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            render::BufferBarrierDesc outputBarrier{.buffer = output.get(),
-                .before = render::ResourceState::Undefined, .after = render::ResourceState::General};
+            render::BufferBarrierDesc outputBarrier{
+                .buffer = output.get(),
+                .before = {},
+                .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            };
             if (auto commandResult = recording.commands->synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::ParameterWriter writer(*device, recording.frame, *registry);
             const Params params{writer.dataBuffer<uint32_t>(data), writer.dataBuffer<uint32_t>(to),
@@ -688,8 +705,8 @@ public:
             render::EncodedParameters encoded;
             REG_REQUIRE(writer.encode(params, kAbi + 5).transform([&](auto value) { encoded = std::move(value); }));
             REG_REQUIRE(kernels[0].dispatch(*recording.commands, encoded, 1));
-            outputBarrier.before = render::ResourceState::General;
-            workBarrier.before = render::ResourceState::General; workBarrier.after = render::ResourceState::IndirectArgument;
+            outputBarrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
+            workBarrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite}; workBarrier.after = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead};
             const render::BufferBarrierDesc barriers[] = {outputBarrier, workBarrier};
             if (auto commandResult = recording.commands->synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[1].dispatchIndirect(*recording.commands, encoded, arguments));
@@ -745,22 +762,24 @@ public:
         std::array<render::BufferBarrierDesc, 3> barriers;
         for (uint32_t i = 0; i < buffers.size(); ++i) {
             REG_REQUIRE(makeBuffer(device, buffers[i]));
-            barriers[i] = {.buffer = buffers[i].get(), .before = render::ResourceState::General,
-                .after = render::ResourceState::ShaderRead,
-                .beforeScope = {S::ComputeShader, A::ShaderWrite}, .afterScope = {S::ComputeShader, A::ShaderRead}};
+            barriers[i] = {
+                .buffer = buffers[i].get(),
+                .before = {S::ComputeShader, A::ShaderWrite},
+                .after = {S::ComputeShader, A::ShaderRead},
+            };
         }
         REG_REQUIRE(command.synchronize({.buffers = barriers.data(), .bufferCount = 3}));
         auto stats = command.synchronizationStats();
         REG_CHECK(stats.calls == 1 && stats.memoryBarriers == 1 && stats.coalescedResources == 3 && stats.imageTransitions == 0);
-        for (auto& barrier : barriers) { barrier.beforeScope.access = A::ShaderRead; }
+        for (auto& barrier : barriers) { barrier.before.access = A::ShaderRead; }
         REG_REQUIRE(command.synchronize({.buffers = barriers.data(), .bufferCount = 3}));
-        REG_CHECK(command.synchronizationStats().calls == 1); // Read/read does not order execution.
+        REG_CHECK(command.synchronizationStats().calls == 2); // Explicit read/read scopes still order execution.
         std::array<render::MemoryBarrierDesc, 2> memory{{
             {{S::ComputeShader, A::ShaderWrite}, {S::DrawIndirect, A::IndirectRead}},
             {{S::Transfer, A::TransferWrite}, {S::ComputeShader, A::ShaderRead}},
         }};
         REG_REQUIRE(command.synchronize({.memory = memory.data(), .memoryCount = 2}));
-        REG_CHECK(command.synchronizationStats().memoryBarriers == 3); // Keep distinct stage pairs.
+        REG_CHECK(command.synchronizationStats().memoryBarriers == 4); // Keep distinct stage pairs.
         const std::array<render::SyncScope, 5> invalid{{
             {S::Transfer, A::ShaderWrite}, {S::ComputeShader, A::IndirectRead},
             {S::None, A::MemoryRead}, {static_cast<S>(1ull << 63), A::None}, {S::Transfer, static_cast<A>(1ull << 63)},
@@ -768,7 +787,7 @@ public:
         for (const auto scope : invalid) {
             memory[1].after = scope;
             REG_CHECK(render::hasError(command.synchronize({.memory = memory.data(), .memoryCount = 2}), render::Error::InvalidArgument));
-            REG_CHECK(command.synchronizationStats().calls == 2); // Validation is atomic.
+            REG_CHECK(command.synchronizationStats().calls == 3); // Validation is atomic.
         }
         barriers[0].offset = 64;
         REG_CHECK(render::hasError(command.synchronize({.buffers = barriers.data(), .bufferCount = 3}), render::Error::InvalidArgument));
@@ -782,6 +801,109 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(SynchronizationScopesTest);
+
+// Capture encoding without submitting work. Restore Volk's entry point even on
+// an assertion failure; these tests execute serially in the RHI test process.
+struct BarrierEncodingCapture {
+    inline static BarrierEncodingCapture* active = nullptr;
+    PFN_vkCmdPipelineBarrier2 original = vkCmdPipelineBarrier2;
+    uint32_t calls = 0;
+    std::vector<VkMemoryBarrier2> memory;
+    std::vector<VkImageMemoryBarrier2> images;
+    BarrierEncodingCapture()
+    {
+        active = this;
+        vkCmdPipelineBarrier2 = capture;
+    }
+    ~BarrierEncodingCapture()
+    {
+        vkCmdPipelineBarrier2 = original;
+        active = nullptr;
+    }
+    static VKAPI_ATTR void VKAPI_CALL capture(VkCommandBuffer, const VkDependencyInfo* dependency)
+    {
+        ++active->calls;
+        active->memory.clear();
+        active->images.clear();
+        for (uint32_t i = 0; i < dependency->memoryBarrierCount; ++i) {
+            active->memory.push_back(dependency->pMemoryBarriers[i]);
+        }
+        for (uint32_t i = 0; i < dependency->imageMemoryBarrierCount; ++i) {
+            active->images.push_back(dependency->pImageMemoryBarriers[i]);
+        }
+    }
+};
+
+class SynchronizationEncodingTest final : public RhiTest {
+public:
+    SynchronizationEncodingTest() { type = RhiTestType::Command; name = "synchronization_explicit_scopes_and_layouts"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using S = render::PipelineStageBits;
+        using A = render::AccessBits;
+        using L = render::TextureLayout;
+        Commands recording;
+        REG_REQUIRE(recording.initialize(context.device, context.graphicsQueue));
+        REG_REQUIRE(recording.begin(0));
+        auto& command = *recording.commands;
+        auto texture = context.device.createTexture({.usage = render::TextureUsageBits::Storage | render::TextureUsageBits::Sampled,
+            .format = render::Format::Rgba8Unorm, .width = 4, .height = 4});
+        REG_CHECK(texture);
+        std::unique_ptr<render::Buffer> buffer;
+        REG_REQUIRE(makeBuffer(context.device, buffer));
+        BarrierEncodingCapture capture;
+
+        render::TextureBarrierDesc image{.texture = texture->get(), .oldLayout = L::General, .newLayout = L::General};
+        render::BufferBarrierDesc bytes{.buffer = buffer.get()};
+        REG_REQUIRE(command.synchronize({.textures = &image, .textureCount = 1, .buffers = &bytes, .bufferCount = 1}));
+        REG_CHECK(capture.calls == 0); // General layout must not invent accesses.
+
+        image.oldLayout = L::Undefined;
+        image.after = {S::ComputeShader, A::ShaderWrite};
+        REG_REQUIRE(command.synchronize({.textures = &image, .textureCount = 1}));
+        REG_CHECK(capture.calls == 1 && capture.images.size() == 1);
+        REG_CHECK(capture.images[0].srcStageMask == VK_PIPELINE_STAGE_2_NONE && capture.images[0].srcAccessMask == 0);
+        REG_CHECK(capture.images[0].dstStageMask == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT &&
+            capture.images[0].dstAccessMask == VK_ACCESS_2_SHADER_WRITE_BIT);
+
+        // A semaphore-covered producer needs an empty source scope even when
+        // its old layout is defined. Unified layouts must preserve that scope.
+        image.oldLayout = L::General;
+        image.newLayout = L::ShaderRead;
+        image.after = {S::ComputeShader, A::ShaderRead};
+        REG_REQUIRE(command.synchronize({.textures = &image, .textureCount = 1}));
+        if (context.device.capabilities().unifiedImageLayouts) {
+            REG_CHECK(capture.memory.size() == 1 && capture.images.empty());
+            REG_CHECK(capture.memory[0].srcStageMask == 0 && capture.memory[0].srcAccessMask == 0);
+        } else {
+            REG_CHECK(capture.images.size() == 1 && capture.memory.empty());
+            REG_CHECK(capture.images[0].srcStageMask == 0 && capture.images[0].srcAccessMask == 0);
+            REG_CHECK(capture.images[0].newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+
+        image.oldLayout = image.newLayout;
+        image.before = bytes.before = {S::ComputeShader, A::None};
+        image.after = bytes.after = {S::FragmentShader, A::None};
+        REG_REQUIRE(command.synchronize({.textures = &image, .textureCount = 1, .buffers = &bytes, .bufferCount = 1}));
+        REG_CHECK(capture.memory.size() == 1 && capture.images.empty());
+        REG_CHECK(capture.memory[0].srcStageMask == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT &&
+            capture.memory[0].dstStageMask == VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
+        REG_CHECK(capture.memory[0].srcAccessMask == 0 && capture.memory[0].dstAccessMask == 0);
+        const auto beforeInvalid = capture.calls;
+        bytes.after = {S::None, A::ShaderRead};
+        REG_CHECK(render::hasError(command.synchronize({.textures = &image, .textureCount = 1,
+            .buffers = &bytes, .bufferCount = 1}), render::Error::InvalidArgument));
+        image.newLayout = static_cast<L>(255);
+        REG_CHECK(render::hasError(command.synchronize({.textures = &image, .textureCount = 1}), render::Error::InvalidArgument));
+        image.newLayout = L::Undefined;
+        REG_CHECK(render::hasError(command.synchronize({.textures = &image, .textureCount = 1}), render::Error::InvalidArgument));
+        REG_CHECK(capture.calls == beforeInvalid);
+        REG_REQUIRE(command.end());
+        recording.frame.cancel();
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(SynchronizationEncodingTest);
 
 class PreparedExecutionViewsTest final : public RhiTest {
 public:
@@ -852,7 +974,13 @@ public:
                 allocations[i] = view->retainTexture();
                 REG_REQUIRE(device->createBuffer({.size = bytes, .usage = render::BufferUsageBits::TransferDestination,
                     .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto value) { readbacks[i] = std::move(value); }));
-                render::TextureBarrierDesc barrier{.texture = texture.get(), .after = render::ResourceState::ColorAttachment};
+                render::TextureBarrierDesc barrier{
+                    .texture = texture.get(),
+                    .oldLayout = render::TextureLayout::Undefined,
+                    .newLayout = render::TextureLayout::ColorAttachment,
+                    .before = {},
+                    .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
+                };
                 REG_REQUIRE(command.synchronize({.textures = &barrier, .textureCount = 1}));
                 render::RenderingAttachmentDesc attachment{.view = view.get(), .state = render::ResourceState::ColorAttachment,
                     .loadOp = render::LoadOp::Clear, .clearColor = {0, 0, 0, 1}};
@@ -867,8 +995,8 @@ public:
                 command.setScissor({0, 0, extent, extent});
                 command.draw(3);
                 command.endRendering();
-                barrier.before = render::ResourceState::ColorAttachment;
-                barrier.after = render::ResourceState::TransferSource;
+                barrier.oldLayout = render::TextureLayout::ColorAttachment; barrier.before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite};
+                barrier.newLayout = render::TextureLayout::TransferSource; barrier.after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
                 REG_REQUIRE(command.synchronize({.textures = &barrier, .textureCount = 1}));
                 command.copyTextureToBuffer({.texture = texture.get(), .buffer = readbacks[i].get(), .width = extent, .height = extent});
                 view.reset(); texture.reset();
@@ -1059,8 +1187,11 @@ public:
                 REG_REQUIRE(contexts[i].initialize(*device, queue));
                 REG_REQUIRE(contexts[i].prepare(frame).transform([&](auto value) { commands[i] = value; }));
             }
-            const render::BufferBarrierDesc barrier{.buffer = output.get(), .before = render::ResourceState::Undefined,
-                .after = render::ResourceState::General};
+            const render::BufferBarrierDesc barrier{
+                .buffer = output.get(),
+                .before = {},
+                .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            };
             if (auto commandResult = commands[0]->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             std::jthread recordA([&] { outcomes[0] = contexts[0].record([&]() -> render::Result<> {
                 auto recorded = packets[0].record(*commands[0]); return recorded ? commands[0]->end() : recorded; }); });

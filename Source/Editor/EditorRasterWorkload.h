@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Runtime/Render/ResourceSynchronization.h"
+
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include <array>
 #include <cstring>
@@ -32,7 +34,11 @@ public:
             copy.metadata = {{"frame", editorFrame}, {"phase", checkpoint}, {"camera", camera}, {"shader", values}, {"binHeader", binHeader}, {"cullHeader", cullHeader}};
             if (!device_->createBuffer({.size = 128, .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { copy.buffer = std::move(rhiValue); })) { throw std::runtime_error("SW workload readback allocation failed"); }
-            render::BufferBarrierDesc barrier{.buffer = resource.buffer, .before = resource.state, .after = render::ResourceState::TransferSource};
+            render::BufferBarrierDesc barrier{
+                .buffer = resource.buffer,
+                .before = metallic::render::resourceSyncScope(resource.state, metallic::render::PipelineStageBits::AllCommands),
+                .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
+            };
             if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             {
                 auto sourceSlice = resource.buffer->slice(0, 128);

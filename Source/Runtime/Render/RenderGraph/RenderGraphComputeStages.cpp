@@ -220,7 +220,7 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
             }
             used[index] = true;
             lastStates[index] = state;
-            access.uses.push_back({index, state, scope, accessWrites(use.access)});
+            access.uses.push_back(declaredGraphAccess(index, use.access, stage.kind));
         }
     }
     if (!computeOnly) {

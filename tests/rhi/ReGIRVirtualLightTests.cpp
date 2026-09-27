@@ -138,8 +138,13 @@ public:
         lightBuffer->unmap();
         commands_->hostWriteBarrier();
         if (frameIndex_ == 0) {
-            const render::TextureBarrierDesc barrier{.texture = dummyEnvironment_.get(),
-                .before = render::ResourceState::Undefined, .after = render::ResourceState::ShaderRead};
+            const render::TextureBarrierDesc barrier{
+                .texture = dummyEnvironment_.get(),
+                .oldLayout = render::TextureLayout::Undefined,
+                .newLayout = render::TextureLayout::ShaderRead,
+                .before = {},
+                .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
+            };
             if (auto commandResult = commands_->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         }
         const auto lightCount = static_cast<uint32_t>(lights.size() - 1);
@@ -168,8 +173,13 @@ public:
             REGIR_CHECK(commands_->begin(&samplingFrame));
             REGIR_CHECK(samplingHost.beginFrame(frameIndex_, 0, nullptr, log_, &samplingFrame));
             if (parameters.frameIndex == 0) {
-                const render::TextureBarrierDesc retryBarrier{.texture = dummyEnvironment_.get(),
-                    .before = render::ResourceState::Undefined, .after = render::ResourceState::ShaderRead};
+                const render::TextureBarrierDesc retryBarrier{
+                    .texture = dummyEnvironment_.get(),
+                    .oldLayout = render::TextureLayout::Undefined,
+                    .newLayout = render::TextureLayout::ShaderRead,
+                    .before = {},
+                    .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
+                };
                 if (auto commandResult = commands_->synchronize({.textures = &retryBarrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             REGIR_CHECK(wrappedLights.update(*device_, *commands_, samplingHost,
@@ -217,8 +227,11 @@ public:
         REGIR_CHECK(device_->createBuffer({.size = outputBytes,
             .usage = render::BufferUsageBits::TransferDestination,
             .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
-        const render::BufferBarrierDesc outputBarrier{.buffer = probe.get(),
-            .before = render::ResourceState::Undefined, .after = render::ResourceState::General};
+        const render::BufferBarrierDesc outputBarrier{
+            .buffer = probe.get(),
+            .before = {},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+        };
         if (auto commandResult = commands_->synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         render::TextureView* pdfViews[] = {
             cancelledWrapperSettings != nullptr ? wrappedLights.lightPdfView() : pdf_.view()};
@@ -236,10 +249,16 @@ public:
             .bindingCount = static_cast<uint32_t>(bindings.size()), .pushData = &push,
             .pushDataSize = sizeof(push), .groupCountX = kProbeSampleCount / 256}));
         const std::array transferBarriers{
-            render::BufferBarrierDesc{.buffer = probe.get(), .before = render::ResourceState::General,
-                .after = render::ResourceState::TransferSource},
-            render::BufferBarrierDesc{.buffer = readback.get(), .before = render::ResourceState::Undefined,
-                .after = render::ResourceState::TransferDestination},
+            render::BufferBarrierDesc{
+                .buffer = probe.get(),
+                .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+                .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
+            },
+            render::BufferBarrierDesc{
+                .buffer = readback.get(),
+                .before = {},
+                .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
+            },
         };
         if (auto commandResult = commands_->synchronize({.buffers = transferBarriers.data(),
             .bufferCount = static_cast<uint32_t>(transferBarriers.size())}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }

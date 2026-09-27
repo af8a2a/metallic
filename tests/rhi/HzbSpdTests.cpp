@@ -90,10 +90,18 @@ public:
             .pushData = constants, .pushDataSize = sizeof(constants),
             .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
         if (!result) { return result; }
-        render::TextureBarrierDesc depthBarrier{.texture = depth.texture(),
-            .before = render::ResourceState::General, .after = render::ResourceState::ShaderRead};
-        const render::BufferBarrierDesc counterBarrier{.buffer = counter,
-            .before = render::ResourceState::General, .after = render::ResourceState::General};
+        render::TextureBarrierDesc depthBarrier{
+            .texture = depth.texture(),
+            .oldLayout = render::TextureLayout::General,
+            .newLayout = render::TextureLayout::ShaderRead,
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
+        };
+        const render::BufferBarrierDesc counterBarrier{
+            .buffer = counter,
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+        };
         if (auto commandResult = context.commandBuffer().synchronize({.textures = &depthBarrier, .textureCount = 1, .buffers = &counterBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         result = heap_->writeSampledImage(depth_, *depth.view(), render::ResourceState::ShaderRead);
         if (result) { result = heap_->writeStorageBuffer(data_, *data); }
@@ -108,7 +116,7 @@ public:
         if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
         context.commandBuffer().dispatch((context.width() + 63) / 64, (context.height() + 63) / 64);
-        std::swap(depthBarrier.before, depthBarrier.after);
+        std::swap(depthBarrier.before, depthBarrier.after); std::swap(depthBarrier.oldLayout, depthBarrier.newLayout);
         if (auto commandResult = context.commandBuffer().synchronize({.textures = &depthBarrier, .textureCount = 1}); !commandResult) { return commandResult; }
         return {};
     }

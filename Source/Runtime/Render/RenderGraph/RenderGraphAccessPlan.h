@@ -76,6 +76,9 @@ Result<GraphAccessPlan> buildGraphAccessPlan(
     std::span<const GraphAccessPass> passes);
 
 SyncScope scopeForGraphAccess(RenderGraphResourceAccess access, RenderGraphPassKind kind);
+// Helper algorithms declare each phase's use; the shared planner derives its
+// before/after scopes, hazard ordering and image transitions.
+GraphAccessUse declaredGraphAccess(size_t resource, RenderGraphResourceAccess access, RenderGraphPassKind kind);
 
 // Diagnostic values only; resource IDs are allocation generations.
 void captureGraphAccessBoundary(const GraphAccessPassPlan& pass, std::span<const uint64_t> resourceIds,

@@ -184,15 +184,23 @@ public:
             LOD_REQUIRE(commands->begin());
             if (test == 0) {
                 for (auto& buffer : buffers) {
-                    BufferBarrierDesc barrier{.buffer = buffer.get(), .before = ResourceState::Undefined, .after = ResourceState::ShaderRead};
+                    BufferBarrierDesc barrier{.buffer = buffer.get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}};
                     if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
             }
             LOD_REQUIRE(selector.record(*commands, *registry, bindings, view, {0, count},
                 static_cast<uint32_t>(f.instances.size()), static_cast<uint32_t>(f.groups.size()), selections, arguments, scratch, manual));
             BufferBarrierDesc barriers[] = {
-                {.buffer = &selector.selections(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},
-                {.buffer = &selector.arguments(), .before = ResourceState::IndirectArgument, .after = ResourceState::TransferSource}};
+                {
+                    .buffer = &selector.selections(),
+                    .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                },
+                {
+                    .buffer = &selector.arguments(),
+                    .before = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                }};
             if (auto commandResult = commands->synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
                 auto sourceSlice = (&selector.selections())->slice(0, selectionBytes);

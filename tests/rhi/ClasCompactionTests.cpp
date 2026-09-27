@@ -315,8 +315,11 @@ class CompactClasLifecycleTest final : public RhiTest {
                             *cmd, *pageBuffer,
                             request ? std::span(&build, 1) : std::span<const MeshletStreamClasPageBuild>{}, log)),
                         log);
-                BufferBarrierDesc tableBarrier{.buffer = pool.pageTableBuffer(), .before = ResourceState::General,
-                    .after = ResourceState::TransferSource};
+                BufferBarrierDesc tableBarrier{
+                    .buffer = pool.pageTableBuffer(),
+                    .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                };
                 if (auto commandResult = cmd->synchronize({.buffers = &tableBarrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 {
                     auto sourceSlice = pool.pageTableBuffer()->slice(uint64_t(pageIndex) * 4u, 4);

@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
@@ -1590,8 +1591,15 @@ struct ScenePathTraceResources::Impl {
         phase.next("Record texture copies");
         for (auto& image : migration.textures) {
             if (!(result = uploadTexture(*migration.commands, image))) { return result; }
-            TextureBarrierDesc barrier{.texture=image.texture.get(), .before=ResourceState::TransferDestination,
-                .after=ResourceState::ShaderRead, .mipCount=image.mipCount, .layerCount=1};
+            TextureBarrierDesc barrier{
+                .texture = image.texture.get(),
+                .oldLayout = TextureLayout::TransferDestination,
+                .newLayout = TextureLayout::ShaderRead,
+                .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                .mipCount = image.mipCount,
+                .layerCount = 1,
+            };
             if (auto commandResult = migration.commands->synchronize({.textures=&barrier, .textureCount=1}); !commandResult) { return commandResult; }
             image.state = ResourceState::ShaderRead;
         }
@@ -1742,7 +1750,7 @@ struct ScenePathTraceResources::Impl {
         buffer->flush(); buffer->unmap();
         TextureFeedback entry{std::move(buffer),frame->completion(),frameIndex};
         feedback = entry.buffer.get(); frame->retain(entry.buffer);
-        BufferBarrierDesc ready{.buffer=feedback, .before=ResourceState::Undefined, .after=ResourceState::General};
+        BufferBarrierDesc ready{.buffer = feedback, .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
         if (auto commandResult = commands.synchronize({.buffers=&ready, .bufferCount=1}); !commandResult) { return commandResult; }
         textureFeedback.push_back(std::move(entry));
         return {};
@@ -2492,8 +2500,10 @@ struct ScenePathTraceResources::Impl {
 
         TextureBarrierDesc toTransfer{
             .texture = texture.texture.get(),
-            .before = texture.state,
-            .after = ResourceState::TransferDestination,
+            .oldLayout = textureLayoutForResourceState(texture.state),
+            .newLayout = TextureLayout::TransferDestination,
+            .before = resourceSyncScope(texture.state, PipelineStageBits::AllCommands),
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
             .baseMip = 0,
             .mipCount = texture.mipCount,
             .baseLayer = 0,
@@ -2535,8 +2545,10 @@ struct ScenePathTraceResources::Impl {
             }
             TextureBarrierDesc toShaderRead{
                 .texture = texture.texture.get(),
-                .before = ResourceState::TransferDestination,
-                .after = ResourceState::ShaderRead,
+                .oldLayout = TextureLayout::TransferDestination,
+                .newLayout = TextureLayout::ShaderRead,
+                .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
                 .baseMip = 0,
                 .mipCount = texture.mipCount,
                 .baseLayer = 0,
@@ -2559,8 +2571,8 @@ struct ScenePathTraceResources::Impl {
         for (const ScenePathTraceBufferUpload& upload : bufferUploads) {
             bufferBarriers.push_back(BufferBarrierDesc{
                 .buffer = upload.destination,
-                .before = ResourceState::TransferDestination,
-                .after = ResourceState::General,
+                .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                 .offset = 0,
                 .size = upload.byteSize,
             });

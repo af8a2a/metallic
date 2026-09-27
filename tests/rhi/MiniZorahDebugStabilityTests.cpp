@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "RhiTest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
@@ -51,14 +52,25 @@ public:
             }
             if (color) {
                 checkDebug(resource.texture->desc().format == Format::Rgba8Unorm, "Unexpected debug color format");
-                TextureBarrierDesc barrier{.texture = resource.texture, .before = resource.state, .after = ResourceState::TransferSource};
+                TextureBarrierDesc barrier{
+                    .texture = resource.texture,
+                    .oldLayout = metallic::render::textureLayoutForResourceState(resource.state),
+                    .newLayout = TextureLayout::TransferSource,
+                    .before = metallic::render::resourceSyncScope(resource.state, metallic::render::PipelineStageBits::AllCommands),
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                };
                 if (auto commandResult = commands.synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 commands.copyTextureToBuffer({.texture = resource.texture, .buffer = copy.get(),
                     .width = resource.texture->desc().width, .height = resource.texture->desc().height});
-                std::swap(barrier.before, barrier.after); if (auto commandResult = commands.synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+                std::swap(barrier.before, barrier.after); std::swap(barrier.oldLayout, barrier.newLayout); if (auto commandResult = commands.synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             } else {
-                BufferBarrierDesc barrier{.buffer = resource.buffer, .before = resource.state, .after = ResourceState::TransferSource,
-                    .offset = resource.offset, .size = bytes};
+                BufferBarrierDesc barrier{
+                    .buffer = resource.buffer,
+                    .before = metallic::render::resourceSyncScope(resource.state, metallic::render::PipelineStageBits::AllCommands),
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                    .offset = resource.offset,
+                    .size = bytes,
+                };
                 if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 {
                     auto sourceSlice = resource.buffer->slice(resource.offset, bytes);

@@ -190,6 +190,8 @@ constexpr AccessBits operator|(AccessBits lhs, AccessBits rhs)
 {
     return static_cast<AccessBits>(static_cast<uint64_t>(lhs) | static_cast<uint64_t>(rhs));
 }
+// Exact execution/access scope. None means empty, never inferred from a layout.
+// Nonempty stages with AccessBits::None express an execution-only dependency.
 struct SyncScope {
     PipelineStageBits stages = PipelineStageBits::None;
     AccessBits access = AccessBits::None;
@@ -588,32 +590,35 @@ struct SwapchainDesc {
     bool allowSdrFallback = true;
 };
 
+enum class TextureLayout : uint8_t {
+    Undefined,
+    Present,
+    ColorAttachment,
+    DepthStencilAttachment,
+    ShaderRead,
+    TransferSource,
+    TransferDestination,
+    General,
+};
+
 struct TextureBarrierDesc {
     class Texture* texture = nullptr;
-    ResourceState before = ResourceState::Undefined;
-    ResourceState after = ResourceState::Undefined;
+    TextureLayout oldLayout = TextureLayout::Undefined;
+    TextureLayout newLayout = TextureLayout::Undefined;
+    SyncScope before;
+    SyncScope after;
     uint32_t baseMip = 0;
     uint32_t mipCount = 1;
     uint32_t baseLayer = 0;
     uint32_t layerCount = 1;
-    // Previous access is covered by a semaphore wait on the consuming queue.
-    // The resource must be shared with this queue family; no ownership transfer.
-    bool acquireFromQueue = false;
-    // Empty scopes derive access from before/after for legacy callers.
-    SyncScope beforeScope;
-    SyncScope afterScope;
 };
 
 struct BufferBarrierDesc {
     class Buffer* buffer = nullptr;
-    ResourceState before = ResourceState::Undefined;
-    ResourceState after = ResourceState::Undefined;
+    SyncScope before;
+    SyncScope after;
     uint64_t offset = 0;
     uint64_t size = UINT64_MAX;
-    bool acquireFromQueue = false;
-    // Empty scopes derive access from before/after for legacy callers.
-    SyncScope beforeScope;
-    SyncScope afterScope;
 };
 
 struct ClusterAccelerationStructureProperties {

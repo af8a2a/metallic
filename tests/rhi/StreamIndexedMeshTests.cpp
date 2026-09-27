@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "RhiTest.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -178,8 +179,20 @@ public:
                     if (submitted) { MESH_REQUIRE(fence->reset()); MESH_REQUIRE(pool->reset()); }
                     MESH_REQUIRE(commands->begin());
                     const TextureBarrierDesc transitions[] = {
-                        {.texture = textures[0].get(), .before = submitted ? ResourceState::TransferSource : ResourceState::Undefined, .after = ResourceState::ColorAttachment},
-                        {.texture = textures[1].get(), .before = submitted ? ResourceState::TransferSource : ResourceState::Undefined, .after = ResourceState::DepthStencilAttachment}};
+                        {
+                            .texture = textures[0].get(),
+                            .oldLayout = metallic::render::textureLayoutForResourceState(submitted ? ResourceState::TransferSource : ResourceState::Undefined),
+                            .newLayout = TextureLayout::ColorAttachment,
+                            .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
+                            .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
+                        },
+                        {
+                            .texture = textures[1].get(),
+                            .oldLayout = metallic::render::textureLayoutForResourceState(submitted ? ResourceState::TransferSource : ResourceState::Undefined),
+                            .newLayout = TextureLayout::DepthStencilAttachment,
+                            .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
+                            .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
+                        }};
                     if (auto commandResult = commands->synchronize({.textures = transitions, .textureCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     if (hybridQueue) { if (auto commandResult = rasterizer.begin(*commands, 8, reversed); !commandResult) { return RhiTestResult::fail(std::string("begin failed: ") + render::resultToString(commandResult)); } }
                     const RenderingAttachmentDesc color{.view = views[0].get(), .state = ResourceState::ColorAttachment,
@@ -202,7 +215,11 @@ public:
                     commands->endRendering();
                     if (hybridQueue) {
                         MESH_REQUIRE(rasterizer.resolve(*commands, *textures[0], *views[0], *textures[1], *views[1]));
-                        const BufferBarrierDesc copy{.buffer = &rasterizer.queueBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource};
+                        const BufferBarrierDesc copy{
+                            .buffer = &rasterizer.queueBuffer(),
+                            .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                        };
                         if (auto commandResult = commands->synchronize({.buffers = &copy, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         {
                             auto sourceSlice = (&rasterizer.queueBuffer())->slice(0, 4);
@@ -211,11 +228,21 @@ public:
                             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                             if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                         }
-                        const BufferBarrierDesc restore{.buffer = &rasterizer.queueBuffer(), .before = ResourceState::TransferSource, .after = ResourceState::ShaderRead};
+                        const BufferBarrierDesc restore{
+                            .buffer = &rasterizer.queueBuffer(),
+                            .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                        };
                         if (auto commandResult = commands->synchronize({.buffers = &restore, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     }
                     for (size_t i = 0; i < 2; ++i) {
-                        const TextureBarrierDesc copy{.texture = textures[i].get(), .before = transitions[i].after, .after = ResourceState::TransferSource};
+                        const TextureBarrierDesc copy{
+                            .texture = textures[i].get(),
+                            .oldLayout = transitions[i].newLayout,
+                            .newLayout = TextureLayout::TransferSource,
+                            .before = transitions[i].after,
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                        };
                         if (auto commandResult = commands->synchronize({.textures = &copy, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = readbacks[i].get(), .width = width, .height = height});
                     }

@@ -127,8 +127,8 @@ void storageBarrier(render::CommandBuffer& commandBuffer, render::Buffer& buffer
 {
     render::BufferBarrierDesc barrier{
         .buffer = &buffer,
-        .before = render::ResourceState::General,
-        .after = render::ResourceState::General,
+        .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+        .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
     };
     if (auto commandResult = commandBuffer.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
 }
@@ -547,13 +547,18 @@ public:
             FRAME_REQUIRE(commands.begin(i));
             if (i == 0) {
                 for (size_t j = 0; j < 3; ++j) {
-                    render::TextureBarrierDesc barrier{.texture = images->textures[j].get(),
-                        .before = render::ResourceState::Undefined, .after = render::ResourceState::TransferDestination};
+                    render::TextureBarrierDesc barrier{
+                        .texture = images->textures[j].get(),
+                        .oldLayout = render::TextureLayout::Undefined,
+                        .newLayout = render::TextureLayout::TransferDestination,
+                        .before = {},
+                        .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
+                    };
                     if (auto commandResult = commands.buffer->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     commands.buffer->clearColorTexture(*images->textures[j], render::ResourceState::TransferDestination,
                         {float((j + 1) * 10), 0, 0, 0});
-                    barrier.before = render::ResourceState::TransferDestination;
-                    barrier.after = render::ResourceState::ShaderRead;
+                    barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
+                    barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
                     if (auto commandResult = commands.buffer->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
             }

@@ -225,8 +225,8 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
         }
         BufferBarrierDesc partialsBarrier{
             .buffer = &partials,
-            .before = ResourceState::General,
-            .after = ResourceState::General,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .offset = 0,
             .size = partials.desc().size,
         };
@@ -652,8 +652,10 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
     context.host.retire(std::static_pointer_cast<void>(next));
     TextureBarrierDesc textureToTransfer{
         .texture = next->radiance.get(),
-        .before = ResourceState::Undefined,
-        .after = ResourceState::TransferDestination,
+        .oldLayout = TextureLayout::Undefined,
+        .newLayout = TextureLayout::TransferDestination,
+        .before = {},
+        .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
         .baseMip = 0,
         .mipCount = mipCount,
         .baseLayer = 0,
@@ -662,19 +664,20 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
     std::array precomputeToGeneral{
         BufferBarrierDesc{
             .buffer = next->prefilteredSpecularBuffer.get(),
-            .before = ResourceState::Undefined, .after = ResourceState::General,
+            .before = {},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         },
         BufferBarrierDesc{
             .buffer = staging->sphericalHarmonicsPartials.get(),
-            .before = ResourceState::Undefined,
-            .after = ResourceState::General,
+            .before = {},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .offset = 0,
             .size = partialBytes,
         },
         BufferBarrierDesc{
             .buffer = next->sphericalHarmonicsBuffer.get(),
-            .before = ResourceState::Undefined,
-            .after = ResourceState::General,
+            .before = {},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .offset = 0,
             .size = kSphericalHarmonicsBytes,
         },
@@ -702,8 +705,10 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
 
     TextureBarrierDesc textureToRead{
         .texture = next->radiance.get(),
-        .before = ResourceState::TransferDestination,
-        .after = ResourceState::ShaderRead,
+        .oldLayout = TextureLayout::TransferDestination,
+        .newLayout = TextureLayout::ShaderRead,
+        .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
         .baseMip = 0,
         .mipCount = mipCount,
         .baseLayer = 0,
@@ -737,8 +742,8 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
     }
     BufferBarrierDesc sphericalHarmonicsToRead{
         .buffer = next->sphericalHarmonicsBuffer.get(),
-        .before = ResourceState::General,
-        .after = ResourceState::ShaderRead,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
         .offset = 0,
         .size = kSphericalHarmonicsBytes,
     };
@@ -746,8 +751,11 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
         .buffers = &sphericalHarmonicsToRead,
         .bufferCount = 1,
     }); !commandResult) { return commandResult; }
-    BufferBarrierDesc specularToRead{.buffer = next->prefilteredSpecularBuffer.get(),
-        .before = ResourceState::General, .after = ResourceState::ShaderRead};
+    BufferBarrierDesc specularToRead{
+        .buffer = next->prefilteredSpecularBuffer.get(),
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+    };
     if (auto commandResult = context.commandBuffer->synchronize({.buffers = &specularToRead, .bufferCount = 1}); !commandResult) { return commandResult; }
     if (resources_ != nullptr) {
         context.host.retire(std::static_pointer_cast<void>(resources_));

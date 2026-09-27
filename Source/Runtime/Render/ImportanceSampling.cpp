@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/RenderFrameContext.h"
@@ -166,8 +167,10 @@ Result<> ImportancePdfTexture::beginGpuBuild(CommandBuffer& commandBuffer)
     if (auto* frame = commandBuffer.frameContext()) { frame->retain(impl_); }
     TextureBarrierDesc toGeneral{
         .texture = impl_->texture.get(),
-        .before = impl_->state,
-        .after = ResourceState::General,
+        .oldLayout = textureLayoutForResourceState(impl_->state),
+        .newLayout = TextureLayout::General,
+        .before = resourceSyncScope(impl_->state, PipelineStageBits::AllCommands),
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         .baseMip = 0,
         .mipCount = mipCount(),
         .baseLayer = 0,
@@ -185,8 +188,10 @@ Result<> ImportancePdfTexture::synchronizeGpuBuild(CommandBuffer& commandBuffer)
     }
     TextureBarrierDesc synchronize{
         .texture = impl_->texture.get(),
-        .before = ResourceState::General,
-        .after = ResourceState::General,
+        .oldLayout = TextureLayout::General,
+        .newLayout = TextureLayout::General,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         .baseMip = 0,
         .mipCount = mipCount(),
         .baseLayer = 0,
@@ -203,8 +208,10 @@ Result<> ImportancePdfTexture::endGpuBuild(CommandBuffer& commandBuffer)
     }
     TextureBarrierDesc toShaderRead{
         .texture = impl_->texture.get(),
-        .before = impl_->state,
-        .after = ResourceState::ShaderRead,
+        .oldLayout = textureLayoutForResourceState(impl_->state),
+        .newLayout = TextureLayout::ShaderRead,
+        .before = resourceSyncScope(impl_->state, PipelineStageBits::AllCommands),
+        .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
         .baseMip = 0,
         .mipCount = mipCount(),
         .baseLayer = 0,

@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "RhiTest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -52,7 +53,11 @@ public:
         }
         const DebugResourceBinding binding{.id = "Ids", .buffer = output->buffer, .state = output->state, .size = 16};
         context.debugCheckpoint("Early", std::span(&binding, 1), {{"sourcePhase", "Early"}});
-        BufferBarrierDesc barrier{.buffer = output->buffer, .before = output->state, .after = output->state};
+        BufferBarrierDesc barrier{
+            .buffer = output->buffer,
+            .before = metallic::render::resourceSyncScope(output->state, metallic::render::PipelineStageBits::AllCommands),
+            .after = metallic::render::resourceSyncScope(output->state, metallic::render::PipelineStageBits::AllCommands),
+        };
         if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         {
             auto sourceSlice = upload_.get()->slice(16, 16);
@@ -314,7 +319,7 @@ public:
         DEBUG_REQUIRE(frame.begin(1));
         auto& commands = *frame.commands;
         commands.hostWriteBarrier();
-        BufferBarrierDesc sourceBarrier{.buffer = ids.get(), .before = ResourceState::Undefined, .after = ResourceState::TransferDestination};
+        BufferBarrierDesc sourceBarrier{.buffer = ids.get(), .before = {}, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
         if (auto commandResult = commands.synchronize({.buffers = &sourceBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
             auto sourceSlice = upload.get()->slice(0, kCount * 4);
@@ -323,9 +328,9 @@ public:
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
-        sourceBarrier.before = ResourceState::TransferDestination; sourceBarrier.after = ResourceState::ShaderRead;
+        sourceBarrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite}; sourceBarrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
         if (auto commandResult = commands.synchronize({.buffers = &sourceBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        BufferBarrierDesc outBarrier{.buffer = sentinel.get(), .before = ResourceState::Undefined, .after = ResourceState::General};
+        BufferBarrierDesc outBarrier{.buffer = sentinel.get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
         if (auto commandResult = commands.synchronize({.buffers = &outBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         const ComputeDispatchBinding originalBindings[] = {{.binding = 0, .buffer = ids.get()}, {.binding = 1, .buffer = sentinel.get()}};
         const uint32_t index = 0;
@@ -342,7 +347,7 @@ public:
             if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = &sourceBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        outBarrier.before = ResourceState::General; if (auto commandResult = commands.synchronize({.buffers = &outBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        outBarrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; if (auto commandResult = commands.synchronize({.buffers = &outBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         // No rebind: debug instrumentation must restore heap, pipeline and push data.
         commands.dispatch(1);
         runtime.boundary(commands, "Late", 0, "Probe", bindings, DebugValue::object());

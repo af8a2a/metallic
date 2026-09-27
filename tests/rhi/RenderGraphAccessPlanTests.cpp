@@ -160,11 +160,25 @@ public:
         ACCESS_CHECK(initial && initial->passes[0].barriers.size() == 1);
         ACCESS_CHECK(initial->passes[0].barriers[0].before == ResourceState::Undefined);
         ACCESS_CHECK(initial->passes[0].barriers[0].after == ResourceState::ShaderRead);
+        ACCESS_CHECK(initial->passes[0].barriers[0].beforeScope.stages == PipelineStageBits::None);
         ACCESS_CHECK(hasPredecessor(*initial, 1, 0) && hasPredecessor(*initial, 2, 0));
         // The first image transition is itself a write; another local reader
         // stage needs a GPU memory dependency, not only a CPU submission edge.
         ACCESS_CHECK(hasVisibilityBarrier(*initial, 1, 2, PipelineStageBits::ComputeShader,
             AccessBits::MemoryWrite, PipelineStageBits::FragmentShader));
+
+        using Access = render::RenderGraphResourceAccess;
+        using Kind = render::RenderGraphPassKind;
+        const std::array remotePasses{
+            GraphAccessPass{.queue = 0, .uses = {render::detail::declaredGraphAccess(0, Access::TextureColorWrite, Kind::Raster)}},
+            GraphAccessPass{.queue = 1, .uses = {render::detail::declaredGraphAccess(0, Access::TextureSampleRead, Kind::Compute)}},
+        };
+        auto remote = buildGraphAccessPlan(undefinedImage, remotePasses);
+        ACCESS_CHECK(remote && hasPredecessor(*remote, 1, 0));
+        ACCESS_CHECK(remote->passes[1].barriers.size() == 1);
+        const auto& acquire = remote->passes[1].barriers.front();
+        ACCESS_CHECK(acquire.beforeScope.stages == PipelineStageBits::None && acquire.beforeScope.access == AccessBits::None);
+        ACCESS_CHECK(acquire.afterScope.stages == PipelineStageBits::ComputeShader && acquire.afterScope.access == AccessBits::ShaderRead);
 
         const std::array image{GraphAccessResource{
             .type = render::RenderGraphResourceType::Texture2D, .state = ResourceState::ShaderRead, .scope = kComputeRead}};

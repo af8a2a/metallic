@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include <stdexcept>
 #include <string>
 
@@ -444,8 +445,15 @@ public:
         }
         const auto record = [&](ResourceState after, bool written) {
             const auto texture = manager.texture("color", HistorySlot::Current);
-            const TextureBarrierDesc barrier{.texture = texture.texture,
-                .before = texture.state, .after = after, .mipCount = 1, .layerCount = 1};
+            const TextureBarrierDesc barrier{
+                .texture = texture.texture,
+                .oldLayout = metallic::render::textureLayoutForResourceState(texture.state),
+                .newLayout = metallic::render::textureLayoutForResourceState(after),
+                .before = metallic::render::resourceSyncScope(texture.state, metallic::render::PipelineStageBits::AllCommands),
+                .after = metallic::render::resourceSyncScope(after, metallic::render::PipelineStageBits::AllCommands),
+                .mipCount = 1,
+                .layerCount = 1,
+            };
             if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             return manager.publishTextureState(*commands, "color", HistorySlot::Current, after, written);
         };

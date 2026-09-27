@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/RenderFrameContext.h"
@@ -225,8 +226,8 @@ Result<> ReGIRLightSelector::build(
 
     BufferBarrierDesc toGeneral{
         .buffer = impl_->buffer.get(),
-        .before = impl_->state,
-        .after = ResourceState::General,
+        .before = resourceSyncScope(impl_->state, PipelineStageBits::AllCommands),
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         .offset = 0,
         .size = impl_->layout.bufferByteSize,
     };
@@ -270,8 +271,8 @@ Result<> ReGIRLightSelector::build(
 
     BufferBarrierDesc toShaderRead{
         .buffer = impl_->buffer.get(),
-        .before = impl_->state,
-        .after = ResourceState::ShaderRead,
+        .before = resourceSyncScope(impl_->state, PipelineStageBits::AllCommands),
+        .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
         .offset = 0,
         .size = impl_->layout.bufferByteSize,
     };

@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/HistoryResources.h"
 #include "Runtime/Render/RenderFrameContext.h"
 
@@ -566,8 +567,10 @@ Result<> HistoryResourceManager::transitionTexture(
 
     TextureBarrierDesc barrier{
         .texture = textureSlot.texture.get(),
-        .before = textureSlot.state,
-        .after = after,
+        .oldLayout = textureLayoutForResourceState(textureSlot.state),
+        .newLayout = textureLayoutForResourceState(after),
+        .before = resourceSyncScope(textureSlot.state, PipelineStageBits::AllCommands),
+        .after = resourceSyncScope(after, PipelineStageBits::AllCommands),
         .baseMip = 0,
         .mipCount = record->textureDesc.mipCount,
         .baseLayer = 0,
@@ -607,8 +610,8 @@ Result<> HistoryResourceManager::transitionBuffer(
 
     BufferBarrierDesc barrier{
         .buffer = bufferSlot.buffer.get(),
-        .before = bufferSlot.state,
-        .after = after,
+        .before = resourceSyncScope(bufferSlot.state, PipelineStageBits::AllCommands),
+        .after = resourceSyncScope(after, PipelineStageBits::AllCommands),
         .offset = 0,
         .size = record->bufferDesc.size,
     };

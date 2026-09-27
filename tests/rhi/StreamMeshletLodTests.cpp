@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "RhiTest.h"
 #include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -759,8 +760,11 @@ private:
             STREAM_LOD_REQUIRE(commands->begin());
             std::array<BufferBarrierDesc, BufferCount> barriers{};
             for (uint32_t index = 0; index < BufferCount; ++index) {
-                barriers[index] = {.buffer = buffers[index].get(),
-                    .before = frame == 0 ? ResourceState::Undefined : ResourceState::General, .after = ResourceState::General};
+                barriers[index] = {
+                    .buffer = buffers[index].get(),
+                    .before = metallic::render::resourceSyncScope(frame == 0 ? ResourceState::Undefined : ResourceState::General, metallic::render::PipelineStageBits::AllCommands),
+                    .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                };
             }
             if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             commands->bindBindlessHeap(*heap);
@@ -790,7 +794,7 @@ private:
                 push.activeBuildPhase = phase;
                 commands->pushBindlessData(&push, sizeof(push));
                 commands->dispatch(phase == 12u ? static_cast<uint32_t>((sizes[Demand] / 4 + 63) / 64) : phase == 13u ? 4u : 1u, 1, 1);
-                for (auto& barrier : barriers) { barrier.before = ResourceState::General; }
+                for (auto& barrier : barriers) { barrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; }
                 if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             if (cooperative) {
@@ -801,8 +805,11 @@ private:
                 if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             for (uint32_t index = 0; index < std::size(outputs); ++index) {
-                BufferBarrierDesc barrier{.buffer = buffers[outputs[index]].get(),
-                    .before = ResourceState::General, .after = ResourceState::TransferSource};
+                BufferBarrierDesc barrier{
+                    .buffer = buffers[outputs[index]].get(),
+                    .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                };
                 if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 {
                     auto sourceSlice = (buffers[outputs[index]].get())->slice(0, outputSizes[index]);
@@ -1119,8 +1126,11 @@ public:
             commands->hostWriteBarrier();
             std::array<BufferBarrierDesc, 3> barriers;
             for (uint32_t i = 0; i < 3; ++i) {
-                barriers[i] = {.buffer = buffers[i].get(), .before = test == 0 ? ResourceState::Undefined : ResourceState::General,
-                    .after = ResourceState::General};
+                barriers[i] = {
+                    .buffer = buffers[i].get(),
+                    .before = metallic::render::resourceSyncScope(test == 0 ? ResourceState::Undefined : ResourceState::General, metallic::render::PipelineStageBits::AllCommands),
+                    .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                };
             }
             if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = 3}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }

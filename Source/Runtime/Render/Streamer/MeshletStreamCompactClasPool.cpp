@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamCompactClasPool.h"
 #include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
@@ -20,7 +21,11 @@ constexpr auto kCompactBufferUsage = BufferUsageBits::Storage | BufferUsageBits:
                                      BufferUsageBits::TransferDestination;
 Result<> publicationBarrier(CommandBuffer& cmd, Buffer& buffer, ResourceState before, ResourceState after)
 {
-    const BufferBarrierDesc barrier{.buffer = &buffer, .before = before, .after = after};
+    const BufferBarrierDesc barrier{
+        .buffer = &buffer,
+        .before = resourceSyncScope(before, PipelineStageBits::AllCommands),
+        .after = resourceSyncScope(after, PipelineStageBits::AllCommands),
+    };
     if (auto commandResult = cmd.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
     return {};
 }

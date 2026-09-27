@@ -194,15 +194,15 @@ public:
 
         const render::BufferBarrierDesc toIndirect{
             .buffer = indirectBuffer.get(),
-            .before = render::ResourceState::Undefined,
-            .after = render::ResourceState::IndirectArgument,
+            .before = {},
+            .after = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &toIndirect, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         const render::BufferBarrierDesc toGeneral{
             .buffer = indirectBuffer.get(),
-            .before = render::ResourceState::IndirectArgument,
-            .after = render::ResourceState::General,
+            .before = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &toGeneral, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 

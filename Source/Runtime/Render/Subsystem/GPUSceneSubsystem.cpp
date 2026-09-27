@@ -1,3 +1,4 @@
+#include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
 #include <algorithm>
@@ -1061,8 +1062,8 @@ Result<> GPUSceneSubsystem::recordInitialize(
     auto initializeResource = [&barriers](const GpuBufferResource& resource) {
         barriers.push_back(BufferBarrierDesc{
             .buffer = resource.buffer.get(),
-            .before = ResourceState::Undefined,
-            .after = ResourceState::General,
+            .before = {},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .offset = 0,
             .size = resource.byteSize,
         });
@@ -1570,15 +1571,15 @@ Result<> GPUSceneSubsystem::uploadFullScene(
     for (const PendingCopy& copy : copies) {
         toTransfer.push_back(BufferBarrierDesc{
             .buffer = copy.destination,
-            .before = ResourceState::Undefined,
-            .after = ResourceState::TransferDestination,
+            .before = {},
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
             .offset = 0,
             .size = copy.byteSize,
         });
         toRead.push_back(BufferBarrierDesc{
             .buffer = copy.destination,
-            .before = ResourceState::TransferDestination,
-            .after = ResourceState::ShaderRead,
+            .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
             .offset = 0,
             .size = copy.byteSize,
         });
@@ -1676,8 +1677,8 @@ Result<> GPUSceneSubsystem::uploadInstances(
 
     BufferBarrierDesc toTransfer{
         .buffer = resource.buffer.get(),
-        .before = ResourceState::ShaderRead,
-        .after = ResourceState::TransferDestination,
+        .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+        .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
         .offset = 0,
         .size = byteSize,
     };
@@ -1694,8 +1695,8 @@ Result<> GPUSceneSubsystem::uploadInstances(
     }
     BufferBarrierDesc toRead{
         .buffer = resource.buffer.get(),
-        .before = ResourceState::TransferDestination,
-        .after = ResourceState::ShaderRead,
+        .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
         .offset = 0,
         .size = byteSize,
     };
@@ -1927,14 +1928,14 @@ Result<> GPUSceneSubsystem::recordCull(
     resetBarriers.reserve(2);
     resetBarriers.push_back(BufferBarrierDesc{
         .buffer = indirectBuffer,
-        .before = ResourceState::General,
-        .after = ResourceState::General,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     });
     if (visible->gpu.visibleInstanceCounter.buffer != nullptr) {
         resetBarriers.push_back(BufferBarrierDesc{
             .buffer = visible->gpu.visibleInstanceCounter.buffer,
-            .before = ResourceState::General,
-            .after = ResourceState::General,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         });
     }
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
@@ -1950,26 +1951,26 @@ Result<> GPUSceneSubsystem::recordCull(
     cullBarriers.reserve(4);
     cullBarriers.push_back(BufferBarrierDesc{
         .buffer = indirectBuffer,
-        .before = ResourceState::General,
-        .after = ResourceState::General,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     });
     cullBarriers.push_back(BufferBarrierDesc{
         .buffer = instanceVisibilityBuffer,
-        .before = ResourceState::General,
-        .after = ResourceState::General,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     });
     if (visible->gpu.visibleInstanceIds.buffer != nullptr) {
         cullBarriers.push_back(BufferBarrierDesc{
             .buffer = visible->gpu.visibleInstanceIds.buffer,
-            .before = ResourceState::General,
-            .after = ResourceState::General,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         });
     }
     if (visible->gpu.visibleInstanceCounter.buffer != nullptr) {
         cullBarriers.push_back(BufferBarrierDesc{
             .buffer = visible->gpu.visibleInstanceCounter.buffer,
-            .before = ResourceState::General,
-            .after = ResourceState::General,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         });
     }
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
@@ -1985,26 +1986,26 @@ Result<> GPUSceneSubsystem::recordCull(
     compactBarriers.reserve(4);
     compactBarriers.push_back(BufferBarrierDesc{
         .buffer = visibleMeshletBuffer,
-        .before = ResourceState::General,
-        .after = ResourceState::General,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     });
     compactBarriers.push_back(BufferBarrierDesc{
         .buffer = indirectBuffer,
-        .before = ResourceState::General,
-        .after = ResourceState::General,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     });
     if (visible->gpu.visibleInstanceIds.buffer != nullptr) {
         compactBarriers.push_back(BufferBarrierDesc{
             .buffer = visible->gpu.visibleInstanceIds.buffer,
-            .before = ResourceState::General,
-            .after = ResourceState::General,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         });
     }
     if (visible->gpu.visibleInstanceCounter.buffer != nullptr) {
         compactBarriers.push_back(BufferBarrierDesc{
             .buffer = visible->gpu.visibleInstanceCounter.buffer,
-            .before = ResourceState::General,
-            .after = ResourceState::General,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         });
     }
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
@@ -2052,8 +2053,8 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
 
     BufferBarrierDesc resetBarrier{
         .buffer = visible->gpu.visibleInstanceCounter.buffer,
-        .before = ResourceState::General,
-        .after = ResourceState::General,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
         .buffers = &resetBarrier,
@@ -2068,20 +2069,20 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
     uint32_t barrierCount = 0;
     barriers[barrierCount++] = BufferBarrierDesc{
         .buffer = visible->gpu.instanceVisibilityStates.buffer,
-        .before = ResourceState::General,
-        .after = ResourceState::General,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
     if (visible->gpu.visibleInstanceIds.buffer != nullptr) {
         barriers[barrierCount++] = BufferBarrierDesc{
             .buffer = visible->gpu.visibleInstanceIds.buffer,
-            .before = ResourceState::General,
-            .after = ResourceState::General,
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         };
     }
     barriers[barrierCount++] = BufferBarrierDesc{
         .buffer = visible->gpu.visibleInstanceCounter.buffer,
-        .before = ResourceState::General,
-        .after = ResourceState::General,
+        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
         .buffers = barriers.data(),
@@ -2143,47 +2144,56 @@ Result<> GPUSceneSubsystem::recordBuildHzb(
         }).transform([](auto) {});
     if (!result) { return result; }
     host_->retire(std::static_pointer_cast<void>(owned->second));
+    using namespace detail;
+    using Access = RenderGraphResourceAccess;
+    constexpr auto compute = RenderGraphPassKind::Compute;
+    std::vector<GraphAccessResource> resources;
+    std::vector<GraphAccessBinding> bindings;
+    for (Buffer* buffer : {writeBuffer, desc.counterResetSource, desc.counterBuffer}) {
+        if (resources.size() != 0 && !desc.singleDispatch) { break; }
+        auto slice = buffer->slice();
+        if (!slice) { return makeError(slice.error()); }
+        resources.push_back({.type = RenderGraphResourceType::Buffer, .state = ResourceState::General,
+            .scope = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}});
+        bindings.push_back({.buffer = std::move(*slice)});
+    }
+    std::vector<GraphAccessPass> phases;
     if (desc.singleDispatch) {
-        // Reset on the GPU for every build, including the second HZB in a frame.
-        // This also handles cancelled recordings without CPU counter state.
-        const BufferBarrierDesc resetBarriers[] = {
-            {.buffer = desc.counterResetSource, .before = ResourceState::General, .after = ResourceState::TransferSource},
-            {.buffer = desc.counterBuffer, .before = ResourceState::General, .after = ResourceState::TransferDestination}};
-        if (auto commandResult = commandBuffer.synchronize({.buffers = resetBarriers, .bufferCount = 2}); !commandResult) { return commandResult; }
-        {
-            auto sourceSlice = desc.counterResetSource->slice(0, sizeof(uint32_t));
-            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = desc.counterBuffer->slice(0, sizeof(uint32_t));
-            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
-            if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        phases.push_back({.uses = {declaredGraphAccess(1, Access::BufferTransferRead, compute),
+            declaredGraphAccess(2, Access::BufferTransferWrite, compute)}});
+    }
+    for (size_t i = 0; i < desc.dispatches.size(); ++i) {
+        auto& phase = phases.emplace_back();
+        phase.uses.push_back(declaredGraphAccess(0, Access::BufferStorageReadWrite, compute));
+        if (desc.singleDispatch) {
+            phase.uses.push_back(declaredGraphAccess(2, Access::BufferStorageReadWrite, compute));
         }
-        const BufferBarrierDesc readyBarriers[] = {
-            {.buffer = desc.counterResetSource, .before = ResourceState::TransferSource, .after = ResourceState::General},
-            {.buffer = desc.counterBuffer, .before = ResourceState::TransferDestination, .after = ResourceState::General}};
-        if (auto commandResult = commandBuffer.synchronize({.buffers = readyBarriers, .bufferCount = 2}); !commandResult) { return commandResult; }
+    }
+    phases.push_back({.uses = {declaredGraphAccess(0, Access::BufferShaderRead, RenderGraphPassKind::Unsafe)}});
+    auto plan = buildGraphAccessPlan(resources, phases);
+    if (!plan) { return makeError(plan.error()); }
+    size_t phase = 0;
+    if (desc.singleDispatch) {
+        // Reset on the GPU for every build, including cancelled/repeated builds.
+        result = recordGraphAccessBarriers(commandBuffer, plan->passes[phase++], bindings);
+        if (!result) { return result; }
+        auto sourceSlice = desc.counterResetSource->slice(0, sizeof(uint32_t));
+        if (!sourceSlice) { return makeError(sourceSlice.error()); }
+        auto destinationSlice = desc.counterBuffer->slice(0, sizeof(uint32_t));
+        if (!destinationSlice) { return makeError(destinationSlice.error()); }
+        result = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice);
+        if (!result) { return result; }
     }
     commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
-    const BufferBarrierDesc writeBarrier{
-        .buffer = writeBuffer,
-        .before = ResourceState::General,
-        .after = ResourceState::General,
-    };
-    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-        .buffers = &writeBarrier,
-        .bufferCount = 1,
-    }); !commandResult) { return commandResult; }
     for (const GPUSceneComputeDispatchDesc& dispatch : desc.dispatches) {
+        result = recordGraphAccessBarriers(commandBuffer, plan->passes[phase++], bindings);
+        if (!result) { return result; }
         commandBuffer.pushBindlessData(dispatch.pushData, dispatch.pushDataSize);
-        if (auto commandResult = commandBuffer.bindExecution((desc.pipeline)->execution()); !commandResult) { return commandResult; }
-        commandBuffer.dispatch(
-            dispatch.groupCountX,
-            dispatch.groupCountY,
-            dispatch.groupCountZ);
-        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-            .buffers = &writeBarrier,
-            .bufferCount = 1,
-        }); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.bindExecution(desc.pipeline->execution()); !commandResult) { return commandResult; }
+        commandBuffer.dispatch(dispatch.groupCountX, dispatch.groupCountY, dispatch.groupCountZ);
     }
+    result = recordGraphAccessBarriers(commandBuffer, plan->passes[phase], bindings);
+    if (!result) { return result; }
     return {};
 }
 

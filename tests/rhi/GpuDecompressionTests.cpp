@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "RhiTest.h"
 #include "GpuPageCodecChecks.h"
 #include "Runtime/Render/GAPI/StreamUploadCompletion.h"
@@ -79,8 +80,12 @@ public:
                 requireGpuPage(receipt && !receipt->isRecordedBefore(*commands) && !receipt->isComplete(), "Premature upload completion");
                 if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 requireGpuPage(receipt->isRecordedBefore(*commands), "Decode not covered by upload receipt");
-                const BufferBarrierDesc barrier{.buffer = destination.get(), .before = ResourceState::General,
-                    .after = ResourceState::TransferSource, .size = decoded.size()};
+                const BufferBarrierDesc barrier{
+                    .buffer = destination.get(),
+                    .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                    .size = decoded.size(),
+                };
                 if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 {
                     auto sourceSlice = destination.get()->slice(0, decoded.size());
@@ -159,9 +164,12 @@ public:
                     if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                     if (uploads) {
                         requireGpuPage(residency.throughputSnapshot().totals.geometryReadyPages == 0, "Premature ready counter");
-                        const BufferBarrierDesc barrier{.buffer = destination.get(),
-                            .before = expectGpu ? ResourceState::General : ResourceState::TransferDestination,
-                            .after = ResourceState::TransferSource, .size = destination->desc().size};
+                        const BufferBarrierDesc barrier{
+                            .buffer = destination.get(),
+                            .before = metallic::render::resourceSyncScope(expectGpu ? ResourceState::General : ResourceState::TransferDestination, metallic::render::PipelineStageBits::AllCommands),
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                            .size = destination->desc().size,
+                        };
                         if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         {
                             auto sourceSlice = destination.get()->slice(residency.deviceOffsetForPage(0), reference.size());

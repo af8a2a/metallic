@@ -121,8 +121,11 @@ public:
             return render::makeError(render::Error::Failure);
         }
         // Read argument bytes as shader data, then restore their indirect state.
-        render::BufferBarrierDesc argumentBarrier{.buffer = bins.arguments,
-            .before = render::ResourceState::IndirectArgument, .after = render::ResourceState::ShaderRead};
+        render::BufferBarrierDesc argumentBarrier{
+            .buffer = bins.arguments,
+            .before = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
+        };
         if (auto commandResult = commands.synchronize({.buffers = &argumentBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 5, .buffer = bins.bins}, {.binding = 6, .buffer = bins.tiles},
@@ -133,8 +136,11 @@ public:
         if (!result) { return result; }
         std::swap(argumentBarrier.before, argumentBarrier.after);
         if (auto commandResult = commands.synchronize({.buffers = &argumentBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
-        render::BufferBarrierDesc outputBarrier{.buffer = context.outputBuffer("data").buffer(),
-            .before = render::ResourceState::General, .after = render::ResourceState::General};
+        render::BufferBarrierDesc outputBarrier{
+            .buffer = context.outputBuffer("data").buffer(),
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+        };
         dispatch.indirectArguments = bins.arguments;
         // Reject an incompatible permutation before descriptor writes or GPU work.
         const render::ComputeIndirectDispatch incompatible[] = {{.pushData = push, .program = &programs_[0]}};
@@ -180,8 +186,11 @@ private:
         render::EncodedParameters encoded;
         result = writer.encode(params, kProbeAbi).transform([&](auto value) { encoded = std::move(value); });
         if (!result) { return result; }
-        render::BufferBarrierDesc argumentBarrier{.buffer = bins.arguments,
-            .before = render::ResourceState::IndirectArgument, .after = render::ResourceState::ShaderRead};
+        render::BufferBarrierDesc argumentBarrier{
+            .buffer = bins.arguments,
+            .before = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
+        };
         if (auto commandResult = commands.synchronize({.buffers = &argumentBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         result = kernels_[0].dispatch(commands, encoded, std::min(groups, 65535u), (groups + 65534) / 65535);
         if (!result) { return result; }
@@ -196,8 +205,11 @@ private:
         if (!result) { return result; }
         if (!render::hasError(kernels_[1].dispatchIndirect(commands, wrongAbi, *bins.arguments),
             render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
-        render::BufferBarrierDesc outputBarrier{.buffer = context.outputBuffer("data").buffer(),
-            .before = render::ResourceState::General, .after = render::ResourceState::General};
+        render::BufferBarrierDesc outputBarrier{
+            .buffer = context.outputBuffer("data").buffer(),
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+        };
         for (uint32_t bin = 0; bin < bins.binCount; ++bin) {
             params.bin = bin;
             result = writer.encode(params, kProbeAbi).transform([&](auto value) { encoded = std::move(value); });

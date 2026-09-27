@@ -347,9 +347,17 @@ public:
             NATIVE_REQUIRE(frame.begin(0));
             NATIVE_REQUIRE(commands->begin(&frame));
             const render::BufferBarrierDesc barriers[] = {
-                {.buffer = buffers[0].get(), .after = render::ResourceState::General},
-                {.buffer = buffers[1].get(), .after = render::ResourceState::General},
-                {.buffer = buffers[2].get(), .after = render::ResourceState::ShaderRead}};
+                {
+                    .buffer = buffers[0].get(),
+                    .before = {},
+                    .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+                },
+                {
+                    .buffer = buffers[1].get(),
+                    .before = {},
+                    .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+                },
+                {.buffer = buffers[2].get(), .before = {}, .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead}}};
             if (auto commandResult = commands->synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             const Push push{handles[0].shaderIndex, handles[1].shaderIndex, handles[2].shaderIndex, count, base};
             commands->bindBindlessHeap(*heap);

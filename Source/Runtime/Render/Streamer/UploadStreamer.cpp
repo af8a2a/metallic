@@ -596,15 +596,25 @@ struct StreamerImpl {
             if (tile.compressed) {
                 bufferRequests.push_back({slot.compressed.get(), offset + tile.sourceOffset,
                     staged.buffer, staged.offset + tile.sourceOffset, tile.storedBytes});
-                decompressionCopyBarriers.push_back({.buffer = slot.compressed.get(), .before = ResourceState::General,
-                    .after = ResourceState::TransferDestination, .offset = offset + tile.sourceOffset, .size = tile.storedBytes});
+                decompressionCopyBarriers.push_back({
+                    .buffer = slot.compressed.get(),
+                    .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                    .offset = offset + tile.sourceOffset,
+                    .size = tile.storedBytes,
+                });
                 decompressions.push_back({slot.compressed.get(), &destination, offset + tile.sourceOffset,
                     destinationOffset + tile.destinationOffset, tile.storedBytes, tile.decodedBytes});
             } else {
                 bufferRequests.push_back({&destination, destinationOffset + tile.destinationOffset,
                     staged.buffer, staged.offset + tile.sourceOffset, tile.decodedBytes});
-                decompressionCopyBarriers.push_back({.buffer = &destination, .before = ResourceState::General,
-                    .after = ResourceState::TransferDestination, .offset = destinationOffset + tile.destinationOffset, .size = tile.decodedBytes});
+                decompressionCopyBarriers.push_back({
+                    .buffer = &destination,
+                    .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                    .offset = destinationOffset + tile.destinationOffset,
+                    .size = tile.decodedBytes,
+                });
             }
         }
         return true;
@@ -667,10 +677,20 @@ struct StreamerImpl {
                 if (phase) { phase("Decompression input barrier"); }
                 std::vector<BufferBarrierDesc> barriers;
                 for (const auto& region : decompressions) {
-                    barriers.push_back({.buffer = region.source, .before = ResourceState::TransferDestination,
-                        .after = ResourceState::DecompressionSource, .offset = region.sourceOffset, .size = region.compressedBytes});
-                    barriers.push_back({.buffer = region.destination, .before = ResourceState::General,
-                        .after = ResourceState::DecompressionDestination, .offset = region.destinationOffset, .size = region.decodedBytes});
+                    barriers.push_back({
+                        .buffer = region.source,
+                        .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                        .after = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionRead},
+                        .offset = region.sourceOffset,
+                        .size = region.compressedBytes,
+                    });
+                    barriers.push_back({
+                        .buffer = region.destination,
+                        .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                        .after = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionWrite},
+                        .offset = region.destinationOffset,
+                        .size = region.decodedBytes,
+                    });
                 }
                 if (auto commandResult = commandBuffer.synchronize({.buffers = barriers.data(), .bufferCount = uint32_t(barriers.size())}); !commandResult) { return commandResult; }
                 if (phase) { phase("GPU decompression"); }
@@ -681,8 +701,13 @@ struct StreamerImpl {
                     for (const auto& region : decompressions) {
                         // General covers both shader consumers and AS build input
                         // reads. The runtime retains its ordinary copy transitions.
-                        barriers.push_back({.buffer = region.destination, .before = ResourceState::DecompressionDestination,
-                            .after = ResourceState::General, .offset = region.destinationOffset, .size = region.decodedBytes});
+                        barriers.push_back({
+                            .buffer = region.destination,
+                            .before = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionWrite},
+                            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                            .offset = region.destinationOffset,
+                            .size = region.decodedBytes,
+                        });
                     }
                     if (auto commandResult = commandBuffer.synchronize({.buffers = barriers.data(), .bufferCount = uint32_t(barriers.size())}); !commandResult) { return commandResult; }
                 }

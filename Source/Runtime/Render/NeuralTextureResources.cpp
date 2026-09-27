@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/NeuralTextureResources.h"
 
 #include <spdlog/spdlog.h>
@@ -677,8 +678,10 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
     for (Impl::TextureSet& set : impl_->sets) {
         TextureBarrierDesc toTransfer{
             .texture = set.texture.get(),
-            .before = set.state,
-            .after = ResourceState::TransferDestination,
+            .oldLayout = textureLayoutForResourceState(set.state),
+            .newLayout = TextureLayout::TransferDestination,
+            .before = resourceSyncScope(set.state, PipelineStageBits::AllCommands),
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
             .baseMip = 0,
             .mipCount = set.texture->desc().mipCount,
             .baseLayer = 0,
@@ -703,8 +706,10 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
         }
         TextureBarrierDesc toShaderRead{
             .texture = set.texture.get(),
-            .before = ResourceState::TransferDestination,
-            .after = ResourceState::ShaderRead,
+            .oldLayout = TextureLayout::TransferDestination,
+            .newLayout = TextureLayout::ShaderRead,
+            .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
             .baseMip = 0,
             .mipCount = set.texture->desc().mipCount,
             .baseLayer = 0,
@@ -734,8 +739,8 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
         }
         BufferBarrierDesc toGeneral{
             .buffer = pair.destination,
-            .before = ResourceState::TransferDestination,
-            .after = ResourceState::General,
+            .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .offset = 0,
             .size = pair.destination->desc().size,
         };
@@ -817,8 +822,8 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
     } else {
         BufferBarrierDesc toGeneral{
             .buffer = impl_->weightsBuffer.get(),
-            .before = ResourceState::TransferDestination,
-            .after = ResourceState::General,
+            .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .offset = 0,
             .size = impl_->weightsBuffer->desc().size,
         };

@@ -71,16 +71,33 @@ public:
             return RhiTestResult::fail("HDR ImGui fixture allocation failed");
         }
         render::TextureBarrierDesc barriers[] = {
-            {.texture = source.get(), .after = render::ResourceState::ColorAttachment},
-            {.texture = output.get(), .after = render::ResourceState::ColorAttachment},
+            {
+                .texture = source.get(),
+                .oldLayout = render::TextureLayout::Undefined,
+                .newLayout = render::TextureLayout::ColorAttachment,
+                .before = {},
+                .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
+            },
+            {
+                .texture = output.get(),
+                .oldLayout = render::TextureLayout::Undefined,
+                .newLayout = render::TextureLayout::ColorAttachment,
+                .before = {},
+                .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
+            },
         };
         if (auto commandResult = commands->synchronize({.textures = barriers, .textureCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         render::RenderingAttachmentDesc attachment{.view = sourceView.get(), .state = render::ResourceState::ColorAttachment,
             .loadOp = render::LoadOp::Clear, .storeOp = render::StoreOp::Store, .clearColor = {12.5f, 5.0f, 1.0f, 1.0f}};
         if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = &attachment, .colorAttachmentCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commands->endRendering();
-        render::TextureBarrierDesc readable{.texture = source.get(), .before = render::ResourceState::ColorAttachment,
-            .after = render::ResourceState::ShaderRead};
+        render::TextureBarrierDesc readable{
+            .texture = source.get(),
+            .oldLayout = render::TextureLayout::ColorAttachment,
+            .newLayout = render::TextureLayout::ShaderRead,
+            .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
+        };
         if (auto commandResult = commands->synchronize({.textures = &readable, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         const auto descriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*sourceView), render::vulkan::nativeImageLayout(*sourceView, render::ResourceState::ShaderRead));
         ImGui_ImplVulkan_NewFrame();
@@ -98,8 +115,13 @@ public:
         if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = &attachment, .colorAttachmentCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), render::vulkan::nativeCommandBuffer(*commands), ui.display.mainPipeline());
         commands->endRendering();
-        render::TextureBarrierDesc toReadback{.texture = output.get(), .before = render::ResourceState::ColorAttachment,
-            .after = render::ResourceState::TransferSource};
+        render::TextureBarrierDesc toReadback{
+            .texture = output.get(),
+            .oldLayout = render::TextureLayout::ColorAttachment,
+            .newLayout = render::TextureLayout::TransferSource,
+            .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
+            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
+        };
         if (auto commandResult = commands->synchronize({.textures = &toReadback, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commands->copyTextureToBuffer({.texture = output.get(), .buffer = readback.get(), .width = 32, .height = 32});
         render::CommandBuffer* command = commands.get();

@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Debug/GpuDebugProbe.h"
 #include "Runtime/Debug/DebugProbe.h"
@@ -446,16 +447,28 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
     for (size_t i = 0; i < copies.size(); ++i) {
         const auto& copy = copies[i];
         if (copy.source->texture) {
-            TextureBarrierDesc barrier{.texture = copy.source->texture, .before = copy.source->state, .after = ResourceState::TransferSource};
+            TextureBarrierDesc barrier{
+                .texture = copy.source->texture,
+                .oldLayout = textureLayoutForResourceState(copy.source->state),
+                .newLayout = TextureLayout::TransferSource,
+                .before = resourceSyncScope(copy.source->state, PipelineStageBits::AllCommands),
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+            };
             if (auto commandResult = commands.synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
             commands.copyTextureToBuffer({.texture = copy.source->texture, .buffer = readback->buffers[i].get(),
                 .bufferRowPitch = copy.width * readback->capture->artifacts[i].layout.stride,
                 .bufferSlicePitch = static_cast<uint32_t>(copy.bytes), .textureOffsetX = static_cast<int32_t>(copy.x), .textureOffsetY = static_cast<int32_t>(copy.y),
                 .width = copy.width, .height = copy.height});
-            std::swap(barrier.before, barrier.after);
+            std::swap(barrier.before, barrier.after); std::swap(barrier.oldLayout, barrier.newLayout);
             if (auto commandResult = commands.synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
         } else {
-            BufferBarrierDesc barrier{.buffer = copy.source->buffer, .before = copy.source->state, .after = ResourceState::TransferSource, .offset = copy.offset, .size = copy.bytes};
+            BufferBarrierDesc barrier{
+                .buffer = copy.source->buffer,
+                .before = resourceSyncScope(copy.source->state, PipelineStageBits::AllCommands),
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                .offset = copy.offset,
+                .size = copy.bytes,
+            };
             if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
             {
                 auto sourceSlice = copy.source->buffer->slice(copy.offset, copy.bytes);

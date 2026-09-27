@@ -1,3 +1,4 @@
+#include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/MaterialBinningParams.h"
 #include "Runtime/Render/SlangCompiler.h"
@@ -83,14 +84,33 @@ Result<MaterialBinningResult> MaterialBinning::record(
     allocation->completion = frame->completion();
     frame->retain(allocation);
     const auto& buffers = allocation->buffers;
-    const ResourceState finalStates[] = {ResourceState::ShaderRead, ResourceState::ShaderRead, ResourceState::IndirectArgument};
-    BufferBarrierDesc barriers[3];
-    for (size_t i = 0; i < 3; ++i) {
-        barriers[i] = {.buffer = buffers[i].get(),
-            .before = allocation->initialized ? finalStates[i] : ResourceState::Undefined,
-            .after = ResourceState::General};
+    using namespace detail;
+    using Access = RenderGraphResourceAccess;
+    constexpr auto compute = RenderGraphPassKind::Compute;
+    constexpr auto consumer = RenderGraphPassKind::Unsafe;
+    std::array<GraphAccessResource, 3> resources;
+    std::array<GraphAccessBinding, 3> bindings;
+    for (size_t i = 0; i < buffers.size(); ++i) {
+        // Reused private allocations may have prior consumers outside this helper.
+        resources[i] = {.type = RenderGraphResourceType::Buffer,
+            .state = allocation->initialized ? ResourceState::General : ResourceState::Undefined,
+            .scope = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
+        auto slice = buffers[i]->slice();
+        if (!slice) { return makeError(slice.error()); }
+        bindings[i].buffer = std::move(*slice);
     }
-    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult.transform([&] { return std::move(output); }); }
+    const GraphAccessPass phases[] = {
+        {.uses = {declaredGraphAccess(0, Access::BufferStorageWrite, compute)}},
+        {.uses = {declaredGraphAccess(0, Access::BufferStorageReadWrite, compute),
+            declaredGraphAccess(1, Access::BufferStorageWrite, compute)}},
+        {.uses = {declaredGraphAccess(0, Access::BufferStorageRead, compute),
+            declaredGraphAccess(2, Access::BufferStorageWrite, compute)}},
+        {.uses = {declaredGraphAccess(0, Access::BufferShaderRead, consumer),
+            declaredGraphAccess(1, Access::BufferShaderRead, consumer),
+            declaredGraphAccess(2, Access::BufferIndirectRead, consumer)}},
+    };
+    auto plan = buildGraphAccessPlan(resources, phases);
+    if (!plan) { return makeError(plan.error()); }
     std::shared_ptr<ResourceRegistry> registry;
     auto result = device.resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
     if (!result) { return makeError(result.error()); }
@@ -109,15 +129,14 @@ Result<MaterialBinningResult> MaterialBinning::record(
     result = writer.encode(params, kMaterialBinningAbi).transform([&](auto value) { encoded = std::move(value); });
     if (!result) { return makeError(result.error()); }
     for (size_t i = 0; i < programs_.size(); ++i) {
+        result = recordGraphAccessBarriers(commands, plan->passes[i], bindings);
+        if (!result) { return makeError(result.error()); }
         result = programs_[i].dispatch(commands, encoded, i == 1 ? static_cast<uint32_t>(columns) : 1,
             i == 1 ? static_cast<uint32_t>(rows) : 1);
         if (!result) { return makeError(result.error()); }
-        for (size_t b = 0; b < 3; ++b) {
-            barriers[b] = {.buffer = buffers[b].get(), .before = ResourceState::General,
-                .after = i == 2 ? finalStates[b] : ResourceState::General};
-        }
-        if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult.transform([&] { return std::move(output); }); }
     }
+    result = recordGraphAccessBarriers(commands, plan->passes.back(), bindings);
+    if (!result) { return makeError(result.error()); }
     allocation->initialized = true;
     output = {.bins = buffers[0].get(), .tiles = buffers[1].get(),
         .arguments = buffers[2].get(), .binCount = kMaterialClassCount};

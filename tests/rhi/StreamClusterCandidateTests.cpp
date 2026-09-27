@@ -132,16 +132,27 @@ public:
             const uint32_t seedPush[] = {handles[4].shaderIndex, handles[5].shaderIndex, capacity};
             commands->pushBindlessData(seedPush, sizeof(seedPush));
             commands->dispatch((capacity + 127) / 128);
-            BufferBarrierDesc ready{.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General,
-                .after = ResourceState::General};
+            BufferBarrierDesc ready{
+                .buffer = &rasterizer.clusterBuffer(),
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            };
             if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             MeshletStreamUserPush push{.activeGroupBuffer = handles[1].shaderIndex, .activeHeaderBuffer = handles[0].shaderIndex,
                 .traversalPhase = test.phase, .rasterBindingsBuffer = handles[2].shaderIndex,
                 .hybridQueueBuffer = handles[6].shaderIndex, .hybridClusterBuffer = handles[5].shaderIndex};
             CANDIDATE_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, *pipelines[0], push));
             const BufferBarrierDesc copies[] = {
-                {.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General, .after = ResourceState::TransferSource},
-                {.buffer = &rasterizer.candidateArguments(), .before = ResourceState::IndirectArgument, .after = ResourceState::TransferSource}};
+                {
+                    .buffer = &rasterizer.clusterBuffer(),
+                    .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                },
+                {
+                    .buffer = &rasterizer.candidateArguments(),
+                    .before = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                }};
             if (auto commandResult = commands->synchronize({.buffers = copies, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
                 auto sourceSlice = (&rasterizer.clusterBuffer())->slice(0, bytes);
@@ -160,8 +171,16 @@ public:
             // Restore state and reuse scratch with real binning kernels. All
             // tags are deliberately culled; the copy retains the pre-bin state.
             const BufferBarrierDesc restore[] = {
-                {.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::TransferSource, .after = ResourceState::General},
-                {.buffer = &rasterizer.candidateArguments(), .before = ResourceState::TransferSource, .after = ResourceState::IndirectArgument}};
+                {
+                    .buffer = &rasterizer.clusterBuffer(),
+                    .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                    .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                },
+                {
+                    .buffer = &rasterizer.candidateArguments(),
+                    .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                    .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
+                }};
             if (auto commandResult = commands->synchronize({.buffers = restore, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             CANDIDATE_REQUIRE(rasterizer.finishClusterBins(*commands));
             CANDIDATE_REQUIRE(commands->end());

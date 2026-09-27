@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "RhiTest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -104,8 +105,13 @@ public:
                 checkRoam(bool(device->createBuffer({.size = size, .usage = BufferUsageBits::TransferDestination,
                     .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); })), "Cannot allocate roaming snapshot");
             }
-            BufferBarrierDesc barrier{.buffer = resource.buffer, .before = resource.state,
-                .after = ResourceState::TransferSource, .offset = resource.offset, .size = size};
+            BufferBarrierDesc barrier{
+                .buffer = resource.buffer,
+                .before = metallic::render::resourceSyncScope(resource.state, metallic::render::PipelineStageBits::AllCommands),
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                .offset = resource.offset,
+                .size = size,
+            };
             if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             {
                 auto sourceSlice = resource.buffer->slice(resource.offset, size);

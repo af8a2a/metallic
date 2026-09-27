@@ -1,4 +1,6 @@
 #pragma once
+
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
@@ -92,8 +94,10 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
         if (!uploaded_) {
             TextureBarrierDesc toTransfer{
                 .texture = imageTexture_.get(),
-                .before = imageState_,
-                .after = ResourceState::TransferDestination,
+                .oldLayout = metallic::render::textureLayoutForResourceState(imageState_),
+                .newLayout = TextureLayout::TransferDestination,
+                .before = metallic::render::resourceSyncScope(imageState_, metallic::render::PipelineStageBits::AllCommands),
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                 .baseMip = 0,
                 .mipCount = 1,
                 .baseLayer = 0,
@@ -117,8 +121,10 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
 
             TextureBarrierDesc toShaderRead{
                 .texture = imageTexture_.get(),
-                .before = imageState_,
-                .after = ResourceState::ShaderRead,
+                .oldLayout = metallic::render::textureLayoutForResourceState(imageState_),
+                .newLayout = TextureLayout::ShaderRead,
+                .before = metallic::render::resourceSyncScope(imageState_, metallic::render::PipelineStageBits::AllCommands),
+                .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
                 .baseMip = 0,
                 .mipCount = 1,
                 .baseLayer = 0,

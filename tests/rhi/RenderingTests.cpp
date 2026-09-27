@@ -227,8 +227,10 @@ public:
 
         render::TextureBarrierDesc toColor{
             .texture = colorTexture.get(),
-            .before = render::ResourceState::Undefined,
-            .after = render::ResourceState::ColorAttachment,
+            .oldLayout = render::TextureLayout::Undefined,
+            .newLayout = render::TextureLayout::ColorAttachment,
+            .before = {},
+            .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .baseMip = 0,
             .mipCount = 1,
             .baseLayer = 0,
@@ -271,8 +273,10 @@ public:
 
         render::TextureBarrierDesc toTransfer{
             .texture = colorTexture.get(),
-            .before = render::ResourceState::ColorAttachment,
-            .after = render::ResourceState::TransferSource,
+            .oldLayout = render::TextureLayout::ColorAttachment,
+            .newLayout = render::TextureLayout::TransferSource,
+            .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
+            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
             .baseMip = 0,
             .mipCount = 1,
             .baseLayer = 0,
@@ -522,8 +526,10 @@ public:
         render::TextureBarrierDesc renderBarriers[] = {
             render::TextureBarrierDesc{
                 .texture = colorTexture.get(),
-                .before = render::ResourceState::Undefined,
-                .after = render::ResourceState::ColorAttachment,
+                .oldLayout = render::TextureLayout::Undefined,
+                .newLayout = render::TextureLayout::ColorAttachment,
+                .before = {},
+                .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
                 .baseMip = 0,
                 .mipCount = 1,
                 .baseLayer = 0,
@@ -531,8 +537,10 @@ public:
             },
             render::TextureBarrierDesc{
                 .texture = depthTexture.get(),
-                .before = render::ResourceState::Undefined,
-                .after = render::ResourceState::DepthStencilAttachment,
+                .oldLayout = render::TextureLayout::Undefined,
+                .newLayout = render::TextureLayout::DepthStencilAttachment,
+                .before = {},
+                .after = {render::PipelineStageBits::DepthStencil, render::AccessBits::DepthStencilRead | render::AccessBits::DepthStencilWrite},
                 .baseMip = 0,
                 .mipCount = 1,
                 .baseLayer = 0,
@@ -589,8 +597,10 @@ public:
 
         render::TextureBarrierDesc toTransfer{
             .texture = colorTexture.get(),
-            .before = render::ResourceState::ColorAttachment,
-            .after = render::ResourceState::TransferSource,
+            .oldLayout = render::TextureLayout::ColorAttachment,
+            .newLayout = render::TextureLayout::TransferSource,
+            .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
+            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
             .baseMip = 0,
             .mipCount = 1,
             .baseLayer = 0,
@@ -906,8 +916,10 @@ public:
 
         render::TextureBarrierDesc toColor{
             .texture = colorTexture.get(),
-            .before = render::ResourceState::Undefined,
-            .after = render::ResourceState::ColorAttachment,
+            .oldLayout = render::TextureLayout::Undefined,
+            .newLayout = render::TextureLayout::ColorAttachment,
+            .before = {},
+            .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .mipCount = 1,
             .layerCount = 1,
         };
@@ -959,8 +971,10 @@ public:
 
         render::TextureBarrierDesc toTransfer{
             .texture = colorTexture.get(),
-            .before = render::ResourceState::ColorAttachment,
-            .after = render::ResourceState::TransferSource,
+            .oldLayout = render::TextureLayout::ColorAttachment,
+            .newLayout = render::TextureLayout::TransferSource,
+            .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
+            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
             .mipCount = 1,
             .layerCount = 1,
         };

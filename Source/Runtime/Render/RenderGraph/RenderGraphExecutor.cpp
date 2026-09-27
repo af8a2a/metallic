@@ -549,7 +549,7 @@ struct RenderGraphExecutor::Impl {
         std::memcpy(mapped, &frameView, sizeof(frameView));
         frameViewBuffer->unmap();
         frameViewBuffer->flush();
-        const BufferBarrierDesc barrier{.buffer = frameViewBuffer, .before = ResourceState::Undefined, .after = ResourceState::ShaderRead};
+        const BufferBarrierDesc barrier{.buffer = frameViewBuffer, .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}};
         if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         if (frame != nullptr) { frame->retain(viewBuffers[slot]); }
         previousView = frameView;

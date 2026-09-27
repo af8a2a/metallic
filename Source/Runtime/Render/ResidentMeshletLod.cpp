@@ -1,3 +1,4 @@
+#include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/ResidentMeshletLod.h"
 #include "Runtime/Render/SlangCompiler.h"
 #include <algorithm>
@@ -78,29 +79,45 @@ Result<> ResidentMeshletLod::record(CommandBuffer& commands, ResourceRegistry& r
         bindings[GPUSceneGlobalBufferKind::LodGroups].shaderIndex(),
         output.shaderIndex(), arguments.shaderIndex(), candidates.offset, candidates.count,
         capacity_, instanceCount, groupCount, manualLevel, scratch.shaderIndex(), 0u};
+    using namespace detail;
+    using Access = RenderGraphResourceAccess;
+    constexpr auto compute = RenderGraphPassKind::Compute;
+    constexpr auto consumer = RenderGraphPassKind::Unsafe;
+    Buffer* buffers[] = {selections_.get(), arguments_.get(), scratch_.get()};
+    std::array<GraphAccessResource, 3> resources;
+    std::array<GraphAccessBinding, 3> resourcesBound;
+    for (size_t i = 0; i < resources.size(); ++i) {
+        resources[i] = {.type = RenderGraphResourceType::Buffer,
+            .state = initialized_ ? ResourceState::General : ResourceState::Undefined,
+            .scope = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
+        auto slice = buffers[i]->slice();
+        if (!slice) { return makeError(slice.error()); }
+        resourcesBound[i].buffer = std::move(*slice);
+    }
+    const GraphAccessPass phases[] = {
+        {.uses = {declaredGraphAccess(0, Access::BufferStorageWrite, compute)}},
+        {.uses = {declaredGraphAccess(2, Access::BufferStorageWrite, compute)}},
+        {.uses = {declaredGraphAccess(0, Access::BufferStorageWrite, compute),
+            declaredGraphAccess(1, Access::BufferStorageWrite, compute),
+            declaredGraphAccess(2, Access::BufferStorageReadWrite, compute)}},
+        {.uses = {declaredGraphAccess(0, Access::BufferStorageWrite, compute),
+            declaredGraphAccess(2, Access::BufferStorageRead, compute)}},
+        {.uses = {declaredGraphAccess(0, Access::BufferShaderRead, consumer),
+            declaredGraphAccess(1, Access::BufferIndirectRead, consumer)}},
+    };
+    auto plan = buildGraphAccessPlan(resources, phases);
+    if (!plan) { return makeError(plan.error()); }
     commands.beginDebugLabel({.name = "Resident adaptive meshlet LOD"});
-    BufferBarrierDesc barriers[] = {
-        {.buffer = selections_.get(), .before = initialized_ ? ResourceState::ShaderRead : ResourceState::Undefined,
-            .after = ResourceState::General},
-        {.buffer = arguments_.get(), .before = initialized_ ? ResourceState::IndirectArgument : ResourceState::Undefined,
-            .after = ResourceState::General},
-        {.buffer = scratch_.get(), .before = initialized_ ? ResourceState::General : ResourceState::Undefined,
-            .after = ResourceState::General}};
-    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
     for (uint32_t stage = 0; stage < 4; ++stage) {
-        if (auto commandResult = commands.bindExecution((pipelines_[stage])->execution()); !commandResult) { return commandResult; }
+        result = recordGraphAccessBarriers(commands, plan->passes[stage], resourcesBound);
+        if (!result) { return result; }
+        if (auto commandResult = commands.bindExecution(pipelines_[stage]->execution()); !commandResult) { return commandResult; }
         commands.pushBindlessData(&push, sizeof(push));
         uint32_t groups = (stage == 1 || stage == 3) ? (candidates.count + 63u) / 64u : 1u;
         if (groups != 0) { commands.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u); }
-        barriers[0].before = ResourceState::General;
-        if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 1}); !commandResult) { return commandResult; }
-        barriers[2].before = ResourceState::General;
-        if (auto commandResult = commands.synchronize({.buffers = &barriers[2], .bufferCount = 1}); !commandResult) { return commandResult; }
     }
-    barriers[0].after = ResourceState::ShaderRead;
-    barriers[1].before = ResourceState::General;
-    barriers[1].after = ResourceState::IndirectArgument;
-    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return commandResult; }
+    result = recordGraphAccessBarriers(commands, plan->passes.back(), resourcesBound);
+    if (!result) { return result; }
     commands.endDebugLabel();
     initialized_ = true;
     return {};

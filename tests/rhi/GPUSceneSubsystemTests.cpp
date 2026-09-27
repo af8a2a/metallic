@@ -1223,23 +1223,23 @@ public:
             for (size_t index = 0; index < sourceViews.size(); ++index) {
                 toCopy[index] = render::BufferBarrierDesc{
                     .buffer = sourceViews[index]->buffer,
-                    .before = render::ResourceState::ShaderRead,
-                    .after = render::ResourceState::TransferSource,
+                    .before = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
+                    .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
                     .offset = 0,
                     .size = sourceViews[index]->size,
                 };
                 toRead[index] = render::BufferBarrierDesc{
                     .buffer = sourceViews[index]->buffer,
-                    .before = render::ResourceState::TransferSource,
-                    .after = render::ResourceState::ShaderRead,
+                    .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
+                    .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
                     .offset = 0,
                     .size = sourceViews[index]->size,
                 };
             }
             render::BufferBarrierDesc readbackDestination{
                 .buffer = canonicalReadback.get(),
-                .before = render::ResourceState::Undefined,
-                .after = render::ResourceState::TransferDestination,
+                .before = {},
+                .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
                 .offset = 0,
                 .size = kCanonicalReadbackSize,
             };
@@ -1962,10 +1962,16 @@ public:
             SUBMISSION_CHECK(instances != nullptr);
             if (index >= 2) { SUBMISSION_CHECK(instances == committedInstances); }
             const std::array barriers{
-                render::BufferBarrierDesc{.buffer = instances, .before = render::ResourceState::ShaderRead,
-                    .after = render::ResourceState::TransferSource},
-                render::BufferBarrierDesc{.buffer = readback.get(), .before = render::ResourceState::Undefined,
-                    .after = render::ResourceState::TransferDestination}};
+                render::BufferBarrierDesc{
+                    .buffer = instances,
+                    .before = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
+                    .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
+                },
+                render::BufferBarrierDesc{
+                    .buffer = readback.get(),
+                    .before = {},
+                    .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
+                }};
             if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
                 auto sourceSlice = instances->slice(0, sizeof(render::GPUSceneGpuInstanceRecord));
@@ -1974,8 +1980,11 @@ public:
                 if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                 if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
-            const render::BufferBarrierDesc restore{.buffer = instances, .before = render::ResourceState::TransferSource,
-                .after = render::ResourceState::ShaderRead};
+            const render::BufferBarrierDesc restore{
+                .buffer = instances,
+                .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
+                .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
+            };
             if (auto commandResult = commands->synchronize({.buffers = &restore, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             SUBMISSION_CHECK(host.recordPostGraph(*commands, nullptr, required, log));
             SUBMISSION_CHECK(commands->end());

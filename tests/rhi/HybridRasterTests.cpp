@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "RhiTest.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
@@ -229,10 +230,20 @@ public:
                     if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
                     HYBRID_REQUIRE(commands->begin());
                     const TextureBarrierDesc transitions[] = {
-                        {.texture = textures[0].get(), .before = submitted ? ResourceState::TransferSource : ResourceState::Undefined,
-                            .after = ResourceState::ColorAttachment},
-                        {.texture = textures[1].get(), .before = submitted ? ResourceState::TransferSource : ResourceState::Undefined,
-                            .after = ResourceState::DepthStencilAttachment}};
+                        {
+                            .texture = textures[0].get(),
+                            .oldLayout = metallic::render::textureLayoutForResourceState(submitted ? ResourceState::TransferSource : ResourceState::Undefined),
+                            .newLayout = TextureLayout::ColorAttachment,
+                            .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
+                            .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
+                        },
+                        {
+                            .texture = textures[1].get(),
+                            .oldLayout = metallic::render::textureLayoutForResourceState(submitted ? ResourceState::TransferSource : ResourceState::Undefined),
+                            .newLayout = TextureLayout::DepthStencilAttachment,
+                            .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
+                            .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
+                        }};
                     if (auto commandResult = commands->synchronize({.textures = transitions, .textureCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     const bool hybrid = configuration != 0;
                     if (hybrid) { if (auto commandResult = rasterizer.begin(*commands, configuration == 1 ? 1.f : configuration == 2 ? 8.f : 32.f, reversed); !commandResult) { return RhiTestResult::fail(std::string("begin failed: ") + render::resultToString(commandResult)); } }
@@ -251,8 +262,16 @@ public:
                     if (hybrid) {
                         HYBRID_REQUIRE(rasterizer.resolve(*commands, *textures[0], *views[0], *textures[1], *views[1]));
                         const BufferBarrierDesc bufferTransitions[] = {
-                            {.buffer = &rasterizer.queueBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},
-                            {.buffer = &rasterizer.pixelBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource}};
+                            {
+                                .buffer = &rasterizer.queueBuffer(),
+                                .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                            },
+                            {
+                                .buffer = &rasterizer.pixelBuffer(),
+                                .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                            }};
                         if (auto commandResult = commands->synchronize({.buffers = bufferTransitions, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         {
                             auto sourceSlice = (&rasterizer.queueBuffer())->slice(0, 32);
@@ -271,7 +290,13 @@ public:
                     }
                     TextureBarrierDesc outputTransitions[2];
                     for (size_t i = 0; i < 2; ++i) {
-                        outputTransitions[i] = {.texture = textures[i].get(), .before = transitions[i].after, .after = ResourceState::TransferSource};
+                        outputTransitions[i] = {
+                            .texture = textures[i].get(),
+                            .oldLayout = transitions[i].newLayout,
+                            .newLayout = TextureLayout::TransferSource,
+                            .before = transitions[i].after,
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                        };
                     }
                     if (auto commandResult = commands->synchronize({.textures = outputTransitions, .textureCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     for (size_t i = 0; i < 2; ++i) {
@@ -394,8 +419,16 @@ public:
             }
             HYBRID_REQUIRE(rasterizer.finishClusterBins(*commands));
             const BufferBarrierDesc barriers[] = {
-                {.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},
-                {.buffer = &rasterizer.clusterArguments(), .before = ResourceState::IndirectArgument, .after = ResourceState::TransferSource}};
+                {
+                    .buffer = &rasterizer.clusterBuffer(),
+                    .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                },
+                {
+                    .buffer = &rasterizer.clusterArguments(),
+                    .before = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                }};
             if (auto commandResult = commands->synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
                 auto sourceSlice = (&rasterizer.clusterBuffer())->slice(0, readbackBytes);

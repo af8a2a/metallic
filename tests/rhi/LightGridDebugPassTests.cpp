@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "RhiTest.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -460,9 +461,11 @@ public:
             // Exercise legacy, untracked recording as well as the tracked preview tests.
             LIGHT_DEBUG_CHECK(executor.execute(*commands));
             LIGHT_DEBUG_CHECK(executor.transitionOutput(*commands, "Debug.color", render::ResourceState::TransferSource));
-            const render::BufferBarrierDesc barrier{.buffer = readback.get(),
-                .before = firstReadback ? render::ResourceState::Undefined : render::ResourceState::TransferDestination,
-                .after = render::ResourceState::TransferDestination};
+            const render::BufferBarrierDesc barrier{
+                .buffer = readback.get(),
+                .before = metallic::render::resourceSyncScope(firstReadback ? render::ResourceState::Undefined : render::ResourceState::TransferDestination, metallic::render::PipelineStageBits::AllCommands),
+                .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
+            };
             if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
                 .width = kExtent, .height = kExtent, .depth = 1});

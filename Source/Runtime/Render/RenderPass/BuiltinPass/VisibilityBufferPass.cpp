@@ -51,8 +51,7 @@ Result<> recordPrivateBufferComputeStages(CommandBuffer& commands, Buffer& buffe
             stage.access != RenderGraphResourceAccess::BufferStorageReadWrite)) {
             return makeError(Error::InvalidArgument);
         }
-        accesses.push_back({.uses = {{0, ResourceState::General,
-            detail::scopeForGraphAccess(stage.access, RenderGraphPassKind::Compute), true}}});
+        accesses.push_back({.uses = {detail::declaredGraphAccess(0, stage.access, RenderGraphPassKind::Compute)}});
     }
     auto plan = detail::buildGraphAccessPlan(resources, accesses);
     if (!plan) { return makeError(plan.error()); }

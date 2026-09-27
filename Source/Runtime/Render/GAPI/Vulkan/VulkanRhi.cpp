@@ -91,10 +91,9 @@ bool spirvHasDescriptorBindings(const uint32_t* words, uint64_t byteSize)
     return false;
 }
 
-struct StateInfo {
+struct VulkanSyncScope {
     VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
     VkAccessFlags2 access = VK_ACCESS_2_NONE;
-    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
 Result<> resultFromVk(VkResult result)
@@ -1074,82 +1073,38 @@ VkCompareOp toVkCompareOp(CompareOp compareOp)
     return VK_COMPARE_OP_LESS_OR_EQUAL;
 }
 
-StateInfo stateInfo(ResourceState state, VkQueueFlags queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)
-{
-    const VkPipelineStageFlags2 shaderReadStages =
-        ((queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0
-            ? VK_PIPELINE_STAGE_2_PRE_RASTERIZATION_SHADERS_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : 0) |
-        ((queueFlags & VK_QUEUE_COMPUTE_BIT) != 0 ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0);
-
-    switch (state) {
-    case ResourceState::Undefined:
-        return {
-            VK_PIPELINE_STAGE_2_NONE,
-            VK_ACCESS_2_NONE,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-        };
-    case ResourceState::Present:
-        return {
-            VK_PIPELINE_STAGE_2_NONE,
-            VK_ACCESS_2_NONE,
-            VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        };
-    case ResourceState::ColorAttachment:
-        return {
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        };
-    case ResourceState::DepthStencilAttachment:
-        return {
-            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        };
-    case ResourceState::ShaderRead:
-        return {
-            shaderReadStages,
-            VK_ACCESS_2_SHADER_READ_BIT,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        };
-    case ResourceState::IndirectArgument:
-        return {
-            VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
-            VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-        };
-    case ResourceState::TransferSource:
-        return {
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_READ_BIT,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        };
-    case ResourceState::TransferDestination:
-        return {
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        };
-    case ResourceState::DecompressionSource:
-        return {VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT,
-            VK_ACCESS_2_MEMORY_DECOMPRESSION_READ_BIT_EXT, VK_IMAGE_LAYOUT_UNDEFINED};
-    case ResourceState::DecompressionDestination:
-        return {VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT,
-            VK_ACCESS_2_MEMORY_DECOMPRESSION_WRITE_BIT_EXT, VK_IMAGE_LAYOUT_UNDEFINED};
-    case ResourceState::General:
-        return {
-            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-            VK_IMAGE_LAYOUT_GENERAL,
-        };
-    }
-
-    return {};
-}
-
 VkImageLayout imageLayout(ResourceState usage, bool unified)
 {
-    const auto layout = stateInfo(usage).layout;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    switch (usage) {
+    case ResourceState::Undefined: layout = VK_IMAGE_LAYOUT_UNDEFINED; break;
+    case ResourceState::Present: layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; break;
+    case ResourceState::ColorAttachment: layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; break;
+    case ResourceState::DepthStencilAttachment: layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; break;
+    case ResourceState::ShaderRead: layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; break;
+    case ResourceState::TransferSource: layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; break;
+    case ResourceState::TransferDestination: layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; break;
+    case ResourceState::General: layout = VK_IMAGE_LAYOUT_GENERAL; break;
+    default: break;
+    }
+    return unified && layout != VK_IMAGE_LAYOUT_UNDEFINED && layout != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+        ? VK_IMAGE_LAYOUT_GENERAL : layout;
+}
+
+VkImageLayout imageLayout(TextureLayout usage, bool unified)
+{
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    switch (usage) {
+    case TextureLayout::Undefined: layout = VK_IMAGE_LAYOUT_UNDEFINED; break;
+    case TextureLayout::Present: layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; break;
+    case TextureLayout::ColorAttachment: layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; break;
+    case TextureLayout::DepthStencilAttachment: layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; break;
+    case TextureLayout::ShaderRead: layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; break;
+    case TextureLayout::TransferSource: layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; break;
+    case TextureLayout::TransferDestination: layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; break;
+    case TextureLayout::General: layout = VK_IMAGE_LAYOUT_GENERAL; break;
+    default: break;
+    }
     return unified && layout != VK_IMAGE_LAYOUT_UNDEFINED && layout != VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
         ? VK_IMAGE_LAYOUT_GENERAL : layout;
 }
@@ -1191,7 +1146,7 @@ VkPipelineStageFlags2 toVkPipelineStages(PipelineStageBits stages)
     if (value & uint64_t(PipelineStageBits::RayTracingShader)) { flags |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR; }
     if (value & uint64_t(PipelineStageBits::MemoryDecompression)) { flags |= VK_PIPELINE_STAGE_2_MEMORY_DECOMPRESSION_BIT_EXT; }
     if (value & uint64_t(PipelineStageBits::Host)) { flags |= VK_PIPELINE_STAGE_2_HOST_BIT; }
-    return flags != VK_PIPELINE_STAGE_2_NONE ? flags : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    return flags;
 }
 
 VkAccessFlags2 accessFlags(AccessBits access)
@@ -1220,10 +1175,10 @@ VkAccessFlags2 accessFlags(AccessBits access)
     return flags;
 }
 
-StateInfo scopeInfo(SyncScope scope)
+VulkanSyncScope scopeInfo(SyncScope scope)
 {
-    return {scope.stages == PipelineStageBits::None ? VK_PIPELINE_STAGE_2_NONE : toVkPipelineStages(scope.stages),
-        accessFlags(scope.access), VK_IMAGE_LAYOUT_UNDEFINED};
+    return {toVkPipelineStages(scope.stages),
+        accessFlags(scope.access)};
 }
 
 VmaAllocationCreateInfo allocationInfoForMemory(MemoryLocation location)
@@ -5893,9 +5848,11 @@ Result<> CommandBuffer::writeTimestamp(
         return makeError(Error::InvalidArgument);
     }
 
+    const auto nativeStage = toVkPipelineStages(stage);
+    if (!nativeStage || (nativeStage & (nativeStage - 1)) != 0) { return makeError(Error::InvalidArgument); }
     vkCmdWriteTimestamp2(
         impl_->commandBuffer,
-        toVkPipelineStages(stage),
+        nativeStage,
         queryPool.impl_->queryPool,
         queryIndex);
     return {};
@@ -6029,7 +5986,8 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
     std::vector<VkImageMemoryBarrier2> images;
     std::vector<VkMemoryBarrier2> memory;
     uint64_t coalesced = 0;
-    const auto appendMemory = [&](StateInfo before, StateInfo after) {
+    const auto appendMemory = [&](VulkanSyncScope before, VulkanSyncScope after) {
+        if (!before.stage && !after.stage) { return; }
         // Preserve stage pairs; unioning unrelated pairs would add false ordering.
         for (auto& existing : memory) {
             if (existing.srcStageMask == before.stage && existing.dstStageMask == after.stage) {
@@ -6042,17 +6000,12 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
             .srcStageMask = before.stage, .srcAccessMask = before.access,
             .dstStageMask = after.stage, .dstAccessMask = after.access});
     };
-    constexpr VkAccessFlags2 writes = VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
-        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-        VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR | VK_ACCESS_2_MEMORY_DECOMPRESSION_WRITE_BIT_EXT |
-        VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-    const auto resourceMemory = [&](StateInfo before, StateInfo after) {
-        // Undefined contents need no memory dependency. Queue waits already cover
-        // memory availability/visibility when acquireFromQueue cleared the source.
-        if (before.stage && ((before.access | after.access) & writes)) {
-            appendMemory(before, after);
-            ++coalesced;
-        }
+    const auto resourceMemory = [&](VulkanSyncScope before, VulkanSyncScope after) {
+        // Explicit scopes are authoritative, including read/read and execution-only
+        // dependencies. Hazard elision belongs to the access planner.
+        if (!before.stage && !after.stage) { return; }
+        appendMemory(before, after);
+        ++coalesced;
     };
     for (uint32_t i = 0; i < desc.memoryCount; ++i) {
         const auto& barrier = desc.memory[i];
@@ -6062,16 +6015,17 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
     for (uint32_t i = 0; i < desc.textureCount; ++i) {
         const auto& barrier = desc.textures[i];
         if (!barrier.texture || !barrier.texture->impl_ || barrier.texture->impl_->device != impl_->device ||
-            !validScope(barrier.beforeScope) || !validScope(barrier.afterScope)) { return makeError(Error::InvalidArgument); }
+            !validScope(barrier.before) || !validScope(barrier.after)) { return makeError(Error::InvalidArgument); }
         const auto& texture = *barrier.texture->impl_;
         if (!barrier.mipCount || !barrier.layerCount || barrier.baseMip >= texture.desc.mipCount ||
             barrier.mipCount > texture.desc.mipCount - barrier.baseMip || barrier.baseLayer >= texture.desc.layerCount ||
             barrier.layerCount > texture.desc.layerCount - barrier.baseLayer) { return makeError(Error::InvalidArgument); }
-        auto before = barrier.beforeScope.stages != PipelineStageBits::None ? scopeInfo(barrier.beforeScope) : stateInfo(barrier.before, impl_->queueFlags);
-        const auto after = barrier.afterScope.stages != PipelineStageBits::None ? scopeInfo(barrier.afterScope) : stateInfo(barrier.after, impl_->queueFlags);
-        if (barrier.acquireFromQueue) { before.stage = 0; before.access = 0; }
-        const auto oldLayout = imageLayout(barrier.before, impl_->device->capabilities.unifiedImageLayouts);
-        const auto newLayout = imageLayout(barrier.after, impl_->device->capabilities.unifiedImageLayouts);
+        const auto before = scopeInfo(barrier.before);
+        const auto after = scopeInfo(barrier.after);
+        if (barrier.oldLayout > TextureLayout::General || barrier.newLayout > TextureLayout::General ||
+            barrier.newLayout == TextureLayout::Undefined) { return makeError(Error::InvalidArgument); }
+        const auto oldLayout = imageLayout(barrier.oldLayout, impl_->device->capabilities.unifiedImageLayouts);
+        const auto newLayout = imageLayout(barrier.newLayout, impl_->device->capabilities.unifiedImageLayouts);
         if (newLayout == VK_IMAGE_LAYOUT_UNDEFINED) { return makeError(Error::InvalidArgument); }
         if (oldLayout == newLayout) { resourceMemory(before, after); continue; }
         images.push_back({.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -6084,13 +6038,12 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
     for (uint32_t i = 0; i < desc.bufferCount; ++i) {
         const auto& barrier = desc.buffers[i];
         if (!barrier.buffer || barrier.buffer->deviceIdentity() != deviceIdentity() ||
-            !validScope(barrier.beforeScope) || !validScope(barrier.afterScope)) { return makeError(Error::InvalidArgument); }
+            !validScope(barrier.before) || !validScope(barrier.after)) { return makeError(Error::InvalidArgument); }
         const auto available = barrier.buffer->desc().size;
         if (barrier.offset >= available || !barrier.size ||
             (barrier.size != UINT64_MAX && barrier.size > available - barrier.offset)) { return makeError(Error::InvalidArgument); }
-        auto before = barrier.beforeScope.stages != PipelineStageBits::None ? scopeInfo(barrier.beforeScope) : stateInfo(barrier.before, impl_->queueFlags);
-        const auto after = barrier.afterScope.stages != PipelineStageBits::None ? scopeInfo(barrier.afterScope) : stateInfo(barrier.after, impl_->queueFlags);
-        if (barrier.acquireFromQueue) { before.stage = 0; before.access = 0; }
+        const auto before = scopeInfo(barrier.before);
+        const auto after = scopeInfo(barrier.after);
         resourceMemory(before, after);
     }
     if (images.empty() && memory.empty()) { return {}; }
@@ -11949,8 +11902,10 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
 
     TextureBarrierDesc toColor{
         .texture = colorTexture.get(),
-        .before = ResourceState::Undefined,
-        .after = ResourceState::ColorAttachment,
+        .oldLayout = TextureLayout::Undefined,
+        .newLayout = TextureLayout::ColorAttachment,
+        .before = {},
+        .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
         .baseMip = 0,
         .mipCount = 1,
         .baseLayer = 0,
@@ -11991,8 +11946,10 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
 
     TextureBarrierDesc toTransfer{
         .texture = colorTexture.get(),
-        .before = ResourceState::ColorAttachment,
-        .after = ResourceState::TransferSource,
+        .oldLayout = TextureLayout::ColorAttachment,
+        .newLayout = TextureLayout::TransferSource,
+        .before = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
+        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
         .baseMip = 0,
         .mipCount = 1,
         .baseLayer = 0,
@@ -12349,8 +12306,10 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                 if (exitCode == 0) {
                     TextureBarrierDesc sourceToColor{
                         .texture = sourceTexture.get(),
-                        .before = ResourceState::Undefined,
-                        .after = ResourceState::ColorAttachment,
+                        .oldLayout = TextureLayout::Undefined,
+                        .newLayout = TextureLayout::ColorAttachment,
+                        .before = {},
+                        .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
                         .baseMip = 0,
                         .mipCount = 1,
                         .baseLayer = 0,
@@ -12380,8 +12339,10 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
 
                     TextureBarrierDesc sourceToShaderRead{
                         .texture = sourceTexture.get(),
-                        .before = ResourceState::ColorAttachment,
-                        .after = ResourceState::ShaderRead,
+                        .oldLayout = TextureLayout::ColorAttachment,
+                        .newLayout = TextureLayout::ShaderRead,
+                        .before = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
+                        .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
                         .baseMip = 0,
                         .mipCount = 1,
                         .baseLayer = 0,
@@ -12391,8 +12352,10 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
 
                     TextureBarrierDesc outputToColor{
                         .texture = outputTexture.get(),
-                        .before = ResourceState::Undefined,
-                        .after = ResourceState::ColorAttachment,
+                        .oldLayout = TextureLayout::Undefined,
+                        .newLayout = TextureLayout::ColorAttachment,
+                        .before = {},
+                        .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
                         .baseMip = 0,
                         .mipCount = 1,
                         .baseLayer = 0,
@@ -12429,8 +12392,10 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
 
                     TextureBarrierDesc outputToTransfer{
                         .texture = outputTexture.get(),
-                        .before = ResourceState::ColorAttachment,
-                        .after = ResourceState::TransferSource,
+                        .oldLayout = TextureLayout::ColorAttachment,
+                        .newLayout = TextureLayout::TransferSource,
+                        .before = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
+                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                         .baseMip = 0,
                         .mipCount = 1,
                         .baseLayer = 0,
@@ -12674,8 +12639,10 @@ int runRhiSmokeTest(bool enableValidation)
 
     TextureBarrierDesc toColor{
         .texture = swapchain->texture(imageIndex),
-        .before = ResourceState::Undefined,
-        .after = ResourceState::ColorAttachment,
+        .oldLayout = TextureLayout::Undefined,
+        .newLayout = TextureLayout::ColorAttachment,
+        .before = {},
+        .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
         .baseMip = 0,
         .mipCount = 1,
         .baseLayer = 0,
@@ -12707,8 +12674,10 @@ int runRhiSmokeTest(bool enableValidation)
 
     TextureBarrierDesc toPresent{
         .texture = swapchain->texture(imageIndex),
-        .before = ResourceState::ColorAttachment,
-        .after = ResourceState::Present,
+        .oldLayout = TextureLayout::ColorAttachment,
+        .newLayout = TextureLayout::Present,
+        .before = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
+        .after = {},
         .baseMip = 0,
         .mipCount = 1,
         .baseLayer = 0,

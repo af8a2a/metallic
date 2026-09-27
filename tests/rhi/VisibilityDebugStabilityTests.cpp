@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "RhiTest.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -137,15 +138,25 @@ public:
                 if (submitted) { DEBUG_REQUIRE(fence->reset()); DEBUG_REQUIRE(pool->reset()); }
                 DEBUG_REQUIRE(commands->begin());
                 for (uint32_t i = 0; i < 2; ++i) {
-                    TextureBarrierDesc barrier{.texture = textures[i].get(),
-                        .before = submitted ? ResourceState::ShaderRead : ResourceState::Undefined, .after = ResourceState::TransferDestination};
+                    TextureBarrierDesc barrier{
+                        .texture = textures[i].get(),
+                        .oldLayout = metallic::render::textureLayoutForResourceState(submitted ? ResourceState::ShaderRead : ResourceState::Undefined),
+                        .newLayout = TextureLayout::TransferDestination,
+                        .before = metallic::render::resourceSyncScope(submitted ? ResourceState::ShaderRead : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
+                        .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                    };
                     if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     commands->copyBufferToTexture({.buffer = uploads[i].get(), .texture = textures[i].get(), .width = width, .height = 1});
-                    barrier.before = ResourceState::TransferDestination; barrier.after = ResourceState::ShaderRead;
+                    barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite}; barrier.newLayout = TextureLayout::ShaderRead; barrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
                     if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
-                TextureBarrierDesc barrier{.texture = textures[2].get(),
-                    .before = submitted ? ResourceState::TransferSource : ResourceState::Undefined, .after = ResourceState::ColorAttachment};
+                TextureBarrierDesc barrier{
+                    .texture = textures[2].get(),
+                    .oldLayout = metallic::render::textureLayoutForResourceState(submitted ? ResourceState::TransferSource : ResourceState::Undefined),
+                    .newLayout = TextureLayout::ColorAttachment,
+                    .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
+                    .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
+                };
                 if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 const RenderingAttachmentDesc color{.view = views[2].get(), .state = ResourceState::ColorAttachment,
                     .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
@@ -157,7 +168,7 @@ public:
                     .depthImage = images[1].shaderIndex, .residentRecords = handles[Resident].shaderIndex, .meshletBuffer = handles[Clusters].shaderIndex,
                     .residentRecordCapacity = base, .streamRecords = handles[Stream].shaderIndex, .streamGroups = handles[Groups].shaderIndex};
                 commands->pushBindlessData(&push, sizeof(push)); commands->draw(3); commands->endRendering();
-                barrier.before = ResourceState::ColorAttachment; barrier.after = ResourceState::TransferSource;
+                barrier.oldLayout = TextureLayout::ColorAttachment; barrier.before = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite}; barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                 if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 commands->copyTextureToBuffer({.texture = textures[2].get(), .buffer = readback.get(), .width = width, .height = 1});
                 DEBUG_REQUIRE(commands->end());

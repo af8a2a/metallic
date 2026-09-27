@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/SlangCompiler.h"
 
@@ -320,8 +321,16 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
     commands.hostWriteBarrier();
     const ResourceState previousState = reuse ? ResourceState::ShaderRead : ResourceState::Undefined;
     const std::array<BufferBarrierDesc, 2> toWrite{{
-        {.buffer = next->buffers[3].get(), .before = previousState, .after = ResourceState::General},
-        {.buffer = next->buffers[4].get(), .before = previousState, .after = ResourceState::General}}};
+        {
+            .buffer = next->buffers[3].get(),
+            .before = resourceSyncScope(previousState, PipelineStageBits::AllCommands),
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        },
+        {
+            .buffer = next->buffers[4].get(),
+            .before = resourceSyncScope(previousState, PipelineStageBits::AllCommands),
+            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+        }}};
     if (auto commandResult = commands.synchronize({.buffers = toWrite.data(), .bufferCount = static_cast<uint32_t>(toWrite.size())}); !commandResult) { return commandResult; }
     std::array<ComputeDispatchBinding, 5> bindings;
     for (uint32_t index = 0; index < bindings.size(); ++index) {
@@ -338,8 +347,16 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
         return result;
     }
     const std::array<BufferBarrierDesc, 2> toRead{{
-        {.buffer = next->buffers[3].get(), .before = ResourceState::General, .after = ResourceState::ShaderRead},
-        {.buffer = next->buffers[4].get(), .before = ResourceState::General, .after = ResourceState::ShaderRead}}};
+        {
+            .buffer = next->buffers[3].get(),
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+        },
+        {
+            .buffer = next->buffers[4].get(),
+            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+        }}};
     if (auto commandResult = commands.synchronize({.buffers = toRead.data(), .bufferCount = static_cast<uint32_t>(toRead.size())}); !commandResult) { return commandResult; }
     if (frame && !reuse) {
         std::erase_if(resourcePool_, [&](const auto& candidate) {

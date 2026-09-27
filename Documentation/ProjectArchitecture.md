@@ -359,6 +359,10 @@ TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进�
 
 命令同步统一使用返回 `Result<>` 的 `synchronize()`；pipeline 与 shader object 通过 `execution()` 快照交给 `bindExecution()`；buffer copy 使用两个经过范围校验的 `BufferSlice`。这些入口的失败必须传回调用方，禁止用忽略结果的兼容包装。`Streamer::copyStreamedData()` 和上传 flush 同样返回结果；失败会取消对应上传发布事务，调用方必须放弃失败的录制。
 
+同步优先由 RenderGraph 的资源访问声明驱动：跨 pass 使用 reflection，pass 内多阶段使用 `executeStages()`；私有 helper 使用同一个 `GraphAccessPlan` 声明每个阶段的读、写、间接参数或传输访问。stage/access、RAW/WAR/WAW、layout 和跨队列前置依赖由规划器推导。材质分桶、Resident LOD、GPUScene HZB 的内部阶段也走该规划器，不再各自维护 barrier 数组。图外上传、调试读回及未纳入图的历史资源仍需在边界明确同步，不能依靠 CPU 等待代替 GPU 依赖。
+
+RHI 的 `MemoryBarrierDesc`、`BufferBarrierDesc` 和 `TextureBarrierDesc` 只接受一套 `before/after: SyncScope`；纹理另以 `oldLayout/newLayout: TextureLayout` 表达布局。空 scope 始终为空，有 stage 而 access 为空表示仅约束执行顺序，不再按 `ResourceState` 推导或通过 `acquireFromQueue` 覆盖。已被 semaphore wait 覆盖的远端生产者使用空源 scope；资源仍须满足队列共享约束，此接口不做 queue-family ownership transfer。RHI 保留显式依赖，只合并同一 stage 对的 memory barrier；省略冗余依赖由图规划器负责。与 [Vulkan synchronization2 的同步范围语义](https://docs.vulkan.org/spec/latest/chapters/synchronization.html) 保持一致。
+
 RHI 上层同样用 `Result<T>` 返回一次操作产生的值：资源注册返回 `ResourceLease`，参数编码返回 `EncodedParameters`，Compute 预录制返回 `PreparedComputeDispatch`，批次提交返回 `SubmissionReceipt`。场景资源获取、GPUScene View/绑定创建、着色器重载准备、编译产物和 GPU 统计也直接返回值；没有产物的操作继续返回 `Result<>`。失败时只有 `Error`，不会产生可误用的默认句柄、回执或部分产物，也不会覆盖调用方已有的成功值。异步轮询返回 `Result<bool>`：`false` 表示尚未完成，错误分支表示失败。日志、编译诊断、进度和统计信息仍可独立传出，原地更新的输入输出对象保持原语义。
 
 `ParameterWriter` 的资源字段构造仍保留首个错误，以便直接组装 Shader 参数结构；必须检查最终的 `encode()` 或 `status()`。`encode()` 只有在所有资源注册和上传成功时才返回不可变参数包。着色器编译通过独立诊断字符串保留失败详情，不能只在成功结果中保存错误日志。

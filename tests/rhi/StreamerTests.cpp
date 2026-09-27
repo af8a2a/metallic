@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include <stdexcept>
 #include <string>
 
@@ -779,7 +780,11 @@ public:
                 runtime.appendDebugBindings(bindings, "test.");
                 const auto found = std::find_if(bindings.begin(), bindings.end(), [](const auto& binding) { return binding.id == "test.blasHeader"; });
                 require(found != bindings.end(), "BLAS telemetry missing");
-                BufferBarrierDesc barrier{.buffer = found->buffer, .before = found->state, .after = ResourceState::TransferSource};
+                BufferBarrierDesc barrier{
+                    .buffer = found->buffer,
+                    .before = metallic::render::resourceSyncScope(found->state, metallic::render::PipelineStageBits::AllCommands),
+                    .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                };
                 if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 {
                     auto sourceSlice = found->buffer->slice(0, sizeof(header));
@@ -953,8 +958,8 @@ public:
         }
         render::BufferBarrierDesc toTransfer{
             .buffer = readbackBuffer.get(),
-            .before = render::ResourceState::Undefined,
-            .after = render::ResourceState::TransferDestination,
+            .before = {},
+            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             .offset = 0,
             .size = kByteSize,
         };
@@ -1094,8 +1099,10 @@ public:
         }
         render::TextureBarrierDesc textureToTransfer{
             .texture = texture.get(),
-            .before = render::ResourceState::Undefined,
-            .after = render::ResourceState::TransferDestination,
+            .oldLayout = render::TextureLayout::Undefined,
+            .newLayout = render::TextureLayout::TransferDestination,
+            .before = {},
+            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             .baseMip = 0,
             .mipCount = 1,
             .baseLayer = 0,
@@ -1108,8 +1115,10 @@ public:
         if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         render::TextureBarrierDesc textureToSource{
             .texture = texture.get(),
-            .before = render::ResourceState::TransferDestination,
-            .after = render::ResourceState::TransferSource,
+            .oldLayout = render::TextureLayout::TransferDestination,
+            .newLayout = render::TextureLayout::TransferSource,
+            .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
+            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
             .baseMip = 0,
             .mipCount = 1,
             .baseLayer = 0,
@@ -1656,8 +1665,8 @@ public:
         }
         render::BufferBarrierDesc toTransfer{
             .buffer = pageBuffer.get(),
-            .before = render::ResourceState::Undefined,
-            .after = render::ResourceState::TransferDestination,
+            .before = {},
+            .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             .offset = 0,
             .size = pageBuffer->desc().size,
         };
@@ -3283,9 +3292,12 @@ public:
                 UPLOAD_REQUIRE(residency.buildOrderedUploadPatches(*commands, orderedPatches) == 0);
                 UPLOAD_REQUIRE(residency.residentPageCount() == 0);
                 if (scenario != 1 || attempt != 0) {
-                    const BufferBarrierDesc barrier{.buffer = destination.get(),
-                        .before = ResourceState::Undefined, .after = ResourceState::TransferDestination,
-                        .size = capacity};
+                    const BufferBarrierDesc barrier{
+                        .buffer = destination.get(),
+                        .before = {},
+                        .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                        .size = capacity,
+                    };
                     if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     const auto copyResult = commands->copyStreamedData(*streamer);
                     const bool sameRecording = !(scenario == 5 && attempt == 0);
@@ -3459,8 +3471,12 @@ public:
             runtime.appendDebugBindings(bindings, "proof.");
             const auto header = std::find_if(bindings.begin(), bindings.end(), [](const auto& b) { return b.id == "proof.activeHeader"; });
             ORDERED_REQUIRE(header != bindings.end());
-            BufferBarrierDesc barrier{.buffer = header->buffer, .before = header->state, .after = ResourceState::TransferSource,
-                .size = sizeof(MeshletStreamGpuActiveHeader)};
+            BufferBarrierDesc barrier{
+                .buffer = header->buffer,
+                .before = metallic::render::resourceSyncScope(header->state, metallic::render::PipelineStageBits::AllCommands),
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                .size = sizeof(MeshletStreamGpuActiveHeader),
+            };
             if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
                 auto sourceSlice = header->buffer->slice(0, sizeof(MeshletStreamGpuActiveHeader));

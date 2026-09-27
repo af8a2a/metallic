@@ -349,8 +349,8 @@ public:
 
         render::BufferBarrierDesc outputBarrier{
             .buffer = outputBuffer.get(),
-            .before = render::ResourceState::General,
-            .after = render::ResourceState::General,
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .offset = 0,
             .size = outputBuffer->desc().size,
         };
@@ -541,8 +541,8 @@ public:
 
         render::BufferBarrierDesc outputBarrier{
             .buffer = outputBuffer.get(),
-            .before = render::ResourceState::General,
-            .after = render::ResourceState::General,
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .offset = 0,
             .size = outputBuffer->desc().size,
         };
@@ -722,8 +722,8 @@ public:
 
         render::BufferBarrierDesc rwBarrier{
             .buffer = rwBuffer.get(),
-            .before = render::ResourceState::General,
-            .after = render::ResourceState::General,
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .offset = 0,
             .size = rwBuffer->desc().size,
         };
@@ -735,8 +735,8 @@ public:
 
         render::BufferBarrierDesc outputBarrier{
             .buffer = outputBuffer.get(),
-            .before = render::ResourceState::General,
-            .after = render::ResourceState::General,
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .offset = 0,
             .size = outputBuffer->desc().size,
         };
@@ -934,8 +934,8 @@ public:
 
         render::BufferBarrierDesc outputBarrier{
             .buffer = outputBuffer.get(),
-            .before = render::ResourceState::General,
-            .after = render::ResourceState::General,
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .offset = 0,
             .size = outputBuffer->desc().size,
         };
@@ -1118,8 +1118,8 @@ public:
 
         render::BufferBarrierDesc rwBarrier{
             .buffer = rwBuffer.get(),
-            .before = render::ResourceState::General,
-            .after = render::ResourceState::General,
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .offset = 0,
             .size = rwBuffer->desc().size,
         };
@@ -1131,8 +1131,8 @@ public:
 
         render::BufferBarrierDesc outputBarrier{
             .buffer = outputBuffer.get(),
-            .before = render::ResourceState::General,
-            .after = render::ResourceState::General,
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .offset = 0,
             .size = outputBuffer->desc().size,
         };
@@ -1287,8 +1287,8 @@ public:
 
         render::BufferBarrierDesc barrier{
             .buffer = buffer.get(),
-            .before = render::ResourceState::General,
-            .after = render::ResourceState::General,
+            .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
+            .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .offset = 0,
             .size = buffer->desc().size,
         };

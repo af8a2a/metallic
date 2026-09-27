@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/Debug/GpuDebugProbe.h"
 #include "Runtime/Render/SlangCompiler.h"
 
@@ -132,9 +133,14 @@ Result<> initializeDebugProbe(Device& device, ComputeProgram& program, std::stri
 Result<> recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
     const PreparedDebugProbe& probe, Buffer& output, Buffer& readback)
 {
-    BufferBarrierDesc source{.buffer = probe.source->buffer, .before = probe.source->state, .after = ResourceState::ShaderRead,
-        .offset = probe.push.byteOffset, .size = probe.scanBytes};
-    BufferBarrierDesc destination{.buffer = &output, .before = ResourceState::Undefined, .after = ResourceState::General};
+    BufferBarrierDesc source{
+        .buffer = probe.source->buffer,
+        .before = resourceSyncScope(probe.source->state, PipelineStageBits::AllCommands),
+        .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+        .offset = probe.push.byteOffset,
+        .size = probe.scanBytes,
+    };
+    BufferBarrierDesc destination{.buffer = &output, .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
     if (auto commandResult = commands.synchronize({.buffers = &source, .bufferCount = 1}); !commandResult) { return commandResult; }
     if (auto commandResult = commands.synchronize({.buffers = &destination, .bufferCount = 1}); !commandResult) { return commandResult; }
     const ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = probe.source->buffer}, {.binding = 1, .buffer = &output}};
@@ -143,7 +149,7 @@ Result<> recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
     std::swap(source.before, source.after);
     if (auto commandResult = commands.synchronize({.buffers = &source, .bufferCount = 1}); !commandResult) { return commandResult; }
     if (!result) { return result; }
-    destination.before = ResourceState::General; destination.after = ResourceState::TransferSource;
+    destination.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; destination.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
     if (auto commandResult = commands.synchronize({.buffers = &destination, .bufferCount = 1}); !commandResult) { return commandResult; }
     {
         auto sourceSlice = (&output)->slice(0, readback.desc().size);

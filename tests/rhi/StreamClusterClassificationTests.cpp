@@ -297,12 +297,19 @@ public:
                         if (auto commandResult = commands->bindExecution((pipelines[4])->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                         commands->pushBindlessData(&push, sizeof(push));
                         CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
-                        BufferBarrierDesc verifyBarrier{.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General, .after = ResourceState::General};
+                        BufferBarrierDesc verifyBarrier{
+                            .buffer = &rasterizer.clusterBuffer(),
+                            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                        };
                         if (auto commandResult = commands->synchronize({.buffers = &verifyBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         CLASSIFY_REQUIRE(rasterizer.cullStreamClusters(*commands, *pipelines[schedule == 1 ? 1 : 8], push));
                         // Inspect the queue before stable bin scatter overwrites it.
-                        BufferBarrierDesc queueCopy{.buffer = &rasterizer.clusterBuffer(),
-                            .before = ResourceState::General, .after = ResourceState::TransferSource};
+                        BufferBarrierDesc queueCopy{
+                            .buffer = &rasterizer.clusterBuffer(),
+                            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                        };
                         if (auto commandResult = commands->synchronize({.buffers = &queueCopy, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         {
                             auto sourceSlice = (&rasterizer.clusterBuffer())->slice(16 * sizeof(uint32_t), uint64_t(capacity) * 16);
@@ -316,8 +323,11 @@ public:
                     }
                     if (measure) {
                         CLASSIFY_REQUIRE(commands->resetTimestampQueries(*timing, 0, timedDispatches * 2));
-                        const BufferBarrierDesc tagsReady{.buffer = &rasterizer.clusterBuffer(),
-                            .before = ResourceState::General, .after = ResourceState::General};
+                        const BufferBarrierDesc tagsReady{
+                            .buffer = &rasterizer.clusterBuffer(),
+                            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                        };
                         for (uint32_t dispatch = 0; dispatch < timedDispatches; ++dispatch) {
                             // Swap AB/BA each pair to balance cache and clock drift.
                             const bool legacy = ((dispatch / 2 + dispatch % 2) & 1u) == 0u;
@@ -336,7 +346,11 @@ public:
                         CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
                     }
                     if (schedule != 0) {
-                        BufferBarrierDesc counterCopy{.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General, .after = ResourceState::TransferSource};
+                        BufferBarrierDesc counterCopy{
+                            .buffer = &rasterizer.clusterBuffer(),
+                            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                        };
                         if (auto commandResult = commands->synchronize({.buffers = &counterCopy, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         {
                             auto sourceSlice = (&rasterizer.clusterBuffer())->slice(0, 16);
@@ -353,7 +367,11 @@ public:
                         commands->bindBindlessHeap(*heap);
                         auto diagnosticPush = push;
                         diagnosticPush.hybridQueueBuffer = handles[16 + bufferSet].shaderIndex;
-                        BufferBarrierDesc ready{.buffer = &rasterizer.workloadBuffer(), .before = ResourceState::General, .after = ResourceState::General};
+                        BufferBarrierDesc ready{
+                            .buffer = &rasterizer.workloadBuffer(),
+                            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                            .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                        };
                         if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         if (auto commandResult = commands->bindExecution((pipelines[5])->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                         commands->pushBindlessData(&diagnosticPush, sizeof(diagnosticPush));
@@ -361,7 +379,7 @@ public:
                         if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         if (auto commandResult = commands->bindExecution((pipelines[6])->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                         CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.clusterArguments(), 4 * 3 * sizeof(uint32_t)));
-                        ready.after = ResourceState::TransferSource;
+                        ready.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                         if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         {
                             auto sourceSlice = (&rasterizer.workloadBuffer())->slice(0, 128);
@@ -374,9 +392,21 @@ public:
                         if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     }
                     const BufferBarrierDesc copies[] = {
-                        {.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},
-                        {.buffer = inputs[Records].get(), .before = ResourceState::General, .after = ResourceState::TransferSource},
-                        {.buffer = &rasterizer.candidateArguments(), .before = ResourceState::IndirectArgument, .after = ResourceState::TransferSource}};
+                        {
+                            .buffer = &rasterizer.clusterBuffer(),
+                            .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                        },
+                        {
+                            .buffer = inputs[Records].get(),
+                            .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                        },
+                        {
+                            .buffer = &rasterizer.candidateArguments(),
+                            .before = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+                        }};
                     if (auto commandResult = commands->synchronize({.buffers = copies, .bufferCount = 3}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     {
                         auto sourceSlice = (&rasterizer.clusterBuffer())->slice(0, binBytes);

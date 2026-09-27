@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
 #include "Runtime/Render/MeshletLod.h"
@@ -201,8 +202,8 @@ Result<> transitionBuffer(
     }
     BufferBarrierDesc barrier{
         .buffer = &buffer,
-        .before = state,
-        .after = nextState,
+        .before = resourceSyncScope(state, PipelineStageBits::AllCommands),
+        .after = resourceSyncScope(nextState, PipelineStageBits::AllCommands),
         .offset = 0,
         .size = buffer.desc().size,
     };

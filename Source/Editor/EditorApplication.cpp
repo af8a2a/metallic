@@ -1,3 +1,4 @@
+#include "Runtime/Render/ResourceSynchronization.h"
 #include "Editor/EditorApplication.h"
 #include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/Profiling/TracyProfiler.h"
@@ -6843,8 +6844,10 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
 
         render::TextureBarrierDesc toColor{
             .texture = swapchainTexture,
-            .before = swapchainImageStates_[imageIndex],
-            .after = render::ResourceState::ColorAttachment,
+            .oldLayout = metallic::render::textureLayoutForResourceState(swapchainImageStates_[imageIndex]),
+            .newLayout = render::TextureLayout::ColorAttachment,
+            .before = metallic::render::resourceSyncScope(swapchainImageStates_[imageIndex], metallic::render::PipelineStageBits::AllCommands),
+            .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .baseMip = 0,
             .mipCount = 1,
             .baseLayer = 0,
@@ -6900,8 +6903,10 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
 
         render::TextureBarrierDesc toPresent{
             .texture = swapchainTexture,
-            .before = render::ResourceState::ColorAttachment,
-            .after = render::ResourceState::Present,
+            .oldLayout = render::TextureLayout::ColorAttachment,
+            .newLayout = render::TextureLayout::Present,
+            .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
+            .after = {},
             .baseMip = 0,
             .mipCount = 1,
             .baseLayer = 0,
