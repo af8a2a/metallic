@@ -24,10 +24,10 @@ namespace {
 
 class SceneAccelerationStructureBuildTest : public RhiTest {
 public:
-    SceneAccelerationStructureBuildTest()
+    explicit SceneAccelerationStructureBuildTest(bool partitioned = false) : partitioned_(partitioned)
     {
         type = RhiTestType::Resource;
-        name = "scene_acceleration_structure_build";
+        name = partitioned ? "scene_partitioned_acceleration_structure_build" : "scene_acceleration_structure_build";
     }
 
     RhiTestResult run(RhiTestContext& context) override
@@ -37,6 +37,8 @@ public:
                 .applicationName = "Metallic Scene Acceleration Structure Test",
                 .enableValidation = context.enableValidation,
                 .enableRayTracingAccelerationStructure = true,
+                .enablePartitionedAccelerationStructure = partitioned_,
+                .enableAsyncCompute = true,
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
@@ -48,6 +50,11 @@ public:
             return RhiTestResult::skip("ray tracing acceleration structure capability is unavailable");
         }
 
+        if (partitioned_ && !device->capabilities().partitionedAccelerationStructure) {
+            return RhiTestResult::skip("partitioned acceleration structures unavailable");
+        }
+        const render::SceneAccelerationStructureBuildOptions options{
+            .topLevelBackend = partitioned_ ? render::RayTracingTopLevelBackend::Partitioned : render::RayTracingTopLevelBackend::Standard};
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
             return RhiTestResult::fail("scene acceleration structure test device has no graphics queue");
@@ -68,7 +75,15 @@ public:
 
         render::SceneAccelerationStructureBuilder builder;
         std::string log;
-        result = builder.beginBuild(*device, *accelerationQueue, loadedScene, log);
+        if (!partitioned_) {
+            const auto unsupported = builder.beginBuild(*device, *accelerationQueue, loadedScene, log,
+                {.topLevelBackend = render::RayTracingTopLevelBackend::Partitioned});
+            if (!render::hasError(unsupported, render::Error::Unsupported) || builder.valid() ||
+                builder.buildState() != render::SceneAccelerationStructureBuildState::Idle) {
+                return RhiTestResult::fail("disabled PTLAS must fail before starting BLAS/OMM work");
+            }
+        }
+        result = builder.beginBuild(*device, *accelerationQueue, loadedScene, log, options);
         if (!result) {
             return RhiTestResult::fail(
                 std::string("SceneAccelerationStructureBuilder::beginBuild returned ") +
@@ -132,7 +147,7 @@ public:
                 "SceneAccelerationStructureBuilder clear did not retire an in-flight build");
         }
 
-        result = builder.beginBuild(*device, *accelerationQueue, loadedScene, log);
+        result = builder.beginBuild(*device, *accelerationQueue, loadedScene, log, options);
         if (!result) {
             return RhiTestResult::fail(
                 std::string("SceneAccelerationStructureBuilder::beginBuild after clear returned ") +
@@ -169,6 +184,10 @@ public:
                 "SceneAccelerationStructureBuilder asynchronous multi-stage build did not produce a valid TLAS");
         }
 
+        if (builder.accelerationStructure()->desc().topLevelBackend != options.topLevelBackend ||
+            (partitioned_ && (builder.stats().partitionCount == 0 || builder.stats().operationBytes == 0))) {
+            return RhiTestResult::fail("incorrect scene top-level strategy");
+        }
         const render::SceneAccelerationStructureStats& stats = builder.stats();
         if (stats.blasCount == 0 || stats.instanceCount == 0 || stats.triangleCount == 0 ||
             stats.originalBlasBytes == 0 || stats.compactedBlasBytes == 0 ||
@@ -228,7 +247,7 @@ public:
             return RhiTestResult::fail("failed to hide every RTAS test instance");
         }
 
-        result = builder.build(*device, *accelerationQueue, loadedScene, log);
+        result = builder.build(*device, *accelerationQueue, loadedScene, log, options);
         if (!result || !builder.valid()) {
             return RhiTestResult::fail(
                 std::string("SceneAccelerationStructureBuilder empty-scene build returned ") +
@@ -271,6 +290,7 @@ public:
             render::ScenePathTraceResources resources;
             const render::RenderGraphProperties properties{
                 {"path", scenePath.string()},
+                {"topLevelBackend", partitioned_ ? "partitioned" : "standard"},
             };
             result = resources.beginPrepareAsync(
                 *device,
@@ -369,6 +389,8 @@ public:
 
         return RhiTestResult::pass(log);
     }
+private:
+    bool partitioned_ = false;
 };
 
 class SceneNonGeometryTransformSyncTest final : public RhiTest {
@@ -559,84 +581,9 @@ public:
     }
 };
 
-class ScenePartitionedAccelerationStructureBuildTest : public RhiTest {
+class ScenePartitionedAccelerationStructureBuildTest final : public SceneAccelerationStructureBuildTest {
 public:
-    ScenePartitionedAccelerationStructureBuildTest()
-    {
-        type = RhiTestType::Resource;
-        name = "scene_partitioned_acceleration_structure_build";
-    }
-
-    RhiTestResult run(RhiTestContext& context) override
-    {
-        std::unique_ptr<render::Device> device;
-        render::Result<> result = render::createDevice(render::DeviceDesc{
-                .applicationName = "Metallic Scene Partitioned Acceleration Structure Test",
-                .enableValidation = context.enableValidation,
-                .enablePartitionedAccelerationStructure = true,
-            }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (!result) {
-            if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
-            }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
-        }
-        if (!device->capabilities().partitionedAccelerationStructure) {
-            return RhiTestResult::skip("partitioned acceleration structure capability is unavailable");
-        }
-
-        render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
-        if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail(
-                "scene partitioned acceleration structure test device has no graphics queue");
-        }
-        render::Queue* accelerationQueue = device->getQueue(render::QueueType::Compute);
-        if (accelerationQueue == nullptr) {
-            accelerationQueue = graphicsQueue;
-        }
-
-        scene::Scene loadedScene;
-        const std::filesystem::path scenePath =
-            std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
-        if (!loadedScene.load(scenePath)) {
-            const scene::LoadResult& loadResult = loadedScene.lastLoadResult();
-            return RhiTestResult::fail(
-                loadResult.error.empty() ? "failed to load Stanford Bunny scene" : loadResult.error);
-        }
-
-        render::ScenePartitionedAccelerationStructureBuilder builder;
-        std::string log;
-        result = builder.build(*device, *accelerationQueue, loadedScene, log);
-        if (!result) {
-            if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
-                    std::string("ScenePartitionedAccelerationStructureBuilder::build returned ") +
-                    toString(result) +
-                    ": " +
-                    log);
-            }
-            return RhiTestResult::fail(
-                std::string("ScenePartitionedAccelerationStructureBuilder::build returned ") +
-                toString(result) +
-                ": " +
-                log);
-        }
-        if (!builder.valid()) {
-            return RhiTestResult::fail("ScenePartitionedAccelerationStructureBuilder did not produce a valid PTLAS");
-        }
-
-        const render::ScenePartitionedAccelerationStructureStats& stats = builder.stats();
-        if (stats.blasCount == 0 ||
-            stats.instanceCount == 0 ||
-            stats.partitionCount == 0 ||
-            stats.triangleCount == 0 ||
-            stats.accelerationStructureBytes == 0 ||
-            stats.operationBytes == 0) {
-            return RhiTestResult::fail("ScenePartitionedAccelerationStructureBuilder produced empty PTLAS stats");
-        }
-
-        return RhiTestResult::pass(log);
-    }
+    ScenePartitionedAccelerationStructureBuildTest() : SceneAccelerationStructureBuildTest(true) {}
 };
 
 class MeshletStreamClasPoolBuildTest : public RhiTest {

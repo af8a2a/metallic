@@ -2476,6 +2476,7 @@ bool EditorApplication::initializeRhi()
                 .enableRayQuery = true,
                 .enablePushDescriptor = true,
                 .enableClusterAccelerationStructure = true,
+                .enablePartitionedAccelerationStructure = true,
                 .enableStreamline = enableStreamline,
                 .enableAftermath = !smokeTest_ || environmentFlagEnabled("METALLIC_SMOKE_TEST_MINIZORAH_SWITCH"),
                 .validationSink = debugRuntime_ ? debugRuntime_->validationSink() : render::ValidationSink{},

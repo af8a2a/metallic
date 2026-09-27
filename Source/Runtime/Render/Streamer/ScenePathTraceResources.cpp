@@ -1259,6 +1259,19 @@ bool buildGpuScene(
     return true;
 }
 
+Result<SceneAccelerationStructureBuildOptions> sceneAccelerationStructureOptions(const RenderGraphProperties& properties)
+{
+    const auto value = properties.find("topLevelBackend");
+    if (value == properties.end()) { return SceneAccelerationStructureBuildOptions{}; }
+    if (!value->is_string()) { return makeError(Error::InvalidArgument); }
+    const auto backend = value->get<std::string>();
+    if (backend == "standard") { return SceneAccelerationStructureBuildOptions{}; }
+    if (backend == "partitioned") {
+        return SceneAccelerationStructureBuildOptions{.topLevelBackend = RayTracingTopLevelBackend::Partitioned};
+    }
+    return makeError(Error::InvalidArgument);
+}
+
 std::vector<bool> referencedMaterialTextures(const scene::Scene& loadedScene)
 {
     std::vector<bool> referenced(loadedScene.textures().size(), loadedScene.hasStreamGeometry());
@@ -2599,6 +2612,7 @@ struct ScenePathTraceResources::Impl {
         decodedKtxScratch = {};
         textureStats = {};
         rtxBuilder.clear();
+        accelerationOptions = {};
         drawBounds = scene::Bounds{};
         scenePath.clear();
         prepared = false;
@@ -2672,6 +2686,7 @@ struct ScenePathTraceResources::Impl {
     }
 
     SceneAccelerationStructureBuilder rtxBuilder;
+    SceneAccelerationStructureBuildOptions accelerationOptions;
     bool materialOnly = false;
     Device* device = nullptr;
     Queue* graphicsQueue = nullptr;
@@ -2770,15 +2785,22 @@ Result<> ScenePathTraceResources::prepare(
     }
     impl_->device = &device;
     impl_->graphicsQueue = &graphicsQueue;
+    const auto accelerationOptions = sceneAccelerationStructureOptions(properties);
+    if (!accelerationOptions) {
+        log = "topLevelBackend must be standard or partitioned.";
+        return std::unexpected(accelerationOptions.error());
+    }
     const std::filesystem::path path = scenePathFromProperties(properties);
     const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, path);
     if (impl_->valid() && !impl_->materialOnly && impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
+        impl_->accelerationOptions.topLevelBackend == accelerationOptions->topLevelBackend &&
         boundScene != nullptr && impl_->sourceTopologyMatches(*boundScene) &&
         (impl_->sourceGeometryTransformRevision != boundScene->geometryTransformRevision() ||
          impl_->sourceMaterialRevision != boundScene->materialRevision())) {
         return syncRuntimeScene(boundScene, log);
     }
     if (impl_->valid() && !impl_->materialOnly && impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
+        impl_->accelerationOptions.topLevelBackend == accelerationOptions->topLevelBackend &&
         (boundScene == nullptr ||
          (impl_->sourceTopologyMatches(*boundScene) &&
           impl_->sourceGeometryTransformRevision == boundScene->geometryTransformRevision() &&
@@ -2797,6 +2819,7 @@ Result<> ScenePathTraceResources::prepare(
     impl_->textureRefineDimension = uint32_t(std::clamp(properties.value("materialTextureRefineDimension",512),1,4096));
     impl_->textureColdFrames = uint32_t(std::clamp(properties.value("materialTextureColdFrames",180),2,36000));
     impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
+    impl_->accelerationOptions = *accelerationOptions;
     scene::SceneDocument fallbackScene;
     if (boundScene == nullptr) {
         SceneResourceLogScope scope("load scene for render pass resources");
@@ -2862,7 +2885,7 @@ Result<> ScenePathTraceResources::prepare(
         if (accelerationQueue == nullptr) {
             accelerationQueue = &graphicsQueue;
         }
-        result = impl_->rtxBuilder.beginBuild(device, *accelerationQueue, loadedScene, rtxLog);
+        result = impl_->rtxBuilder.beginBuild(device, *accelerationQueue, loadedScene, rtxLog, impl_->accelerationOptions);
     }
     if (!result) {
         appendLogBlock(log, rtxLog);
@@ -2982,6 +3005,11 @@ Result<> ScenePathTraceResources::beginPrepareAsync(
     std::string& log,
     bool materialsOnly)
 {
+    const auto accelerationOptions = sceneAccelerationStructureOptions(properties);
+    if (!accelerationOptions) {
+        log = "topLevelBackend must be standard or partitioned.";
+        return std::unexpected(accelerationOptions.error());
+    }
     const std::filesystem::path path = scenePathFromProperties(properties);
     const scene::Scene* boundScene = runtimeSceneForPath(&runtimeScene, path);
     if (boundScene == nullptr || !boundScene->bounds().valid) {
@@ -2989,7 +3017,8 @@ Result<> ScenePathTraceResources::beginPrepareAsync(
         return makeError(Error::InvalidArgument);
     }
     if (impl_->valid() && impl_->materialOnly == (materialsOnly || boundScene->hasStreamGeometry()) &&
-        impl_->scenePath == path && impl_->textureSettingsMatch(properties) && impl_->sourceTopologyMatches(*boundScene)) {
+        impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
+        impl_->accelerationOptions.topLevelBackend == accelerationOptions->topLevelBackend && impl_->sourceTopologyMatches(*boundScene)) {
         return syncRuntimeScene(boundScene, log);
     }
 
@@ -3004,6 +3033,7 @@ Result<> ScenePathTraceResources::beginPrepareAsync(
     impl_->textureRefineDimension = uint32_t(std::clamp(properties.value("materialTextureRefineDimension",512),1,4096));
     impl_->textureColdFrames = uint32_t(std::clamp(properties.value("materialTextureColdFrames",180),2,36000));
     impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
+    impl_->accelerationOptions = *accelerationOptions;
     impl_->materialOnly = materialsOnly || boundScene->hasStreamGeometry();
     impl_->asyncScenePath = path;
     impl_->asyncSourceResourceIdentity = boundScene->resourceIdentity();
@@ -3142,7 +3172,7 @@ Result<> ScenePathTraceResources::pumpPrepareAsync(
                 *impl_->device,
                 *accelerationQueue,
                 *impl_->asyncScene,
-                log);
+                log, impl_->accelerationOptions);
             if (!result) {
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
                 return result;
@@ -3367,6 +3397,8 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
             {"materialTextureRefineDimension", impl_->textureRefineDimension},
             {"materialTextureColdFrames", impl_->textureColdFrames},
             {"materialTextureBudgetMiB", impl_->textureBudgetBytes / (1024 * 1024)},
+            {"topLevelBackend", impl_->accelerationOptions.topLevelBackend == RayTracingTopLevelBackend::Partitioned
+                ? "partitioned" : "standard"},
         };
         Result<> result = prepare(
             device,

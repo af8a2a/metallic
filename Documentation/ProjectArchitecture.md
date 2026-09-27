@@ -372,9 +372,8 @@ TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进�
 
 场景光追层包含：
 
-- `SceneAccelerationStructureBuilder`：普通三角形 BLAS + TLAS；
+- `SceneAccelerationStructureBuilder`：共享的三角形 BLAS、OMM、压缩和异步提交，顶层选择 Standard TLAS 或 Partitioned TLAS；
 - `SceneClusterAccelerationStructureBuilder`：cluster acceleration structure、cluster BLAS + TLAS；
-- `ScenePartitionedAccelerationStructureBuilder`：partitioned TLAS；
 - `ComputeProgram`：SPIR-V、descriptor binding 和 compute dispatch 封装；
 - `MeshletStreamClasPool`：面向驻留 page 的 CLAS 分配和更新。
 
@@ -382,7 +381,11 @@ TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进�
 
 普通 TLAS 与 PTLAS 共用 `RayTracingAccelerationStructure`，`desc().type` 均为 `TopLevel`，由 `desc().topLevelBackend` 的 `Standard` / `Partitioned` 区分后端。两者共用资源保活、`ResourceRegistry::accelerationStructure()`、`ComputeDispatchBinding::accelerationStructure` 和 `BindlessHeap::writeAccelerationStructure()`；shader 仍接收完整的 64-bit AS device address，mapped/native 模式均走 `Core.resolveDescriptor`。
 
-构建数据仍按后端区分：普通 TLAS 使用 `createRayTracingAccelerationStructure()` / `buildRayTracingAccelerationStructure()`；PTLAS 使用 `createPartitionedAccelerationStructure()` / `buildPartitionedAccelerationStructure()`，创建结果同为 `Result<std::unique_ptr<RayTracingAccelerationStructure>>`。PTLAS 的分区配置、operation buffer 和 operation count buffer 由统一实现内部的可选状态持有。KHR 构建、更新、压缩和压缩尺寸查询拒绝 PTLAS；PTLAS 构建拒绝普通 TLAS。当前 PTLAS 仍执行完整构建，资源类型统一不改变场景构建策略或增加增量更新。
+构建数据仍按后端区分：普通 TLAS 使用 `createRayTracingAccelerationStructure()` / `buildRayTracingAccelerationStructure()`；PTLAS 使用 `createPartitionedAccelerationStructure()` / `buildPartitionedAccelerationStructure()`，创建结果同为 `Result<std::unique_ptr<RayTracingAccelerationStructure>>`。PTLAS 的分区配置、operation buffer 和 operation count buffer 由统一实现内部的可选状态持有。KHR 构建、更新、压缩和压缩尺寸查询拒绝 PTLAS；PTLAS 构建拒绝普通 TLAS。场景层已删除独立的 PTLAS builder：`SceneAccelerationStructureBuildOptions::topLevelBackend` 控制内部顶层策略，`build()` / `beginBuild()` 默认使用 Standard；显式请求不支持的 Partitioned 返回 `Unsupported`。两种策略共享 OMM→BLAS 构建、压缩尺寸查询、压缩与顶层提交、异步轮询和清理流程。
+
+`ScenePathTraceResources` 通过属性 `"topLevelBackend": "standard" | "partitioned"` 选择策略。资源缓存键包含该选择，材质或可见性变化引起的重建保留它。变换更新复用 BLAS、OMM 和顶层存储：Standard 执行 refit，Partitioned 重新编码并构建顶层。PTLAS 初次按 XZ 网格分区，变换更新保持成员归属与实例索引，因此不会因跨网格移动超过已查询的分区容量；目前不提供增量 PTLAS operations 或自动重分区。[PTLAS 构建语义](https://docs.vulkan.org/features/latest/features/proposals/VK_NV_partitioned_acceleration_structure.html)。
+
+OMM 的 CPU 分类覆盖 `AlphaCoverage.hlsli` 所用双线性 repeat 采样的四个 texel，包括半 texel 偏移和 wrap 接缝；只有全部采样点的状态一致才生成确定状态，否则保留 shader alpha 判断。`opacity_micromap_ray_query` 与 `_partitioned` 用独立 CPU 双线性参考逐像素验证 fallback/OMM、cutoff/UV/alpha/BLEND 编辑及跨分区变换，并验证 BLAS 压缩和 OMM 存储保活。
 
 ## 11. Shader、Pipeline 与 Sample 的关系
 

@@ -9,6 +9,11 @@
 
 namespace metallic::render {
 
+struct SceneAccelerationStructureBuildOptions {
+    // Explicit choice: an unavailable Partitioned backend returns Unsupported.
+    RayTracingTopLevelBackend topLevelBackend = RayTracingTopLevelBackend::Standard;
+};
+
 struct SceneAccelerationStructureStats {
     uint32_t blasCount = 0;
     uint32_t instanceCount = 0;
@@ -30,6 +35,11 @@ struct SceneAccelerationStructureStats {
     uint32_t opacityMicromapCount = 0;
     uint64_t opacityMicromapTriangleCount = 0;
     uint64_t opacityMicromapBytes = 0;
+    RayTracingTopLevelBackend topLevelBackend = RayTracingTopLevelBackend::Standard;
+    uint64_t topLevelBytes = 0;
+    uint32_t partitionCount = 0;
+    uint32_t maxInstancesPerPartition = 0;
+    uint64_t operationBytes = 0;
 };
 
 enum class SceneAccelerationStructureBuildState : uint8_t {
@@ -50,8 +60,10 @@ public:
     SceneAccelerationStructureBuilder(const SceneAccelerationStructureBuilder&) = delete;
     SceneAccelerationStructureBuilder& operator=(const SceneAccelerationStructureBuilder&) = delete;
 
-    Result<> build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
-    Result<> beginBuild(Device& device, Queue& queue, const scene::Scene& scene, std::string& log);
+    Result<> build(Device& device, Queue& queue, const scene::Scene& scene, std::string& log,
+        const SceneAccelerationStructureBuildOptions& options = {});
+    Result<> beginBuild(Device& device, Queue& queue, const scene::Scene& scene, std::string& log,
+        const SceneAccelerationStructureBuildOptions& options = {});
     Result<> pollBuild(bool& complete, std::string& log);
     bool pollBuild();
     SceneAccelerationStructureBuildState buildState() const;
@@ -72,6 +84,7 @@ private:
         Device& device,
         Queue& queue,
         const scene::Scene& scene,
+        const SceneAccelerationStructureBuildOptions& options,
         bool waitForCompletion,
         std::string& log);
     std::unique_ptr<Impl> impl_;

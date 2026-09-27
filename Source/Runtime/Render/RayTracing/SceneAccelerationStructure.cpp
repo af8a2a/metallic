@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <span>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -105,6 +107,107 @@ Result<> uploadVector(Buffer& buffer, const std::vector<T>& values, const char* 
     return {};
 }
 
+// Only top-level allocation, instance encoding and recording differ. BLAS/OMM,
+// compaction, submission and retirement stay in the shared scene build phases.
+struct TopLevelBuildStrategy {
+    RayTracingTopLevelBackend backend = RayTracingTopLevelBackend::Standard;
+    std::vector<uint32_t> partitions;
+    uint32_t partitionCount = 0;
+    uint32_t maxInstancesPerPartition = 0;
+    uint64_t scratchSize = 0;
+    uint64_t instanceBytes = 0;
+    uint64_t operationBytes = 0;
+
+    Result<std::unique_ptr<RayTracingAccelerationStructure>> create(
+        Device& device, std::span<const RayTracingInstanceDesc> instances)
+    {
+        if (backend == RayTracingTopLevelBackend::Standard) {
+            constexpr auto flags = RayTracingAccelerationStructureBuildFlags::PreferFastTrace |
+                RayTracingAccelerationStructureBuildFlags::AllowUpdate;
+            auto sizes = device.queryRayTracingAccelerationStructureBuildSizes({
+                .type = RayTracingAccelerationStructureType::TopLevel, .flags = flags,
+                .instanceCount = uint32_t(instances.size())});
+            if (!sizes) { return std::unexpected(sizes.error()); }
+            scratchSize = std::max(sizes->buildScratchSize, sizes->updateScratchSize);
+            instanceBytes = instances.size() * sizeof(RayTracingGpuInstance);
+            return device.createRayTracingAccelerationStructure({.type = RayTracingAccelerationStructureType::TopLevel,
+                .buildFlags = flags, .size = sizes->accelerationStructureSize});
+        }
+
+        // Assign spatial partitions once. Transform updates retain membership,
+        // so even a move across the initial grid cannot overflow its capacity.
+        float minX = instances.front().transform[0][3], maxX = minX;
+        float minZ = instances.front().transform[2][3], maxZ = minZ;
+        for (const auto& instance : instances) {
+            const float x = instance.transform[0][3], z = instance.transform[2][3];
+            if (!std::isfinite(x) || !std::isfinite(z)) { return makeError(Error::InvalidArgument); }
+            minX = std::min(minX, x); maxX = std::max(maxX, x);
+            minZ = std::min(minZ, z); maxZ = std::max(maxZ, z);
+        }
+        const double spanX = double(maxX) - minX, spanZ = double(maxZ) - minZ;
+        const uint32_t axis = spanX <= 1e-5 && spanZ <= 1e-5 ? 1 : instances.size() >= 16 ? 4 : instances.size() >= 4 ? 2 : 1;
+        partitionCount = axis * axis;
+        std::vector<uint32_t> counts(partitionCount);
+        for (const auto& instance : instances) {
+            const auto cell = [axis](float coordinate, float low, double span) {
+                return span > 1e-5 ? std::min(axis - 1, uint32_t((double(coordinate) - low) / span * axis)) : 0u;
+            };
+            const uint32_t partition = cell(instance.transform[2][3], minZ, spanZ) * axis +
+                cell(instance.transform[0][3], minX, spanX);
+            partitions.push_back(partition);
+            maxInstancesPerPartition = std::max(maxInstancesPerPartition, ++counts[partition]);
+        }
+        const PartitionedAccelerationStructureBuildInputs inputs{.instanceCount = uint32_t(instances.size()),
+            .partitionCount = partitionCount, .maxInstancePerPartitionCount = maxInstancesPerPartition};
+        auto sizes = device.queryPartitionedAccelerationStructureBuildSizes(inputs);
+        if (!sizes) { return std::unexpected(sizes.error()); }
+        scratchSize = sizes->buildScratchSize;
+        instanceBytes = sizes->instanceWriteInfoSize;
+        operationBytes = sizes->operationInfoSize + sizes->operationCountSize;
+        return device.createPartitionedAccelerationStructure({.inputs = inputs, .sizes = *sizes});
+    }
+
+    Result<> encode(Device& device, std::span<const RayTracingInstanceDesc> instances,
+        std::unique_ptr<Buffer>& buffer) const
+    {
+        if (backend == RayTracingTopLevelBackend::Standard) {
+            if (buffer) { return device.writeRayTracingInstances(*buffer, instances.data(), uint32_t(instances.size())); }
+            return device.createRayTracingInstanceBuffer(instances.data(), uint32_t(instances.size()))
+                .transform([&](auto value) { buffer = std::move(value); });
+        }
+        if (instances.size() != partitions.size()) { return makeError(Error::InvalidArgument); }
+        std::vector<PartitionedAccelerationStructureInstanceDesc> encoded;
+        encoded.reserve(instances.size());
+        for (uint32_t i = 0; i < instances.size(); ++i) {
+            const auto& source = instances[i];
+            auto& destination = encoded.emplace_back(PartitionedAccelerationStructureInstanceDesc{
+                .bottomLevel = source.bottomLevel, .instanceIndex = i, .partitionIndex = partitions[i],
+                .customIndex = source.customIndex, .shaderBindingTableRecordOffset = source.shaderBindingTableRecordOffset,
+                .mask = source.mask, .flags = source.flags});
+            std::memcpy(destination.transform, source.transform, sizeof(source.transform));
+        }
+        return device.createPartitionedAccelerationStructureInstanceBuffer(encoded.data(), uint32_t(encoded.size()))
+            .transform([&](auto value) { buffer = std::move(value); });
+    }
+
+    Result<> record(CommandBuffer& commands, RayTracingAccelerationStructure& destination,
+        Buffer& instances, uint32_t count, Buffer& scratch, uint64_t offset, bool update = false) const
+    {
+        if (backend == RayTracingTopLevelBackend::Partitioned) {
+            // The current RHI writes all instances with a null source, including
+            // transform updates. BLAS and OMM allocations remain unchanged.
+            return commands.buildPartitionedAccelerationStructure({.destination = &destination,
+                .instanceBuffer = &instances, .instanceCount = count, .scratchBuffer = &scratch,
+                .scratchBufferOffset = offset});
+        }
+        return commands.buildRayTracingAccelerationStructure({.destination = &destination,
+            .source = update ? &destination : nullptr,
+            .mode = update ? RayTracingAccelerationStructureBuildMode::Update : RayTracingAccelerationStructureBuildMode::Build,
+            .instanceBuffer = &instances, .instanceCount = count, .scratchBuffer = &scratch,
+            .scratchBufferOffset = offset});
+    }
+};
+
 } // namespace
 
 struct SceneAccelerationStructureBuilder::Impl {
@@ -115,6 +218,7 @@ struct SceneAccelerationStructureBuilder::Impl {
     };
 
     SceneAccelerationStructureStats stats;
+    TopLevelBuildStrategy topLevel;
     std::unique_ptr<Buffer> vertexBuffer;
     std::unique_ptr<Buffer> indexBuffer;
     std::unique_ptr<Buffer> instanceBuffer;
@@ -186,6 +290,7 @@ struct SceneAccelerationStructureBuilder::Impl {
         pendingInstances.clear();
         pendingInstanceBlasIndices.clear();
         stats = {};
+        topLevel = {};
         sourceGeometryTransformRevision = 0;
         scratchOffset = 0;
         tlasBytes = 0;
@@ -296,8 +401,7 @@ Result<> SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::s
         }
 
         std::unique_ptr<Buffer> newInstanceBuffer;
-        Result<> result = buildDevice->createRayTracingInstanceBuffer(instances.data(),
-            static_cast<uint32_t>(instances.size())).transform([&](auto rhiValue) { newInstanceBuffer = std::move(rhiValue); });
+        Result<> result = topLevel.encode(*buildDevice, instances, newInstanceBuffer);
         if (!result || newInstanceBuffer == nullptr) {
             return result ? makeError(Error::Failure) : result;
         }
@@ -326,14 +430,8 @@ Result<> SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::s
             }
         }
 
-        result = commandBuffer->buildRayTracingAccelerationStructure(
-            RayTracingAccelerationStructureBuildDesc{
-                .destination = tlas.get(),
-                .instanceBuffer = newInstanceBuffer.get(),
-                .instanceCount = static_cast<uint32_t>(instances.size()),
-                .scratchBuffer = scratchBuffer.get(),
-                .scratchBufferOffset = scratchOffset,
-            });
+        result = topLevel.record(*commandBuffer, *tlas, *newInstanceBuffer,
+            uint32_t(instances.size()), *scratchBuffer, scratchOffset);
         if (!result || !(result = commandBuffer->end())) {
             return result;
         }
@@ -520,24 +618,27 @@ Result<> SceneAccelerationStructureBuilder::build(
     Device& device,
     Queue& queue,
     const scene::Scene& scene,
-    std::string& log)
+    std::string& log,
+    const SceneAccelerationStructureBuildOptions& options)
 {
-    return buildInternal(device, queue, scene, true, log);
+    return buildInternal(device, queue, scene, options, true, log);
 }
 
 Result<> SceneAccelerationStructureBuilder::beginBuild(
     Device& device,
     Queue& queue,
     const scene::Scene& scene,
-    std::string& log)
+    std::string& log,
+    const SceneAccelerationStructureBuildOptions& options)
 {
-    return buildInternal(device, queue, scene, false, log);
+    return buildInternal(device, queue, scene, options, false, log);
 }
 
 Result<> SceneAccelerationStructureBuilder::buildInternal(
     Device& device,
     Queue& queue,
     const scene::Scene& scene,
+    const SceneAccelerationStructureBuildOptions& options,
     bool waitForCompletion,
     std::string& log)
 {
@@ -551,7 +652,18 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
         return makeError(Error::Unsupported);
     }
 
+    if (options.topLevelBackend != RayTracingTopLevelBackend::Standard &&
+        options.topLevelBackend != RayTracingTopLevelBackend::Partitioned) {
+        log = "Invalid top-level backend.";
+        return makeError(Error::InvalidArgument);
+    }
+    if (options.topLevelBackend == RayTracingTopLevelBackend::Partitioned &&
+        !device.capabilities().partitionedAccelerationStructure) {
+        log = "Partitioned acceleration structure capability is unavailable.";
+        return makeError(Error::Unsupported);
+    }
     clear();
+    impl_->topLevel.backend = options.topLevelBackend;
     const BuildClock::time_point begin = BuildClock::now();
     impl_->buildBegin = begin;
     const std::vector<scene::RenderPrimitive>& renderPrimitives = scene.renderPrimitives();
@@ -806,34 +918,14 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
         instanceBlasIndices.push_back(0);
     }
 
-    constexpr RayTracingAccelerationStructureBuildFlags kTlasFlags =
-        RayTracingAccelerationStructureBuildFlags::PreferFastTrace |
-        RayTracingAccelerationStructureBuildFlags::AllowUpdate;
-    RayTracingAccelerationStructureBuildSizes tlasSizes;
-    result = device.queryRayTracingAccelerationStructureBuildSizes(RayTracingAccelerationStructureBuildInputs{
-            .type = RayTracingAccelerationStructureType::TopLevel,
-            .flags = kTlasFlags,
-            .instanceCount = static_cast<uint32_t>(instances.size()),
-        }).transform([&](auto rhiValue) { tlasSizes = std::move(rhiValue); });
+    result = impl_->topLevel.create(device, instances).transform([&](auto value) { impl_->tlas = std::move(value); });
     if (!result) {
-        log = resultMessage("queryRayTracingAccelerationStructureBuildSizes(TLAS)", result);
+        log = resultMessage("create scene top-level acceleration structure", result);
         clear();
         return result;
     }
-    result = device.createRayTracingAccelerationStructure(RayTracingAccelerationStructureDesc{
-            .type = RayTracingAccelerationStructureType::TopLevel,
-            .buildFlags = kTlasFlags,
-            .size = tlasSizes.accelerationStructureSize,
-        }).transform([&](auto rhiValue) { impl_->tlas = std::move(rhiValue); });
-    if (!result) {
-        log = resultMessage("createRayTracingAccelerationStructure(TLAS)", result);
-        clear();
-        return result;
-    }
-    impl_->tlasBytes = tlasSizes.accelerationStructureSize;
-    maxScratchSize = std::max(
-        maxScratchSize,
-        std::max(tlasSizes.buildScratchSize, tlasSizes.updateScratchSize));
+    impl_->tlasBytes = impl_->tlas->desc().size;
+    maxScratchSize = std::max(maxScratchSize, impl_->topLevel.scratchSize);
 
     RayTracingAccelerationStructureProperties properties;
     result = device.queryRayTracingAccelerationStructureProperties().transform([&](auto rhiValue) { properties = std::move(rhiValue); });
@@ -842,7 +934,9 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
         clear();
         return result;
     }
-    const uint64_t scratchBufferSize = maxScratchSize + properties.scratchAlignment - 1;
+    // PTLAS and OMM both require 256-byte scratch alignment.
+    const uint64_t scratchAlignment = std::max<uint64_t>(properties.scratchAlignment, 256);
+    const uint64_t scratchBufferSize = maxScratchSize + scratchAlignment - 1;
     result = createBuffer(
         device,
         scratchBufferSize,
@@ -856,7 +950,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
         return result;
     }
     const uint64_t scratchAddress = impl_->scratchBuffer->deviceAddress();
-    impl_->scratchOffset = alignUp(scratchAddress, properties.scratchAlignment) - scratchAddress;
+    impl_->scratchOffset = alignUp(scratchAddress, scratchAlignment) - scratchAddress;
 
     const Result<> queryPoolResult =
         device.createRayTracingAccelerationStructureCompactionQueryPool(RayTracingAccelerationStructureCompactionQueryPoolDesc{
@@ -971,15 +1065,20 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
         .indexCount = indices.size(),
         .geometryBytes = static_cast<uint64_t>(vertices.size()) * sizeof(RayTracingVertex) +
             static_cast<uint64_t>(indices.size()) * sizeof(uint32_t) +
-            static_cast<uint64_t>(instances.size()) * properties.instanceRecordSize,
-        .accelerationStructureBytes = originalBlasBytes + tlasSizes.accelerationStructureSize + micromapBytes,
+            impl_->topLevel.instanceBytes,
+        .accelerationStructureBytes = originalBlasBytes + impl_->tlasBytes + micromapBytes,
         .scratchBytes = scratchBufferSize,
         .originalBlasBytes = originalBlasBytes,
         .peakAccelerationStructureBytes = originalBlasBytes +
-            tlasSizes.accelerationStructureSize + micromapBytes,
+            impl_->tlasBytes + micromapBytes,
         .opacityMicromapCount = micromapCount,
         .opacityMicromapTriangleCount = micromapTriangleCount,
         .opacityMicromapBytes = micromapBytes,
+        .topLevelBackend = options.topLevelBackend,
+        .topLevelBytes = impl_->tlasBytes,
+        .partitionCount = impl_->topLevel.partitionCount,
+        .maxInstancesPerPartition = impl_->topLevel.maxInstancesPerPartition,
+        .operationBytes = impl_->topLevel.operationBytes,
     };
     impl_->primitiveToBlas = std::move(primitiveToBlas);
     impl_->pendingInstances = std::move(instances);
@@ -1050,7 +1149,8 @@ Result<> SceneAccelerationStructureBuilder::updateInstanceTransforms(
 {
     log.clear();
     if (!valid() || !scene.valid() || impl_->instanceBuffer == nullptr ||
-        impl_->scratchBuffer == nullptr || impl_->primitiveToBlas.empty()) {
+        impl_->scratchBuffer == nullptr || impl_->primitiveToBlas.empty() ||
+        impl_->tlas->deviceIdentity() != device.identity()) {
         log = "Scene acceleration structures are not ready for an instance update.";
         return makeError(Error::InvalidArgument);
     }
@@ -1093,12 +1193,9 @@ Result<> SceneAccelerationStructureBuilder::updateInstanceTransforms(
         return {};
     }
 
-    Result<> result = device.writeRayTracingInstances(
-        *impl_->instanceBuffer,
-        instances.data(),
-        static_cast<uint32_t>(instances.size()));
+    Result<> result = impl_->topLevel.encode(device, instances, impl_->instanceBuffer);
     if (!result) {
-        log = resultMessage("writeRayTracingInstances", result);
+        log = resultMessage("encode scene top-level instances", result);
         return result;
     }
     std::unique_ptr<CommandPool> commandPool;
@@ -1111,16 +1208,8 @@ Result<> SceneAccelerationStructureBuilder::updateInstanceTransforms(
         log = resultMessage("create scene TLAS update submission", result);
         return result;
     }
-    result = commandBuffer->buildRayTracingAccelerationStructure(
-        RayTracingAccelerationStructureBuildDesc{
-            .destination = impl_->tlas.get(),
-            .source = impl_->tlas.get(),
-            .mode = RayTracingAccelerationStructureBuildMode::Update,
-            .instanceBuffer = impl_->instanceBuffer.get(),
-            .instanceCount = static_cast<uint32_t>(instances.size()),
-            .scratchBuffer = impl_->scratchBuffer.get(),
-            .scratchBufferOffset = impl_->scratchOffset,
-        });
+    result = impl_->topLevel.record(*commandBuffer, *impl_->tlas, *impl_->instanceBuffer,
+        uint32_t(instances.size()), *impl_->scratchBuffer, impl_->scratchOffset, true);
     if (!result || !(result = commandBuffer->end())) {
         log = resultMessage("record scene TLAS update", result);
         return result;

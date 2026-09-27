@@ -33,7 +33,8 @@ std::filesystem::path propertyPath(
 
 std::string resourceKey(const std::filesystem::path& scenePath, const RenderGraphProperties& properties)
 {
-    return normalizedScenePath(scenePath).generic_string() + "#textures:" +
+    return normalizedScenePath(scenePath).generic_string() + "#top-level:" +
+        properties.value("topLevelBackend", RenderGraphProperties("standard")).dump() + "#textures:" +
         std::to_string(properties.value("materialTextureMaxDimension",512)) + ":" +
         std::to_string(properties.value("materialTextureBudgetMiB",2048)) + ":" +
         std::to_string(properties.value("materialTextureMaskMaxDimension",0)) + ":" +

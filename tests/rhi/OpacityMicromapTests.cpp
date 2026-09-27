@@ -8,6 +8,8 @@
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSpirv.h"
 
 #include <array>
+#include <algorithm>
+#include <cmath>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -54,6 +56,16 @@ public:
                 OMM_EXPECT(baked.stateCounts[0] && baked.stateCounts[1] && baked.stateCounts[3], "coverage lost transparent/opaque/boundary states");
             }
         }
+        scene::RenderImage::Mip edge{.width = 2, .height = 1, .pixels = {255,255,255,0, 255,255,255,255}};
+        material.alphaCutoff = 0.75f;
+        primitive.texcoords0 = {{0.51f,0.5f}, {0.52f,0.5f}, {0.51f,0.51f}};
+        OMM_EXPECT(render::OpacityMicromapBaker(material, &edge).bake(primitive, 0, baked) && baked.stateCounts[3] == 1,
+            "bilinear half-texel footprint was incorrectly classified opaque");
+        primitive.texcoords0 = {{0.98f,0.5f}, {0.99f,0.5f}, {0.98f,0.51f}};
+        OMM_EXPECT(render::OpacityMicromapBaker(material, &edge).bake(primitive, 0, baked) && baked.stateCounts[3] == 1,
+            "bilinear repeat seam was incorrectly classified opaque");
+        primitive.texcoords0 = {{0,0}, {1,0}, {0,1}};
+        material.alphaCutoff = 0.5f;
         material.baseColorFactor.w = 0;
         OMM_EXPECT(render::OpacityMicromapBaker(material, &image).bake(primitive, 4, baked) && baked.stateCounts[0] == 1 && baked.data.size() == 1, "constant-transparent triangle was not collapsed");
         material.alphaCutoff = 0;
@@ -71,11 +83,11 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(OpacityMicromapBakeTest);
 
-class OpacityMicromapRayQueryTest final : public RhiTest {
+class OpacityMicromapRayQueryTest : public RhiTest {
 public:
-    OpacityMicromapRayQueryTest()
+    explicit OpacityMicromapRayQueryTest(bool partitioned = false) : partitioned_(partitioned)
     {
-        name = "opacity_micromap_ray_query";
+        name = partitioned ? "opacity_micromap_ray_query_partitioned" : "opacity_micromap_ray_query";
         type = RhiTestType::Rendering;
     }
     RhiTestResult run(RhiTestContext& context) override
@@ -93,8 +105,8 @@ public:
             binary.write(reinterpret_cast<const char*>(indices), sizeof(indices));
             std::ofstream gltf(path);
             // Two distinct primitives exercise OMM scratch reuse and per-BLAS histograms.
-            gltf << R"json({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1]}],
-                "nodes":[{"mesh":0},{"mesh":1,"translation":[2,0,0]}],
+            gltf << R"json({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0,1,2,3]}],
+                "nodes":[{"mesh":0},{"mesh":1,"translation":[2,0,0]},{"mesh":0,"translation":[4,0,0]},{"mesh":1,"translation":[6,0,0]}],
                 "meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1},"indices":2,"material":0}]},
                     {"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1},"indices":2,"material":1}]}],
                 "buffers":[{"uri":"mesh.bin","byteLength":104}],
@@ -117,7 +129,7 @@ public:
         const std::string originalGltf((std::istreambuf_iterator<char>(sourceFile)), std::istreambuf_iterator<char>());
         sourceFile.close();
         using Probe = std::array<std::array<uint32_t, 2>, 64 * 64>;
-        std::array<Probe, 5> baseline{};
+        std::array<Probe, 9> baseline{};
         uint64_t fallbackCandidates = 0, ommCandidates = 0;
         for (bool enable : {false, true}) {
             { std::ofstream restore(path); restore << originalGltf; }
@@ -125,9 +137,12 @@ public:
             const auto setup = render::createDevice({.applicationName = "Opacity Micromap Test",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
                 .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
-                .enableOpacityMicromap = enable}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
+                .enableOpacityMicromap = enable, .enablePartitionedAccelerationStructure = partitioned_, .enableAsyncCompute = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
             if (render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("ray queries unavailable"); }
             OMM_REQUIRE(setup);
+            if (partitioned_ && !device->capabilities().partitionedAccelerationStructure) {
+                return RhiTestResult::skip("PTLAS unavailable");
+            }
             if (enable && !device->capabilities().opacityMicromap) { return RhiTestResult::skip("fallback passed; OMM unavailable"); }
             if (!enable) {
                 render::RayTracingAccelerationStructureBuildSizes sizes;
@@ -138,7 +153,7 @@ public:
             scene::Scene loaded;
             OMM_EXPECT(loaded.load(path), loaded.lastLoadResult().error);
             render::ScenePathTraceResources resources;
-            OMM_REQUIRE(resources.beginPrepareAsync(*device, queue, {{"path", path.string()}}, loaded, log));
+            OMM_REQUIRE(resources.beginPrepareAsync(*device, queue, {{"path", path.string()}, {"topLevelBackend", partitioned_ ? "partitioned" : "standard"}}, loaded, log));
             bool complete = false;
             scene::SceneLoadProgress progress;
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -147,7 +162,7 @@ public:
                 if (!complete) { std::this_thread::yield(); }
             }
             OMM_EXPECT(complete && resources.valid(), "scene preparation timed out: " + log);
-            OMM_EXPECT(resources.accelerationStructure().stats().opacityMicromapCount == (enable ? 2u : 0u), "scene BLAS did not bake the expected OMMs");
+            OMM_EXPECT(resources.accelerationStructure().stats().opacityMicromapCount == (enable ? 4u : 0u), "scene BLAS did not bake the expected OMMs");
             OMM_EXPECT(resources.accelerationStructure().stats().compactedBlasBytes != 0, "BLAS compaction was not exercised");
             const char* capabilities[] = {"spvRayQueryKHR"};
             render::ShaderCompileResult compiled;
@@ -187,8 +202,8 @@ public:
                     (void)frame.reset();
                 }
             } drain{frame, *pool};
-            for (uint32_t step = 0; step < baseline.size(); ++step) {
-                if (step != 0) {
+            for (uint32_t step = 0; step < (partitioned_ ? 9u : 7u); ++step) {
+                if (step > 0 && step < 5) {
                     auto material = loaded.materials()[0];
                     if (step == 1) { material.alphaCutoff = 0.9f; }
                     if (step == 2) {
@@ -208,6 +223,37 @@ public:
                     OMM_EXPECT(loaded.setMaterialProperties(0, material), "material edit failed");
                     OMM_REQUIRE(resources.syncRuntimeScene(&loaded, log));
                 }
+                if (step >= 5 && step < 7) {
+                    auto transform = loaded.nodes()[0].localMatrix;
+                    transform.a03 = step == 5 ? 3.5f : 0.0f;
+                    const auto before = resources.accelerationStructure().stats();
+                    const auto address = resources.accelerationStructure().accelerationStructure()->deviceAddress();
+                    OMM_EXPECT(loaded.setNodeLocalMatrix(0, transform), "instance move failed");
+                    OMM_REQUIRE(resources.syncRuntimeScene(&loaded, log));
+                    const auto after = resources.accelerationStructure().stats();
+                    OMM_EXPECT(before.compactedBlasBytes == after.compactedBlasBytes &&
+                        before.opacityMicromapBytes == after.opacityMicromapBytes &&
+                        address == resources.accelerationStructure().accelerationStructure()->deviceAddress(),
+                        "transform update replaced BLAS/OMM/top-level storage");
+                }
+                if (step >= 7) {
+                    // Reusing a scene with another backend must invalidate the resource cache.
+                    OMM_REQUIRE(resources.beginPrepareAsync(*device, queue, {{"path", path.string()},
+                        {"topLevelBackend", step == 7 ? "standard" : "partitioned"}}, loaded, log));
+                    bool ready = false;
+                    const auto switchDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+                    while (!ready && std::chrono::steady_clock::now() < switchDeadline) {
+                        OMM_REQUIRE(resources.pumpPrepareAsync(10.0, ready, progress, log));
+                        if (!ready) { std::this_thread::yield(); }
+                    }
+                    OMM_EXPECT(ready && resources.valid(), "backend switch did not finish");
+                }
+                const bool expectPartitioned = partitioned_ && step != 7;
+                OMM_EXPECT(resources.accelerationStructure().accelerationStructure()->desc().topLevelBackend ==
+                    (expectPartitioned ? render::RayTracingTopLevelBackend::Partitioned : render::RayTracingTopLevelBackend::Standard),
+                    "material/transform update changed the selected backend");
+                OMM_EXPECT(!expectPartitioned || resources.accelerationStructure().stats().partitionCount > 1,
+                    "fixture did not exercise multiple partitions");
                 OMM_REQUIRE(frame.begin(step));
                 OMM_REQUIRE(pool->reset());
                 OMM_REQUIRE(commands->begin(&frame));
@@ -236,12 +282,34 @@ public:
                 uint32_t hits = 0;
                 for (size_t ray = 0; ray < actual.size(); ++ray) {
                     hits += actual[ray][0];
+                    // Independent CPU reference for AlphaCoverage.hlsli's four-tap
+                    // mip-0 bilinear repeat sampler. Do not compare to old nearest counts.
+                    const auto& material = loaded.materials()[0];
+                    const float u = (float(ray % 64) + 0.31f) / 64.0f;
+                    const float v = (float(ray / 64) + 0.67f) / 64.0f;
+                    const auto& t = material.baseColorTexture.uvTransform;
+                    const float tu = t[0] * u + t[1] * v + t[2], tv = t[3] * u + t[4] * v + t[5];
+                    const float x = (tu - std::floor(tu)) * 32.0f - 0.5f;
+                    const float y = (tv - std::floor(tv)) * 32.0f - 0.5f;
+                    const int ix = int(std::floor(x)), iy = int(std::floor(y));
+                    const float fx = x - std::floor(x), fy = y - std::floor(y);
+                    const auto alpha = [&](int px, int py) {
+                        return float(pixels[(((py + 32) % 32) * 32 + (px + 32) % 32) * 4 + 3]) / 255.0f;
+                    };
+                    const float a0 = alpha(ix, iy) * (1 - fx) + alpha(ix + 1, iy) * fx;
+                    const float a1 = alpha(ix, iy + 1) * (1 - fx) + alpha(ix + 1, iy + 1) * fx;
+                    const float coverage = std::clamp(material.baseColorFactor.w * (a0 * (1 - fy) + a1 * fy), 0.0f, 1.0f);
+                    const bool expected = step != 5 && (material.alphaMode == "BLEND" ? coverage > 0 :
+                        coverage >= std::clamp(material.alphaCutoff, 0.0f, 1.0f));
+                    OMM_EXPECT(actual[ray][0] == uint32_t(expected), "bilinear alpha mismatch at step " +
+                        std::to_string(step) + " ray " + std::to_string(ray) + " coverage=" + std::to_string(coverage) +
+                        " actual=" + std::to_string(actual[ray][0]) + " OMM=" + std::to_string(enable));
                     if (!enable) { baseline[step][ray] = actual[ray]; fallbackCandidates += actual[ray][1]; }
                     else { ommCandidates += actual[ray][1]; }
                     OMM_EXPECT(actual[ray][0] == baseline[step][ray][0], "OMM changed visibility at step " + std::to_string(step) + " ray " + std::to_string(ray));
                 }
-                if (step == 0) { OMM_EXPECT(hits == 2048, "initial alpha mask incorrect"); }
-                if (step == 1) { OMM_EXPECT(hits == 1024, "cutoff edit did not change visibility"); }
+                if (step == 0) { OMM_EXPECT(hits > 0 && hits < 4096, "alpha fixture needs both hits and holes"); }
+
                 if (step == 3) { OMM_EXPECT(hits == 0, "alpha edit retained stale OMM"); }
                 if (enable) {
                     std::vector<uint8_t> png(64 * 64 * 4, 255);
@@ -254,11 +322,18 @@ public:
         }
         OMM_EXPECT(ommCandidates < fallbackCandidates / 2, "OMM did not reduce shader alpha candidates: " +
             std::to_string(fallbackCandidates) + " -> " + std::to_string(ommCandidates));
-        return RhiTestResult::pass("OMM visibility equals fallback after compaction/cutoff/UV/alpha/BLEND edits; candidates " +
+        return RhiTestResult::pass("OMM visibility equals fallback after compaction/cutoff/UV/alpha/BLEND edits, transforms and backend switches; candidates " +
             std::to_string(fallbackCandidates) + " -> " + std::to_string(ommCandidates));
     }
+private:
+    bool partitioned_ = false;
+};
+class PartitionedOpacityMicromapRayQueryTest final : public OpacityMicromapRayQueryTest {
+public:
+    PartitionedOpacityMicromapRayQueryTest() : OpacityMicromapRayQueryTest(true) {}
 };
 METALLIC_REGISTER_RHI_TEST(OpacityMicromapRayQueryTest);
+METALLIC_REGISTER_RHI_TEST(PartitionedOpacityMicromapRayQueryTest);
 
 #undef OMM_REQUIRE
 #undef OMM_EXPECT

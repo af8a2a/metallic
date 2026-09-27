@@ -150,8 +150,10 @@ uint8_t OpacityMicromapBaker::classify(const std::array<float2, 3>& uv) const
     const double pad = 0.000004 * (1.0 + std::max({std::abs(minX), std::abs(maxX), std::abs(minY), std::abs(maxY)}));
     const auto intervals = [pad](double low, double high, uint32_t dimension) {
         std::array<std::array<uint32_t, 2>, 2> ranges{};
-        int64_t begin = int64_t(std::floor((low - pad) * dimension));
-        int64_t end = int64_t(std::floor((high + pad) * dimension)) + 1;
+        // sampleAlphaCoverage uses texel = frac(uv) * dimension - 0.5
+        // and blends floor(texel) with floor(texel) + 1, including wrap seams.
+        int64_t begin = int64_t(std::floor((low - pad) * dimension - 0.5));
+        int64_t end = int64_t(std::floor((high + pad) * dimension - 0.5)) + 2;
         if (end - begin >= dimension) {
             ranges[0] = {0, dimension};
         } else {

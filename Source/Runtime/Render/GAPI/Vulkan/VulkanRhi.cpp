@@ -8032,17 +8032,11 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         return makeError(Error::Failure);
     }
 
-    VkPhysicalDeviceAccelerationStructurePropertiesKHR properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR,
-    };
-    VkPhysicalDeviceProperties2 properties2{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-        .pNext = &properties,
-    };
-    vkGetPhysicalDeviceProperties2(impl_->device->physicalDevice, &properties2);
-    const uint64_t scratchAlignment = std::max<uint64_t>(
-        1,
-        properties.minAccelerationStructureScratchOffsetAlignment);
+    constexpr uint64_t scratchAlignment = 256;
+    if (desc.scratchBufferOffset >= desc.scratchBuffer->desc().size ||
+        scratchBase > UINT64_MAX - desc.scratchBufferOffset - (scratchAlignment - 1)) {
+        return makeError(Error::InvalidArgument);
+    }
     const uint64_t unalignedScratchAddress = scratchBase + desc.scratchBufferOffset;
     const uint64_t scratchAddress =
         (unalignedScratchAddress + scratchAlignment - 1u) & ~(scratchAlignment - 1u);
@@ -8111,8 +8105,8 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT |
             VK_ACCESS_2_MEMORY_WRITE_BIT,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-        .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+        .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
     };
     const VkDependencyInfo inputDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -9059,6 +9053,7 @@ Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createPartition
             .usage = BufferUsageBits::AccelerationStructureStorage |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::Device,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
         }).transform([&](auto rhiValue) { implementation->storage = std::move(rhiValue); });
     if (!result) {
         return std::unexpected(result.error());
@@ -9069,6 +9064,7 @@ Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createPartition
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::HostUpload,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
         }).transform([&](auto rhiValue) { implementation->partitioned->operationBuffer = std::move(rhiValue); });
     if (!result) {
         return std::unexpected(result.error());
@@ -9079,6 +9075,7 @@ Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createPartition
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::HostUpload,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
         }).transform([&](auto rhiValue) { implementation->partitioned->operationCountBuffer = std::move(rhiValue); });
     if (!result) {
         return std::unexpected(result.error());
@@ -9130,6 +9127,7 @@ Result<std::unique_ptr<Buffer>> Device::createPartitionedAccelerationStructureIn
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::HostUpload,
+            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
         }).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
     if (!result) {
         return std::unexpected(result.error());

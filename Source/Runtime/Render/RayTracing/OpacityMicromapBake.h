@@ -16,8 +16,8 @@ struct BakedOpacityMicromap {
     std::array<uint64_t, 4> stateCounts{};
 };
 
-// Conservative coverage of mip-0 nearest/wrap sampling used by scene ray queries.
-// A microtriangle is classified only if every texel in its UV bounds agrees.
+// Conservative coverage of the bilinear/wrap sampling in AlphaCoverage.hlsli.
+// Classification includes all four taps at every point in the UV bounds.
 class OpacityMicromapBaker {
 public:
     OpacityMicromapBaker(const scene::RenderMaterial& material, const scene::RenderImage::Mip* image);
