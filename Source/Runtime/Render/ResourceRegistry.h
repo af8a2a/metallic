@@ -46,7 +46,7 @@ constexpr ParameterAbi parameterAbi(uint64_t id)
     return {id, sizeof(T), alignof(T)};
 }
 
-namespace detail { struct RegistryState; struct ResourceLeaseState; struct ParameterPacket; }
+namespace detail { struct RegistryState; struct ResourceLeaseState; struct ParameterPacket; struct ParameterChunk; }
 
 class ResourceLease {
 public:
@@ -65,6 +65,7 @@ public:
     bool valid() const { return packet_ != nullptr; }
     ParameterAbi abi() const;
     uint64_t address() const;
+    const void* deviceIdentity() const;
     bool compatible(const CommandBuffer& commands, ParameterAbi abi) const;
     // Also usable by raw bindless raster/compute paths: retain this immutable
     // packet locally and bind its registry without changing execution state.
@@ -118,11 +119,13 @@ private:
 };
 
 // Resources must be registered/leased through this writer before encoding their wire handles.
-// Each registration contributes a strong allocation lease. The writer belongs to one submission.
+// Each registration contributes a strong allocation lease. Frame writers use a submission arena;
+// standalone writers own their storage and can be used by commands without a frame.
 // The first error is sticky, so a failed registration cannot publish a partial packet.
 class ParameterWriter {
 public:
     ParameterWriter(Device& device, RenderFrameContext& frame, ResourceRegistry& registry);
+    ParameterWriter(Device& device, ResourceRegistry& registry, RenderFrameContext* frame = nullptr);
     ShaderBuffer buffer(Buffer* buffer);
     ShaderDataSpan dataBuffer(const BufferSlice& slice, uint32_t stride, uint32_t alignment);
     ShaderDataSpan dataBuffer(Buffer* buffer, uint32_t stride, uint32_t alignment);
@@ -156,12 +159,13 @@ private:
         uint64_t& address, std::shared_ptr<void>& allocation);
     uint64_t append(Result<ResourceLease> lease);
     Device& device_;
-    RenderFrameContext& frame_;
+    RenderFrameContext* frame_ = nullptr;
     GpuCompletionPoint completion_;
     std::shared_ptr<detail::RegistryState> registry_;
     Result<> result_;
     std::vector<std::shared_ptr<detail::ResourceLeaseState>> resources_;
     std::vector<std::shared_ptr<void>> arrays_;
+    std::vector<std::shared_ptr<detail::ParameterChunk>> standaloneChunks_;
 };
 
 } // namespace metallic::render

@@ -128,12 +128,18 @@ uint64_t EncodedParameters::address() const
     return packet_ ? packet_->address : 0;
 }
 
+const void* EncodedParameters::deviceIdentity() const
+{
+    return packet_ ? packet_->registry->device : nullptr;
+}
+
 bool EncodedParameters::compatible(const CommandBuffer& commands, ParameterAbi abi) const
 {
     auto* frame = commands.frameContext();
-    return packet_ && packet_->abi == abi && commands.recording() && frame && frame->recording() &&
+    return packet_ && packet_->abi == abi && commands.recording() &&
         packet_->registry->device == commands.deviceIdentity() &&
-        packet_->completion.sameSubmission(frame->completion());
+        (!packet_->completion.valid() || (frame && frame->recording() &&
+            packet_->completion.sameSubmission(frame->completion())));
 }
 
 Result<> EncodedParameters::bindResources(CommandBuffer& commands) const
@@ -295,9 +301,15 @@ Result<> ResourceRegistry::retain(CommandBuffer& commands, const ResourceLease& 
 }
 
 ParameterWriter::ParameterWriter(Device& device, RenderFrameContext& frame, ResourceRegistry& registry)
-    : device_(device), frame_(frame), completion_(frame.completion()), registry_(registry.state_)
+    : ParameterWriter(device, registry, &frame)
 {
-    if (!registry_ || registry_->device != device.identity() || !frame.recording()) {
+}
+
+ParameterWriter::ParameterWriter(Device& device, ResourceRegistry& registry, RenderFrameContext* frame)
+    : device_(device), frame_(frame), completion_(frame ? frame->completion() : GpuCompletionPoint{}),
+      registry_(registry.state_)
+{
+    if (!registry_ || registry_->device != device.identity() || (frame && !frame->recording())) {
         result_ = makeError(Error::InvalidArgument);
     }
 }
@@ -374,21 +386,22 @@ Result<> ParameterWriter::upload(const void* data, uint64_t size, uint64_t align
     uint64_t& address, std::shared_ptr<void>& allocation)
 {
     if (!result_) { return result_; }
-    if (!frame_.recording() || !completion_.sameSubmission(frame_.completion()) ||
+    if ((frame_ && (!frame_->recording() || !completion_.sameSubmission(frame_->completion()))) ||
         !data || size == 0 || alignment == 0 || !std::has_single_bit(alignment) ||
         alignment > 4096 || size > UINT32_MAX) { return makeError(Error::InvalidArgument); }
     std::lock_guard lock(registry_->mutex);
     std::shared_ptr<detail::ParameterChunk> chunk;
     uint64_t offset = 0;
-    for (const auto& candidate : registry_->chunks) {
-        if (candidate->completion.isComplete()) {
-            candidate->completion = frame_.completion(); candidate->used = 0;
+    auto& chunks = frame_ ? registry_->chunks : standaloneChunks_;
+    for (const auto& candidate : chunks) {
+        if (frame_ && candidate->completion.isComplete()) {
+            candidate->completion = completion_; candidate->used = 0;
         }
         // A later batch can upload while an accepted prefix reads this chunk.
         // Start each write in a distinct flush atom (including the prior tail).
         const uint64_t writeAlignment = std::max(alignment, candidate->buffer->hostWriteAlignment());
         offset = (candidate->used + writeAlignment - 1) & ~(writeAlignment - 1);
-        if (candidate->completion.sameSubmission(frame_.completion()) &&
+        if ((!frame_ || candidate->completion.sameSubmission(completion_)) &&
             offset <= candidate->buffer->desc().size && size <= candidate->buffer->desc().size - offset) {
             chunk = candidate; break;
         }
@@ -400,9 +413,9 @@ Result<> ParameterWriter::upload(const void* data, uint64_t size, uint64_t align
             .memoryLocation = MemoryLocation::HostUpload,
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { chunk->buffer = std::move(rhiValue); });
         if (!result) { return result; }
-        chunk->completion = frame_.completion(); offset = 0;
-        registry_->stats.parameterCapacity += chunk->buffer->desc().size;
-        registry_->chunks.push_back(chunk);
+        chunk->completion = completion_; offset = 0;
+        if (frame_) { registry_->stats.parameterCapacity += chunk->buffer->desc().size; }
+        chunks.push_back(chunk);
     }
     auto* mapped = static_cast<uint8_t*>(chunk->buffer->map());
     const auto base = chunk->buffer->deviceAddress();
@@ -451,7 +464,7 @@ Result<EncodedParameters> ParameterWriter::encodeBytes(const void* params, Param
     auto packet = std::make_shared<detail::ParameterPacket>();
     result_ = upload(params, abi.size, abi.alignment, packet->address, packet->allocation);
     if (!result_) { return makeError(result_.error()); }
-    packet->registry = registry_; packet->completion = frame_.completion(); packet->abi = abi;
+    packet->registry = registry_; packet->completion = completion_; packet->abi = abi;
     packet->resources = resources_; packet->arrays = arrays_;
     out.packet_ = std::move(packet);
     return out;

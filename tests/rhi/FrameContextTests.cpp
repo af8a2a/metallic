@@ -415,8 +415,7 @@ public:
 METALLIC_REGISTER_RHI_TEST(FrameUploadGrowthBurstTest);
 
 render::Result<> createProbe(render::Device& device, const char* entry,
-    std::span<const render::ComputeProgramBindingDesc> bindings, render::ComputeProgram& program, std::string& log,
-    uint32_t tableCount = 1)
+    std::span<const render::ComputeProgramBindingDesc> bindings, render::ComputeProgram& program, std::string& log)
 {
     render::ShaderCompileResult shader;
     render::Result<> result = render::compileSlangShaderToSpirv({
@@ -428,7 +427,6 @@ render::Result<> createProbe(render::Device& device, const char* entry,
         .spirv = shader.spirv,
         .pushConstantSize = sizeof(uint32_t),
         .bindings = bindings,
-        .resourceTableCount = tableCount,
         .requiresRayQuery = false,
     }, log);
 }
@@ -470,7 +468,7 @@ public:
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
         };
         std::string log;
-        FRAME_REQUIRE(createProbe(*device, "copyValue", bindings, program, log, 2));
+        FRAME_REQUIRE(createProbe(*device, "copyValue", bindings, program, log));
         QueueDrain drain{queue, gate.get()};
         FRAME_REQUIRE(first.begin(0));
         FRAME_REQUIRE(second.begin(1));
@@ -485,7 +483,6 @@ public:
                 .bindings = {resources, 2},
                 .pushData = &index,
                 .pushDataSize = 4,
-                .resourceTableIndex = index % 2,
             }));
         }
         FRAME_REQUIRE(first.submit(tracker, gate.get()));

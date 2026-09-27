@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/ComputeKernel.h"
 
 #include <cstdint>
 #include <memory>
@@ -27,6 +27,7 @@ struct ComputeProgramBindingDesc {
     // DataBuffer only: explicit GPU element ABI; no descriptor is allocated.
     uint32_t dataStride = 0;
     uint32_t dataAlignment = 0;
+    bool operator==(const ComputeProgramBindingDesc&) const = default;
 };
 
 struct ComputeProgramDesc {
@@ -34,11 +35,7 @@ struct ComputeProgramDesc {
     uint32_t pushConstantSize = 0;
     std::span<const ComputeProgramBindingDesc> bindings;
     const char* debugName = nullptr;
-    uint32_t resourceTableCount = 1;
     bool requiresRayQuery = true;
-    // Native DescriptorHandle shaders import the Core module. The
-    // mapped path is retained only for explicit legacy shader diagnostics.
-    bool usesResourceTable = true;
     // Optional cache borrowed only during pipeline creation.
     PipelineCache* pipelineCache = nullptr;
 };
@@ -82,7 +79,6 @@ struct ComputeDispatchDesc {
     uint32_t groupCountX = 1;
     uint32_t groupCountY = 1;
     uint32_t groupCountZ = 1;
-    uint32_t resourceTableIndex = 0;
     // When present, GPU-generated counts replace groupCountX/Y/Z. The caller
     // transitions this buffer to IndirectArgument and retains it until completion.
     Buffer* indirectArguments = nullptr;
@@ -94,19 +90,6 @@ struct ComputeDispatchDesc {
 class ComputeProgram;
 class RenderFrameContext;
 
-// Immutable, frame-scoped dispatch packet. Owns constants, executable state and
-// allocation leases; input wrappers and the originating program may be released
-// after preparation. Copies may be recorded on distinct exclusive contexts.
-class PreparedComputeDispatch {
-public:
-    bool valid() const { return impl_ != nullptr; }
-    Result<> record(CommandBuffer& commands, const BarrierDesc& betweenDispatches = {}) const;
-private:
-    struct Impl;
-    std::shared_ptr<const Impl> impl_;
-    friend class ComputeProgram;
-};
-
 struct ComputeIndirectDispatch {
     const void* pushData = nullptr;
     uint64_t argumentOffset = 0;
@@ -114,6 +97,7 @@ struct ComputeIndirectDispatch {
     const ComputeProgram* program = nullptr;
 };
 
+// Resource-table input adapter for Core shaders. ComputeKernel owns all execution.
 class ComputeProgram {
 public:
     ComputeProgram();
@@ -131,7 +115,7 @@ public:
     Result<> dispatch(const ComputeDispatchDesc& desc);
     // No command buffer access. Concurrent preparations require stable program,
     // input wrappers and frame generation until all jobs join. A packet is returned
-    // only on success. Legacy usesResourceTable=false shaders remain a serial adapter.
+    // only on success. Encoding delegates execution to ComputeKernel.
     [[nodiscard]] Result<PreparedComputeDispatch> prepareDispatch(
         RenderFrameContext& frame,
         const ComputeDispatchDesc& desc) const;
@@ -149,13 +133,11 @@ public:
 private:
     Result<> validateDispatch(const ComputeDispatchDesc& desc,
         std::span<const ComputeIndirectDispatch> dispatches) const;
-    [[nodiscard]] Result<PreparedComputeDispatch> prepareShared(
+    [[nodiscard]] Result<PreparedComputeDispatch> prepare(
         RenderFrameContext* frame,
         const ComputeDispatchDesc& desc,
         std::span<const ComputeIndirectDispatch> dispatches) const;
     Result<> dispatchImpl(const ComputeDispatchDesc& desc,
-        std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches);
-    Result<> dispatchShared(const ComputeDispatchDesc& desc,
         std::span<const ComputeIndirectDispatch> dispatches, const BarrierDesc& betweenDispatches);
     struct Impl;
     std::shared_ptr<Impl> impl_;

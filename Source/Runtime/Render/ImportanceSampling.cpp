@@ -373,7 +373,6 @@ Result<> ImportancePdfCompute::initialize(Device& device, std::string& log)
             .pushConstantSize = sizeof(PrepareLightsPdfPush),
             .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
             .debugName = "ImportancePdfCompute",
-            .resourceTableCount = kImportancePdfMaxMipCount * 2u,
             .requiresRayQuery = false,
         },
         log);
@@ -413,7 +412,7 @@ Result<> ImportancePdfCompute::buildLocalLights(
         },
         {.binding = 50, .buffer = &punctualLights},
     };
-    auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t resourceTableIndex) {
+    auto dispatch = [&](const PrepareLightsPdfPush& push) {
         return impl_->program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
@@ -422,7 +421,6 @@ Result<> ImportancePdfCompute::buildLocalLights(
             .groupCountX = (push.destinationSize[0] + 7u) / 8u,
             .groupCountY = (push.destinationSize[1] + 7u) / 8u,
             .groupCountZ = 1,
-            .resourceTableIndex = resourceTableIndex,
         });
     };
 
@@ -434,7 +432,7 @@ Result<> ImportancePdfCompute::buildLocalLights(
     push.sourceSize[1] = localLightPdf.textureHeight();
     push.destinationSize[0] = localLightPdf.textureWidth();
     push.destinationSize[1] = localLightPdf.textureHeight();
-    Result<> result = dispatch(push, 0u);
+    Result<> result = dispatch(push);
     if (result) {
         if (auto commandResult = localLightPdf.synchronizeGpuBuild(commandBuffer); !commandResult) { return commandResult; }
     }
@@ -447,7 +445,7 @@ Result<> ImportancePdfCompute::buildLocalLights(
         push.sourceSize[1] = dimensionAtMip(localLightPdf.textureHeight(), sourceMip);
         push.destinationSize[0] = dimensionAtMip(localLightPdf.textureWidth(), sourceMip + 1u);
         push.destinationSize[1] = dimensionAtMip(localLightPdf.textureHeight(), sourceMip + 1u);
-        result = dispatch(push, sourceMip + 1u);
+        result = dispatch(push);
         if (result) {
             if (auto commandResult = localLightPdf.synchronizeGpuBuild(commandBuffer); !commandResult) { return commandResult; }
         }
@@ -486,7 +484,7 @@ Result<> ImportancePdfCompute::buildEnvironment(
         },
         {.binding = 50, .buffer = impl_->emptyLights.get()},
     };
-    auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t resourceTableIndex) {
+    auto dispatch = [&](const PrepareLightsPdfPush& push) {
         return impl_->program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
             .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
@@ -495,7 +493,6 @@ Result<> ImportancePdfCompute::buildEnvironment(
             .groupCountX = (push.destinationSize[0] + 7u) / 8u,
             .groupCountY = (push.destinationSize[1] + 7u) / 8u,
             .groupCountZ = 1,
-            .resourceTableIndex = resourceTableIndex,
         });
     };
 
@@ -506,7 +503,7 @@ Result<> ImportancePdfCompute::buildEnvironment(
     push.sourceSize[1] = environmentPdf.sourceHeight();
     push.destinationSize[0] = environmentPdf.textureWidth();
     push.destinationSize[1] = environmentPdf.textureHeight();
-    Result<> result = dispatch(push, kImportancePdfMaxMipCount);
+    Result<> result = dispatch(push);
     if (result) {
         if (auto commandResult = environmentPdf.synchronizeGpuBuild(commandBuffer); !commandResult) { return commandResult; }
     }
@@ -519,7 +516,7 @@ Result<> ImportancePdfCompute::buildEnvironment(
         push.sourceSize[1] = dimensionAtMip(environmentPdf.textureHeight(), sourceMip);
         push.destinationSize[0] = dimensionAtMip(environmentPdf.textureWidth(), sourceMip + 1u);
         push.destinationSize[1] = dimensionAtMip(environmentPdf.textureHeight(), sourceMip + 1u);
-        result = dispatch(push, kImportancePdfMaxMipCount + sourceMip + 1u);
+        result = dispatch(push);
         if (result) {
             if (auto commandResult = environmentPdf.synchronizeGpuBuild(commandBuffer); !commandResult) { return commandResult; }
         }

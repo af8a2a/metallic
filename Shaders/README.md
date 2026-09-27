@@ -52,11 +52,11 @@ __include "GPUDriven/GPUDrivenCullingCommon.slang";
 消费者直接导入自己使用的模块，不依赖其他模块的间接导入。
 当前固定的 Slang 2026.1.2 对结构体成员仍需显式标注 `public`，不要依赖新版本的成员默认可见性。
 
-Core 是 `gComputeResources` 的唯一声明者，多个导入路径共用同一份 push constant。
-它维持现有 RHI 的两个 heap 索引、资源表指针和常量指针布局，不引入新的描述符绑定。
+`ParameterRoot` 是 Compute 根参数的唯一声明者；typed kernel 与 Core 资源表都只推送一个 64 位参数地址。
+Core 通过 `getComputeResources()` 从根参数读取资源表和常量地址，RHI 单独管理 heap header。多个导入路径不会声明第二份 push constant。
 `getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
 取代原来的 `METALLIC_RESOURCE`、`METALLIC_RESOURCE_ARRAY`、`METALLIC_CONSTANTS` 宏。
-数组通过 slot 的 `array` 地址读取共享 registry 的实际句柄，再用 `nonuniform` 选择 descriptor；不要求连续 descriptor 分配。标量存于 slot 的 `handle` 字段。pass 可用本地别名描述槽位，但库不依赖消费者的宏。
+数组通过 slot 的 `payload` 地址读取共享 registry 的实际句柄，再用 `nonuniform` 选择 descriptor；不要求连续 descriptor 分配。标量存于 slot 的 `handle` 字段。pass 可用本地别名描述槽位，但库不依赖消费者的宏。
 
 Lighting 的算法显式接收 `StructuredBuffer<GpuPunctualLight>` 或 `PunctualSamplingResources`；
 库内不再固定光源、ReGIR、PDF 的槽位。顶点位置读取同样显式接收 buffer；

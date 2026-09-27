@@ -8,34 +8,36 @@ post processing and debug passes. NRD already uses its own native bindless ABI.
 
 ## Shader and runtime contract
 
-- `ComputeProgramBindingDesc::binding` is an application slot in `[0, 255]`.
-  It indexes a table of `uint2` handles, not a Vulkan descriptor binding.
-- Image, buffer and sampler slots contain an absolute `BindlessHandle::shaderIndex`
-  in `x` and zero in `y`. Texture arrays use a contiguous range starting at that
-  index. Their handles are marked `nonuniform` before dereferencing.
-- Acceleration-structure slots contain the full 64-bit device address. The
-  bundled Slang 2026.1.2 interprets `DescriptorHandle<RaytracingAccelerationStructure>`
-  as an address, not a descriptor index. Both ordinary and partitioned structures
-  expose their addresses through the RHI. Do not truncate these to a heap index.
-- The native RHI prepends an 8-byte heap header. ComputeProgram then pushes the
-  resource-table and constants addresses (8 bytes each), for 24 bytes total.
-  Shader entry points load their existing parameter types with
-  `getConstants<T>()`. Parameter field
-  order and CPU/shader layouts are unchanged.
-- `resourceTableCount` and `resourceTableIndex` select application resource tables.
-  Each active frame retains its heap, table, constants and pipeline until GPU
-  completion. Repeated use of a table in a frame gets another snapshot. Indirect
-  batches share a table but give every dispatch its own constants address.
-- Callers using a command buffer without a `RenderFrameContext` must keep the
-  program/resources alive and complete previous uses before rewriting the table,
-  with distinct table indices for overlapping dispatches, as before.
+`ComputeKernel` owns executable code and its `ParameterAbi`. Direct dispatch,
+indirect dispatch and immutable prepared batches all record through
+`PreparedComputeDispatch`. `ComputeProgram` is a resource-table input encoder for
+existing Core shaders; it has no private heap, descriptor-table pool or separate
+command-recording implementation.
 
-ComputeProgram defaults to this ABI and creates pipelines without per-resource
-`ShaderBindingMappingDesc` entries. The bundled Slang lowers `DescriptorHandle`
-to unbounded typed arrays; the RHI maps only those common sampler/resource arrays
-to `VK_EXT_descriptor_heap`. This compiler does not support
-`spvDescriptorHeapEXT` yet. The explicit `usesResourceTable = false` path remains
-for the legacy descriptor-heap code-pattern diagnostic only.
+- The application push data is one 64-bit `ParameterRoot` address for both typed
+  kernels and Core resource tables. The RHI adds its heap header where required.
+- Core loads `ComputeResourceParameters {resources, constants}` from that root.
+  Existing `getResource<T>()`, `getResourceArray<T>()`, `getData<T>()` and
+  `getConstants<T>()` accessors continue to work. CPU parameter layouts remain
+  explicit; all affected shaders must be recompiled for the new root ABI.
+- `ComputeProgramBindingDesc::binding` selects an application slot in `[0, 255]`,
+  independent of Vulkan descriptor binding or layout declaration order.
+  A slot is 16 bytes: a canonical handle and a payload. Image-array payloads point
+  to immutable lists of handles, without requiring contiguous descriptor indices.
+  DataBuffer slots hold a device address plus element count and stride.
+- Acceleration structures retain the full 64-bit device address. Ordinary and
+  partitioned top-level structures use the same resource type and resolver.
+- `ParameterWriter` owns resource leases and immutable uploads. Frame writers use
+  a submission arena and packets reject other frame generations. Standalone
+  writers own their storage; command buffers retain recorded packets, pipelines
+  and indirect allocations. Commands/pools must not be reset before GPU completion.
+- Every indirect item has its own encoded constants and argument slice. The
+  entire batch's device, parameter ABI and frame scope are checked before its
+  first dispatch. Resource barriers remain a RenderGraph/caller responsibility.
+- `usesResourceTable`, `resourceTableCount` and `resourceTableIndex` are removed.
+  Legacy descriptor/push mapping experiments use a test-local raw RHI fixture.
+  Mapped/native descriptor lowering is selected by `SlangDescriptorHeapMode`,
+  independently of the common compute parameter ABI.
 
 The editor's ImGui backend and closed Streamline SDK retain their external
 descriptor-set interoperability. Those are separate from the application shader
@@ -48,10 +50,18 @@ Vulkan's common-array mapping is described in
 
 ## Validation
 
+`compute_kernel_prepared_standalone_batch` checks typed direct/indirect packets,
+standalone storage, ABI rejection, a stale tail before recording any batch prefix,
+and wrapper destruction. `prepared_dispatch_parallel_snapshot_lifetime` also
+checks equivalent layouts declared in different orders. Both exercise mapped
+and native lowering.
+
+The results below are historical validation records, not the current run.
+
 The RTXDI, OpenPBR and position-fetch shader tests inspect SPIR-V to reject
 scalar/fixed-size descriptor bindings and require native heap arrays and
-address-based compute data. Frame descriptor snapshots cover different table
-indices, concurrent frames and clearing a program with GPU work pending. The
+address-based compute data. Frame descriptor snapshots cover repeated dispatches, concurrent frames and
+clearing a program with GPU work pending. The
 material-binning GPU test covers indirect batches with per-dispatch constants
 and compatible shader permutations.
 

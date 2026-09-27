@@ -123,6 +123,63 @@ struct PatternCommands {
     if (!patternResult) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(patternResult)); } \
 } while (false)
 
+// Raw vk::binding/push-data diagnostics intentionally stay below the production
+// ComputeKernel ABI. Fixture resources outlive PatternCommands and its GPU wait.
+class MappedPatternPipeline {
+public:
+    render::Result<> initialize(render::Device& device, std::span<const uint32_t> spirv)
+    {
+        auto result = device.createBindlessHeap({.maxSampledImages = 2, .maxBuffers = 4})
+            .transform([&](auto value) { heap_ = std::move(value); });
+        if (!result) { return result; }
+        // Preserve the original two-table allocation and pushed-base mapping.
+        for (uint32_t table = 0; table < 2; ++table) {
+            auto image = heap_->allocateSampledImage();
+            auto input = heap_->allocateBuffer();
+            auto output = heap_->allocateBuffer();
+            if (!image) { return render::makeError(image.error()); }
+            if (!input) { return render::makeError(input.error()); }
+            if (!output) { return render::makeError(output.error()); }
+            if (output->shaderIndex != input->shaderIndex + 1) { return render::makeError(render::Error::Failure); }
+            if (table == 0) { image_ = *image; input_ = *input; output_ = *output; }
+        }
+        const render::ShaderBindingMappingDesc mappings[] = {
+            {.firstBinding = 0, .type = render::ShaderBindingType::SampledImage,
+                .source = render::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 32},
+            {.firstBinding = 1, .type = render::ShaderBindingType::StorageBuffer,
+                .source = render::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 36},
+            {.firstBinding = 2, .type = render::ShaderBindingType::StorageBuffer,
+                .source = render::ShaderBindingSource::HeapIndexFromPushData, .pushDataOffset = 36, .heapIndexOffset = 1}};
+        result = device.createShaderModule({.spirv = spirv})
+            .transform([&](auto value) { shader_ = std::move(value); });
+        if (!result) { return result; }
+        return device.createComputePipeline({.computeShader = {shader_.get(), "main"},
+            .usesBindlessHeap = true, .bindlessUserPushDataSize = 40, .bindingMappings = mappings})
+            .transform([&](auto value) { pipeline_ = std::move(value); });
+    }
+
+    render::Result<> dispatch(render::CommandBuffer& commands, render::TextureView& image,
+        render::Buffer& input, render::Buffer& output, const PatternValues& values, uint32_t groups)
+    {
+        auto result = heap_->writeSampledImage(image_, image);
+        if (result) { result = heap_->writeStorageBuffer(input_, input); }
+        if (result) { result = heap_->writeStorageBuffer(output_, output); }
+        if (!result) { return result; }
+        struct Push { PatternValues values; uint32_t imageBase, bufferBase; };
+        const Push push{values, image_.shaderIndex, input_.shaderIndex};
+        static_assert(sizeof(Push) == 40);
+        commands.bindBindlessHeap(*heap_);
+        result = commands.bindExecution(pipeline_->execution(), &push, sizeof(push));
+        if (result) { commands.dispatch(groups, 1, 1); }
+        return result;
+    }
+private:
+    std::unique_ptr<render::BindlessHeap> heap_;
+    std::unique_ptr<render::ShaderModule> shader_;
+    std::unique_ptr<render::ComputePipeline> pipeline_;
+    render::BindlessHandle image_, input_, output_;
+};
+
 class DescriptorHeapCodePatternTest final : public RhiTest {
 public:
     DescriptorHeapCodePatternTest()
@@ -156,15 +213,9 @@ public:
         const bool procedural = pattern == 6;
         // Production SH fixtures deliberately use fixed image/partial counts.
         if (environment) { groups = procedural ? 256u : 1u; }
-        std::string_view tableMode = "shared";
-        if (environment) {
-            if (const char* requested = std::getenv("METALLIC_GPU_PATTERN_TABLES")) { tableMode = requested; }
-            if (tableMode != "shared" && tableMode != "separate" && tableMode != "constant") {
-                return RhiTestResult::fail("METALLIC_GPU_PATTERN_TABLES must be shared, separate or constant");
-            }
+        if (environment && std::getenv("METALLIC_GPU_PATTERN_TABLES")) {
+            return RhiTestResult::fail("METALLIC_GPU_PATTERN_TABLES was removed: resource tables are immutable parameter packets");
         }
-        const uint32_t resourceTableCount = tableMode == "constant" ? 1u : 2u;
-        const uint32_t finalizeTable = tableMode == "shared" ? 1u : 0u;
         const char* pdfValue = std::getenv("METALLIC_GPU_PATTERN_PREFIX_PDF");
         const bool prefixPdf = environment && pdfValue != nullptr && std::strcmp(pdfValue, "1") == 0;
         const char* integrateOnlyValue = std::getenv("METALLIC_GPU_PATTERN_INTEGRATE_ONLY");
@@ -200,7 +251,7 @@ public:
             ", groups=" + std::to_string(groups) + ", Aftermath=" + (aftermath ? "on" : "off") +
             ", device=" + (previewDevice ? "preview" : "required shader object") +
             ", compile only=" + (compileOnly ? "on" : "off") +
-            (environment ? ", tables=" + std::string(tableMode) + ", prefix PDF=" + (prefixPdf ? "on" : "off") +
+            (environment ? std::string(", prefix PDF=") + (prefixPdf ? "on" : "off") +
                 ", SH=" + (integrateOnly ? "integrate only" : "integrate + finalize") : "");
         std::cout << "Descriptor heap pattern: " << description << std::endl;
         // Old shaderObject=false cache entries can produce DeviceLost when reused
@@ -272,19 +323,18 @@ public:
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
             {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
         render::ComputeProgram program;
+        MappedPatternPipeline mappedProgram;
         std::string log;
-        result = program.initialize(*device, {
+        result = environment ? program.initialize(*device, {
             .spirv = shader.spirv,
             .pushConstantSize = sizeof(PatternValues),
             .bindings = {bindings, 3},
             .debugName = "DescriptorHeap Code Pattern",
-            .resourceTableCount = resourceTableCount,
             .requiresRayQuery = false,
-            .usesResourceTable = environment,
-        }, log);
-        if (!result) { return RhiTestResult::fail(log); }
+        }, log) : mappedProgram.initialize(*device, shader.spirv);
+        if (!result) { return RhiTestResult::fail(log + render::resultToString(result)); }
         if (compileOnly) {
-            std::cout << "Pattern compile only: ComputeProgram initialized; no fixture resources, commands or submissions; "
+            std::cout << "Pattern compile only: pipeline initialized; no fixture resources, commands or submissions; "
                 "PDF prefix skipped." << std::endl;
             return RhiTestResult::pass(description + ", pipeline initialization completed without GPU submission");
         }
@@ -377,13 +427,13 @@ public:
             {.binding = 0, .textureViews = {&sampledView, 1}},
             {.binding = 1, .buffer = input.get()},
             {.binding = 2, .buffer = output.get()}};
-        PATTERN_REQUIRE(program.dispatch({
+        PATTERN_REQUIRE(environment ? program.dispatch({
             .commandBuffer = commands.buffer.get(),
             .bindings = {resources, 3},
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = groups,
-        }));
+        }) : mappedProgram.dispatch(*commands.buffer, *view, *input, *output, push, groups));
         if (environment && !integrateOnly) {
             const render::BufferBarrierDesc partialsBarrier{
                 .buffer = input.get(),
@@ -400,7 +450,6 @@ public:
                 .pushData = &finalizePush,
                 .pushDataSize = sizeof(finalizePush),
                 .groupCountX = 9,
-                .resourceTableIndex = finalizeTable,
             }));
         }
         PATTERN_REQUIRE(commands.buffer->end());

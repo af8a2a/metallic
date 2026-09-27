@@ -12,7 +12,7 @@
 
 - GPUScene 上传后发布 `ResourceLease`，移除额外 `BufferView` 和 consumer 私有 descriptor 分配。`createBindings()` 只复制当前 generation/revision 对应的 leases。
 - `MeshletStreamRuntime` 与两个 raster 消费者不再创建私有 heap。resident/stream 共用材质纹理索引、材质 remap buffer 和 tessellation buffer，删除第二套上传及重映射。
-- `ComputeProgram` 的 Core 资源表路径成为兼容适配器，ScenePathTrace、deferred shading 等现有调用者复用 registry 身份。只有显式 `usesResourceTable=false` 的旧 SPIR-V mapping 诊断路径保留私有表。
+- `ComputeProgram` 的 Core 资源表路径成为兼容适配器，ScenePathTrace、deferred shading 等现有调用者复用 registry 身份。它只编码参数，创建与录制统一委托 `ComputeKernel`。旧 SPIR-V mapping 诊断已移到测试内的原始 RHI fixture。
 - NRD 使用 `ComputeKernel` / `ParameterWriter`，取消 sampler/image slot 池与逐帧游标。SDK 调度计划、历史状态、barrier 和取消恢复逻辑仍由 NRD 适配层管理；常量与资源索引存入同一提交参数区，不再借用 Streamer 常量缓冲。
 
 **迁移边界：** ComputeProgram 的命名 typed 参数尚未全面替换数字 slot；raster/stream 的既有 push struct 也继续使用原 ABI。共享的是资源身份、descriptor 分配和提交期所有权。BDA buffer API、同步模型、NRC/DLSS 原生 SDK 资源包装和 lazy native view 不在本批范围。
@@ -20,20 +20,18 @@
 ## 参数与资源契约
 
 ```cpp
-std::shared_ptr<ResourceRegistry> registry;
-auto result = device.resourceRegistry(registry);
-if (!result) { return result; }
+auto registry = device.resourceRegistry();
+if (!registry) { return makeError(registry.error()); }
 
-ParameterWriter writer(device, *commands.frameContext(), *registry);
+ParameterWriter writer(device, *commands.frameContext(), **registry);
 MyParams params{
     .input = writer.buffer(inputBuffer),
     .output = writer.storageImage(outputView),
     .width = width,
 };
-EncodedParameters encoded;
-result = writer.encode(params, kMyParamsAbi, encoded);
-if (!result) { return result; }
-return kernel.dispatch(commands, encoded, groupsX, groupsY);
+auto encoded = writer.encode(params, kMyParamsAbi);
+if (!encoded) { return makeError(encoded.error()); }
+return kernel.dispatch(commands, *encoded, groupsX, groupsY);
 ```
 
 - CPU 的 `ShaderBuffer` / `ShaderSampledImage` / `ShaderStorageImage` / `ShaderSampler` / `ShaderAccelerationStructure` 是不同类型，wire 大小均为 8 字节，不再暴露 CPU allocator handle。
@@ -41,7 +39,7 @@ return kernel.dispatch(commands, encoded, groupsX, groupsY);
 - ABI 包含调用者维护的版本 ID、大小和对齐。C++ 参数必须是 standard-layout、trivially-copyable；跨 C++/Slang 的字段偏移仍需显式断言及 GPU 测试，未引入自动反射生成器。`MaterialBinningParams` 已检查大小及首个标量偏移。
 - 每个 packet 的资源必须由同一个 writer 注册，或通过 `writer.use(lease)` 引入同 registry 的 lease。不要把裸 wire handle 从另一个 writer/registry 复制后直接 encode；POD 参数不是能自动追踪任意字段的反射系统。
 - `sampledImages()` 上传不可变 handle 数组；不同元素不需要连续 descriptor slot。当前空数组会返回错误，应由调用者明确处理缺省场景。
-- Packet 只可在创建它的同一次 frame recording 使用。跨帧、已结束的 command buffer、错误 device 和错误 ABI 被拒绝。
+- 帧内 packet 只可在创建它的同一次 frame recording 使用。独立 writer `ParameterWriter(device, registry)` 创建的 packet 持有专用存储，可在无 frame 的 command 上录制。两者都拒绝已结束的 command buffer、错误 device 和错误 ABI。
 
 ## 保留与回收
 
@@ -79,7 +77,7 @@ build/tests/MetallicRhiTests.exe --rhi-validation '--gtest_filter=*registry_*:*m
 
 ## 第二批兼容 ABI 与刷新契约
 
-Core 的资源 slot 改为 16 字节 `{uint64 handle; uint64 arrayAddress;}`，根 push 仍为两个 64 位地址。标量直接读取 canonical handle；数组读取参数区里的显式句柄列表，支持重复纹理、非连续 slot 以及不同程序复用同一纹理。所有引用 Core 的 shader 随源依赖重新编译；手工读取 `gComputeResources.resources` 的代码必须使用 `.handle` 字段。
+Core 的资源 slot 改为 16 字节 `{uint64 handle; uint64 arrayAddress;}`，两地址结构现在作为 `ParameterRoot` 指向的参数内容，push 本身只有一个 64 位根地址。标量直接读取 canonical handle；数组读取参数区里的显式句柄列表，支持重复纹理、非连续 slot 以及不同程序复用同一纹理。所有引用 Core 的 shader 随源依赖重新编译；手工读取 `getComputeResources().resources` 的代码必须使用 `.handle` 字段。
 
 帧录制中的兼容参数数据复用 `ParameterWriter` arena。没有 `RenderFrameContext` 的旧调用使用不可变专用 upload allocation，由 command recording 保留；调用者必须继续保证 command/pool 在 GPU 完成前存活且不重置。`CommandBuffer::retainResource()` 不改变提交事务的失败时机，部分提交仍按原 frame completion 契约回收。
 
@@ -109,14 +107,13 @@ Raster 捕获实际使用的 leases，NRD 捕获 packet 和 kernel 实现。场�
 `BufferSlice` 只从 `Buffer::slice()` 或父 slice 的 `subslice()` 创建。它保存原生分配的强引用、分配内字节偏移及长度，设备 identity、usage 和地址均取自同一分配，不能用裸地址伪造来源。子范围只能缩小，`UINT64_MAX` 表示父范围余量；失败会清空输出，也支持原地缩小。零长度 slice 可用于 CPU 范围计算，但 GPU 数据/命令入口拒绝它。Buffer 包装对象移动、销毁或替换不会改变旧 slice 的来源。
 
 ```cpp
-auto records = buffer.slice(byteOffset, byteSize);
+auto records = buffer.slice({byteOffset, byteSize});
 if (!records) { return std::unexpected(records.error()); }
 ParameterWriter writer(device, frame, *registry);
 MyParams params{.records = writer.dataBuffer<MyGpuRecord>(*records)};
-EncodedParameters packet;
-auto result = writer.encode(params, kMyAbi, packet);
-if (!result) { return result; }
-return kernel.dispatch(commands, packet, groupCount);
+auto packet = writer.encode(params, kMyAbi);
+if (!packet) { return makeError(packet.error()); }
+return kernel.dispatch(commands, *packet, groupCount);
 ```
 
 `ShaderDataSpan` 是 16 字节的 `{uint64 address; uint32 count; uint32 stride;}`，对应 Slang `DataSpan<T>`。它不分配、不写入 buffer descriptor。`dataBuffer(slice, stride, alignment)` 校验来源设备、非空范围、绝对地址对齐、步长整除、元素数量上限及 Storage/ShaderDeviceAddress usage；显式 `ShaderDeviceAddress` 数据分配不要求 Storage usage。模板入口从 CPU GPU-layout 类型取得 `sizeof/alignof`，仍要求该布局与 shader 一致。不能把其他 writer 的裸 wire 值复制进 packet 并期待自动获得所有权；必须经过当前 writer 的 `dataBuffer()`。

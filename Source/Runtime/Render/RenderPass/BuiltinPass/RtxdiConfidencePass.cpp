@@ -147,7 +147,6 @@ public:
                 .pushConstantSize = sizeof(RtxdiConfidencePush),
                 .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .debugName = "RtxdiConfidencePass",
-                .resourceTableCount = kMaximumFilterPasses + 2u,
             },
             programLog);
         if (!programLog.empty()) {
@@ -269,7 +268,7 @@ public:
             {.binding = 12, .textureView = diffuseConfidenceHistory.current},
             {.binding = 13, .textureView = specularConfidenceHistory.current},
         };
-        auto dispatch = [&](CommandBuffer& commands, uint32_t mode, uint32_t resourceTableIndex,
+        auto dispatch = [&](CommandBuffer& commands, uint32_t mode,
                             uint32_t width, uint32_t height, uint32_t filterStep = 0u) {
             auto stagePush = push;
             stagePush.mode = mode;
@@ -282,7 +281,6 @@ public:
                 .groupCountX = (width + 7u) / 8u,
                 .groupCountY = (height + 7u) / 8u,
                 .groupCountZ = 1,
-                .resourceTableIndex = resourceTableIndex,
             });
         };
 
@@ -352,7 +350,7 @@ public:
         stages.reserve(filterPassCount + 3u);
         stages.push_back({"PrepareDescriptors", prepareUses, [](CommandBuffer&) -> Result<> { return {}; }});
         stages.push_back({"Gradient", gradientUses, [&](CommandBuffer& commands) {
-            return dispatch(commands, kComputeGradient, 0u, gradientWidth_, gradientHeight_);
+            return dispatch(commands, kComputeGradient, gradientWidth_, gradientHeight_);
         }});
         for (uint32_t passIndex = 0; passIndex < filterPassCount; ++passIndex) {
             const bool sourceA = (passIndex & 1u) == 0u;
@@ -361,12 +359,12 @@ public:
                         : std::span<const RenderGraphStageUse>(filterBToA),
                 [&, passIndex, sourceA](CommandBuffer& commands) {
                     return dispatch(commands, sourceA ? kFilterAToB : kFilterBToA,
-                        passIndex + 1u, gradientWidth_, gradientHeight_, 1u << passIndex);
+                        gradientWidth_, gradientHeight_, 1u << passIndex);
                 }});
         }
         stages.push_back({"Resolve", resolveUses, [&](CommandBuffer& commands) {
             return dispatch(commands, finalGradientIsA ? kResolveA : kResolveB,
-                kMaximumFilterPasses + 1u, context.width(), context.height());
+                context.width(), context.height());
         }});
         result = context.executeStages(stages, {}, textures);
         if (!result) {

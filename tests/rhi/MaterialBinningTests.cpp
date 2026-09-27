@@ -86,10 +86,17 @@ public:
                 .spirv = shader.spirv,
                 .pushConstantSize = 16,
                 .bindings = {fixture_ ? layout : layout + 5, fixture_ ? 5u : 4u},
-                .resourceTableCount = !fixture_ && i == 0 ? 2u : 1u,
                 .requiresRayQuery = false,
             }, log);
             if (!result) { return result; }
+            if (!fixture_ && i == 0) {
+                // Constant layout, rather than obsolete table counts, defines ABI compatibility.
+                result = incompatibleProgram_.initialize(*device_, {
+                    .spirv = shader.spirv, .pushConstantSize = 20,
+                    .bindings = {layout + 5, 4}, .requiresRayQuery = false,
+                }, log);
+                if (!result) { return result; }
+            }
         }
         return {};
     }
@@ -166,7 +173,7 @@ public:
         };
         dispatch.indirectArguments = bins.arguments;
         // Reject an incompatible permutation before descriptor writes or GPU work.
-        const render::ComputeIndirectDispatch incompatible[] = {{.pushData = push, .program = &programs_[0]}};
+        const render::ComputeIndirectDispatch incompatible[] = {{.pushData = push, .program = &incompatibleProgram_}};
         if (!render::hasError(programs_[1].dispatchIndirectBatch(dispatch, incompatible), render::Error::InvalidArgument)) {
             return render::makeError(render::Error::Failure);
         }
@@ -248,6 +255,7 @@ private:
     bool typed_;
     render::Device* device_ = nullptr;
     std::array<render::ComputeProgram, 3> programs_;
+    render::ComputeProgram incompatibleProgram_;
     std::array<render::ComputeKernel, 3> kernels_;
     render::MaterialBinning binning_;
 };

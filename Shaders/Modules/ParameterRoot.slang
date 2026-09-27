@@ -3,7 +3,7 @@ module ParameterRoot;
 
 namespace Metallic
 {
-// One immutable typed packet per dispatch; no resource-slot table or heap header.
+// One immutable parameter packet per dispatch; the RHI owns the heap header.
 [[vk::push_constant]] public uint* gParameterRoot;
 
 public T getParameters<T>()
