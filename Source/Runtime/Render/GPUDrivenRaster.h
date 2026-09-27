@@ -40,11 +40,15 @@ struct alignas(16) VisibilityBufferFrameInfo {
     uint32_t temporalJitter = 0;
     float jitter[2] = {};
     uint64_t frameIndex = 0;
+    // Producer settings (LOD, displacement, culling, etc.) can change the
+    // primary surface without changing the camera or the source scene.
+    uint64_t rasterSettingsRevision = 0;
 };
-static_assert(sizeof(VisibilityBufferFrameInfo) == 144);
+static_assert(sizeof(VisibilityBufferFrameInfo) == 160);
 // VisibilityBufferDeferred.slang reads these words from the shared frame buffer.
 static_assert(offsetof(VisibilityBufferFrameInfo, residentRecordCount) == 88);
 static_assert(offsetof(VisibilityBufferFrameInfo, hasStreamGeometry) == 92);
+static_assert(offsetof(VisibilityBufferFrameInfo, reserved) == 104);
 
 inline constexpr uint32_t kVisibilityTriangleBits = 7u;
 inline constexpr uint32_t kVisibilityTriangleMask =

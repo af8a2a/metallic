@@ -166,6 +166,91 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(VisibilityBufferDeferredTest);
 
+class VisibilityBufferDeferredShadowHistoryTest final : public RhiTest {
+public:
+    VisibilityBufferDeferredShadowHistoryTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "visibility_buffer_deferred_shadow_history";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string log;
+        if (!render::loadBuiltInRenderSample("lookdev-vbuffer", sample, log)) { return RhiTestResult::fail(log); }
+        scene::SceneDocument scene;
+        if (!scene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) {
+            return RhiTestResult::fail(scene.lastLoadResult().error);
+        }
+        render::RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&scene);
+        const auto initialized = preview.initialize(context.enableValidation, true, false);
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders and ray queries"); }
+        if (!initialized) { return RhiTestResult::fail("Preview initialization failed"); }
+        preview.setEnvironment(scene.environment());
+        auto lighting = scene.lighting();
+        lighting.autoExposure.enabled = false;
+        preview.setLighting(lighting);
+        const auto raster = sample.graph.findNode("VBuffer")->id;
+        const auto deferred = sample.graph.findNode("Deferred")->id;
+        sample.graph.setNodeRuntimeProperty(sample.graph.findNode("Slider")->id, "splitPosition", 0.0f);
+        const auto renderFrames = [&](uint32_t count) {
+            for (uint32_t frame = 0; frame < count; ++frame) {
+                if (!preview.render(sample.graph, 512, 512)) { return false; }
+            }
+            return true;
+        };
+        // Exercise the production graph with its HDR environment and shadows.
+        // Do not override its LOD settings or discard black output pixels.
+        if (!renderFrames(32) ||
+            !savePreview(preview, context.outputDirectory / "LookDevShadowProduction.png", log)) {
+            return RhiTestResult::fail(preview.lastLog() + log);
+        }
+        size_t darkPixels = 0;
+        constexpr size_t kSurfacePixels = (345 - 160) * (330 - 165);
+        for (uint32_t y = 165; y < 330; ++y) {
+            for (uint32_t x = 160; x < 345; ++x) {
+                const uint32_t pixel = preview.pixels()[y * 512 + x];
+                const uint32_t sum = (pixel & 255u) + ((pixel >> 8u) & 255u) + ((pixel >> 16u) & 255u);
+                darkPixels += sum < 48;
+            }
+        }
+        // This fixed camera covers the lit white ball, including its inset.
+        // Allow the small legitimate crevice shadows, but reject broad acne.
+        if (darkPixels > kSurfacePixels / 100) {
+            return RhiTestResult::fail("LookDev surface has " + std::to_string(darkPixels) +
+                " near-black pixels; raster and shadow geometry must agree");
+        }
+
+        // Warm a different raster surface, then change only the producer's LOD.
+        // The first restored frame must match an explicitly reset consumer.
+        sample.graph.setNodeRuntimeProperty(raster, "autoLod", true);
+        if (!renderFrames(32)) { return RhiTestResult::fail(preview.lastLog()); }
+        sample.graph.setNodeRuntimeProperty(raster, "autoLod", false);
+        sample.graph.setNodeRuntimeProperty(raster, "lodLevel", 0);
+        if (!renderFrames(1) ||
+            !savePreview(preview, context.outputDirectory / "LookDevShadowLodSwitch.png", log)) {
+            return RhiTestResult::fail(preview.lastLog() + log);
+        }
+        const auto switched = preview.pixels();
+        sample.graph.setNodeRuntimeProperty(deferred, "accumulate", false);
+        if (!renderFrames(1)) { return RhiTestResult::fail(preview.lastLog()); }
+        sample.graph.setNodeRuntimeProperty(deferred, "accumulate", true);
+        if (!renderFrames(1) ||
+            !savePreview(preview, context.outputDirectory / "LookDevShadowHistoryReset.png", log)) {
+            return RhiTestResult::fail(preview.lastLog() + log);
+        }
+        if (switched != preview.pixels()) {
+            return RhiTestResult::fail("Changing raster LOD retained deferred lighting history");
+        }
+        return RhiTestResult::pass("Production environment/shadows: " + std::to_string(darkPixels) +
+            " near-black surface pixels; LOD switch matches a fresh accumulation frame");
+    }
+};
+
+METALLIC_REGISTER_RHI_TEST(VisibilityBufferDeferredShadowHistoryTest);
+
 class VisibilityBufferMaterialEditTest final : public RhiTest {
 public:
     VisibilityBufferMaterialEditTest()

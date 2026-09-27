@@ -99,6 +99,30 @@ Metallic 的环境旋转应为 **0°**，不能再加 90°。
 传递函数。它不经过 Reinhard、Exponential 或 ACES。原有两种曲线不变。
 `PathTrace.color` 保留未曝光的 RGBA32F 输出，供 HDR 数值检查。
 
+## VBuffer 与路径追踪对比的几何约束
+
+`lookdev-vbuffer` 使用 `autoLod: false`、`lodLevel: 0`，使光栅主表面与
+场景 BLAS 中的原始网格一致。仅设置 `lodLevel: 0` 不会关闭自动 LOD。
+这个约束只应用于该对比示例，其他光栅示例仍可选择自动 LOD。
+
+resident 自动 LOD 的简化表面可能落在原始网格内部。从该表面发出的
+阴影或环境可见性射线会被原始网格误遮挡，产生材质球黑斑。底色和法线
+调试输出可以正常，增加光照采样数也不会消除这类几何误差。重新打开旧的
+已保存图时，需要关闭 VBuffer 的 **Auto Meshlet LOD** 并选择 LOD 0，
+或重新加载内置示例。
+
+保留自适应 LOD 的完整解决方案需要让射线加速结构使用与光栅一致的几何；
+本示例设置不代表 resident 自适应 LOD 与原始 BLAS 的组合已经受支持。
+不应通过关闭阴影或任意增大射线偏移来掩盖该差异。
+
+`rasterInfo.rasterSettingsRevision` 将生产者设置变化传给延迟消费者，
+与 View 身份一起使光照累计历史失效，避免切换 LOD 后保留旧表面的残影。
+它描述 CPU 设置变化，不是 GPU streaming 驻留或动态 LOD cut 的版本号。
+
+GPU 回归 `visibility_buffer_deferred_shadow_history` 保留生产示例的环境光
+和阴影，在 512 × 512、32 帧累计下检查白色球面上的异常黑像素，并检查
+LOD 切换后的第一帧与显式清除累计后的第一帧完全一致。
+
 ## 复现与验证
 
 资源已随场景提供，正常加载无需联网。重新生成资源只需 Python 标准库：

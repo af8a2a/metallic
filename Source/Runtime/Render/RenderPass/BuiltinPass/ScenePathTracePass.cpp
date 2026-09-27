@@ -1815,10 +1815,15 @@ public:
             push.jitterOffsetY = view->jitter[1];
         }
         const ScenePathTraceCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
+        const GPUSceneViewId rasterView{info.lightGridViewIndex, info.lightGridViewGeneration};
         if (visibilityDeferred_ && (!hasPreviousCamera_ ||
             std::memcmp(&currentCamera, &previousCamera_, sizeof(currentCamera)) != 0 ||
+            deferredHistoryView_ != rasterView ||
+            deferredRasterSettingsRevision_ != info.rasterSettingsRevision ||
             deferredHistoryProperties_ != context.properties())) {
             resetAccumulation_ = true;
+            deferredHistoryView_ = rasterView;
+            deferredRasterSettingsRevision_ = info.rasterSettingsRevision;
             deferredHistoryProperties_ = context.properties();
         }
         const bool previousCameraValid =
@@ -3242,6 +3247,8 @@ private:
     std::array<ComputeProgram, kMaterialClassCount - 1> classifiedPrograms_;
     bool compiledMaterialBinning_ = true;
     RenderGraphProperties deferredHistoryProperties_;
+    GPUSceneViewId deferredHistoryView_;
+    uint64_t deferredRasterSettingsRevision_ = 0;
     SceneLightResources lights_;
     ScenePathTraceResources sceneResources_;
     bool streamMaterials_ = false;

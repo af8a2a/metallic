@@ -835,6 +835,11 @@ public:
         info.jitter[0] = previousParams_.renderEye[3];
         info.jitter[1] = previousParams_.renderCenter[3];
         info.frameIndex = context.frameIndex();
+        if (rasterSettingsRevision_ == 0 || rasterHistoryProperties_ != context.properties()) {
+            rasterHistoryProperties_ = context.properties();
+            ++rasterSettingsRevision_;
+        }
+        info.rasterSettingsRevision = rasterSettingsRevision_;
         void* mappedInfo = rasterInfo.buffer()->map();
         if (mappedInfo == nullptr) { return makeError(Error::Failure); }
         std::memcpy(mappedInfo, &info, sizeof(info));
@@ -4505,6 +4510,8 @@ private:
     std::string compiledStreamSourceId_;
     std::filesystem::path compiledStreamSourcePath_;
     GPUDrivenPreviewGpuParams previousParams_;
+    RenderGraphProperties rasterHistoryProperties_;
+    uint64_t rasterSettingsRevision_ = 0;
     GPUDrivenPreviewGpuParams frozenCullingCamera_;
     ClusterLightGridDesc lightGridDesc_;
     uint32_t drawTaskCount_ = 0;

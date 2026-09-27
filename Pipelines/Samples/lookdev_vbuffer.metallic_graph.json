@@ -76,6 +76,7 @@
                 },
                 "cameraSyncGroup": "LookDevComparison",
                 "visualization": "none",
+                "autoLod": false,
                 "lodLevel": 0
             }
         },
