@@ -105,6 +105,26 @@ requirements 在运行用例前检查。profile 没有请求必要能力时为 S
 
 构建 revision 是 CMake 配置时的值，run.json 的 dirty 摘要是运行时状态，不声称二者一定代表一个干净源码提交。精确可执行文件由 binary hash 标识。shader 清单覆盖仓库 shader 与测试 probe，不是完整外部 SDK 依赖锁文件。
 
+## HTML 报告
+
+每次执行自动生成离线 HTML，无需额外开关、Python、网络或本地服务器。布局参考 [agfx test report](https://github.com/AmelieHeinrich/agfx/tree/main/tools/test_report)，结果仍以执行器核验后的 verdict 为准。
+
+- `--tb-run`、`--tb-replay`：`<run>/report.html` 汇总，以及每个执行和 comparison 目录下的 `report.html`。
+- `--tb-shrink`：缩减输出目录下的汇总，以及每个 attempt 的详情。故障复现的 Fail 是预期证据；缩减是否成功查看 `shrink.json`。
+- `--tb-self-test` 和旧 GoogleTest 入口：`<output-dir>/reports/<timestamp>/report.html`，每个 case / iteration 都有独立详情。旧入口保留原有图片输出位置，只将本用例新增或改写的产物复制进报告目录；它使用 GoogleTest verdict，不提供隔离执行器的 validation 审计保证。
+
+终端打印 HTML 路径，双击即可打开。页面支持名称/coverage/消息搜索，状态、产物类型、责任层、profile 筛选，名称/耗时排序；点击卡片查看实际结果、seed、设备/驱动、输出/预期预览、Buffer 差异、validation、trace 摘要和原始证据链接。JSON、图片和预览数据内嵌，所以单个 HTML 可以离线分享；要打开原始产物链接，需保留对应输出目录结构。
+
+报告保留 `SkipUnsupported`、`SkipNotEnabled`、Crash、Timeout、InfrastructureFailure 等实际状态；require-all 导致的 skip 算失败并单独标注。每个用例结束后原子更新汇总，因此已完成用例不会因之后子进程崩溃而失去报告。父进程提前退出时最后一份汇总标为 incomplete；规划/列举用例和执行开始前的参数错误不生成执行报告。报告写入失败会记录错误并使运行非零退出，既有机器证据继续保留。
+
+耗时是 CPU 墙钟：隔离子进程包括启动、设备创建、测试和 cleanup；comparison 单独计时；旧入口使用 GoogleTest 用例时间。它们不代表 GPU 时间，也不能直接作为性能对比。汇总墙钟包含报告生成和调度开销。
+
+预览只展示实际可解释的数据：PNG，或 fixture 明确提供 `visuals.json` 的 RGBA8 区域。原始 RGBA 缩略图默认显示 RGB（忽略 alpha）；详情可切换 RGBA 透明度或 Alpha 灰度，原始像素保持不变。Buffer 的逐字节差异是展示信息，不替代浮点容差、解析 oracle 或扩展 comparison 的正式判断；没有加入未经计算的 FLIP 指标或 golden 图。单个预览读取上限 16 MiB，PNG 上限 256 KiB，RGBA 区域最大 512×512；每个 case 最多四组图片/Buffer 对比。汇总达到 24 MiB 展示预算后保留状态和详情链接，后续大预览只在各自 case 页显示。日志/诊断文本有展示截断，完整文件继续保留。
+
+添加 RGBA8 预览时通过 `Evidence` 保存 `visuals.json` 数组，每项明确 `format: "rgba8"`、`actual` 文件名、`width`、`height`，可选 `expected`、`label`、`rowPitch`、`offset`。文件只能来自当前用例目录；只有格式和范围通过检查才嵌入预览。报告生成不执行 GPU 工作，也不会改变原有 oracle 或结果状态。
+
+本机报告验证：Release/MSVC 构建通过；12 个 testbench CTest 作业通过，最终版本另完成 10 项 harness 自测、13 个 core GPU 用例、单用例 replay 和旧入口 3 个图像用例 × 2 轮。Edge 直接打开 `file://` 报告，验证筛选、详情/证据链接、RGB/RGBA/Alpha 像素、桌面/窄屏布局和脚本注入防护；真实 extensions 报告保留 OMM target / comparison 的两个 skip，未把它们算成 GPU 验证通过。
+
 ## 重放
 
 ```powershell

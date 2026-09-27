@@ -1,0 +1,4 @@
+#pragma once
+namespace metallic::tests::bench {
+inline constexpr char kHtmlReportTemplate[] = R"METALLIC_REPORT(@METALLIC_REPORT_HTML@)METALLIC_REPORT";
+}

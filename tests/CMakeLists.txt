@@ -222,6 +222,11 @@ metallic_copy_openusd_runtime(MetallicGpuPageTests)
 add_test(NAME MetallicGpuPageTests COMMAND MetallicGpuPageTests)
 set_tests_properties(MetallicGpuPageTests PROPERTIES LABELS "scene;rhi")
 
+# Embed the offline report at build time; no server, Python or copied runtime assets.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/HtmlReport.html")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/HtmlReport.html" METALLIC_REPORT_HTML)
+configure_file(rhi/harness/HtmlReportTemplate.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/HtmlReportTemplate.h" @ONLY)
+
 add_executable(MetallicRhiTests
     rhi/GeneratedCommandsTests.cpp
     rhi/DebugControlTests.cpp
@@ -229,6 +234,9 @@ add_executable(MetallicRhiTests
     rhi/RhiTest.h
     rhi/harness/Requirements.cpp
     rhi/harness/Evidence.cpp
+    rhi/harness/HtmlReport.cpp
+    rhi/harness/HtmlReportTests.cpp
+    rhi/harness/GTestHtmlReport.cpp
     rhi/harness/ValidationRecorder.cpp
     rhi/harness/VulkanDiagnostics.cpp
     rhi/harness/ProcessRunner.cpp
@@ -324,6 +332,7 @@ add_executable(MetallicRhiTests
 )
 
 target_include_directories(MetallicRhiTests PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
     "${CMAKE_SOURCE_DIR}/Source"
     "${CMAKE_CURRENT_SOURCE_DIR}/rhi"
 )

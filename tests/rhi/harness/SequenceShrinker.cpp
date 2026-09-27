@@ -1,5 +1,6 @@
 #include "BufferSequence.h"
 #include "Runner.h"
+#include "HtmlReport.h"
 #include <algorithm>
 #include <iostream>
 
@@ -29,6 +30,7 @@ Json signature(const std::filesystem::path& directory, const Json& result)
 int shrinkBufferSequence(const std::filesystem::path& executable, const std::filesystem::path& original,
     const Json& input, const std::filesystem::path& output)
 {
+    HtmlReport html(output, {{"mode", "shrinker"}, {"completionStatus", "Attempt failures are expected; see shrink.json for reduction outcome."}});
     const auto originalInput = readJson(original / "input.json");
     const auto expected = signature(original, verifyChild(original, originalInput, {1, false}));
     if (expected.is_null()) { throw std::runtime_error("shrink requires a verified readback mismatch without validation errors"); }
@@ -48,10 +50,13 @@ int shrinkBufferSequence(const std::filesystem::path& executable, const std::fil
             auto candidate = input; candidate["sequence"] = sequence;
             Evidence sample(directory); sample.json("input.json", candidate); sample.phase("scheduled");
             const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
+            const auto attemptStart = std::chrono::steady_clock::now();
             const auto process = runProcess(executable, {"--tb-child", "--tb-input", argument(directory / "input.json")}, directory,
                 std::min(remaining, std::chrono::milliseconds(15000)));
-            const auto result = verifyChild(directory, candidate, process);
+            auto result = verifyChild(directory, candidate, process);
+            result["durationMs"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - attemptStart).count();
             sample.json("parent-result.json", result);
+            html.append(directory, candidate, result);
             const auto observed = signature(directory, result);
             if (result.at("status") == "Pass" || !observed.is_null()) {
                 const auto actualDevice = readJson(directory / "capabilities.json");
@@ -103,6 +108,8 @@ int shrinkBufferSequence(const std::filesystem::path& executable, const std::fil
     evidence.json("shrink.json", {{"schema", 1}, {"signature", expected}, {"originalCommands", input.at("sequence").at("commands").size()},
         {"minimalCommands", current.at("commands").size()}, {"oneDeletionMinimal", minimal}, {"budgetExhausted", !minimal},
         {"childBudget", budget}, {"wallBudgetSeconds", 120}, {"children", attempts.size()}, {"confirmationsPerAcceptedProgram", 2}});
+    html.finish();
+    std::cout << "HTML report: " << (output / "report.html").string() << '\n';
     std::cout << "Shrunk " << input.at("sequence").at("commands").size() << " -> " << current.at("commands").size()
         << " commands; one-deletion minimal=" << minimal << "; evidence: " << output.string() << '\n';
     return 0;

@@ -6,6 +6,7 @@
 #include <fstream>
 
 namespace metallic::tests::bench {
+void htmlReportProtocol();
 namespace {
 
 std::filesystem::path outputDirectory()
@@ -115,9 +116,11 @@ void childFailures()
     ASSERT_EQ(result.exitCode, 1);
     const auto cases = readJson(root / "results/results.json").at("cases");
     ASSERT_EQ(cases.size(), 7);
+    EXPECT_TRUE(std::filesystem::exists(root / "results/report.html"));
     EXPECT_EQ(cases[0].at("status"), "Timeout"); // Later cases must still execute.
     for (const auto& sample : cases) {
         const auto id = sample.at("id").get<std::string>();
+        EXPECT_TRUE(std::filesystem::exists(root / "results/core" / id / "0/report.html"));
         const auto expected = id.ends_with("_pass") ? "Pass" : id.ends_with("_crash") ? "Crash" : id.ends_with("_timeout") ? "Timeout" : "Fail";
         EXPECT_EQ(sample.at("status"), expected) << sample.dump();
         if (id.ends_with("fail_cleanup")) {
@@ -242,7 +245,7 @@ void registerHarnessTests()
     for (const auto& entry : std::vector<std::pair<const char*, void (*)()>>{
         {"Requirements", requirements}, {"RecorderLifetime", recorderLifetime}, {"RecorderThreads", recorderThreads},
         {"Filtering", filtering}, {"EvidenceIntegrity", evidenceIntegrity}, {"ChildFailures", childFailures},
-        {"ReplayAndPaths", replayAndPaths}, {"ResultProtocol", resultProtocol}, {"DifferentialProtocol", differentialProtocol}}) {
+        {"ReplayAndPaths", replayAndPaths}, {"ResultProtocol", resultProtocol}, {"DifferentialProtocol", differentialProtocol}, {"HtmlReportProtocol", htmlReportProtocol}}) {
         ::testing::RegisterTest("TestbenchHarness", entry.first, nullptr, nullptr, __FILE__, __LINE__,
             [body = entry.second]() -> HarnessAdapter* { return new HarnessAdapter(body); });
     }

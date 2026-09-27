@@ -1,3 +1,5 @@
+#include "harness/GTestHtmlReport.h"
+#include "harness/VulkanDiagnostics.h"
 #include "RhiTest.h"
 #include "harness/Runner.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
@@ -62,7 +64,7 @@ void printRhiUsage()
 {
     spdlog::info(
         "Metallic RHI options:\n"
-        "  --output-dir <path>      Write generated images to <path>\n"
+        "  --output-dir <path>      Write images and HTML reports to <path>\n"
         "  --rhi-no-validation      Disable Vulkan validation for RHI tests\n"
         "  --rhi-validation         Enable Vulkan validation for RHI tests\n"
         "  --rhi-streamline         Enable Streamline, bindless heap and ray queries\n"
@@ -424,7 +426,13 @@ int main(int argc, char** argv)
         spdlog::error("TaskSystem initialization failed: {}", taskInitialization.error().message);
         return 1;
     }
+    auto report = metallic::tests::bench::installGTestHtmlReport(options.outputDirectory, "legacy", [environment] {
+        if (!environment->context()) { return metallic::tests::bench::Json::object(); }
+        auto device = metallic::tests::bench::describeDevice(environment->context()->device, {"legacy", {}});
+        device.erase("capabilities"); // No legacy requested-feature provenance is inferred.
+        return device;
+    });
     const int result = RUN_ALL_TESTS();
     metallic::task::shutdownTaskSystem();
-    return result;
+    return result || report->failed ? 1 : 0;
 }

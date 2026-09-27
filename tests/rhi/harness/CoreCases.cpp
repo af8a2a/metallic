@@ -136,6 +136,18 @@ public:
             CASE_REQUIRE(recording.submitAndWait());
             const std::string prefix = volume ? "volume" : "array";
             if (context.evidence) { context.evidence->json(prefix + "-regions.json", {{"seed", seed}, {"regions", description}}); }
+            if (context.evidence) {
+                bench::Json visuals = bench::Json::array();
+                const auto path = context.evidence->root() / "visuals.json";
+                if (std::filesystem::exists(path)) { visuals = bench::readJson(path); }
+                for (const auto& region : regions) {
+                    if (region.layer > 0 || region.mip > 0) { continue; }
+                    visuals.push_back({{"format", "rgba8"}, {"label", prefix + " mip 0 / layer 0 / z 0"},
+                        {"actual", prefix + "-actual.bin"}, {"expected", prefix + "-expected.bin"},
+                        {"width", region.width}, {"height", region.height}, {"rowPitch", region.row}, {"offset", region.offset}});
+                }
+                context.evidence->json("visuals.json", visuals);
+            }
             auto result = compare(context, **readback, expected, prefix);
             if (!result.passed) { return result; }
             if (context.trace) {
@@ -248,6 +260,10 @@ public:
                     expected[offset + (x / 13 == 1 ? 1 : 0)] = std::byte{255};
                 }
             }
+        }
+        if (context.evidence) {
+            context.evidence->json("visuals.json", bench::Json::array({{{"format", "rgba8"}, {"label", "Pipeline / shader object / pipeline"},
+                {"actual", "aba-actual.bin"}, {"expected", "aba-expected.bin"}, {"width", width}, {"height", height}}}));
         }
         return compare(context, **readback, expected, "aba");
     }

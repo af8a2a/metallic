@@ -1,4 +1,6 @@
 #include "Runner.h"
+#include "HtmlReport.h"
+#include "GTestHtmlReport.h"
 #include "TraceRecorder.h"
 #include "BufferSequence.h"
 #include "RhiTest.h"
@@ -538,6 +540,13 @@ int parent(const Options& options)
         if (plan.size() != 1 || !plan.front().contains("sequence")) { throw std::runtime_error("shrink requires one buffer sequence replay"); }
         return shrinkBufferSequence(executable, options.replay, plan.front(), root);
     }
+    auto reportRun = readJson(root / "run.json");
+    size_t plannedResults = plan.size();
+    if (replay.is_null()) {
+        for (const auto& input : plan) { plannedResults += input.value("variant", "") == "target"; }
+    }
+    reportRun["planned"] = plannedResults;
+    HtmlReport html(root, reportRun);
     Json results = Json::array(), coverage = Json::array();
     bool failure = false;
     for (const auto& input : plan) {
@@ -547,6 +556,7 @@ int parent(const Options& options)
         sample.json("input.json", input);
         sample.phase("scheduled");
         Json result;
+        const auto caseStart = std::chrono::steady_clock::now();
         try {
             const auto process = runProcess(executable, {"--tb-child", "--tb-input", utf8(directory / "input.json")},
                 directory, std::chrono::milliseconds(input.at("timeoutMs").get<int64_t>()));
@@ -555,10 +565,13 @@ int parent(const Options& options)
             result = {{"id", id}, {"profile", configId}, {"iteration", input.at("iteration")},
                 {"status", "InfrastructureFailure"}, {"failed", true}, {"executed", false}, {"message", error.what()}};
         }
+        result["durationMs"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - caseStart).count();
+        result["durationScope"] = "isolated child wall time (setup, run, cleanup)";
         const bool skipped = result.at("status") == "SkipUnsupported" || result.at("status") == "SkipNotEnabled";
         if (options.requireAll && skipped) { result["policyFailure"] = true; failure = true; }
         failure |= result.at("failed").get<bool>();
         sample.json("parent-result.json", result);
+        html.append(directory, input, result);
         std::cout << result.at("status").get<std::string>() << " " << id << " [" << configId << "] " << result.at("message").get<std::string>() << '\n';
         results.push_back(result);
         for (const auto& claim : input.at("metadata").at("coverage")) {
@@ -575,7 +588,10 @@ int parent(const Options& options)
             const auto iteration = std::to_string(input.at("iteration").get<uint32_t>());
             const auto reference = root / input.at("metadata").at("profile").get<std::string>() / id / iteration;
             const auto target = root / input.at("profile").get<std::string>() / id / iteration;
+            const auto comparisonStart = std::chrono::steady_clock::now();
             auto result = compareEvidence(reference, target, spec);
+            result["durationMs"] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - comparisonStart).count();
+            result["durationScope"] = "parent comparison wall time";
             result["id"] = id + ".comparison";
             result["profile"] = "comparison";
             result["iteration"] = input.at("iteration");
@@ -585,6 +601,7 @@ int parent(const Options& options)
             failure |= result.at("failed").get<bool>() || result.value("policyFailure", false);
             result["specification"] = spec;
             Evidence(root / "comparisons" / id / iteration).json("diff.json", result);
+            html.append(root / "comparisons" / id / iteration, input, result);
             comparisons.push_back(result);
             results.push_back(result);
             coverage.push_back({{"claim", spec.at("toggle").get<std::string>() + ".differential"},
@@ -598,6 +615,8 @@ int parent(const Options& options)
     evidence.json("results.json", {{"schema", 1}, {"failed", failure}, {"cases", results}});
     evidence.json("coverage.json", {{"schema", 1}, {"scope", "selected migrated cases only; iterations are not independent coverage"}, {"observations", coverage}});
     writeReport(root / "gtest.xml", results);
+    html.finish();
+    std::cout << "HTML report: " << (root / "report.html").string() << '\n';
     std::cout << "Evidence: " << root.string() << '\n';
     return failure ? 1 : 0;
 }
@@ -803,7 +822,9 @@ std::optional<int> runIfRequested(int argc, char** argv)
             char* arguments[]{program.data(), filter.data()};
             int count = 2;
             ::testing::InitGoogleTest(&count, arguments);
-            return RUN_ALL_TESTS();
+            auto report = installGTestHtmlReport(options.output.empty() ? std::filesystem::path(".tmp/testbench-self-test") : options.output, "harness");
+            const auto result = RUN_ALL_TESTS();
+            return result || report->failed ? 1 : 0;
         }
         if (options.mode == "--tb-child") { return child(options); }
         return parent(options);
