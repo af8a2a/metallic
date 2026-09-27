@@ -334,7 +334,9 @@ NativeTrace 同样属于插桩；没有 DebugPrintf 指令也不自动合格。
 2026-09-27 更新：P0/P1 回归通过；P2 完成真实 WorkControl 站点、一次性 variant lease、
 独立 case 进程与离线证据复核。early/late 各三个独立目标帧逐位复现，NoMatch/SiteNotReached
 可区分，生产绑定与 depth/visibility 恢复通过。收集边界为 case 进程 instance 销毁，
-尚未推广到任意常驻编辑器连续 watch。详见 [P2 验收](AgenticShaderPrintfP2.md)。P3/P4 仍待推进。
+尚未推广到任意常驻编辑器连续 watch。详见 [P2 验收](AgenticShaderPrintfP2.md)。P3 已完成真实 triangle-decision 站点及有界故障/修复闭环，
+12 个 GPU 进程确认最早观测分歧和无插桩修复；性能筛查为 inconclusive，未接受优化收益。
+详见 [P3 验收与入口](AgenticShaderPrintfP3.md)。P4 仍按需推进。
 
 下表保留阶段规划；当前完成状态以上述更新和各阶段验收记录为准。工期按单一开发主线粗估，驱动/SDK 兼容故障另计。
 
@@ -346,7 +348,8 @@ NativeTrace 同样属于插桩；没有 DebugPrintf 指令也不自动合格。
 | P3 Agent 调试闭环 | 添加真实 triangle reject 或 HZB decision 站点；声明式计划、结果比较、回归/性能门禁 | 用可控故障定位最早有证据的分歧并在无插桩版本确认修复；Printf-only 插桩不能进入 M3；日志消失不被当修复 | 2–3 天 |
 | P4 按需扩展 | Native Trace Buffer、多 invocation 摘要、运行时 TraceParams、其他 stage 与受限表达式 | 每种 stage/descriptor/object 路径单独验收；原子配额、同步与生命周期不丢证据；旧 artifact 仍可离线解码 | 按具体需求 |
 
-P0–P2 的上述固定工作负载范围已验收；后续根据真实问题选择 P3/P4 站点和扩展。
+P0–P3 的上述固定工作负载正确性范围已验收；P3 性能资格仍由原 M3 门禁独立把关。
+后续根据真实问题扩展已注册的声明式 recipe，P4 按需推进。
 P0 若生产 heap 路径不支持，记录准确的组合与错误；不能用传统 descriptor fixture
 通过代替生产链路验收，也不先承诺完整系统工期。
 

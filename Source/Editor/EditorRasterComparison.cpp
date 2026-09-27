@@ -391,12 +391,12 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                     const auto& selection=config.at("shaderTrace");
                     checkRaster(selection.is_object(),"Shader trace selection must be an object");
                     for (auto field=selection.begin();field!=selection.end();++field) {
-                        checkRaster(field.key()=="phase" || field.key()=="group" || field.key()=="localIndex" || field.key()=="predicate", "Unknown shader trace selection field");
+                        checkRaster(field.key()=="site" || field.key()=="phase" || field.key()=="group" || field.key()=="localIndex" || field.key()=="predicate", "Unknown shader trace selection field");
                     }
                     const std::string phase=selection.at("phase");
                     checkRaster(phase=="early" || phase=="late","Shader trace phase must be early or late");
                     shaderTrace_->configure(observer.graph);
-                    const auto& site=shaderTrace_->sites().at(phase=="early" ? 0 : 1);
+                    const auto& site=shaderTrace_->site(selection.value("site",std::string("stream.after-triangle-prepare")),phase);
                     Json watch{{"version",1},{"generation",observer.graph.at("generation")},
                         {"target",{{"site",site.at("name")},{"phase",phase},{"expectedSiteSchemaHash",site.at("schemaHash")}}},
                         {"invocation",{{"group",selection.value("group",Json::array({0,0,0}))},{"localIndex",selection.value("localIndex",0u)}}},

@@ -88,13 +88,34 @@ public HybridScreenVertex hybridPrepareVertex(float4 clip, float2 viewport, uint
     return result;
 }
 
-public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
-    uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
-    uint pixelBuffer, bool incrementalDepth)
+// The mask distinguishes unevaluated fields from meaningful zero values.
+// reason: 0=setup accepted (not pixel coverage), 1=zero area, 2=backface,
+// 3=empty pixel bounds, 4=degenerate depth plane. stages: 1=area, 2=bounds, 4=plane.
+public struct HybridTriangleDecision
 {
+    public int signedArea;
+    public uint doubleSided;
+    public uint reason;
+    public int2 lower;
+    public int2 upper;
+    public float determinant;
+    public uint evaluatedStages;
+};
+
+public void hybridRasterPreparedTriangleDecision(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
+    uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
+    uint pixelBuffer, bool incrementalDepth, out HybridTriangleDecision decision)
+{
+    decision = {};
+    decision.doubleSided = uint(doubleSided);
     int2 p0 = a.position, p1 = b.position, p2 = c.position;
     int area = hybridEdge(p0, p1, p2);
-    if (area == 0 || (!doubleSided && area > 0)) { return; }
+    decision.signedArea = area;
+    decision.evaluatedStages = 1;
+    if (area == 0 || (!doubleSided && area > 0)) {
+        decision.reason = area == 0 ? 1u : 2u;
+        return;
+    }
     if (area < 0) {
         int2 temp = p1; p1 = p2; p2 = temp;
         float z = b.depth; b.depth = c.depth; c.depth = z;
@@ -102,7 +123,9 @@ public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVerte
     int scale = 1 << subpixelBits;
     int2 lower = max(int2(0), int2(ceil(float2(min(p0, min(p1, p2))) / scale - 0.5)));
     int2 upper = min(int2(width, height) - 1, int2(floor(float2(max(p0, max(p1, p2))) / scale - 0.5)));
-    if (any(lower > upper)) { return; }
+    decision.lower = lower; decision.upper = upper;
+    decision.evaluatedStages |= 2;
+    if (any(lower > upper)) { decision.reason = 3; return; }
     int3 bias = int3(hybridEdgeBias(p1,p2), hybridEdgeBias(p2,p0), hybridEdgeBias(p0,p1));
     int2 point = lower * scale + scale / 2;
     int3 rowEdges = int3(hybridEdge(p1,p2,point), hybridEdge(p2,p0,point), hybridEdge(p0,p1,point)) + bias;
@@ -111,7 +134,9 @@ public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVerte
     float2 s0 = float2(p0) / scale;
     float2 e1 = float2(p1) / scale - s0, e2 = float2(p2) / scale - s0;
     float determinant = e1.x * e2.y - e1.y * e2.x;
-    if (abs(determinant) < 1e-12) { return; }
+    decision.determinant = determinant;
+    decision.evaluatedStages |= 4;
+    if (abs(determinant) < 1e-12) { decision.reason = 4; return; }
     float3 z = float3(a.depth,b.depth,c.depth);
     float2 gradient = float2(e2.y*(z.y-z.x)-e1.y*(z.z-z.x), e1.x*(z.z-z.x)-e2.x*(z.y-z.x)) / determinant;
     DescriptorHandle<RWStructuredBuffer<uint64_t>> handle = DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(pixelBuffer, 0));
@@ -141,5 +166,14 @@ public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVerte
         }
         rowEdges += stepY;
     }
+}
+// Ordinary callers discard the decision; no Printf or additional resource reads.
+public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
+    uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
+    uint pixelBuffer, bool incrementalDepth)
+{
+    HybridTriangleDecision decision;
+    hybridRasterPreparedTriangleDecision(a,b,c,visibilityId,doubleSided,width,height,reversedZ,
+        subpixelBits,pixelBuffer,incrementalDepth,decision);
 }
 } // namespace Metallic.GPUDriven

@@ -23,6 +23,7 @@ public:
     void releaseGpu();
     void finishAfterDevice() noexcept;
     const debug::DebugValue& variant() const { return evidence_.at("variant"); }
+    const debug::DebugValue& site(std::string_view name, std::string_view phase) const;
     const debug::DebugValue& sites() const { return sites_; }
     const debug::DebugValue& plan() const { return runtime_.plan(); }
     const std::string& job() const { return job_; }

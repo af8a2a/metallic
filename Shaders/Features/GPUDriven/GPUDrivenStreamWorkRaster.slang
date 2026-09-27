@@ -7,6 +7,9 @@
 #endif
 #if METALLIC_WORK_CONTROL_TRACE
 import ShaderTrace;
+#ifndef TRACE_SITE_ID
+#define TRACE_SITE_ID 2
+#endif
 bool workControlTraceSelected(uint3 group, uint lane)
 {
     return all(group == uint3(TRACE_GROUP_X, TRACE_GROUP_Y, TRACE_GROUP_Z)) && lane == TRACE_LOCAL;
@@ -17,7 +20,7 @@ ShaderTraceIdentity workControlTraceIdentity(uint3 group, uint lane)
     id.session = uint2(TRACE_SESSION_LO, TRACE_SESSION_HI);
     id.run = uint2(TRACE_RUN_LO, TRACE_RUN_HI);
     id.dispatch = uint2(TRACE_DISPATCH_LO, TRACE_DISPATCH_HI);
-    id.site = 2; id.group = group; id.localIndex = lane;
+    id.site = TRACE_SITE_ID; id.group = group; id.localIndex = lane;
     return id;
 }
 #endif
@@ -64,7 +67,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPus
         b.position = asint(g_StreamRasterWords[tri.y].xy); b.depth = asfloat(g_StreamRasterWords[tri.y].z);
         c.position = asint(g_StreamRasterWords[tri.z].xy); c.depth = asfloat(g_StreamRasterWords[tri.z].z);
 #if METALLIC_WORK_CONTROL_TRACE
-        if (!reorder && workControlTraceSelected(group, lane)) {
+        if (TRACE_SITE_ID == 2 && !reorder && workControlTraceSelected(group, lane)) {
             ++traceCounts.x;
             if (!TRACE_PREDICATE_ENABLED || triangle == TRACE_TRIANGLE_ID) {
                 ++traceCounts.y;
@@ -82,9 +85,34 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPus
             }
         }
 #endif
+        // Shader debugger transaction boundary: prepared vertices -> raster decision.
+#if METALLIC_WORK_CONTROL_TRACE && TRACE_SITE_ID == 3
+        HybridTriangleDecision decision;
+        hybridRasterPreparedTriangleDecision(a, b, c,
+            packVisibilityId(g_StreamSoftware.recordIndex, triangle), (g_StreamSoftware.instanceFlags & 2u) != 0u,
+            bins[6], bins[7], bins[9], bins[10], bins[11], false, decision);
+        if (!reorder && workControlTraceSelected(group, lane)) {
+            ++traceCounts.x;
+            if (!TRACE_PREDICATE_ENABLED || triangle == TRACE_TRIANGLE_ID) {
+                ++traceCounts.y;
+                if (traceCounts.z < TRACE_MAX_RECORDS - 2) {
+                    ShaderTraceIdentity id = workControlTraceIdentity(group, lane);
+                    printf("MTS1 %u %u %u %u %u %u 3 1 %u %u %u %u %u 12 %u %u %u %u %u %u %u %u %u %u %u %u\n",
+                        id.session.x, id.session.y, id.run.x, id.run.y, id.dispatch.x, id.dispatch.y,
+                        group.x, group.y, group.z, lane, traceCounts.z + 1,
+                        g_StreamSoftware.recordIndex, triangle, g_StreamSoftware.instanceFlags,
+                        asuint(decision.signedArea), decision.doubleSided, decision.reason,
+                        asuint(decision.lower.x), asuint(decision.lower.y), asuint(decision.upper.x), asuint(decision.upper.y),
+                        asuint(decision.determinant), decision.evaluatedStages);
+                    ++traceCounts.z;
+                }
+            }
+        }
+#else
         hybridRasterPreparedTriangle(a, b, c,
             packVisibilityId(g_StreamSoftware.recordIndex, triangle), (g_StreamSoftware.instanceFlags & 2u) != 0u,
             bins[6], bins[7], bins[9], bins[10], bins[11], false);
+#endif
     }
 }
 

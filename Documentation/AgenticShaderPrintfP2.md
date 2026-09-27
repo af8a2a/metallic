@@ -153,4 +153,5 @@ SHA-256 表示文件完整性，不是来源签名。
 没有声称完整最终彩色图像/时序质量、所有 renderer 场景、native production heap、其他 shader stage、
 任意表达式、多个同时 watch、driver device-lost 恢复或常驻编辑器持续收集都已验证。
 主机测试覆盖取消/超时与资源持有契约；实际 GPU 取消中途、热重载竞争尚未独立故障注入验收。
-P3 的 reject/HZB 原因站点和自动修复闭环仍待推进。
+P3 已增加实际 triangle decision 站点和有界故障/修复闭环，见 [P3 入口与验收](AgenticShaderPrintfP3.md)。
+HZB 站点仍未扩展。

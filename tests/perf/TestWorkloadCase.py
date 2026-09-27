@@ -104,7 +104,7 @@ class WorkloadTests(unittest.TestCase):
             self.analyze()
 
     def test_instrumented_cannot_qualify_aa(self):
-        for key in ("graphicsCaptureInjected", "gpuTraceInjected", "renderDocInjected", "pipelineStatisticsRequested"):
+        for key in ("graphicsCaptureInjected", "gpuTraceInjected", "renderDocInjected", "pipelineStatisticsRequested", "nvPerfRequested", "shaderTraceRequested"):
             self.capture[key] = True
             result = self.analyze()
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, "instrumented"):

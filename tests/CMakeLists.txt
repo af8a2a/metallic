@@ -421,6 +421,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME MetallicShaderPrintfEvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/rhi/TestShaderPrintfEvidence.py")
     set_tests_properties(MetallicShaderPrintfEvidenceTests PROPERTIES LABELS "tools;shader-printf" TIMEOUT 30)
+    add_test(NAME MetallicShaderDebuggerP3Tests
+        COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/rhi/TestShaderDebugger.py")
+    set_tests_properties(MetallicShaderDebuggerP3Tests PROPERTIES LABELS "tools;shader-trace" TIMEOUT 30)
+
     add_test(NAME MetallicShaderTraceP2EvidenceTests
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/rhi/TestShaderTraceP2Evidence.py")
     set_tests_properties(MetallicShaderTraceP2EvidenceTests PROPERTIES LABELS "tools;shader-trace" TIMEOUT 30)

@@ -27,6 +27,7 @@ ROOT = w.ROOT
 PROTOCOL = "metallic.shader-trace.p2.v1"
 CASE = ROOT / "Tools/Perf/WorkloadCase.MiniZorahHistory.json"
 SITE = "stream.after-triangle-prepare"
+DECISION_SITE = "stream.triangle-decision"
 
 
 def source_inventory():
@@ -44,10 +45,13 @@ def recipe():
     return {**case, "rounds": 1, "sampleFrames": 8}
 
 
-def selection(phase="early", group_x=0, local=0, triangle=None):
+def selection(phase="early", group_x=0, local=0, triangle=None, site=SITE):
     w.require(phase in ("early", "late") and type(group_x) is int and 0 <= group_x <= 65534
               and type(local) is int and 0 <= local <= 127, "Invalid bounded invocation")
     result = {"phase": phase, "group": [group_x, 0, 0], "localIndex": local}
+    w.require(site in (SITE, DECISION_SITE), "Unregistered site")
+    if site != SITE:
+        result["site"] = site
     if triangle is not None:
         w.require(type(triangle) is int and 0 <= triangle <= 0xffffffff, "Invalid triangleId predicate")
         result["predicate"] = {"field": "triangleId", "op": "eq", "value": triangle}
@@ -142,7 +146,7 @@ def inspect(directory, case, row, cli):
     if "expected" in row:
         w.require(trace["outcome"] == row["expected"], "Unexpected observation outcome")
     dispatch, runtime, variant = trace["dispatch"], raw["runtime"], trace["dispatch"]["variant"]
-    w.require(trace["site"]["name"] == SITE and trace["site"]["phase"] == dispatch["phase"] == phase
+    w.require(trace["site"]["name"] == selected.get("site", SITE) and trace["site"]["phase"] == dispatch["phase"] == phase
               and dispatch["pass"] == "VBuffer" and dispatch["dispatchOrdinal"] == (0 if phase == "early" else 1)
               and dispatch["execution"] > 0 and dispatch["commandBufferRecording"] > 0, "Dispatch identity mismatch")
     w.require(dispatch["queue"]["type"] == "Graphics" and dispatch["submit"]["execution"] == dispatch["execution"], "Missing real submission")
@@ -176,6 +180,7 @@ def inspect(directory, case, row, cli):
               and defines["METALLIC_WORK_CONTROL_TRACE"] == "1", "Compiled watch budget mismatch")
     w.require(defines["TRACE_PREDICATE_ENABLED"] == ("1" if "predicate" in selected else "0")
               and int(defines["TRACE_TRIANGLE_ID"]) == selected.get("predicate", {}).get("value", 0), "Compiled predicate mismatch")
+    w.require(int(defines.get("TRACE_SITE_ID", "2")) == trace["site"]["id"], "Compiled site mismatch")
     baseline = w.snapshot_identity(app, snapshots["before"], case)
     diagnostic = normalized_diagnostic(snapshots["diagnostic"], snapshots["before"], phase, trace)
     w.require(w.snapshot_identity(app, diagnostic, case) == baseline
@@ -220,7 +225,7 @@ def execute(args):
     output.mkdir(parents=True, exist_ok=False)
     case = recipe()
     acceptance = args.command == "acceptance"
-    selected = selection(args.phase, args.group_x, args.local_index, args.triangle_id)
+    selected = selection(args.phase, args.group_x, args.local_index, args.triangle_id, args.site)
     runs = schedule(acceptance, selected)
     w.save(output / "Case.json", case)
     w.save(output / "Schedule.json", runs)
@@ -317,6 +322,7 @@ def main():
         run.add_argument("--group-x", type=int, default=0)
         run.add_argument("--local-index", type=int, default=0)
         run.add_argument("--triangle-id", type=int)
+        run.add_argument("--site", choices=(SITE, DECISION_SITE), default=SITE)
     check = commands.add_parser("verify")
     check.add_argument("directory", type=Path)
     check.add_argument("--cli", type=Path, default=ROOT / "build-release/Source/metallicctl.exe")

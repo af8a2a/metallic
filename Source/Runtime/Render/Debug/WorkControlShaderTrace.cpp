@@ -141,7 +141,8 @@ void WorkControlShaderTrace::configure(DebugValue graph)
     require(!armed_,"Cannot reconfigure an armed observation");
     graph_ = std::move(graph); core_.setGraph(graph_);
     const auto hashes = sourceHashes({PROJECT_SOURCE_DIR "/Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang",
-        PROJECT_SOURCE_DIR "/Shaders/Modules/ShaderTrace.slang"});
+        PROJECT_SOURCE_DIR "/Shaders/Modules/ShaderTrace.slang",
+        PROJECT_SOURCE_DIR "/Shaders/Modules/GPUDriven/HybridRasterTriangle.slang"});
     DebugValue fields = DebugValue::array();
     for (const char* name : {"recordIndex","triangleId","instanceFlags","triangleCount"}) { fields.push_back({{"name",name},{"type","u32"}}); }
     for (const char* vertex : {"a","b","c"}) {
@@ -156,10 +157,34 @@ void WorkControlShaderTrace::configure(DebugValue graph)
             {"entry","streamClusterRasterWorkControlMain"},{"sourceHashes",hashes},{"fields",fields},
             {"invocation",{{"group",{0,0,0}},{"localIndex",0}}}}));
     }
+    DebugValue decisions = DebugValue::array();
+    for (const auto& [name,type] : std::array<std::pair<const char*,const char*>,12>{{
+        {"recordIndex","u32"},{"triangleId","u32"},{"instanceFlags","u32"},{"signedArea","i32"},
+        {"doubleSided","u32"},{"reason","u32"},{"lowerX","i32"},{"lowerY","i32"},
+        {"upperX","i32"},{"upperY","i32"},{"determinant","f32"},{"evaluatedStages","u32"}}}) {
+        decisions.push_back({{"name",name},{"type",type}});
+    }
+    for (const char* phase : {"early","late"}) {
+        sites_.push_back(debug::shaderTraceSite({{"name","stream.triangle-decision"},{"id",3},{"phase",phase},
+            {"adapter","work-control-v1"},{"pass","VBuffer"},{"module","Features/GPUDriven/GPUDrivenStreamWorkRaster"},
+            {"entry","streamClusterRasterWorkControlMain"},{"sourceHashes",hashes},{"fields",decisions},
+            {"decisionReasons",{{"0","SetupAccepted"},{"1","DegenerateArea"},{"2","Backface"},
+                {"3","EmptyBounds"},{"4","DegenerateDepthPlane"}}},
+            {"evaluatedStages",{{"area",1},{"bounds",2},{"plane",4}}},
+            {"invocation",{{"group",{0,0,0}},{"localIndex",0}}}}));
+    }
     core_.configureShaderTrace({{"configured",true},{"smokeVerified",true},{"fixtureOnly",false},
         {"adapter","work-control-v1"},{"collectionBoundary","case-process-instance-destroyed"},
         {"scope","one watch in a dedicated primed workload process"}},sites_);
     save(output_/"Sites.json",sites_);
+}
+
+const DebugValue& WorkControlShaderTrace::site(std::string_view name, std::string_view phase) const
+{
+    for (const auto& item : sites_) {
+        if (item.at("name").get_ref<const std::string&>() == name && item.at("phase").get_ref<const std::string&>() == phase) { return item; }
+    }
+    throw std::runtime_error("Unknown WorkControl site/phase");
 }
 
 void WorkControlShaderTrace::prepare(Device& device, const DebugValue& specification, const DebugValue& input)
@@ -171,7 +196,7 @@ void WorkControlShaderTrace::prepare(Device& device, const DebugValue& specifica
     job_ = response.at("result").at("job");
     auto requests = core_.takeShaderRequests(graph_.at("id").get<std::string>(),debug::debugUnsigned(graph_.at("generation")));
     require(requests.size()==1,"Shader request not available");
-    const auto& site = sites_.at(phase_ == "early" ? 0 : 1);
+    const auto& site = this->site(request_.at("target").at("site").get<std::string>(),phase_);
     auto begun = runtime_.begin(requests[0],site,{{"graph",graph_.at("id")},{"generation",graph_.at("generation")},
         {"execution",0u},{"pass","VBuffer"},{"phase",phase_},{"dispatchOrdinal",phase_ == "early" ? 0 : 1},
         {"inputFingerprint",debug::debugSha256(input.dump())}});
@@ -179,6 +204,7 @@ void WorkControlShaderTrace::prepare(Device& device, const DebugValue& specifica
     evidence_["input"] = input;
     validateSources(site.at("sourceHashes"));
     std::map<std::string,std::string> defines{{"METALLIC_WORK_CONTROL_TRACE","1"},
+        {"TRACE_SITE_ID",std::to_string(debug::debugUnsigned(site.at("id")))},
         {"TRACE_LOCAL",std::to_string(debug::debugUnsigned(request_.at("invocation").at("localIndex")))},
         {"TRACE_MAX_RECORDS",std::to_string(debug::debugUnsigned(request_.at("limits").at("maxRecords")))},
         {"TRACE_PREDICATE_ENABLED",request_.contains("predicate") ? "1" : "0"},
