@@ -92,7 +92,7 @@ class ClasSizeMoveTest final : public RhiTest {
                 require(bool(commands->end()), "End failed");
                 CommandBuffer* list[] = {commands.get()};
                 require(bool(queue->submit(
-                            {.commandBuffers = list, .commandBufferCount = 1, .signalFence = fence.get()})) &&
+                            {.commandBuffers = {list, 1}, .signalFence = fence.get()})) &&
                             bool(fence->wait(5000000000ull)),
                         "Submission failed");
             };
@@ -112,15 +112,16 @@ class ClasSizeMoveTest final : public RhiTest {
                             .destinationSize = stride};
             }
             require(bool(commands->buildClusterAccelerationStructureTriangles(
-                        {.clusters = input,
-                         .clusterCount = 2,
-                         .maxClusterTriangleCount = 128,
-                         .maxClusterVertexCount = 128,
-                         .scratchBuffer = scratch.get(),
-                         .scratchBufferOffset = scratchOffset,
-                         .buildInfoBuffer = infos.get(),
-                         .destinationAddressBuffer = destinations.get(),
-                         .destinationSizeBuffer = sizes.get()})),
+                        {
+                            .clusters = {input, 2},
+                            .maxClusterTriangleCount = 128,
+                            .maxClusterVertexCount = 128,
+                            .scratchBuffer = scratch.get(),
+                            .scratchBufferOffset = scratchOffset,
+                            .buildInfoBuffer = infos.get(),
+                            .destinationAddressBuffer = destinations.get(),
+                            .destinationSizeBuffer = sizes.get(),
+                        })),
                     "Build with size output failed");
             submit();
             sizes->invalidate();
@@ -143,12 +144,13 @@ class ClasSizeMoveTest final : public RhiTest {
                                                              .destinationBuffer = compact.get(),
                                                              .destinationOffset = actual[0],
                                                              .size = actual[1]}};
-            auto move = ClusterAccelerationStructureMoveDesc{.objects = moves,
-                                                             .objectCount = 2,
-                                                             .sourceAddressBuffer = sources.get(),
-                                                             .destinationAddressBuffer = destinations.get(),
-                                                             .scratchBuffer = scratch.get(),
-                                                             .scratchBufferOffset = scratchOffset};
+            auto move = ClusterAccelerationStructureMoveDesc{
+                .objects = {moves, 2},
+                .sourceAddressBuffer = sources.get(),
+                .destinationAddressBuffer = destinations.get(),
+                .scratchBuffer = scratch.get(),
+                .scratchBufferOffset = scratchOffset,
+            };
             moves[1].destinationOffset += 1;
             require(hasError(commands->moveClusterAccelerationStructures(move), Error::InvalidArgument),
                     "Unaligned move accepted");
@@ -273,7 +275,7 @@ class CompactClasLifecycleTest final : public RhiTest {
             return RhiTestResult::fail("stream CLAS page buffer did not map");
         }
         std::memcpy(mapped, decodedPayload.data(), decodedPayload.size());
-        pageBuffer->flush(0, decodedPayload.size());
+        pageBuffer->flush({0, decodedPayload.size()});
         pageBuffer->unmap();
 
         const auto require = [](bool ok, const std::string& message) {
@@ -320,23 +322,23 @@ class CompactClasLifecycleTest final : public RhiTest {
                     .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                 };
-                if (auto commandResult = cmd->synchronize({.buffers = &tableBarrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+                if (auto commandResult = cmd->synchronize({.buffers = {&tableBarrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 {
-                    auto sourceSlice = pool.pageTableBuffer()->slice(uint64_t(pageIndex) * 4u, 4);
+                    auto sourceSlice = pool.pageTableBuffer()->slice({uint64_t(pageIndex) * 4u, 4});
                     if (!sourceSlice) { throw std::runtime_error(std::string("source slice failed: ") + metallic::render::resultToString(sourceSlice)); }
-                    auto destinationSlice = publicationReadback.get()->slice(0, 4);
+                    auto destinationSlice = publicationReadback.get()->slice({0, 4});
                     if (!destinationSlice) { throw std::runtime_error(std::string("destination slice failed: ") + metallic::render::resultToString(destinationSlice)); }
                     if (auto commandResult = cmd->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { throw std::runtime_error(std::string("copyBuffer failed: ") + metallic::render::resultToString(commandResult)); }
                 }
                 std::swap(tableBarrier.before, tableBarrier.after);
-                if (auto commandResult = cmd->synchronize({.buffers = &tableBarrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+                if (auto commandResult = cmd->synchronize({.buffers = {&tableBarrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 require(bool(cmd->end()), "End failed");
                 if (cancel) {
                     frame.cancel();
                     return;
                 }
                 CommandBuffer* list[] = {cmd.get()};
-                require(bool(tracker.submit({.commandBuffers = list, .commandBufferCount = 1}, frame)) &&
+                require(bool(tracker.submit({.commandBuffers = {list, 1}}, frame)) &&
                             bool(frame.wait(5000000000ull)),
                         "Tracked submit failed");
                 publicationReadback->invalidate();

@@ -273,14 +273,14 @@ struct StreamerImpl {
         if (completionTracked && (activeFrame == nullptr || !activeFrame->recording())) {
             return {};
         }
-        if (streamDesc.dataChunkCount == 0 ||
-            streamDesc.dataChunks == nullptr ||
+        if (streamDesc.dataChunks.size() == 0 ||
+            streamDesc.dataChunks.size() > UINT32_MAX ||
             desc.queuedFrameCount == 0) {
             return {};
         }
 
         uint64_t dataSize = 0;
-        for (uint32_t index = 0; index < streamDesc.dataChunkCount; ++index) {
+        for (uint32_t index = 0; index < streamDesc.dataChunks.size(); ++index) {
             const StreamDataChunk& chunk = streamDesc.dataChunks[index];
             if (chunk.size > 0 && chunk.data == nullptr) {
                 return {};
@@ -315,7 +315,7 @@ struct StreamerImpl {
         }
 
         uint8_t* dst = static_cast<uint8_t*>(mapped) + bufferOffset;
-        for (uint32_t index = 0; index < streamDesc.dataChunkCount; ++index) {
+        for (uint32_t index = 0; index < streamDesc.dataChunks.size(); ++index) {
             const StreamDataChunk& chunk = streamDesc.dataChunks[index];
             if (chunk.size == 0) {
                 continue;
@@ -323,7 +323,7 @@ struct StreamerImpl {
             std::memcpy(dst, chunk.data, static_cast<size_t>(chunk.size));
             dst += chunk.size;
         }
-        dynamicBuffer->flush(bufferOffset, dataSize);
+        dynamicBuffer->flush({bufferOffset, dataSize});
         dynamicBuffer->unmap();
 
         if (activeFrame != nullptr) {
@@ -467,7 +467,7 @@ struct StreamerImpl {
                 std::memcpy(dst, src, static_cast<size_t>(rowSize));
             }
         }
-        dynamicBuffer->flush(bufferOffset, dataSize);
+        dynamicBuffer->flush({bufferOffset, dataSize});
         dynamicBuffer->unmap();
 
         if (activeFrame != nullptr) {
@@ -545,7 +545,7 @@ struct StreamerImpl {
                 static_cast<uint8_t*>(mapped) + bufferOffset,
                 data,
                 static_cast<size_t>(byteSize));
-            constantBuffer->flush(bufferOffset, byteSize);
+            constantBuffer->flush({bufferOffset, byteSize});
             constantBuffer->unmap();
         }
         constantBufferOffset = offset + byteSize;
@@ -588,7 +588,7 @@ struct StreamerImpl {
             slot.compressed = std::move(buffer);
         }
         const StreamDataChunk chunk{stored.data(), stored.size()};
-        const auto staged = stageBufferData({.dataChunks = &chunk, .dataChunkCount = 1, .placementAlignment = 16});
+        const auto staged = stageBufferData({.dataChunks = {&chunk, 1}, .placementAlignment = 16});
         if (!staged.valid()) { return false; }
         activeFrame->retain(slot.compressed);
         slot.compressedOffset = required;
@@ -600,8 +600,7 @@ struct StreamerImpl {
                     .buffer = slot.compressed.get(),
                     .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
-                    .offset = offset + tile.sourceOffset,
-                    .size = tile.storedBytes,
+                    .range = {.offset = offset + tile.sourceOffset, .size = tile.storedBytes},
                 });
                 decompressions.push_back({slot.compressed.get(), &destination, offset + tile.sourceOffset,
                     destinationOffset + tile.destinationOffset, tile.storedBytes, tile.decodedBytes});
@@ -612,8 +611,7 @@ struct StreamerImpl {
                     .buffer = &destination,
                     .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
-                    .offset = destinationOffset + tile.destinationOffset,
-                    .size = tile.decodedBytes,
+                    .range = {.offset = destinationOffset + tile.destinationOffset, .size = tile.decodedBytes},
                 });
             }
         }
@@ -658,13 +656,13 @@ struct StreamerImpl {
                 bufferRequests.size() + textureRequests.size());
             if (phase) { phase("Upload copies"); }
             if (!decompressionCopyBarriers.empty()) {
-                if (auto commandResult = commandBuffer.synchronize({.buffers = decompressionCopyBarriers.data(), .bufferCount = uint32_t(decompressionCopyBarriers.size())}); !commandResult) { return commandResult; }
+                if (auto commandResult = commandBuffer.synchronize({.buffers = decompressionCopyBarriers}); !commandResult) { return commandResult; }
             }
             for (const BufferCopyRequest& request : bufferRequests) {
                 {
-                    auto sourceSlice = request.source->slice(request.sourceOffset, request.size);
+                    auto sourceSlice = request.source->slice({request.sourceOffset, request.size});
                     if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-                    auto destinationSlice = request.destination->slice(request.destinationOffset, request.size);
+                    auto destinationSlice = request.destination->slice({request.destinationOffset, request.size});
                     if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
                     if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
                 }
@@ -681,18 +679,16 @@ struct StreamerImpl {
                         .buffer = region.source,
                         .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                         .after = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionRead},
-                        .offset = region.sourceOffset,
-                        .size = region.compressedBytes,
+                        .range = {.offset = region.sourceOffset, .size = region.compressedBytes},
                     });
                     barriers.push_back({
                         .buffer = region.destination,
                         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                         .after = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionWrite},
-                        .offset = region.destinationOffset,
-                        .size = region.decodedBytes,
+                        .range = {.offset = region.destinationOffset, .size = region.decodedBytes},
                     });
                 }
-                if (auto commandResult = commandBuffer.synchronize({.buffers = barriers.data(), .bufferCount = uint32_t(barriers.size())}); !commandResult) { return commandResult; }
+                if (auto commandResult = commandBuffer.synchronize({.buffers = barriers}); !commandResult) { return commandResult; }
                 if (phase) { phase("GPU decompression"); }
                 if (auto result = commandBuffer.decompressBuffers(decompressions); !result) { return result; }
                 {
@@ -705,11 +701,10 @@ struct StreamerImpl {
                             .buffer = region.destination,
                             .before = {PipelineStageBits::MemoryDecompression, AccessBits::DecompressionWrite},
                             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                            .offset = region.destinationOffset,
-                            .size = region.decodedBytes,
+                            .range = {.offset = region.destinationOffset, .size = region.decodedBytes},
                         });
                     }
-                    if (auto commandResult = commandBuffer.synchronize({.buffers = barriers.data(), .bufferCount = uint32_t(barriers.size())}); !commandResult) { return commandResult; }
+                    if (auto commandResult = commandBuffer.synchronize({.buffers = barriers}); !commandResult) { return commandResult; }
                 }
             }
             return {};

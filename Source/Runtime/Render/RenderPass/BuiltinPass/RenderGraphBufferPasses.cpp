@@ -44,11 +44,10 @@ public:
         }
 
         result = context.device->createComputePipeline(ComputePipelineDesc{
-                .computeShader = shader_.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),
-            }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
+            .computeShader = {shader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),
+        }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
         if (!result) {
             log += resultMessage("createComputePipeline(RenderGraphBufferWritePass)", result);
             log += '\n';
@@ -124,11 +123,10 @@ public:
         }
 
         result = context.device->createComputePipeline(ComputePipelineDesc{
-                .computeShader = shader_.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),
-            }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
+            .computeShader = {shader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(RenderGraphBufferUserPush),
+        }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
         if (!result) {
             log += resultMessage("createComputePipeline(RenderGraphBufferCopyPass)", result);
             log += '\n';

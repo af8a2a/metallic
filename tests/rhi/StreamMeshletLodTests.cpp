@@ -567,39 +567,54 @@ private:
             .entryPointName = kMeshletStreamActiveBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
         if (!compile) { return RhiTestResult::fail("stream frontier shader compile: " + compiled.diagnostics); }
         std::unique_ptr<ShaderModule> shader;
-        STREAM_LOD_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> pipeline;
-        STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .computeEntryPoint = "main",
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createComputePipeline({
+            .computeShader = {shader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
         ShaderCompileResult cooperativeCompiled;
         const auto cooperativeCompile = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
             .entryPointName = kMeshletStreamCooperativeBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, cooperativeCompiled.diagnostics).transform([&](auto value) { cooperativeCompiled = std::move(value); });
         if (!cooperativeCompile) { return RhiTestResult::fail(cooperativeCompiled.diagnostics); }
         std::unique_ptr<ShaderModule> cooperativeShader;
-        STREAM_LOD_REQUIRE(device->createShaderModule({.code = cooperativeCompiled.spirv.data(),
-            .byteSize = cooperativeCompiled.spirv.size() * 4}).transform([&](auto rhiValue) { cooperativeShader = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createShaderModule({
+            .spirv = cooperativeCompiled.spirv,
+        }).transform([&](auto rhiValue) { cooperativeShader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> cooperativePipeline;
-        STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = cooperativeShader.get(), .computeEntryPoint = "main",
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { cooperativePipeline = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createComputePipeline({
+            .computeShader = {cooperativeShader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+        }).transform([&](auto rhiValue) { cooperativePipeline = std::move(rhiValue); }));
         ShaderCompileResult traversalCompiled;
         STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
             .entryPointName = kMeshletStreamTraversalEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, traversalCompiled.diagnostics).transform([&](auto value) { traversalCompiled = std::move(value); }));
         std::unique_ptr<ShaderModule> traversalShader;
-        STREAM_LOD_REQUIRE(device->createShaderModule({.code = traversalCompiled.spirv.data(),
-            .byteSize = traversalCompiled.spirv.size() * 4}).transform([&](auto rhiValue) { traversalShader = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createShaderModule({
+            .spirv = traversalCompiled.spirv,
+        }).transform([&](auto rhiValue) { traversalShader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> traversalPipeline;
-        STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = traversalShader.get(), .computeEntryPoint = "main",
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { traversalPipeline = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createComputePipeline({
+            .computeShader = {traversalShader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+        }).transform([&](auto rhiValue) { traversalPipeline = std::move(rhiValue); }));
         ShaderCompileResult demandCompiled;
         const auto demandCompile = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
             .entryPointName = kMeshletStreamDemandEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, demandCompiled.diagnostics).transform([&](auto value) { demandCompiled = std::move(value); });
         if (!demandCompile) { return RhiTestResult::fail(demandCompiled.diagnostics); }
         std::unique_ptr<ShaderModule> demandShader;
-        STREAM_LOD_REQUIRE(device->createShaderModule({.code = demandCompiled.spirv.data(),
-            .byteSize = demandCompiled.spirv.size() * 4}).transform([&](auto rhiValue) { demandShader = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createShaderModule({
+            .spirv = demandCompiled.spirv,
+        }).transform([&](auto rhiValue) { demandShader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> demandPipeline;
-        STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = demandShader.get(), .computeEntryPoint = "main",
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { demandPipeline = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createComputePipeline({
+            .computeShader = {demandShader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+        }).transform([&](auto rhiValue) { demandPipeline = std::move(rhiValue); }));
         uint32_t positivePriorities = 0;
         uint32_t viewDemandReductions = 0;
         uint32_t speculativeRequests = 0;
@@ -766,14 +781,14 @@ private:
                     .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                 };
             }
-            if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             commands->bindBindlessHeap(*heap);
             if (cooperative) {
                 if (auto commandResult = commands->bindExecution((traversalPipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 push.traversalPhase = 2u;
                 commands->pushBindlessData(&push, sizeof(push));
                 commands->dispatch((kGroupCount + 63u) / 64u, 1, 1);
-                if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             if (frame == caseCount) {
@@ -783,7 +798,7 @@ private:
                 commands->pushBindlessData(&push, sizeof(push));
                 const uint32_t initGroups = static_cast<uint32_t>((sizes[State] / 4 + 63) / 64);
                 commands->dispatch(std::min(initGroups, 65535u), (initGroups + 65534) / 65535, 1);
-                if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             for (uint32_t phase : {0u, 12u, 10u, 13u, 5u, 11u, 6u, 7u, 2u, 9u, 9u}) {
                 if (phase == 9u && !prefetch) { continue; }
@@ -795,14 +810,14 @@ private:
                 commands->pushBindlessData(&push, sizeof(push));
                 commands->dispatch(phase == 12u ? static_cast<uint32_t>((sizes[Demand] / 4 + 63) / 64) : phase == 13u ? 4u : 1u, 1, 1);
                 for (auto& barrier : barriers) { barrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; }
-                if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             if (cooperative) {
                 if (auto commandResult = commands->bindExecution((traversalPipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 push.traversalPhase = 3u;
                 commands->pushBindlessData(&push, sizeof(push));
                 commands->dispatch((kRequestCapacity + 63u) / 64u, 1, 1);
-                if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             for (uint32_t index = 0; index < std::size(outputs); ++index) {
                 BufferBarrierDesc barrier{
@@ -810,29 +825,29 @@ private:
                     .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                 };
-                if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 {
-                    auto sourceSlice = (buffers[outputs[index]].get())->slice(0, outputSizes[index]);
+                    auto sourceSlice = (buffers[outputs[index]].get())->slice({0, outputSizes[index]});
                     if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                    auto destinationSlice = readback.get()->slice(offsets[index], outputSizes[index]);
+                    auto destinationSlice = readback.get()->slice({offsets[index], outputSizes[index]});
                     if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                     if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                 }
                 if (large && outputs[index] == State) {
                     {
-                        auto sourceSlice = (buffers[State].get())->slice(sizes[State] - 3 * sizeof(uint32_t), 3 * sizeof(uint32_t));
+                        auto sourceSlice = (buffers[State].get())->slice({sizes[State] - 3 * sizeof(uint32_t), 3 * sizeof(uint32_t)});
                         if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                        auto destinationSlice = readback.get()->slice(tailOffset, 3 * sizeof(uint32_t));
+                        auto destinationSlice = readback.get()->slice({tailOffset, 3 * sizeof(uint32_t)});
                         if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                         if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                     }
                 }
                 std::swap(barrier.before, barrier.after);
-                if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             STREAM_LOD_REQUIRE(commands->end());
             CommandBuffer* submitted[] = {commands.get()};
-            STREAM_LOD_REQUIRE(queue->submit({.commandBuffers = submitted, .commandBufferCount = 1, .signalFence = fence.get()}));
+            STREAM_LOD_REQUIRE(queue->submit({.commandBuffers = {submitted, 1}, .signalFence = fence.get()}));
             STREAM_LOD_REQUIRE(fence->wait());
             readback->invalidate();
             const auto* mapped = static_cast<const uint8_t*>(readback->map());
@@ -1082,10 +1097,13 @@ public:
         STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
             .entryPointName = kMeshletStreamActiveBuildEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
         std::unique_ptr<ShaderModule> shader;
-        STREAM_LOD_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> pipeline;
-        STREAM_LOD_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .computeEntryPoint = "main",
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
+        STREAM_LOD_REQUIRE(device->createComputePipeline({
+            .computeShader = {shader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -1132,7 +1150,7 @@ public:
                     .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                 };
             }
-            if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = 3}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), 3}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             MeshletStreamUserPush push{};
             push.paramsBuffer = handles[0].shaderIndex; push.activeHeaderBuffer = handles[2].shaderIndex;
@@ -1140,7 +1158,7 @@ public:
             commands->pushBindlessData(&push, sizeof(push)); commands->dispatch(1, 1, 1);
             STREAM_LOD_REQUIRE(commands->end());
             CommandBuffer* list[] = {commands.get()};
-            STREAM_LOD_REQUIRE(queue->submit({.commandBuffers = list, .commandBufferCount = 1, .signalFence = fence.get()}));
+            STREAM_LOD_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
             STREAM_LOD_REQUIRE(fence->wait());
             buffers[2]->invalidate();
             auto* headerData = buffers[2]->map();

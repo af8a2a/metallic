@@ -217,7 +217,7 @@ Result<> SceneLightResources::update(Device& device, CommandBuffer& commands,
         void* mapped = next->map();
         if (mapped == nullptr) { return makeError(Error::Failure); }
         std::memcpy(mapped, records.data(), static_cast<size_t>(bytes));
-        next->flush(0, bytes);
+        next->flush({0, bytes});
         next->unmap();
         host.retire(buffer_);
         buffer_ = std::move(next);

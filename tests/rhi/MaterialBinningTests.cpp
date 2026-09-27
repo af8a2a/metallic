@@ -53,9 +53,12 @@ public:
             for (uint32_t i = 0; i < kernels_.size(); ++i) {
                 const render::SlangMacroDefine defines[] = {{"PROBE_TYPED", "1"}, {"PROBE_ALTERNATE", "1"}};
                 render::ShaderCompileResult shader;
-                auto result = render::compileSlangShaderToSpirv({.moduleName = "MaterialBinningProbe",
-                    .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-                    .macroDefines = defines, .macroDefineCount = i == 2 ? 2u : 1u}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+                auto result = render::compileSlangShaderToSpirv({
+                    .moduleName = "MaterialBinningProbe",
+                    .entryPointName = entries[i],
+                    .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                    .macroDefines = {defines, i == 2 ? 2u : 1u},
+                }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
                 if (!result) { log = shader.diagnostics; return result; }
                 result = kernels_[i].initialize(*device_, {.spirv = shader.spirv,
                     .parameters = render::parameterAbi<MaterialProbeParams>(kProbeAbi)}, log);
@@ -72,12 +75,20 @@ public:
         for (uint32_t i = 0; i < (fixture_ ? 1u : 3u); ++i) {
             const render::SlangMacroDefine alternate[] = {{"PROBE_ALTERNATE", "1"}};
             render::ShaderCompileResult shader;
-            auto result = render::compileSlangShaderToSpirv({.moduleName = "MaterialBinningProbe",
-                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .macroDefines = alternate, .macroDefineCount = i == 2 ? 1u : 0u}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+            auto result = render::compileSlangShaderToSpirv({
+                .moduleName = "MaterialBinningProbe",
+                .entryPointName = entries[i],
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                .macroDefines = {alternate, i == 2 ? 1u : 0u},
+            }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { log = shader.diagnostics; return result; }
-            result = programs_[i].initialize(*device_, {.spirv = shader.spirv.data(),
-                .byteSize = shader.spirv.size() * 4, .pushConstantSize = 16,
-                .bindings = fixture_ ? layout : layout + 5, .bindingCount = fixture_ ? 5u : 4u, .resourceTableCount = !fixture_ && i == 0 ? 2u : 1u, .requiresRayQuery = false}, log);
+            result = programs_[i].initialize(*device_, {
+                .spirv = shader.spirv,
+                .pushConstantSize = 16,
+                .bindings = {fixture_ ? layout : layout + 5, fixture_ ? 5u : 4u},
+                .resourceTableCount = !fixture_ && i == 0 ? 2u : 1u,
+                .requiresRayQuery = false,
+            }, log);
             if (!result) { return result; }
         }
         return {};
@@ -97,8 +108,14 @@ public:
                 {.binding = 2, .buffer = context.outputBuffer("instances").buffer()},
                 {.binding = 3, .buffer = context.outputBuffer("materials").buffer()},
                 {.binding = 4, .buffer = context.outputBuffer("shadingMaterials").buffer()}};
-            return programs_[0].dispatch({.commandBuffer = &commands, .bindings = bindings, .bindingCount = 5,
-                .pushData = push, .pushDataSize = sizeof(push), .groupCountX = std::min(fixtureGroups, 65535u), .groupCountY = (fixtureGroups + 65534) / 65535});
+            return programs_[0].dispatch({
+                .commandBuffer = &commands,
+                .bindings = {bindings, 5},
+                .pushData = push,
+                .pushDataSize = sizeof(push),
+                .groupCountX = std::min(fixtureGroups, 65535u),
+                .groupCountY = (fixtureGroups + 65534) / 65535,
+            });
         }
         render::MaterialBinningResult bins;
         std::string log;
@@ -126,16 +143,22 @@ public:
             .before = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
         };
-        if (auto commandResult = commands.synchronize({.buffers = &argumentBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = {&argumentBarrier, 1}}); !commandResult) { return commandResult; }
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 5, .buffer = bins.bins}, {.binding = 6, .buffer = bins.tiles},
             {.binding = 7, .buffer = bins.arguments}, {.binding = 8, .buffer = context.outputBuffer("data").buffer()}};
-        render::ComputeDispatchDesc dispatch{.commandBuffer = &commands, .bindings = bindings, .bindingCount = 4,
-            .pushData = push, .pushDataSize = sizeof(push), .groupCountX = std::min(readbackGroups, 65535u), .groupCountY = (readbackGroups + 65534) / 65535};
+        render::ComputeDispatchDesc dispatch{
+            .commandBuffer = &commands,
+            .bindings = {bindings, 4},
+            .pushData = push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = std::min(readbackGroups, 65535u),
+            .groupCountY = (readbackGroups + 65534) / 65535,
+        };
         result = programs_[0].dispatch(dispatch);
         if (!result) { return result; }
         std::swap(argumentBarrier.before, argumentBarrier.after);
-        if (auto commandResult = commands.synchronize({.buffers = &argumentBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = {&argumentBarrier, 1}}); !commandResult) { return commandResult; }
         render::BufferBarrierDesc outputBarrier{
             .buffer = context.outputBuffer("data").buffer(),
             .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
@@ -155,11 +178,11 @@ public:
                 items[bin] = {.pushData = pushes[bin].data(), .argumentOffset = uint64_t(bin) * 12,
                     .program = (bin & 1u) != 0 ? &programs_[2] : nullptr};
             }
-            if (auto commandResult = commands.synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
-            return programs_[1].dispatchIndirectBatch(dispatch, items, {.buffers = &outputBarrier, .bufferCount = 1});
+            if (auto commandResult = commands.synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return commandResult; }
+            return programs_[1].dispatchIndirectBatch(dispatch, items, {.buffers = {&outputBarrier, 1}});
         }
         for (uint32_t bin = 0; bin < bins.binCount; ++bin) {
-            if (auto commandResult = commands.synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+            if (auto commandResult = commands.synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return commandResult; }
             push[3] = bin;
             dispatch.indirectOffset = uint64_t(bin) * 12;
             result = programs_[1].dispatch(dispatch);
@@ -191,11 +214,11 @@ private:
             .before = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
         };
-        if (auto commandResult = commands.synchronize({.buffers = &argumentBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = {&argumentBarrier, 1}}); !commandResult) { return commandResult; }
         result = kernels_[0].dispatch(commands, encoded, std::min(groups, 65535u), (groups + 65534) / 65535);
         if (!result) { return result; }
         std::swap(argumentBarrier.before, argumentBarrier.after);
-        if (auto commandResult = commands.synchronize({.buffers = &argumentBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = {&argumentBarrier, 1}}); !commandResult) { return commandResult; }
         for (uint64_t offset : {uint64_t(1), bins.arguments->desc().size - 4, UINT64_MAX}) {
             if (!render::hasError(kernels_[1].dispatchIndirect(commands, encoded, *bins.arguments, offset),
                 render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
@@ -214,7 +237,7 @@ private:
             params.bin = bin;
             result = writer.encode(params, kProbeAbi).transform([&](auto value) { encoded = std::move(value); });
             if (!result) { return result; }
-            if (auto commandResult = commands.synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+            if (auto commandResult = commands.synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return commandResult; }
             const size_t permutation = (context.frameIndex() & 1u) && (bin & 1u) ? 2 : 1;
             result = kernels_[permutation].dispatchIndirect(commands, encoded, *bins.arguments, uint64_t(bin) * 12);
             if (!result) { return result; }

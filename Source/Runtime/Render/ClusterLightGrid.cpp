@@ -39,10 +39,12 @@ Result<> initializeClusterLightGridProgram(Device& device, ComputeProgram& progr
 {
     const std::array<ComputeProgramBindingDesc, 5> bindings{{
         {.binding = 0}, {.binding = 1}, {.binding = 2}, {.binding = 3}, {.binding = 4}}};
-    return program.initialize(device, {.spirv = spirv.data(),
-        .byteSize = spirv.size() * sizeof(uint32_t), .bindings = bindings.data(),
-        .bindingCount = static_cast<uint32_t>(bindings.size()),
-        .debugName = "Cluster light grid", .requiresRayQuery = false}, log);
+    return program.initialize(device, {
+        .spirv = spirv,
+        .bindings = bindings,
+        .debugName = "Cluster light grid",
+        .requiresRayQuery = false,
+    }, log);
 }
 
 } // namespace
@@ -305,7 +307,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
             const void* data = index == 0 ? static_cast<const void*>(&params)
                 : index == 1 ? static_cast<const void*>(lightData.data()) : static_cast<const void*>(candidates.data());
             std::memcpy(mapped, data, static_cast<size_t>(sizes[index]));
-            next->buffers[index]->flush(0, sizes[index]);
+            next->buffers[index]->flush({0, sizes[index]});
             next->buffers[index]->unmap();
         }
     }
@@ -331,16 +333,20 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
             .before = resourceSyncScope(previousState, PipelineStageBits::AllCommands),
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         }}};
-    if (auto commandResult = commands.synchronize({.buffers = toWrite.data(), .bufferCount = static_cast<uint32_t>(toWrite.size())}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = toWrite}); !commandResult) { return commandResult; }
     std::array<ComputeDispatchBinding, 5> bindings;
     for (uint32_t index = 0; index < bindings.size(); ++index) {
         // Bind the entire grow-only allocation. Logical counts in params bound
         // all shader accesses, including after a viewport or light-count shrink.
         bindings[index] = {.binding = index, .buffer = next->buffers[index].get()};
     }
-    result = dispatchProgram.dispatch({.commandBuffer = &commands, .bindings = bindings.data(),
-        .bindingCount = static_cast<uint32_t>(bindings.size()),
-        .groupCountX = params.grid[0], .groupCountY = params.grid[1], .groupCountZ = params.grid[2]});
+    result = dispatchProgram.dispatch({
+        .commandBuffer = &commands,
+        .bindings = bindings,
+        .groupCountX = params.grid[0],
+        .groupCountY = params.grid[1],
+        .groupCountZ = params.grid[2],
+    });
     if (!result) {
         publication->cancel();
         log = "ClusterLightGrid compute dispatch failed";
@@ -357,7 +363,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
         }}};
-    if (auto commandResult = commands.synchronize({.buffers = toRead.data(), .bufferCount = static_cast<uint32_t>(toRead.size())}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = toRead}); !commandResult) { return commandResult; }
     if (frame && !reuse) {
         std::erase_if(resourcePool_, [&](const auto& candidate) {
             return candidate->completion.isComplete() && !reusable(candidate);

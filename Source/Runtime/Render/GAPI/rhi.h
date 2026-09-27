@@ -541,10 +541,37 @@ enum class BufferViewType : uint8_t {
     ReadWriteRaw,
 };
 
-struct BufferViewDesc {
-    BufferViewType type = BufferViewType::Raw;
+// Byte range relative to a buffer or slice. UINT64_MAX selects the remainder.
+struct BufferRange {
     uint64_t offset = 0;
     uint64_t size = UINT64_MAX;
+    bool operator==(const BufferRange&) const = default;
+
+    [[nodiscard]] Result<BufferRange> resolve(uint64_t totalSize) const
+    {
+        if (offset > totalSize || (size != UINT64_MAX && size > totalSize - offset)) {
+            return makeError(Error::InvalidArgument);
+        }
+        return BufferRange{offset, size == UINT64_MAX ? totalSize - offset : size};
+    }
+};
+
+struct TextureSubresourceRange {
+    uint32_t baseMip = 0;
+    uint32_t mipCount = 1;
+    uint32_t baseLayer = 0;
+    uint32_t layerCount = 1;
+
+    [[nodiscard]] bool valid(uint32_t totalMips, uint32_t totalLayers) const
+    {
+        return mipCount != 0 && layerCount != 0 && baseMip < totalMips && baseLayer < totalLayers &&
+            mipCount <= totalMips - baseMip && layerCount <= totalLayers - baseLayer;
+    }
+};
+
+struct BufferViewDesc {
+    BufferViewType type = BufferViewType::Raw;
+    BufferRange range;
     uint32_t structureStride = 0;
 };
 
@@ -564,10 +591,7 @@ struct TextureDesc {
 
 struct TextureViewDesc {
     Format format = Format::Unknown;
-    uint32_t baseMip = 0;
-    uint32_t mipCount = 1;
-    uint32_t baseLayer = 0;
-    uint32_t layerCount = 1;
+    TextureSubresourceRange range;
     // Values mirror the portable component selection, independent of Vulkan.
     enum class Component : uint8_t { Identity, Zero, One, R, G, B, A };
     std::array<Component, 4> swizzle{};
@@ -607,18 +631,14 @@ struct TextureBarrierDesc {
     TextureLayout newLayout = TextureLayout::Undefined;
     SyncScope before;
     SyncScope after;
-    uint32_t baseMip = 0;
-    uint32_t mipCount = 1;
-    uint32_t baseLayer = 0;
-    uint32_t layerCount = 1;
+    TextureSubresourceRange range;
 };
 
 struct BufferBarrierDesc {
     class Buffer* buffer = nullptr;
     SyncScope before;
     SyncScope after;
-    uint64_t offset = 0;
-    uint64_t size = UINT64_MAX;
+    BufferRange range;
 };
 
 struct ClusterAccelerationStructureProperties {
@@ -674,8 +694,7 @@ struct ClusterAccelerationStructureTriangleBuildInfo {
 };
 
 struct ClusterAccelerationStructureTriangleBuildDesc {
-    const ClusterAccelerationStructureTriangleBuildInfo* clusters = nullptr;
-    uint32_t clusterCount = 0;
+    std::span<const ClusterAccelerationStructureTriangleBuildInfo> clusters;
     uint32_t maxClusterTriangleCount = 0;
     uint32_t maxClusterVertexCount = 0;
     uint32_t maxClusterUniqueGeometryCount = 1;
@@ -700,8 +719,7 @@ struct ClusterAccelerationStructureMoveInfo {
 
 // Non-overlapping copies of triangle CLAS, with driver relocation of their contents.
 struct ClusterAccelerationStructureMoveDesc {
-    const ClusterAccelerationStructureMoveInfo* objects = nullptr;
-    uint32_t objectCount = 0;
+    std::span<const ClusterAccelerationStructureMoveInfo> objects;
     class Buffer* sourceAddressBuffer = nullptr;
     class Buffer* destinationAddressBuffer = nullptr;
     class Buffer* scratchBuffer = nullptr;
@@ -818,8 +836,7 @@ struct OpacityMicromapUsage {
 };
 
 struct OpacityMicromapBuildInput {
-    const OpacityMicromapUsage* usages = nullptr;
-    uint32_t usageCount = 0;
+    std::span<const OpacityMicromapUsage> usages;
     class Buffer* dataBuffer = nullptr;
     uint64_t dataOffset = 0;
     class Buffer* triangleBuffer = nullptr;
@@ -842,8 +859,7 @@ struct RayTracingTriangleGeometryDesc {
     class RayTracingAccelerationStructure* opacityMicromap = nullptr;
     // Histogram for these geometry triangles; required by the EXT OMM backend.
     // Only read during size queries and command recording.
-    const OpacityMicromapUsage* opacityMicromapUsages = nullptr;
-    uint32_t opacityMicromapUsageCount = 0;
+    std::span<const OpacityMicromapUsage> opacityMicromapUsages;
 };
 
 struct RayTracingAccelerationStructureBuildInputs {
@@ -851,8 +867,7 @@ struct RayTracingAccelerationStructureBuildInputs {
         RayTracingAccelerationStructureType::BottomLevel;
     RayTracingAccelerationStructureBuildFlags flags =
         RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
-    const RayTracingTriangleGeometryDesc* geometries = nullptr;
-    uint32_t geometryCount = 0;
+    std::span<const RayTracingTriangleGeometryDesc> geometries;
     uint32_t instanceCount = 0;
     const OpacityMicromapBuildInput* micromap = nullptr;
 };
@@ -914,8 +929,7 @@ struct RayTracingAccelerationStructureBuildDesc {
     class RayTracingAccelerationStructure* source = nullptr;
     RayTracingAccelerationStructureBuildMode mode =
         RayTracingAccelerationStructureBuildMode::Build;
-    const RayTracingTriangleGeometryDesc* geometries = nullptr;
-    uint32_t geometryCount = 0;
+    std::span<const RayTracingTriangleGeometryDesc> geometries;
     class Buffer* instanceBuffer = nullptr;
     uint32_t instanceCount = 0;
     class Buffer* scratchBuffer = nullptr;
@@ -1027,12 +1041,9 @@ struct PartitionedAccelerationStructureBuildDesc {
 
 struct BarrierDesc {
     // Resources remain explicit for layout transitions and graph dependency tracking.
-    const TextureBarrierDesc* textures = nullptr;
-    uint32_t textureCount = 0;
-    const BufferBarrierDesc* buffers = nullptr;
-    uint32_t bufferCount = 0;
-    const MemoryBarrierDesc* memory = nullptr;
-    uint32_t memoryCount = 0;
+    std::span<const TextureBarrierDesc> textures;
+    std::span<const BufferBarrierDesc> buffers;
+    std::span<const MemoryBarrierDesc> memory;
 };
 
 struct SemaphoreDesc {
@@ -1051,8 +1062,7 @@ struct RenderingAttachmentDesc {
 
 struct RenderingDesc {
     Rect renderArea;
-    const RenderingAttachmentDesc* colorAttachments = nullptr;
-    uint32_t colorAttachmentCount = 0;
+    std::span<const RenderingAttachmentDesc> colorAttachments;
     const RenderingAttachmentDesc* depthStencilAttachment = nullptr;
 };
 
@@ -1068,16 +1078,11 @@ struct SwapchainSemaphoreSubmitDesc {
 };
 
 struct QueueSubmitDesc {
-    const SemaphoreSubmitDesc* waitSemaphores = nullptr;
-    uint32_t waitSemaphoreCount = 0;
-    const SwapchainSemaphoreSubmitDesc* waitSwapchainSemaphores = nullptr;
-    uint32_t waitSwapchainSemaphoreCount = 0;
-    class CommandBuffer* const* commandBuffers = nullptr;
-    uint32_t commandBufferCount = 0;
-    const SemaphoreSubmitDesc* signalSemaphores = nullptr;
-    uint32_t signalSemaphoreCount = 0;
-    const SwapchainSemaphoreSubmitDesc* signalSwapchainSemaphores = nullptr;
-    uint32_t signalSwapchainSemaphoreCount = 0;
+    std::span<const SemaphoreSubmitDesc> waitSemaphores;
+    std::span<const SwapchainSemaphoreSubmitDesc> waitSwapchainSemaphores;
+    std::span<class CommandBuffer* const> commandBuffers;
+    std::span<const SemaphoreSubmitDesc> signalSemaphores;
+    std::span<const SwapchainSemaphoreSubmitDesc> signalSwapchainSemaphores;
     class Fence* signalFence = nullptr;
 };
 
@@ -1101,9 +1106,9 @@ struct RasterizationState {
     FrontFace frontFace = FrontFace::CounterClockwise;
 };
 
+// SPIR-V is supplied in words and copied during creation. The input may then be released.
 struct ShaderModuleDesc {
-    const uint32_t* code = nullptr;
-    uint64_t byteSize = 0;
+    std::span<const uint32_t> spirv;
     const char* debugName = nullptr;
 };
 
@@ -1160,15 +1165,17 @@ struct PipelineCacheStats {
     uint64_t backendDataSize = 0;
 };
 
+// Stages borrow their module only for creation; executables own backend state.
+struct ShaderStageDesc {
+    class ShaderModule* module = nullptr;
+    const char* entryPoint = "main";
+};
+
 struct GraphicsPipelineDesc {
-    class ShaderModule* vertexShader = nullptr;
-    class ShaderModule* taskShader = nullptr;
-    class ShaderModule* meshShader = nullptr;
-    class ShaderModule* fragmentShader = nullptr;
-    const char* vertexEntryPoint = "main";
-    const char* taskEntryPoint = "main";
-    const char* meshEntryPoint = "main";
-    const char* fragmentEntryPoint = "main";
+    ShaderStageDesc vertexShader;
+    ShaderStageDesc taskShader;
+    ShaderStageDesc meshShader;
+    ShaderStageDesc fragmentShader;
     uint32_t taskRequiredSubgroupSize = 0;
     // Full-subgroup mode is accepted only with a fixed required subgroup size.
     bool taskRequireFullSubgroups = false;
@@ -1188,24 +1195,18 @@ struct GraphicsPipelineDesc {
 };
 
 struct ComputePipelineDesc {
-    class ShaderModule* computeShader = nullptr;
-    const char* computeEntryPoint = "main";
+    ShaderStageDesc computeShader;
     bool usesBindlessHeap = false;
     uint32_t bindlessUserPushDataSize = 0;
-    const ShaderBindingMappingDesc* bindingMappings = nullptr;
-    uint32_t bindingMappingCount = 0;
+    std::span<const ShaderBindingMappingDesc> bindingMappings;
     class PipelineCache* pipelineCache = nullptr;
     // Required for membership in a DGC indirect execution set.
     bool indirectBindable = false;
 };
 
 struct GraphicsShaderObjectProgramDesc {
-    const uint32_t* vertexCode = nullptr;
-    uint64_t vertexByteSize = 0;
-    const char* vertexEntryPoint = "main";
-    const uint32_t* fragmentCode = nullptr;
-    uint64_t fragmentByteSize = 0;
-    const char* fragmentEntryPoint = "main";
+    ShaderStageDesc vertexShader;
+    ShaderStageDesc fragmentShader;
     bool usesBindlessHeap = false;
     uint32_t bindlessUserPushDataSize = 0;
     // Required for membership in a DGC indirect execution set.
@@ -1340,8 +1341,7 @@ struct StreamerStats {
 };
 
 struct StreamBufferDataDesc {
-    const StreamDataChunk* dataChunks = nullptr;
-    uint32_t dataChunkCount = 0;
+    std::span<const StreamDataChunk> dataChunks;
     uint32_t placementAlignment = 1;
     class Buffer* dstBuffer = nullptr;
     uint64_t dstOffset = 0;
@@ -1588,8 +1588,8 @@ public:
     const void* deviceIdentity() const;
     uint64_t deviceAddress() const;
     std::shared_ptr<void> retainAllocation() const;
-    // UINT64_MAX takes the remainder; failure clears out. Empty CPU slices are valid.
-    [[nodiscard]] Result<BufferSlice> subslice(uint64_t offset = 0, uint64_t size = UINT64_MAX) const;
+    // UINT64_MAX takes the remainder; failure returns an error. Empty CPU slices are valid.
+    [[nodiscard]] Result<BufferSlice> subslice(BufferRange range = {}) const;
     // Requires a nonempty addressed range, all usage bits, and absolute alignment.
     Result<> validate(const void* device, BufferUsageBits usage, uint64_t alignment = 1,
         uint64_t minimumSize = 1) const;
@@ -1614,7 +1614,7 @@ public:
     const BufferDesc& desc() const;
     ResourceMemoryInfo memoryInfo() const;
     uint64_t deviceAddress() const;
-    [[nodiscard]] Result<BufferSlice> slice(uint64_t offset = 0, uint64_t size = UINT64_MAX) const;
+    [[nodiscard]] Result<BufferSlice> slice(BufferRange range = {}) const;
     // Retains this allocation, not the movable public wrapper. Device must outlive it.
     std::shared_ptr<void> retainAllocation() const;
     const void* deviceIdentity() const;
@@ -1622,8 +1622,8 @@ public:
     uint64_t hostWriteAlignment() const;
     void* map();
     void unmap();
-    void flush(uint64_t offset = 0, uint64_t size = UINT64_MAX);
-    void invalidate(uint64_t offset = 0, uint64_t size = UINT64_MAX);
+    void flush(BufferRange range = {});
+    void invalidate(BufferRange range = {});
 
 private:
     explicit Buffer(std::unique_ptr<detail::BufferImpl> impl);
@@ -1674,8 +1674,7 @@ public:
     const TimestampQueryPoolDesc& desc() const;
     Result<> readResults(
         uint32_t firstQuery,
-        uint32_t queryCount,
-        TimestampQueryResult* outResults) const;
+        std::span<TimestampQueryResult> outResults) const;
     double durationMilliseconds(uint64_t beginTimestamp, uint64_t endTimestamp) const;
 
 private:
@@ -1704,8 +1703,7 @@ public:
     const RayTracingAccelerationStructureCompactionQueryPoolDesc& desc() const;
     Result<> readResults(
         uint32_t firstQuery,
-        uint32_t queryCount,
-        uint64_t* outCompactedSizes) const;
+        std::span<uint64_t> outCompactedSizes) const;
 
 private:
     explicit RayTracingAccelerationStructureCompactionQueryPool(
@@ -1977,10 +1975,10 @@ public:
     [[nodiscard]] Result<BindlessHandle> allocateAccelerationStructure();
     void release(BindlessHandle handle);
     Result<> writeSampler(BindlessHandle handle, const SamplerDesc& sampler);
-    Result<> writeSamplers(const BindlessSamplerWrite* writes, uint32_t writeCount);
+    Result<> writeSamplers(std::span<const BindlessSamplerWrite> writes);
     Result<> writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state = ResourceState::ShaderRead);
     Result<> writeStorageImage(BindlessHandle handle, TextureView& view);
-    Result<> writeImages(const BindlessImageWrite* writes, uint32_t writeCount);
+    Result<> writeImages(std::span<const BindlessImageWrite> writes);
     Result<> writeBufferView(BindlessHandle handle, BufferView& view);
     Result<> writeConstantBuffer(BindlessHandle handle, Buffer& buffer);
     Result<> writeStorageBuffer(BindlessHandle handle, Buffer& buffer);
@@ -2239,12 +2237,10 @@ public:
     [[nodiscard]] Result<RayTracingAccelerationStructureProperties> queryRayTracingAccelerationStructureProperties() const;
     [[nodiscard]] Result<RayTracingAccelerationStructureBuildSizes> queryRayTracingAccelerationStructureBuildSizes(const RayTracingAccelerationStructureBuildInputs& inputs) const;
     [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createRayTracingAccelerationStructure(const RayTracingAccelerationStructureDesc& desc);
-    [[nodiscard]] Result<std::unique_ptr<Buffer>> createRayTracingInstanceBuffer(const RayTracingInstanceDesc* instances,
-        uint32_t instanceCount);
+    [[nodiscard]] Result<std::unique_ptr<Buffer>> createRayTracingInstanceBuffer(std::span<const RayTracingInstanceDesc> instances);
     Result<> writeRayTracingInstances(
         Buffer& buffer,
-        const RayTracingInstanceDesc* instances,
-        uint32_t instanceCount);
+        std::span<const RayTracingInstanceDesc> instances);
     [[nodiscard]] Result<std::unique_ptr<BufferView>> createBufferView(Buffer& buffer, const BufferViewDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<Texture>> createTexture(const TextureDesc& desc);
     [[nodiscard]] Result<uint64_t> textureAllocationSize(const TextureDesc& desc);
@@ -2263,11 +2259,11 @@ public:
     [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureBottomLevelBuildSizes(const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc) const;
     [[nodiscard]] Result<PartitionedAccelerationStructureBuildSizes> queryPartitionedAccelerationStructureBuildSizes(const PartitionedAccelerationStructureBuildInputs& inputs) const;
     [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createPartitionedAccelerationStructure(const PartitionedAccelerationStructureDesc& desc);
-    [[nodiscard]] Result<std::unique_ptr<Buffer>> createPartitionedAccelerationStructureInstanceBuffer(const PartitionedAccelerationStructureInstanceDesc* instances,
-        uint32_t instanceCount);
+    [[nodiscard]] Result<std::unique_ptr<Buffer>> createPartitionedAccelerationStructureInstanceBuffer(std::span<const PartitionedAccelerationStructureInstanceDesc> instances);
 
 private:
     explicit Device(std::unique_ptr<detail::DeviceImpl> impl);
+    bool validShaderStage(const ShaderStageDesc& stage) const;
 
     std::unique_ptr<detail::DeviceImpl> impl_;
 

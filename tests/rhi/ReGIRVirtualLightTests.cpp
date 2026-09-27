@@ -94,10 +94,12 @@ public:
             {.binding = 0}, {.binding = 50}, {.binding = 52},
             {.binding = 53, .kind = render::ComputeResourceBindingKind::SampledImage},
         }};
-        REGIR_CHECK(program_.initialize(*device_, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t),
-            .pushConstantSize = sizeof(ReGIRProbePush), .bindings = bindings.data(),
-            .bindingCount = static_cast<uint32_t>(bindings.size()), .requiresRayQuery = false}, log_));
+        REGIR_CHECK(program_.initialize(*device_, {
+            .spirv = shader.spirv,
+            .pushConstantSize = sizeof(ReGIRProbePush),
+            .bindings = bindings,
+            .requiresRayQuery = false,
+        }, log_));
         return RhiTestResult::pass();
     }
 
@@ -145,7 +147,7 @@ public:
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
             };
-            if (auto commandResult = commands_->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands_->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         }
         const auto lightCount = static_cast<uint32_t>(lights.size() - 1);
         render::ReGIRBuildParameters parameters;
@@ -180,7 +182,7 @@ public:
                     .before = {},
                     .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
                 };
-                if (auto commandResult = commands_->synchronize({.textures = &retryBarrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands_->synchronize({.textures = {&retryBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             REGIR_CHECK(wrappedLights.update(*device_, *commands_, samplingHost,
                 nullptr, *cancelledWrapperSettings));
@@ -232,7 +234,7 @@ public:
             .before = {},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
         };
-        if (auto commandResult = commands_->synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands_->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         render::TextureView* pdfViews[] = {
             cancelledWrapperSettings != nullptr ? wrappedLights.lightPdfView() : pdf_.view()};
         const std::array<render::ComputeDispatchBinding, 4> bindings{{
@@ -240,14 +242,18 @@ public:
             {.binding = 50, .buffer = cancelledWrapperSettings != nullptr ? wrappedLights.buffer() : lightBuffer.get()},
             {.binding = 52, .buffer = cancelledWrapperSettings != nullptr ? wrappedLights.reGIRBuffer()
                 : (syntheticGrid ? syntheticGrid.get() : selector_.buffer())},
-            {.binding = 53, .textureViews = pdfViews, .textureViewCount = 1},
+            {.binding = 53, .textureViews = {pdfViews, 1}},
         }};
         ReGIRProbePush push;
         std::copy(position.begin(), position.end(), push.position);
         push.seedOffset = frameIndex_;
-        REGIR_CHECK(program_.dispatch({.commandBuffer = commands_.get(), .bindings = bindings.data(),
-            .bindingCount = static_cast<uint32_t>(bindings.size()), .pushData = &push,
-            .pushDataSize = sizeof(push), .groupCountX = kProbeSampleCount / 256}));
+        REGIR_CHECK(program_.dispatch({
+            .commandBuffer = commands_.get(),
+            .bindings = bindings,
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = kProbeSampleCount / 256,
+        }));
         const std::array transferBarriers{
             render::BufferBarrierDesc{
                 .buffer = probe.get(),
@@ -260,12 +266,13 @@ public:
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             },
         };
-        if (auto commandResult = commands_->synchronize({.buffers = transferBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(transferBarriers.size())}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands_->synchronize({
+            .buffers = transferBarriers,
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
-            auto sourceSlice = probe.get()->slice(0, outputBytes);
+            auto sourceSlice = probe.get()->slice({0, outputBytes});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = readback.get()->slice(0, outputBytes);
+            auto destinationSlice = readback.get()->slice({0, outputBytes});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
@@ -273,10 +280,10 @@ public:
         render::CommandBuffer* submissions[] = {commands_.get()};
         if (cancelledWrapperSettings != nullptr) {
             samplingHost.endFrame();
-            REGIR_CHECK(samplingSubmissions.submit({.commandBuffers = submissions, .commandBufferCount = 1}, samplingFrame));
+            REGIR_CHECK(samplingSubmissions.submit({.commandBuffers = {submissions, 1}}, samplingFrame));
             REGIR_CHECK(samplingFrame.wait(10'000'000'000ull));
         } else {
-            REGIR_CHECK(queue_->submit({.commandBuffers = submissions, .commandBufferCount = 1}));
+            REGIR_CHECK(queue_->submit({.commandBuffers = {submissions, 1}}));
         }
         REGIR_CHECK(queue_->waitIdle());
         readback->invalidate();

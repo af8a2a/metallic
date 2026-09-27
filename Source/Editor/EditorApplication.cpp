@@ -2614,10 +2614,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
         result = device_->createTextureView(*texture,
             render::TextureViewDesc{
                 .format = swapchain_->format(),
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { view = std::move(rhiValue); });
         if (!result || view == nullptr) {
             spdlog::error("createTextureView(swapchain) failed with Result {}", render::resultToString(result));
@@ -6848,14 +6845,10 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             .newLayout = render::TextureLayout::ColorAttachment,
             .before = metallic::render::resourceSyncScope(swapchainImageStates_[imageIndex], metallic::render::PipelineStageBits::AllCommands),
             .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
+            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
         if (auto commandResult = frame.commandBuffer->synchronize(render::BarrierDesc{
-            .textures = &toColor,
-            .textureCount = 1,
+            .textures = {&toColor, 1},
         }); !commandResult) { return false; }
         swapchainImageStates_[imageIndex] = render::ResourceState::ColorAttachment;
 
@@ -6883,8 +6876,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
         });
         result = frame.commandBuffer->beginRendering(render::RenderingDesc{
             .renderArea = renderArea,
-            .colorAttachments = &colorAttachment,
-            .colorAttachmentCount = 1,
+            .colorAttachments = {&colorAttachment, 1},
         });
         if (!result) {
             spdlog::error("Editor attachment preparation failed: {}", render::resultToString(result));
@@ -6907,14 +6899,10 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             .newLayout = render::TextureLayout::Present,
             .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .after = {},
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
+            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
         if (auto commandResult = frame.commandBuffer->synchronize(render::BarrierDesc{
-            .textures = &toPresent,
-            .textureCount = 1,
+            .textures = {&toPresent, 1},
         }); !commandResult) { return false; }
         swapchainImageStates_[imageIndex] = render::ResourceState::Present;
     }
@@ -6946,12 +6934,9 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
     {
         auto profileScope = profiler_.scope("Submit Frame");
         const render::QueueSubmitDesc submitDesc{
-            .waitSwapchainSemaphores = &waitSemaphore,
-            .waitSwapchainSemaphoreCount = renderMainViewport ? 1u : 0u,
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
-            .signalSwapchainSemaphores = &signalSemaphore,
-            .signalSwapchainSemaphoreCount = renderMainViewport ? 1u : 0u,
+            .waitSwapchainSemaphores = {&waitSemaphore, renderMainViewport ? 1u : 0u},
+            .commandBuffers = {commandBuffers, 1},
+            .signalSwapchainSemaphores = {&signalSemaphore, renderMainViewport ? 1u : 0u},
         };
         result = hasPlatformWindows
             ? frameSubmissions_.submitSegment(submitDesc, frame.context).transform([&](auto value) { segmentCompletion = std::move(value); })

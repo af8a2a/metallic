@@ -454,31 +454,30 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
                 .before = resourceSyncScope(copy.source->state, PipelineStageBits::AllCommands),
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
             };
-            if (auto commandResult = commands.synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
+            if (auto commandResult = commands.synchronize({.textures = {&barrier, 1}}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
             commands.copyTextureToBuffer({.texture = copy.source->texture, .buffer = readback->buffers[i].get(),
                 .bufferRowPitch = copy.width * readback->capture->artifacts[i].layout.stride,
                 .bufferSlicePitch = static_cast<uint32_t>(copy.bytes), .textureOffsetX = static_cast<int32_t>(copy.x), .textureOffsetY = static_cast<int32_t>(copy.y),
                 .width = copy.width, .height = copy.height});
             std::swap(barrier.before, barrier.after); std::swap(barrier.oldLayout, barrier.newLayout);
-            if (auto commandResult = commands.synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
+            if (auto commandResult = commands.synchronize({.textures = {&barrier, 1}}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
         } else {
             BufferBarrierDesc barrier{
                 .buffer = copy.source->buffer,
                 .before = resourceSyncScope(copy.source->state, PipelineStageBits::AllCommands),
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
-                .offset = copy.offset,
-                .size = copy.bytes,
+                .range = {.offset = copy.offset, .size = copy.bytes},
             };
-            if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
+            if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
             {
-                auto sourceSlice = copy.source->buffer->slice(copy.offset, copy.bytes);
+                auto sourceSlice = copy.source->buffer->slice({copy.offset, copy.bytes});
                 if (!sourceSlice) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(sourceSlice)}; readbacks_.push_back(std::move(readback)); return; }
-                auto destinationSlice = (readback->buffers[i].get())->slice(0, copy.bytes);
+                auto destinationSlice = (readback->buffers[i].get())->slice({0, copy.bytes});
                 if (!destinationSlice) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(destinationSlice)}; readbacks_.push_back(std::move(readback)); return; }
                 if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
             }
             std::swap(barrier.before, barrier.after);
-            if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
+            if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { core_.transition(request.id, "Recorded"); readback->recordingError = {"CopyRecordingFailed", resultToString(commandResult)}; readbacks_.push_back(std::move(readback)); return; }
         }
     }
     if (!probes.empty()) {

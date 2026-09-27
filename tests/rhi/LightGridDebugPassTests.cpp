@@ -466,12 +466,12 @@ public:
                 .before = metallic::render::resourceSyncScope(firstReadback ? render::ResourceState::Undefined : render::ResourceState::TransferDestination, metallic::render::PipelineStageBits::AllCommands),
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             };
-            if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
                 .width = kExtent, .height = kExtent, .depth = 1});
             LIGHT_DEBUG_CHECK(commands->end());
             render::CommandBuffer* submission[] = {commands.get()};
-            LIGHT_DEBUG_CHECK(queue->submit({.commandBuffers = submission, .commandBufferCount = 1}));
+            LIGHT_DEBUG_CHECK(queue->submit({.commandBuffers = {submission, 1}}));
             LIGHT_DEBUG_CHECK(queue->waitIdle());
             readback->invalidate();
             const auto* mapped = static_cast<const uint32_t*>(readback->map());

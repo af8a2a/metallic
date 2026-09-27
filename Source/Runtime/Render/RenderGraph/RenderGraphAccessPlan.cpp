@@ -188,7 +188,7 @@ Result<GraphAccessBinding> bindGraphAccessResource(const RenderGraphResource& re
         !resource.bufferDesc.size) {
         return makeError(Error::InvalidArgument);
     }
-    auto slice = resource.buffer->slice(0, resource.bufferDesc.size);
+    auto slice = resource.buffer->slice({0, resource.bufferDesc.size});
     if (!slice) { return makeError(slice.error()); }
     return GraphAccessBinding{.buffer = std::move(*slice)};
 }
@@ -229,10 +229,7 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
                 .newLayout = textureLayoutForResourceState(barrier.after),
                 .before = barrier.beforeScope,
                 .after = barrier.afterScope,
-                .baseMip = 0,
-                .mipCount = binding.mipCount,
-                .baseLayer = 0,
-                .layerCount = binding.layerCount,
+                .range = {.baseMip = 0, .mipCount = binding.mipCount, .baseLayer = 0, .layerCount = binding.layerCount},
             });
         } else {
             // Buffers and execution-only dependencies need no image transition.
@@ -249,8 +246,10 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
             if (!retained) { return retained; }
         }
     }
-    return commands.synchronize({.textures = textures.data(), .textureCount = uint32_t(textures.size()),
-        .memory = memory.data(), .memoryCount = uint32_t(memory.size())});
+    return commands.synchronize({
+        .textures = textures,
+        .memory = memory,
+    });
 }
 
 Result<GraphAccessPlan> buildGraphAccessPlan(

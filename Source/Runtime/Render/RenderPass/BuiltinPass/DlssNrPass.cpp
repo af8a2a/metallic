@@ -241,9 +241,13 @@ private:
             {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
         };
-        return sliderProgram_.initialize(*device_, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = sizeof(SliderDebugPush),
-            .bindings = bindings, .bindingCount = 2, .debugName = "DlssNrSliderDebug", .requiresRayQuery = false}, log);
+        return sliderProgram_.initialize(*device_, {
+            .spirv = shader.spirv,
+            .pushConstantSize = sizeof(SliderDebugPush),
+            .bindings = {bindings, 2},
+            .debugName = "DlssNrSliderDebug",
+            .requiresRayQuery = false,
+        }, log);
     }
 
     Result<> drawSliderDebug(RenderGraphExecutionContext& context, TextureHandle input, TextureHandle output)
@@ -258,12 +262,17 @@ private:
         auto& command = context.commandBuffer();
         auto* source = input.view();
         const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = &source, .textureViewCount = 1},
+            {.binding = 0, .textureViews = {&source, 1}},
             {.binding = 2, .textureView = output.view()},
         };
-        return sliderProgram_.dispatch({.commandBuffer = &command,
-            .bindings = bindings, .bindingCount = 2, .pushData = &push, .pushDataSize = sizeof(push),
-            .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
+        return sliderProgram_.dispatch({
+            .commandBuffer = &command,
+            .bindings = {bindings, 2},
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+        });
     }
 
     static void copyColor(CommandBuffer& command, TextureHandle input, TextureHandle output)

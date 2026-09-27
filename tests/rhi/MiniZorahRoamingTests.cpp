@@ -109,19 +109,18 @@ public:
                 .buffer = resource.buffer,
                 .before = metallic::render::resourceSyncScope(resource.state, metallic::render::PipelineStageBits::AllCommands),
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
-                .offset = resource.offset,
-                .size = size,
+                .range = {.offset = resource.offset, .size = size},
             };
-            if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+            if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             {
-                auto sourceSlice = resource.buffer->slice(resource.offset, size);
+                auto sourceSlice = resource.buffer->slice({resource.offset, size});
                 if (!sourceSlice) { throw std::runtime_error(std::string("source slice failed: ") + metallic::render::resultToString(sourceSlice)); }
-                auto destinationSlice = buffer.get()->slice(0, size);
+                auto destinationSlice = buffer.get()->slice({0, size});
                 if (!destinationSlice) { throw std::runtime_error(std::string("destination slice failed: ") + metallic::render::resultToString(destinationSlice)); }
                 if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { throw std::runtime_error(std::string("copyBuffer failed: ") + metallic::render::resultToString(commandResult)); }
             }
             std::swap(barrier.before, barrier.after);
-            if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+            if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         }
     }
     template<typename T> std::vector<T> read(const std::string& name)
@@ -156,7 +155,7 @@ public:
     Json readTimings()
     {
         std::array<TimestampQueryResult, stages.size()> values{};
-        checkRoam(timestamps && bool(timestamps->readResults(0, static_cast<uint32_t>(values.size()), values.data())), "Cannot read checkpoint timestamps");
+        checkRoam(timestamps && bool(timestamps->readResults(0, values)), "Cannot read checkpoint timestamps");
         Json result;
         for (uint32_t i = 0; i < values.size(); ++i) {
             checkRoam(values[i].available, "Incomplete checkpoint timestamp");

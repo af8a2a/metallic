@@ -475,19 +475,19 @@ uint64_t shaderRequestHash(const SlangShaderDesc& desc, SlangShaderDebugMode deb
     hash = hashText(hash, searchPath.c_str());
     hash = hashText(hash, PROJECT_SOURCE_DIR "/Shaders/Modules");
     hash = hashText(hash, PROJECT_SOURCE_DIR "/Shaders/Interop");
-    hash = hashValue(hash, desc.additionalSearchPathCount);
-    for (uint32_t index = 0; index < desc.additionalSearchPathCount; ++index) {
+    hash = hashValue(hash, static_cast<uint32_t>(desc.additionalSearchPaths.size()));
+    for (uint32_t index = 0; index < desc.additionalSearchPaths.size(); ++index) {
         const std::string additionalSearchPath = normalizedAbsolutePath(
             desc.additionalSearchPaths[index]).generic_string();
         hash = hashText(hash, additionalSearchPath.c_str());
     }
-    hash = hashValue(hash, desc.capabilityCount);
-    for (uint32_t index = 0; index < desc.capabilityCount; ++index) {
-        hash = hashText(hash, desc.capabilities != nullptr ? desc.capabilities[index] : nullptr);
+    hash = hashValue(hash, static_cast<uint32_t>(desc.capabilities.size()));
+    for (uint32_t index = 0; index < desc.capabilities.size(); ++index) {
+        hash = hashText(hash, !desc.capabilities.empty() ? desc.capabilities[index] : nullptr);
     }
-    hash = hashValue(hash, desc.macroDefineCount);
-    for (uint32_t index = 0; index < desc.macroDefineCount; ++index) {
-        const SlangMacroDefine* macro = desc.macroDefines != nullptr
+    hash = hashValue(hash, static_cast<uint32_t>(desc.macroDefines.size()));
+    for (uint32_t index = 0; index < desc.macroDefines.size(); ++index) {
+        const SlangMacroDefine* macro = !desc.macroDefines.empty()
             ? &desc.macroDefines[index]
             : nullptr;
         hash = hashText(hash, macro != nullptr ? macro->name : nullptr);
@@ -864,10 +864,11 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     }
 
     if (desc.moduleName == nullptr || desc.entryPointName == nullptr || desc.searchPath == nullptr ||
-        (desc.additionalSearchPathCount > 0 && desc.additionalSearchPaths == nullptr)) {
+        (desc.additionalSearchPaths.size() > UINT32_MAX || desc.capabilities.size() > UINT32_MAX ||
+         desc.macroDefines.size() > UINT32_MAX)) {
         return makeError(Error::InvalidArgument);
     }
-    for (uint32_t index = 0; index < desc.additionalSearchPathCount; ++index) {
+    for (uint32_t index = 0; index < desc.additionalSearchPaths.size(); ++index) {
         if (desc.additionalSearchPaths[index] == nullptr ||
             desc.additionalSearchPaths[index][0] == '\0') {
             return makeError(Error::InvalidArgument);
@@ -913,9 +914,9 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     }
 
     std::vector<std::filesystem::path> normalizedSearchPaths;
-    normalizedSearchPaths.reserve(5u + desc.additionalSearchPathCount);
+    normalizedSearchPaths.reserve(5u + desc.additionalSearchPaths.size());
     normalizedSearchPaths.push_back(normalizedAbsolutePath(desc.searchPath));
-    for (uint32_t index = 0; index < desc.additionalSearchPathCount; ++index) {
+    for (uint32_t index = 0; index < desc.additionalSearchPaths.size(); ++index) {
         normalizedSearchPaths.push_back(
             normalizedAbsolutePath(desc.additionalSearchPaths[index]));
     }
@@ -943,7 +944,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         searchPaths.push_back(searchPath.c_str());
     }
     std::vector<slang::CompilerOptionEntry> compilerOptions;
-    compilerOptions.reserve(desc.capabilityCount + desc.macroDefineCount + 4u);
+    compilerOptions.reserve(desc.capabilities.size() + desc.macroDefines.size() + 4u);
     if (nativeDescriptorHeapEnabled(desc)) {
         compilerOptions.push_back(slang::CompilerOptionEntry{
             .name = slang::CompilerOptionName::Capability,
@@ -982,7 +983,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         }
     }
     for (uint32_t capabilityIndex = 0;
-         desc.capabilities != nullptr && capabilityIndex < desc.capabilityCount;
+         !desc.capabilities.empty() && capabilityIndex < desc.capabilities.size();
          ++capabilityIndex) {
         const char* capability = desc.capabilities[capabilityIndex];
         if (capability == nullptr || capability[0] == '\0') {
@@ -997,7 +998,7 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
         });
     }
     for (uint32_t macroIndex = 0;
-         desc.macroDefines != nullptr && macroIndex < desc.macroDefineCount;
+         !desc.macroDefines.empty() && macroIndex < desc.macroDefines.size();
          ++macroIndex) {
         const SlangMacroDefine& macro = desc.macroDefines[macroIndex];
         if (macro.name == nullptr || macro.name[0] == '\0') {

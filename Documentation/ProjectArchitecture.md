@@ -367,6 +367,12 @@ RHI 上层同样用 `Result<T>` 返回一次操作产生的值：资源注册返
 
 `ParameterWriter` 的资源字段构造仍保留首个错误，以便直接组装 Shader 参数结构；必须检查最终的 `encode()` 或 `status()`。`encode()` 只有在所有资源注册和上传成功时才返回不可变参数包。着色器编译通过独立诊断字符串保留失败详情，不能只在成功结果中保存错误日志。
 
+借用集合统一使用 `std::span`：提交数组、barrier、渲染附件、BLAS/OMM/CLAS 构建输入、上传分块、Compute bindings 和 Slang 编译选项不再分开传指针与数量。查询读回使用可写 span 表达调用方提供的存储；GPU 缓冲区内部的实例数量和 GPU ABI 计数字段保留。span 不拥有内存，调用方需让数据存活到同步调用返回；准备后的执行包继续自行保留资源。
+
+buffer 的视图、barrier、切片及 flush/invalidate 共用 `BufferRange`，偏移和大小以字节计，`UINT64_MAX` 表示剩余范围。`BufferSlice` 在校验范围后保留底层分配；末端空切片可表示，但不能用于需要数据的 GPU 操作或视图。纹理视图和 barrier 共用 `TextureSubresourceRange`，默认一个 mip 和一个 layer，数量必须非零且范围不能越界。
+
+`ShaderModuleDesc` 与 `ComputeProgramDesc` 统一接收 `std::span<const uint32_t> spirv`，大小由 word span 确定。graphics/compute pipeline 与 shader object 使用同一个 `ShaderStageDesc { module, entryPoint }`；省略 entry point 时为 `main`，显式空指针或空字符串无效。模块复制输入并保留设备实际使用的 SPIR-V，OMM 转换只在模块创建时执行，shader object 复用同一份结果。阶段模块必须属于创建设备，创建完成后可释放输入 words 和模块包装对象。
+
 ### 10.2 Vulkan 实现
 
 `VulkanRhi.cpp` 使用 Volk 加载 Vulkan，并用 VMA 管理资源内存。PImpl 隔离大多数 Vulkan 类型，但以下位置仍显式依赖 Vulkan：

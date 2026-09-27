@@ -246,17 +246,13 @@ public:
         }
 #endif
         result = compileSlangShaderToSpirv(SlangShaderDesc{
-                .moduleName = kSceneRtxdiShaderModuleName,
-                .entryPointName = kSceneRtxdiEntryPoint,
-                .searchPath = kTriangleShaderSearchPath,
-                .additionalSearchPaths = additionalSearchPaths.data(),
-                .additionalSearchPathCount =
-                    static_cast<uint32_t>(additionalSearchPaths.size()),
-                .capabilities = capabilities.data(),
-                .capabilityCount = static_cast<uint32_t>(capabilities.size()),
-                .macroDefines = defines,
-                .macroDefineCount = static_cast<uint32_t>(std::size(defines)),
-            }, computeCompile.diagnostics).transform([&](auto value) { computeCompile = std::move(value); });
+            .moduleName = kSceneRtxdiShaderModuleName,
+            .entryPointName = kSceneRtxdiEntryPoint,
+            .searchPath = kTriangleShaderSearchPath,
+            .additionalSearchPaths = additionalSearchPaths,
+            .capabilities = capabilities,
+            .macroDefines = {defines, static_cast<uint32_t>(std::size(defines))},
+        }, computeCompile.diagnostics).transform([&](auto value) { computeCompile = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(SceneRtxdi.sceneRtxdiMain) returned ";
             log += resultToString(result);
@@ -332,11 +328,9 @@ public:
         result = rayQueryProgram_.initialize(
             *context.device,
             ComputeProgramDesc{
-                .spirv = computeCompile.spirv.data(),
-                .byteSize = static_cast<uint64_t>(computeCompile.spirv.size() * sizeof(uint32_t)),
+                .spirv = computeCompile.spirv,
                 .pushConstantSize = sizeof(SceneRtxdiPush),
-                .bindings = bindings.data(),
-                .bindingCount = static_cast<uint32_t>(bindings.size()),
+                .bindings = bindings,
                 .debugName = "SceneRtxdiPass",
             },
             programLog);
@@ -538,8 +532,7 @@ public:
             {.binding = 6, .buffer = sceneResources_.materialBuffer()},
             {
                 .binding = 7,
-                .textureViews = materialTextureViews.data(),
-                .textureViewCount = static_cast<uint32_t>(materialTextureViews.size()),
+                .textureViews = materialTextureViews,
             },
             {.binding = 8, .textureView = reservoirHistory.current},
             {.binding = 9, .textureView = reservoirHistory.previous},
@@ -556,18 +549,15 @@ public:
             {.binding = 20, .textureView = emissive.view()},
             {
                 .binding = 21,
-                .textureViews = environmentTextureViews,
-                .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
+                .textureViews = {environmentTextureViews, static_cast<uint32_t>(std::size(environmentTextureViews))},
             },
             {
                 .binding = 53,
-                .textureViews = localLightPdfViews,
-                .textureViewCount = static_cast<uint32_t>(std::size(localLightPdfViews)),
+                .textureViews = {localLightPdfViews, static_cast<uint32_t>(std::size(localLightPdfViews))},
             },
             {
                 .binding = 23,
-                .textureViews = environmentImportanceTextureViews,
-                .textureViewCount = static_cast<uint32_t>(std::size(environmentImportanceTextureViews)),
+                .textureViews = {environmentImportanceTextureViews, static_cast<uint32_t>(std::size(environmentImportanceTextureViews))},
             },
             {.binding = 50, .buffer = lights_.buffer()},
             {.binding = 52, .buffer = lights_.reGIRBuffer()},
@@ -580,8 +570,7 @@ public:
             const auto& latentViews = neuralTextures.latentTextureViews();
             bindings.push_back({
                 .binding = kNeuralTextureLatentsBinding,
-                .textureViews = latentViews.data(),
-                .textureViewCount = static_cast<uint32_t>(latentViews.size()),
+                .textureViews = latentViews,
             });
             bindings.push_back({
                 .binding = kNeuralTextureConstantsBinding,
@@ -633,8 +622,7 @@ public:
             {"ReSTIR", uses, [&](CommandBuffer& commands) {
                 return rayQueryProgram_.dispatch(ComputeDispatchDesc{
                     .commandBuffer = &commands,
-                    .bindings = bindings.data(),
-                    .bindingCount = static_cast<uint32_t>(bindings.size()),
+                    .bindings = bindings,
                     .pushData = &push,
                     .pushDataSize = sizeof(push),
                     .groupCountX = (context.width() + 7) / 8,

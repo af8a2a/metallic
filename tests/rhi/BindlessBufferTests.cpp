@@ -82,9 +82,8 @@ RhiTestResult createShaderModule(
     }
 
     result = device.createShaderModule(render::ShaderModuleDesc{
-            .code = compileResult.spirv.data(),
-            .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
-        }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
+        .spirv = compileResult.spirv,
+    }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
     if (!result || outShaderModule == nullptr) {
         return RhiTestResult::fail(std::string("createShaderModule returned ") + toString(result));
     }
@@ -149,8 +148,7 @@ RhiTestResult submitAndWait(render::Queue& queue, render::CommandBuffer& command
     render::CommandBuffer* commandBuffers[] = {&commandBuffer};
     render::Result<> result = queue.submit(
         render::QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
+            .commandBuffers = {commandBuffers, 1},
             .signalFence = &fence,
         });
     if (!result) {
@@ -167,7 +165,7 @@ RhiTestResult submitAndWait(render::Queue& queue, render::CommandBuffer& command
 
 RhiTestResult readBufferBytes(render::Buffer& buffer, uint64_t byteSize, std::vector<uint8_t>& outBytes)
 {
-    buffer.invalidate(0, byteSize);
+    buffer.invalidate({0, byteSize});
     void* mapped = buffer.map();
     if (mapped == nullptr) {
         return RhiTestResult::fail("readback buffer did not map");
@@ -227,7 +225,7 @@ public:
             return RhiTestResult::fail("constant buffer did not map");
         }
         std::memcpy(mappedConstant, kInputWords.data(), kInputWords.size() * sizeof(uint32_t));
-        constantBuffer->flush(0, kInputWords.size() * sizeof(uint32_t));
+        constantBuffer->flush({0, kInputWords.size() * sizeof(uint32_t)});
         constantBuffer->unmap();
 
         std::unique_ptr<render::Buffer> outputBuffer;
@@ -251,8 +249,7 @@ public:
             *constantBuffer,
             render::BufferViewDesc{
                 .type = render::BufferViewType::Constant,
-                .offset = 0,
-                .size = 256,
+                .range = {.offset = 0, .size = 256},
                 .structureStride = 16,
             },
             "constant",
@@ -267,8 +264,7 @@ public:
             *outputBuffer,
             render::BufferViewDesc{
                 .type = render::BufferViewType::ReadWriteRaw,
-                .offset = 0,
-                .size = outputBuffer->desc().size,
+                .range = {.offset = 0, .size = outputBuffer->desc().size},
                 .structureStride = sizeof(uint32_t),
             },
             "output",
@@ -315,11 +311,10 @@ public:
 
         std::unique_ptr<render::ComputePipeline> pipeline;
         result = setup.device->createComputePipeline(render::ComputePipelineDesc{
-                .computeShader = shader.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+            .computeShader = {shader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }
@@ -351,10 +346,9 @@ public:
             .buffer = outputBuffer.get(),
             .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = outputBuffer->desc().size,
+            .range = {.offset = 0, .size = outputBuffer->desc().size},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = {&outputBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -424,7 +418,7 @@ public:
             return RhiTestResult::fail("structured input buffer did not map");
         }
         std::memcpy(mappedInput, inputWords.data(), inputWords.size() * sizeof(uint32_t));
-        inputBuffer->flush(0, inputWords.size() * sizeof(uint32_t));
+        inputBuffer->flush({0, inputWords.size() * sizeof(uint32_t)});
         inputBuffer->unmap();
 
         std::unique_ptr<render::Buffer> outputBuffer;
@@ -448,8 +442,7 @@ public:
             *inputBuffer,
             render::BufferViewDesc{
                 .type = render::BufferViewType::Structured,
-                .offset = 0,
-                .size = inputBuffer->desc().size,
+                .range = {.offset = 0, .size = inputBuffer->desc().size},
                 .structureStride = 8,
             },
             "input",
@@ -464,8 +457,7 @@ public:
             *outputBuffer,
             render::BufferViewDesc{
                 .type = render::BufferViewType::ReadWriteRaw,
-                .offset = 0,
-                .size = outputBuffer->desc().size,
+                .range = {.offset = 0, .size = outputBuffer->desc().size},
                 .structureStride = sizeof(uint32_t),
             },
             "output",
@@ -508,11 +500,10 @@ public:
 
         std::unique_ptr<render::ComputePipeline> pipeline;
         result = setup.device->createComputePipeline(render::ComputePipelineDesc{
-                .computeShader = shader.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+            .computeShader = {shader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }
@@ -543,10 +534,9 @@ public:
             .buffer = outputBuffer.get(),
             .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = outputBuffer->desc().size,
+            .range = {.offset = 0, .size = outputBuffer->desc().size},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = {&outputBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -627,8 +617,7 @@ public:
             *rwBuffer,
             render::BufferViewDesc{
                 .type = render::BufferViewType::ReadWriteStructured,
-                .offset = 0,
-                .size = rwBuffer->desc().size,
+                .range = {.offset = 0, .size = rwBuffer->desc().size},
                 .structureStride = 8,
             },
             "rw_structured",
@@ -643,8 +632,7 @@ public:
             *outputBuffer,
             render::BufferViewDesc{
                 .type = render::BufferViewType::ReadWriteRaw,
-                .offset = 0,
-                .size = outputBuffer->desc().size,
+                .range = {.offset = 0, .size = outputBuffer->desc().size},
                 .structureStride = sizeof(uint32_t),
             },
             "output",
@@ -687,11 +675,10 @@ public:
 
         std::unique_ptr<render::ComputePipeline> pipeline;
         result = setup.device->createComputePipeline(render::ComputePipelineDesc{
-                .computeShader = shader.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+            .computeShader = {shader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }
@@ -724,10 +711,9 @@ public:
             .buffer = rwBuffer.get(),
             .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = rwBuffer->desc().size,
+            .range = {.offset = 0, .size = rwBuffer->desc().size},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &rwBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = {&rwBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         push.passIndex = 1;
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -737,10 +723,9 @@ public:
             .buffer = outputBuffer.get(),
             .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = outputBuffer->desc().size,
+            .range = {.offset = 0, .size = outputBuffer->desc().size},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = {&outputBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -817,7 +802,7 @@ public:
             return RhiTestResult::fail("raw input buffer did not map");
         }
         std::memcpy(mappedInput, kInputWords.data(), kInputWords.size() * sizeof(uint32_t));
-        inputBuffer->flush(0, kInputWords.size() * sizeof(uint32_t));
+        inputBuffer->flush({0, kInputWords.size() * sizeof(uint32_t)});
         inputBuffer->unmap();
 
         std::unique_ptr<render::Buffer> outputBuffer;
@@ -841,8 +826,7 @@ public:
             *inputBuffer,
             render::BufferViewDesc{
                 .type = render::BufferViewType::Raw,
-                .offset = 0,
-                .size = inputBuffer->desc().size,
+                .range = {.offset = 0, .size = inputBuffer->desc().size},
                 .structureStride = sizeof(uint32_t),
             },
             "input",
@@ -857,8 +841,7 @@ public:
             *outputBuffer,
             render::BufferViewDesc{
                 .type = render::BufferViewType::ReadWriteRaw,
-                .offset = 0,
-                .size = outputBuffer->desc().size,
+                .range = {.offset = 0, .size = outputBuffer->desc().size},
                 .structureStride = sizeof(uint32_t),
             },
             "output",
@@ -901,11 +884,10 @@ public:
 
         std::unique_ptr<render::ComputePipeline> pipeline;
         result = setup.device->createComputePipeline(render::ComputePipelineDesc{
-                .computeShader = shader.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+            .computeShader = {shader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }
@@ -936,10 +918,9 @@ public:
             .buffer = outputBuffer.get(),
             .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = outputBuffer->desc().size,
+            .range = {.offset = 0, .size = outputBuffer->desc().size},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = {&outputBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -1019,8 +1000,7 @@ public:
             *rwBuffer,
             render::BufferViewDesc{
                 .type = render::BufferViewType::ReadWriteRaw,
-                .offset = 0,
-                .size = rwBuffer->desc().size,
+                .range = {.offset = 0, .size = rwBuffer->desc().size},
                 .structureStride = sizeof(uint32_t),
             },
             "rw",
@@ -1035,8 +1015,7 @@ public:
             *outputBuffer,
             render::BufferViewDesc{
                 .type = render::BufferViewType::ReadWriteRaw,
-                .offset = 0,
-                .size = outputBuffer->desc().size,
+                .range = {.offset = 0, .size = outputBuffer->desc().size},
                 .structureStride = sizeof(uint32_t),
             },
             "output",
@@ -1083,11 +1062,10 @@ public:
 
         std::unique_ptr<render::ComputePipeline> pipeline;
         result = setup.device->createComputePipeline(render::ComputePipelineDesc{
-                .computeShader = shader.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+            .computeShader = {shader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }
@@ -1120,10 +1098,9 @@ public:
             .buffer = rwBuffer.get(),
             .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = rwBuffer->desc().size,
+            .range = {.offset = 0, .size = rwBuffer->desc().size},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &rwBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = {&rwBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         push.passIndex = 1;
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -1133,10 +1110,9 @@ public:
             .buffer = outputBuffer.get(),
             .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = outputBuffer->desc().size,
+            .range = {.offset = 0, .size = outputBuffer->desc().size},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = {&outputBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -1211,7 +1187,7 @@ public:
         std::memset(mapped, 0, static_cast<size_t>(kByteSize));
         auto* words = static_cast<uint32_t*>(mapped);
         words[3] = 0xDEADBEEFu;
-        buffer->flush(0, kByteSize);
+        buffer->flush({0, kByteSize});
         buffer->unmap();
 
         std::unique_ptr<render::BufferView> bufferView;
@@ -1220,8 +1196,7 @@ public:
             *buffer,
             render::BufferViewDesc{
                 .type = render::BufferViewType::ReadWriteRaw,
-                .offset = 0,
-                .size = buffer->desc().size,
+                .range = {.offset = 0, .size = buffer->desc().size},
                 .structureStride = sizeof(uint32_t),
             },
             "atomic",
@@ -1255,11 +1230,10 @@ public:
 
         std::unique_ptr<render::ComputePipeline> pipeline;
         result = setup.device->createComputePipeline(render::ComputePipelineDesc{
-                .computeShader = shader.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
-            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+            .computeShader = {shader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(BindlessBufferUserPush),
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline returned ") + toString(result));
         }
@@ -1289,10 +1263,9 @@ public:
             .buffer = buffer.get(),
             .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = buffer->desc().size,
+            .range = {.offset = 0, .size = buffer->desc().size},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {

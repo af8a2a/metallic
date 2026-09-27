@@ -121,7 +121,7 @@ Result<> uploadVector(Buffer& buffer, const std::vector<T>& values, const char* 
 
     const uint64_t byteSize = static_cast<uint64_t>(values.size() * sizeof(T));
     std::memcpy(mapped, values.data(), static_cast<size_t>(byteSize));
-    buffer.flush(0, byteSize);
+    buffer.flush({0, byteSize});
     buffer.unmap();
     return {};
 }
@@ -177,8 +177,7 @@ Result<> recordSubmitWait(
 
     CommandBuffer* submittedCommandBuffers[] = {commandBuffer.get()};
     result = queue.submit(QueueSubmitDesc{
-        .commandBuffers = submittedCommandBuffers,
-        .commandBufferCount = 1,
+        .commandBuffers = {submittedCommandBuffers, 1},
         .signalFence = fence.get(),
     });
     if (result) {
@@ -950,8 +949,7 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
             Result<> buildResult =
                 commandBuffer.buildClusterAccelerationStructureTriangles(
                     ClusterAccelerationStructureTriangleBuildDesc{
-                        .clusters = clasBuildInfos.data(),
-                        .clusterCount = clusterCount,
+                        .clusters = {clasBuildInfos.data(), clusterCount},
                         .maxClusterTriangleCount = maxClusterTriangleCount,
                         .maxClusterVertexCount = maxClusterVertexCount,
                         .maxClusterUniqueGeometryCount = 1,

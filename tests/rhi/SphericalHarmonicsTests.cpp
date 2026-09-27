@@ -61,9 +61,11 @@ public:
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .bindings = bindings,
-            .bindingCount = 2, .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .bindings = {bindings, 2},
+            .requiresRayQuery = false,
+        }, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -71,7 +73,7 @@ public:
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
             {.binding = 1, .buffer = input_.get()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 2});
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
     }
 
 private:

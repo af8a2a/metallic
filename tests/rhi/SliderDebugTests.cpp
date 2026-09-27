@@ -42,10 +42,12 @@ public:
             {.binding = 1, .kind = render::ComputeResourceBindingKind::SampledImage},
             {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer},
         };
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = readback_ ? 0u : 4u,
-            .bindings = readback_ ? bindings + 1 : bindings, .bindingCount = readback_ ? 2u : 1u,
-            .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .pushConstantSize = readback_ ? 0u : 4u,
+            .bindings = {readback_ ? bindings + 1 : bindings, readback_ ? 2u : 1u},
+            .requiresRayQuery = false,
+        }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
@@ -54,13 +56,17 @@ public:
         auto* input = context.inputTexture("source").view();
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 0, .textureView = context.outputTexture("color").view()},
-            {.binding = 1, .textureViews = &input, .textureViewCount = 1},
+            {.binding = 1, .textureViews = {&input, 1}},
             {.binding = 2, .buffer = context.outputBuffer("pixels").buffer()},
         };
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(),
-            .bindings = readback_ ? bindings + 1 : bindings, .bindingCount = readback_ ? 2u : 1u,
-            .pushData = readback_ ? nullptr : &path, .pushDataSize = readback_ ? 0u : 4u,
-            .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
+        return program_.dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {readback_ ? bindings + 1 : bindings, readback_ ? 2u : 1u},
+            .pushData = readback_ ? nullptr : &path,
+            .pushDataSize = readback_ ? 0u : 4u,
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+        });
     }
 private:
     bool readback_;

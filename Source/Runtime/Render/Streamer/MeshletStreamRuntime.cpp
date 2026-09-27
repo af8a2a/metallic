@@ -139,7 +139,7 @@ Result<> updateHostBuffer(Buffer& buffer, const void* data, uint64_t byteSize)
     }
     if (byteSize > 0) {
         std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-        buffer.flush(0, byteSize);
+        buffer.flush({0, byteSize});
     }
     buffer.unmap();
     return {};
@@ -177,7 +177,7 @@ Result<> createAndPopulateHostStorageBuffer(
             populate(values[index], index);
         }
     }
-    outBuffer->flush(0, byteSize);
+    outBuffer->flush({0, byteSize});
     outBuffer->unmap();
     return {};
 }
@@ -204,12 +204,10 @@ Result<> transitionBuffer(
         .buffer = &buffer,
         .before = resourceSyncScope(state, PipelineStageBits::AllCommands),
         .after = resourceSyncScope(nextState, PipelineStageBits::AllCommands),
-        .offset = 0,
-        .size = buffer.desc().size,
+        .range = {.offset = 0, .size = buffer.desc().size},
     };
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-        .buffers = &barrier,
-        .bufferCount = 1,
+        .buffers = {&barrier, 1},
     }); !commandResult) { return commandResult; }
     state = nextState;
     return {};
@@ -245,10 +243,9 @@ Result<> createSlangShaderModule(
 
     const std::string shaderDebugName = std::string(moduleName) + "." + entryPoint;
     result = device.createShaderModule(ShaderModuleDesc{
-            .code = compileResult.spirv.data(),
-            .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
-            .debugName = shaderDebugName.c_str(),
-        }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
+        .spirv = compileResult.spirv,
+        .debugName = shaderDebugName.c_str(),
+    }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
     if (!result || outShader == nullptr) {
         log += resultMessage("createShaderModule", result);
         log += '\n';
@@ -287,12 +284,11 @@ public:
             return result;
         }
         result = device.createComputePipeline(ComputePipelineDesc{
-                .computeShader = pageTableInitShader_.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-                .pipelineCache = pipelineCache,
-            }).transform([&](auto rhiValue) { pageTableInitPipeline_ = std::move(rhiValue); });
+            .computeShader = {pageTableInitShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { pageTableInitPipeline_ = std::move(rhiValue); });
         if (!result || pageTableInitPipeline_ == nullptr) {
             log += resultMessage("createComputePipeline(MeshletStreamRuntime page table init)", result);
             log += '\n';
@@ -310,12 +306,11 @@ public:
         }
 
         result = device.createComputePipeline(ComputePipelineDesc{
-                .computeShader = updateShader_.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-                .pipelineCache = pipelineCache,
-            }).transform([&](auto rhiValue) { updatePipeline_ = std::move(rhiValue); });
+            .computeShader = {updateShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { updatePipeline_ = std::move(rhiValue); });
         if (!result || updatePipeline_ == nullptr) {
             log += resultMessage("createComputePipeline(MeshletStreamRuntime update)", result);
             log += '\n';
@@ -417,9 +412,7 @@ public:
                 patchData[writeIndex++] = patch;
             }
         }
-        updateBuffer.flush(
-            0,
-            sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(patchCount) * sizeof(StreamPageTablePatch));
+        updateBuffer.flush({0, sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(patchCount) * sizeof(StreamPageTablePatch)});
         updateBuffer.unmap();
 
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
@@ -455,12 +448,11 @@ public:
         }
 
         result = device.createComputePipeline(ComputePipelineDesc{
-                .computeShader = traversalShader_.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-                .pipelineCache = pipelineCache,
-            }).transform([&](auto rhiValue) { traversalPipeline_ = std::move(rhiValue); });
+            .computeShader = {traversalShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { traversalPipeline_ = std::move(rhiValue); });
         if (!result || traversalPipeline_ == nullptr) {
             log += resultMessage("createComputePipeline(MeshletStreamRuntime traversal)", result);
             log += '\n';
@@ -526,12 +518,11 @@ public:
 
         phase.next("streamInit.activePipeline");
         result = device.createComputePipeline(ComputePipelineDesc{
-                .computeShader = activeBuildShader_.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-                .pipelineCache = pipelineCache,
-            }).transform([&](auto rhiValue) { activeBuildPipeline_ = std::move(rhiValue); });
+            .computeShader = {activeBuildShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { activeBuildPipeline_ = std::move(rhiValue); });
         if (!result || activeBuildPipeline_ == nullptr) {
             log += resultMessage("createComputePipeline(MeshletStreamRuntime active build)", result);
             log += '\n';
@@ -542,9 +533,12 @@ public:
             kMeshletStreamCooperativeBuildEntryPoint, cooperativeShader_, log);
         if (!result) { return result; }
         phase.next("streamInit.cooperativePipeline");
-        result = device.createComputePipeline({.computeShader = cooperativeShader_.get(),
-            .computeEntryPoint = "main", .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush), .pipelineCache = pipelineCache}).transform([&](auto rhiValue) { cooperativePipeline_ = std::move(rhiValue); });
+        result = device.createComputePipeline({
+            .computeShader = {cooperativeShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { cooperativePipeline_ = std::move(rhiValue); });
         if (!result) {
             log += resultMessage("createComputePipeline(MeshletStreamRuntime cooperative LOD)", result);
             return result;
@@ -552,9 +546,12 @@ public:
         result = createSlangShaderModule(device, kMeshletStreamShaderModuleName,
             kMeshletStreamDemandEntryPoint, demandShader_, log);
         if (!result) { return result; }
-        result = device.createComputePipeline({.computeShader = demandShader_.get(),
-            .computeEntryPoint = "main", .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush), .pipelineCache = pipelineCache}).transform([&](auto rhiValue) { demandPipeline_ = std::move(rhiValue); });
+        result = device.createComputePipeline({
+            .computeShader = {demandShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { demandPipeline_ = std::move(rhiValue); });
         if (!result) { return result; }
         phase.next("streamInit.lodCacheStatus");
         spdlog::info("[MeshletStreamRuntime] LOD PSO cache enabled={} activeHit={} cooperativeHit={}",
@@ -647,12 +644,11 @@ public:
         }
 
         result = device.createComputePipeline(ComputePipelineDesc{
-                .computeShader = blasInputShader_.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-                .pipelineCache = pipelineCache,
-            }).transform([&](auto rhiValue) { blasInputPipeline_ = std::move(rhiValue); });
+            .computeShader = {blasInputShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { blasInputPipeline_ = std::move(rhiValue); });
         if (!result || blasInputPipeline_ == nullptr) {
             log += resultMessage("createComputePipeline(MeshletStreamRuntime BLAS input)", result);
             log += '\n';
@@ -738,12 +734,11 @@ public:
             return result;
         }
         result = device.createComputePipeline(ComputePipelineDesc{
-                .computeShader = tlasInputShader_.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-                .pipelineCache = pipelineCache,
-            }).transform([&](auto rhiValue) { tlasInputPipeline_ = std::move(rhiValue); });
+            .computeShader = {tlasInputShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            .pipelineCache = pipelineCache,
+        }).transform([&](auto rhiValue) { tlasInputPipeline_ = std::move(rhiValue); });
         if (!result || tlasInputPipeline_ == nullptr) {
             log += resultMessage("createComputePipeline(MeshletStreamRuntime TLAS input)", result);
             log += '\n';
@@ -1627,7 +1622,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                 .clusterReferencesAddressHigh = static_cast<uint32_t>(referenceAddress >> 32u),
             };
         }
-        fallbackBlasBuildInfoBuffer_->flush(0, fallbackBuildInfoBytes);
+        fallbackBlasBuildInfoBuffer_->flush({0, fallbackBuildInfoBytes});
         fallbackBlasBuildInfoBuffer_->unmap();
 
         result = createFallbackHostBuffer(
@@ -1652,7 +1647,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             fallbackDestinations[fallbackIndex] =
                 fallbackStorageAddress + fallbackBlasPrimitives_[fallbackIndex].storageOffset;
         }
-        fallbackBlasDestinationBuffer_->flush(0, fallbackDestinationBytes);
+        fallbackBlasDestinationBuffer_->flush({0, fallbackDestinationBytes});
         fallbackBlasDestinationBuffer_->unmap();
 
         result = createFallbackHostBuffer(
@@ -1669,7 +1664,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             return makeError(Error::Failure);
         }
         std::fill_n(fallbackAddresses, asset_.primitiveCount(), uint64_t{0});
-        fallbackBlasAddressBuffer_->flush(0, primitiveAddressBytes);
+        fallbackBlasAddressBuffer_->flush({0, primitiveAddressBytes});
         fallbackBlasAddressBuffer_->unmap();
 
         if (fallbackStorageAddress == 0 ||
@@ -2894,7 +2889,7 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
         return makeError(Error::Failure);
     }
     std::memcpy(mapped, gpuInstances.data(), static_cast<size_t>(instanceBuffer_->desc().size));
-    instanceBuffer_->flush(0, instanceBuffer_->desc().size);
+    instanceBuffer_->flush({0, instanceBuffer_->desc().size});
     instanceBuffer_->unmap();
     if (updatedBounds.valid) {
         drawBounds_ = updatedBounds;
@@ -2926,7 +2921,7 @@ Result<> MeshletStreamRuntime::syncGPUSceneInstanceMapping(std::span<const uint3
     for (size_t index = 0; index < mapping.size(); ++index) {
         gpuInstances[index].gpuSceneInstanceIndex = mapping[index];
     }
-    instanceBuffer_->flush(0, instanceBuffer_->desc().size);
+    instanceBuffer_->flush({0, instanceBuffer_->desc().size});
     instanceBuffer_->unmap();
     gpuSceneInstanceMapping_.assign(mapping.begin(), mapping.end());
     return {};
@@ -3348,9 +3343,9 @@ Result<> MeshletStreamRuntime::clearRequestBuffer(CommandBuffer& commandBuffer)
 
     if (auto commandResult = transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferDestination); !commandResult) { return commandResult; }
     {
-        auto sourceSlice = requestClearBuffer_.get()->slice(0, sizeof(StreamRequestBufferHeader));
+        auto sourceSlice = requestClearBuffer_.get()->slice({0, sizeof(StreamRequestBufferHeader)});
         if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-        auto destinationSlice = requestBuffer_.get()->slice(0, sizeof(StreamRequestBufferHeader));
+        auto destinationSlice = requestBuffer_.get()->slice({0, sizeof(StreamRequestBufferHeader)});
         if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
         if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
     }
@@ -3381,9 +3376,9 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
     }
     if (auto commandResult = transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
     {
-        auto sourceSlice = requestBuffer_.get()->slice(0, readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader));
+        auto sourceSlice = requestBuffer_.get()->slice({0, readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader)});
         if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-        auto destinationSlice = readback->slice(0, readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader));
+        auto destinationSlice = readback->slice({0, readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader)});
         if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
         if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
     }
@@ -3392,9 +3387,9 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
         // no additional CPU wait or GPU-to-CPU submission is introduced.
         if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
         {
-            auto sourceSlice = demandBuffer_.get()->slice(18u * sizeof(uint32_t), sizeof(uint32_t));
+            auto sourceSlice = demandBuffer_.get()->slice({18u * sizeof(uint32_t), sizeof(uint32_t)});
             if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = readback->slice(readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader), sizeof(uint32_t));
+            auto destinationSlice = readback->slice({readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader), sizeof(uint32_t)});
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
@@ -3402,9 +3397,9 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
     if (clusterRtxEnabled_ && blasHeaderBuffer_) {
         if (auto commandResult = transitionBuffer(commandBuffer, *blasHeaderBuffer_, blasHeaderBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
         {
-            auto sourceSlice = blasHeaderBuffer_.get()->slice(0, sizeof(MeshletStreamGpuBlasHeader));
+            auto sourceSlice = blasHeaderBuffer_.get()->slice({0, sizeof(MeshletStreamGpuBlasHeader)});
             if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = readback->slice(readback->desc().size - sizeof(MeshletStreamGpuBlasHeader), sizeof(MeshletStreamGpuBlasHeader));
+            auto destinationSlice = readback->slice({readback->desc().size - sizeof(MeshletStreamGpuBlasHeader), sizeof(MeshletStreamGpuBlasHeader)});
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
@@ -3807,12 +3802,8 @@ Result<> MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer
         }
         addressData[primitiveIndex] =
             fallbackStorageAddress + fallback.storageOffset;
-        fallbackBlasReferenceBuffer_->flush(
-            referenceOffset * sizeof(uint64_t),
-            static_cast<uint64_t>(fallback.referenceCount) * sizeof(uint64_t));
-        fallbackBlasAddressBuffer_->flush(
-            static_cast<uint64_t>(primitiveIndex) * sizeof(uint64_t),
-            sizeof(uint64_t));
+        fallbackBlasReferenceBuffer_->flush({referenceOffset * sizeof(uint64_t), static_cast<uint64_t>(fallback.referenceCount) * sizeof(uint64_t)});
+        fallbackBlasAddressBuffer_->flush({static_cast<uint64_t>(primitiveIndex) * sizeof(uint64_t), sizeof(uint64_t)});
     }
     fallbackBlasReferenceBuffer_->unmap();
     fallbackBlasAddressBuffer_->unmap();

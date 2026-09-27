@@ -125,10 +125,7 @@ Result<> ImportancePdfTexture::initialize(
     result = device.createTextureView(*impl_->texture,
         TextureViewDesc{
             .format = Format::R32Sfloat,
-            .baseMip = 0,
-            .mipCount = impl_->mipCount,
-            .baseLayer = 0,
-            .layerCount = 1,
+            .range = {.baseMip = 0, .mipCount = impl_->mipCount, .baseLayer = 0, .layerCount = 1},
         }).transform([&](auto rhiValue) { impl_->view = std::move(rhiValue); });
     if (!result || impl_->view == nullptr) {
         log = resultMessage(std::string("createTextureView(") + std::string(debugName) + ")", result);
@@ -141,10 +138,7 @@ Result<> ImportancePdfTexture::initialize(
         result = device.createTextureView(*impl_->texture,
             TextureViewDesc{
                 .format = Format::R32Sfloat,
-                .baseMip = mipIndex,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = mipIndex, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { mipView = std::move(rhiValue); });
         if (!result || mipView == nullptr) {
             log = resultMessage(std::string("createTextureView(") + std::string(debugName) + " mip)", result);
@@ -171,12 +165,9 @@ Result<> ImportancePdfTexture::beginGpuBuild(CommandBuffer& commandBuffer)
         .newLayout = TextureLayout::General,
         .before = resourceSyncScope(impl_->state, PipelineStageBits::AllCommands),
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-        .baseMip = 0,
-        .mipCount = mipCount(),
-        .baseLayer = 0,
-        .layerCount = 1,
+        .range = {.baseMip = 0, .mipCount = mipCount(), .baseLayer = 0, .layerCount = 1},
     };
-    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = &toGeneral, .textureCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = {&toGeneral, 1}}); !commandResult) { return commandResult; }
     impl_->state = ResourceState::General;
     return {};
 }
@@ -192,12 +183,9 @@ Result<> ImportancePdfTexture::synchronizeGpuBuild(CommandBuffer& commandBuffer)
         .newLayout = TextureLayout::General,
         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-        .baseMip = 0,
-        .mipCount = mipCount(),
-        .baseLayer = 0,
-        .layerCount = 1,
+        .range = {.baseMip = 0, .mipCount = mipCount(), .baseLayer = 0, .layerCount = 1},
     };
-    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = &synchronize, .textureCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = {&synchronize, 1}}); !commandResult) { return commandResult; }
     return {};
 }
 
@@ -212,12 +200,9 @@ Result<> ImportancePdfTexture::endGpuBuild(CommandBuffer& commandBuffer)
         .newLayout = TextureLayout::ShaderRead,
         .before = resourceSyncScope(impl_->state, PipelineStageBits::AllCommands),
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-        .baseMip = 0,
-        .mipCount = mipCount(),
-        .baseLayer = 0,
-        .layerCount = 1,
+        .range = {.baseMip = 0, .mipCount = mipCount(), .baseLayer = 0, .layerCount = 1},
     };
-    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = &toShaderRead, .textureCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = {&toShaderRead, 1}}); !commandResult) { return commandResult; }
     impl_->state = ResourceState::ShaderRead;
     return {};
 }
@@ -384,11 +369,9 @@ Result<> ImportancePdfCompute::initialize(Device& device, std::string& log)
     return impl_->program.initialize(
         device,
         ComputeProgramDesc{
-            .spirv = compileResult.spirv.data(),
-            .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+            .spirv = compileResult.spirv,
             .pushConstantSize = sizeof(PrepareLightsPdfPush),
-            .bindings = bindings,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
             .debugName = "ImportancePdfCompute",
             .resourceTableCount = kImportancePdfMaxMipCount * 2u,
             .requiresRayQuery = false,
@@ -418,26 +401,22 @@ Result<> ImportancePdfCompute::buildLocalLights(
     const ComputeDispatchBinding bindings[] = {
         {
             .binding = 0,
-            .textureViews = environmentViews,
-            .textureViewCount = static_cast<uint32_t>(std::size(environmentViews)),
+            .textureViews = {environmentViews, static_cast<uint32_t>(std::size(environmentViews))},
         },
         {
             .binding = 1,
-            .textureViews = localLightPdf.mipViews(),
-            .textureViewCount = localLightPdf.mipViewCount(),
+            .textureViews = {localLightPdf.mipViews(), localLightPdf.mipViewCount()},
         },
         {
             .binding = 2,
-            .textureViews = localLightPdf.mipViews(),
-            .textureViewCount = localLightPdf.mipViewCount(),
+            .textureViews = {localLightPdf.mipViews(), localLightPdf.mipViewCount()},
         },
         {.binding = 50, .buffer = &punctualLights},
     };
     auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t resourceTableIndex) {
         return impl_->program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
-            .bindings = bindings,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = (push.destinationSize[0] + 7u) / 8u,
@@ -495,26 +474,22 @@ Result<> ImportancePdfCompute::buildEnvironment(
     const ComputeDispatchBinding bindings[] = {
         {
             .binding = 0,
-            .textureViews = environmentViews,
-            .textureViewCount = static_cast<uint32_t>(std::size(environmentViews)),
+            .textureViews = {environmentViews, static_cast<uint32_t>(std::size(environmentViews))},
         },
         {
             .binding = 1,
-            .textureViews = environmentPdf.mipViews(),
-            .textureViewCount = environmentPdf.mipViewCount(),
+            .textureViews = {environmentPdf.mipViews(), environmentPdf.mipViewCount()},
         },
         {
             .binding = 2,
-            .textureViews = environmentPdf.mipViews(),
-            .textureViewCount = environmentPdf.mipViewCount(),
+            .textureViews = {environmentPdf.mipViews(), environmentPdf.mipViewCount()},
         },
         {.binding = 50, .buffer = impl_->emptyLights.get()},
     };
     auto dispatch = [&](const PrepareLightsPdfPush& push, uint32_t resourceTableIndex) {
         return impl_->program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
-            .bindings = bindings,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = (push.destinationSize[0] + 7u) / 8u,

@@ -51,8 +51,10 @@ Result<MaterialBinningResult> MaterialBinning::record(
         ShaderCompileResult shader;
         auto result = compileSlangShaderToSpirv({
             .moduleName = "Features/VisibilityBuffer/VisibilityMaterialBinning",
-            .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-            .capabilities = capabilities, .capabilityCount = 2}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+            .entryPointName = entries[i],
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders",
+            .capabilities = {capabilities, 2},
+        }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result.transform([&] { return std::move(output); }); }
         result = programs_[i].initialize(device, {.spirv = shader.spirv,
             .parameters = parameterAbi<MaterialBinningParams>(kMaterialBinningAbi), .debugName = entries[i]}, log);

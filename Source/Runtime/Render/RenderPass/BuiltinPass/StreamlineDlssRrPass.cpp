@@ -222,10 +222,13 @@ public:
                 {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
                 {.binding = 3, .kind = ComputeResourceBindingKind::StorageImage},
             };
-            result = guideResolve_.initialize(*context.device, {.spirv = shader.spirv.data(),
-                .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = 8,
-                .bindings = bindings, .bindingCount = 4, .debugName = "UpscalerGuideResolve",
-                .requiresRayQuery = false}, log);
+            result = guideResolve_.initialize(*context.device, {
+                .spirv = shader.spirv,
+                .pushConstantSize = 8,
+                .bindings = {bindings, 4},
+                .debugName = "UpscalerGuideResolve",
+                .requiresRayQuery = false,
+            }, log);
             if (!result) { return result; }
         }
         const bool featureSupported = variant_ == DlssVariant::RayReconstruction
@@ -518,14 +521,19 @@ private:
         auto* mv = motion.view();
         auto* z = depth.view();
         const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = &mv, .textureViewCount = 1},
-            {.binding = 1, .textureViews = &z, .textureViewCount = 1},
+            {.binding = 0, .textureViews = {&mv, 1}},
+            {.binding = 1, .textureViews = {&z, 1}},
             {.binding = 2, .textureView = context.outputTexture("motionVectors").view()},
             {.binding = 3, .textureView = context.outputTexture("depth").view()},
         };
-        return guideResolve_.dispatch({.commandBuffer = &command,
-            .bindings = bindings, .bindingCount = 4, .pushData = jitter.data(), .pushDataSize = 8,
-            .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
+        return guideResolve_.dispatch({
+            .commandBuffer = &command,
+            .bindings = {bindings, 4},
+            .pushData = jitter.data(),
+            .pushDataSize = 8,
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+        });
     }
 
     const char* passTypeName() const
@@ -855,17 +863,17 @@ private:
                 return result;
             }
             result = device.createGraphicsPipeline(GraphicsPipelineDesc{
-                    .vertexShader = depthVertexShader_.get(),
-                    .fragmentShader = depthFragmentShader_.get(),
-                    .depthStencilFormat = Format::D32Sfloat,
-                    .topology = PrimitiveTopology::TriangleList,
-                    .depthStencil = DepthStencilState{
+                .vertexShader = {depthVertexShader_.get()},
+                .fragmentShader = {depthFragmentShader_.get()},
+                .depthStencilFormat = Format::D32Sfloat,
+                .topology = PrimitiveTopology::TriangleList,
+                .depthStencil = DepthStencilState{
                         .depthTestEnable = true,
                         .depthWriteEnable = true,
                         .depthCompareOp = CompareOp::Always,
                     },
-                    .usesBindlessHeap = true,
-                }).transform([&](auto rhiValue) { depthExportPipeline_ = std::move(rhiValue); });
+                .usesBindlessHeap = true,
+            }).transform([&](auto rhiValue) { depthExportPipeline_ = std::move(rhiValue); });
             if (!result || depthExportPipeline_ == nullptr) {
                 log += resultMessage("createGraphicsPipeline(StreamlineDlssSrPass depth export)", result);
                 log += '\n';
@@ -884,10 +892,10 @@ private:
                 return result;
             }
             result = device.createComputePipeline(ComputePipelineDesc{
-                    .computeShader = alphaShader_.get(),
-                    .usesBindlessHeap = true,
-                    .bindlessUserPushDataSize = sizeof(StreamlineDlssAlphaUserPush),
-                }).transform([&](auto rhiValue) { alphaResolvePipeline_ = std::move(rhiValue); });
+                .computeShader = {alphaShader_.get()},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(StreamlineDlssAlphaUserPush),
+            }).transform([&](auto rhiValue) { alphaResolvePipeline_ = std::move(rhiValue); });
             if (!result || alphaResolvePipeline_ == nullptr) {
                 log += resultMessage("createComputePipeline(StreamlineDlssSrPass alpha resolve)", result);
                 log += '\n';
@@ -923,10 +931,7 @@ private:
         result = device.createTextureView(*dlssDepth_,
             TextureViewDesc{
                 .format = Format::D32Sfloat,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { dlssDepthView_ = std::move(rhiValue); });
         if (!result || dlssDepthView_ == nullptr) {
             log += resultMessage("createTextureView(StreamlineDlssSrPass D32 depth)", result);

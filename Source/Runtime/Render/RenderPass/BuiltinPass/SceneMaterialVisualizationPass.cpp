@@ -124,17 +124,13 @@ public:
         }
 #endif
         result = compileSlangShaderToSpirv(SlangShaderDesc{
-                .moduleName = kSceneMaterialVisualizationShaderModuleName,
-                .entryPointName = kSceneMaterialVisualizationEntryPoint,
-                .searchPath = kTriangleShaderSearchPath,
-                .additionalSearchPaths = additionalSearchPaths.data(),
-                .additionalSearchPathCount =
-                    static_cast<uint32_t>(additionalSearchPaths.size()),
-                .capabilities = capabilities.data(),
-                .capabilityCount = static_cast<uint32_t>(capabilities.size()),
-                .macroDefines = ntcDefines,
-                .macroDefineCount = static_cast<uint32_t>(std::size(ntcDefines)),
-            }, computeCompile.diagnostics).transform([&](auto value) { computeCompile = std::move(value); });
+            .moduleName = kSceneMaterialVisualizationShaderModuleName,
+            .entryPointName = kSceneMaterialVisualizationEntryPoint,
+            .searchPath = kTriangleShaderSearchPath,
+            .additionalSearchPaths = additionalSearchPaths,
+            .capabilities = capabilities,
+            .macroDefines = {ntcDefines, static_cast<uint32_t>(std::size(ntcDefines))},
+        }, computeCompile.diagnostics).transform([&](auto value) { computeCompile = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(";
             log += kSceneMaterialVisualizationShaderModuleName;
@@ -217,11 +213,9 @@ public:
         result = rayQueryProgram_.initialize(
             *context.device,
             ComputeProgramDesc{
-                .spirv = computeCompile.spirv.data(),
-                .byteSize = static_cast<uint64_t>(computeCompile.spirv.size() * sizeof(uint32_t)),
+                .spirv = computeCompile.spirv,
                 .pushConstantSize = sizeof(SceneMaterialVisualizationPush),
-                .bindings = bindings.data(),
-                .bindingCount = static_cast<uint32_t>(bindings.size()),
+                .bindings = bindings,
                 .debugName = "SceneMaterialVisualizationPass",
             },
             programLog);
@@ -294,8 +288,7 @@ public:
             },
             ComputeDispatchBinding{
                 .binding = 7,
-                .textureViews = materialTextureViews.data(),
-                .textureViewCount = static_cast<uint32_t>(materialTextureViews.size()),
+                .textureViews = materialTextureViews,
             },
         };
         const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
@@ -306,8 +299,7 @@ public:
             const auto& latentViews = neuralTextures.latentTextureViews();
             bindings.push_back(ComputeDispatchBinding{
                 .binding = kNeuralTextureLatentsBinding,
-                .textureViews = latentViews.data(),
-                .textureViewCount = static_cast<uint32_t>(latentViews.size()),
+                .textureViews = latentViews,
             });
             bindings.push_back(ComputeDispatchBinding{
                 .binding = kNeuralTextureConstantsBinding,
@@ -328,8 +320,7 @@ public:
         }
         result = rayQueryProgram_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
-            .bindings = bindings.data(),
-            .bindingCount = static_cast<uint32_t>(bindings.size()),
+            .bindings = bindings,
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = (context.width() + 7) / 8,

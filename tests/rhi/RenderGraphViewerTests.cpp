@@ -35,9 +35,12 @@ public:
             .entryPointName = "autoExposureFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc binding{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage};
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = 16,
-            .bindings = &binding, .bindingCount = 1, .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .pushConstantSize = 16,
+            .bindings = {&binding, 1},
+            .requiresRayQuery = false,
+        }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
@@ -47,9 +50,14 @@ public:
         const std::array uses{render::RenderGraphStageUse{"color", render::RenderGraphResourceAccess::TextureStorageWrite}};
         const std::array stages{render::RenderGraphStage{"Fill pixels", uses,
             [&](render::CommandBuffer& commands) {
-                return program_.dispatch({.commandBuffer = &commands, .bindings = &binding, .bindingCount = 1,
-                    .pushData = &push, .pushDataSize = sizeof(push),
-                    .groupCountX = (push.width + 7) / 8, .groupCountY = (push.height + 7) / 8});
+                return program_.dispatch({
+                    .commandBuffer = &commands,
+                    .bindings = {&binding, 1},
+                    .pushData = &push,
+                    .pushDataSize = sizeof(push),
+                    .groupCountX = (push.width + 7) / 8,
+                    .groupCountY = (push.height + 7) / 8,
+                });
             }}};
         return context.executeStages(stages);
     }

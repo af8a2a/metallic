@@ -100,9 +100,12 @@ public:
         for (uint32_t i = 0; i < 2; ++i) {
             const render::SlangMacroDefine macro{"DGC_ADD", i ? "1000" : "0"};
             render::ShaderCompileResult shader;
-            DGC_RHI(render::compileSlangShaderToSpirv({.moduleName = "GeneratedCommandsProbe",
-                .entryPointName = "generatedCommandsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-                .macroDefines = &macro, .macroDefineCount = 1}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
+            DGC_RHI(render::compileSlangShaderToSpirv({
+                .moduleName = "GeneratedCommandsProbe",
+                .entryPointName = "generatedCommandsProbeMain",
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                .macroDefines = {&macro, 1},
+            }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             const VkShaderModuleCreateInfo shaderInfo{.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                 .codeSize = shader.spirv.size() * 4, .pCode = shader.spirv.data()};
             DGC_VK(vkCreateShaderModule(native.device, &shaderInfo, nullptr, &resources.shaders[i]));
@@ -198,7 +201,7 @@ public:
             vkCmdPipelineBarrier2(cmd, &dependency);
             DGC_RHI(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
-            DGC_RHI(context.graphicsQueue.submit({.commandBuffers = submitted, .commandBufferCount = 1, .signalFence = fence.get()}));
+            DGC_RHI(context.graphicsQueue.submit({.commandBuffers = {submitted, 1}, .signalFence = fence.get()}));
             const auto waitResult = fence->wait(UINT64_MAX);
             DGC_RHI(waitResult);
             output->invalidate();

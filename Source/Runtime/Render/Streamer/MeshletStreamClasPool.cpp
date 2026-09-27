@@ -115,7 +115,7 @@ struct MeshletStreamClasPool::Impl {
             return;
         }
         std::memcpy(static_cast<uint8_t*>(mapped) + offset, &entry, sizeof(entry));
-        pageTableBuffer->flush(offset, sizeof(entry));
+        pageTableBuffer->flush({offset, sizeof(entry)});
         pageTableBuffer->unmap();
     }
 
@@ -135,9 +135,7 @@ struct MeshletStreamClasPool::Impl {
                         static_cast<uint64_t>(page.addressOffset) * sizeof(uint64_t),
                     0,
                     static_cast<size_t>(page.clusterCount) * sizeof(uint64_t));
-                addressBuffer->flush(
-                    static_cast<uint64_t>(page.addressOffset) * sizeof(uint64_t),
-                    static_cast<uint64_t>(page.clusterCount) * sizeof(uint64_t));
+                addressBuffer->flush({static_cast<uint64_t>(page.addressOffset) * sizeof(uint64_t), static_cast<uint64_t>(page.clusterCount) * sizeof(uint64_t)});
                 addressBuffer->unmap();
             }
         }
@@ -628,8 +626,7 @@ Result<> MeshletStreamClasPool::cmdBuildPages(
     Impl::FrameResources& frame = impl_->frames[impl_->frameIndex % impl_->frames.size()];
     Result<> result = commandBuffer.buildClusterAccelerationStructureTriangles(
         ClusterAccelerationStructureTriangleBuildDesc{
-            .clusters = buildInfos.data(),
-            .clusterCount = static_cast<uint32_t>(buildInfos.size()),
+            .clusters = buildInfos,
             .maxClusterTriangleCount = impl_->asset->maxClusterTriangles(),
             .maxClusterVertexCount = impl_->asset->maxClusterVertices(),
             .maxClusterUniqueGeometryCount = 1,

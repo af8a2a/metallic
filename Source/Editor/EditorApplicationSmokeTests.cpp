@@ -213,7 +213,7 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
         if (!graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::ShaderRead) ||
             !commands->end()) { return false; }
         render::CommandBuffer* buffers[] = {commands.get()};
-        if (!tracker.submit({.commandBuffers = buffers, .commandBufferCount = 1}, frame) || !frame.wait()) { return false; }
+        if (!tracker.submit({.commandBuffers = {buffers, 1}}, frame) || !frame.wait()) { return false; }
         readback->invalidate();
         const void* mapped = readback->map();
         if (!mapped) { return false; }
@@ -353,7 +353,7 @@ bool EditorApplication::runSceneSwitchSmokeTest()
         if (!graphExecutor_->transitionOutput(*commands, activePreviewOutput_, render::ResourceState::ShaderRead) ||
             !commands->end()) { return false; }
         render::CommandBuffer* buffers[] = {commands.get()};
-        if (!tracker.submit({.commandBuffers = buffers, .commandBufferCount = 1}, frame) || !frame.wait()) { return false; }
+        if (!tracker.submit({.commandBuffers = {buffers, 1}}, frame) || !frame.wait()) { return false; }
         readback->invalidate();
         const auto* pixels = static_cast<const uint8_t*>(readback->map());
         if (!pixels) { return false; }

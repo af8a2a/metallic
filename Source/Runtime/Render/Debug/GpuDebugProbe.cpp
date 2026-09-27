@@ -125,9 +125,13 @@ Result<> initializeDebugProbe(Device& device, ComputeProgram& program, std::stri
         .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     if (!result) { log = shader.diagnostics; return result; }
     const ComputeProgramBindingDesc bindings[] = {{0}, {1}};
-    return program.initialize(device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-        .pushConstantSize = sizeof(DebugProbePush), .bindings = bindings, .bindingCount = 2,
-        .debugName = "DebugGpuProbe", .requiresRayQuery = false}, log);
+    return program.initialize(device, {
+        .spirv = shader.spirv,
+        .pushConstantSize = sizeof(DebugProbePush),
+        .bindings = {bindings, 2},
+        .debugName = "DebugGpuProbe",
+        .requiresRayQuery = false,
+    }, log);
 }
 
 Result<> recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
@@ -137,24 +141,28 @@ Result<> recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
         .buffer = probe.source->buffer,
         .before = resourceSyncScope(probe.source->state, PipelineStageBits::AllCommands),
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-        .offset = probe.push.byteOffset,
-        .size = probe.scanBytes,
+        .range = {.offset = probe.push.byteOffset, .size = probe.scanBytes},
     };
     BufferBarrierDesc destination{.buffer = &output, .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
-    if (auto commandResult = commands.synchronize({.buffers = &source, .bufferCount = 1}); !commandResult) { return commandResult; }
-    if (auto commandResult = commands.synchronize({.buffers = &destination, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {&source, 1}}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {&destination, 1}}); !commandResult) { return commandResult; }
     const ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = probe.source->buffer}, {.binding = 1, .buffer = &output}};
-    const auto result = program.dispatch({.commandBuffer = &commands, .bindings = bindings, .bindingCount = 2,
-        .pushData = &probe.push, .pushDataSize = sizeof(probe.push), .groupCountX = probe.push.groupCount});
+    const auto result = program.dispatch({
+        .commandBuffer = &commands,
+        .bindings = {bindings, 2},
+        .pushData = &probe.push,
+        .pushDataSize = sizeof(probe.push),
+        .groupCountX = probe.push.groupCount,
+    });
     std::swap(source.before, source.after);
-    if (auto commandResult = commands.synchronize({.buffers = &source, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {&source, 1}}); !commandResult) { return commandResult; }
     if (!result) { return result; }
     destination.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; destination.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
-    if (auto commandResult = commands.synchronize({.buffers = &destination, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {&destination, 1}}); !commandResult) { return commandResult; }
     {
-        auto sourceSlice = (&output)->slice(0, readback.desc().size);
+        auto sourceSlice = (&output)->slice({0, readback.desc().size});
         if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-        auto destinationSlice = (&readback)->slice(0, readback.desc().size);
+        auto destinationSlice = (&readback)->slice({0, readback.desc().size});
         if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
         if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
     }

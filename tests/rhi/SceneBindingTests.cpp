@@ -157,7 +157,7 @@ public:
                 if (status) { status = commands->end(); }
                 if (status) {
                     render::CommandBuffer* submitted[] = {commands.get()};
-                    status = submissions.submit({.commandBuffers = submitted, .commandBufferCount = 1}, frame);
+                    status = submissions.submit({.commandBuffers = {submitted, 1}}, frame);
                 }
                 if (!status) { (void)pool->reset(); frame.cancel(); return status; }
                 return frame.wait();

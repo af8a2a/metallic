@@ -75,9 +75,13 @@ public:
             Result<> result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/AutoExposure",
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { log += shader.diagnostics; return result; }
-            result = programs_[i].initialize(*context.device, {.spirv = shader.spirv.data(),
-                .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = sizeof(AutoExposurePush),
-                .bindings = bindings, .bindingCount = 5, .debugName = entries[i], .requiresRayQuery = false}, log);
+            result = programs_[i].initialize(*context.device, {
+                .spirv = shader.spirv,
+                .pushConstantSize = sizeof(AutoExposurePush),
+                .bindings = {bindings, 5},
+                .debugName = entries[i],
+                .requiresRayQuery = false,
+            }, log);
             if (!result) { return result; }
         }
         state_ = std::make_shared<State>();
@@ -138,16 +142,21 @@ public:
         if (!result) { return result; }
         TextureView* sourceView = source.view();
         const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = &sourceView, .textureViewCount = 1},
+            {.binding = 0, .textureViews = {&sourceView, 1}},
             {.binding = 1, .buffer = histogram.buffer()},
             {.binding = 2, .buffer = state_->history.get()},
             {.binding = 3, .buffer = exposure.buffer()},
             {.binding = 4, .textureView = color.view()},
         };
         const auto record = [&](size_t program, CommandBuffer& stageCommands, uint32_t x, uint32_t y) {
-            return programs_[program].dispatch({.commandBuffer = &stageCommands,
-                .bindings = bindings, .bindingCount = 5, .pushData = &push, .pushDataSize = sizeof(push),
-                .groupCountX = x, .groupCountY = y});
+            return programs_[program].dispatch({
+                .commandBuffer = &stageCommands,
+                .bindings = {bindings, 5},
+                .pushData = &push,
+                .pushDataSize = sizeof(push),
+                .groupCountX = x,
+                .groupCountY = y,
+            });
         };
         using Access = RenderGraphResourceAccess;
         const RenderGraphStageUse histogramUses[] = {

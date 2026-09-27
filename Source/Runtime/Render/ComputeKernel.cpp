@@ -17,12 +17,17 @@ Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc
         return makeError(Error::InvalidArgument);
     }
     auto impl = std::make_shared<Impl>();
-    auto result = device.createShaderModule({.code = desc.spirv.data(), .byteSize = desc.spirv.size_bytes(),
-        .debugName = desc.debugName}).transform([&](auto rhiValue) { impl->shader = std::move(rhiValue); });
+    auto result = device.createShaderModule({
+        .spirv = desc.spirv,
+        .debugName = desc.debugName,
+    }).transform([&](auto rhiValue) { impl->shader = std::move(rhiValue); });
     if (result) {
-        result = device.createComputePipeline({.computeShader = impl->shader.get(), .computeEntryPoint = "main",
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(uint64_t),
-            .pipelineCache = desc.pipelineCache}).transform([&](auto rhiValue) { impl->pipeline = std::move(rhiValue); });
+        result = device.createComputePipeline({
+            .computeShader = {impl->shader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(uint64_t),
+            .pipelineCache = desc.pipelineCache,
+        }).transform([&](auto rhiValue) { impl->pipeline = std::move(rhiValue); });
     }
     if (!result) {
         log += "ComputeKernel creation failed: "; log += resultToString(result); return result;
@@ -63,7 +68,7 @@ Result<> ComputeKernel::dispatchIndirect(CommandBuffer& commands, const EncodedP
     Buffer& arguments, uint64_t offset) const
 {
     BufferSlice slice;
-    auto result = arguments.slice(offset, 12).transform([&](auto rhiValue) { slice = std::move(rhiValue); });
+    auto result = arguments.slice({offset, 12}).transform([&](auto rhiValue) { slice = std::move(rhiValue); });
     return result ? dispatchIndirect(commands, params, slice) : result;
 }
 

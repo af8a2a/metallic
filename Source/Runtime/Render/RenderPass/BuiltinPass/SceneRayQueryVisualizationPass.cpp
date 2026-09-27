@@ -128,14 +128,12 @@ public:
             ? static_cast<uint32_t>(std::size(clusterIdCapabilities))
             : static_cast<uint32_t>(std::size(rayQueryCapabilities));
         result = compileSlangShaderToSpirv(SlangShaderDesc{
-                .moduleName = kSceneRayQueryVisualizationShaderModuleName,
-                .entryPointName = kSceneRayQueryVisualizationEntryPoint,
-                .searchPath = kTriangleShaderSearchPath,
-                .capabilities = capabilities,
-                .capabilityCount = capabilityCount,
-                .macroDefines = clusterIdSupported ? clusterIdMacros : nullptr,
-                .macroDefineCount = clusterIdSupported ? static_cast<uint32_t>(std::size(clusterIdMacros)) : 0u,
-            }, computeCompile.diagnostics).transform([&](auto value) { computeCompile = std::move(value); });
+            .moduleName = kSceneRayQueryVisualizationShaderModuleName,
+            .entryPointName = kSceneRayQueryVisualizationEntryPoint,
+            .searchPath = kTriangleShaderSearchPath,
+            .capabilities = {capabilities, capabilityCount},
+            .macroDefines = {clusterIdSupported ? clusterIdMacros : nullptr, clusterIdSupported ? static_cast<uint32_t>(std::size(clusterIdMacros)) : 0u},
+        }, computeCompile.diagnostics).transform([&](auto value) { computeCompile = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(";
             log += kSceneRayQueryVisualizationShaderModuleName;
@@ -164,11 +162,9 @@ public:
         result = rayQueryProgram_.initialize(
             *context.device,
             ComputeProgramDesc{
-                .spirv = computeCompile.spirv.data(),
-                .byteSize = static_cast<uint64_t>(computeCompile.spirv.size() * sizeof(uint32_t)),
+                .spirv = computeCompile.spirv,
                 .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
-                .bindings = bindings,
-                .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .debugName = "SceneRayQueryVisualizationPass",
             },
             log);
@@ -216,8 +212,7 @@ public:
         };
         return rayQueryProgram_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
-            .bindings = bindings,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = (context.width() + 7) / 8,

@@ -125,9 +125,13 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     slang->release();
     render::ShaderCompileResult compiled;
     render::setSlangShaderDebugMode(render::SlangShaderDebugMode::Disabled);
-    const auto result = render::compileSlangShaderToSpirv({.moduleName = trace ? "ShaderTraceFixture" : "ShaderPrintfEcho", .entryPointName = entry,
-        .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .macroDefines = macros.data(), .macroDefineCount = uint32_t(macros.size()),
-        .descriptorHeapMode = mode == "heap-native" ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped}, {.enableDiskCache = false}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
+    const auto result = render::compileSlangShaderToSpirv({
+        .moduleName = trace ? "ShaderTraceFixture" : "ShaderPrintfEcho",
+        .entryPointName = entry,
+        .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+        .macroDefines = macros,
+        .descriptorHeapMode = mode == "heap-native" ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped,
+    }, {.enableDiskCache = false}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
     report["compiler"] = {{"profile", "spirv_1_6"}, {"diskCache", false}, {"shaderDebugMode", "Disabled"},
         {"diagnostics", compiled.diagnostics}, {"dependencies", compiled.dependencies}, {"sourceEntryPoint", entry}, {"spirvEntryPoint", "main"},
         {"macro", {{"PRINTF_RECORD_COUNT", macroValue}}}};
@@ -168,14 +172,18 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
         {"driverInfo", driver.driverInfo}, {"vendorId", properties.properties.vendorID}, {"deviceId", properties.properties.deviceID},
         {"descriptorHeap", native.descriptorHeapEnabled}};
     report["loadedLayerModule"] = loadedModule(L"VkLayer_khronos_validation.dll");
-    auto shader = require(device->createShaderModule({.code = compiled.spirv.data(),
-        .byteSize = compiled.spirv.size() * sizeof(uint32_t)}), "createShaderModule");
+    auto shader = require(device->createShaderModule({
+        .spirv = compiled.spirv,
+    }), "createShaderModule");
     struct Push { uint32_t inputBuffer; uint32_t cookie; };
     Push push{0, 305397763};
     report["phase"] = "pipeline-create";
     save(directory / "Report.json", report);
-    auto pipeline = require(device->createComputePipeline({.computeShader = shader.get(), .computeEntryPoint = "main",
-        .usesBindlessHeap = heapMode, .bindlessUserPushDataSize = heapMode ? sizeof(Push) : 0}), "createComputePipeline");
+    auto pipeline = require(device->createComputePipeline({
+        .computeShader = {shader.get(), "main"},
+        .usesBindlessHeap = heapMode,
+        .bindlessUserPushDataSize = heapMode ? sizeof(Push) : 0,
+    }), "createComputePipeline");
     std::unique_ptr<render::BindlessHeap> heap;
     std::unique_ptr<render::Buffer> input, output;
     render::BindlessHandle inputHandle{}, outputHandle{};
@@ -229,7 +237,7 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     render::CommandBuffer* submitted[] = {commands.get()};
     validateSources();
     if (trace && !trace->maySubmit()) { throw std::runtime_error("Shader observation cancelled or stale before submit"); }
-    require(tracker.submit({.commandBuffers = submitted, .commandBufferCount = 1}, frame), "submit");
+    require(tracker.submit({.commandBuffers = {submitted, 1}}, frame), "submit");
     if (trace) { trace->submitted({{"type","Graphics"}, {"family",vk::nativeQueue(queue).familyIndex}},
         {{"timelineValue",frame.completion().value()}, {"execution",trace->plan().at("execution")}}); }
     if (!frame.wait(10'000'000'000ull)) {

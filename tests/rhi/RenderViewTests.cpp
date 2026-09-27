@@ -27,8 +27,11 @@ public:
             .entryPointName = "viewConstantsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}, {.binding = 1}};
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .bindings = bindings, .bindingCount = 2, .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .bindings = {bindings, 2},
+            .requiresRayQuery = false,
+        }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
@@ -39,7 +42,7 @@ public:
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 0, .buffer = context.outputBuffer("view").buffer()},
             {.binding = 1, .buffer = context.viewConstantsBuffer()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 2});
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
     }
 private:
     render::ComputeProgram program_;

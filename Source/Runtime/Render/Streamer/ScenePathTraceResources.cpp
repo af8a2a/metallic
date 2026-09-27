@@ -233,7 +233,7 @@ public:
             return result;
         }
         std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-        outBuffer->flush(outOffset, byteSize);
+        outBuffer->flush({outOffset, byteSize});
         return {};
     }
 
@@ -459,7 +459,7 @@ Result<> uploadStorageBuffer(
             return makeError(Error::Failure);
         }
         std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-        uploadBuffer->flush(0, byteSize);
+        uploadBuffer->flush({0, byteSize});
         uploadBuffer->unmap();
     }
     if (deviceLocal) {
@@ -727,7 +727,7 @@ Result<> createMaterialTexture(
         std::memcpy(static_cast<uint8_t*>(mapped) + upload.bufferOffset,
             mipPixels.data(), static_cast<size_t>(upload.byteSize));
     }
-    outTexture.uploadBuffer->flush(outTexture.uploadBufferOffset, allocationSize);
+    outTexture.uploadBuffer->flush({outTexture.uploadBufferOffset, allocationSize});
     outTexture.uploadAllocationSize = allocationSize;
 
     result = createSharedTexture(device,
@@ -755,10 +755,7 @@ Result<> createMaterialTexture(
         *outTexture.texture,
         TextureViewDesc{
             .format = outTexture.format,
-            .baseMip = 0,
-            .mipCount = outTexture.mipCount,
-            .baseLayer = 0,
-            .layerCount = 1,
+            .range = {.baseMip = 0, .mipCount = outTexture.mipCount, .baseLayer = 0, .layerCount = 1},
         },
         outTexture.view);
     if (!result || outTexture.view == nullptr) {
@@ -792,7 +789,7 @@ Result<> createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena
     Result<> result = createSharedTexture(device, desc, texture.texture);
     if (!result) { log = "Cannot allocate KTX2 texture: " + info.path.string(); return result; }
     result = createSharedTextureView(device, *texture.texture,
-        {.format=desc.format,.mipCount=desc.mipCount,.swizzle=info.swizzle}, texture.view);
+        {.format=desc.format,.range={.mipCount=desc.mipCount},.swizzle=info.swizzle}, texture.view);
     timing.imageCreateMs += sceneResourceElapsedMilliseconds(phaseBegin);
     if (!result) { return result; }
     void* mapped = nullptr;
@@ -814,7 +811,7 @@ Result<> createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena
     timing.decodeMs = prefetched ? prefetched->stats.decodeMs : reader.stats().decodeMs - before.decodeMs;
     if (prefetched) { timing.totalMs += prefetched->workerMs; }
     phaseBegin = SceneResourceLogClock::now();
-    texture.uploadBuffer->flush(texture.uploadBufferOffset,size);
+    texture.uploadBuffer->flush({texture.uploadBufferOffset, size});
     timing.flushMs += sceneResourceElapsedMilliseconds(phaseBegin);
     texture.uploadAllocationSize = size;
     return {};
@@ -1517,7 +1514,7 @@ struct ScenePathTraceResources::Impl {
             upload.completionObservedMilliseconds = sceneResourceElapsedMilliseconds(migration.submittedAt);
             if (migration.timestamps) {
                 TimestampQueryResult values[2];
-                const auto queryResult = migration.timestamps->readResults(0, 2, values);
+                const auto queryResult = migration.timestamps->readResults(0, {values, 2});
                 if (queryResult && values[0].available && values[1].available) {
                     upload.gpuTimingAvailable = true;
                     upload.gpuMilliseconds = migration.timestamps->durationMilliseconds(values[0].value, values[1].value);
@@ -1597,10 +1594,9 @@ struct ScenePathTraceResources::Impl {
                 .newLayout = TextureLayout::ShaderRead,
                 .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                 .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-                .mipCount = image.mipCount,
-                .layerCount = 1,
+                .range = {.mipCount = image.mipCount, .layerCount = 1},
             };
-            if (auto commandResult = migration.commands->synchronize({.textures=&barrier, .textureCount=1}); !commandResult) { return commandResult; }
+            if (auto commandResult = migration.commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return commandResult; }
             image.state = ResourceState::ShaderRead;
         }
         if (migration.timestamps && !(result = migration.commands->writeTimestamp(
@@ -1608,7 +1604,7 @@ struct ScenePathTraceResources::Impl {
         if (!(result = migration.commands->end())) { return result; }
         phase.next("Submit texture upload");
         CommandBuffer* commands[] = {migration.commands.get()};
-        if (!(result = migration.tracker.submit({.commandBuffers=commands, .commandBufferCount=1}, migration.frame))) { return result; }
+        if (!(result = migration.tracker.submit({.commandBuffers = {commands, 1}}, migration.frame))) { return result; }
         migration.submitted = true;
         migration.submittedFrame = streamingFrame;
         migration.submittedAt = SceneResourceLogClock::now();
@@ -1751,7 +1747,7 @@ struct ScenePathTraceResources::Impl {
         TextureFeedback entry{std::move(buffer),frame->completion(),frameIndex};
         feedback = entry.buffer.get(); frame->retain(entry.buffer);
         BufferBarrierDesc ready{.buffer = feedback, .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
-        if (auto commandResult = commands.synchronize({.buffers=&ready, .bufferCount=1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = {&ready, 1}}); !commandResult) { return commandResult; }
         textureFeedback.push_back(std::move(entry));
         return {};
     }
@@ -1922,9 +1918,9 @@ struct ScenePathTraceResources::Impl {
         }
         for (const ScenePathTraceBufferUpload& upload : bufferUploads) {
             {
-                auto sourceSlice = upload.stagingBuffer.get()->slice(upload.sourceOffset, upload.byteSize);
+                auto sourceSlice = upload.stagingBuffer.get()->slice({upload.sourceOffset, upload.byteSize});
                 if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-                auto destinationSlice = upload.destination->slice(0, upload.byteSize);
+                auto destinationSlice = upload.destination->slice({0, upload.byteSize});
                 if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
                 if (auto commandResult = batch->uploadCommands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
             }
@@ -1947,10 +1943,8 @@ struct ScenePathTraceResources::Impl {
         uploadStats.recordMs += sceneResourceElapsedMilliseconds(phaseBegin);
         batch->copySubmitted = SceneResourceLogClock::now();
         result = uploadQueue->submit(QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
-            .signalSemaphores = &signal,
-            .signalSemaphoreCount = 1,
+            .commandBuffers = {commandBuffers, 1},
+            .signalSemaphores = {&signal, 1},
         });
         uploadStats.copySubmitMs += sceneResourceElapsedMilliseconds(batch->copySubmitted);
         if (!result) {
@@ -2003,12 +1997,9 @@ struct ScenePathTraceResources::Impl {
             uploadStats.recordMs += sceneResourceElapsedMilliseconds(phaseBegin);
             batch->acquireSubmitted = SceneResourceLogClock::now();
             result = graphicsQueue.submit(QueueSubmitDesc{
-                .waitSemaphores = &wait,
-                .waitSemaphoreCount = 1,
-                .commandBuffers = acquireCommandBuffers,
-                .commandBufferCount = 1,
-                .signalSemaphores = &acquireSignal,
-                .signalSemaphoreCount = 1,
+                .waitSemaphores = {&wait, 1},
+                .commandBuffers = {acquireCommandBuffers, 1},
+                .signalSemaphores = {&acquireSignal, 1},
             });
             uploadStats.acquireSubmitMs += sceneResourceElapsedMilliseconds(batch->acquireSubmitted);
             if (!result) {
@@ -2504,14 +2495,10 @@ struct ScenePathTraceResources::Impl {
             .newLayout = TextureLayout::TransferDestination,
             .before = resourceSyncScope(texture.state, PipelineStageBits::AllCommands),
             .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
-            .baseMip = 0,
-            .mipCount = texture.mipCount,
-            .baseLayer = 0,
-            .layerCount = 1,
+            .range = {.baseMip = 0, .mipCount = texture.mipCount, .baseLayer = 0, .layerCount = 1},
         };
         if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-            .textures = &toTransfer,
-            .textureCount = 1,
+            .textures = {&toTransfer, 1},
         }); !commandResult) { return commandResult; }
         texture.state = ResourceState::TransferDestination;
 
@@ -2549,14 +2536,10 @@ struct ScenePathTraceResources::Impl {
                 .newLayout = TextureLayout::ShaderRead,
                 .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                 .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-                .baseMip = 0,
-                .mipCount = texture.mipCount,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = texture.mipCount, .baseLayer = 0, .layerCount = 1},
             };
             if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-                .textures = &toShaderRead,
-                .textureCount = 1,
+                .textures = {&toShaderRead, 1},
             }); !commandResult) { return commandResult; }
             texture.state = ResourceState::ShaderRead;
             return {};
@@ -2573,14 +2556,12 @@ struct ScenePathTraceResources::Impl {
                 .buffer = upload.destination,
                 .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                 .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = upload.byteSize,
+                .range = {.offset = 0, .size = upload.byteSize},
             });
         }
         if (!bufferBarriers.empty()) {
             if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-                .buffers = bufferBarriers.data(),
-                .bufferCount = static_cast<uint32_t>(bufferBarriers.size()),
+                .buffers = bufferBarriers,
             }); !commandResult) { return commandResult; }
         }
         return {};

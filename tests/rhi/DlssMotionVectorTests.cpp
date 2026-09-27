@@ -30,15 +30,15 @@ public:
             .moduleName = "DlssMotionVectorProbe",
             .entryPointName = "dlssMotionVectorProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-            .capabilities = capabilities,
-            .capabilityCount = 1,
+            .capabilities = {capabilities, 1},
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc binding{
             .binding = 63, .kind = render::ComputeResourceBindingKind::StorageBuffer};
         return program_.initialize(*context.device, {
-            .spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * sizeof(uint32_t),
-            .bindings = &binding, .bindingCount = 1, .requiresRayQuery = false,
+            .spirv = shader.spirv,
+            .bindings = {&binding, 1},
+            .requiresRayQuery = false,
         }, log);
     }
 
@@ -47,7 +47,9 @@ public:
         const render::ComputeDispatchBinding binding{
             .binding = 63, .buffer = context.outputBuffer("motion").buffer()};
         return program_.dispatch({
-            .commandBuffer = &context.commandBuffer(), .bindings = &binding, .bindingCount = 1});
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {&binding, 1},
+        });
     }
 
 private:

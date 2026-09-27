@@ -58,10 +58,8 @@ public:
         };
         result = context.graphicsQueue.submit(
             render::QueueSubmitDesc{
-                .commandBuffers = commandBuffers,
-                .commandBufferCount = 1,
-                .signalSemaphores = &signalSemaphore,
-                .signalSemaphoreCount = 1,
+                .commandBuffers = {commandBuffers, 1},
+                .signalSemaphores = {&signalSemaphore, 1},
                 .signalFence = fence.get(),
             });
         if (!result) {
@@ -156,8 +154,7 @@ public:
         }
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = context.graphicsQueue.submit(render::QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
+            .commandBuffers = {commandBuffers, 1},
             .signalFence = fence.get(),
         });
         if (!result) {
@@ -169,7 +166,7 @@ public:
         }
 
         std::array<render::TimestampQueryResult, 2> timestamps{};
-        result = queryPool->readResults(0, static_cast<uint32_t>(timestamps.size()), timestamps.data());
+        result = queryPool->readResults(0, timestamps);
         if (!result) {
             return RhiTestResult::fail(std::string("TimestampQueryPool::readResults returned ") + toString(result));
         }

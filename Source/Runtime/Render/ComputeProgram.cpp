@@ -34,10 +34,10 @@ const ComputeDispatchBinding* findDispatchBinding(
     const ComputeDispatchDesc& desc,
     uint32_t binding)
 {
-    if (desc.bindings == nullptr) {
+    if (desc.bindings.empty()) {
         return nullptr;
     }
-    for (uint32_t index = 0; index < desc.bindingCount; ++index) {
+    for (uint32_t index = 0; index < desc.bindings.size(); ++index) {
         if (desc.bindings[index].binding == binding) {
             return &desc.bindings[index];
         }
@@ -45,13 +45,10 @@ const ComputeDispatchBinding* findDispatchBinding(
     return nullptr;
 }
 
-bool hasDuplicateBindings(const ComputeProgramBindingDesc* bindings, uint32_t bindingCount)
+bool hasDuplicateBindings(std::span<const ComputeProgramBindingDesc> bindings)
 {
-    if (bindings == nullptr) {
-        return bindingCount != 0;
-    }
-    for (uint32_t lhs = 0; lhs < bindingCount; ++lhs) {
-        for (uint32_t rhs = lhs + 1; rhs < bindingCount; ++rhs) {
+    for (uint32_t lhs = 0; lhs < bindings.size(); ++lhs) {
+        for (uint32_t rhs = lhs + 1; rhs < bindings.size(); ++rhs) {
             if (bindings[lhs].binding == bindings[rhs].binding) {
                 return true;
             }
@@ -272,13 +269,11 @@ Result<> ComputeProgram::initialize(
     }
     log.clear();
 
-    if (desc.spirv == nullptr ||
-        desc.byteSize == 0 ||
-        (desc.byteSize % sizeof(uint32_t)) != 0 ||
-        desc.bindings == nullptr ||
-        desc.bindingCount == 0 ||
+    if (desc.spirv.size() < 5 || desc.spirv[0] != 0x07230203u ||
+        desc.bindings.empty() ||
+        desc.bindings.size() > UINT32_MAX ||
         desc.resourceTableCount == 0 ||
-        hasDuplicateBindings(desc.bindings, desc.bindingCount)) {
+        hasDuplicateBindings(desc.bindings)) {
         log = "ComputeProgramDesc is invalid";
         return makeError(Error::InvalidArgument);
     }
@@ -297,9 +292,9 @@ Result<> ComputeProgram::initialize(
     impl_->pushConstantSize = desc.pushConstantSize;
     impl_->resourceTableCount = desc.resourceTableCount;
     impl_->usesResourceTable = desc.usesResourceTable;
-    for (size_t word = 5; word < desc.byteSize / sizeof(uint32_t);) {
+    for (size_t word = 5; word < desc.spirv.size_bytes() / sizeof(uint32_t);) {
         const uint32_t count = desc.spirv[word] >> 16;
-        if (count == 0 || count > desc.byteSize / sizeof(uint32_t) - word) { return makeError(Error::InvalidArgument); }
+        if (count == 0 || count > desc.spirv.size_bytes() / sizeof(uint32_t) - word) { return makeError(Error::InvalidArgument); }
         if ((desc.spirv[word] & 0xffffu) == 17 && count == 2 && desc.spirv[word + 1] == 5128) {
             impl_->nativeDescriptorHeap = true;
         }
@@ -311,8 +306,8 @@ Result<> ComputeProgram::initialize(
     uint64_t sampledImageCount = 0;
     uint64_t storageImageCount = 0;
     uint64_t bufferCount = 0;
-    impl_->bindings.reserve(desc.bindingCount);
-    for (uint32_t bindingIndex = 0; bindingIndex < desc.bindingCount; ++bindingIndex) {
+    impl_->bindings.reserve(desc.bindings.size());
+    for (uint32_t bindingIndex = 0; bindingIndex < desc.bindings.size(); ++bindingIndex) {
         const ComputeProgramBindingDesc& binding = desc.bindings[bindingIndex];
         if (binding.kind == ComputeResourceBindingKind::DataBuffer &&
             (!desc.usesResourceTable || binding.descriptorCount != 1 || binding.dataStride == 0 ||
@@ -523,24 +518,21 @@ Result<> ComputeProgram::initialize(
     }
 
     result = device.createShaderModule(ShaderModuleDesc{
-            .code = desc.spirv,
-            .byteSize = desc.byteSize,
-            .debugName = impl_->debugName.c_str(),
-        }).transform([&](auto rhiValue) { impl_->shader = std::move(rhiValue); });
+        .spirv = desc.spirv,
+        .debugName = impl_->debugName.c_str(),
+    }).transform([&](auto rhiValue) { impl_->shader = std::move(rhiValue); });
     if (!result) {
         log = resultMessage("createShaderModule(ComputeProgram)", result);
         clear();
         return result;
     }
     result = device.createComputePipeline(ComputePipelineDesc{
-            .computeShader = impl_->shader.get(),
-            .computeEntryPoint = "main",
-            .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = impl_->bindlessPushDataSize,
-            .bindingMappings = mappings.data(),
-            .bindingMappingCount = static_cast<uint32_t>(mappings.size()),
-            .pipelineCache = desc.pipelineCache,
-        }).transform([&](auto rhiValue) { impl_->pipeline = std::move(rhiValue); });
+        .computeShader = {impl_->shader.get(), "main"},
+        .usesBindlessHeap = true,
+        .bindlessUserPushDataSize = impl_->bindlessPushDataSize,
+        .bindingMappings = mappings,
+        .pipelineCache = desc.pipelineCache,
+    }).transform([&](auto rhiValue) { impl_->pipeline = std::move(rhiValue); });
     if (!result) {
         log = resultMessage("createComputePipeline(ComputeProgram bindless)", result);
         clear();
@@ -586,7 +578,7 @@ Result<> ComputeProgram::validateDispatch(const ComputeDispatchDesc& desc,
     std::span<const ComputeIndirectDispatch> dispatches) const
 {
     if (desc.stats) { *desc.stats = {}; }
-    if (!valid() ||
+    if (!valid() || desc.bindings.size() > UINT32_MAX ||
         (desc.indirectArguments == nullptr &&
          (desc.groupCountX == 0 || desc.groupCountY == 0 || desc.groupCountZ == 0)) ||
         desc.resourceTableIndex >= impl_->resourceTableCount ||
@@ -686,7 +678,7 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
             findDispatchBinding(desc, expectedBinding.desc.binding);
         if (binding == nullptr) {
             std::string providedBindings;
-            for (uint32_t index = 0; index < desc.bindingCount; ++index) {
+            for (uint32_t index = 0; index < desc.bindings.size(); ++index) {
                 if (!providedBindings.empty()) {
                     providedBindings += ',';
                 }
@@ -696,7 +688,7 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
                 "[ComputeProgram:{}] missing binding {}; provided count={} bindings=[{}]",
                 impl_->debugName,
                 expectedBinding.desc.binding,
-                desc.bindingCount,
+                desc.bindings.size(),
                 providedBindings);
             return makeError(Error::InvalidArgument);
         }
@@ -740,7 +732,7 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         }
         case ComputeResourceBindingKind::StorageImage: {
             const bool useTextureArray =
-                binding->textureViews != nullptr && binding->textureViewCount >= descriptorCount;
+                !binding->textureViews.empty() && binding->textureViews.size() >= descriptorCount;
             if (!useTextureArray && (descriptorCount != 1u || binding->textureView == nullptr)) {
                 spdlog::error(
                     "[ComputeProgram:{}] invalid storage image binding {}",
@@ -772,7 +764,7 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         case ComputeResourceBindingKind::SampledImage: {
             const auto& snapshot = binding->sampledImages;
             if (snapshot ? snapshot->views.size() < descriptorCount :
-                (binding->textureViews == nullptr || binding->textureViewCount < descriptorCount)) {
+                (binding->textureViews.empty() || binding->textureViews.size() < descriptorCount)) {
                 spdlog::error("[ComputeProgram:{}] invalid sampled image array at binding {}",
                     impl_->debugName, expectedBinding.desc.binding);
                 return makeError(Error::InvalidArgument);
@@ -818,15 +810,15 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
             break;
         }
         case ComputeResourceBindingKind::StorageBuffer: {
-            if (binding->buffer == nullptr || binding->offset != 0 ||
-                (binding->size != UINT64_MAX &&
-                 binding->size != binding->buffer->desc().size)) {
+            if (binding->buffer == nullptr || binding->range.offset != 0 ||
+                (binding->range.size != UINT64_MAX &&
+                 binding->range.size != binding->buffer->desc().size)) {
                 spdlog::error(
                     "[ComputeProgram:{}] invalid storage buffer binding {} offset={} size={}",
                     impl_->debugName,
                     expectedBinding.desc.binding,
-                    binding->offset,
-                    binding->size);
+                    binding->range.offset,
+                    binding->range.size);
                 return makeError(Error::InvalidArgument);
             }
             result = tables->heap->writeStorageBuffer(
@@ -976,8 +968,7 @@ Result<PreparedComputeDispatch> ComputeProgram::prepareShared(
         prepared->items[i].execution = program->execution;
         prepared->owners.push_back(program);
         if (desc.indirectArguments) {
-            result = desc.indirectArguments->slice(dispatches.empty() ? desc.indirectOffset : dispatches[i].argumentOffset,
-                3 * sizeof(uint32_t)).transform([&](auto slice) { prepared->items[i].arguments = std::move(slice); });
+            result = desc.indirectArguments->slice({dispatches.empty() ? desc.indirectOffset : dispatches[i].argumentOffset, 3 * sizeof(uint32_t)}).transform([&](auto slice) { prepared->items[i].arguments = std::move(slice); });
             if (result) { result = prepared->items[i].arguments.validate(impl_->device->identity(), BufferUsageBits::Indirect, 4, 12); }
             if (!result) { return makeError(result.error()); }
         }
@@ -1020,12 +1011,12 @@ Result<PreparedComputeDispatch> ComputeProgram::prepareShared(
         if (expected.desc.kind == ComputeResourceBindingKind::DataBuffer) {
             BufferSlice slice = binding->data;
             if (slice.valid()) {
-                if (binding->buffer || binding->offset != 0 || binding->size != UINT64_MAX) {
+                if (binding->buffer || binding->range.offset != 0 || binding->range.size != UINT64_MAX) {
                     return makeError(Error::InvalidArgument);
                 }
             } else {
                 if (!binding->buffer) { return makeError(Error::InvalidArgument); }
-                result = binding->buffer->slice(binding->offset, binding->size).transform([&](auto rhiValue) { slice = std::move(rhiValue); });
+                result = binding->buffer->slice({binding->range.offset, binding->range.size}).transform([&](auto rhiValue) { slice = std::move(rhiValue); });
                 if (!result) { return makeError(result.error()); }
             }
             result = slice.validateData(impl_->device->identity(), expected.desc.dataStride, expected.desc.dataAlignment);
@@ -1049,8 +1040,8 @@ Result<PreparedComputeDispatch> ComputeProgram::prepareShared(
             case ComputeResourceBindingKind::DataBuffer:
                 return makeError(Error::InvalidArgument);
             case ComputeResourceBindingKind::StorageBuffer:
-                if (!binding->buffer || binding->offset != 0 ||
-                    (binding->size != UINT64_MAX && binding->size != binding->buffer->desc().size)) {
+                if (!binding->buffer || binding->range.offset != 0 ||
+                    (binding->range.size != UINT64_MAX && binding->range.size != binding->buffer->desc().size)) {
                     return makeError(Error::InvalidArgument);
                 }
                 lease = registry.storageBuffer(*binding->buffer);
@@ -1069,7 +1060,7 @@ Result<PreparedComputeDispatch> ComputeProgram::prepareShared(
                 if (binding->sampledImages && expected.desc.kind == ComputeResourceBindingKind::SampledImage) {
                     if (binding->sampledImages->views.size() < count) { return makeError(Error::InvalidArgument); }
                     view = binding->sampledImages->views[i].get();
-                } else if (binding->textureViews && binding->textureViewCount >= count) {
+                } else if (!binding->textureViews.empty() && binding->textureViews.size() >= count) {
                     view = binding->textureViews[i];
                 } else if (count == 1) { view = binding->textureView; }
                 if (!view) { return makeError(Error::InvalidArgument); }

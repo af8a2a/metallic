@@ -86,10 +86,10 @@ public:
                 .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             },
         };
-        if (auto commandResult = commands->synchronize({.textures = barriers, .textureCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->synchronize({.textures = {barriers, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         render::RenderingAttachmentDesc attachment{.view = sourceView.get(), .state = render::ResourceState::ColorAttachment,
             .loadOp = render::LoadOp::Clear, .storeOp = render::StoreOp::Store, .clearColor = {12.5f, 5.0f, 1.0f, 1.0f}};
-        if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = &attachment, .colorAttachmentCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commands->endRendering();
         render::TextureBarrierDesc readable{
             .texture = source.get(),
@@ -98,7 +98,7 @@ public:
             .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
         };
-        if (auto commandResult = commands->synchronize({.textures = &readable, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->synchronize({.textures = {&readable, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         const auto descriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*sourceView), render::vulkan::nativeImageLayout(*sourceView, render::ResourceState::ShaderRead));
         ImGui_ImplVulkan_NewFrame();
         ImGui::NewFrame();
@@ -112,7 +112,7 @@ public:
         ImGui::Render();
         attachment.view = outputView.get();
         attachment.clearColor = {0, 0, 0, 1};
-        if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = &attachment, .colorAttachmentCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), render::vulkan::nativeCommandBuffer(*commands), ui.display.mainPipeline());
         commands->endRendering();
         render::TextureBarrierDesc toReadback{
@@ -122,11 +122,13 @@ public:
             .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
         };
-        if (auto commandResult = commands->synchronize({.textures = &toReadback, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->synchronize({.textures = {&toReadback, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commands->copyTextureToBuffer({.texture = output.get(), .buffer = readback.get(), .width = 32, .height = 32});
         render::CommandBuffer* command = commands.get();
-        if (!commands->end() || !context.graphicsQueue.submit({.commandBuffers = &command, .commandBufferCount = 1,
-                .signalFence = fence.get()}) || !fence->wait()) { return RhiTestResult::fail("HDR ImGui submit failed"); }
+        if (!commands->end() || !context.graphicsQueue.submit({
+            .commandBuffers = {&command, 1},
+            .signalFence = fence.get(),
+        }) || !fence->wait()) { return RhiTestResult::fail("HDR ImGui submit failed"); }
         readback->invalidate();
         const auto* pixels = static_cast<const uint16_t*>(readback->map());
         if (!pixels) { return RhiTestResult::fail("HDR ImGui readback failed"); }

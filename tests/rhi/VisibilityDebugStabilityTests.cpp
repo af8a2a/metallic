@@ -58,11 +58,16 @@ public:
                 .entryPointName = i == 0 ? "visibilityBufferCompositeVertexMain" : "visibilityBufferCompositeFragmentMain",
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
             log = compiled.diagnostics; DEBUG_REQUIRE(result);
-            DEBUG_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { i == 0 ? vertex : fragment = std::move(rhiValue); }));
+            DEBUG_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { i == 0 ? vertex : fragment = std::move(rhiValue); }));
         }
         std::unique_ptr<GraphicsPipeline> pipeline;
-        DEBUG_REQUIRE(device->createGraphicsPipeline({.vertexShader = vertex.get(), .fragmentShader = fragment.get(),
-            .colorFormat = Format::Rgba8Unorm, .rasterization = {.cullMode = CullMode::None}, .usesBindlessHeap = true}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
+        DEBUG_REQUIRE(device->createGraphicsPipeline({
+            .vertexShader = {vertex.get()},
+            .fragmentShader = {fragment.get()},
+            .colorFormat = Format::Rgba8Unorm,
+            .rasterization = {.cullMode = CullMode::None},
+            .usesBindlessHeap = true,
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
         std::array<std::unique_ptr<Texture>, 3> textures;
         std::array<std::unique_ptr<TextureView>, 3> views;
         std::array<std::unique_ptr<Buffer>, 2> uploads;
@@ -145,10 +150,10 @@ public:
                         .before = metallic::render::resourceSyncScope(submitted ? ResourceState::ShaderRead : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
                         .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                     };
-                    if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     commands->copyBufferToTexture({.buffer = uploads[i].get(), .texture = textures[i].get(), .width = width, .height = 1});
                     barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite}; barrier.newLayout = TextureLayout::ShaderRead; barrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
-                    if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
                 TextureBarrierDesc barrier{
                     .texture = textures[2].get(),
@@ -157,10 +162,10 @@ public:
                     .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
                     .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
                 };
-                if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 const RenderingAttachmentDesc color{.view = views[2].get(), .state = ResourceState::ColorAttachment,
                     .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
-                if (auto commandResult = commands->beginRendering({.renderArea = {.width = width, .height = 1}, .colorAttachments = &color, .colorAttachmentCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->beginRendering({.renderArea = {.width = width, .height = 1}, .colorAttachments = {&color, 1}}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                 commands->setViewport({.width = float(width), .height = 1.f, .maxDepth = 1.f});
                 commands->setScissor({.width = width, .height = 1});
                 commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
@@ -169,11 +174,11 @@ public:
                     .residentRecordCapacity = base, .streamRecords = handles[Stream].shaderIndex, .streamGroups = handles[Groups].shaderIndex};
                 commands->pushBindlessData(&push, sizeof(push)); commands->draw(3); commands->endRendering();
                 barrier.oldLayout = TextureLayout::ColorAttachment; barrier.before = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite}; barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
-                if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 commands->copyTextureToBuffer({.texture = textures[2].get(), .buffer = readback.get(), .width = width, .height = 1});
                 DEBUG_REQUIRE(commands->end());
                 CommandBuffer* list[] = {commands.get()};
-                DEBUG_REQUIRE(queue->submit({.commandBuffers = list, .commandBufferCount = 1, .signalFence = fence.get()}));
+                DEBUG_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
                 DEBUG_REQUIRE(fence->wait()); submitted = true;
                 readback->invalidate(); const void* mapped = readback->map();
                 if (!mapped) { return RhiTestResult::fail("Cannot read debug attachment"); }

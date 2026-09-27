@@ -36,11 +36,11 @@ public:
         }
 
         result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
-                .vertexShader = vertexShader_.get(),
-                .fragmentShader = fragmentShader_.get(),
-                .colorFormat = Format::Rgba8Unorm,
-                .topology = PrimitiveTopology::TriangleList,
-            }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
+            .vertexShader = {vertexShader_.get()},
+            .fragmentShader = {fragmentShader_.get()},
+            .colorFormat = Format::Rgba8Unorm,
+            .topology = PrimitiveTopology::TriangleList,
+        }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
         if (!result) {
             log += resultMessage("createGraphicsPipeline", result);
             log += '\n';
@@ -71,8 +71,7 @@ public:
         };
         auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
-            .colorAttachments = &attachment,
-            .colorAttachmentCount = 1,
+            .colorAttachments = {&attachment, 1},
         });
         if (!rendering) { return rendering; }
         context.commandBuffer().setViewport(Viewport{
@@ -120,10 +119,9 @@ private:
         const std::string shaderDebugName =
             std::string(kTriangleShaderModuleName) + "." + entryPointName;
         result = device.createShaderModule(ShaderModuleDesc{
-                .code = compileResult.spirv.data(),
-                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
-                .debugName = shaderDebugName.c_str(),
-            }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
+            .spirv = compileResult.spirv,
+            .debugName = shaderDebugName.c_str(),
+        }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
         if (!result) {
             log += resultMessage("createShaderModule", result);
             log += '\n';

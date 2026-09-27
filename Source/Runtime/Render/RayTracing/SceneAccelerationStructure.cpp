@@ -102,7 +102,7 @@ Result<> uploadVector(Buffer& buffer, const std::vector<T>& values, const char* 
     }
     const uint64_t byteSize = static_cast<uint64_t>(values.size()) * sizeof(T);
     std::memcpy(mapped, values.data(), static_cast<size_t>(byteSize));
-    buffer.flush(0, byteSize);
+    buffer.flush({0, byteSize});
     buffer.unmap();
     return {};
 }
@@ -171,8 +171,8 @@ struct TopLevelBuildStrategy {
         std::unique_ptr<Buffer>& buffer) const
     {
         if (backend == RayTracingTopLevelBackend::Standard) {
-            if (buffer) { return device.writeRayTracingInstances(*buffer, instances.data(), uint32_t(instances.size())); }
-            return device.createRayTracingInstanceBuffer(instances.data(), uint32_t(instances.size()))
+            if (buffer) { return device.writeRayTracingInstances(*buffer, instances); }
+            return device.createRayTracingInstanceBuffer(instances)
                 .transform([&](auto value) { buffer = std::move(value); });
         }
         if (instances.size() != partitions.size()) { return makeError(Error::InvalidArgument); }
@@ -186,7 +186,7 @@ struct TopLevelBuildStrategy {
                 .mask = source.mask, .flags = source.flags});
             std::memcpy(destination.transform, source.transform, sizeof(source.transform));
         }
-        return device.createPartitionedAccelerationStructureInstanceBuffer(encoded.data(), uint32_t(encoded.size()))
+        return device.createPartitionedAccelerationStructureInstanceBuffer(encoded)
             .transform([&](auto value) { buffer = std::move(value); });
     }
 
@@ -336,10 +336,7 @@ Result<> SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::s
     std::vector<uint64_t> compactedSizes(blases.size(), 0);
     bool compactedSizesAvailable = false;
     if (compactionQueryPool != nullptr && compactionQueriesRecorded) {
-        const Result<> queryResult = compactionQueryPool->readResults(
-            0,
-            static_cast<uint32_t>(compactedSizes.size()),
-            compactedSizes.data());
+        const Result<> queryResult = compactionQueryPool->readResults(0, compactedSizes);
         if (queryResult) {
             compactedSizesAvailable = true;
         } else {
@@ -438,8 +435,7 @@ Result<> SceneAccelerationStructureBuilder::Impl::startTopLevelSubmission(std::s
 
         CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = buildQueue->submit(QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
+            .commandBuffers = {commandBuffers, 1},
             .signalFence = fence.get(),
         });
         if (!result) {
@@ -772,8 +768,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
             continue;
         }
         auto& input = micromapInputs[i];
-        input.usages = baked.usages.data();
-        input.usageCount = uint32_t(baked.usages.size());
+        input.usages = baked.usages;
         RayTracingAccelerationStructureBuildSizes sizes;
         result = device.queryRayTracingAccelerationStructureBuildSizes({
             .type = RayTracingAccelerationStructureType::OpacityMicromap,
@@ -805,7 +800,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
                 return makeError(Error::Failure);
             }
             std::memcpy(mapped + offset, values.data(), size_t(bytes));
-            storage->flush(0, storage->desc().size);
+            storage->flush({0, storage->desc().size});
             storage->unmap();
             buffer = storage.get();
             impl_->micromapUploadBuffers.push_back(std::move(storage));
@@ -851,15 +846,13 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
             .flags = input.opaque ? RayTracingGeometryFlags::Opaque : RayTracingGeometryFlags::None,
             .opacityMicromap = impl_->micromaps[geometries.size()].get(),
             .opacityMicromapUsages = micromapInputs[geometries.size()].usages,
-            .opacityMicromapUsageCount = micromapInputs[geometries.size()].usageCount,
         });
         RayTracingAccelerationStructureBuildSizes sizes;
         result = device.queryRayTracingAccelerationStructureBuildSizes(RayTracingAccelerationStructureBuildInputs{
-                .type = RayTracingAccelerationStructureType::BottomLevel,
-                .flags = blasBuildFlags,
-                .geometries = &geometries.back(),
-                .geometryCount = 1,
-            }).transform([&](auto rhiValue) { sizes = std::move(rhiValue); });
+            .type = RayTracingAccelerationStructureType::BottomLevel,
+            .flags = blasBuildFlags,
+            .geometries = {&geometries.back(), 1},
+        }).transform([&](auto rhiValue) { sizes = std::move(rhiValue); });
         if (!result) {
             log = resultMessage("queryRayTracingAccelerationStructureBuildSizes(BLAS)", result);
             clear();
@@ -1008,8 +1001,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
         result = commandBuffer->buildRayTracingAccelerationStructure(
             RayTracingAccelerationStructureBuildDesc{
                 .destination = impl_->blases[index].get(),
-                .geometries = &geometries[index],
-                .geometryCount = 1,
+                .geometries = {&geometries[index], 1},
                 .scratchBuffer = impl_->scratchBuffer.get(),
                 .scratchBufferOffset = impl_->scratchOffset,
             });
@@ -1043,8 +1035,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
     }
     CommandBuffer* commandBuffers[] = {commandBuffer.get()};
     result = queue.submit(QueueSubmitDesc{
-        .commandBuffers = commandBuffers,
-        .commandBufferCount = 1,
+        .commandBuffers = {commandBuffers, 1},
         .signalFence = fence.get(),
     });
     if (!result) {
@@ -1207,8 +1198,7 @@ Result<> SceneAccelerationStructureBuilder::updateInstanceTransforms(
     }
     CommandBuffer* commandBuffers[] = {commandBuffer.get()};
     result = queue.submit(QueueSubmitDesc{
-        .commandBuffers = commandBuffers,
-        .commandBufferCount = 1,
+        .commandBuffers = {commandBuffers, 1},
         .signalFence = fence.get(),
     });
     if (!result || !(result = fence->wait())) {

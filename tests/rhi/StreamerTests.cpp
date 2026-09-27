@@ -69,8 +69,7 @@ RhiTestResult submitAndWait(
 {
     render::CommandBuffer* commandBuffers[] = {&commandBuffer};
     render::Result<> result = queue.submit(render::QueueSubmitDesc{
-        .commandBuffers = commandBuffers,
-        .commandBufferCount = 1,
+        .commandBuffers = {commandBuffers, 1},
         .signalFence = &fence,
     });
     if (!result) {
@@ -86,7 +85,7 @@ RhiTestResult submitAndWait(
 
 bool readBufferBytes(render::Buffer& buffer, void* outData, uint64_t byteSize)
 {
-    buffer.invalidate(0, byteSize);
+    buffer.invalidate({0, byteSize});
     void* mapped = buffer.map();
     if (mapped == nullptr) {
         return false;
@@ -785,16 +784,16 @@ public:
                     .before = metallic::render::resourceSyncScope(found->state, metallic::render::PipelineStageBits::AllCommands),
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                 };
-                if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 {
-                    auto sourceSlice = found->buffer->slice(0, sizeof(header));
+                    auto sourceSlice = found->buffer->slice({0, sizeof(header)});
                     if (!sourceSlice) { throw std::runtime_error(std::string("source slice failed: ") + metallic::render::resultToString(sourceSlice)); }
-                    auto destinationSlice = readback.get()->slice(0, sizeof(header));
+                    auto destinationSlice = readback.get()->slice({0, sizeof(header)});
                     if (!destinationSlice) { throw std::runtime_error(std::string("destination slice failed: ") + metallic::render::resultToString(destinationSlice)); }
                     if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { throw std::runtime_error(std::string("copyBuffer failed: ") + metallic::render::resultToString(commandResult)); }
                 }
                 std::swap(barrier.before, barrier.after);
-                if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 require(bool(commands->end()), "Frame end failed");
                 const auto readiness = runtime.debugSnapshot(false);
                 if (!cancelledInitialFallback && readiness.at("fallbackBlasRecorded") > readiness.at("fallbackBlasSubmitted")) {
@@ -810,7 +809,7 @@ public:
                     return;
                 }
                 CommandBuffer* list[] = {commands.get()};
-                require(bool(tracker.submit({.commandBuffers = list, .commandBufferCount = 1}, frame)) &&
+                require(bool(tracker.submit({.commandBuffers = {list, 1}}, frame)) &&
                     bool(frame.wait(5000000000ull)), "Frame submit failed");
                 lastAcceptedFeedback = runtime.frameIndex();
                 streamer->endFrame();
@@ -921,8 +920,7 @@ public:
             },
         };
         render::BufferOffset streamed = streamer->streamBufferData(render::StreamBufferDataDesc{
-            .dataChunks = chunks,
-            .dataChunkCount = static_cast<uint32_t>(std::size(chunks)),
+            .dataChunks = {chunks, static_cast<uint32_t>(std::size(chunks))},
             .placementAlignment = 4,
             .dstBuffer = readbackBuffer.get(),
             .dstOffset = 0,
@@ -960,12 +958,10 @@ public:
             .buffer = readbackBuffer.get(),
             .before = {},
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
-            .offset = 0,
-            .size = kByteSize,
+            .range = {.offset = 0, .size = kByteSize},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = &toTransfer,
-            .bufferCount = 1,
+            .buffers = {&toTransfer, 1},
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
@@ -1103,14 +1099,10 @@ public:
             .newLayout = render::TextureLayout::TransferDestination,
             .before = {},
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
+            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .textures = &textureToTransfer,
-            .textureCount = 1,
+            .textures = {&textureToTransfer, 1},
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         render::TextureBarrierDesc textureToSource{
@@ -1119,14 +1111,10 @@ public:
             .newLayout = render::TextureLayout::TransferSource,
             .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
+            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .textures = &textureToSource,
-            .textureCount = 1,
+            .textures = {&textureToSource, 1},
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
             .texture = texture.get(),
@@ -1217,7 +1205,7 @@ public:
         }
 
         render::Buffer* constantBuffer = streamer->constantBuffer();
-        constantBuffer->invalidate(0, desc.constantBufferSize);
+        constantBuffer->invalidate({0, desc.constantBufferSize});
         void* mapped = constantBuffer->map();
         if (mapped == nullptr) {
             return RhiTestResult::fail("constant buffer did not map");
@@ -1272,8 +1260,7 @@ public:
             .size = kExpected.size() * sizeof(uint32_t),
         };
         render::BufferOffset streamed = streamer->streamBufferData(render::StreamBufferDataDesc{
-            .dataChunks = &chunk,
-            .dataChunkCount = 1,
+            .dataChunks = {&chunk, 1},
             .placementAlignment = 4,
             .dstBuffer = output.buffer(),
             .dstOffset = 0,
@@ -1667,12 +1654,10 @@ public:
             .buffer = pageBuffer.get(),
             .before = {},
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
-            .offset = 0,
-            .size = pageBuffer->desc().size,
+            .range = {.offset = 0, .size = pageBuffer->desc().size},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = &toTransfer,
-            .bufferCount = 1,
+            .buffers = {&toTransfer, 1},
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
@@ -1768,7 +1753,7 @@ public:
         }
 
         std::vector<uint8_t> actual(static_cast<size_t>(asset.pages()[pageIndex].uncompressedSize));
-        pageBuffer->invalidate(deviceOffset, actual.size());
+        pageBuffer->invalidate({deviceOffset, actual.size()});
         void* mapped = pageBuffer->map();
         if (mapped == nullptr) {
             return RhiTestResult::fail("page buffer did not map");
@@ -3296,9 +3281,9 @@ public:
                         .buffer = destination.get(),
                         .before = {},
                         .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
-                        .size = capacity,
+                        .range = {.size = capacity},
                     };
-                    if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     const auto copyResult = commands->copyStreamedData(*streamer);
                     const bool sameRecording = !(scenario == 5 && attempt == 0);
                     if (sameRecording) { UPLOAD_REQUIRE(copyResult); }
@@ -3333,8 +3318,9 @@ public:
                         UPLOAD_REQUIRE(prefix->end());
                         CommandBuffer* prefixBuffers[] = {prefix.get()};
                         GpuCompletionPoint prefixCompletion;
-                        UPLOAD_REQUIRE(tracker.submitSegment({.commandBuffers = prefixBuffers,
-                            .commandBufferCount = 1}, frame).transform([&](auto value) { prefixCompletion = std::move(value); }));
+                        UPLOAD_REQUIRE(tracker.submitSegment({
+                            .commandBuffers = {prefixBuffers, 1},
+                        }, frame).transform([&](auto value) { prefixCompletion = std::move(value); }));
                     }
                     frame.cancel();
                     if (scenario == 3) {
@@ -3349,9 +3335,10 @@ public:
                     continue;
                 }
                 const SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
-                UPLOAD_REQUIRE(tracker.submit({.waitSemaphores = scenario == 0 ? &wait : nullptr,
-                    .waitSemaphoreCount = scenario == 0 ? 1u : 0u,
-                    .commandBuffers = buffers, .commandBufferCount = 1}, frame));
+                UPLOAD_REQUIRE(tracker.submit({
+                    .waitSemaphores = {scenario == 0 ? &wait : nullptr, scenario == 0 ? 1u : 0u},
+                    .commandBuffers = {buffers, 1},
+                }, frame));
                 if (scenario == 0) {
                     // CPU frame age, recording and queue acceptance prove none
                     // of the GPU copy's completion. No blocking wait is allowed.
@@ -3475,24 +3462,24 @@ public:
                 .buffer = header->buffer,
                 .before = metallic::render::resourceSyncScope(header->state, metallic::render::PipelineStageBits::AllCommands),
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
-                .size = sizeof(MeshletStreamGpuActiveHeader),
+                .range = {.size = sizeof(MeshletStreamGpuActiveHeader)},
             };
-            if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
-                auto sourceSlice = header->buffer->slice(0, sizeof(MeshletStreamGpuActiveHeader));
+                auto sourceSlice = header->buffer->slice({0, sizeof(MeshletStreamGpuActiveHeader)});
                 if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                auto destinationSlice = readback.get()->slice(0, sizeof(MeshletStreamGpuActiveHeader));
+                auto destinationSlice = readback.get()->slice({0, sizeof(MeshletStreamGpuActiveHeader)});
                 if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                 if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             std::swap(barrier.before, barrier.after);
-            if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             ORDERED_REQUIRE(runtime.cmdEndFrame(*commands));
             ORDERED_REQUIRE(commands->end());
             streamer->endFrame();
             if (attempt == 0) { frame.cancel(); continue; }
             CommandBuffer* buffers[]{commands.get()};
-            ORDERED_REQUIRE(tracker.submit({.commandBuffers = buffers, .commandBufferCount = 1}, frame));
+            ORDERED_REQUIRE(tracker.submit({.commandBuffers = {buffers, 1}}, frame));
             ORDERED_REQUIRE(frame.wait(5'000'000'000ull));
             MeshletStreamGpuActiveHeader result;
             ORDERED_REQUIRE(readBufferBytes(*readback, &result, sizeof(result)));

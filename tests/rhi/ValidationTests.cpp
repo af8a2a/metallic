@@ -352,12 +352,12 @@ public:
         if (!buffer || *created) {
             return RhiTestResult::fail("buffer ownership was not transferred from the result");
         }
-        auto slice = buffer->slice(16, 32);
+        auto slice = buffer->slice({16, 32});
         if (!slice || slice->offset() != 16 || slice->size() != 32 ||
-            !hasError(slice->subslice(33), Error::InvalidArgument)) {
+            !hasError(slice->subslice({33}), Error::InvalidArgument)) {
             return RhiTestResult::fail("slice result lost its range or error");
         }
-        auto remainder = slice->subslice(8);
+        auto remainder = slice->subslice({8});
         if (!remainder || remainder->offset() != 24 || remainder->size() != 24) {
             return RhiTestResult::fail("subslice default size did not preserve the remaining range");
         }

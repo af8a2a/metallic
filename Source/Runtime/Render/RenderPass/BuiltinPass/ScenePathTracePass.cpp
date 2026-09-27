@@ -461,7 +461,7 @@ private:
             return makeError(Error::Failure);
         }
         std::memcpy(mapped, pixels, static_cast<size_t>(byteSize));
-        outTexture.uploadBuffer->flush(0, byteSize);
+        outTexture.uploadBuffer->flush({0, byteSize});
         outTexture.uploadBuffer->unmap();
 
         result = device.createTexture(TextureDesc{
@@ -484,10 +484,7 @@ private:
         result = device.createTextureView(*outTexture.texture,
             TextureViewDesc{
                 .format = Format::Rgba32Sfloat,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { outTexture.view = std::move(rhiValue); });
         if (!result || outTexture.view == nullptr) {
             log += resultMessage(std::string("createTextureView(") + std::string(label) + ")", result);
@@ -507,7 +504,7 @@ private:
         }
 
         using namespace detail;
-        auto upload = texture.uploadBuffer->slice(0, texture.uploadBuffer->desc().size);
+        auto upload = texture.uploadBuffer->slice({0, texture.uploadBuffer->desc().size});
         if (!upload) { return makeError(upload.error()); }
         const std::array resources{
             GraphAccessResource{RenderGraphResourceType::Texture2D, texture.uploadState->state},
@@ -1204,17 +1201,13 @@ public:
 #endif
             ShaderCompileResult permutationCompile;
             Result<> permutationResult = compileSlangShaderToSpirv(SlangShaderDesc{
-                    .moduleName = moduleName,
-                    .entryPointName = entryPointName,
-                    .searchPath = kTriangleShaderSearchPath,
-                    .additionalSearchPaths = additionalSearchPaths.data(),
-                    .additionalSearchPathCount =
-                        static_cast<uint32_t>(additionalSearchPaths.size()),
-                    .capabilities = capabilities.data(),
-                    .capabilityCount = static_cast<uint32_t>(capabilities.size()),
-                    .macroDefines = defines.data(),
-                    .macroDefineCount = static_cast<uint32_t>(defines.size()),
-                }, permutationCompile.diagnostics).transform([&](auto value) { permutationCompile = std::move(value); });
+                .moduleName = moduleName,
+                .entryPointName = entryPointName,
+                .searchPath = kTriangleShaderSearchPath,
+                .additionalSearchPaths = additionalSearchPaths,
+                .capabilities = capabilities,
+                .macroDefines = defines,
+            }, permutationCompile.diagnostics).transform([&](auto value) { permutationCompile = std::move(value); });
             if (!permutationResult) {
                 log += "compileSlangShaderToSpirv(";
                 log += moduleName;
@@ -1243,11 +1236,9 @@ public:
             permutationResult = outProgram.initialize(
                 *context.device,
                 ComputeProgramDesc{
-                    .spirv = permutationCompile.spirv.data(),
-                    .byteSize = static_cast<uint64_t>(permutationCompile.spirv.size() * sizeof(uint32_t)),
+                    .spirv = permutationCompile.spirv,
                     .pushConstantSize = sizeof(ScenePathTracePush),
-                    .bindings = permutationBindings.data(),
-                    .bindingCount = static_cast<uint32_t>(permutationBindings.size()),
+                    .bindings = permutationBindings,
                     .debugName = debugName.c_str(),
                     .pipelineCache = deferredPipelineCache_.get(),
                 },
@@ -1371,12 +1362,11 @@ public:
                 [&](const char* entryPointName, ComputeProgram& outProgram) -> Result<> {
                 ShaderCompileResult maintenanceCompile;
                 Result<> maintenanceResult = compileSlangShaderToSpirv(SlangShaderDesc{
-                        .moduleName = kSceneSharcMaintenanceShaderModuleName,
-                        .entryPointName = entryPointName,
-                        .searchPath = kTriangleShaderSearchPath,
-                        .capabilities = capabilities.data(),
-                        .capabilityCount = static_cast<uint32_t>(capabilities.size()),
-                    }, maintenanceCompile.diagnostics).transform([&](auto value) { maintenanceCompile = std::move(value); });
+                    .moduleName = kSceneSharcMaintenanceShaderModuleName,
+                    .entryPointName = entryPointName,
+                    .searchPath = kTriangleShaderSearchPath,
+                    .capabilities = capabilities,
+                }, maintenanceCompile.diagnostics).transform([&](auto value) { maintenanceCompile = std::move(value); });
                 if (!maintenanceResult) {
                     log += "compileSlangShaderToSpirv(";
                     log += kSceneSharcMaintenanceShaderModuleName;
@@ -1398,11 +1388,9 @@ public:
                 maintenanceResult = outProgram.initialize(
                     *context.device,
                     ComputeProgramDesc{
-                        .spirv = maintenanceCompile.spirv.data(),
-                        .byteSize = static_cast<uint64_t>(maintenanceCompile.spirv.size() * sizeof(uint32_t)),
+                        .spirv = maintenanceCompile.spirv,
                         .pushConstantSize = sizeof(SceneSharcMaintenancePush),
-                        .bindings = maintenanceBindings.data(),
-                        .bindingCount = static_cast<uint32_t>(maintenanceBindings.size()),
+                        .bindings = maintenanceBindings,
                         .debugName = maintenanceDebugName.c_str(),
                         .requiresRayQuery = false,
                     },
@@ -1506,12 +1494,11 @@ public:
                 };
                 ShaderCompileResult tonemapCompile;
                 Result<> tonemapResult = compileSlangShaderToSpirv(SlangShaderDesc{
-                        .moduleName = kScenePathTraceTonemapShaderModuleName,
-                        .entryPointName = kScenePathTraceTonemapEntryPointName,
-                        .searchPath = kTriangleShaderSearchPath,
-                        .capabilities = capabilities.data(),
-                        .capabilityCount = static_cast<uint32_t>(capabilities.size()),
-                    }, tonemapCompile.diagnostics).transform([&](auto value) { tonemapCompile = std::move(value); });
+                    .moduleName = kScenePathTraceTonemapShaderModuleName,
+                    .entryPointName = kScenePathTraceTonemapEntryPointName,
+                    .searchPath = kTriangleShaderSearchPath,
+                    .capabilities = capabilities,
+                }, tonemapCompile.diagnostics).transform([&](auto value) { tonemapCompile = std::move(value); });
                 if (!tonemapResult) {
                     log += "compileSlangShaderToSpirv(";
                     log += kScenePathTraceTonemapShaderModuleName;
@@ -1529,11 +1516,9 @@ public:
                 tonemapResult = tonemapProgram_.initialize(
                     *context.device,
                     ComputeProgramDesc{
-                        .spirv = tonemapCompile.spirv.data(),
-                        .byteSize = static_cast<uint64_t>(tonemapCompile.spirv.size() * sizeof(uint32_t)),
+                        .spirv = tonemapCompile.spirv,
                         .pushConstantSize = sizeof(ScenePathTraceTonemapPush),
-                        .bindings = tonemapBindings.data(),
-                        .bindingCount = static_cast<uint32_t>(tonemapBindings.size()),
+                        .bindings = tonemapBindings,
                         .debugName = "ScenePathTracePass.Tonemap",
                         .requiresRayQuery = false,
                     },
@@ -1772,7 +1757,7 @@ public:
                 void* destination = (*free)->map();
                 if (!destination) { return makeError(Error::Failure); }
                 std::memcpy(destination, &info, sizeof(info));
-                (*free)->flush(0, sizeof(info));
+                (*free)->flush({0, sizeof(info)});
                 (*free)->unmap();
                 deferredFrameInfo = free->get();
                 frame->retain(*free);
@@ -1914,21 +1899,18 @@ public:
             },
             ComputeDispatchBinding{
                 .binding = 9,
-                .textureViews = materialTextureViews.data(),
-                .textureViewCount = static_cast<uint32_t>(materialTextureViews.size()),
+                .textureViews = materialTextureViews,
                 // Streaming publishes a new immutable snapshot after mip changes;
                 // completed descriptor tables reuse unchanged image bindings.
                 .sampledImages = visibilityDeferred_ ? sceneResources_.materialTextureSnapshot() : nullptr,
             },
             ComputeDispatchBinding{
                 .binding = 10,
-                .textureViews = environmentTextureViews,
-                .textureViewCount = static_cast<uint32_t>(std::size(environmentTextureViews)),
+                .textureViews = {environmentTextureViews, static_cast<uint32_t>(std::size(environmentTextureViews))},
             },
             ComputeDispatchBinding{
                 .binding = kEnvironmentImportancePdfBinding,
-                .textureViews = environmentImportancePdfViews,
-                .textureViewCount = static_cast<uint32_t>(std::size(environmentImportancePdfViews)),
+                .textureViews = {environmentImportancePdfViews, static_cast<uint32_t>(std::size(environmentImportancePdfViews))},
             },
         };
         if (sceneResources_.fallbackPositionBuffer() != nullptr) {
@@ -1946,7 +1928,7 @@ public:
         }
         if (streamRayQueries_ || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
             bindings.push_back({.binding = 52, .buffer = lights_.reGIRBuffer()});
-            bindings.push_back({.binding = 53, .textureViews = punctualPdfViews, .textureViewCount = 1});
+            bindings.push_back({.binding = 53, .textureViews = {punctualPdfViews, 1}});
         }
         MaterialBinningResult materialBins;
         ScreenSpaceShadowResult shadow;
@@ -1999,23 +1981,26 @@ public:
                     if (!result) { spdlog::error("Ray-traced shadows: {} ({})", shadowLog, resultToString(result)); return result; }
                     previousShadowJitter_ = {shadowView.jitter[0], shadowView.jitter[1]};
                 }
-                bindings.push_back({.binding = 81, .textureViews = &shadow.shadow, .textureViewCount = 1});
+                bindings.push_back({.binding = 81, .textureViews = {&shadow.shadow, 1}});
                 bindings.push_back({.binding = 82, .buffer = shadow.parameters});
             }
             if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
                 bindings.push_back({.binding = 72, .textureView = context.outputTexture("motionVectors").view()});
                 bindings.push_back({.binding = 73, .textureView = context.outputTexture("deviceDepth").view()});
             }
-            bindings.push_back({.binding = 60, .textureViews = &visibilityView, .textureViewCount = 1});
-            bindings.push_back({.binding = 61, .textureViews = &visibilityDepthView, .textureViewCount = 1});
-            bindings.push_back({.binding = 88, .textureViews = &domainView, .textureViewCount = 1});
+            bindings.push_back({.binding = 60, .textureViews = {&visibilityView, 1}});
+            bindings.push_back({.binding = 61, .textureViews = {&visibilityDepthView, 1}});
+            bindings.push_back({.binding = 88, .textureViews = {&domainView, 1}});
             const GPUSceneBufferView* views[] = {&deferredViews->vertices, &deferredViews->meshlets,
                 &deferredViews->meshletDraws, &deferredViews->meshletVertices, &deferredViews->meshletTriangleWords,
                 &deferredViews->geometries, &deferredViews->instances, &deferredViews->materials};
             for (uint32_t i = 0; i < std::size(views); ++i) {
                 const auto& view = views[i]->buffer ? *views[i] : deferredViews->geometries;
-                bindings.push_back({.binding = 62 + i, .buffer = view.buffer,
-                    .offset = view.offset, .size = view.size});
+                bindings.push_back({
+                    .binding = 62 + i,
+                    .buffer = view.buffer,
+                    .range = {.offset = view.offset, .size = view.size},
+                });
             }
             if (streamRayQueries_) {
                 if (deferredStream == nullptr || deferredStream->accelerationStructure == nullptr) {
@@ -2062,13 +2047,11 @@ public:
             const auto& lut3DViews = openPBRLuts_.lut3DViews();
             bindings.push_back(ComputeDispatchBinding{
                 .binding = kOpenPBRLut2DBinding,
-                .textureViews = lut2DViews.data(),
-                .textureViewCount = static_cast<uint32_t>(lut2DViews.size()),
+                .textureViews = lut2DViews,
             });
             bindings.push_back(ComputeDispatchBinding{
                 .binding = kOpenPBRLut3DBinding,
-                .textureViews = lut3DViews.data(),
-                .textureViewCount = static_cast<uint32_t>(lut3DViews.size()),
+                .textureViews = lut3DViews,
             });
         }
         if (exportGuides) {
@@ -2106,8 +2089,7 @@ public:
             const auto& latentViews = neuralTextures.latentTextureViews();
             bindings.push_back(ComputeDispatchBinding{
                 .binding = kNeuralTextureLatentsBinding,
-                .textureViews = latentViews.data(),
-                .textureViewCount = static_cast<uint32_t>(latentViews.size()),
+                .textureViews = latentViews,
             });
             bindings.push_back(ComputeDispatchBinding{
                 .binding = kNeuralTextureConstantsBinding,
@@ -2185,15 +2167,17 @@ public:
                             dispatches[bin] = {.pushData = &binPushes[bin], .argumentOffset = uint64_t(bin) * 12,
                                 .program = bin < classifiedPrograms_.size() ? &classifiedPrograms_[bin] : renderProgram};
                         }
-                        return renderProgram->dispatchIndirectBatch({.commandBuffer = &commands,
-                            .bindings = bindings.data(), .bindingCount = static_cast<uint32_t>(bindings.size()),
-                            .pushDataSize = sizeof(push), .indirectArguments = materialBins.arguments,
-                            .profiler = profiler}, dispatches);
+                        return renderProgram->dispatchIndirectBatch({
+                            .commandBuffer = &commands,
+                            .bindings = bindings,
+                            .pushDataSize = sizeof(push),
+                            .indirectArguments = materialBins.arguments,
+                            .profiler = profiler,
+                        }, dispatches);
                     }
                     return renderProgram->dispatch({
                         .commandBuffer = &commands,
-                        .bindings = bindings.data(),
-                        .bindingCount = static_cast<uint32_t>(bindings.size()),
+                        .bindings = bindings,
                         .pushData = &push,
                         .pushDataSize = sizeof(push),
                         .groupCountX = (context.width() + 7) / 8,
@@ -2272,7 +2256,7 @@ private:
     static Result<> importBuffer(StageResources& resources, std::string_view name, Buffer* buffer)
     {
         if (!buffer) { return makeError(Error::InvalidArgument); }
-        auto slice = buffer->slice(0, buffer->desc().size);
+        auto slice = buffer->slice({0, buffer->desc().size});
         if (!slice) { return makeError(slice.error()); }
         resources.buffers.push_back({name, *slice});
         return {};
@@ -2436,7 +2420,7 @@ private:
             return makeError(Error::Failure);
         }
         std::memcpy(mapped, &params, sizeof(params));
-        cacheParamsBuffer_->flush(0, sizeof(params));
+        cacheParamsBuffer_->flush({0, sizeof(params)});
         cacheParamsBuffer_->unmap();
         return {};
     }
@@ -2587,19 +2571,29 @@ private:
             }});
         }
         stages.push_back({"SHaRC update", resources.uses, [&](CommandBuffer& commands) {
-            return updateProgram.dispatch({.commandBuffer = &commands,
-                .bindings = updateBindings.data(), .bindingCount = static_cast<uint32_t>(updateBindings.size()),
-                .pushData = &push, .pushDataSize = sizeof(push),
-                .groupCountX = (updateWidth + 7) / 8, .groupCountY = (updateHeight + 7) / 8, .groupCountZ = 1});
+            return updateProgram.dispatch({
+                .commandBuffer = &commands,
+                .bindings = updateBindings,
+                .pushData = &push,
+                .pushDataSize = sizeof(push),
+                .groupCountX = (updateWidth + 7) / 8,
+                .groupCountY = (updateHeight + 7) / 8,
+                .groupCountZ = 1,
+            });
         }});
         stages.push_back({"SHaRC resolve", maintenanceUses, [&](CommandBuffer& commands) {
             return dispatchSharcMaintenance(commands, sharcResolveProgram_, resolvePush, maintenanceGroups);
         }});
         stages.push_back({"SHaRC query", resources.uses, [&](CommandBuffer& commands) {
-            return queryProgram.dispatch({.commandBuffer = &commands,
-                .bindings = queryBindings.data(), .bindingCount = static_cast<uint32_t>(queryBindings.size()),
-                .pushData = &push, .pushDataSize = sizeof(push),
-                .groupCountX = (push.width + 7) / 8, .groupCountY = (push.height + 7) / 8, .groupCountZ = 1});
+            return queryProgram.dispatch({
+                .commandBuffer = &commands,
+                .bindings = queryBindings,
+                .pushData = &push,
+                .pushDataSize = sizeof(push),
+                .groupCountX = (push.width + 7) / 8,
+                .groupCountY = (push.height + 7) / 8,
+                .groupCountZ = 1,
+            });
         }});
         const auto discarded = sharcDiscarded_;
         result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>([] {},
@@ -2624,8 +2618,7 @@ private:
         };
         return program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
-            .bindings = bindings.data(),
-            .bindingCount = static_cast<uint32_t>(bindings.size()),
+            .bindings = bindings,
             .pushData = &maintenancePush,
             .pushDataSize = sizeof(maintenancePush),
             .groupCountX = std::max(groupCount, 1u),
@@ -2864,26 +2857,41 @@ private:
                 return begun ? prepareParams() : begun;
             }, RenderGraphPassKind::Unsafe},
             RenderGraphStage{"NRC update", resources.uses, [&](CommandBuffer& commands) {
-                return updateProgram.dispatch({.commandBuffer = &commands,
-                    .bindings = traceBindings.data(), .bindingCount = static_cast<uint32_t>(traceBindings.size()),
-                    .pushData = &push, .pushDataSize = sizeof(push),
-                    .groupCountX = (trainingWidth + 7) / 8, .groupCountY = (trainingHeight + 7) / 8, .groupCountZ = 1});
+                return updateProgram.dispatch({
+                    .commandBuffer = &commands,
+                    .bindings = traceBindings,
+                    .pushData = &push,
+                    .pushDataSize = sizeof(push),
+                    .groupCountX = (trainingWidth + 7) / 8,
+                    .groupCountY = (trainingHeight + 7) / 8,
+                    .groupCountZ = 1,
+                });
             }},
             RenderGraphStage{"NRC query", resources.uses, [&](CommandBuffer& commands) {
-                return queryProgram.dispatch({.commandBuffer = &commands,
-                    .bindings = traceBindings.data(), .bindingCount = static_cast<uint32_t>(traceBindings.size()),
-                    .pushData = &push, .pushDataSize = sizeof(push),
-                    .groupCountX = (push.width + 7) / 8, .groupCountY = (push.height + 7) / 8, .groupCountZ = 1});
+                return queryProgram.dispatch({
+                    .commandBuffer = &commands,
+                    .bindings = traceBindings,
+                    .pushData = &push,
+                    .pushDataSize = sizeof(push),
+                    .groupCountX = (push.width + 7) / 8,
+                    .groupCountY = (push.height + 7) / 8,
+                    .groupCountZ = 1,
+                });
             }},
             RenderGraphStage{"NRC train", sdkUses,
                 [&](CommandBuffer& commands) { return nrc_.queryAndTrain(commands, nullptr); }, RenderGraphPassKind::Unsafe},
             RenderGraphStage{"NRC resolve", resolveUses,
                 [&](CommandBuffer& commands) { return nrc_.resolve(commands, *historyCurrentView); }, RenderGraphPassKind::Unsafe},
             RenderGraphStage{"NRC tonemap", tonemapUses, [&](CommandBuffer& commands) {
-                return tonemapProgram_.dispatch({.commandBuffer = &commands,
-                    .bindings = tonemapBindings.data(), .bindingCount = static_cast<uint32_t>(tonemapBindings.size()),
-                    .pushData = &tonemapPush, .pushDataSize = sizeof(tonemapPush),
-                    .groupCountX = (push.width + 7) / 8, .groupCountY = (push.height + 7) / 8, .groupCountZ = 1});
+                return tonemapProgram_.dispatch({
+                    .commandBuffer = &commands,
+                    .bindings = tonemapBindings,
+                    .pushData = &tonemapPush,
+                    .pushDataSize = sizeof(tonemapPush),
+                    .groupCountX = (push.width + 7) / 8,
+                    .groupCountY = (push.height + 7) / 8,
+                    .groupCountZ = 1,
+                });
             }}};
         const auto pending = nrcEndFramePending_;
         const auto discarded = nrcDiscarded_;

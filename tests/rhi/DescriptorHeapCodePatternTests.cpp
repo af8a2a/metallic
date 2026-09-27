@@ -247,7 +247,8 @@ public:
             .moduleName = environment ? "Features/Environment/EnvironmentLightingPrecompute" : "DescriptorHeapCodePattern",
             .entryPointName = environment ? "environmentLightingPrecomputeMain" : "descriptorHeapCodePatternMain",
             .searchPath = environment ? PROJECT_SOURCE_DIR "/Shaders" : PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-            .macroDefines = environment ? nullptr : &macro, .macroDefineCount = environment ? 0u : 1u}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+            .macroDefines = {environment ? nullptr : &macro, environment ? 0u : 1u},
+        }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { return RhiTestResult::fail(shader.diagnostics); }
         if (shader.spirv.size() < 5 || shader.spirv[0] != 0x07230203u) {
             return RhiTestResult::fail("Pattern shader has an invalid SPIR-V header");
@@ -272,11 +273,15 @@ public:
             {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
         render::ComputeProgram program;
         std::string log;
-        result = program.initialize(*device, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = sizeof(PatternValues),
-            .bindings = bindings, .bindingCount = 3, .debugName = "DescriptorHeap Code Pattern",
-            .resourceTableCount = resourceTableCount, .requiresRayQuery = false,
-            .usesResourceTable = environment}, log);
+        result = program.initialize(*device, {
+            .spirv = shader.spirv,
+            .pushConstantSize = sizeof(PatternValues),
+            .bindings = {bindings, 3},
+            .debugName = "DescriptorHeap Code Pattern",
+            .resourceTableCount = resourceTableCount,
+            .requiresRayQuery = false,
+            .usesResourceTable = environment,
+        }, log);
         if (!result) { return RhiTestResult::fail(log); }
         if (compileOnly) {
             std::cout << "Pattern compile only: ComputeProgram initialized; no fixture resources, commands or submissions; "
@@ -354,7 +359,7 @@ public:
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             }};
-        if (auto commandResult = commands.buffer->synchronize({.textures = &toTransfer, .textureCount = 1, .buffers = toGeneral, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands.buffer->synchronize({.textures = {&toTransfer, 1}, .buffers = {toGeneral, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commands.buffer->copyBufferToTexture({.buffer = upload.get(), .texture = texture.get(), .width = 1, .height = 1});
         const render::TextureBarrierDesc toRead{
             .texture = texture.get(),
@@ -363,36 +368,44 @@ public:
             .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
         };
-        if (auto commandResult = commands.buffer->synchronize({.textures = &toRead, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands.buffer->synchronize({.textures = {&toRead, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         if (prefixPdf) {
             PATTERN_REQUIRE(pdfCompute.buildEnvironment(*commands.buffer, *view, pdfTexture));
         }
         auto* sampledView = view.get();
         const render::ComputeDispatchBinding resources[] = {
-            {.binding = 0, .textureViews = &sampledView, .textureViewCount = 1},
+            {.binding = 0, .textureViews = {&sampledView, 1}},
             {.binding = 1, .buffer = input.get()},
             {.binding = 2, .buffer = output.get()}};
-        PATTERN_REQUIRE(program.dispatch({.commandBuffer = commands.buffer.get(),
-            .bindings = resources, .bindingCount = 3, .pushData = &push, .pushDataSize = sizeof(push),
-            .groupCountX = groups}));
+        PATTERN_REQUIRE(program.dispatch({
+            .commandBuffer = commands.buffer.get(),
+            .bindings = {resources, 3},
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = groups,
+        }));
         if (environment && !integrateOnly) {
             const render::BufferBarrierDesc partialsBarrier{
                 .buffer = input.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .size = inputBytes,
+                .range = {.size = inputBytes},
             };
-            if (auto commandResult = commands.buffer->synchronize({.buffers = &partialsBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands.buffer->synchronize({.buffers = {&partialsBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             PatternValues finalizePush = push;
             finalizePush.a = 1;
-            PATTERN_REQUIRE(program.dispatch({.commandBuffer = commands.buffer.get(),
-                .bindings = resources, .bindingCount = 3,
-                .pushData = &finalizePush, .pushDataSize = sizeof(finalizePush),
-                .groupCountX = 9, .resourceTableIndex = finalizeTable}));
+            PATTERN_REQUIRE(program.dispatch({
+                .commandBuffer = commands.buffer.get(),
+                .bindings = {resources, 3},
+                .pushData = &finalizePush,
+                .pushDataSize = sizeof(finalizePush),
+                .groupCountX = 9,
+                .resourceTableIndex = finalizeTable,
+            }));
         }
         PATTERN_REQUIRE(commands.buffer->end());
         render::CommandBuffer* submitted[] = {commands.buffer.get()};
-        PATTERN_REQUIRE(commands.tracker.submit({.commandBuffers = submitted, .commandBufferCount = 1}, commands.frame));
+        PATTERN_REQUIRE(commands.tracker.submit({.commandBuffers = {submitted, 1}}, commands.frame));
         PATTERN_REQUIRE(commands.frame.wait(kWaitTimeout));
 
         if (environment) { return verifyEnvironmentPartials(*input, *output, groups, procedural, integrateOnly, description); }

@@ -170,8 +170,11 @@ public:
         mapped = shadow.parameters->map();
         if (mapped == nullptr) { return makeError(Error::Failure); }
         const StreamDataChunk chunk{mapped, sizeof(ScreenSpaceShadowParameters)};
-        const auto uploaded = context.streamer()->streamBufferData({.dataChunks = &chunk, .dataChunkCount = 1,
-            .placementAlignment = 16, .dstBuffer = parameters.buffer()});
+        const auto uploaded = context.streamer()->streamBufferData({
+            .dataChunks = {&chunk, 1},
+            .placementAlignment = 16,
+            .dstBuffer = parameters.buffer(),
+        });
         shadow.parameters->unmap();
         if (!uploaded.valid()) { return makeError(Error::OutOfMemory); }
         if (auto commandResult = commands.copyStreamedData(*context.streamer()); !commandResult) { return commandResult; }

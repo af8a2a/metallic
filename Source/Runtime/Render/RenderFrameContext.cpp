@@ -415,13 +415,12 @@ Result<> QueueSubmissionTracker::submit(const QueueSubmitDesc& desc, RenderFrame
 
 Result<GpuCompletionPoint> QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame)
 {
-    if (desc.commandBufferCount && !desc.commandBuffers) { return makeError(Error::InvalidArgument); }
+    if (desc.commandBuffers.size() > UINT32_MAX) { return makeError(Error::InvalidArgument); }
     RecordedBatch batch;
-    auto result = batch.seal(frame, {desc.commandBuffers, desc.commandBufferCount});
+    auto result = batch.seal(frame, desc.commandBuffers);
     if (!result) { return makeError(result.error()); }
     QueueSubmitDesc synchronization = desc;
-    synchronization.commandBuffers = nullptr;
-    synchronization.commandBufferCount = 0;
+    synchronization.commandBuffers = {};
     auto receipt = submitBatch(batch, synchronization, frame);
     if (!receipt) {
         for (auto& state : batch.states_) { state->sealed = false; }
@@ -471,27 +470,26 @@ Result<SubmissionReceipt> QueueSubmissionTracker::submitBatch(
     profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::submitNs);
     using State = GpuCompletionPoint::State;
     if (!batch.valid() || batch.frame_ != &frame || !batch.generation_.sameSubmission(frame.completion()) ||
-        synchronization.commandBufferCount || synchronization.commandBuffers) { return makeError(Error::InvalidArgument); }
+        !synchronization.commandBuffers.empty()) { return makeError(Error::InvalidArgument); }
     QueueSubmitDesc desc = synchronization;
-    desc.commandBuffers = batch.commands_.data();
-    desc.commandBufferCount = uint32_t(batch.commands_.size());
+    desc.commandBuffers = batch.commands_;
     if (queue_ == nullptr || timeline_ == nullptr || frame.completion_.state_ == nullptr ||
         frame.completion_.state_->status != State::Status::Recording ||
         nextValue_ == UINT64_MAX || (frame.submissionMode() == FrameSubmissionMode::Joined && !frame.recordingsFinished()) ||
-        (desc.waitSemaphoreCount != 0 && desc.waitSemaphores == nullptr) ||
-        (desc.signalSemaphoreCount != 0 && desc.signalSemaphores == nullptr) ||
-        (desc.commandBufferCount != 0 && desc.commandBuffers == nullptr)) {
+        (desc.waitSemaphores.size() > UINT32_MAX) ||
+        (desc.signalSemaphores.size() > UINT32_MAX) ||
+        (desc.commandBuffers.size() > UINT32_MAX)) {
         return makeError(Error::InvalidArgument);
     }
-    for (uint32_t index = 0; index < desc.commandBufferCount; ++index) {
+    for (uint32_t index = 0; index < desc.commandBuffers.size(); ++index) {
         if (desc.commandBuffers[index] == nullptr || desc.commandBuffers[index]->frameContext() != &frame ||
             desc.commandBuffers[index]->frameRecording_ != frame.completion_.state_) {
             return makeError(Error::InvalidArgument);
         }
     }
     std::vector<SemaphoreSubmitDesc> signals;
-    if (desc.signalSemaphoreCount != 0) {
-        signals.assign(desc.signalSemaphores, desc.signalSemaphores + desc.signalSemaphoreCount);
+    if (desc.signalSemaphores.size() != 0) {
+        signals.assign(desc.signalSemaphores.begin(), desc.signalSemaphores.end());
     }
     signals.push_back(SemaphoreSubmitDesc{
         .semaphore = timeline_.get(),
@@ -499,18 +497,16 @@ Result<SubmissionReceipt> QueueSubmissionTracker::submitBatch(
         .stages = PipelineStageBits::AllCommands,
     });
     std::vector<SemaphoreSubmitDesc> waits;
-    if (desc.waitSemaphoreCount != 0) {
-        waits.assign(desc.waitSemaphores, desc.waitSemaphores + desc.waitSemaphoreCount);
+    if (desc.waitSemaphores.size() != 0) {
+        waits.assign(desc.waitSemaphores.begin(), desc.waitSemaphores.end());
     }
     for (const auto& point : frame.dependencies_) {
         Result<> result = point.appendWaits(waits);
         if (!result) { return makeError(result.error()); }
     }
     QueueSubmitDesc submission = desc;
-    submission.waitSemaphores = waits.data();
-    submission.waitSemaphoreCount = static_cast<uint32_t>(waits.size());
-    submission.signalSemaphores = signals.data();
-    submission.signalSemaphoreCount = static_cast<uint32_t>(signals.size());
+    submission.waitSemaphores = waits;
+    submission.signalSemaphores = signals;
     auto segment = std::make_shared<State>();
     segment->signals.push_back({timeline_, nextValue_});
     auto& state = *frame.completion_.state_;

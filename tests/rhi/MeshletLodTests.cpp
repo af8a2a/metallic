@@ -185,7 +185,7 @@ public:
             if (test == 0) {
                 for (auto& buffer : buffers) {
                     BufferBarrierDesc barrier{.buffer = buffer.get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}};
-                    if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
             }
             LOD_REQUIRE(selector.record(*commands, *registry, bindings, view, {0, count},
@@ -201,26 +201,26 @@ public:
                     .before = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                 }};
-            if (auto commandResult = commands->synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
-                auto sourceSlice = (&selector.selections())->slice(0, selectionBytes);
+                auto sourceSlice = (&selector.selections())->slice({0, selectionBytes});
                 if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                auto destinationSlice = readback.get()->slice(0, selectionBytes);
+                auto destinationSlice = readback.get()->slice({0, selectionBytes});
                 if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                 if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             {
-                auto sourceSlice = (&selector.arguments())->slice(0, 24);
+                auto sourceSlice = (&selector.arguments())->slice({0, 24});
                 if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                auto destinationSlice = readback.get()->slice(selectionBytes, 24);
+                auto destinationSlice = readback.get()->slice({selectionBytes, 24});
                 if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                 if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             for (auto& barrier : barriers) { std::swap(barrier.before, barrier.after); }
-            if (auto commandResult = commands->synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             LOD_REQUIRE(commands->end());
             CommandBuffer* list[] = {commands.get()};
-            LOD_REQUIRE(queue->submit({.commandBuffers = list, .commandBufferCount = 1, .signalFence = fence.get()}));
+            LOD_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
             LOD_REQUIRE(fence->wait());
             readback->invalidate();
             auto* mapped = static_cast<const uint32_t*>(readback->map());

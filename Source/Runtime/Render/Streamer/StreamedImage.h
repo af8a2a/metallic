@@ -52,7 +52,7 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
             return makeError(Error::Failure);
         }
         std::memcpy(mapped, pixels, static_cast<size_t>(imageByteSize));
-        uploadBuffer_->flush(0, imageByteSize);
+        uploadBuffer_->flush({0, imageByteSize});
         uploadBuffer_->unmap();
         stbi_image_free(pixels);
 
@@ -76,10 +76,7 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
         result = device.createTextureView(*imageTexture_,
             TextureViewDesc{
                 .format = Format::Rgba8Unorm,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { imageView_ = std::move(rhiValue); });
         if (!result || imageView_ == nullptr) {
             log += imageError("createTextureView(ImageSamplePass image)", result);
@@ -98,14 +95,10 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
                 .newLayout = TextureLayout::TransferDestination,
                 .before = metallic::render::resourceSyncScope(imageState_, metallic::render::PipelineStageBits::AllCommands),
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             };
             if (auto commandResult = commands.synchronize(BarrierDesc{
-                .textures = &toTransfer,
-                .textureCount = 1,
+                .textures = {&toTransfer, 1},
             }); !commandResult) { return commandResult; }
             imageState_ = ResourceState::TransferDestination;
 
@@ -125,14 +118,10 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
                 .newLayout = TextureLayout::ShaderRead,
                 .before = metallic::render::resourceSyncScope(imageState_, metallic::render::PipelineStageBits::AllCommands),
                 .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             };
             if (auto commandResult = commands.synchronize(BarrierDesc{
-                .textures = &toShaderRead,
-                .textureCount = 1,
+                .textures = {&toShaderRead, 1},
             }); !commandResult) { return commandResult; }
             imageState_ = ResourceState::ShaderRead;
             uploaded_ = true;

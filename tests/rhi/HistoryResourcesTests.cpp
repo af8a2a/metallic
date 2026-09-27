@@ -227,8 +227,7 @@ public:
         };
         render::BufferViewDesc viewDesc{
             .type = render::BufferViewType::ReadWriteStructured,
-            .offset = 0,
-            .size = UINT64_MAX,
+            .range = {.offset = 0, .size = UINT64_MAX},
             .structureStride = 0,
         };
 
@@ -245,7 +244,7 @@ public:
         if (current.buffer == nullptr ||
             current.view == nullptr ||
             current.viewDesc == nullptr ||
-            current.viewDesc->size != 64 ||
+            current.viewDesc->range.size != 64 ||
             current.viewDesc->structureStride != 16) {
             return RhiTestResult::fail("buffer view ref did not expose normalized view metadata");
         }
@@ -398,8 +397,7 @@ public:
 
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = context.graphicsQueue.submit(render::QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
+            .commandBuffers = {commandBuffers, 1},
             .signalFence = fence.get(),
         });
         if (!result) {
@@ -451,10 +449,9 @@ public:
                 .newLayout = metallic::render::textureLayoutForResourceState(after),
                 .before = metallic::render::resourceSyncScope(texture.state, metallic::render::PipelineStageBits::AllCommands),
                 .after = metallic::render::resourceSyncScope(after, metallic::render::PipelineStageBits::AllCommands),
-                .mipCount = 1,
-                .layerCount = 1,
+                .range = {.mipCount = 1, .layerCount = 1},
             };
-            if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             return manager.publishTextureState(*commands, "color", HistorySlot::Current, after, written);
         };
         manager.beginFrame(0);
@@ -478,8 +475,10 @@ public:
             return RhiTestResult::fail("could not record accepted history state");
         }
         CommandBuffer* submitted[] = {commands.get()};
-        if (!context.graphicsQueue.submit({.commandBuffers = submitted, .commandBufferCount = 1,
-                .signalFence = fence.get()}) || !fence->wait(5'000'000'000ull) || !pool->reset()) {
+        if (!context.graphicsQueue.submit({
+            .commandBuffers = {submitted, 1},
+            .signalFence = fence.get(),
+        }) || !fence->wait(5'000'000'000ull) || !pool->reset()) {
             (void)context.graphicsQueue.waitIdle();
             return RhiTestResult::fail("accepted history submission failed");
         }

@@ -42,11 +42,16 @@ Result<> ResidentMeshletLod::initialize(Device& device, uint32_t capacity, std::
         result = compileSlangShaderToSpirv({.moduleName = "Features/GPUDriven/ResidentMeshletLod",
             .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
-        result = device.createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4u,
-            .debugName = entries[i]}).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });
+        result = device.createShaderModule({
+            .spirv = shader.spirv,
+            .debugName = entries[i],
+        }).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });
         if (result) {
-            result = device.createComputePipeline({.computeShader = shaders_[i].get(),
-                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(LodPush)}).transform([&](auto rhiValue) { pipelines_[i] = std::move(rhiValue); });
+            result = device.createComputePipeline({
+                .computeShader = {shaders_[i].get()},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(LodPush),
+            }).transform([&](auto rhiValue) { pipelines_[i] = std::move(rhiValue); });
         }
         if (!result) { return result; }
     }

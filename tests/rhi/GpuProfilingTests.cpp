@@ -301,7 +301,7 @@ public:
             const bool submit = index == 0 || index == 5;
             if (submit) {
                 render::CommandBuffer* buffers[] = {commands.get()};
-                result = tracker.submit({.commandBuffers = buffers, .commandBufferCount = 1}, frame);
+                result = tracker.submit({.commandBuffers = {buffers, 1}}, frame);
                 if (!result) { return RhiTestResult::fail(toString(result)); }
                 result = frame.wait(5'000'000'000ull);
                 if (!result) { return RhiTestResult::fail(toString(result)); }
@@ -390,9 +390,11 @@ public:
             }
             const render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
             render::CommandBuffer* submitted[] = {commands.get()};
-            if (!fence->reset() || !context.graphicsQueue.submit({.waitSemaphores = &wait,
-                    .waitSemaphoreCount = 1, .commandBuffers = submitted,
-                    .commandBufferCount = 1, .signalFence = fence.get()})) {
+            if (!fence->reset() || !context.graphicsQueue.submit({
+                .waitSemaphores = {&wait, 1},
+                .commandBuffers = {submitted, 1},
+                .signalFence = fence.get(),
+            })) {
                 return RhiTestResult::fail("raw profiling submission failed");
             }
             // Queue acceptance is observable while the unsignaled host gate

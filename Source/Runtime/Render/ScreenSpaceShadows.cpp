@@ -157,11 +157,14 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             {.name = "METALLIC_NTC_COOPERATIVE_VECTOR", .value = coop ? "1" : "0"},
         };
         ShaderCompileResult shader;
-        auto result = compileSlangShaderToSpirv({.moduleName = "Features/Lighting/ScreenSpaceShadows",
-            .entryPointName = "rayTracedShadowsMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-            .additionalSearchPaths = searchPaths.data(), .additionalSearchPathCount = uint32_t(searchPaths.size()),
-            .capabilities = capabilities.data(), .capabilityCount = uint32_t(capabilities.size()),
-            .macroDefines = defines, .macroDefineCount = 4}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+        auto result = compileSlangShaderToSpirv({
+            .moduleName = "Features/Lighting/ScreenSpaceShadows",
+            .entryPointName = "rayTracedShadowsMain",
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders",
+            .additionalSearchPaths = searchPaths,
+            .capabilities = capabilities,
+            .macroDefines = {defines, 4},
+        }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result.transform([&] { return std::move(output); }); }
         std::vector<ComputeProgramBindingDesc> layout = {
             {.binding = kShadowBinding}, {.binding = kShadowBinding + 1, .kind = ComputeResourceBindingKind::SampledImage},
@@ -190,10 +193,13 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             layout.push_back({.binding = kNeuralTextureSetInfoBinding});
             layout.push_back({.binding = kNeuralTextureSamplerBinding, .kind = ComputeResourceBindingKind::Sampler});
         }
-        result = trace.initialize(device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
+        result = trace.initialize(device, {
+            .spirv = shader.spirv,
             .pushConstantSize = 8u,
-            .bindings = layout.data(), .bindingCount = uint32_t(layout.size()),
-            .debugName = "Ray-traced shadows", .requiresRayQuery = true}, log);
+            .bindings = layout,
+            .debugName = "Ray-traced shadows",
+            .requiresRayQuery = true,
+        }, log);
         if (!result) { return makeError(result.error()); }
     }
     profile.next("Prepare shadow images");
@@ -251,7 +257,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     void* mapped = state->parameters->map();
     if (!mapped) { return makeError(Error::Failure); }
     std::memcpy(mapped, &parameters, sizeof(parameters));
-    state->parameters->flush(0, sizeof(parameters));
+    state->parameters->flush({0, sizeof(parameters)});
     state->parameters->unmap();
     commands.hostWriteBarrier();
 
@@ -293,7 +299,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     TextureView* depthView = &depth;
     std::vector<ComputeDispatchBinding> bindings{
         {.binding = kShadowBinding, .buffer = state->parameters.get()},
-        {.binding = kShadowBinding + 1, .textureViews = &depthView, .textureViewCount = 1},
+        {.binding = kShadowBinding + 1, .textureViews = {&depthView, 1}},
     };
     for (uint32_t i = 0; i < 5; ++i) {
         bindings.push_back({.binding = kShadowBinding + i + 2, .textureView = state->views[i].get()});
@@ -305,7 +311,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
             bindings.push_back({.binding = 0, .accelerationStructure = streamGeometry->accelerationStructure});
             bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
-            bindings.push_back({.binding = 9, .textureViews = geometry->materialTextureViews().data(), .textureViewCount = textureCount, .sampledImages = geometry->materialTextureSnapshot()});
+            bindings.push_back({.binding = 9, .textureViews = {geometry->materialTextureViews().data(), textureCount}, .sampledImages = geometry->materialTextureSnapshot()});
             bindings.push_back({.binding = 90, .buffer = streamGeometry->pageBuffer});
             bindings.push_back({.binding = 91, .buffer = streamGeometry->pageTableBuffer});
             bindings.push_back({.binding = 92, .buffer = streamGeometry->instanceBuffer});
@@ -322,14 +328,19 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         bindings.push_back({.binding = 4, .buffer = geometry->primitiveBuffer()});
         bindings.push_back({.binding = 5, .buffer = geometry->instanceBuffer()});
         bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
-        bindings.push_back({.binding = 9, .textureViews = geometry->materialTextureViews().data(),
-            .textureViewCount = geometry->materialTextureCount(), .sampledImages = geometry->materialTextureSnapshot()});
+        bindings.push_back({
+            .binding = 9,
+            .textureViews = {geometry->materialTextureViews().data(), geometry->materialTextureCount()},
+            .sampledImages = geometry->materialTextureSnapshot(),
+        });
         geometryPush[0] = geometry->materialTextureCount();
         geometryPush[1] = neural->textureSetCount();
     }
     if (ntc) {
-        bindings.push_back({.binding = kNeuralTextureLatentsBinding, .textureViews = neural->latentTextureViews().data(),
-            .textureViewCount = kMaxNeuralTextureSets});
+        bindings.push_back({
+            .binding = kNeuralTextureLatentsBinding,
+            .textureViews = {neural->latentTextureViews().data(), kMaxNeuralTextureSets},
+        });
         bindings.push_back({.binding = kNeuralTextureConstantsBinding, .buffer = neural->constantsBuffer()});
         bindings.push_back({.binding = kNeuralTextureWeightsBinding, .buffer = neural->weightsBuffer()});
         bindings.push_back({.binding = kNeuralTextureSetInfoBinding, .buffer = neural->setInfoBuffer()});
@@ -339,9 +350,15 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     result = enterStage(1);
     if (!result) { return makeError(result.error()); }
     commands.beginDebugLabel({.name = "Ray-traced shadows"});
-    result = trace.dispatch({.commandBuffer = &commands, .bindings = bindings.data(), .bindingCount = uint32_t(bindings.size()),
-        .pushData = geometryPush, .pushDataSize = sizeof(geometryPush),
-        .groupCountX = (width + 7) / 8, .groupCountY = (height + 7) / 8, .profiler = profiler});
+    result = trace.dispatch({
+        .commandBuffer = &commands,
+        .bindings = bindings,
+        .pushData = geometryPush,
+        .pushDataSize = sizeof(geometryPush),
+        .groupCountX = (width + 7) / 8,
+        .groupCountY = (height + 7) / 8,
+        .profiler = profiler,
+    });
     commands.endDebugLabel();
     if (!result) { return makeError(result.error()); }
     profile.next("Record denoising");

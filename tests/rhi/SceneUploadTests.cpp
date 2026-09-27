@@ -125,7 +125,7 @@ public:
         ScenePathTraceResources resources;
         UploadQueueDrain drain{*gate, *copy, *graphics};
         const SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1, .stages = PipelineStageBits::AllCommands};
-        UPLOAD_REQUIRE(copy->submit({.waitSemaphores = &wait, .waitSemaphoreCount = 1}));
+        UPLOAD_REQUIRE(copy->submit({.waitSemaphores = {&wait, 1}}));
         UPLOAD_REQUIRE(resources.beginPrepareAsync(*device, *graphics, {{"path", path.string()}}, scene, log));
         bool complete = false;
         scene::SceneLoadProgress progress;
@@ -157,8 +157,12 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         ComputeProgram program;
         const ComputeProgramBindingDesc layout[] = {{0, ComputeResourceBindingKind::SampledImage}, {1}};
-        UPLOAD_REQUIRE(program.initialize(*device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .pushConstantSize = 4, .bindings = layout, .bindingCount = 2, .requiresRayQuery = false}, log));
+        UPLOAD_REQUIRE(program.initialize(*device, {
+            .spirv = shader.spirv,
+            .pushConstantSize = 4,
+            .bindings = {layout, 2},
+            .requiresRayQuery = false,
+        }, log));
         std::unique_ptr<Buffer> output;
         UPLOAD_REQUIRE(device->createBuffer({.size = kTextureCount * kMipCount * 2u * 16u, .structureStride = 16,
             .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
@@ -178,16 +182,20 @@ public:
         UPLOAD_REQUIRE(commands->begin(&frame));
         for (uint32_t index = 0; index < kTextureCount; ++index) {
             const ComputeDispatchBinding bindings[] = {
-                {.binding = 0, .textureViews = resources.materialTextureViews().data() + index + 1, .textureViewCount = 1},
+                {.binding = 0, .textureViews = {resources.materialTextureViews().data() + index + 1, 1}},
                 {.binding = 1, .buffer = output.get()},
             };
             const uint32_t offset = index * kMipCount * 2u;
-            UPLOAD_REQUIRE(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings, .bindingCount = 2,
-                .pushData = &offset, .pushDataSize = 4}));
+            UPLOAD_REQUIRE(program.dispatch({
+                .commandBuffer = commands.get(),
+                .bindings = {bindings, 2},
+                .pushData = &offset,
+                .pushDataSize = 4,
+            }));
         }
         UPLOAD_REQUIRE(commands->end());
         CommandBuffer* submitted[] = {commands.get()};
-        UPLOAD_REQUIRE(tracker.submit({.commandBuffers = submitted, .commandBufferCount = 1}, frame));
+        UPLOAD_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
         UPLOAD_REQUIRE(frame.wait(30'000'000'000ull));
         output->invalidate();
         const auto* pixels = static_cast<const std::array<uint32_t, 4>*>(output->map());
@@ -210,7 +218,7 @@ public:
         resources.clear();
         drain.value = 2;
         const SemaphoreSubmitDesc nextWait{.semaphore = gate.get(), .value = 2, .stages = PipelineStageBits::AllCommands};
-        UPLOAD_REQUIRE(copy->submit({.waitSemaphores = &nextWait, .waitSemaphoreCount = 1}));
+        UPLOAD_REQUIRE(copy->submit({.waitSemaphores = {&nextWait, 1}}));
         UPLOAD_REQUIRE(resources.beginPrepareAsync(*device, *graphics, {{"path", path.string()}}, scene, log));
         for (uint32_t pump = 0; pump < 20 && resources.uploadStats().submittedBatches < 3; ++pump) {
             UPLOAD_REQUIRE(resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { complete = std::move(value); }));

@@ -50,14 +50,21 @@ public:
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage}, {.binding = 1}};
-        result = fixture_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .pushConstantSize = 16, .bindings = bindings, .bindingCount = 2, .requiresRayQuery = false}, log);
+        result = fixture_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .pushConstantSize = 16,
+            .bindings = {bindings, 2},
+            .requiresRayQuery = false,
+        }, log);
         if (!result) { return result; }
         const render::SlangMacroDefine waveDefine{render::kHzbSpdWaveOpsDefine,
             properties().value("waveOps", true) ? "1" : "0"};
-        result = render::compileSlangShaderToSpirv({.moduleName = render::kHzbSpdModule,
-            .entryPointName = render::kHzbSpdEntryPoint, .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-            .macroDefines = &waveDefine, .macroDefineCount = 1}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+        result = render::compileSlangShaderToSpirv({
+            .moduleName = render::kHzbSpdModule,
+            .entryPointName = render::kHzbSpdEntryPoint,
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders",
+            .macroDefines = {&waveDefine, 1},
+        }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         // Wave indexing relies on full subgroups, guaranteed by SPIR-V 1.6
         // with numthreads.x=256 and the supported subgroup-size range.
@@ -65,10 +72,13 @@ public:
             log = "SPD wave operations require SPIR-V 1.6";
             return render::makeError(render::Error::Failure);
         }
-        result = context.device->createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4}).transform([&](auto rhiValue) { shader_ = std::move(rhiValue); });
+        result = context.device->createShaderModule({.spirv = shader.spirv}).transform([&](auto rhiValue) { shader_ = std::move(rhiValue); });
         if (!result) { return result; }
-        result = context.device->createComputePipeline({.computeShader = shader_.get(), .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = sizeof(render::HzbSpdUserPush)}).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
+        result = context.device->createComputePipeline({
+            .computeShader = {shader_.get()},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(render::HzbSpdUserPush),
+        }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
         if (!result) { return result; }
         result = context.device->createBindlessHeap({.maxSampledImages = 1, .maxBuffers = 2}).transform([&](auto rhiValue) { heap_ = std::move(rhiValue); });
         if (result) { result = heap_->allocateSampledImage().transform([&](auto rhiValue) { depth_ = std::move(rhiValue); }); }
@@ -86,9 +96,14 @@ public:
         auto* counter = context.outputBuffer("counter").buffer();
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 0, .textureView = depth.view()}, {.binding = 1, .buffer = counter}};
-        auto result = fixture_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 2,
-            .pushData = constants, .pushDataSize = sizeof(constants),
-            .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
+        auto result = fixture_.dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {bindings, 2},
+            .pushData = constants,
+            .pushDataSize = sizeof(constants),
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+        });
         if (!result) { return result; }
         render::TextureBarrierDesc depthBarrier{
             .texture = depth.texture(),
@@ -102,7 +117,7 @@ public:
             .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
         };
-        if (auto commandResult = context.commandBuffer().synchronize({.textures = &depthBarrier, .textureCount = 1, .buffers = &counterBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = context.commandBuffer().synchronize({.textures = {&depthBarrier, 1}, .buffers = {&counterBarrier, 1}}); !commandResult) { return commandResult; }
         result = heap_->writeSampledImage(depth_, *depth.view(), render::ResourceState::ShaderRead);
         if (result) { result = heap_->writeStorageBuffer(data_, *data); }
         if (result) { result = heap_->writeStorageBuffer(counter_, *counter); }
@@ -117,7 +132,7 @@ public:
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
         context.commandBuffer().dispatch((context.width() + 63) / 64, (context.height() + 63) / 64);
         std::swap(depthBarrier.before, depthBarrier.after); std::swap(depthBarrier.oldLayout, depthBarrier.newLayout);
-        if (auto commandResult = context.commandBuffer().synchronize({.textures = &depthBarrier, .textureCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = context.commandBuffer().synchronize({.textures = {&depthBarrier, 1}}); !commandResult) { return commandResult; }
         return {};
     }
 private:

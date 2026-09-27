@@ -60,7 +60,7 @@ public:
         (*vertex)->unmap();
         const RayTracingTriangleGeometryDesc geometry{.vertexBuffer = vertex->get(), .vertexStride = 12,
             .vertexCount = 3, .indexType = RayTracingIndexType::None, .primitiveCount = 1};
-        auto blasSizes = device.queryRayTracingAccelerationStructureBuildSizes({.geometries = &geometry, .geometryCount = 1});
+        auto blasSizes = device.queryRayTracingAccelerationStructureBuildSizes({.geometries = {&geometry, 1}});
         TLAS_REQUIRE(blasSizes);
         auto blas = device.createRayTracingAccelerationStructure({.size = blasSizes->accelerationStructureSize});
         TLAS_REQUIRE(blas);
@@ -75,7 +75,7 @@ public:
         TLAS_CHECK(hasError(device.createRayTracingAccelerationStructure({.type = RayTracingAccelerationStructureType::TopLevel,
             .size = standardSizes->accelerationStructureSize, .topLevelBackend = RayTracingTopLevelBackend::Partitioned}), Error::InvalidArgument));
         const RayTracingInstanceDesc instance{.bottomLevel = blas->get(), .customIndex = 37, .mask = 1};
-        auto instances = device.createRayTracingInstanceBuffer(&instance, 1);
+        auto instances = device.createRayTracingInstanceBuffer({&instance, 1});
         TLAS_REQUIRE(instances);
         std::unique_ptr<RayTracingAccelerationStructure> partitioned;
         std::unique_ptr<Buffer> partitionedInstances;
@@ -90,7 +90,7 @@ public:
             partitioned = std::move(*resource);
             const PartitionedAccelerationStructureInstanceDesc partitionedInstance{
                 .bottomLevel = blas->get(), .customIndex = 37, .mask = 1};
-            auto encoded = device.createPartitionedAccelerationStructureInstanceBuffer(&partitionedInstance, 1);
+            auto encoded = device.createPartitionedAccelerationStructureInstanceBuffer({&partitionedInstance, 1});
             TLAS_REQUIRE(encoded);
             partitionedInstances = std::move(*encoded);
             scratchSize = std::max(scratchSize, sizes->buildScratchSize);
@@ -102,15 +102,21 @@ public:
         TLAS_REQUIRE(scratch);
         const char* capabilities[] = {"spvRayQueryKHR"};
         ShaderCompileResult shader;
-        const auto compiled = compileSlangShaderToSpirv({.moduleName = "UnifiedTopLevelProbe", .entryPointName = "unifiedTopLevelMain",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .capabilities = capabilities, .capabilityCount = 1,
-            .descriptorHeapMode = native_ ? SlangDescriptorHeapMode::Native : SlangDescriptorHeapMode::Mapped}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+        const auto compiled = compileSlangShaderToSpirv({
+            .moduleName = "UnifiedTopLevelProbe",
+            .entryPointName = "unifiedTopLevelMain",
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+            .capabilities = {capabilities, 1},
+            .descriptorHeapMode = native_ ? SlangDescriptorHeapMode::Native : SlangDescriptorHeapMode::Mapped,
+        }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         log = shader.diagnostics;
         TLAS_REQUIRE(compiled);
         const ComputeProgramBindingDesc layout[] = {{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
         ComputeProgram program;
-        const auto initialized = program.initialize(device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .bindings = layout, .bindingCount = 2}, log);
+        const auto initialized = program.initialize(device, {
+            .spirv = shader.spirv,
+            .bindings = {layout, 2},
+        }, log);
         if (native_ && hasError(initialized, Error::Unsupported)) { return RhiTestResult::skip("native descriptor heap unavailable"); }
         TLAS_REQUIRE(initialized);
         using Probe = std::array<std::array<uint32_t, 2>, 3>;
@@ -148,8 +154,11 @@ public:
         } drain{frame, **pool};
         TLAS_REQUIRE(frame.begin(0));
         TLAS_REQUIRE((*commands)->begin(&frame));
-        TLAS_REQUIRE((*commands)->buildRayTracingAccelerationStructure({.destination = blas->get(),
-            .geometries = &geometry, .geometryCount = 1, .scratchBuffer = scratch->get()}));
+        TLAS_REQUIRE((*commands)->buildRayTracingAccelerationStructure({
+            .destination = blas->get(),
+            .geometries = {&geometry, 1},
+            .scratchBuffer = scratch->get(),
+        }));
         TLAS_REQUIRE((*commands)->buildRayTracingAccelerationStructure({.destination = standard->get(),
             .instanceBuffer = instances->get(), .instanceCount = 1, .scratchBuffer = scratch->get()}));
         if (partitioned_) {
@@ -180,10 +189,10 @@ public:
             TLAS_REQUIRE(registry.accelerationStructure(structure).transform([&](auto value) { lease = std::move(value); }));
             TLAS_CHECK(lease.kind() == ShaderResourceKind::AccelerationStructure && lease.shaderValue() == address);
             const ComputeDispatchBinding bindings[] = {{.binding = 0, .accelerationStructure = &structure}, {.binding = 1, .buffer = output->get()}};
-            TLAS_REQUIRE(program.dispatch({.commandBuffer = commands->get(), .bindings = bindings, .bindingCount = 2}));
+            TLAS_REQUIRE(program.dispatch({.commandBuffer = commands->get(), .bindings = {bindings, 2}}));
             TLAS_REQUIRE((*commands)->end());
             CommandBuffer* submitted[] = {commands->get()};
-            TLAS_REQUIRE(tracker.submit({.commandBuffers = submitted, .commandBufferCount = 1}, frame));
+            TLAS_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
             TLAS_REQUIRE(frame.wait(10'000'000'000ull));
             Probe actual{};
             const void* readback = (*output)->map();

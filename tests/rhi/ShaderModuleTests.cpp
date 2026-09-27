@@ -131,8 +131,7 @@ public:
         // A session define must configure it, and must get a different cache key.
         const render::SlangMacroDefine macro{"VENDOR_SCALE", "3u"};
         auto variantDesc = desc;
-        variantDesc.macroDefines = &macro;
-        variantDesc.macroDefineCount = 1;
+        variantDesc.macroDefines = {&macro, 1};
         render::ShaderCompileResult variant;
         if (!render::compileSlangShaderToSpirv(variantDesc, cache, variant.diagnostics).transform([&](auto value) { variant = std::move(value); }) ||
             variant.spirv == cached.spirv) {

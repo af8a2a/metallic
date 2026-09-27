@@ -92,10 +92,7 @@ public:
         result = context.device.createTextureView(*texture,
             render::TextureViewDesc{
                 .format = render::Format::Rgba8Unorm,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { textureView = std::move(rhiValue); });
         if (!result || textureView == nullptr) {
             return RhiTestResult::fail(std::string("createTextureView returned ") + toString(result));
@@ -197,14 +194,14 @@ public:
             .before = {},
             .after = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &toIndirect, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = {&toIndirect, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         const render::BufferBarrierDesc toGeneral{
             .buffer = indirectBuffer.get(),
             .before = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &toGeneral, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = {&toGeneral, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -222,8 +219,7 @@ public:
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = context.graphicsQueue.submit(
             render::QueueSubmitDesc{
-                .commandBuffers = commandBuffers,
-                .commandBufferCount = 1,
+                .commandBuffers = {commandBuffers, 1},
                 .signalFence = fence.get(),
             });
         if (!result) {

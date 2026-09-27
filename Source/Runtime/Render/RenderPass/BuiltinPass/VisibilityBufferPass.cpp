@@ -616,9 +616,9 @@ public:
             const bool masked = bucketIndex >= 2u;
             const bool doubleSided = (bucketIndex & 1u) != 0u;
             GraphicsPipelineDesc pipelineDesc{
-                .taskShader = amplificationShader_.get(),
-                .meshShader = masked ? maskedMeshShader_.get() : meshShader_.get(),
-                .fragmentShader = masked ? maskedFragmentShader_.get() : fragmentShader_.get(),
+                .taskShader = {amplificationShader_.get()},
+                .meshShader = {masked ? maskedMeshShader_.get() : meshShader_.get()},
+                .fragmentShader = {masked ? maskedFragmentShader_.get() : fragmentShader_.get()},
                 .taskRequiredSubgroupSize = amplificationWave32_
                     ? kGPUDrivenPreviewAmplificationGroupSize
                     : 0u,
@@ -649,7 +649,7 @@ public:
             // Frozen HZB raster needs only visibility/depth. Use a matching
             // single-target PSO so it cannot overwrite viewport domain/colors.
             if (result && tessellationEnabled()) {
-                pipelineDesc.fragmentShader = masked ? frozenMaskedFragmentShader_.get() : frozenFragmentShader_.get();
+                pipelineDesc.fragmentShader.module = masked ? frozenMaskedFragmentShader_.get() : frozenFragmentShader_.get();
                 pipelineDesc.secondColorFormat = Format::Unknown;
                 pipelineDesc.thirdColorFormat = Format::Unknown;
                 result = context.device->createGraphicsPipeline(pipelineDesc).transform([&](auto rhiValue) { frozenStandardZVisibilityPipelines_[bucketIndex] = std::move(rhiValue); });
@@ -667,13 +667,13 @@ public:
             }
         }
         result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
-                .vertexShader = compositeVertexShader_.get(),
-                .fragmentShader = compositeFragmentShader_.get(),
-                .colorFormat = Format::Rgba8Unorm,
-                .topology = PrimitiveTopology::TriangleList,
-                .usesBindlessHeap = true,
-                .pipelineCache = pipelineCache_.get(),
-            }).transform([&](auto rhiValue) { compositePipeline_ = std::move(rhiValue); });
+            .vertexShader = {compositeVertexShader_.get()},
+            .fragmentShader = {compositeFragmentShader_.get()},
+            .colorFormat = Format::Rgba8Unorm,
+            .topology = PrimitiveTopology::TriangleList,
+            .usesBindlessHeap = true,
+            .pipelineCache = pipelineCache_.get(),
+        }).transform([&](auto rhiValue) { compositePipeline_ = std::move(rhiValue); });
         if (!result || compositePipeline_ == nullptr) {
             log += resultMessage("createGraphicsPipeline(VisibilityBufferPass composite)", result);
             log += '\n';
@@ -838,7 +838,7 @@ public:
         void* mappedInfo = rasterInfo.buffer()->map();
         if (mappedInfo == nullptr) { return makeError(Error::Failure); }
         std::memcpy(mappedInfo, &info, sizeof(info));
-        rasterInfo.buffer()->flush(0, sizeof(info));
+        rasterInfo.buffer()->flush({0, sizeof(info)});
         rasterInfo.buffer()->unmap();
         if (streamEnabled_) {
             result = bindStreamViewResources(
@@ -1378,16 +1378,14 @@ private:
             "spvGroupNonUniformBallot",
         };
         Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
-                .moduleName = moduleName,
-                .entryPointName = entryPoint,
-                .searchPath = kTriangleShaderSearchPath,
-                .capabilities = meshShadingShader ? capabilities : nullptr,
-                .capabilityCount = meshShadingShader
+            .moduleName = moduleName,
+            .entryPointName = entryPoint,
+            .searchPath = kTriangleShaderSearchPath,
+            .capabilities = {meshShadingShader ? capabilities : nullptr, meshShadingShader
                     ? static_cast<uint32_t>(std::size(capabilities))
-                    : 0u,
-                .macroDefines = macroDefines,
-                .macroDefineCount = macroDefineCount,
-            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
+                    : 0u},
+            .macroDefines = {macroDefines, macroDefineCount},
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(";
             log += moduleName;
@@ -1408,10 +1406,9 @@ private:
         for (size_t i = 0; i < compileResult.spirv.size() * sizeof(uint32_t); ++i) { hash = (hash ^ bytes[i]) * 1099511628211ull; }
         shaderHashes_[shaderDebugName] = std::to_string(hash);
         result = device.createShaderModule(ShaderModuleDesc{
-                .code = compileResult.spirv.data(),
-                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
-                .debugName = shaderDebugName.c_str(),
-            }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
+            .spirv = compileResult.spirv,
+            .debugName = shaderDebugName.c_str(),
+        }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
         if (!result) {
             log += resultMessage(
                 std::string("createShaderModule(VisibilityBufferPass ") + entryPoint + ")",
@@ -1525,12 +1522,11 @@ private:
         auto createCompute = [&](ShaderModule& shader, std::unique_ptr<ComputePipeline>& pipeline, const char* label) {
             const auto pipelineBegin = GPUDrivenCompileClock::now();
             Result<> result = device.createComputePipeline(ComputePipelineDesc{
-                    .computeShader = &shader,
-                    .computeEntryPoint = "main",
-                    .usesBindlessHeap = true,
-                    .bindlessUserPushDataSize = sizeof(GPUDrivenPreviewUserPush),
-                    .pipelineCache = pipelineCache_.get(),
-                }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+                .computeShader = {&shader, "main"},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(GPUDrivenPreviewUserPush),
+                .pipelineCache = pipelineCache_.get(),
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
             if (!result || pipeline == nullptr) {
                 log += resultMessage(std::string("createComputePipeline(VisibilityBufferPass ") + label + ")", result);
                 log += '\n';
@@ -1579,12 +1575,11 @@ private:
                                        std::unique_ptr<ComputePipeline>& pipeline,
                                        const char* label) -> Result<> {
             Result<> streamResult = device.createComputePipeline(ComputePipelineDesc{
-                    .computeShader = &shader,
-                    .computeEntryPoint = "main",
-                    .usesBindlessHeap = true,
-                    .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-                    .pipelineCache = pipelineCache_.get(),
-                }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+                .computeShader = {&shader, "main"},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+                .pipelineCache = pipelineCache_.get(),
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
             if (!streamResult || pipeline == nullptr) {
                 log += resultMessage(
                     std::string("createComputePipeline(VisibilityBufferPass stream ") +
@@ -1639,9 +1634,9 @@ private:
             return result;
         }
         GraphicsPipelineDesc pipelineDesc{
-            .taskShader = streamTaskShader_.get(),
-            .meshShader = streamMeshShader_.get(),
-            .fragmentShader = streamFragmentShader_.get(),
+            .taskShader = {streamTaskShader_.get()},
+            .meshShader = {streamMeshShader_.get()},
+            .fragmentShader = {streamFragmentShader_.get()},
             .colorFormat = Format::R32Uint,
             .secondColorFormat = tessellationEnabled() ? Format::Rgba32Sfloat : Format::Unknown,
             .thirdColorFormat = tessellationEnabled() ? Format::Rgba8Unorm : Format::Unknown,
@@ -2133,8 +2128,7 @@ private:
         if (!hasResidentGeometry) {
             if (auto rendering = commandBuffer.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
-                .colorAttachments = colors,
-                .colorAttachmentCount = tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u,
+                .colorAttachments = {colors, tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u},
                 .depthStencilAttachment = &depthAttachment,
             }); !rendering) { return rendering; }
             commandBuffer.endRendering();
@@ -2196,8 +2190,7 @@ private:
             commands.beginDebugLabel({.name = "Hybrid raster: resident hardware clusters"});
             if (auto rendering = commands.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
-                .colorAttachments = colors,
-                .colorAttachmentCount = tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u,
+                .colorAttachments = {colors, tessellationEnabled() && !projectWithCullingCamera ? 3u : 1u},
                 .depthStencilAttachment = &depthAttachment,
             }); !rendering) { return rendering; }
             commands.setViewport(Viewport{
@@ -2328,8 +2321,7 @@ private:
         };
         if (auto rendering = commandBuffer.beginRendering(RenderingDesc{
             .renderArea = renderArea,
-            .colorAttachments = &attachment,
-            .colorAttachmentCount = 1,
+            .colorAttachments = {&attachment, 1},
         }); !rendering) { return rendering; }
         commandBuffer.setViewport(Viewport{
             .x = 0.0f,
@@ -2918,8 +2910,7 @@ private:
             commands.beginDebugLabel({.name = "Hybrid raster: stream hardware clusters"});
             if (auto rendering = commands.beginRendering(RenderingDesc{
                 .renderArea = renderArea,
-                .colorAttachments = colors,
-                .colorAttachmentCount = tessellationEnabled() ? 3u : 1u,
+                .colorAttachments = {colors, tessellationEnabled() ? 3u : 1u},
                 .depthStencilAttachment = &depthAttachment,
             }); !rendering) { return rendering; }
             commands.setViewport(Viewport{
@@ -3027,7 +3018,7 @@ private:
             return makeError(Error::Failure);
         }
         std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-        outBuffer->flush(0, byteSize);
+        outBuffer->flush({0, byteSize});
         outBuffer->unmap();
         return {};
     }
@@ -3045,7 +3036,7 @@ private:
             return makeError(Error::Failure);
         }
         std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-        buffer.flush(0, byteSize);
+        buffer.flush({0, byteSize});
         buffer.unmap();
         return {};
     }

@@ -157,15 +157,18 @@ public:
             .entryPointName = "environmentPrefilterProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {{.binding = 2}, {.binding = 3}};
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .bindings = bindings, .bindingCount = 2, .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .bindings = {bindings, 2},
+            .requiresRayQuery = false,
+        }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 2, .buffer = context.outputBuffer("data").buffer()},
             {.binding = 3, .buffer = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot().prefilteredSpecularBuffer}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 2});
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
     }
 private:
     render::ComputeProgram program_;
@@ -245,9 +248,11 @@ public:
             {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::SampledImage},
             {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * 4, .bindings = bindings, .bindingCount = 3,
-            .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .bindings = {bindings, 3},
+            .requiresRayQuery = false,
+        }, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -259,11 +264,15 @@ public:
         auto* motion = context.inputTexture("motion").view();
         auto* depth = context.inputTexture("depth").view();
         const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = &motion, .textureViewCount = 1},
-            {.binding = 1, .textureViews = &depth, .textureViewCount = 1},
+            {.binding = 0, .textureViews = {&motion, 1}},
+            {.binding = 1, .textureViews = {&depth, 1}},
             {.binding = 2, .buffer = context.outputBuffer("guides").buffer()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 3,
-            .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
+        return program_.dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {bindings, 3},
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+        });
     }
 private:
     render::ComputeProgram program_;

@@ -73,9 +73,8 @@ RhiTestResult createTriangleShaderModule(
     }
 
     result = device.createShaderModule(render::ShaderModuleDesc{
-            .code = compileResult.spirv.data(),
-            .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
-        }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
+        .spirv = compileResult.spirv,
+    }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
     if (!result || outShaderModule == nullptr) {
         return RhiTestResult::fail(std::string("createShaderModule returned ") + toString(result));
     }
@@ -125,7 +124,7 @@ RhiTestResult createUploadStorageBuffer(
         return RhiTestResult::fail(std::string("map(") + label + ") returned null");
     }
     std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-    outBuffer->flush(0, byteSize);
+    outBuffer->flush({0, byteSize});
     outBuffer->unmap();
     return RhiTestResult::pass();
 }
@@ -160,11 +159,11 @@ public:
 
         std::unique_ptr<render::GraphicsPipeline> pipeline;
         render::Result<> result = context.device.createGraphicsPipeline(render::GraphicsPipelineDesc{
-                .vertexShader = vertexShader.get(),
-                .fragmentShader = fragmentShader.get(),
-                .colorFormat = render::Format::Rgba8Unorm,
-                .topology = render::PrimitiveTopology::TriangleList,
-            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+            .vertexShader = {vertexShader.get()},
+            .fragmentShader = {fragmentShader.get()},
+            .colorFormat = render::Format::Rgba8Unorm,
+            .topology = render::PrimitiveTopology::TriangleList,
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createGraphicsPipeline returned ") + toString(result));
         }
@@ -189,10 +188,7 @@ public:
         result = context.device.createTextureView(*colorTexture,
             render::TextureViewDesc{
                 .format = render::Format::Rgba8Unorm,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { colorTextureView = std::move(rhiValue); });
         if (!result || colorTextureView == nullptr) {
             return RhiTestResult::fail(std::string("createTextureView returned ") + toString(result));
@@ -231,12 +227,9 @@ public:
             .newLayout = render::TextureLayout::ColorAttachment,
             .before = {},
             .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
+            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = &toColor, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toColor, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         const render::Rect renderArea{
             .x = 0,
@@ -254,8 +247,7 @@ public:
         if (auto commandResult = commandBuffer->beginRendering(
             render::RenderingDesc{
                 .renderArea = renderArea,
-                .colorAttachments = &colorAttachment,
-                .colorAttachmentCount = 1,
+                .colorAttachments = {&colorAttachment, 1},
             }); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commandBuffer->setViewport(
             render::Viewport{
@@ -277,12 +269,9 @@ public:
             .newLayout = render::TextureLayout::TransferSource,
             .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
+            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = &toTransfer, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(
             render::TextureBufferCopyDesc{
                 .texture = colorTexture.get(),
@@ -308,8 +297,7 @@ public:
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = context.graphicsQueue.submit(
             render::QueueSubmitDesc{
-                .commandBuffers = commandBuffers,
-                .commandBufferCount = 1,
+                .commandBuffers = {commandBuffers, 1},
                 .signalFence = fence.get(),
             });
         if (!result) {
@@ -409,17 +397,17 @@ public:
                 render::ShaderModule& fragmentShader,
                 std::unique_ptr<render::GraphicsPipeline>& outPipeline) -> RhiTestResult {
             render::Result<> result = context.device.createGraphicsPipeline(render::GraphicsPipelineDesc{
-                    .vertexShader = &vertexShader,
-                    .fragmentShader = &fragmentShader,
-                    .colorFormat = render::Format::Rgba8Unorm,
-                    .depthStencilFormat = render::Format::D32Sfloat,
-                    .topology = render::PrimitiveTopology::TriangleList,
-                    .depthStencil = render::DepthStencilState{
+                .vertexShader = {&vertexShader},
+                .fragmentShader = {&fragmentShader},
+                .colorFormat = render::Format::Rgba8Unorm,
+                .depthStencilFormat = render::Format::D32Sfloat,
+                .topology = render::PrimitiveTopology::TriangleList,
+                .depthStencil = render::DepthStencilState{
                         .depthTestEnable = true,
                         .depthWriteEnable = true,
                         .depthCompareOp = render::CompareOp::GreaterEqual,
                     },
-                }).transform([&](auto rhiValue) { outPipeline = std::move(rhiValue); });
+            }).transform([&](auto rhiValue) { outPipeline = std::move(rhiValue); });
             if (!result || outPipeline == nullptr) {
                 return RhiTestResult::fail(std::string("createGraphicsPipeline(depth) returned ") + toString(result));
             }
@@ -458,10 +446,7 @@ public:
         result = context.device.createTextureView(*colorTexture,
             render::TextureViewDesc{
                 .format = render::Format::Rgba8Unorm,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { colorTextureView = std::move(rhiValue); });
         if (!result || colorTextureView == nullptr) {
             return RhiTestResult::fail(std::string("createTextureView(color) returned ") + toString(result));
@@ -487,10 +472,7 @@ public:
         result = context.device.createTextureView(*depthTexture,
             render::TextureViewDesc{
                 .format = render::Format::D32Sfloat,
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { depthTextureView = std::move(rhiValue); });
         if (!result || depthTextureView == nullptr) {
             return RhiTestResult::fail(std::string("createTextureView(depth) returned ") + toString(result));
@@ -530,10 +512,7 @@ public:
                 .newLayout = render::TextureLayout::ColorAttachment,
                 .before = {},
                 .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             },
             render::TextureBarrierDesc{
                 .texture = depthTexture.get(),
@@ -541,15 +520,11 @@ public:
                 .newLayout = render::TextureLayout::DepthStencilAttachment,
                 .before = {},
                 .after = {render::PipelineStageBits::DepthStencil, render::AccessBits::DepthStencilRead | render::AccessBits::DepthStencilWrite},
-                .baseMip = 0,
-                .mipCount = 1,
-                .baseLayer = 0,
-                .layerCount = 1,
+                .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             },
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .textures = renderBarriers,
-            .textureCount = 2,
+            .textures = {renderBarriers, 2},
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         const render::Rect renderArea{
@@ -575,8 +550,7 @@ public:
         if (auto commandResult = commandBuffer->beginRendering(
             render::RenderingDesc{
                 .renderArea = renderArea,
-                .colorAttachments = &colorAttachment,
-                .colorAttachmentCount = 1,
+                .colorAttachments = {&colorAttachment, 1},
                 .depthStencilAttachment = &depthAttachment,
             }); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commandBuffer->setViewport(
@@ -601,12 +575,9 @@ public:
             .newLayout = render::TextureLayout::TransferSource,
             .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-            .baseMip = 0,
-            .mipCount = 1,
-            .baseLayer = 0,
-            .layerCount = 1,
+            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = &toTransfer, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(
             render::TextureBufferCopyDesc{
                 .texture = colorTexture.get(),
@@ -632,8 +603,7 @@ public:
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = context.graphicsQueue.submit(
             render::QueueSubmitDesc{
-                .commandBuffers = commandBuffers,
-                .commandBufferCount = 1,
+                .commandBuffers = {commandBuffers, 1},
                 .signalFence = fence.get(),
             });
         if (!result) {
@@ -729,12 +699,17 @@ public:
             return testResult;
         }
 
+        auto vertexModule = device->createShaderModule({.spirv = vertexCompile.spirv});
+        if (!vertexModule) { return RhiTestResult::fail("createShaderModule(vertex) failed"); }
+        auto fragmentModule = device->createShaderModule({.spirv = fragmentCompile.spirv});
+        if (!fragmentModule) { return RhiTestResult::fail("createShaderModule(fragment) failed"); }
+        auto alternateFragmentModule = device->createShaderModule({.spirv = alternateFragmentCompile.spirv});
+        if (!alternateFragmentModule) { return RhiTestResult::fail("createShaderModule(alternateFragment) failed"); }
+
         std::unique_ptr<render::GraphicsShaderObjectProgram> defaultProgram;
         result = device->createGraphicsShaderObjectProgram(render::GraphicsShaderObjectProgramDesc{
-                .vertexCode = vertexCompile.spirv.data(),
-                .vertexByteSize = static_cast<uint64_t>(vertexCompile.spirv.size() * sizeof(uint32_t)),
-                .fragmentCode = fragmentCompile.spirv.data(),
-                .fragmentByteSize = static_cast<uint64_t>(fragmentCompile.spirv.size() * sizeof(uint32_t)),
+                .vertexShader = {vertexModule->get()},
+                .fragmentShader = {fragmentModule->get()},
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MaterialUserPush),
             }).transform([&](auto rhiValue) { defaultProgram = std::move(rhiValue); });
@@ -744,10 +719,8 @@ public:
 
         std::unique_ptr<render::GraphicsShaderObjectProgram> alternateProgram;
         result = device->createGraphicsShaderObjectProgram(render::GraphicsShaderObjectProgramDesc{
-                .vertexCode = vertexCompile.spirv.data(),
-                .vertexByteSize = static_cast<uint64_t>(vertexCompile.spirv.size() * sizeof(uint32_t)),
-                .fragmentCode = alternateFragmentCompile.spirv.data(),
-                .fragmentByteSize = static_cast<uint64_t>(alternateFragmentCompile.spirv.size() * sizeof(uint32_t)),
+                .vertexShader = {vertexModule->get()},
+                .fragmentShader = {alternateFragmentModule->get()},
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MaterialUserPush),
             }).transform([&](auto rhiValue) { alternateProgram = std::move(rhiValue); });
@@ -882,8 +855,7 @@ public:
         result = device->createTextureView(*colorTexture,
             render::TextureViewDesc{
                 .format = render::Format::Rgba8Unorm,
-                .mipCount = 1,
-                .layerCount = 1,
+                .range = {.mipCount = 1, .layerCount = 1},
             }).transform([&](auto rhiValue) { colorTextureView = std::move(rhiValue); });
         if (!result || colorTextureView == nullptr) {
             return RhiTestResult::fail(std::string("createTextureView returned ") + toString(result));
@@ -920,10 +892,9 @@ public:
             .newLayout = render::TextureLayout::ColorAttachment,
             .before = {},
             .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
-            .mipCount = 1,
-            .layerCount = 1,
+            .range = {.mipCount = 1, .layerCount = 1},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = &toColor, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toColor, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         const render::Rect renderArea{.x = 0, .y = 0, .width = kWidth, .height = kHeight};
         render::RenderingAttachmentDesc colorAttachment{
@@ -936,8 +907,7 @@ public:
         if (auto commandResult = commandBuffer->beginRendering(
             render::RenderingDesc{
                 .renderArea = renderArea,
-                .colorAttachments = &colorAttachment,
-                .colorAttachmentCount = 1,
+                .colorAttachments = {&colorAttachment, 1},
             }); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commandBuffer->bindBindlessHeap(*bindlessHeap);
         if (auto commandResult = commandBuffer->bindExecution((defaultProgram)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
@@ -975,10 +945,9 @@ public:
             .newLayout = render::TextureLayout::TransferSource,
             .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-            .mipCount = 1,
-            .layerCount = 1,
+            .range = {.mipCount = 1, .layerCount = 1},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = &toTransfer, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(
             render::TextureBufferCopyDesc{
                 .texture = colorTexture.get(),
@@ -1001,8 +970,7 @@ public:
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = graphicsQueue->submit(
             render::QueueSubmitDesc{
-                .commandBuffers = commandBuffers,
-                .commandBufferCount = 1,
+                .commandBuffers = {commandBuffers, 1},
                 .signalFence = fence.get(),
             });
         if (!result) {
@@ -1111,13 +1079,13 @@ public:
                                         std::unique_ptr<render::GraphicsPipeline>& outPipeline,
                                         render::RasterizationState rasterization = {}) {
             return context.device.createGraphicsPipeline(render::GraphicsPipelineDesc{
-                    .vertexShader = vertexShader.get(),
-                    .fragmentShader = &fragment,
-                    .colorFormat = render::Format::Rgba8Unorm,
-                    .topology = render::PrimitiveTopology::TriangleList,
-                    .rasterization = rasterization,
-                    .pipelineCache = &cache,
-                }).transform([&](auto rhiValue) { outPipeline = std::move(rhiValue); });
+                .vertexShader = {vertexShader.get()},
+                .fragmentShader = {&fragment},
+                .colorFormat = render::Format::Rgba8Unorm,
+                .topology = render::PrimitiveTopology::TriangleList,
+                .rasterization = rasterization,
+                .pipelineCache = &cache,
+            }).transform([&](auto rhiValue) { outPipeline = std::move(rhiValue); });
         };
 
         std::unique_ptr<render::PipelineCache> firstCache;

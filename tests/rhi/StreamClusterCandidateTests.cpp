@@ -67,10 +67,14 @@ public:
                 .searchPath = i == 0 ? PROJECT_SOURCE_DIR "/Shaders" : PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
             log = compiled.diagnostics;
             CANDIDATE_REQUIRE(result);
-            CANDIDATE_REQUIRE(device->createShaderModule({.code = compiled.spirv.data(),
-                .byteSize = compiled.spirv.size() * 4}).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
-            CANDIDATE_REQUIRE(device->createComputePipeline({.computeShader = shaders[i].get(), .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = i == 0 ? uint32_t(sizeof(MeshletStreamUserPush)) : 12u}).transform([&](auto rhiValue) { pipelines[i] = std::move(rhiValue); }));
+            CANDIDATE_REQUIRE(device->createShaderModule({
+                .spirv = compiled.spirv,
+            }).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
+            CANDIDATE_REQUIRE(device->createComputePipeline({
+                .computeShader = {shaders[i].get()},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = i == 0 ? uint32_t(sizeof(MeshletStreamUserPush)) : 12u,
+            }).transform([&](auto rhiValue) { pipelines[i] = std::move(rhiValue); }));
         }
         std::unique_ptr<Buffer> readback, arguments;
         const uint64_t bytes = rasterizer.clusterBuffer().desc().size;
@@ -137,7 +141,7 @@ public:
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                 .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             };
-            if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             MeshletStreamUserPush push{.activeGroupBuffer = handles[1].shaderIndex, .activeHeaderBuffer = handles[0].shaderIndex,
                 .traversalPhase = test.phase, .rasterBindingsBuffer = handles[2].shaderIndex,
                 .hybridQueueBuffer = handles[6].shaderIndex, .hybridClusterBuffer = handles[5].shaderIndex};
@@ -153,18 +157,18 @@ public:
                     .before = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                 }};
-            if (auto commandResult = commands->synchronize({.buffers = copies, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {copies, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
-                auto sourceSlice = (&rasterizer.clusterBuffer())->slice(0, bytes);
+                auto sourceSlice = (&rasterizer.clusterBuffer())->slice({0, bytes});
                 if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                auto destinationSlice = readback.get()->slice(0, bytes);
+                auto destinationSlice = readback.get()->slice({0, bytes});
                 if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                 if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             {
-                auto sourceSlice = (&rasterizer.candidateArguments())->slice(0, 36);
+                auto sourceSlice = (&rasterizer.candidateArguments())->slice({0, 36});
                 if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                auto destinationSlice = arguments.get()->slice(0, 36);
+                auto destinationSlice = arguments.get()->slice({0, 36});
                 if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                 if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
@@ -181,11 +185,11 @@ public:
                     .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                     .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
                 }};
-            if (auto commandResult = commands->synchronize({.buffers = restore, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {restore, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             CANDIDATE_REQUIRE(rasterizer.finishClusterBins(*commands));
             CANDIDATE_REQUIRE(commands->end());
             CommandBuffer* list[] = {commands.get()};
-            CANDIDATE_REQUIRE(queue->submit({.commandBuffers = list, .commandBufferCount = 1, .signalFence = fence.get()}));
+            CANDIDATE_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
             CANDIDATE_REQUIRE(fence->wait());
             submitted = true;
             readback->invalidate(); arguments->invalidate();

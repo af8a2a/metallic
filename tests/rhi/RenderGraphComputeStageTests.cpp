@@ -98,7 +98,7 @@ public:
             uses = {{{"image", Access::TextureSampleRead}}};
             break;
         case StageProbeCase::GraphAllocationImport: {
-            auto graphSlice = context.outputBuffer("data").buffer()->slice(16, 32);
+            auto graphSlice = context.outputBuffer("data").buffer()->slice({16, 32});
             if (!graphSlice) { return render::makeError(graphSlice.error()); }
             imports.push_back({"private", *graphSlice, Access::BufferStorageReadWrite});
             uses = {{{"private", Access::BufferStorageWrite}}};
@@ -119,8 +119,8 @@ public:
         case StageProbeCase::PrivateAliases: {
             // Distinct overlapping CPU slices must still resolve to one GPU
             // allocation, rather than independent hazards under the two names.
-            auto writeSlice = privateSlice->subslice(0, 48);
-            auto readSlice = privateSlice->subslice(16, 48);
+            auto writeSlice = privateSlice->subslice({0, 48});
+            auto readSlice = privateSlice->subslice({16, 48});
             if (!writeSlice || !readSlice) { return render::makeError(render::Error::Failure); }
             imports.push_back({"privateWrite", *writeSlice, Access::BufferStorageReadWrite});
             imports.push_back({"privateRead", *readSlice, Access::BufferStorageReadWrite});

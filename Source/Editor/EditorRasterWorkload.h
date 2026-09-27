@@ -39,16 +39,16 @@ public:
                 .before = metallic::render::resourceSyncScope(resource.state, metallic::render::PipelineStageBits::AllCommands),
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
             };
-            if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+            if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             {
-                auto sourceSlice = resource.buffer->slice(0, 128);
+                auto sourceSlice = resource.buffer->slice({0, 128});
                 if (!sourceSlice) { throw std::runtime_error(std::string("source slice failed: ") + metallic::render::resultToString(sourceSlice)); }
-                auto destinationSlice = copy.buffer.get()->slice(0, 128);
+                auto destinationSlice = copy.buffer.get()->slice({0, 128});
                 if (!destinationSlice) { throw std::runtime_error(std::string("destination slice failed: ") + metallic::render::resultToString(destinationSlice)); }
                 if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { throw std::runtime_error(std::string("copyBuffer failed: ") + metallic::render::resultToString(commandResult)); }
             }
             std::swap(barrier.before, barrier.after);
-            if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+            if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             copies_.push_back(std::move(copy));
         }
     }

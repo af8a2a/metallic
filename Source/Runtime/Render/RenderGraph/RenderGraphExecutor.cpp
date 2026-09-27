@@ -550,7 +550,7 @@ struct RenderGraphExecutor::Impl {
         frameViewBuffer->unmap();
         frameViewBuffer->flush();
         const BufferBarrierDesc barrier{.buffer = frameViewBuffer, .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead}};
-        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
         if (frame != nullptr) { frame->retain(viewBuffers[slot]); }
         previousView = frameView;
         hasPreviousView = frame != nullptr;
@@ -1262,10 +1262,7 @@ struct RenderGraphExecutor::Impl {
                     result = graphDevice.createTextureView(*slot.texture,
                         TextureViewDesc{
                             .format = desc.format,
-                            .baseMip = 0,
-                            .mipCount = 1,
-                            .baseLayer = 0,
-                            .layerCount = 1,
+                            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
                         }).transform([&](auto rhiValue) { slot.textureView = std::move(rhiValue); });
                     if (!result || slot.textureView == nullptr) {
                         log += resultMessage(std::string("createTextureView(") + fullName + ")", result);
@@ -1333,8 +1330,7 @@ struct RenderGraphExecutor::Impl {
 
                     BufferViewDesc viewDesc{
                         .type = viewType,
-                        .offset = 0,
-                        .size = desc.size,
+                        .range = {.offset = 0, .size = desc.size},
                         .structureStride = desc.structureStride,
                     };
                     const bool needsBindlessBuffer = bindlessPlan.bufferResourceSet.contains(fullName);
@@ -1597,7 +1593,7 @@ struct RenderGraphExecutor::Impl {
             for (uint32_t q = 0; q < values.size(); ++q) {
                 if (!slot.used[q]) { continue; }
                 values[q].resize(slot.used[q]);
-                const auto result = gpuTimestampQueryPools[q]->readResults(slot.firstQuery, slot.used[q], values[q].data());
+                const auto result = gpuTimestampQueryPools[q]->readResults(slot.firstQuery, {values[q].data(), slot.used[q]});
                 if (!result) { return result; }
             }
             const auto intervalReady = [&](TimerRef timer) {
@@ -3405,7 +3401,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             const uint64_t submitBegin = schedulingCapture.elapsed();
             if (capturedBatch) { capturedBatch->semaphoreWaitCount = uint32_t(waits.size()); }
             auto accepted = impl_->submissionTrackers.at(queue)->submitBatch(ready->second.commands, {
-                .waitSemaphores = waits.data(), .waitSemaphoreCount = uint32_t(waits.size()),
+                .waitSemaphores = waits,
             }, slot.frame).transform([&](auto value) { receipt = std::move(value); });
             if (!accepted) { return accepted; }
             if (capturedBatch) {
@@ -4261,8 +4257,7 @@ Result<> RenderGraphPreviewRenderer::render(
     CommandBuffer* commandBuffers[] = {impl_->commandBuffer.get()};
     phase.next("preview.readbackSubmit");
     result = impl_->submissions.submit(QueueSubmitDesc{
-        .commandBuffers = commandBuffers,
-        .commandBufferCount = 1,
+        .commandBuffers = {commandBuffers, 1},
     }, impl_->frameContext);
     if (!result) {
         return result;

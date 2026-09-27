@@ -69,8 +69,10 @@ struct Commands {
         if (!result) { return result; }
         render::CommandBuffer* buffers[] = {commands.get()};
         render::SemaphoreSubmitDesc wait{.semaphore = &gate, .value = 1};
-        return tracker.submit({.waitSemaphores = &wait, .waitSemaphoreCount = 1,
-            .commandBuffers = buffers, .commandBufferCount = 1}, frame);
+        return tracker.submit({
+            .waitSemaphores = {&wait, 1},
+            .commandBuffers = {buffers, 1},
+        }, frame);
     }
 };
 
@@ -227,7 +229,7 @@ public:
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             };
-            if (auto commandResult = first.commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = first.commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(secondKernel.dispatch(*first.commands, encoded, 1));
             // Force the parameter arena to grow without moving already encoded roots.
             std::array<uint32_t, 17000> burst{};
@@ -352,11 +354,11 @@ public:
                         .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                         .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                     };
-                    if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+                    if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
                     auto result = kernel.dispatch(*commands, packets[i], 1);
                     // Re-read the very first packet after additional uploads.
                     if (result && i == 2) {
-                        if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+                        if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
                         result = kernel.dispatch(*commands, packets[0], 1);
                     }
                     return result ? commands->end() : result;
@@ -365,8 +367,9 @@ public:
                 REG_REQUIRE(batch.seal(frame, {&commands, 1}));
                 render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
                 render::SubmissionReceipt receipt;
-                REG_REQUIRE(tracker.submitBatch(batch, {.waitSemaphores = i == 0 ? &wait : nullptr,
-                    .waitSemaphoreCount = i == 0 ? 1u : 0u}, frame).transform([&](auto value) { receipt = std::move(value); }));
+                REG_REQUIRE(tracker.submitBatch(batch, {
+                    .waitSemaphores = {i == 0 ? &wait : nullptr, i == 0 ? 1u : 0u},
+                }, frame).transform([&](auto value) { receipt = std::move(value); }));
                 REG_CHECK(receipt.accepted() && frame.recording() && !frame.completion().isSubmitted());
                 if (i == 0) { REG_CHECK(!receipt.completion().isComplete()); }
                 if (i == 1) {
@@ -436,10 +439,10 @@ public:
         source.reset(); owner.reset(); kernel.clear();
         render::CommandBuffer* buffers[] = {recording.commands.get()};
         render::GpuCompletionPoint graphicsDone, copyDone, rejected;
-        REG_REQUIRE(graphicsTracker.submitSegment({.commandBuffers = buffers, .commandBufferCount = 1}, recording.frame).transform([&](auto value) { graphicsDone = std::move(value); }));
+        REG_REQUIRE(graphicsTracker.submitSegment({.commandBuffers = {buffers, 1}}, recording.frame).transform([&](auto value) { graphicsDone = std::move(value); }));
         render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
-        REG_REQUIRE(copyTracker.submitSegment({.waitSemaphores = &wait, .waitSemaphoreCount = 1}, recording.frame).transform([&](auto value) { copyDone = std::move(value); }));
-        REG_CHECK(!copyTracker.submitSegment({.commandBufferCount = 1}, recording.frame).transform([&](auto value) { rejected = std::move(value); }));
+        REG_REQUIRE(copyTracker.submitSegment({.waitSemaphores = {&wait, 1}}, recording.frame).transform([&](auto value) { copyDone = std::move(value); }));
+        REG_CHECK(!copyTracker.submitSegment({.commandBuffers = std::array<render::CommandBuffer*, 1>{nullptr}}, recording.frame).transform([&](auto value) { rejected = std::move(value); }));
         recording.frame.cancel(); // Must seal accepted segments, not release their packets.
         REG_REQUIRE(graphicsDone.wait(5'000'000'000ull));
         registry->collect();
@@ -508,10 +511,10 @@ public:
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             };
-            if (auto commandResult = recording.commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[0].dispatch(*recording.commands, encoded, 1));
             barrier.oldLayout = render::TextureLayout::General; barrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite}; barrier.newLayout = render::TextureLayout::ShaderRead; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
-            if (auto commandResult = recording.commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[1].dispatch(*recording.commands, encoded, 1));
         }
         image.reset(); view.reset();
@@ -548,34 +551,34 @@ public:
         std::unique_ptr<render::Buffer> buffer;
         REG_REQUIRE(makeBuffer(*device, buffer));
         render::BufferSlice parent, child, invalid, empty;
-        REG_REQUIRE(buffer->slice(16, 32).transform([&](auto rhiValue) { parent = std::move(rhiValue); }));
-        REG_REQUIRE(parent.subslice(8, 8).transform([&](auto rhiValue) { child = std::move(rhiValue); }));
+        REG_REQUIRE(buffer->slice({16, 32}).transform([&](auto rhiValue) { parent = std::move(rhiValue); }));
+        REG_REQUIRE(parent.subslice({8, 8}).transform([&](auto rhiValue) { child = std::move(rhiValue); }));
         REG_CHECK(child.offset() == 24 && child.size() == 8);
         REG_CHECK(child.deviceAddress() == buffer->deviceAddress() + 24);
         REG_CHECK(child.deviceIdentity() == device->identity());
         REG_CHECK(child.allocationIdentity() == buffer->retainAllocation().get());
         REG_REQUIRE(child.validateData(device->identity(), 4, 4));
         REG_CHECK(render::hasError(child.validateData(other->identity(), 4, 4), render::Error::InvalidArgument));
-        REG_REQUIRE(parent.subslice(32).transform([&](auto value) { empty = std::move(value); }));
+        REG_REQUIRE(parent.subslice({32}).transform([&](auto value) { empty = std::move(value); }));
         REG_CHECK(empty.valid() && empty.size() == 0);
         REG_CHECK(!empty.validateData(device->identity(), 4, 4));
         for (uint64_t offset : {uint64_t(33), UINT64_MAX}) {
-            const auto rejected = parent.subslice(offset);
+            const auto rejected = parent.subslice({offset});
             REG_CHECK(render::hasError(rejected, render::Error::InvalidArgument));
             REG_CHECK(parent.offset() == 16 && parent.size() == 32);
         }
-        REG_CHECK(render::hasError(parent.subslice(0, 33), render::Error::InvalidArgument));
-        REG_CHECK(render::hasError(parent.subslice(31, UINT64_MAX - 1), render::Error::InvalidArgument));
-        REG_REQUIRE(parent.subslice(1, 8).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
+        REG_CHECK(render::hasError(parent.subslice({0, 33}), render::Error::InvalidArgument));
+        REG_CHECK(render::hasError(parent.subslice({31, UINT64_MAX - 1}), render::Error::InvalidArgument));
+        REG_REQUIRE(parent.subslice({1, 8}).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
         REG_CHECK(!invalid.validateData(device->identity(), 4, 4));
-        REG_REQUIRE(parent.subslice(0, 12).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
+        REG_REQUIRE(parent.subslice({0, 12}).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
         REG_CHECK(!invalid.validateData(device->identity(), 8, 4));
         REG_CHECK(!child.validateData(device->identity(), 0, 4));
         REG_CHECK(!child.validateData(device->identity(), 4, 0));
         REG_CHECK(!child.validateData(device->identity(), 4, 3));
         REG_CHECK(!child.validateData(device->identity(), 3, 4));
         REG_CHECK(!child.validate(device->identity(), render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource));
-        REG_REQUIRE(parent.subslice(8, 8).transform([&](auto rhiValue) { parent = std::move(rhiValue); }));
+        REG_REQUIRE(parent.subslice({8, 8}).transform([&](auto rhiValue) { parent = std::move(rhiValue); }));
         REG_CHECK(parent.offset() == child.offset() && parent.size() == child.size());
 
         std::weak_ptr<void> allocation = buffer->retainAllocation();
@@ -643,8 +646,11 @@ public:
         render::ComputeProgram adapter;
         const render::ComputeProgramBindingDesc layout{.binding = 0,
             .kind = render::ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4};
-        REG_REQUIRE(adapter.initialize(*device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .bindings = &layout, .bindingCount = 1, .requiresRayQuery = false}, log));
+        REG_REQUIRE(adapter.initialize(*device, {
+            .spirv = shader.spirv,
+            .bindings = {&layout, 1},
+            .requiresRayQuery = false,
+        }, log));
         std::unique_ptr<render::Buffer> source, work, output;
         REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::TransferSource,
             .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { source = std::move(rhiValue); }));
@@ -672,33 +678,33 @@ public:
         REG_REQUIRE(recording.begin(0));
         {
             render::BufferSlice from, data, to, arguments, invalid;
-            REG_REQUIRE(source->slice(8, 16).transform([&](auto rhiValue) { from = std::move(rhiValue); }));
-            REG_REQUIRE(work->slice(16, 16).transform([&](auto rhiValue) { data = std::move(rhiValue); }));
-            REG_REQUIRE(work->slice(48, 12).transform([&](auto rhiValue) { arguments = std::move(rhiValue); }));
-            REG_REQUIRE(output->slice(20, 16).transform([&](auto rhiValue) { to = std::move(rhiValue); }));
+            REG_REQUIRE(source->slice({8, 16}).transform([&](auto rhiValue) { from = std::move(rhiValue); }));
+            REG_REQUIRE(work->slice({16, 16}).transform([&](auto rhiValue) { data = std::move(rhiValue); }));
+            REG_REQUIRE(work->slice({48, 12}).transform([&](auto rhiValue) { arguments = std::move(rhiValue); }));
+            REG_REQUIRE(output->slice({20, 16}).transform([&](auto rhiValue) { to = std::move(rhiValue); }));
             // Transfer-only memory is not a shader data buffer.
             REG_CHECK(!from.validateData(device->identity(), 4, 4));
-            REG_REQUIRE(to.subslice(0, 12).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
+            REG_REQUIRE(to.subslice({0, 12}).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
             REG_CHECK(!recording.commands->copyBuffer(from, invalid));
             REG_CHECK(!recording.commands->copyBuffer(to, to));
             REG_CHECK(!recording.commands->dispatchIndirect(to));
-            REG_REQUIRE(arguments.subslice(1, 8).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
+            REG_REQUIRE(arguments.subslice({1, 8}).transform([&](auto rhiValue) { invalid = std::move(rhiValue); }));
             REG_CHECK(!recording.commands->dispatchIndirect(invalid));
             render::BufferBarrierDesc workBarrier{
                 .buffer = work.get(),
                 .before = {},
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             };
-            if (auto commandResult = recording.commands->synchronize({.buffers = &workBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.buffers = {&workBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(recording.commands->copyBuffer(from, data));
             workBarrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite}; workBarrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
-            if (auto commandResult = recording.commands->synchronize({.buffers = &workBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.buffers = {&workBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::BufferBarrierDesc outputBarrier{
                 .buffer = output.get(),
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             };
-            if (auto commandResult = recording.commands->synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::ParameterWriter writer(*device, recording.frame, *registry);
             const Params params{writer.dataBuffer<uint32_t>(data), writer.dataBuffer<uint32_t>(to),
                 writer.dataBuffer<uint32_t>(arguments), 7};
@@ -708,14 +714,14 @@ public:
             outputBarrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
             workBarrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite}; workBarrier.after = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead};
             const render::BufferBarrierDesc barriers[] = {outputBarrier, workBarrier};
-            if (auto commandResult = recording.commands->synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[1].dispatchIndirect(*recording.commands, encoded, arguments));
-            if (auto commandResult = recording.commands->synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::ComputeDispatchBinding binding{.binding = 0, .data = to};
-            render::ComputeDispatchDesc dispatch{.commandBuffer = recording.commands.get(), .bindings = &binding, .bindingCount = 1};
-            binding.offset = 4;
+            render::ComputeDispatchDesc dispatch{.commandBuffer = recording.commands.get(), .bindings = {&binding, 1}};
+            binding.range.offset = 4;
             REG_CHECK(render::hasError(adapter.dispatch(dispatch), render::Error::InvalidArgument));
-            binding.offset = 0;
+            binding.range.offset = 0;
             REG_REQUIRE(adapter.dispatch(dispatch));
         }
         source.reset(); work.reset();
@@ -745,6 +751,66 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(BufferSliceSubmissionTest);
 
+class ResourceRangeContractTest final : public RhiTest {
+public:
+    ResourceRangeContractTest() { type = RhiTestType::Resource; name = "resource_range_and_shader_input_contract"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using render::BufferRange;
+        using render::Error;
+        const auto tail = BufferRange{16}.resolve(64);
+        REG_CHECK(tail && tail->offset == 16 && tail->size == 48);
+        const auto end = BufferRange{64}.resolve(64);
+        REG_CHECK(end && end->size == 0);
+        REG_CHECK(render::hasError(BufferRange{65, 0}.resolve(64), Error::InvalidArgument));
+        REG_CHECK(render::hasError(BufferRange{16, UINT64_MAX - 1}.resolve(64), Error::InvalidArgument));
+        REG_CHECK(render::hasError(BufferRange{UINT64_MAX - 2, 4}.resolve(UINT64_MAX), Error::InvalidArgument));
+
+        auto& device = context.device;
+        std::unique_ptr<render::Buffer> buffer;
+        REG_REQUIRE(makeBuffer(device, buffer));
+        auto slice = buffer->slice({16, 32});
+        REG_CHECK(slice && slice->offset() == 16 && slice->size() == 32);
+        auto sub = slice->subslice({8});
+        REG_CHECK(sub && sub->offset() == 24 && sub->size() == 24);
+        const auto empty = slice->subslice({32});
+        REG_CHECK(empty && empty->size() == 0);
+        REG_CHECK(render::hasError(slice->subslice({31, 2}), Error::InvalidArgument));
+        REG_CHECK(render::hasError(buffer->slice({UINT64_MAX, 1}), Error::InvalidArgument));
+        if (device.capabilities().bindlessDescriptorHeap) {
+            auto view = device.createBufferView(*buffer, {.range = {16}});
+            REG_CHECK(view && (*view)->desc().range == *tail);
+            REG_CHECK(render::hasError(device.createBufferView(*buffer, {.range = {64}}), Error::InvalidArgument));
+            REG_CHECK(render::hasError(device.createBufferView(*buffer, {.range = {16, UINT64_MAX - 1}}), Error::InvalidArgument));
+        }
+
+        auto texture = device.createTexture({.usage = render::TextureUsageBits::Sampled,
+            .format = render::Format::Rgba8Unorm, .width = 8, .height = 8, .mipCount = 3, .layerCount = 2});
+        REG_CHECK(texture);
+        const render::TextureSubresourceRange range{1, 2, 1, 1};
+        REG_CHECK(range.valid(3, 2));
+        auto view = device.createTextureView(**texture, {.range = range});
+        REG_CHECK(view && (*view)->desc().range.baseMip == 1 && (*view)->desc().range.layerCount == 1);
+        for (const auto invalid : std::array<render::TextureSubresourceRange, 5>{{
+                 {3, 1, 0, 1}, {0, 0, 0, 1}, {1, UINT32_MAX, 0, 1}, {0, 1, 2, 1}, {0, 1, 1, UINT32_MAX}}}) {
+            REG_CHECK(!invalid.valid(3, 2));
+            REG_CHECK(render::hasError(device.createTextureView(**texture, {.range = invalid}), Error::InvalidArgument));
+        }
+
+        // Word spans cannot represent misaligned byte lengths. Malformed word streams
+        // must still be rejected before reaching Vulkan or the OMM transformer.
+        const std::array<uint32_t, 4> truncated{0x07230203u};
+        const std::array<uint32_t, 5> badMagic{};
+        const std::array<uint32_t, 6> badInstruction{0x07230203u, 0x00010600u, 0, 1, 0, 0};
+        REG_CHECK(render::hasError(device.createShaderModule({}), Error::InvalidArgument));
+        REG_CHECK(render::hasError(device.createShaderModule({.spirv = truncated}), Error::InvalidArgument));
+        REG_CHECK(render::hasError(device.createShaderModule({.spirv = badMagic}), Error::InvalidArgument));
+        REG_CHECK(render::hasError(device.createShaderModule({.spirv = badInstruction}), Error::InvalidArgument));
+        return RhiTestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(ResourceRangeContractTest);
+
 
 class SynchronizationScopesTest final : public RhiTest {
 public:
@@ -768,17 +834,17 @@ public:
                 .after = {S::ComputeShader, A::ShaderRead},
             };
         }
-        REG_REQUIRE(command.synchronize({.buffers = barriers.data(), .bufferCount = 3}));
+        REG_REQUIRE(command.synchronize({.buffers = {barriers.data(), 3}}));
         auto stats = command.synchronizationStats();
         REG_CHECK(stats.calls == 1 && stats.memoryBarriers == 1 && stats.coalescedResources == 3 && stats.imageTransitions == 0);
         for (auto& barrier : barriers) { barrier.before.access = A::ShaderRead; }
-        REG_REQUIRE(command.synchronize({.buffers = barriers.data(), .bufferCount = 3}));
+        REG_REQUIRE(command.synchronize({.buffers = {barriers.data(), 3}}));
         REG_CHECK(command.synchronizationStats().calls == 2); // Explicit read/read scopes still order execution.
         std::array<render::MemoryBarrierDesc, 2> memory{{
             {{S::ComputeShader, A::ShaderWrite}, {S::DrawIndirect, A::IndirectRead}},
             {{S::Transfer, A::TransferWrite}, {S::ComputeShader, A::ShaderRead}},
         }};
-        REG_REQUIRE(command.synchronize({.memory = memory.data(), .memoryCount = 2}));
+        REG_REQUIRE(command.synchronize({.memory = {memory.data(), 2}}));
         REG_CHECK(command.synchronizationStats().memoryBarriers == 4); // Keep distinct stage pairs.
         const std::array<render::SyncScope, 5> invalid{{
             {S::Transfer, A::ShaderWrite}, {S::ComputeShader, A::IndirectRead},
@@ -786,11 +852,11 @@ public:
         }};
         for (const auto scope : invalid) {
             memory[1].after = scope;
-            REG_CHECK(render::hasError(command.synchronize({.memory = memory.data(), .memoryCount = 2}), render::Error::InvalidArgument));
+            REG_CHECK(render::hasError(command.synchronize({.memory = {memory.data(), 2}}), render::Error::InvalidArgument));
             REG_CHECK(command.synchronizationStats().calls == 3); // Validation is atomic.
         }
-        barriers[0].offset = 64;
-        REG_CHECK(render::hasError(command.synchronize({.buffers = barriers.data(), .bufferCount = 3}), render::Error::InvalidArgument));
+        barriers[0].range.offset = 64;
+        REG_CHECK(render::hasError(command.synchronize({.buffers = {barriers.data(), 3}}), render::Error::InvalidArgument));
         REG_REQUIRE(command.end());
         REG_CHECK(render::hasError(command.synchronize({}), render::Error::InvalidArgument));
         recording.frame.cancel();
@@ -855,12 +921,12 @@ public:
 
         render::TextureBarrierDesc image{.texture = texture->get(), .oldLayout = L::General, .newLayout = L::General};
         render::BufferBarrierDesc bytes{.buffer = buffer.get()};
-        REG_REQUIRE(command.synchronize({.textures = &image, .textureCount = 1, .buffers = &bytes, .bufferCount = 1}));
+        REG_REQUIRE(command.synchronize({.textures = {&image, 1}, .buffers = {&bytes, 1}}));
         REG_CHECK(capture.calls == 0); // General layout must not invent accesses.
 
         image.oldLayout = L::Undefined;
         image.after = {S::ComputeShader, A::ShaderWrite};
-        REG_REQUIRE(command.synchronize({.textures = &image, .textureCount = 1}));
+        REG_REQUIRE(command.synchronize({.textures = {&image, 1}}));
         REG_CHECK(capture.calls == 1 && capture.images.size() == 1);
         REG_CHECK(capture.images[0].srcStageMask == VK_PIPELINE_STAGE_2_NONE && capture.images[0].srcAccessMask == 0);
         REG_CHECK(capture.images[0].dstStageMask == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT &&
@@ -871,7 +937,7 @@ public:
         image.oldLayout = L::General;
         image.newLayout = L::ShaderRead;
         image.after = {S::ComputeShader, A::ShaderRead};
-        REG_REQUIRE(command.synchronize({.textures = &image, .textureCount = 1}));
+        REG_REQUIRE(command.synchronize({.textures = {&image, 1}}));
         if (context.device.capabilities().unifiedImageLayouts) {
             REG_CHECK(capture.memory.size() == 1 && capture.images.empty());
             REG_CHECK(capture.memory[0].srcStageMask == 0 && capture.memory[0].srcAccessMask == 0);
@@ -884,19 +950,21 @@ public:
         image.oldLayout = image.newLayout;
         image.before = bytes.before = {S::ComputeShader, A::None};
         image.after = bytes.after = {S::FragmentShader, A::None};
-        REG_REQUIRE(command.synchronize({.textures = &image, .textureCount = 1, .buffers = &bytes, .bufferCount = 1}));
+        REG_REQUIRE(command.synchronize({.textures = {&image, 1}, .buffers = {&bytes, 1}}));
         REG_CHECK(capture.memory.size() == 1 && capture.images.empty());
         REG_CHECK(capture.memory[0].srcStageMask == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT &&
             capture.memory[0].dstStageMask == VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT);
         REG_CHECK(capture.memory[0].srcAccessMask == 0 && capture.memory[0].dstAccessMask == 0);
         const auto beforeInvalid = capture.calls;
         bytes.after = {S::None, A::ShaderRead};
-        REG_CHECK(render::hasError(command.synchronize({.textures = &image, .textureCount = 1,
-            .buffers = &bytes, .bufferCount = 1}), render::Error::InvalidArgument));
+        REG_CHECK(render::hasError(command.synchronize({
+            .textures = {&image, 1},
+            .buffers = {&bytes, 1},
+        }), render::Error::InvalidArgument));
         image.newLayout = static_cast<L>(255);
-        REG_CHECK(render::hasError(command.synchronize({.textures = &image, .textureCount = 1}), render::Error::InvalidArgument));
+        REG_CHECK(render::hasError(command.synchronize({.textures = {&image, 1}}), render::Error::InvalidArgument));
         image.newLayout = L::Undefined;
-        REG_CHECK(render::hasError(command.synchronize({.textures = &image, .textureCount = 1}), render::Error::InvalidArgument));
+        REG_CHECK(render::hasError(command.synchronize({.textures = {&image, 1}}), render::Error::InvalidArgument));
         REG_CHECK(capture.calls == beforeInvalid);
         REG_REQUIRE(command.end());
         recording.frame.cancel();
@@ -932,16 +1000,34 @@ public:
             for (uint32_t i = 0; i < modules.size(); ++i) {
                 REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "Features/Samples/Triangle",
                     .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled[i].diagnostics).transform([&](auto value) { compiled[i] = std::move(value); }));
-                REG_REQUIRE(device->createShaderModule({.code = compiled[i].spirv.data(),
-                    .byteSize = compiled[i].spirv.size() * sizeof(uint32_t)}).transform([&](auto value) { modules[i] = std::move(value); }));
+                REG_REQUIRE(device->createShaderModule({
+                    .spirv = compiled[i].spirv,
+                }).transform([&](auto value) { modules[i] = std::move(value); }));
             }
+            auto foreign = context.device.createShaderModule({.spirv = compiled[0].spirv});
+            REG_CHECK(foreign);
+            const render::ShaderStageDesc fragment{modules[1].get()};
+            REG_CHECK(render::hasError(device->createGraphicsPipeline({.vertexShader = {foreign->get()},
+                .fragmentShader = fragment}), render::Error::InvalidArgument));
+            REG_CHECK(render::hasError(device->createGraphicsShaderObjectProgram({.vertexShader = {foreign->get()},
+                .fragmentShader = fragment}), render::Error::InvalidArgument));
+            REG_CHECK(render::hasError(device->createComputePipeline({.computeShader = {foreign->get()}}), render::Error::InvalidArgument));
+            for (const char* entry : std::array<const char*, 2>{nullptr, ""}) {
+                REG_CHECK(render::hasError(device->createGraphicsPipeline({.vertexShader = {modules[0].get(), entry},
+                    .fragmentShader = fragment}), render::Error::InvalidArgument));
+                REG_CHECK(render::hasError(device->createGraphicsShaderObjectProgram({.vertexShader = {modules[0].get(), entry},
+                    .fragmentShader = fragment}), render::Error::InvalidArgument));
+                REG_CHECK(render::hasError(device->createComputePipeline({.computeShader = {modules[0].get(), entry}}), render::Error::InvalidArgument));
+            }
+            compiled = {}; // Both executable forms must use the module's owned words.
             std::unique_ptr<render::GraphicsPipeline> pipeline;
-            REG_REQUIRE(device->createGraphicsPipeline({.vertexShader = modules[0].get(), .fragmentShader = modules[1].get(),
-                .colorFormat = render::Format::Rgba8Unorm}).transform([&](auto value) { pipeline = std::move(value); }));
+            REG_REQUIRE(device->createGraphicsPipeline({
+                .vertexShader = {modules[0].get()},
+                .fragmentShader = {modules[1].get()},
+                .colorFormat = render::Format::Rgba8Unorm,
+            }).transform([&](auto value) { pipeline = std::move(value); }));
             std::unique_ptr<render::GraphicsShaderObjectProgram> program;
-            REG_REQUIRE(device->createGraphicsShaderObjectProgram({.vertexCode = compiled[0].spirv.data(),
-                .vertexByteSize = compiled[0].spirv.size() * sizeof(uint32_t), .fragmentCode = compiled[1].spirv.data(),
-                .fragmentByteSize = compiled[1].spirv.size() * sizeof(uint32_t)}).transform([&](auto value) { program = std::move(value); }));
+            REG_REQUIRE(device->createGraphicsShaderObjectProgram({.vertexShader = {modules[0].get()}, .fragmentShader = {modules[1].get()}}).transform([&](auto value) { program = std::move(value); }));
             std::array<render::PreparedExecution, 3> executions{pipeline->execution(), program->execution(), pipeline->execution()};
             auto invalidState = program->execution({.colorAttachmentCount = 9});
             // Snapshots survive hot replacement of all source objects before recording.
@@ -967,7 +1053,7 @@ public:
                 std::unique_ptr<render::TextureView> view;
                 REG_REQUIRE(device->createTextureView(*texture, {}).transform([&](auto value) { view = std::move(value); }));
                 REG_CHECK(!view->hasNativeView());
-                REG_CHECK(render::hasError(device->createTextureView(*texture, {.baseMip = 1}).transform([](auto) {}), render::Error::InvalidArgument));
+                REG_CHECK(render::hasError(device->createTextureView(*texture, {.range = {.baseMip = 1}}).transform([](auto) {}), render::Error::InvalidArgument));
                 REG_CHECK(render::vulkan::nativeImageLayout(*view, render::ResourceState::ColorAttachment) ==
                     (unified ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL));
                 REG_CHECK(!view->hasNativeView());
@@ -981,10 +1067,10 @@ public:
                     .before = {},
                     .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
                 };
-                REG_REQUIRE(command.synchronize({.textures = &barrier, .textureCount = 1}));
+                REG_REQUIRE(command.synchronize({.textures = {&barrier, 1}}));
                 render::RenderingAttachmentDesc attachment{.view = view.get(), .state = render::ResourceState::ColorAttachment,
                     .loadOp = render::LoadOp::Clear, .clearColor = {0, 0, 0, 1}};
-                REG_REQUIRE(command.beginRendering({.renderArea = {0, 0, extent, extent}, .colorAttachments = &attachment, .colorAttachmentCount = 1}));
+                REG_REQUIRE(command.beginRendering({.renderArea = {0, 0, extent, extent}, .colorAttachments = {&attachment, 1}}));
                 REG_CHECK(view->hasNativeView());
                 const auto native = render::vulkan::nativeImageView(*view);
                 REG_CHECK(native != VK_NULL_HANDLE && native == render::vulkan::nativeImageView(*view));
@@ -997,7 +1083,7 @@ public:
                 command.endRendering();
                 barrier.oldLayout = render::TextureLayout::ColorAttachment; barrier.before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite};
                 barrier.newLayout = render::TextureLayout::TransferSource; barrier.after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
-                REG_REQUIRE(command.synchronize({.textures = &barrier, .textureCount = 1}));
+                REG_REQUIRE(command.synchronize({.textures = {&barrier, 1}}));
                 command.copyTextureToBuffer({.texture = texture.get(), .buffer = readbacks[i].get(), .width = extent, .height = extent});
                 view.reset(); texture.reset();
                 REG_CHECK(!allocations[i].expired());
@@ -1102,7 +1188,7 @@ private:
         source.reset();
         kernel.clear();
         REG_CHECK(!allocation.expired());
-        REG_REQUIRE(tracker.submit({.commandBuffers = commands.data(), .commandBufferCount = uint32_t(commands.size())}, frame));
+        REG_REQUIRE(tracker.submit({.commandBuffers = commands}, frame));
         REG_REQUIRE(frame.wait(5'000'000'000ull));
         output->invalidate();
         auto* mapped = output->map();
@@ -1139,8 +1225,12 @@ public:
                 {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
             std::string log;
             for (auto& program : programs) {
-                REG_REQUIRE(program.initialize(*device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-                    .pushConstantSize = 4, .bindings = layout, .bindingCount = 2, .requiresRayQuery = false}, log));
+                REG_REQUIRE(program.initialize(*device, {
+                    .spirv = shader.spirv,
+                    .pushConstantSize = 4,
+                    .bindings = {layout, 2},
+                    .requiresRayQuery = false,
+                }, log));
             }
             std::unique_ptr<render::Buffer> input, output, arguments;
             REG_REQUIRE(makeBuffer(*device, input, 137));
@@ -1164,19 +1254,28 @@ public:
             uint32_t indices[] = {0, 1, 2};
             const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = input.get()}, {.binding = 1, .buffer = output.get()}};
             std::jthread first([&] {
-                outcomes[0] = programs[0].prepareDispatch(frame, {.bindings = bindings, .bindingCount = 2,
-                    .pushData = &indices[0], .pushDataSize = 4}).transform([&](auto value) { packets[0] = std::move(value); });
+                outcomes[0] = programs[0].prepareDispatch(frame, {
+                    .bindings = {bindings, 2},
+                    .pushData = &indices[0],
+                    .pushDataSize = 4,
+                }).transform([&](auto value) { packets[0] = std::move(value); });
             });
             std::jthread second([&] {
                 const render::ComputeIndirectDispatch items[] = {
                     {.pushData = &indices[1]}, {.pushData = &indices[2], .argumentOffset = 12, .program = &programs[1]}};
-                outcomes[1] = programs[0].prepareIndirectBatch(frame, {.bindings = bindings, .bindingCount = 2,
-                    .pushDataSize = 4, .indirectArguments = arguments.get()}, items).transform([&](auto value) { packets[1] = std::move(value); });
+                outcomes[1] = programs[0].prepareIndirectBatch(frame, {
+                    .bindings = {bindings, 2},
+                    .pushDataSize = 4,
+                    .indirectArguments = arguments.get(),
+                }, items).transform([&](auto value) { packets[1] = std::move(value); });
             });
             first.join(); second.join();
             for (const auto& outcome : outcomes) { REG_REQUIRE(outcome); }
-            const auto failed = programs[0].prepareDispatch(frame, {.bindings = bindings, .bindingCount = 2,
-                .pushData = &indices[0], .pushDataSize = 3});
+            const auto failed = programs[0].prepareDispatch(frame, {
+                .bindings = {bindings, 2},
+                .pushData = &indices[0],
+                .pushDataSize = 3,
+            });
             REG_CHECK(render::hasError(failed, render::Error::InvalidArgument) && packets[0].valid());
             // Preparation owns constant bytes, permutations, descriptors and argument ranges.
             indices[0] = indices[1] = indices[2] = 15;
@@ -1192,7 +1291,7 @@ public:
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             };
-            if (auto commandResult = commands[0]->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands[0]->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             std::jthread recordA([&] { outcomes[0] = contexts[0].record([&]() -> render::Result<> {
                 auto recorded = packets[0].record(*commands[0]); return recorded ? commands[0]->end() : recorded; }); });
             std::jthread recordB([&] { outcomes[1] = contexts[1].record([&]() -> render::Result<> {
@@ -1202,8 +1301,10 @@ public:
             auto stale = packets[0];
             packets[0] = {}; packets[1] = {};
             const render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
-            REG_REQUIRE(tracker.submit({.waitSemaphores = &wait, .waitSemaphoreCount = 1,
-                .commandBuffers = commands, .commandBufferCount = 2}, frame));
+            REG_REQUIRE(tracker.submit({
+                .waitSemaphores = {&wait, 1},
+                .commandBuffers = {commands, 2},
+            }, frame));
             REG_CHECK(!inputLife.expired() && !argumentLife.expired());
             REG_REQUIRE(gate->signal(1)); REG_REQUIRE(frame.wait());
             output->invalidate();
@@ -1241,15 +1342,22 @@ public:
             auto& queue = *device->getQueue(render::QueueType::Graphics);
             const render::SlangMacroDefine macro{"METALLIC_LEGACY_BINDINGS", legacy ? "1" : "0"};
             render::ShaderCompileResult shader;
-            REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "BatchBarrierProbe",
-                .entryPointName = "batchBarrierMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-                .macroDefines = &macro, .macroDefineCount = 1,
-                .descriptorHeapMode = path == 2 ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
+            REG_REQUIRE(render::compileSlangShaderToSpirv({
+                .moduleName = "BatchBarrierProbe",
+                .entryPointName = "batchBarrierMain",
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                .macroDefines = {&macro, 1},
+                .descriptorHeapMode = path == 2 ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped,
+            }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             const render::ComputeProgramBindingDesc layout{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer};
             render::ComputeProgram program;
             std::string log;
-            REG_REQUIRE(program.initialize(*device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-                .bindings = &layout, .bindingCount = 1, .requiresRayQuery = false, .usesResourceTable = !legacy}, log));
+            REG_REQUIRE(program.initialize(*device, {
+                .spirv = shader.spirv,
+                .bindings = {&layout, 1},
+                .requiresRayQuery = false,
+                .usesResourceTable = !legacy,
+            }, log));
             std::unique_ptr<render::Buffer> output, arguments;
             REG_REQUIRE(makeBuffer(*device, output));
             REG_REQUIRE(makeBuffer(*device, arguments));
@@ -1269,10 +1377,13 @@ public:
             render::MemoryBarrierDesc memory{
                 .before = {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderWrite},
                 .after = {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderRead | render::AccessBits::ShaderWrite}};
-            const render::BarrierDesc barrier{.memory = &memory, .memoryCount = 1};
+            const render::BarrierDesc barrier{.memory = {&memory, 1}};
             REG_REQUIRE(recording.begin(0));
-            render::ComputeDispatchDesc dispatch{.commandBuffer = recording.commands.get(), .bindings = &binding,
-                .bindingCount = 1, .indirectArguments = arguments.get()};
+            render::ComputeDispatchDesc dispatch{
+                .commandBuffer = recording.commands.get(),
+                .bindings = {&binding, 1},
+                .indirectArguments = arguments.get(),
+            };
             REG_REQUIRE(program.dispatchIndirectBatch(dispatch, items, barrier));
             REG_CHECK(recording.commands->synchronizationStats().memoryBarriers == 1);
             REG_REQUIRE(recording.submit(tracker, *gate));

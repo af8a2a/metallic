@@ -146,11 +146,9 @@ Result<> ReGIRLightSelector::initialize(Device& device, std::string& log)
     return impl_->program.initialize(
         device,
         ComputeProgramDesc{
-            .spirv = compileResult.spirv.data(),
-            .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+            .spirv = compileResult.spirv,
             .pushConstantSize = sizeof(BuildReGIRPush),
-            .bindings = bindings,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
             .debugName = "BuildReGIR",
             .requiresRayQuery = false,
         },
@@ -228,18 +226,16 @@ Result<> ReGIRLightSelector::build(
         .buffer = impl_->buffer.get(),
         .before = resourceSyncScope(impl_->state, PipelineStageBits::AllCommands),
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-        .offset = 0,
-        .size = impl_->layout.bufferByteSize,
+        .range = {.offset = 0, .size = impl_->layout.bufferByteSize},
     };
-    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = &toGeneral, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = {&toGeneral, 1}}); !commandResult) { return commandResult; }
     impl_->state = ResourceState::General;
 
     TextureView* const pdfViews[] = {&localLightPdf};
     const ComputeDispatchBinding bindings[] = {
         {
             .binding = 0,
-            .textureViews = pdfViews,
-            .textureViewCount = static_cast<uint32_t>(std::size(pdfViews)),
+            .textureViews = {pdfViews, static_cast<uint32_t>(std::size(pdfViews))},
         },
         {.binding = 1, .buffer = impl_->buffer.get()},
         {.binding = 50, .buffer = &punctualLights},
@@ -259,8 +255,7 @@ Result<> ReGIRLightSelector::build(
 
     Result<> result = impl_->program.dispatch(ComputeDispatchDesc{
         .commandBuffer = &commandBuffer,
-        .bindings = bindings,
-        .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+        .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
         .pushData = &push,
         .pushDataSize = sizeof(push),
         .groupCountX = static_cast<uint32_t>((uint64_t(impl_->layout.lightSlotCount) +
@@ -273,10 +268,9 @@ Result<> ReGIRLightSelector::build(
         .buffer = impl_->buffer.get(),
         .before = resourceSyncScope(impl_->state, PipelineStageBits::AllCommands),
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-        .offset = 0,
-        .size = impl_->layout.bufferByteSize,
+        .range = {.offset = 0, .size = impl_->layout.bufferByteSize},
     };
-    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = &toShaderRead, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = {&toShaderRead, 1}}); !commandResult) { return commandResult; }
     impl_->state = ResourceState::ShaderRead;
     return result;
 }

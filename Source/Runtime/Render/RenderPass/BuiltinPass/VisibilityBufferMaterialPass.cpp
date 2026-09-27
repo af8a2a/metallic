@@ -62,10 +62,13 @@ public:
         }
         bindings[0].kind = ComputeResourceBindingKind::StorageImage;
         bindings[1].kind = ComputeResourceBindingKind::SampledImage;
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = 32,
-            .bindings = bindings.data(), .bindingCount = uint32_t(bindings.size()),
-            .debugName = "VisibilityBufferMaterial", .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .pushConstantSize = 32,
+            .bindings = bindings,
+            .debugName = "VisibilityBufferMaterial",
+            .requiresRayQuery = false,
+        }, log);
     }
 
     Result<> prepareExecution(RenderGraphExecutionContext& context) override
@@ -110,7 +113,7 @@ private:
         TextureView* image = visibility.view();
         const ComputeDispatchBinding bindings[] = {
             {.binding = 0, .textureView = color.view()},
-            {.binding = 1, .textureViews = &image, .textureViewCount = 1},
+            {.binding = 1, .textureViews = {&image, 1}},
             {.binding = 2, .buffer = views.instances.buffer},
             {.binding = 3, .buffer = views.materials.buffer},
             {.binding = 4, .buffer = optional(views.meshletDraws.buffer)},
@@ -130,9 +133,13 @@ private:
         const Push push{info.width, info.height, info.residentRecordCount, stream ? stream->visibleRecordCapacity : 0u,
             mode == "baseColor" ? 1u : mode == "normal" ? 2u : mode == "instance" ? 3u : 0u,
             {info.eye[0], info.eye[1], info.eye[2]}};
-        ComputeDispatchDesc desc{.bindings = bindings,
-            .bindingCount = uint32_t(std::size(bindings)), .pushData = &push, .pushDataSize = sizeof(push),
-            .groupCountX = (info.width + 7) / 8, .groupCountY = (info.height + 7) / 8};
+        ComputeDispatchDesc desc{
+            .bindings = {bindings, uint32_t(std::size(bindings))},
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (info.width + 7) / 8,
+            .groupCountY = (info.height + 7) / 8,
+        };
         if (prepare) { return program_.prepareDispatch(*context.commandBuffer().frameContext(), desc).transform([&](auto value) { prepared_ = std::move(value); }); }
         desc.commandBuffer = &context.commandBuffer();
         return program_.dispatch(desc);

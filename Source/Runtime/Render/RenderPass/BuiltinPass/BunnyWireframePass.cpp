@@ -163,11 +163,13 @@ public:
             return result;
         }
 
+        auto vertexModule = context.device->createShaderModule({.spirv = vertexCompile.spirv});
+        if (!vertexModule) { return makeError(vertexModule.error()); }
+        auto fragmentModule = context.device->createShaderModule({.spirv = fragmentCompile.spirv});
+        if (!fragmentModule) { return makeError(fragmentModule.error()); }
         result = context.device->createGraphicsShaderObjectProgram(GraphicsShaderObjectProgramDesc{
-                .vertexCode = vertexCompile.spirv.data(),
-                .vertexByteSize = static_cast<uint64_t>(vertexCompile.spirv.size() * sizeof(uint32_t)),
-                .fragmentCode = fragmentCompile.spirv.data(),
-                .fragmentByteSize = static_cast<uint64_t>(fragmentCompile.spirv.size() * sizeof(uint32_t)),
+                .vertexShader = {vertexModule->get()},
+                .fragmentShader = {fragmentModule->get()},
                 .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(BunnyWireframeUserPush),
             }).transform([&](auto rhiValue) { program_ = std::move(rhiValue); });
@@ -231,8 +233,7 @@ public:
         };
         auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
-            .colorAttachments = &attachment,
-            .colorAttachmentCount = 1,
+            .colorAttachments = {&attachment, 1},
             .depthStencilAttachment = &depthAttachment,
         });
         if (!rendering) { return rendering; }
@@ -297,7 +298,7 @@ private:
             return makeError(Error::Failure);
         }
         std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-        outBuffer->flush(0, byteSize);
+        outBuffer->flush({0, byteSize});
         outBuffer->unmap();
         return {};
     }
@@ -329,7 +330,7 @@ private:
             return makeError(Error::Failure);
         }
         std::memcpy(mapped, transforms.data(), static_cast<size_t>(transformBuffer_->desc().size));
-        transformBuffer_->flush(0, transformBuffer_->desc().size);
+        transformBuffer_->flush({0, transformBuffer_->desc().size});
         transformBuffer_->unmap();
         drawBounds_ = runtimeScene->bounds();
         transformRevision_ = runtimeScene->transformRevision();
@@ -421,7 +422,7 @@ private:
             return makeError(Error::Failure);
         }
         std::memcpy(mapped, &params, sizeof(params));
-        paramsBuffer_->flush(0, sizeof(params));
+        paramsBuffer_->flush({0, sizeof(params)});
         paramsBuffer_->unmap();
         return {};
     }

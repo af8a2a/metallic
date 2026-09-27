@@ -1355,8 +1355,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             staged = streamer.streamDecompressedBufferData(devicePayload, tiles, destination, page.deviceOffsetBytes);
         } else {
             staged = streamer.streamBufferData(StreamBufferDataDesc{
-                .dataChunks = &chunk,
-                .dataChunkCount = 1,
+                .dataChunks = {&chunk, 1},
                 .placementAlignment = 16,
                 .dstBuffer = &destination,
                 .dstOffset = page.deviceOffsetBytes,

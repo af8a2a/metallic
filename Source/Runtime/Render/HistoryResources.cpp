@@ -29,10 +29,10 @@ bool textureDescEquals(const TextureDesc& lhs, const TextureDesc& rhs)
 bool textureViewDescEquals(const TextureViewDesc& lhs, const TextureViewDesc& rhs)
 {
     return lhs.format == rhs.format &&
-        lhs.baseMip == rhs.baseMip &&
-        lhs.mipCount == rhs.mipCount &&
-        lhs.baseLayer == rhs.baseLayer &&
-        lhs.layerCount == rhs.layerCount;
+        lhs.range.baseMip == rhs.range.baseMip &&
+        lhs.range.mipCount == rhs.range.mipCount &&
+        lhs.range.baseLayer == rhs.range.baseLayer &&
+        lhs.range.layerCount == rhs.range.layerCount;
 }
 
 bool bufferDescEquals(const BufferDesc& lhs, const BufferDesc& rhs)
@@ -46,8 +46,8 @@ bool bufferDescEquals(const BufferDesc& lhs, const BufferDesc& rhs)
 bool bufferViewDescEquals(const BufferViewDesc& lhs, const BufferViewDesc& rhs)
 {
     return lhs.type == rhs.type &&
-        lhs.offset == rhs.offset &&
-        lhs.size == rhs.size &&
+        lhs.range.offset == rhs.range.offset &&
+        lhs.range.size == rhs.range.size &&
         lhs.structureStride == rhs.structureStride;
 }
 
@@ -69,19 +69,13 @@ TextureViewDesc normalizeTextureViewDesc(const TextureDesc& textureDesc, Texture
     if (viewDesc.format == Format::Unknown) {
         viewDesc.format = textureDesc.format;
     }
-    if (viewDesc.mipCount == 0) {
-        viewDesc.mipCount = 1;
-    }
-    if (viewDesc.layerCount == 0) {
-        viewDesc.layerCount = 1;
-    }
     return viewDesc;
 }
 
 BufferViewDesc normalizeBufferViewDesc(const BufferDesc& bufferDesc, BufferViewDesc viewDesc)
 {
-    if (viewDesc.offset < bufferDesc.size && viewDesc.size == UINT64_MAX) {
-        viewDesc.size = bufferDesc.size - viewDesc.offset;
+    if (viewDesc.range.offset < bufferDesc.size && viewDesc.range.size == UINT64_MAX) {
+        viewDesc.range.size = bufferDesc.size - viewDesc.range.offset;
     }
     if (viewDesc.structureStride == 0) {
         viewDesc.structureStride = bufferDesc.structureStride;
@@ -571,14 +565,10 @@ Result<> HistoryResourceManager::transitionTexture(
         .newLayout = textureLayoutForResourceState(after),
         .before = resourceSyncScope(textureSlot.state, PipelineStageBits::AllCommands),
         .after = resourceSyncScope(after, PipelineStageBits::AllCommands),
-        .baseMip = 0,
-        .mipCount = record->textureDesc.mipCount,
-        .baseLayer = 0,
-        .layerCount = record->textureDesc.layerCount,
+        .range = {.baseMip = 0, .mipCount = record->textureDesc.mipCount, .baseLayer = 0, .layerCount = record->textureDesc.layerCount},
     };
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-        .textures = &barrier,
-        .textureCount = 1,
+        .textures = {&barrier, 1},
     }); !commandResult) { return commandResult; }
     textureSlot.state = after;
     return {};
@@ -612,12 +602,10 @@ Result<> HistoryResourceManager::transitionBuffer(
         .buffer = bufferSlot.buffer.get(),
         .before = resourceSyncScope(bufferSlot.state, PipelineStageBits::AllCommands),
         .after = resourceSyncScope(after, PipelineStageBits::AllCommands),
-        .offset = 0,
-        .size = record->bufferDesc.size,
+        .range = {.offset = 0, .size = record->bufferDesc.size},
     };
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-        .buffers = &barrier,
-        .bufferCount = 1,
+        .buffers = {&barrier, 1},
     }); !commandResult) { return commandResult; }
     bufferSlot.state = after;
     return {};

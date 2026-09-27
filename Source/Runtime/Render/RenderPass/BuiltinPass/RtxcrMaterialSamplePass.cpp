@@ -142,12 +142,11 @@ public:
         const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
         ShaderCompileResult compileResult;
         Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
-                .moduleName = kRtxcrMaterialSampleShaderModuleName,
-                .entryPointName = kRtxcrMaterialSampleEntryPoint,
-                .searchPath = kTriangleShaderSearchPath,
-                .additionalSearchPaths = additionalSearchPaths,
-                .additionalSearchPathCount = static_cast<uint32_t>(std::size(additionalSearchPaths)),
-            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
+            .moduleName = kRtxcrMaterialSampleShaderModuleName,
+            .entryPointName = kRtxcrMaterialSampleEntryPoint,
+            .searchPath = kTriangleShaderSearchPath,
+            .additionalSearchPaths = {additionalSearchPaths, static_cast<uint32_t>(std::size(additionalSearchPaths))},
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             log = "compileSlangShaderToSpirv(RtxcrMaterialSample.rtxcrMaterialSampleMain) returned ";
             log += resultToString(result);
@@ -168,11 +167,9 @@ public:
         result = program_.initialize(
             *context.device,
             ComputeProgramDesc{
-                .spirv = compileResult.spirv.data(),
-                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+                .spirv = compileResult.spirv,
                 .pushConstantSize = sizeof(RtxcrMaterialSamplePush),
-                .bindings = bindings,
-                .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .debugName = "RtxcrMaterialSamplePass",
             },
             programLog);
@@ -250,8 +247,7 @@ public:
         };
         return program_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
-            .bindings = bindings,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = (context.width() + 7u) / 8u,

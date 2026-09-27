@@ -250,10 +250,14 @@ public:
             {.binding = 1, .buffer = grid->cells},
             {.binding = 2, .textureView = color.view()},
         };
-        return program->dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)), .pushData = &push,
-            .pushDataSize = sizeof(push), .groupCountX = (desc.width + 7u) / 8u,
-            .groupCountY = (desc.height + 7u) / 8u});
+        return program->dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (desc.width + 7u) / 8u,
+            .groupCountY = (desc.height + 7u) / 8u,
+        });
     }
 
 private:
@@ -263,10 +267,13 @@ private:
             {.binding = 0}, {.binding = 1},
             {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
         };
-        return program.initialize(*device_, {.spirv = spirv_.data(),
-            .byteSize = spirv_.size() * sizeof(uint32_t), .pushConstantSize = sizeof(LightGridDebugPush),
-            .bindings = bindings, .bindingCount = static_cast<uint32_t>(std::size(bindings)),
-            .debugName = "LightGridDebugPass", .requiresRayQuery = false}, log);
+        return program.initialize(*device_, {
+            .spirv = spirv_,
+            .pushConstantSize = sizeof(LightGridDebugPush),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+            .debugName = "LightGridDebugPass",
+            .requiresRayQuery = false,
+        }, log);
     }
 
     void buildBenchLights(const RenderGraphProperties& props, uint64_t frameIndex)

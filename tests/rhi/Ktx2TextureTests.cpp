@@ -150,12 +150,12 @@ std::array<float, 12> sampleTexture(RhiTestContext& context, ScenePathTraceResou
         {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
     ComputeProgram program;
     require(program.initialize(context.device,
-                               {.spirv = shader.spirv.data(),
-                                .byteSize = shader.spirv.size() * 4,
-                                .pushConstantSize = 16,
-                                .bindings = layout,
-                                .bindingCount = 2,
-                                .requiresRayQuery = false},
+                               {
+                                   .spirv = shader.spirv,
+                                   .pushConstantSize = 16,
+                                   .bindings = {layout, 2},
+                                   .requiresRayQuery = false,
+                               },
                                log),
             log);
     std::unique_ptr<Buffer> output;
@@ -176,22 +176,24 @@ std::array<float, 12> sampleTexture(RhiTestContext& context, ScenePathTraceResou
         .before = {},
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
-    if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-    const ComputeDispatchBinding bindings[] = {{.binding = 0,
-                                                .textureViews = resources.materialTextureViews().data(),
-                                                .textureViewCount = resources.materialTextureCount()},
+    if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+    const ComputeDispatchBinding bindings[] = {{
+        .binding = 0,
+        .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()},
+    },
                                                {.binding = 1, .buffer = output.get()}};
     const uint32_t push[] = {index, mip, flags, 0};
-    require(program.dispatch({.commandBuffer = commands.get(),
-                              .bindings = bindings,
-                              .bindingCount = 2,
-                              .pushData = push,
-                              .pushDataSize = 16}),
+    require(program.dispatch({
+        .commandBuffer = commands.get(),
+        .bindings = {bindings, 2},
+        .pushData = push,
+        .pushDataSize = 16,
+    }),
             log);
     require(commands->end(), "sample end");
     CommandBuffer* command = commands.get();
     require(context.graphicsQueue.submit(
-                {.commandBuffers = &command, .commandBufferCount = 1, .signalFence = fence.get()}),
+                {.commandBuffers = {&command, 1}, .signalFence = fence.get()}),
             "sample submit");
     require(fence->wait(), "sample wait");
     output->invalidate();
@@ -566,8 +568,12 @@ public:
             .searchPath=PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),shader.diagnostics);
         ComputeProgram program;
         const ComputeProgramBindingDesc binding{.binding=0};
-        require(program.initialize(context.device,{.spirv=shader.spirv.data(),.byteSize=shader.spirv.size()*4,
-            .pushConstantSize=16,.bindings=&binding,.bindingCount=1,.requiresRayQuery=false},log),log);
+        require(program.initialize(context.device,{
+            .spirv = shader.spirv,
+            .pushConstantSize = 16,
+            .bindings = {&binding, 1},
+            .requiresRayQuery = false,
+        },log),log);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         QueueSubmissionTracker tracker;
@@ -595,12 +601,16 @@ public:
             require(resources.uploadMaterialTextures(*commands),"retain current texture generation");
             ComputeDispatchBinding view{.binding=0,.buffer=feedback};
             const uint32_t push[]{imageSlot,0,visible ? 1000u : 0u,0};
-            require(program.dispatch({.commandBuffer=commands.get(),.bindings=&view,.bindingCount=1,
-                .pushData=push,.pushDataSize=16}),"feedback dispatch");
+            require(program.dispatch({
+                .commandBuffer = commands.get(),
+                .bindings = {&view, 1},
+                .pushData = push,
+                .pushDataSize = 16,
+            }),"feedback dispatch");
             require(commands->end(),"feedback end");
             if (cancel) { frame.cancel(); return; }
             auto* command = commands.get();
-            require(tracker.submit({.commandBuffers=&command,.commandBufferCount=1},frame),"feedback submit");
+            require(tracker.submit({.commandBuffers = {&command, 1}},frame),"feedback submit");
         };
         tick(true,true); // An unsubmitted frame must not become a demand sample.
         struct RestorePolicy {
@@ -868,18 +878,18 @@ class BcTextureUploadTest final : public RhiTest {
                     .before = {},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                 };
-                if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite};
                 barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
-                if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 commands->copyTextureToBuffer(
                     {.texture = texture.get(), .buffer = readback.get(), .width = width, .height = height});
                 require(commands->end(), "BC end");
                 CommandBuffer* command = commands.get();
                 require(
                     context.graphicsQueue.submit(
-                        {.commandBuffers = &command, .commandBufferCount = 1, .signalFence = fence.get()}),
+                        {.commandBuffers = {&command, 1}, .signalFence = fence.get()}),
                     "BC submit");
                 require(fence->wait(), "BC wait");
                 readback->invalidate();

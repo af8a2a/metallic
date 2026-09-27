@@ -76,9 +76,13 @@ VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool
     const char* entries[] = {"editorDisplayVertex", "editorDisplayFragment"};
     for (uint32_t index = 0; index < 2; ++index) {
         render::ShaderCompileResult shader;
-        if (!render::compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/EditorDisplay",
-                .entryPointName = entries[index], .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-                .macroDefines = defines, .macroDefineCount = 4, .descriptorHeapMode = render::SlangDescriptorHeapMode::Mapped}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); })) {
+        if (!render::compileSlangShaderToSpirv({
+            .moduleName = "Features/PostProcess/EditorDisplay",
+            .entryPointName = entries[index],
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders",
+            .macroDefines = {defines, 4},
+            .descriptorHeapMode = render::SlangDescriptorHeapMode::Mapped,
+        }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); })) {
             spdlog::error("Editor display shader: {}", shader.diagnostics);
             destroyModules();
             return VK_NULL_HANDLE;

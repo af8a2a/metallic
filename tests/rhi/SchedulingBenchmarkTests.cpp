@@ -31,7 +31,7 @@ Result<> verifyRed(RenderGraphExecutor& executor, RhiTestContext& context, const
             .width = 32, .height = 32});
         result = commands->end();
     }
-    if (result) { result = tracker.submit({.commandBuffers = &commands, .commandBufferCount = 1}, frame); }
+    if (result) { result = tracker.submit({.commandBuffers = {&commands, 1}}, frame); }
     if (result) { result = frame.wait(5'000'000'000ull); }
     if (!result) { return result; }
     readback->invalidate();

@@ -38,7 +38,7 @@ public:
             return RhiTestResult::fail("Buffer backing metadata is incomplete");
         }
         BufferSlice slice;
-        if (!first->slice(256, 1024).transform([&](auto value) { slice = std::move(value); })) {
+        if (!first->slice({256, 1024}).transform([&](auto value) { slice = std::move(value); })) {
             return RhiTestResult::fail("Cannot create metadata slice");
         }
         std::weak_ptr<void> owner = first->retainAllocation();

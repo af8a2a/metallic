@@ -40,9 +40,11 @@ public:
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
             {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
             {.binding = 50, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
-        return program_.initialize(*device_, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .bindings = bindings,
-            .bindingCount = 3, .requiresRayQuery = false}, log);
+        return program_.initialize(*device_, {
+            .spirv = shader.spirv,
+            .bindings = {bindings, 3},
+            .requiresRayQuery = false,
+        }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
@@ -54,7 +56,7 @@ public:
             {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
             {.binding = 1, .buffer = environment.sphericalHarmonicsBuffer},
             {.binding = 50, .buffer = lights_.buffer()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 3});
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 3}});
     }
 private:
     render::Device* device_ = nullptr;

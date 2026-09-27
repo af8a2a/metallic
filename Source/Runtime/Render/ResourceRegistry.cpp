@@ -187,8 +187,8 @@ Result<ResourceLease> ResourceRegistry::image(
     auto allocation = view.retainTexture();
     auto key = keyFor(kind, allocation);
     const auto& desc = view.desc();
-    key[2] = uint64_t(desc.format); key[3] = desc.baseMip; key[4] = desc.mipCount;
-    key[5] = desc.baseLayer; key[6] = desc.layerCount; key[7] = uint64_t(layout);
+    key[2] = uint64_t(desc.format); key[3] = desc.range.baseMip; key[4] = desc.range.mipCount;
+    key[5] = desc.range.baseLayer; key[6] = desc.range.layerCount; key[7] = uint64_t(layout);
     for (size_t i = 0; i < 4; ++i) { key[8 + i] = uint64_t(desc.swizzle[i]); }
     return acquire(state_, key, kind, allocation, false, [&](auto& entry) {
         auto result = kind == ShaderResourceKind::SampledImage
@@ -411,7 +411,7 @@ Result<> ParameterWriter::upload(const void* data, uint64_t size, uint64_t align
         return makeError(Error::Failure);
     }
     std::memcpy(mapped + offset, data, size);
-    chunk->buffer->flush(offset, size);
+    chunk->buffer->flush({offset, size});
     chunk->buffer->unmap();
     chunk->used = offset + size;
     registry_->stats.parameterBytes += size;

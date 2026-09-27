@@ -166,9 +166,12 @@ public:
             OMM_EXPECT(resources.accelerationStructure().stats().compactedBlasBytes != 0, "BLAS compaction was not exercised");
             const char* capabilities[] = {"spvRayQueryKHR"};
             render::ShaderCompileResult compiled;
-            const auto compile = render::compileSlangShaderToSpirv({.moduleName = "Features/SmokeTests/OpacityMicromapProbe",
-                .entryPointName = "opacityMicromapProbeMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-                .capabilities = capabilities, .capabilityCount = 1}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
+            const auto compile = render::compileSlangShaderToSpirv({
+                .moduleName = "Features/SmokeTests/OpacityMicromapProbe",
+                .entryPointName = "opacityMicromapProbeMain",
+                .searchPath = PROJECT_SOURCE_DIR "/Shaders",
+                .capabilities = {capabilities, 1},
+            }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
             log = compiled.diagnostics;
             OMM_REQUIRE(compile);
             std::vector<uint32_t> patched, twice;
@@ -180,8 +183,11 @@ public:
                 {0, render::ComputeResourceBindingKind::AccelerationStructure}, {2}, {3}, {4}, {5}, {6},
                 {9, render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()}, {63}};
             render::ComputeProgram program;
-            OMM_REQUIRE(program.initialize(*device, {.spirv = compiled.spirv.data(), .byteSize = compiled.spirv.size() * 4,
-                .pushConstantSize = 4, .bindings = layout, .bindingCount = uint32_t(std::size(layout))}, log));
+            OMM_REQUIRE(program.initialize(*device, {
+                .spirv = compiled.spirv,
+                .pushConstantSize = 4,
+                .bindings = {layout, uint32_t(std::size(layout))},
+            }, log));
             std::unique_ptr<render::Buffer> output;
             OMM_REQUIRE(device->createBuffer({.size = sizeof(Probe), .structureStride = 8,
                 .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
@@ -263,15 +269,20 @@ public:
                     {.binding = 2, .buffer = resources.shadingVertexBuffer()}, {.binding = 3, .buffer = resources.indexBuffer()},
                     {.binding = 4, .buffer = resources.primitiveBuffer()}, {.binding = 5, .buffer = resources.instanceBuffer()},
                     {.binding = 6, .buffer = resources.materialBuffer()},
-                    {.binding = 9, .textureViews = resources.materialTextureViews().data(), .textureViewCount = resources.materialTextureCount()},
+                    {.binding = 9, .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()}},
                     {.binding = 63, .buffer = output.get()}};
                 const uint32_t textureCount = uint32_t(resources.materialTextureViews().size());
-                OMM_REQUIRE(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings,
-                    .bindingCount = uint32_t(std::size(bindings)), .pushData = &textureCount, .pushDataSize = 4,
-                    .groupCountX = 8, .groupCountY = 8}));
+                OMM_REQUIRE(program.dispatch({
+                    .commandBuffer = commands.get(),
+                    .bindings = {bindings, uint32_t(std::size(bindings))},
+                    .pushData = &textureCount,
+                    .pushDataSize = 4,
+                    .groupCountX = 8,
+                    .groupCountY = 8,
+                }));
                 OMM_REQUIRE(commands->end());
                 render::CommandBuffer* submitted[] = {commands.get()};
-                OMM_REQUIRE(tracker.submit({.commandBuffers = submitted, .commandBufferCount = 1}, frame));
+                OMM_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
                 OMM_REQUIRE(frame.wait(10'000'000'000ull));
                 Probe actual{};
                 const void* mapped = output->map();

@@ -36,13 +36,10 @@ struct SlangShaderDesc {
     // Program root. Modules/ and Interop/ under this root and the project's
     // Shaders directory are also searched for named subsystem imports.
     const char* searchPath = nullptr;
-    const char* const* additionalSearchPaths = nullptr;
-    uint32_t additionalSearchPathCount = 0;
+    std::span<const char* const> additionalSearchPaths;
     const char* profileName = kDefaultSlangProfileName;
-    const char* const* capabilities = nullptr;
-    uint32_t capabilityCount = 0;
-    const SlangMacroDefine* macroDefines = nullptr;
-    uint32_t macroDefineCount = 0;
+    std::span<const char* const> capabilities;
+    std::span<const SlangMacroDefine> macroDefines;
     SlangDescriptorHeapMode descriptorHeapMode = SlangDescriptorHeapMode::Default;
 };
 

@@ -143,11 +143,9 @@ public:
         result = program_.initialize(
             *context.device,
             ComputeProgramDesc{
-                .spirv = compileResult.spirv.data(),
-                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+                .spirv = compileResult.spirv,
                 .pushConstantSize = sizeof(RtxdiConfidencePush),
-                .bindings = bindings,
-                .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .debugName = "RtxdiConfidencePass",
                 .resourceTableCount = kMaximumFilterPasses + 2u,
             },
@@ -278,8 +276,7 @@ public:
             stagePush.filterStep = filterStep;
             return program_.dispatch(ComputeDispatchDesc{
                 .commandBuffer = &commands,
-                .bindings = bindings,
-                .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .pushData = &stagePush,
                 .pushDataSize = sizeof(stagePush),
                 .groupCountX = (width + 7u) / 8u,

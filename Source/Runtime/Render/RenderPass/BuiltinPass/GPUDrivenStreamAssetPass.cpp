@@ -188,12 +188,11 @@ Result<> createMeshShader(Device& device, std::unique_ptr<ShaderModule>& outShad
     ShaderCompileResult meshCompile;
     const char* capabilities[] = {"spvMeshShadingEXT"};
     Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
-            .moduleName = kMeshletStreamShaderModuleName,
-            .entryPointName = kMeshletStreamMeshEntryPoint,
-            .searchPath = kMeshletStreamShaderSearchPath,
-            .capabilities = capabilities,
-            .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-        }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
+        .moduleName = kMeshletStreamShaderModuleName,
+        .entryPointName = kMeshletStreamMeshEntryPoint,
+        .searchPath = kMeshletStreamShaderSearchPath,
+        .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
+    }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
     if (!result) {
         log += "compileSlangShaderToSpirv(GPUDrivenStreamAsset.mesh) returned ";
         log += resultToString(result);
@@ -206,10 +205,9 @@ Result<> createMeshShader(Device& device, std::unique_ptr<ShaderModule>& outShad
     }
 
     result = device.createShaderModule(ShaderModuleDesc{
-            .code = meshCompile.spirv.data(),
-            .byteSize = static_cast<uint64_t>(meshCompile.spirv.size() * sizeof(uint32_t)),
-            .debugName = "GPUDrivenStreamAsset.mesh",
-        }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
+        .spirv = meshCompile.spirv,
+        .debugName = "GPUDrivenStreamAsset.mesh",
+    }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
     if (!result || outShader == nullptr) {
         log += resultMessage("createShaderModule(GPUDrivenStreamAsset mesh)", result);
         log += '\n';
@@ -236,10 +234,9 @@ Result<> createStreamShader(
     const std::string shaderDebugName =
         std::string(kMeshletStreamShaderModuleName) + "." + entryPoint;
     result = device.createShaderModule(ShaderModuleDesc{
-            .code = compileResult.spirv.data(),
-            .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
-            .debugName = shaderDebugName.c_str(),
-        }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
+        .spirv = compileResult.spirv,
+        .debugName = shaderDebugName.c_str(),
+    }).transform([&](auto rhiValue) { outShader = std::move(rhiValue); });
     if (!result || outShader == nullptr) {
         log += resultMessage(
             std::string("createShaderModule(GPUDrivenStreamAsset ") + entryPoint + ")",
@@ -520,17 +517,17 @@ public:
 
         for (uint32_t reversedZ = 0; reversedZ < visibilityPipelines_.size(); ++reversedZ) {
             result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
-                    .meshShader = meshShader_.get(),
-                    .fragmentShader = fragmentShader_.get(),
-                    .colorFormat = Format::R32Uint,
-                    .depthStencilFormat = Format::D32Sfloat,
-                    .depthStencil = DepthStencilState{
+                .meshShader = {meshShader_.get()},
+                .fragmentShader = {fragmentShader_.get()},
+                .colorFormat = Format::R32Uint,
+                .depthStencilFormat = Format::D32Sfloat,
+                .depthStencil = DepthStencilState{
                         .depthTestEnable = true,
                         .depthWriteEnable = true,
                         .depthCompareOp = depthCompareOp(reversedZ != 0u),
                     },
-                    .usesBindlessHeap = true,
-                }).transform([&](auto rhiValue) { visibilityPipelines_[reversedZ] = std::move(rhiValue); });
+                .usesBindlessHeap = true,
+            }).transform([&](auto rhiValue) { visibilityPipelines_[reversedZ] = std::move(rhiValue); });
             if (!result || visibilityPipelines_[reversedZ] == nullptr) {
                 log += resultMessage("createGraphicsPipeline(GPUDrivenStreamAsset visibility)", result);
                 log += '\n';
@@ -539,22 +536,21 @@ public:
         }
 
         result = context.device->createComputePipeline(ComputePipelineDesc{
-                .computeShader = deferredShader_.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-            }).transform([&](auto rhiValue) { deferredPipeline_ = std::move(rhiValue); });
+            .computeShader = {deferredShader_.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+        }).transform([&](auto rhiValue) { deferredPipeline_ = std::move(rhiValue); });
         if (!result || deferredPipeline_ == nullptr) {
             log += resultMessage("createComputePipeline(GPUDrivenStreamAsset deferred)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
         result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
-                .vertexShader = compositeVertexShader_.get(),
-                .fragmentShader = compositeFragmentShader_.get(),
-                .colorFormat = context.defaultFormat,
-                .usesBindlessHeap = true,
-            }).transform([&](auto rhiValue) { compositePipeline_ = std::move(rhiValue); });
+            .vertexShader = {compositeVertexShader_.get()},
+            .fragmentShader = {compositeFragmentShader_.get()},
+            .colorFormat = context.defaultFormat,
+            .usesBindlessHeap = true,
+        }).transform([&](auto rhiValue) { compositePipeline_ = std::move(rhiValue); });
         if (!result || compositePipeline_ == nullptr) {
             log += resultMessage("createGraphicsPipeline(GPUDrivenStreamAsset composite)", result);
             log += '\n';
@@ -565,11 +561,10 @@ public:
                                          std::unique_ptr<ComputePipeline>& pipeline,
                                          const char* label) -> Result<> {
             Result<> pipelineResult = context.device->createComputePipeline(ComputePipelineDesc{
-                    .computeShader = &shader,
-                    .computeEntryPoint = "main",
-                    .usesBindlessHeap = true,
-                    .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-                }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+                .computeShader = {&shader, "main"},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
             if (!pipelineResult || pipeline == nullptr) {
                 log += resultMessage(
                     std::string("createComputePipeline(GPUDrivenStreamAsset ") + label + ")",
@@ -1256,14 +1251,12 @@ private:
         };
         ShaderCompileResult compileResult;
         Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
-                .moduleName = kSceneRayQueryVisualizationShaderModuleName,
-                .entryPointName = kSceneRayQueryVisualizationEntryPoint,
-                .searchPath = kTriangleShaderSearchPath,
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-                .macroDefines = macros,
-                .macroDefineCount = static_cast<uint32_t>(std::size(macros)),
-            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
+            .moduleName = kSceneRayQueryVisualizationShaderModuleName,
+            .entryPointName = kSceneRayQueryVisualizationEntryPoint,
+            .searchPath = kTriangleShaderSearchPath,
+            .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
+            .macroDefines = {macros, static_cast<uint32_t>(std::size(macros))},
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             log += "compileSlangShaderToSpirv(stream RTAS visualization) returned ";
             log += resultToString(result);
@@ -1288,11 +1281,9 @@ private:
         return rayQueryProgram_.initialize(
             device,
             ComputeProgramDesc{
-                .spirv = compileResult.spirv.data(),
-                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+                .spirv = compileResult.spirv,
                 .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
-                .bindings = bindings,
-                .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .debugName = "GPUDrivenStreamAssetPass RTAS visualization",
             },
             log);
@@ -1385,8 +1376,7 @@ private:
         };
         if (auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
-            .colorAttachments = &attachment,
-            .colorAttachmentCount = 1,
+            .colorAttachments = {&attachment, 1},
             .depthStencilAttachment = &depthAttachment,
         }); !rendering) { return rendering; }
         context.commandBuffer().setViewport(Viewport{
@@ -1444,8 +1434,7 @@ private:
         };
         if (auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
-            .colorAttachments = &attachment,
-            .colorAttachmentCount = 1,
+            .colorAttachments = {&attachment, 1},
         }); !rendering) { return rendering; }
         context.commandBuffer().setViewport(Viewport{
             .x = 0.0f,
@@ -1514,8 +1503,7 @@ private:
         };
         return rayQueryProgram_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
-            .bindings = bindings,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = (context.width() + 7u) / 8u,

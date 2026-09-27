@@ -285,9 +285,8 @@ render::Result<> createSlangShaderModule(
     }
 
     return device.createShaderModule(render::ShaderModuleDesc{
-            .code = compileResult.spirv.data(),
-            .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
-        }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
+        .spirv = compileResult.spirv,
+    }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
 }
 
 render::Result<> writeHostBuffer(render::Buffer& buffer, const void* data, uint64_t byteSize)
@@ -301,7 +300,7 @@ render::Result<> writeHostBuffer(render::Buffer& buffer, const void* data, uint6
     }
     if (byteSize > 0) {
         std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-        buffer.flush(0, byteSize);
+        buffer.flush({0, byteSize});
     }
     buffer.unmap();
     return {};
@@ -312,7 +311,7 @@ bool readHostBuffer(render::Buffer& buffer, void* outData, uint64_t byteSize)
     if (byteSize > buffer.desc().size || (byteSize > 0 && outData == nullptr)) {
         return false;
     }
-    buffer.invalidate(0, byteSize);
+    buffer.invalidate({0, byteSize});
     void* mapped = buffer.map();
     if (mapped == nullptr) {
         return false;
@@ -411,12 +410,12 @@ public:
         }
 
         result = context.device->createGraphicsPipeline(render::GraphicsPipelineDesc{
-                .vertexShader = vertexShader_.get(),
-                .fragmentShader = fragmentShader_.get(),
-                .colorFormat = render::Format::Rgba8Unorm,
-                .topology = render::PrimitiveTopology::TriangleList,
-                .usesBindlessHeap = true,
-            }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
+            .vertexShader = {vertexShader_.get()},
+            .fragmentShader = {fragmentShader_.get()},
+            .colorFormat = render::Format::Rgba8Unorm,
+            .topology = render::PrimitiveTopology::TriangleList,
+            .usesBindlessHeap = true,
+        }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
         if (!result) {
             log += std::string("createGraphicsPipeline(bindless graph pass) returned ") + toString(result) + '\n';
         }
@@ -449,8 +448,7 @@ public:
         };
         if (auto commandResult = context.commandBuffer().beginRendering(render::RenderingDesc{
             .renderArea = renderArea,
-            .colorAttachments = &attachment,
-            .colorAttachmentCount = 1,
+            .colorAttachments = {&attachment, 1},
         }); !commandResult) { return commandResult; }
         context.commandBuffer().setViewport(render::Viewport{
             .x = 0.0f,
@@ -3612,13 +3610,12 @@ public:
         render::ShaderCompileResult compileResult;
         const char* capabilities[] = {"spvRayQueryKHR"};
         render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                .moduleName = "Features/PathTracing/OpenPBRRayQueryPathTrace",
-                .entryPointName = "openPbrRayQueryPathTraceMain",
-                .searchPath = kShaderSearchPath,
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-                .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
-            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
+            .moduleName = "Features/PathTracing/OpenPBRRayQueryPathTrace",
+            .entryPointName = "openPbrRayQueryPathTraceMain",
+            .searchPath = kShaderSearchPath,
+            .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
+            .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("OpenPBR RayQuery path tracing shader compile returned ") +
@@ -3705,12 +3702,11 @@ public:
             "spvGroupNonUniformBallot",
         };
         render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
-                .entryPointName = "visibilityBufferAmplificationMain",
-                .searchPath = kShaderSearchPath,
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-            }, amplificationCompile.diagnostics).transform([&](auto value) { amplificationCompile = std::move(value); });
+            .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
+            .entryPointName = "visibilityBufferAmplificationMain",
+            .searchPath = kShaderSearchPath,
+            .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
+        }, amplificationCompile.diagnostics).transform([&](auto value) { amplificationCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("VisibilityBuffer amplification shader compile returned ") +
@@ -3732,15 +3728,13 @@ public:
         };
         render::ShaderCompileResult atomicFallbackCompile;
         result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
-                .entryPointName = "visibilityBufferAmplificationMain",
-                .searchPath = kShaderSearchPath,
-                .capabilities = atomicFallbackCapabilities,
-                .capabilityCount = static_cast<uint32_t>(
-                    std::size(atomicFallbackCapabilities)),
-                .macroDefines = &atomicFallbackDefine,
-                .macroDefineCount = 1u,
-            }, atomicFallbackCompile.diagnostics).transform([&](auto value) { atomicFallbackCompile = std::move(value); });
+            .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
+            .entryPointName = "visibilityBufferAmplificationMain",
+            .searchPath = kShaderSearchPath,
+            .capabilities = {atomicFallbackCapabilities, static_cast<uint32_t>(
+                    std::size(atomicFallbackCapabilities))},
+            .macroDefines = {&atomicFallbackDefine, 1u},
+        }, atomicFallbackCompile.diagnostics).transform([&](auto value) { atomicFallbackCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("VisibilityBuffer atomic amplification fallback compile returned ") +
@@ -3755,12 +3749,11 @@ public:
 
         render::ShaderCompileResult meshCompile;
         result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
-                .entryPointName = "visibilityBufferMeshMain",
-                .searchPath = kShaderSearchPath,
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-            }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
+            .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
+            .entryPointName = "visibilityBufferMeshMain",
+            .searchPath = kShaderSearchPath,
+            .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
+        }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("VisibilityBuffer mesh shader compile returned ") +
@@ -3777,15 +3770,13 @@ public:
         };
         render::ShaderCompileResult maskedMeshCompile;
         result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
-                .entryPointName = "visibilityBufferMeshMain",
-                .searchPath = kShaderSearchPath,
-                .capabilities = atomicFallbackCapabilities,
-                .capabilityCount = static_cast<uint32_t>(
-                    std::size(atomicFallbackCapabilities)),
-                .macroDefines = &maskedMeshDefine,
-                .macroDefineCount = 1u,
-            }, maskedMeshCompile.diagnostics).transform([&](auto value) { maskedMeshCompile = std::move(value); });
+            .moduleName = "Features/VisibilityBuffer/VisibilityBuffer",
+            .entryPointName = "visibilityBufferMeshMain",
+            .searchPath = kShaderSearchPath,
+            .capabilities = {atomicFallbackCapabilities, static_cast<uint32_t>(
+                    std::size(atomicFallbackCapabilities))},
+            .macroDefines = {&maskedMeshDefine, 1u},
+        }, maskedMeshCompile.diagnostics).transform([&](auto value) { maskedMeshCompile = std::move(value); });
         if (!result || maskedMeshCompile.spirv.empty()) {
             return RhiTestResult::fail(
                 "VisibilityBuffer masked mesh compile failed: " +
@@ -3900,12 +3891,11 @@ public:
         render::ShaderCompileResult meshCompile;
         const char* capabilities[] = {"spvMeshShadingEXT"};
         render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
-                .entryPointName = "gpuDrivenStreamAssetMeshMain",
-                .searchPath = kShaderSearchPath,
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-            }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
+            .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
+            .entryPointName = "gpuDrivenStreamAssetMeshMain",
+            .searchPath = kShaderSearchPath,
+            .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
+        }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("GPUDrivenStreamAsset mesh shader compile returned ") +
@@ -4743,20 +4733,18 @@ public:
         }
         std::unique_ptr<render::ShaderModule> traversalShader;
         result = device->createShaderModule(render::ShaderModuleDesc{
-                .code = compileResult.spirv.data(),
-                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
-            }).transform([&](auto rhiValue) { traversalShader = std::move(rhiValue); });
+            .spirv = compileResult.spirv,
+        }).transform([&](auto rhiValue) { traversalShader = std::move(rhiValue); });
         if (!result || traversalShader == nullptr) {
             return RhiTestResult::fail(std::string("createShaderModule(traversal) returned ") + toString(result));
         }
 
         std::unique_ptr<render::ComputePipeline> pipeline;
         result = device->createComputePipeline(render::ComputePipelineDesc{
-                .computeShader = traversalShader.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
-            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
+            .computeShader = {traversalShader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
+        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline(traversal) returned ") + toString(result));
         }
@@ -4776,20 +4764,18 @@ public:
         }
         std::unique_ptr<render::ShaderModule> activeBuildShader;
         result = device->createShaderModule(render::ShaderModuleDesc{
-                .code = activeBuildCompileResult.spirv.data(),
-                .byteSize = static_cast<uint64_t>(activeBuildCompileResult.spirv.size() * sizeof(uint32_t)),
-            }).transform([&](auto rhiValue) { activeBuildShader = std::move(rhiValue); });
+            .spirv = activeBuildCompileResult.spirv,
+        }).transform([&](auto rhiValue) { activeBuildShader = std::move(rhiValue); });
         if (!result || activeBuildShader == nullptr) {
             return RhiTestResult::fail(std::string("createShaderModule(active build) returned ") + toString(result));
         }
 
         std::unique_ptr<render::ComputePipeline> activeBuildPipeline;
         result = device->createComputePipeline(render::ComputePipelineDesc{
-                .computeShader = activeBuildShader.get(),
-                .computeEntryPoint = "main",
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
-            }).transform([&](auto rhiValue) { activeBuildPipeline = std::move(rhiValue); });
+            .computeShader = {activeBuildShader.get(), "main"},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
+        }).transform([&](auto rhiValue) { activeBuildPipeline = std::move(rhiValue); });
         if (!result || activeBuildPipeline == nullptr) {
             return RhiTestResult::fail(std::string("createComputePipeline(active build) returned ") + toString(result));
         }
@@ -4819,32 +4805,29 @@ public:
                 .buffer = pageTableBuffer.get(),
                 .before = {},
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
-                .offset = 0,
-                .size = pageTableBuffer->desc().size,
+                .range = {.offset = 0, .size = pageTableBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = requestBuffer.get(),
                 .before = {},
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
-                .offset = 0,
-                .size = requestBuffer->desc().size,
+                .range = {.offset = 0, .size = requestBuffer->desc().size},
             },
         }};
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = uploadBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(uploadBarriers.size()),
+            .buffers = uploadBarriers,
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
-            auto sourceSlice = pageTableUploadBuffer.get()->slice(0, pageTableBuffer->desc().size);
+            auto sourceSlice = pageTableUploadBuffer.get()->slice({0, pageTableBuffer->desc().size});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = pageTableBuffer.get()->slice(0, pageTableBuffer->desc().size);
+            auto destinationSlice = pageTableBuffer.get()->slice({0, pageTableBuffer->desc().size});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
-            auto sourceSlice = requestUploadBuffer.get()->slice(0, requestBuffer->desc().size);
+            auto sourceSlice = requestUploadBuffer.get()->slice({0, requestBuffer->desc().size});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = requestBuffer.get()->slice(0, requestBuffer->desc().size);
+            auto destinationSlice = requestBuffer.get()->slice({0, requestBuffer->desc().size});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
@@ -4853,20 +4836,17 @@ public:
                 .buffer = pageTableBuffer.get(),
                 .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = pageTableBuffer->desc().size,
+                .range = {.offset = 0, .size = pageTableBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = requestBuffer.get(),
                 .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = requestBuffer->desc().size,
+                .range = {.offset = 0, .size = requestBuffer->desc().size},
             },
         }};
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = generalBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(generalBarriers.size()),
+            .buffers = generalBarriers,
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         commandBuffer->bindBindlessHeap(*bindlessHeap);
@@ -4894,55 +4874,47 @@ public:
                 .buffer = pageTableBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = pageTableBuffer->desc().size,
+                .range = {.offset = 0, .size = pageTableBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = requestBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = requestBuffer->desc().size,
+                .range = {.offset = 0, .size = requestBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = activeGroupBuffer.get(),
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = activeGroupBuffer->desc().size,
+                .range = {.offset = 0, .size = activeGroupBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = activeHeaderBuffer.get(),
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = activeHeaderBuffer->desc().size,
+                .range = {.offset = 0, .size = activeHeaderBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = drawIndirectBuffer.get(),
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = drawIndirectBuffer->desc().size,
+                .range = {.offset = 0, .size = drawIndirectBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = traversalHeaderBuffer.get(),
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = traversalHeaderBuffer->desc().size,
+                .range = {.offset = 0, .size = traversalHeaderBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = traversalWorkBuffer.get(),
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = traversalWorkBuffer->desc().size,
+                .range = {.offset = 0, .size = traversalWorkBuffer->desc().size},
             },
         }};
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = activeBuildBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(activeBuildBarriers.size()),
+            .buffers = activeBuildBarriers,
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         if (auto commandResult = commandBuffer->bindExecution((activeBuildPipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
@@ -4955,55 +4927,47 @@ public:
                 .buffer = pageTableBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = pageTableBuffer->desc().size,
+                .range = {.offset = 0, .size = pageTableBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = requestBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = requestBuffer->desc().size,
+                .range = {.offset = 0, .size = requestBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = activeGroupBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = activeGroupBuffer->desc().size,
+                .range = {.offset = 0, .size = activeGroupBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = activeHeaderBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = activeHeaderBuffer->desc().size,
+                .range = {.offset = 0, .size = activeHeaderBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = drawIndirectBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = drawIndirectBuffer->desc().size,
+                .range = {.offset = 0, .size = drawIndirectBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = traversalHeaderBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = traversalHeaderBuffer->desc().size,
+                .range = {.offset = 0, .size = traversalHeaderBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = traversalWorkBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
-                .offset = 0,
-                .size = traversalWorkBuffer->desc().size,
+                .range = {.offset = 0, .size = traversalWorkBuffer->desc().size},
             },
         }};
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = activePhaseBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
+            .buffers = activePhaseBarriers,
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         push.activeBuildPhase = render::kMeshletStreamActiveBuildSeedPhase;
@@ -5011,24 +4975,21 @@ public:
         commandBuffer->dispatch(1, 1, 1);
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = activePhaseBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
+            .buffers = activePhaseBarriers,
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         push.activeBuildPhase = render::kMeshletStreamActiveBuildRunPhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = activePhaseBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
+            .buffers = activePhaseBarriers,
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         push.activeBuildPhase = render::kMeshletStreamActiveBuildFinalizePhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = activePhaseBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
+            .buffers = activePhaseBarriers,
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         push.traversalPhase = render::kMeshletStreamTraversalUnloadPhase;
@@ -5041,88 +5002,81 @@ public:
                 .buffer = pageTableBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-                .offset = 0,
-                .size = pageTableBuffer->desc().size,
+                .range = {.offset = 0, .size = pageTableBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = requestBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-                .offset = 0,
-                .size = requestBuffer->desc().size,
+                .range = {.offset = 0, .size = requestBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = activeGroupBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-                .offset = 0,
-                .size = activeGroupBuffer->desc().size,
+                .range = {.offset = 0, .size = activeGroupBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = activeHeaderBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-                .offset = 0,
-                .size = activeHeaderBuffer->desc().size,
+                .range = {.offset = 0, .size = activeHeaderBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = drawIndirectBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-                .offset = 0,
-                .size = drawIndirectBuffer->desc().size,
+                .range = {.offset = 0, .size = drawIndirectBuffer->desc().size},
             },
             render::BufferBarrierDesc{
                 .buffer = traversalHeaderBuffer.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-                .offset = 0,
-                .size = traversalHeaderBuffer->desc().size,
+                .range = {.offset = 0, .size = traversalHeaderBuffer->desc().size},
             },
         }};
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = readbackBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(readbackBarriers.size()),
+            .buffers = readbackBarriers,
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
-            auto sourceSlice = pageTableBuffer.get()->slice(0, pageTableBuffer->desc().size);
+            auto sourceSlice = pageTableBuffer.get()->slice({0, pageTableBuffer->desc().size});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = pageTableReadbackBuffer.get()->slice(0, pageTableBuffer->desc().size);
+            auto destinationSlice = pageTableReadbackBuffer.get()->slice({0, pageTableBuffer->desc().size});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
-            auto sourceSlice = requestBuffer.get()->slice(0, requestBuffer->desc().size);
+            auto sourceSlice = requestBuffer.get()->slice({0, requestBuffer->desc().size});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = requestReadbackBuffer.get()->slice(0, requestBuffer->desc().size);
+            auto destinationSlice = requestReadbackBuffer.get()->slice({0, requestBuffer->desc().size});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
-            auto sourceSlice = activeGroupBuffer.get()->slice(0, activeGroupBuffer->desc().size);
+            auto sourceSlice = activeGroupBuffer.get()->slice({0, activeGroupBuffer->desc().size});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = activeGroupReadbackBuffer.get()->slice(0, activeGroupBuffer->desc().size);
+            auto destinationSlice = activeGroupReadbackBuffer.get()->slice({0, activeGroupBuffer->desc().size});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
-            auto sourceSlice = activeHeaderBuffer.get()->slice(0, activeHeaderBuffer->desc().size);
+            auto sourceSlice = activeHeaderBuffer.get()->slice({0, activeHeaderBuffer->desc().size});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = activeHeaderReadbackBuffer.get()->slice(0, activeHeaderBuffer->desc().size);
+            auto destinationSlice = activeHeaderReadbackBuffer.get()->slice({0, activeHeaderBuffer->desc().size});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
-            auto sourceSlice = drawIndirectBuffer.get()->slice(0, drawIndirectBuffer->desc().size);
+            auto sourceSlice = drawIndirectBuffer.get()->slice({0, drawIndirectBuffer->desc().size});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = drawIndirectReadbackBuffer.get()->slice(0, drawIndirectBuffer->desc().size);
+            auto destinationSlice = drawIndirectReadbackBuffer.get()->slice({0, drawIndirectBuffer->desc().size});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
-            auto sourceSlice = traversalHeaderBuffer.get()->slice(0, traversalHeaderBuffer->desc().size);
+            auto sourceSlice = traversalHeaderBuffer.get()->slice({0, traversalHeaderBuffer->desc().size});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = traversalHeaderReadbackBuffer.get()->slice(0, traversalHeaderBuffer->desc().size);
+            auto destinationSlice = traversalHeaderReadbackBuffer.get()->slice({0, traversalHeaderBuffer->desc().size});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
@@ -5133,8 +5087,7 @@ public:
 
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = queue->submit(render::QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
+            .commandBuffers = {commandBuffers, 1},
             .signalFence = fence.get(),
         });
         if (!result) {
@@ -5348,13 +5301,11 @@ public:
         const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
         render::ShaderCompileResult compileResult;
         render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                .moduleName = "Features/Samples/RtxcrMaterialSample",
-                .entryPointName = "rtxcrMaterialSampleMain",
-                .searchPath = kShaderSearchPath,
-                .additionalSearchPaths = additionalSearchPaths,
-                .additionalSearchPathCount =
-                    static_cast<uint32_t>(std::size(additionalSearchPaths)),
-            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
+            .moduleName = "Features/Samples/RtxcrMaterialSample",
+            .entryPointName = "rtxcrMaterialSampleMain",
+            .searchPath = kShaderSearchPath,
+            .additionalSearchPaths = {additionalSearchPaths, static_cast<uint32_t>(std::size(additionalSearchPaths))},
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result || compileResult.spirv.empty()) {
             return RhiTestResult::fail(
                 std::string("RTXCR material shader compile returned ") +
@@ -5448,15 +5399,14 @@ public:
         for (const ShaderEntry& entry : entries) {
             render::ShaderCompileResult compileResult;
             render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                    .moduleName = entry.moduleName,
-                    .entryPointName = entry.entryPointName,
-                    .searchPath = kShaderSearchPath,
-                    .capabilities = entry.rayQuery ? capabilities : nullptr,
-                    .capabilityCount = entry.rayQuery
+                .moduleName = entry.moduleName,
+                .entryPointName = entry.entryPointName,
+                .searchPath = kShaderSearchPath,
+                .capabilities = {entry.rayQuery ? capabilities : nullptr, entry.rayQuery
                         ? static_cast<uint32_t>(std::size(capabilities))
-                        : 0u,
-                    .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
-                }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
+                        : 0u},
+                .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
+            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
             if (!result) {
                 return RhiTestResult::fail(
                     std::string("RTXDI shader compile returned ") +
@@ -5500,15 +5450,13 @@ public:
             for (const ShaderEntry& entry : entries) {
                 render::ShaderCompileResult compileResult;
                 render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                        .moduleName = entry.moduleName,
-                        .entryPointName = entry.entryPointName,
-                        .searchPath = kShaderSearchPath,
-                        .capabilities = capabilities,
-                        .capabilityCount = 1u + positionFetch,
-                        .macroDefines = defines,
-                        .macroDefineCount = static_cast<uint32_t>(std::size(defines)),
-                        .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
-                    }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
+                    .moduleName = entry.moduleName,
+                    .entryPointName = entry.entryPointName,
+                    .searchPath = kShaderSearchPath,
+                    .capabilities = {capabilities, 1u + positionFetch},
+                    .macroDefines = {defines, static_cast<uint32_t>(std::size(defines))},
+                    .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
+                }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
                 if (!result || compileResult.spirv.empty()) {
                     return RhiTestResult::fail(
                         std::string("Path tracing guide shader compile failed for ") +
@@ -5597,14 +5545,12 @@ public:
         };
         render::ShaderCompileResult compileResult;
         render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                .moduleName = "Features/Debug/SceneRayQueryVisualize",
-                .entryPointName = "sceneRayQueryVisualizeMain",
-                .searchPath = kShaderSearchPath,
-                .capabilities = capabilities,
-                .capabilityCount = static_cast<uint32_t>(std::size(capabilities)),
-                .macroDefines = macros,
-                .macroDefineCount = static_cast<uint32_t>(std::size(macros)),
-            }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
+            .moduleName = "Features/Debug/SceneRayQueryVisualize",
+            .entryPointName = "sceneRayQueryVisualizeMain",
+            .searchPath = kShaderSearchPath,
+            .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
+            .macroDefines = {macros, static_cast<uint32_t>(std::size(macros))},
+        }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
             return RhiTestResult::fail(
                 std::string("Cluster ray-query shader compile returned ") +
@@ -7825,8 +7771,7 @@ public:
 
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = readbackTracker.submit(render::QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
+            .commandBuffers = {commandBuffers, 1},
             .signalFence = fence.get(),
         }, readbackFrame);
         if (!result) {
@@ -8006,8 +7951,7 @@ public:
         }
         render::CommandBuffer* rasterCommandBuffers[] = {rasterCommandBuffer.get()};
         result = graphicsQueue->submit(render::QueueSubmitDesc{
-            .commandBuffers = rasterCommandBuffers,
-            .commandBufferCount = 1,
+            .commandBuffers = {rasterCommandBuffers, 1},
             .signalFence = rasterFence.get(),
         });
         if (!result) {
@@ -8129,8 +8073,7 @@ public:
 
             render::CommandBuffer* captureCommandBuffers[] = {captureCommandBuffer.get()};
             result = graphicsQueue->submit(render::QueueSubmitDesc{
-                .commandBuffers = captureCommandBuffers,
-                .commandBufferCount = 1,
+                .commandBuffers = {captureCommandBuffers, 1},
                 .signalFence = captureFence.get(),
             });
             if (result) {
@@ -8798,17 +8741,15 @@ public:
             .buffer = globalViews.meshletDraws.buffer,
             .before = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-            .offset = globalViews.meshletDraws.offset,
-            .size = globalViews.meshletDraws.size,
+            .range = {.offset = globalViews.meshletDraws.offset, .size = globalViews.meshletDraws.size},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = &residentRecordsToCopy,
-            .bufferCount = 1,
+            .buffers = {&residentRecordsToCopy, 1},
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
-            auto sourceSlice = globalViews.meshletDraws.buffer->slice(globalViews.meshletDraws.offset, globalViews.meshletDraws.size);
+            auto sourceSlice = globalViews.meshletDraws.buffer->slice({globalViews.meshletDraws.offset, globalViews.meshletDraws.size});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = residentRecordReadback.get()->slice(0, globalViews.meshletDraws.size);
+            auto destinationSlice = residentRecordReadback.get()->slice({0, globalViews.meshletDraws.size});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
@@ -8816,12 +8757,10 @@ public:
             .buffer = globalViews.meshletDraws.buffer,
             .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
-            .offset = globalViews.meshletDraws.offset,
-            .size = globalViews.meshletDraws.size,
+            .range = {.offset = globalViews.meshletDraws.offset, .size = globalViews.meshletDraws.size},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
-            .buffers = &residentRecordsToRead,
-            .bufferCount = 1,
+            .buffers = {&residentRecordsToRead, 1},
         }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
@@ -8831,8 +8770,7 @@ public:
         }
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = graphicsQueue->submit(render::QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
+            .commandBuffers = {commandBuffers, 1},
             .signalFence = fence.get(),
         });
         if (result) {
@@ -8848,7 +8786,7 @@ public:
                                 render::Buffer& buffer,
                                 void* destination,
                                 uint64_t size) -> bool {
-            buffer.invalidate(0, size);
+            buffer.invalidate({0, size});
             const void* mapped = buffer.map();
             if (mapped == nullptr) {
                 return false;
@@ -9010,8 +8948,7 @@ public:
             }
             if (result) {
                 result = graphicsQueue->submit(render::QueueSubmitDesc{
-                    .commandBuffers = commandBuffers,
-                    .commandBufferCount = 1,
+                    .commandBuffers = {commandBuffers, 1},
                     .signalFence = fence.get(),
                 });
             }

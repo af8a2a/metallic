@@ -55,8 +55,7 @@ public:
         };
         if (auto rendering = context.commandBuffer().beginRendering(RenderingDesc{
             .renderArea = renderArea,
-            .colorAttachments = &attachment,
-            .colorAttachmentCount = 1,
+            .colorAttachments = {&attachment, 1},
         }); !rendering) { return rendering; }
         context.commandBuffer().endRendering();
         return {};

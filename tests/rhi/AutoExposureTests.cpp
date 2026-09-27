@@ -29,9 +29,12 @@ public:
             .entryPointName = "autoExposureFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc binding{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage};
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = 16,
-            .bindings = &binding, .bindingCount = 1, .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .pushConstantSize = 16,
+            .bindings = {&binding, 1},
+            .requiresRayQuery = false,
+        }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
@@ -39,9 +42,14 @@ public:
         const Push push{context.width(), context.height(), context.properties().value("luminance", 0.18f),
             context.properties().value("outliers", 0u)};
         const render::ComputeDispatchBinding binding{.binding = 0, .textureView = context.outputTexture("color").view()};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = &binding, .bindingCount = 1,
-            .pushData = &push, .pushDataSize = sizeof(push),
-            .groupCountX = (push.width + 7) / 8, .groupCountY = (push.height + 7) / 8});
+        return program_.dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {&binding, 1},
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (push.width + 7) / 8,
+            .groupCountY = (push.height + 7) / 8,
+        });
     }
 private:
     render::ComputeProgram program_;
@@ -80,16 +88,16 @@ public:
         }
         auto& commands = context.commandBuffer();
         {
-            auto sourceSlice = exposure.buffer()->slice(0, 16);
+            auto sourceSlice = exposure.buffer()->slice({0, 16});
             if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = data.buffer()->slice(0, 16);
+            auto destinationSlice = data.buffer()->slice({0, 16});
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
         {
-            auto sourceSlice = histogram.buffer()->slice(0, histogram.desc().size);
+            auto sourceSlice = histogram.buffer()->slice({0, histogram.desc().size});
             if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = data.buffer()->slice(16, histogram.desc().size);
+            auto destinationSlice = data.buffer()->slice({16, histogram.desc().size});
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
@@ -174,8 +182,10 @@ public:
                     }
                     if (cancel) { return pool->reset().has_value(); }
                     render::CommandBuffer* submitted[] = {commands.get()};
-                    return fence->reset() && queue->submit({.commandBuffers = submitted, .commandBufferCount = 1,
-                        .signalFence = fence.get()}) && fence->wait(5'000'000'000ull);
+                    return fence->reset() && queue->submit({
+                        .commandBuffers = {submitted, 1},
+                        .signalFence = fence.get(),
+                    }) && fence->wait(5'000'000'000ull);
                 };
                 auto checkOutput = [&](float luminance, float expectedEV) -> std::string {
                     auto* output = executor.outputResource("Readback.data");

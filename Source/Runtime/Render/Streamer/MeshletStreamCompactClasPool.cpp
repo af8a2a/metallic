@@ -26,7 +26,7 @@ Result<> publicationBarrier(CommandBuffer& cmd, Buffer& buffer, ResourceState be
         .before = resourceSyncScope(before, PipelineStageBits::AllCommands),
         .after = resourceSyncScope(after, PipelineStageBits::AllCommands),
     };
-    if (auto commandResult = cmd.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = cmd.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     return {};
 }
 } // namespace
@@ -142,17 +142,17 @@ struct MeshletStreamCompactClasPool::Impl {
             const uint64_t size = update.addresses.size() * 8u;
             if (size) {
                 {
-                    auto sourceSlice = upload.get()->slice(offset, size);
+                    auto sourceSlice = upload.get()->slice({offset, size});
                     if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-                    auto destinationSlice = addresses.get()->slice(uint64_t(update.addressOffset) * 8u, size);
+                    auto destinationSlice = addresses.get()->slice({uint64_t(update.addressOffset) * 8u, size});
                     if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
                     if (auto commandResult = cmd.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
                 }
             }
             {
-                auto sourceSlice = upload.get()->slice(offset + size, 4u);
+                auto sourceSlice = upload.get()->slice({offset + size, 4u});
                 if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-                auto destinationSlice = pageTable.get()->slice(uint64_t(id) * 4u, 4u);
+                auto destinationSlice = pageTable.get()->slice({uint64_t(id) * 4u, 4u});
                 if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
                 if (auto commandResult = cmd.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
             }
@@ -495,12 +495,13 @@ Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
         if (moves.empty()) {
             continue;
         }
-        auto result = cmd.moveClusterAccelerationStructures({.objects = moves.data(),
-                                                             .objectCount = uint32_t(moves.size()),
-                                                             .sourceAddressBuffer = batch.moveSources.get(),
-                                                             .destinationAddressBuffer = batch.moveDestinations.get(),
-                                                             .scratchBuffer = p.scratch.get(),
-                                                             .scratchBufferOffset = p.scratchOffset});
+        auto result = cmd.moveClusterAccelerationStructures({
+            .objects = moves,
+            .sourceAddressBuffer = batch.moveSources.get(),
+            .destinationAddressBuffer = batch.moveDestinations.get(),
+            .scratchBuffer = p.scratch.get(),
+            .scratchBufferOffset = p.scratchOffset,
+        });
         if (result) {
             result = p.track(cmd, batch);
         }

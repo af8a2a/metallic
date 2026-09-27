@@ -163,11 +163,9 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
         return program.initialize(
             device,
             ComputeProgramDesc{
-                .spirv = compileResult.spirv.data(),
-                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+                .spirv = compileResult.spirv,
                 .pushConstantSize = sizeof(EnvironmentLightingPrecomputePush),
-                .bindings = bindings.data(),
-                .bindingCount = static_cast<uint32_t>(bindings.size()),
+                .bindings = bindings,
                 .debugName = "EnvironmentLightingPrecompute",
                 .resourceTableCount = 3,
                 .requiresRayQuery = false,
@@ -195,8 +193,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
         const std::array bindings{
             ComputeDispatchBinding{
                 .binding = 0,
-                .textureViews = radianceViews,
-                .textureViewCount = static_cast<uint32_t>(std::size(radianceViews)),
+                .textureViews = {radianceViews, static_cast<uint32_t>(std::size(radianceViews))},
             },
             ComputeDispatchBinding{.binding = 1, .buffer = &partials},
             ComputeDispatchBinding{.binding = 2, .buffer = &coefficients},
@@ -211,8 +208,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
         };
         Result<> result = program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
-            .bindings = bindings.data(),
-            .bindingCount = static_cast<uint32_t>(bindings.size()),
+            .bindings = bindings,
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = dispatchWidth,
@@ -227,15 +223,13 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             .buffer = &partials,
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = partials.desc().size,
+            .range = {.offset = 0, .size = partials.desc().size},
         };
-        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = &partialsBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = {&partialsBarrier, 1}}); !commandResult) { return commandResult; }
         push.mode = 1;
         result = program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
-            .bindings = bindings.data(),
-            .bindingCount = static_cast<uint32_t>(bindings.size()),
+            .bindings = bindings,
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = kEnvironmentSHCoefficientCount,
@@ -245,11 +239,14 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
         });
         if (!result) { return result; }
         push.mode = 2;
-        return program.dispatch({.commandBuffer = &commandBuffer,
-            .bindings = bindings.data(), .bindingCount = static_cast<uint32_t>(bindings.size()),
-            .pushData = &push, .pushDataSize = sizeof(push),
+        return program.dispatch({
+            .commandBuffer = &commandBuffer,
+            .bindings = bindings,
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
             .groupCountX = 256 * 128 * 8 / kEnvironmentSHThreadCount,
-            .resourceTableIndex = 2});
+            .resourceTableIndex = 2,
+        });
     }
 };
 
@@ -572,10 +569,7 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
     result = device_->createTextureView(*next->radiance,
         TextureViewDesc{
             .format = Format::Rgba32Sfloat,
-            .baseMip = 0,
-            .mipCount = mipCount,
-            .baseLayer = 0,
-            .layerCount = 1,
+            .range = {.baseMip = 0, .mipCount = mipCount, .baseLayer = 0, .layerCount = 1},
         }).transform([&](auto rhiValue) { next->radianceView = std::move(rhiValue); });
     if (!result || next->radianceView == nullptr) {
         log = "EnvironmentLightingSubsystem createTextureView returned " + std::string(resultToString(result));
@@ -644,7 +638,7 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
         return makeError(Error::Failure);
     }
     std::memcpy(mappedRadiance, decoded.pixels.data(), static_cast<size_t>(radianceBytes));
-    staging->radiance->flush(0, radianceBytes);
+    staging->radiance->flush({0, radianceBytes});
     staging->radiance->unmap();
 
     // Keep every referenced allocation alive even if a later recording step fails.
@@ -656,10 +650,7 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
         .newLayout = TextureLayout::TransferDestination,
         .before = {},
         .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
-        .baseMip = 0,
-        .mipCount = mipCount,
-        .baseLayer = 0,
-        .layerCount = 1,
+        .range = {.baseMip = 0, .mipCount = mipCount, .baseLayer = 0, .layerCount = 1},
     };
     std::array precomputeToGeneral{
         BufferBarrierDesc{
@@ -671,24 +662,20 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
             .buffer = staging->sphericalHarmonicsPartials.get(),
             .before = {},
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = partialBytes,
+            .range = {.offset = 0, .size = partialBytes},
         },
         BufferBarrierDesc{
             .buffer = next->sphericalHarmonicsBuffer.get(),
             .before = {},
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = kSphericalHarmonicsBytes,
+            .range = {.offset = 0, .size = kSphericalHarmonicsBytes},
         },
     };
     if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
-        .buffers = precomputeToGeneral.data(),
-        .bufferCount = static_cast<uint32_t>(precomputeToGeneral.size()),
+        .buffers = precomputeToGeneral,
     }); !commandResult) { return commandResult; }
     if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
-        .textures = &textureToTransfer,
-        .textureCount = 1,
+        .textures = {&textureToTransfer, 1},
     }); !commandResult) { return commandResult; }
 
     for (uint32_t mip = 0; mip < mipCount; ++mip) {
@@ -709,14 +696,10 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
         .newLayout = TextureLayout::ShaderRead,
         .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-        .baseMip = 0,
-        .mipCount = mipCount,
-        .baseLayer = 0,
-        .layerCount = 1,
+        .range = {.baseMip = 0, .mipCount = mipCount, .baseLayer = 0, .layerCount = 1},
     };
     if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
-        .textures = &textureToRead,
-        .textureCount = 1,
+        .textures = {&textureToRead, 1},
     }); !commandResult) { return commandResult; }
     result = pdfCompute_.buildEnvironment(
         *context.commandBuffer,
@@ -744,19 +727,17 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
         .buffer = next->sphericalHarmonicsBuffer.get(),
         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-        .offset = 0,
-        .size = kSphericalHarmonicsBytes,
+        .range = {.offset = 0, .size = kSphericalHarmonicsBytes},
     };
     if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
-        .buffers = &sphericalHarmonicsToRead,
-        .bufferCount = 1,
+        .buffers = {&sphericalHarmonicsToRead, 1},
     }); !commandResult) { return commandResult; }
     BufferBarrierDesc specularToRead{
         .buffer = next->prefilteredSpecularBuffer.get(),
         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
     };
-    if (auto commandResult = context.commandBuffer->synchronize({.buffers = &specularToRead, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = context.commandBuffer->synchronize({.buffers = {&specularToRead, 1}}); !commandResult) { return commandResult; }
     if (resources_ != nullptr) {
         context.host.retire(std::static_pointer_cast<void>(resources_));
     }

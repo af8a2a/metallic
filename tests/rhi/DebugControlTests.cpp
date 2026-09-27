@@ -45,9 +45,9 @@ public:
         auto* output = context.output("values");
         auto& commands = context.commandBuffer();
         {
-            auto sourceSlice = upload_.get()->slice(0, 16);
+            auto sourceSlice = upload_.get()->slice({0, 16});
             if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = output->buffer->slice(0, 16);
+            auto destinationSlice = output->buffer->slice({0, 16});
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
@@ -58,11 +58,11 @@ public:
             .before = metallic::render::resourceSyncScope(output->state, metallic::render::PipelineStageBits::AllCommands),
             .after = metallic::render::resourceSyncScope(output->state, metallic::render::PipelineStageBits::AllCommands),
         };
-        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
         {
-            auto sourceSlice = upload_.get()->slice(16, 16);
+            auto sourceSlice = upload_.get()->slice({16, 16});
             if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = output->buffer->slice(0, 16);
+            auto destinationSlice = output->buffer->slice({0, 16});
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
@@ -113,7 +113,7 @@ struct FrameCommands {
         auto result = commands->end();
         if (!result) { return result; }
         CommandBuffer* raw = commands.get();
-        return tracker.submit({.commandBuffers = &raw, .commandBufferCount = 1}, frame);
+        return tracker.submit({.commandBuffers = {&raw, 1}}, frame);
     }
 };
 
@@ -190,8 +190,8 @@ public:
         DEBUG_REQUIRE(frame.commands->end());
         CommandBuffer* raw = frame.commands.get();
         GpuCompletionPoint prefix, failed;
-        DEBUG_REQUIRE(frame.tracker.submitSegment({.commandBuffers = &raw, .commandBufferCount = 1}, frame.frame).transform([&](auto value) { prefix = std::move(value); }));
-        if (frame.tracker.submitSegment({.commandBufferCount = 1}, frame.frame).transform([&](auto value) { failed = std::move(value); })) { return RhiTestResult::fail("Expected rejected tail submission"); }
+        DEBUG_REQUIRE(frame.tracker.submitSegment({.commandBuffers = {&raw, 1}}, frame.frame).transform([&](auto value) { prefix = std::move(value); }));
+        if (frame.tracker.submitSegment({.commandBuffers = std::array<render::CommandBuffer*, 1>{nullptr}}, frame.frame).transform([&](auto value) { failed = std::move(value); })) { return RhiTestResult::fail("Expected rejected tail submission"); }
         frame.frame.cancel(); DEBUG_REQUIRE(frame.frame.wait()); runtime.poll();
         const auto prefixResult = call(runtime, "eval", {{"job", prefixJob}, {"expression", "buffers[\"Ids\"][0]"}});
         if (prefixResult["status"] != "ok" || prefixResult["result"]["value"] != 11 ||
@@ -314,40 +314,48 @@ public:
         ComputeProgram original;
         const ComputeProgramBindingDesc programBindings[] = {{0}, {1}};
         std::string log;
-        DEBUG_REQUIRE(original.initialize(*device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .pushConstantSize = 4, .bindings = programBindings, .bindingCount = 2, .requiresRayQuery = false}, log));
+        DEBUG_REQUIRE(original.initialize(*device, {
+            .spirv = shader.spirv,
+            .pushConstantSize = 4,
+            .bindings = {programBindings, 2},
+            .requiresRayQuery = false,
+        }, log));
         DEBUG_REQUIRE(frame.begin(1));
         auto& commands = *frame.commands;
         commands.hostWriteBarrier();
         BufferBarrierDesc sourceBarrier{.buffer = ids.get(), .before = {}, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
-        if (auto commandResult = commands.synchronize({.buffers = &sourceBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
-            auto sourceSlice = upload.get()->slice(0, kCount * 4);
+            auto sourceSlice = upload.get()->slice({0, kCount * 4});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = ids.get()->slice(0, kCount * 4);
+            auto destinationSlice = ids.get()->slice({0, kCount * 4});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         sourceBarrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite}; sourceBarrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
-        if (auto commandResult = commands.synchronize({.buffers = &sourceBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         BufferBarrierDesc outBarrier{.buffer = sentinel.get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
-        if (auto commandResult = commands.synchronize({.buffers = &outBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands.synchronize({.buffers = {&outBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         const ComputeDispatchBinding originalBindings[] = {{.binding = 0, .buffer = ids.get()}, {.binding = 1, .buffer = sentinel.get()}};
         const uint32_t index = 0;
-        DEBUG_REQUIRE(original.dispatch({.commandBuffer = &commands, .bindings = originalBindings, .bindingCount = 2,
-            .pushData = &index, .pushDataSize = 4}));
+        DEBUG_REQUIRE(original.dispatch({
+            .commandBuffer = &commands,
+            .bindings = {originalBindings, 2},
+            .pushData = &index,
+            .pushDataSize = 4,
+        }));
         runtime.beginExecution(*device, {.graph = "probe-graph", .generation = 1, .execution = 9}, nullptr);
         runtime.boundary(commands, "Early", 0, "Probe", bindings, DebugValue::object());
-        std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = &sourceBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
-            auto sourceSlice = upload.get()->slice(kCount * 4, kCount * 4);
+            auto sourceSlice = upload.get()->slice({kCount * 4, kCount * 4});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = ids.get()->slice(0, kCount * 4);
+            auto destinationSlice = ids.get()->slice({0, kCount * 4});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
-        std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = &sourceBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        outBarrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; if (auto commandResult = commands.synchronize({.buffers = &outBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        outBarrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; if (auto commandResult = commands.synchronize({.buffers = {&outBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         // No rebind: debug instrumentation must restore heap, pipeline and push data.
         commands.dispatch(1);
         runtime.boundary(commands, "Late", 0, "Probe", bindings, DebugValue::object());

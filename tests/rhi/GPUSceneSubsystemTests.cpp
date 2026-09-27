@@ -1017,8 +1017,7 @@ public:
             }
             render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
             frameResult = queue->submit(render::QueueSubmitDesc{
-                .commandBuffers = commandBuffers,
-                .commandBufferCount = 1,
+                .commandBuffers = {commandBuffers, 1},
                 .signalFence = fence.get(),
             });
             if (frameResult) {
@@ -1225,31 +1224,26 @@ public:
                     .buffer = sourceViews[index]->buffer,
                     .before = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
                     .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
-                    .offset = 0,
-                    .size = sourceViews[index]->size,
+                    .range = {.offset = 0, .size = sourceViews[index]->size},
                 };
                 toRead[index] = render::BufferBarrierDesc{
                     .buffer = sourceViews[index]->buffer,
                     .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
                     .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
-                    .offset = 0,
-                    .size = sourceViews[index]->size,
+                    .range = {.offset = 0, .size = sourceViews[index]->size},
                 };
             }
             render::BufferBarrierDesc readbackDestination{
                 .buffer = canonicalReadback.get(),
                 .before = {},
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
-                .offset = 0,
-                .size = kCanonicalReadbackSize,
+                .range = {.offset = 0, .size = kCanonicalReadbackSize},
             };
             if (auto commandResult = commandBuffer.synchronize(render::BarrierDesc{
-                .buffers = &readbackDestination,
-                .bufferCount = 1,
+                .buffers = {&readbackDestination, 1},
             }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             if (auto commandResult = commandBuffer.synchronize(render::BarrierDesc{
-                .buffers = toCopy.data(),
-                .bufferCount = static_cast<uint32_t>(toCopy.size()),
+                .buffers = toCopy,
             }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             const std::array destinationOffsets{
                 kGeometryReadbackOffset,
@@ -1262,16 +1256,15 @@ public:
             };
             for (size_t index = 0; index < sourceViews.size(); ++index) {
                 {
-                    auto sourceSlice = (sourceViews[index]->buffer)->slice(0, sourceViews[index]->size);
+                    auto sourceSlice = (sourceViews[index]->buffer)->slice({0, sourceViews[index]->size});
                     if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                    auto destinationSlice = canonicalReadback.get()->slice(destinationOffsets[index], sourceViews[index]->size);
+                    auto destinationSlice = canonicalReadback.get()->slice({destinationOffsets[index], sourceViews[index]->size});
                     if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                     if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                 }
             }
             if (auto commandResult = commandBuffer.synchronize(render::BarrierDesc{
-                .buffers = toRead.data(),
-                .bufferCount = static_cast<uint32_t>(toRead.size()),
+                .buffers = toRead,
             }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             return RhiTestResult::pass();
         });
@@ -1279,7 +1272,7 @@ public:
             return frameResult;
         }
 
-        canonicalReadback->invalidate(0, kCanonicalReadbackSize);
+        canonicalReadback->invalidate({0, kCanonicalReadbackSize});
         const void* canonicalMapped = canonicalReadback->map();
         if (canonicalMapped == nullptr) {
             return RhiTestResult::fail("GPUScene canonical payload readback did not map");
@@ -1857,8 +1850,7 @@ public:
         }
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = queue->submit(render::QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
+            .commandBuffers = {commandBuffers, 1},
             .signalFence = fence.get(),
         });
         if (result) {
@@ -1972,11 +1964,11 @@ public:
                     .before = {},
                     .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
                 }};
-            if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
-                auto sourceSlice = instances->slice(0, sizeof(render::GPUSceneGpuInstanceRecord));
+                auto sourceSlice = instances->slice({0, sizeof(render::GPUSceneGpuInstanceRecord)});
                 if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                auto destinationSlice = readback.get()->slice(0, sizeof(render::GPUSceneGpuInstanceRecord));
+                auto destinationSlice = readback.get()->slice({0, sizeof(render::GPUSceneGpuInstanceRecord)});
                 if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
                 if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
@@ -1985,7 +1977,7 @@ public:
                 .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
             };
-            if (auto commandResult = commands->synchronize({.buffers = &restore, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {&restore, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             SUBMISSION_CHECK(host.recordPostGraph(*commands, nullptr, required, log));
             SUBMISSION_CHECK(commands->end());
             host.endFrame();
@@ -2005,10 +1997,10 @@ public:
                 SUBMISSION_CHECK(resources.hzbInitialized == (index != 0));
                 SUBMISSION_CHECK(subsystem->prepareView(view, 0, {.width = 1, .height = 1}));
                 SUBMISSION_CHECK(!subsystem->visibleDrawSet(view, 0)->stats.hzbValid);
-                SUBMISSION_CHECK(!queue->submit({.commandBuffers = buffers, .commandBufferCount = 1}));
+                SUBMISSION_CHECK(!queue->submit({.commandBuffers = {buffers, 1}}));
                 continue;
             }
-            SUBMISSION_CHECK(tracker.submit({.commandBuffers = buffers, .commandBufferCount = 1}, frame));
+            SUBMISSION_CHECK(tracker.submit({.commandBuffers = {buffers, 1}}, frame));
             SUBMISSION_CHECK(frame.wait(5'000'000'000ull));
             committedInstances = instances;
             SUBMISSION_CHECK(subsystem->gpuUploadStats().fullUploadCount == 1);

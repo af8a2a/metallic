@@ -134,9 +134,11 @@ public:
             const std::array<render::ComputeProgramBindingDesc, 6> bindings{{
                 {.binding = 0}, {.binding = 1}, {.binding = 2},
                 {.binding = 3}, {.binding = 4}, {.binding = 5}}};
-            GRID_CHECK(lookupProgram_.initialize(*device_, {.spirv = shader.spirv.data(),
-                .byteSize = shader.spirv.size() * sizeof(uint32_t), .bindings = bindings.data(),
-                .bindingCount = static_cast<uint32_t>(bindings.size()), .requiresRayQuery = false}, log_));
+            GRID_CHECK(lookupProgram_.initialize(*device_, {
+                .spirv = shader.spirv,
+                .bindings = bindings,
+                .requiresRayQuery = false,
+            }, log_));
         }
         std::unique_ptr<render::Buffer> probe;
         GRID_CHECK(device_->createBuffer({.size = sizeof(output.lookup),
@@ -147,7 +149,7 @@ public:
             .before = {},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
         };
-        if (auto commandResult = commands_->synchronize({.buffers = &probeToWrite, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands_->synchronize({.buffers = {&probeToWrite, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         const std::array<render::ComputeDispatchBinding, 6> probeBindings{{
             {.binding = 0, .buffer = output.snapshot.parameters},
             {.binding = 1, .buffer = output.snapshot.lights},
@@ -156,8 +158,10 @@ public:
             {.binding = 4, .buffer = output.snapshot.lightIndices},
             {.binding = 5, .buffer = probe.get()},
         }};
-        GRID_CHECK(lookupProgram_.dispatch({.commandBuffer = commands_.get(),
-            .bindings = probeBindings.data(), .bindingCount = static_cast<uint32_t>(probeBindings.size())}));
+        GRID_CHECK(lookupProgram_.dispatch({
+            .commandBuffer = commands_.get(),
+            .bindings = probeBindings,
+        }));
         std::unique_ptr<render::Buffer> readback;
         GRID_CHECK(device_->createBuffer({.size = cellBytes + indexBytes + sizeof(output.lookup),
             .usage = render::BufferUsageBits::TransferDestination,
@@ -184,25 +188,25 @@ public:
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             },
         };
-        if (auto commandResult = commands_->synchronize({.buffers = barriers.data(), .bufferCount = static_cast<uint32_t>(barriers.size())}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands_->synchronize({.buffers = barriers}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
-            auto sourceSlice = output.snapshot.cells->slice(0, cellBytes);
+            auto sourceSlice = output.snapshot.cells->slice({0, cellBytes});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = readback.get()->slice(0, cellBytes);
+            auto destinationSlice = readback.get()->slice({0, cellBytes});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
-            auto sourceSlice = output.snapshot.lightIndices->slice(0, indexBytes);
+            auto sourceSlice = output.snapshot.lightIndices->slice({0, indexBytes});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = readback.get()->slice(cellBytes, indexBytes);
+            auto destinationSlice = readback.get()->slice({cellBytes, indexBytes});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
-            auto sourceSlice = probe.get()->slice(0, sizeof(output.lookup));
+            auto sourceSlice = probe.get()->slice({0, sizeof(output.lookup)});
             if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-            auto destinationSlice = readback.get()->slice(cellBytes + indexBytes, sizeof(output.lookup));
+            auto destinationSlice = readback.get()->slice({cellBytes + indexBytes, sizeof(output.lookup)});
             if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
             if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
@@ -218,11 +222,11 @@ public:
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
             },
         };
-        if (auto commandResult = commands_->synchronize({.buffers = restore.data(), .bufferCount = static_cast<uint32_t>(restore.size())}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands_->synchronize({.buffers = restore}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         GRID_CHECK(commands_->end());
         host_.endFrame();
         render::CommandBuffer* submissions[] = {commands_.get()};
-        GRID_CHECK(tracker_.submit({.commandBuffers = submissions, .commandBufferCount = 1}, *frames_[slot]));
+        GRID_CHECK(tracker_.submit({.commandBuffers = {submissions, 1}}, *frames_[slot]));
         GRID_CHECK(frames_[slot]->wait(10'000'000'000ull));
         readback->invalidate();
         const auto* data = static_cast<const uint8_t*>(readback->map());
@@ -304,7 +308,7 @@ public:
         const auto first = *grid.snapshot(scene);
         GRID_CHECK(commands_->end());
         render::CommandBuffer* firstSubmission[] = {commands_.get()};
-        GRID_CHECK(queue_->submit({.commandBuffers = firstSubmission, .commandBufferCount = 1}));
+        GRID_CHECK(queue_->submit({.commandBuffers = {firstSubmission, 1}}));
 
         // Recording another legacy command must not overwrite the first one's
         // buffers or descriptor table, even if the first submission is in flight.
@@ -318,7 +322,7 @@ public:
         GRID_CHECK(grid.snapshot(scene)->parameters != first.parameters);
         GRID_CHECK(secondCommands->end());
         render::CommandBuffer* secondSubmission[] = {secondCommands.get()};
-        GRID_CHECK(queue_->submit({.commandBuffers = secondSubmission, .commandBufferCount = 1}));
+        GRID_CHECK(queue_->submit({.commandBuffers = {secondSubmission, 1}}));
         GRID_CHECK(queue_->waitIdle());
         GRID_CHECK(grid.snapshot(scene) != nullptr);
         secondCommands.reset();

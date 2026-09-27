@@ -70,9 +70,13 @@ public:
             {.binding = 1, .kind = ComputeResourceBindingKind::SampledImage},
             {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
         };
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .pushConstantSize = sizeof(SliderDebugPush),
-            .bindings = bindings, .bindingCount = 3, .debugName = "SliderDebug", .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .pushConstantSize = sizeof(SliderDebugPush),
+            .bindings = {bindings, 3},
+            .debugName = "SliderDebug",
+            .requiresRayQuery = false,
+        }, log);
     }
 
     Result<> execute(RenderGraphExecutionContext& context) override
@@ -95,13 +99,18 @@ public:
         TextureView* viewA = sourceA.view();
         TextureView* viewB = sourceB.view();
         const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = &viewA, .textureViewCount = 1},
-            {.binding = 1, .textureViews = &viewB, .textureViewCount = 1},
+            {.binding = 0, .textureViews = {&viewA, 1}},
+            {.binding = 1, .textureViews = {&viewB, 1}},
             {.binding = 2, .textureView = color.view()},
         };
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(),
-            .bindings = bindings, .bindingCount = 3, .pushData = &push, .pushDataSize = sizeof(push),
-            .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
+        return program_.dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {bindings, 3},
+            .pushData = &push,
+            .pushDataSize = sizeof(push),
+            .groupCountX = (context.width() + 7) / 8,
+            .groupCountY = (context.height() + 7) / 8,
+        });
     }
 
 private:

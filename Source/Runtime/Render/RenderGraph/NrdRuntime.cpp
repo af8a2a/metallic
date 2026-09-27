@@ -171,14 +171,12 @@ struct NrdRuntime::Impl {
         const char* searchPaths[] = {PROJECT_SOURCE_DIR "/External/MathLib"};
         ShaderCompileResult compiled;
         Result<> result = compileSlangShaderToSpirv({
-                .moduleName = recipe.shaderName.c_str(),
-                .entryPointName = "main",
-                .searchPath = PROJECT_SOURCE_DIR "/Shaders/Interop/Denoising/NRD",
-                .additionalSearchPaths = searchPaths,
-                .additionalSearchPathCount = 1,
-                .macroDefines = defines.data(),
-                .macroDefineCount = static_cast<uint32_t>(defines.size()),
-            }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
+            .moduleName = recipe.shaderName.c_str(),
+            .entryPointName = "main",
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders/Interop/Denoising/NRD",
+            .additionalSearchPaths = {searchPaths, 1},
+            .macroDefines = defines,
+        }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
         if (!result) {
             spdlog::error("NRD {}: {}", recipe.shaderName, compiled.diagnostics);
             return result;
@@ -235,10 +233,7 @@ Result<> NrdRuntime::initialize(Device& device, uint16_t width, uint16_t height,
         result = device.createTextureView(*resource.texture,
                                           TextureViewDesc{
                                               .format = format,
-                                              .baseMip = 0,
-                                              .mipCount = 1,
-                                              .baseLayer = 0,
-                                              .layerCount = 1,
+                                              .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
                                           }).transform([&](auto rhiValue) { resource.view = std::move(rhiValue); });
         if (!result || resource.view == nullptr) {
             log = "createTextureView(NRD internal) returned ";

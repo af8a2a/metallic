@@ -145,10 +145,8 @@ public:
                 .moduleName = "Features/SmokeTests/ScenePositionFetchProbe",
                 .entryPointName = "scenePositionFetchProbeMain",
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-                .capabilities = capabilities,
-                .capabilityCount = positionFetch ? 2u : 1u,
-                .macroDefines = defines,
-                .macroDefineCount = 1,
+                .capabilities = {capabilities, positionFetch ? 2u : 1u},
+                .macroDefines = {defines, 1},
                 .descriptorHeapMode = native_ ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Default,
             }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             log = shader.diagnostics;
@@ -164,9 +162,9 @@ public:
             }
             render::ComputeProgram program;
             const auto initialized = program.initialize(*device, {
-                .spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * sizeof(uint32_t),
-                .pushConstantSize = sizeof(float), .bindings = layout.data(),
-                .bindingCount = static_cast<uint32_t>(std::size(layout)),
+                .spirv = shader.spirv,
+                .pushConstantSize = sizeof(float),
+                .bindings = {layout.data(), static_cast<uint32_t>(std::size(layout))},
             }, log);
             if (native_ && render::hasError(initialized, render::Error::Unsupported)) {
                 return RhiTestResult::skip("native descriptor heaps require KHR untyped pointers");
@@ -215,8 +213,10 @@ public:
                     {.binding = 4, .buffer = resources.primitiveBuffer()},
                     {.binding = 5, .buffer = resources.instanceBuffer()},
                     {.binding = 6, .buffer = resources.materialBuffer()},
-                    {.binding = 9, .textureViews = resources.materialTextureViews().data(),
-                        .textureViewCount = resources.materialTextureCount()},
+                    {
+                        .binding = 9,
+                        .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()},
+                    },
                     {.binding = 63, .buffer = output.get()},
                 };
                 if (!positionFetch) {
@@ -224,13 +224,14 @@ public:
                         .buffer = resources.fallbackPositionBuffer()});
                 }
                 FETCH_REQUIRE(program.dispatch({
-                    .commandBuffer = commands.get(), .bindings = bindings.data(),
-                    .bindingCount = static_cast<uint32_t>(std::size(bindings)),
-                    .pushData = &translationX, .pushDataSize = sizeof(translationX),
+                    .commandBuffer = commands.get(),
+                    .bindings = {bindings.data(), static_cast<uint32_t>(std::size(bindings))},
+                    .pushData = &translationX,
+                    .pushDataSize = sizeof(translationX),
                 }));
                 FETCH_REQUIRE(commands->end());
                 render::CommandBuffer* submitted[] = {commands.get()};
-                FETCH_REQUIRE(tracker.submit({.commandBuffers = submitted, .commandBufferCount = 1}, frame));
+                FETCH_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
                 FETCH_REQUIRE(frame.wait(10'000'000'000ull));
                 std::array<float, 96> actual{};
                 const void* mapped = output->map();
@@ -343,8 +344,9 @@ public:
         const render::ComputeProgramBindingDesc layout[] = {{2}, {63}};
         render::ComputeProgram program;
         FETCH_REQUIRE(program.initialize(*device, {
-            .spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * sizeof(uint32_t),
-            .bindings = layout, .bindingCount = 2, .requiresRayQuery = false,
+            .spirv = shader.spirv,
+            .bindings = {layout, 2},
+            .requiresRayQuery = false,
         }, log));
         render::QueueSubmissionTracker tracker;
         FETCH_REQUIRE(tracker.initialize(*device, queue));
@@ -366,11 +368,14 @@ public:
         FETCH_REQUIRE(frame.begin(0));
         FETCH_REQUIRE(commands->begin(&frame));
         const render::ComputeDispatchBinding bindings[] = {{.binding = 2, .buffer = input.get()}, {.binding = 63, .buffer = output.get()}};
-        FETCH_REQUIRE(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings, .bindingCount = 2,
-            .groupCountX = static_cast<uint32_t>(vertices.size())}));
+        FETCH_REQUIRE(program.dispatch({
+            .commandBuffer = commands.get(),
+            .bindings = {bindings, 2},
+            .groupCountX = static_cast<uint32_t>(vertices.size()),
+        }));
         FETCH_REQUIRE(commands->end());
         render::CommandBuffer* submitted[] = {commands.get()};
-        FETCH_REQUIRE(tracker.submit({.commandBuffers = submitted, .commandBufferCount = 1}, frame));
+        FETCH_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
         FETCH_REQUIRE(frame.wait(10'000'000'000ull));
         mapped = output->map();
         if (mapped == nullptr) { return RhiTestResult::fail("packing readback map failed"); }

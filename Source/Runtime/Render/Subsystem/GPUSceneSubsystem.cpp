@@ -1064,8 +1064,7 @@ Result<> GPUSceneSubsystem::recordInitialize(
             .buffer = resource.buffer.get(),
             .before = {},
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = resource.byteSize,
+            .range = {.offset = 0, .size = resource.byteSize},
         });
     };
     if (!slot.initialized) {
@@ -1086,8 +1085,7 @@ Result<> GPUSceneSubsystem::recordInitialize(
     }
     if (!barriers.empty()) {
         if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-            .buffers = barriers.data(),
-            .bufferCount = gpuCount(barriers.size()),
+            .buffers = {barriers.data(), gpuCount(barriers.size())},
         }); !commandResult) { return commandResult; }
     }
     slot.initialized = true;
@@ -1483,7 +1481,7 @@ Result<> GPUSceneSubsystem::uploadFullScene(
             return makeError(Error::Failure);
         }
         std::memcpy(mapped, records.data(), static_cast<size_t>(byteSize));
-        staging->flush(0, byteSize);
+        staging->flush({0, byteSize});
         staging->unmap();
         copies.push_back(PendingCopy{
             .source = staging.get(),
@@ -1573,38 +1571,34 @@ Result<> GPUSceneSubsystem::uploadFullScene(
             .buffer = copy.destination,
             .before = {},
             .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
-            .offset = 0,
-            .size = copy.byteSize,
+            .range = {.offset = 0, .size = copy.byteSize},
         });
         toRead.push_back(BufferBarrierDesc{
             .buffer = copy.destination,
             .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
             .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-            .offset = 0,
-            .size = copy.byteSize,
+            .range = {.offset = 0, .size = copy.byteSize},
         });
         uploadedBytes += copy.byteSize;
     }
     context.host.retire(std::static_pointer_cast<void>(next));
     if (!toTransfer.empty()) {
         if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
-            .buffers = toTransfer.data(),
-            .bufferCount = gpuCount(toTransfer.size()),
+            .buffers = {toTransfer.data(), gpuCount(toTransfer.size())},
         }); !commandResult) { return commandResult; }
     }
     for (const PendingCopy& copy : copies) {
         {
-            auto sourceSlice = copy.source->slice(0, copy.byteSize);
+            auto sourceSlice = copy.source->slice({0, copy.byteSize});
             if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = copy.destination->slice(0, copy.byteSize);
+            auto destinationSlice = copy.destination->slice({0, copy.byteSize});
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = context.commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
     }
     if (!toRead.empty()) {
         if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
-            .buffers = toRead.data(),
-            .bufferCount = gpuCount(toRead.size()),
+            .buffers = {toRead.data(), gpuCount(toRead.size())},
         }); !commandResult) { return commandResult; }
     }
 
@@ -1672,24 +1666,22 @@ Result<> GPUSceneSubsystem::uploadInstances(
         return makeError(Error::Failure);
     }
     std::memcpy(mapped, instances.data(), static_cast<size_t>(byteSize));
-    staging->flush(0, byteSize);
+    staging->flush({0, byteSize});
     staging->unmap();
 
     BufferBarrierDesc toTransfer{
         .buffer = resource.buffer.get(),
         .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
         .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
-        .offset = 0,
-        .size = byteSize,
+        .range = {.offset = 0, .size = byteSize},
     };
     if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
-        .buffers = &toTransfer,
-        .bufferCount = 1,
+        .buffers = {&toTransfer, 1},
     }); !commandResult) { return commandResult; }
     {
-        auto sourceSlice = staging.get()->slice(0, byteSize);
+        auto sourceSlice = staging.get()->slice({0, byteSize});
         if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-        auto destinationSlice = resource.buffer.get()->slice(0, byteSize);
+        auto destinationSlice = resource.buffer.get()->slice({0, byteSize});
         if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
         if (auto commandResult = context.commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
     }
@@ -1697,12 +1689,10 @@ Result<> GPUSceneSubsystem::uploadInstances(
         .buffer = resource.buffer.get(),
         .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-        .offset = 0,
-        .size = byteSize,
+        .range = {.offset = 0, .size = byteSize},
     };
     if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
-        .buffers = &toRead,
-        .bufferCount = 1,
+        .buffers = {&toRead, 1},
     }); !commandResult) { return commandResult; }
 
     uploads->stagingBuffers.push_back(std::move(staging));
@@ -1939,8 +1929,7 @@ Result<> GPUSceneSubsystem::recordCull(
         });
     }
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-        .buffers = resetBarriers.data(),
-        .bufferCount = gpuCount(resetBarriers.size()),
+        .buffers = {resetBarriers.data(), gpuCount(resetBarriers.size())},
     }); !commandResult) { return commandResult; }
 
     commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
@@ -1974,8 +1963,7 @@ Result<> GPUSceneSubsystem::recordCull(
         });
     }
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-        .buffers = cullBarriers.data(),
-        .bufferCount = gpuCount(cullBarriers.size()),
+        .buffers = {cullBarriers.data(), gpuCount(cullBarriers.size())},
     }); !commandResult) { return commandResult; }
 
     commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
@@ -2009,8 +1997,7 @@ Result<> GPUSceneSubsystem::recordCull(
         });
     }
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-        .buffers = compactBarriers.data(),
-        .bufferCount = gpuCount(compactBarriers.size()),
+        .buffers = {compactBarriers.data(), gpuCount(compactBarriers.size())},
     }); !commandResult) { return commandResult; }
     return {};
 }
@@ -2057,8 +2044,7 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-        .buffers = &resetBarrier,
-        .bufferCount = 1,
+        .buffers = {&resetBarrier, 1},
     }); !commandResult) { return commandResult; }
 
     commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
@@ -2085,8 +2071,7 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
-        .buffers = barriers.data(),
-        .bufferCount = barrierCount,
+        .buffers = {barriers.data(), barrierCount},
     }); !commandResult) { return commandResult; }
     return {};
 }
@@ -2177,9 +2162,9 @@ Result<> GPUSceneSubsystem::recordBuildHzb(
         // Reset on the GPU for every build, including cancelled/repeated builds.
         result = recordGraphAccessBarriers(commandBuffer, plan->passes[phase++], bindings);
         if (!result) { return result; }
-        auto sourceSlice = desc.counterResetSource->slice(0, sizeof(uint32_t));
+        auto sourceSlice = desc.counterResetSource->slice({0, sizeof(uint32_t)});
         if (!sourceSlice) { return makeError(sourceSlice.error()); }
-        auto destinationSlice = desc.counterBuffer->slice(0, sizeof(uint32_t));
+        auto destinationSlice = desc.counterBuffer->slice({0, sizeof(uint32_t)});
         if (!destinationSlice) { return makeError(destinationSlice.error()); }
         result = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice);
         if (!result) { return result; }

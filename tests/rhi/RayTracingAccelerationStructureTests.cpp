@@ -675,7 +675,7 @@ public:
             return RhiTestResult::fail("stream CLAS page buffer did not map");
         }
         std::memcpy(mapped, decodedPayload.data(), decodedPayload.size());
-        pageBuffer->flush(0, decodedPayload.size());
+        pageBuffer->flush({0, decodedPayload.size()});
         pageBuffer->unmap();
 
         render::MeshletStreamClasPool pool;
@@ -741,8 +741,7 @@ public:
         }
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = graphicsQueue->submit(render::QueueSubmitDesc{
-            .commandBuffers = commandBuffers,
-            .commandBufferCount = 1,
+            .commandBuffers = {commandBuffers, 1},
             .signalFence = fence.get(),
         });
         if (!result) {

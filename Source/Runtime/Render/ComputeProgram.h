@@ -30,11 +30,9 @@ struct ComputeProgramBindingDesc {
 };
 
 struct ComputeProgramDesc {
-    const uint32_t* spirv = nullptr;
-    uint64_t byteSize = 0;
+    std::span<const uint32_t> spirv;
     uint32_t pushConstantSize = 0;
-    const ComputeProgramBindingDesc* bindings = nullptr;
-    uint32_t bindingCount = 0;
+    std::span<const ComputeProgramBindingDesc> bindings;
     const char* debugName = nullptr;
     uint32_t resourceTableCount = 1;
     bool requiresRayQuery = true;
@@ -66,12 +64,10 @@ struct ComputeDispatchBinding {
         const SamplerDesc* sampler;
     };
     TextureView* textureView = nullptr;
-    TextureView* const* textureViews = nullptr;
-    uint32_t textureViewCount = 0;
+    std::span<TextureView* const> textureViews;
     Buffer* buffer = nullptr;
-    uint64_t offset = 0;
-    uint64_t size = UINT64_MAX;
-    // DataBuffer only. Supply either a slice or buffer/offset/size, never both.
+    BufferRange range;
+    // DataBuffer only. Supply either a slice or buffer/range, never both.
     BufferSlice data;
     // Optional immutable sampled-image array; takes precedence over textureViews.
     // The shared registry also deduplicates individual resource registrations.
@@ -80,8 +76,7 @@ struct ComputeDispatchBinding {
 
 struct ComputeDispatchDesc {
     CommandBuffer* commandBuffer = nullptr;
-    const ComputeDispatchBinding* bindings = nullptr;
-    uint32_t bindingCount = 0;
+    std::span<const ComputeDispatchBinding> bindings;
     const void* pushData = nullptr;
     uint32_t pushDataSize = 0;
     uint32_t groupCountX = 1;

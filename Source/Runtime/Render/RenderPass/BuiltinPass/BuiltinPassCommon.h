@@ -988,10 +988,9 @@ inline Result<> createSlangShaderModule(
 
     const std::string shaderDebugName = std::string(moduleName) + "." + entryPointName;
     result = device.createShaderModule(ShaderModuleDesc{
-            .code = compileResult.spirv.data(),
-            .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
-            .debugName = shaderDebugName.c_str(),
-        }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
+        .spirv = compileResult.spirv,
+        .debugName = shaderDebugName.c_str(),
+    }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
     if (!result) {
         log += resultMessage("createShaderModule", result);
         log += '\n';

@@ -71,11 +71,9 @@ public:
         result = program_.initialize(
             *context.device,
             ComputeProgramDesc{
-                .spirv = compileResult.spirv.data(),
-                .byteSize = static_cast<uint64_t>(compileResult.spirv.size() * sizeof(uint32_t)),
+                .spirv = compileResult.spirv,
                 .pushConstantSize = sizeof(RtxdiCompositePush),
-                .bindings = bindings,
-                .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
                 .debugName = "RtxdiCompositePass",
             },
             programLog);
@@ -118,8 +116,7 @@ public:
         };
         return program_.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
-            .bindings = bindings,
-            .bindingCount = static_cast<uint32_t>(std::size(bindings)),
+            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = (context.width() + 7) / 8,

@@ -45,12 +45,9 @@ CompileOutcome compileRequest(const metallic::tools::ShaderWarmupRequest& reques
         .moduleName = request.module.c_str(),
         .entryPointName = request.entry.c_str(),
         .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-        .additionalSearchPaths = searchPaths.data(),
-        .additionalSearchPathCount = static_cast<uint32_t>(searchPaths.size()),
-        .capabilities = capabilities.data(),
-        .capabilityCount = static_cast<uint32_t>(capabilities.size()),
-        .macroDefines = defines.data(),
-        .macroDefineCount = static_cast<uint32_t>(defines.size()),
+        .additionalSearchPaths = searchPaths,
+        .capabilities = capabilities,
+        .macroDefines = defines,
     };
     bool cacheHit = false;
     const SlangShaderCacheOptions options{

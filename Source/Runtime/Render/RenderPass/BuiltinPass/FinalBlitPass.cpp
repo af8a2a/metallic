@@ -115,13 +115,12 @@ public:
         TextureView* sourceView = sampleSource ? source.view() : nullptr;
         const ComputeDispatchBinding bindings[] = {
             {.binding = 0, .textureView = color.view()},
-            {.binding = 1, .textureViews = &sourceView, .textureViewCount = 1},
+            {.binding = 1, .textureViews = {&sourceView, 1}},
         };
         ComputeProgram& program = sampleSource ? blitProgram_ : uvProgram_;
         return program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &context.commandBuffer(),
-            .bindings = bindings,
-            .bindingCount = sampleSource ? 2u : 1u,
+            .bindings = {bindings, sampleSource ? 2u : 1u},
             .pushData = &push,
             .pushDataSize = sizeof(push),
             .groupCountX = (context.width() + 7) / 8,
@@ -158,11 +157,9 @@ private:
             {.binding = 1, .kind = ComputeResourceBindingKind::SampledImage},
         };
         return program.initialize(device, ComputeProgramDesc{
-            .spirv = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t),
+            .spirv = shader.spirv,
             .pushConstantSize = sizeof(Push),
-            .bindings = bindings,
-            .bindingCount = sampleSource ? 2u : 1u,
+            .bindings = {bindings, sampleSource ? 2u : 1u},
             .debugName = entryPoint,
             .requiresRayQuery = false,
         }, log);

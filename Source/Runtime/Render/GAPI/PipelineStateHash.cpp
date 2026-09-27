@@ -48,9 +48,9 @@ uint8_t hashBool(bool value)
 uint64_t shaderContentHash(const ShaderModuleDesc& desc)
 {
     uint64_t hash = kFnvOffset;
-    hash = hashValue(hash, desc.byteSize);
-    return desc.code != nullptr && desc.byteSize > 0
-        ? hashBytes(hash, desc.code, static_cast<size_t>(desc.byteSize))
+    hash = hashValue(hash, desc.spirv.size_bytes());
+    return desc.spirv.data() != nullptr && desc.spirv.size_bytes() > 0
+        ? hashBytes(hash, desc.spirv.data(), static_cast<size_t>(desc.spirv.size_bytes()))
         : hash;
 }
 
@@ -59,25 +59,25 @@ uint64_t graphicsPipelineStateHash(const GraphicsPipelineDesc& desc)
     uint64_t hash = kFnvOffset;
     hash = hashValue(hash, kPipelineStateHashVersion);
     hash = hashValue(hash, kGraphicsPipelineTag);
-    const bool usesTaskShader = desc.taskShader != nullptr;
-    const bool usesMeshShader = desc.meshShader != nullptr;
+    const bool usesTaskShader = desc.taskShader.module != nullptr;
+    const bool usesMeshShader = desc.meshShader.module != nullptr;
     hash = hashValue(hash, hashBool(usesTaskShader));
     hash = hashValue(hash, hashBool(usesMeshShader));
     if (usesTaskShader) {
-        hash = hashValue(hash, desc.taskShader->contentHash());
-        hash = hashString(hash, desc.taskEntryPoint);
+        hash = hashValue(hash, desc.taskShader.module->contentHash());
+        hash = hashString(hash, desc.taskShader.entryPoint);
         hash = hashValue(hash, desc.taskRequiredSubgroupSize);
         hash = hashValue(hash, hashBool(desc.taskRequireFullSubgroups));
     }
     if (usesMeshShader) {
-        hash = hashValue(hash, desc.meshShader->contentHash());
-        hash = hashString(hash, desc.meshEntryPoint);
+        hash = hashValue(hash, desc.meshShader.module->contentHash());
+        hash = hashString(hash, desc.meshShader.entryPoint);
     } else {
-        hash = hashValue(hash, desc.vertexShader != nullptr ? desc.vertexShader->contentHash() : 0ull);
-        hash = hashString(hash, desc.vertexEntryPoint);
+        hash = hashValue(hash, desc.vertexShader.module != nullptr ? desc.vertexShader.module->contentHash() : 0ull);
+        hash = hashString(hash, desc.vertexShader.entryPoint);
     }
-    hash = hashValue(hash, desc.fragmentShader != nullptr ? desc.fragmentShader->contentHash() : 0ull);
-    hash = hashString(hash, desc.fragmentEntryPoint);
+    hash = hashValue(hash, desc.fragmentShader.module != nullptr ? desc.fragmentShader.module->contentHash() : 0ull);
+    hash = hashString(hash, desc.fragmentShader.entryPoint);
     hash = hashValue(hash, static_cast<uint32_t>(desc.colorFormat));
     hash = hashValue(hash, static_cast<uint32_t>(desc.secondColorFormat));
     hash = hashValue(hash, static_cast<uint32_t>(desc.thirdColorFormat));
@@ -98,14 +98,14 @@ uint64_t computePipelineStateHash(const ComputePipelineDesc& desc)
     uint64_t hash = kFnvOffset;
     hash = hashValue(hash, kPipelineStateHashVersion);
     hash = hashValue(hash, kComputePipelineTag);
-    hash = hashValue(hash, desc.computeShader != nullptr ? desc.computeShader->contentHash() : 0ull);
-    hash = hashString(hash, desc.computeEntryPoint);
+    hash = hashValue(hash, desc.computeShader.module != nullptr ? desc.computeShader.module->contentHash() : 0ull);
+    hash = hashString(hash, desc.computeShader.entryPoint);
     hash = hashValue(hash, hashBool(desc.usesBindlessHeap));
     hash = hashValue(hash, hashBool(desc.indirectBindable));
     hash = hashValue(hash, desc.bindlessUserPushDataSize);
-    hash = hashValue(hash, desc.bindingMappingCount);
-    if (desc.bindingMappings != nullptr) {
-        for (uint32_t index = 0; index < desc.bindingMappingCount; ++index) {
+    hash = hashValue(hash, static_cast<uint32_t>(desc.bindingMappings.size()));
+    if (!desc.bindingMappings.empty()) {
+        for (uint32_t index = 0; index < desc.bindingMappings.size(); ++index) {
             const ShaderBindingMappingDesc& mapping = desc.bindingMappings[index];
             hash = hashValue(hash, mapping.descriptorSet);
             hash = hashValue(hash, mapping.firstBinding);

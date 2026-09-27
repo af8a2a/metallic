@@ -80,7 +80,7 @@ public:
             cv.wait(lock, [&] { return entered; });
         }
         const bool exclusive = !first.record([] { return render::Result<>{}; }) && !first.prepare(frame) && !first.reset();
-        const bool rejectedEarlySubmit = !tracker.submit({.commandBuffers = &b, .commandBufferCount = 1}, frame);
+        const bool rejectedEarlySubmit = !tracker.submit({.commandBuffers = {&b, 1}}, frame);
         {
             std::lock_guard lock(mutex);
             release = true;
@@ -91,10 +91,12 @@ public:
         RECORD_REQUIRE(workerResult);
         render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
         render::GpuCompletionPoint prefix;
-        RECORD_REQUIRE(tracker.submitSegment({.waitSemaphores = &wait, .waitSemaphoreCount = 1,
-            .commandBuffers = &a, .commandBufferCount = 1}, frame).transform([&](auto value) { prefix = std::move(value); }));
+        RECORD_REQUIRE(tracker.submitSegment({
+            .waitSemaphores = {&wait, 1},
+            .commandBuffers = {&a, 1},
+        }, frame).transform([&](auto value) { prefix = std::move(value); }));
         // An invalid tail after an accepted prefix must keep only accepted owners.
-        RECORD_CHECK(!tracker.submitSegment({.commandBuffers = &a, .commandBufferCount = 1}, frame).transform([&](auto value) { prefix = std::move(value); }));
+        RECORD_CHECK(!tracker.submitSegment({.commandBuffers = {&a, 1}}, frame).transform([&](auto value) { prefix = std::move(value); }));
         frame.cancel();
         RECORD_CHECK(frame.completion().isSubmitted() && !frame.completion().isComplete());
         RECORD_CHECK(!acceptedWeak.expired() && cancelledWeak.expired() && !first.reset());
@@ -125,8 +127,10 @@ public:
         RECORD_REQUIRE(unsealed->prepare(frame).transform([&](auto value) { a = value; }));
         RECORD_REQUIRE(unsealed->record([&] { return a->end(); }));
         wait.value = 2;
-        RECORD_REQUIRE(tracker.submitSegment({.waitSemaphores = &wait, .waitSemaphoreCount = 1,
-            .commandBuffers = &a, .commandBufferCount = 1}, frame).transform([&](auto value) { prefix = std::move(value); }));
+        RECORD_REQUIRE(tracker.submitSegment({
+            .waitSemaphores = {&wait, 1},
+            .commandBuffers = {&a, 1},
+        }, frame).transform([&](auto value) { prefix = std::move(value); }));
         std::jthread releaseGate([&] {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
             (void)gate->signal(2);
@@ -252,7 +256,7 @@ public:
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
             render::TimestampQueryResult progress{};
             do {
-                result = probe.progress->readResults(0, 1, &progress);
+                result = probe.progress->readResults(0, {&progress, 1});
                 if (!result) { return result; }
                 if (progress.available) { break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -275,13 +279,13 @@ public:
             std::memcpy(mapped, words.data(), sizeof(words));
             upload->flush();
             upload->unmap();
-            result = upload->slice(0, 16).transform([&](auto value) { source = std::move(value); });
+            result = upload->slice({0, 16}).transform([&](auto value) { source = std::move(value); });
         } else {
-            result = context.inputBuffer("source").buffer()->slice(0, 16).transform([&](auto value) { source = std::move(value); });
+            result = context.inputBuffer("source").buffer()->slice({0, 16}).transform([&](auto value) { source = std::move(value); });
         }
         if (!result) { return result; }
         render::BufferSlice destination;
-        result = target->slice(0, 16).transform([&](auto value) { destination = std::move(value); });
+        result = target->slice({0, 16}).transform([&](auto value) { destination = std::move(value); });
         if (result) { result = commands.copyBuffer(source, destination); }
         if (result && probe.progress && index == 0) {
             result = commands.writeTimestamp(*probe.progress, 0, render::PipelineStageBits::BottomOfPipe);
@@ -437,8 +441,10 @@ public:
         RECORD_REQUIRE(blocker.prepare(blockerFrame).transform([&](auto value) { commands = value; }));
         RECORD_REQUIRE(blocker.record([&] { return commands->end(); }));
         render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
-        RECORD_REQUIRE(tracker.submit({.waitSemaphores = &wait, .waitSemaphoreCount = 1,
-            .commandBuffers = &commands, .commandBufferCount = 1}, blockerFrame));
+        RECORD_REQUIRE(tracker.submit({
+            .waitSemaphores = {&wait, 1},
+            .commandBuffers = {&commands, 1},
+        }, blockerFrame));
         render::RenderGraphSubmitDesc desc{.graphicsQueue = &context.graphicsQueue, .slotWaitTimeoutNanoseconds = 0,
             .recordingWorkerLimit = 4, .recordingBatchWorkload = 4};
         RECORD_REQUIRE(executor.execute(desc));
@@ -521,7 +527,7 @@ public:
                 }
                 return commands->end();
             }));
-            RECORD_REQUIRE(tracker.submit({.commandBuffers = &commands, .commandBufferCount = 1}, frame));
+            RECORD_REQUIRE(tracker.submit({.commandBuffers = {&commands, 1}}, frame));
             RECORD_REQUIRE(frame.wait(kTimeout));
             readback->invalidate();
             const auto* pixels = static_cast<const uint8_t*>(readback->map());
@@ -611,19 +617,19 @@ public:
         std::weak_ptr<int> acceptedWeak = acceptedOwner;
         RECORD_REQUIRE(a->retainResource(std::move(acceptedOwner)));
         RECORD_REQUIRE(first.record([&] { return a->end(); }));
-        RECORD_CHECK(!tracker.submit({.commandBuffers = &a, .commandBufferCount = 1}, frame) && !frame.hasAcceptedWork());
+        RECORD_CHECK(!tracker.submit({.commandBuffers = {&a, 1}}, frame) && !frame.hasAcceptedWork());
         render::RecordedBatch batch;
         std::array<render::CommandBuffer*, 2> duplicates{a, a};
         RECORD_CHECK(!batch.seal(frame, duplicates));
         RECORD_REQUIRE(batch.seal(frame, {&a, 1}));
         RECORD_CHECK(batch.valid() && frame.recording() && !frame.hasAcceptedWork());
         RECORD_CHECK(!a->begin(&frame) && !frame.sealRecording());
-        RECORD_CHECK(!context.graphicsQueue.submit({.commandBuffers = &a, .commandBufferCount = 1}));
+        RECORD_CHECK(!context.graphicsQueue.submit({.commandBuffers = {&a, 1}}));
         render::SubmissionReceipt receipt;
-        RECORD_CHECK(!tracker.submitBatch(batch, {.commandBuffers = &a, .commandBufferCount = 1}, frame).transform([&](auto value) { receipt = std::move(value); }));
+        RECORD_CHECK(!tracker.submitBatch(batch, {.commandBuffers = {&a, 1}}, frame).transform([&](auto value) { receipt = std::move(value); }));
         RECORD_CHECK(!receipt.accepted() && batch.valid());
         render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
-        RECORD_REQUIRE(tracker.submitBatch(batch, {.waitSemaphores = &wait, .waitSemaphoreCount = 1}, frame).transform([&](auto value) { receipt = std::move(value); }));
+        RECORD_REQUIRE(tracker.submitBatch(batch, {.waitSemaphores = {&wait, 1}}, frame).transform([&](auto value) { receipt = std::move(value); }));
         const auto prefix = receipt.completion();
         RECORD_CHECK(receipt.accepted() && !prefix.isComplete() && frame.recording() && frame.hasAcceptedWork());
         RECORD_CHECK(!frame.completion().isSubmitted() && frame.completion().value() == 0 && !frame.wait(0));
@@ -675,7 +681,7 @@ public:
             render::RecordedBatch prefixBatch;
             RECORD_REQUIRE(prefixBatch.seal(frame, {&a, 1}));
             wait.semaphore = partialGate.get();
-            RECORD_REQUIRE(tracker.submitBatch(prefixBatch, {.waitSemaphores = &wait, .waitSemaphoreCount = 1}, frame).transform([&](auto value) { receipt = std::move(value); }));
+            RECORD_REQUIRE(tracker.submitBatch(prefixBatch, {.waitSemaphores = {&wait, 1}}, frame).transform([&](auto value) { receipt = std::move(value); }));
             render::CommandBuffer* copy = nullptr;
             RECORD_REQUIRE(copyContext.prepare(frame).transform([&](auto value) { copy = value; }));
             RECORD_REQUIRE(copyContext.record([&] { return copy->end(); }));
@@ -753,7 +759,7 @@ public:
                 auto result = commands->resetTimestampQueries(*progress, 0, 1);
                 return result ? commands->end() : result;
             }));
-            RECORD_REQUIRE(tracker.submit({.commandBuffers = &commands, .commandBufferCount = 1}, setupFrame));
+            RECORD_REQUIRE(tracker.submit({.commandBuffers = {&commands, 1}}, setupFrame));
             RECORD_REQUIRE(setupFrame.wait(kTimeout));
             if (mode < 4 || mode >= 6) { probe.progress = progress.get(); }
             probe.rendezvous = mode < 3 ? 3 : 0;

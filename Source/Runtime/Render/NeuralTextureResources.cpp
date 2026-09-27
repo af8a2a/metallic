@@ -67,7 +67,7 @@ Result<> createUploadBuffer(
         return makeError(Error::Failure);
     }
     std::memcpy(mapped, data, static_cast<size_t>(byteSize));
-    outBuffer->flush(0, byteSize);
+    outBuffer->flush({0, byteSize});
     outBuffer->unmap();
     return {};
 }
@@ -549,10 +549,7 @@ Result<> NeuralTextureResources::prepare(
         result = device.createTextureView(*set.texture,
             TextureViewDesc{
                 .format = Format::Bgra4Unorm,
-                .baseMip = 0,
-                .mipCount = static_cast<uint32_t>(pending.desc.mipLevels),
-                .baseLayer = 0,
-                .layerCount = static_cast<uint32_t>(pending.desc.arraySize),
+                .range = {.baseMip = 0, .mipCount = static_cast<uint32_t>(pending.desc.mipLevels), .baseLayer = 0, .layerCount = static_cast<uint32_t>(pending.desc.arraySize)},
             }).transform([&](auto rhiValue) { set.view = std::move(rhiValue); });
         if (!result || set.view == nullptr) {
             appendWarning(log, "[NTC] Failed to create latent texture view; using conventional textures");
@@ -682,12 +679,9 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             .newLayout = TextureLayout::TransferDestination,
             .before = resourceSyncScope(set.state, PipelineStageBits::AllCommands),
             .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
-            .baseMip = 0,
-            .mipCount = set.texture->desc().mipCount,
-            .baseLayer = 0,
-            .layerCount = set.texture->desc().layerCount,
+            .range = {.baseMip = 0, .mipCount = set.texture->desc().mipCount, .baseLayer = 0, .layerCount = set.texture->desc().layerCount},
         };
-        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = &toTransfer, .textureCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return commandResult; }
         set.state = ResourceState::TransferDestination;
         for (const Impl::TextureUpload& upload : set.uploads) {
             commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
@@ -710,12 +704,9 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             .newLayout = TextureLayout::ShaderRead,
             .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
             .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
-            .baseMip = 0,
-            .mipCount = set.texture->desc().mipCount,
-            .baseLayer = 0,
-            .layerCount = set.texture->desc().layerCount,
+            .range = {.baseMip = 0, .mipCount = set.texture->desc().mipCount, .baseLayer = 0, .layerCount = set.texture->desc().layerCount},
         };
-        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = &toShaderRead, .textureCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = {&toShaderRead, 1}}); !commandResult) { return commandResult; }
         set.state = ResourceState::ShaderRead;
     }
 
@@ -731,9 +722,9 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             return makeError(Error::InvalidArgument);
         }
         {
-            auto sourceSlice = pair.upload->slice(0, pair.destination->desc().size);
+            auto sourceSlice = pair.upload->slice({0, pair.destination->desc().size});
             if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = pair.destination->slice(0, pair.destination->desc().size);
+            auto destinationSlice = pair.destination->slice({0, pair.destination->desc().size});
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
@@ -741,10 +732,9 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             .buffer = pair.destination,
             .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = pair.destination->desc().size,
+            .range = {.offset = 0, .size = pair.destination->desc().size},
         };
-        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = &toGeneral, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = {&toGeneral, 1}}); !commandResult) { return commandResult; }
     }
 
 #if METALLIC_HAS_NTC
@@ -790,9 +780,9 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             }
         } else {
             {
-                auto sourceSlice = impl_->weightsUpload.get()->slice(set.sourceWeightOffset, set.sourceWeightSize);
+                auto sourceSlice = impl_->weightsUpload.get()->slice({set.sourceWeightOffset, set.sourceWeightSize});
                 if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-                auto destinationSlice = impl_->weightsBuffer.get()->slice(set.destinationWeightOffset, set.sourceWeightSize);
+                auto destinationSlice = impl_->weightsBuffer.get()->slice({set.destinationWeightOffset, set.sourceWeightSize});
                 if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
                 if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
             }
@@ -824,10 +814,9 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             .buffer = impl_->weightsBuffer.get(),
             .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
-            .offset = 0,
-            .size = impl_->weightsBuffer->desc().size,
+            .range = {.offset = 0, .size = impl_->weightsBuffer->desc().size},
         };
-        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = &toGeneral, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = {&toGeneral, 1}}); !commandResult) { return commandResult; }
     }
 #endif
     impl_->uploadRecorded = true;

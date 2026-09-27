@@ -37,11 +37,12 @@ public:
         const char* rayCapabilities[] = {"spvRayQueryKHR"};
         render::ShaderCompileResult rejected;
         if (render::compileSlangShaderToSpirv({
-                .moduleName = "NativeDescriptorHandles", .entryPointName = "unsafeNativeAsMain",
-                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-                .capabilities = rayCapabilities, .capabilityCount = 1,
-                .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
-            }, {.enableDiskCache = false}, rejected.diagnostics).transform([&](auto value) { rejected = std::move(value); }) || !rejected.spirv.empty() ||
+            .moduleName = "NativeDescriptorHandles",
+            .entryPointName = "unsafeNativeAsMain",
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+            .capabilities = {rayCapabilities, 1},
+            .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
+        }, {.enableDiskCache = false}, rejected.diagnostics).transform([&](auto value) { rejected = std::move(value); }) || !rejected.spirv.empty() ||
             rejected.diagnostics.find("resolveDescriptor") == std::string::npos) {
             return RhiTestResult::fail("unsafe native AS lowering was not rejected: " + rejected.diagnostics);
         }
@@ -68,8 +69,9 @@ public:
             render::ComputeProgram program;
             const render::ComputeProgramBindingDesc layout[] = {{0}, {1}};
             const auto initialized = program.initialize(*device, {
-                .spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * sizeof(uint32_t),
-                .bindings = layout, .bindingCount = 2, .requiresRayQuery = false,
+                .spirv = shader.spirv,
+                .bindings = {layout, 2},
+                .requiresRayQuery = false,
             }, log);
             if (mode == render::SlangDescriptorHeapMode::Native && render::hasError(initialized, render::Error::Unsupported)) {
                 return RhiTestResult::skip("mapped passed; native requires KHR untyped pointers");
@@ -100,10 +102,10 @@ public:
             NATIVE_REQUIRE(frame.begin(0));
             NATIVE_REQUIRE(commands->begin(&frame));
             const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = records.get()}, {.binding = 1, .buffer = output.get()}};
-            NATIVE_REQUIRE(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings, .bindingCount = 2}));
+            NATIVE_REQUIRE(program.dispatch({.commandBuffer = commands.get(), .bindings = {bindings, 2}}));
             NATIVE_REQUIRE(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
-            NATIVE_REQUIRE(tracker.submit({.commandBuffers = submitted, .commandBufferCount = 1}, frame));
+            NATIVE_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
             NATIVE_REQUIRE(frame.wait(10'000'000'000ull));
             std::array<uint32_t, 1600> values{};
             const void* mapped = output->map();
@@ -154,8 +156,9 @@ public:
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode,
             }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
             std::unique_ptr<render::ShaderModule> shader;
-            const auto moduleResult = device->createShaderModule({.code = compiled.spirv.data(),
-                .byteSize = compiled.spirv.size() * sizeof(uint32_t)}).transform([&](auto rhiValue) { shader = std::move(rhiValue); });
+            const auto moduleResult = device->createShaderModule({
+                .spirv = compiled.spirv,
+            }).transform([&](auto rhiValue) { shader = std::move(rhiValue); });
             if (mode == render::SlangDescriptorHeapMode::Native && render::hasError(moduleResult, render::Error::Unsupported)) {
                 return RhiTestResult::skip("mapped passed; native requires KHR untyped pointers");
             }
@@ -163,8 +166,11 @@ public:
             struct Push { uint32_t inputBuffer; uint32_t cookie; };
             static_assert(sizeof(Push) == 8);
             std::unique_ptr<render::ComputePipeline> pipeline;
-            NATIVE_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .computeEntryPoint = "main",
-                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
+            NATIVE_REQUIRE(device->createComputePipeline({
+                .computeShader = {shader.get(), "main"},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(Push),
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
             std::array<std::unique_ptr<render::BindlessHeap>, 2> heaps;
             std::array<std::unique_ptr<render::Buffer>, 2> inputs, outputs;
             std::array<render::BindlessHandle, 2> inputHandles, outputHandles;
@@ -229,7 +235,7 @@ public:
             }
             NATIVE_REQUIRE(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
-            NATIVE_REQUIRE(tracker.submit({.commandBuffers = submitted, .commandBufferCount = 1}, frame));
+            NATIVE_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
             NATIVE_REQUIRE(frame.wait(10'000'000'000ull));
             for (uint32_t i = 0; i < heaps.size(); ++i) {
                 std::array<uint32_t, 4> actual{};
@@ -283,8 +289,9 @@ public:
                 (mode == render::SlangDescriptorHeapMode::Native ? "native.spv" : "mapped.spv"), std::ios::binary);
             binary.write(reinterpret_cast<const char*>(compiled.spirv.data()), compiled.spirv.size() * sizeof(uint32_t));
             std::unique_ptr<render::ShaderModule> shader;
-            const auto module = device->createShaderModule({.code = compiled.spirv.data(),
-                .byteSize = compiled.spirv.size() * sizeof(uint32_t)}).transform([&](auto rhiValue) { shader = std::move(rhiValue); });
+            const auto module = device->createShaderModule({
+                .spirv = compiled.spirv,
+            }).transform([&](auto rhiValue) { shader = std::move(rhiValue); });
             if (mode == render::SlangDescriptorHeapMode::Native && render::hasError(module, render::Error::Unsupported)) {
                 return RhiTestResult::skip("mapped passed; native requires KHR untyped pointers");
             }
@@ -292,8 +299,11 @@ public:
             struct Push { uint32_t atomics, counters, records, count, base; };
             static_assert(sizeof(Push) == 20);
             std::unique_ptr<render::ComputePipeline> pipeline;
-            NATIVE_REQUIRE(device->createComputePipeline({.computeShader = shader.get(), .computeEntryPoint = "main",
-                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
+            NATIVE_REQUIRE(device->createComputePipeline({
+                .computeShader = {shader.get(), "main"},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(Push),
+            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
             std::unique_ptr<render::BindlessHeap> heap;
             NATIVE_REQUIRE(device->createBindlessHeap({.maxSampledImages = 7, .maxBuffers = 8}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
             render::BindlessHandle unused;
@@ -358,14 +368,14 @@ public:
                     .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 },
                 {.buffer = buffers[2].get(), .before = {}, .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead}}};
-            if (auto commandResult = commands->synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {barriers, 3}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             const Push push{handles[0].shaderIndex, handles[1].shaderIndex, handles[2].shaderIndex, count, base};
             commands->bindBindlessHeap(*heap);
             if (auto commandResult = commands->bindExecution((pipeline)->execution(), &push, sizeof(push)); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             commands->dispatch(count / 64, 1, 1);
             NATIVE_REQUIRE(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
-            NATIVE_REQUIRE(tracker.submit({.commandBuffers = submitted, .commandBufferCount = 1}, frame));
+            NATIVE_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
             NATIVE_REQUIRE(frame.wait(10'000'000'000ull));
             const std::array<void*, 2> destination{values.data(), counters.data()};
             for (uint32_t i = 0; i < destination.size(); ++i) {

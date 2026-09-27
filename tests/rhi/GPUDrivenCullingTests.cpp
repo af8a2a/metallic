@@ -28,13 +28,16 @@ public:
             .entryPointName = "gpuDrivenConeProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}};
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .bindings = bindings, .bindingCount = 1, .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .bindings = {bindings, 1},
+            .requiresRayQuery = false,
+        }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = context.outputBuffer("data").buffer()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 1});
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 1}});
     }
 private:
     render::ComputeProgram program_;
@@ -97,8 +100,11 @@ public:
             .entryPointName = "twoPassOcclusionProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}, {.binding = 1}, {.binding = 2}};
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .bindings = bindings, .bindingCount = 3, .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .bindings = {bindings, 3},
+            .requiresRayQuery = false,
+        }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
@@ -106,7 +112,7 @@ public:
             {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
             {.binding = 1, .buffer = context.outputBuffer("history").buffer()},
             {.binding = 2, .buffer = context.outputBuffer("current").buffer()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 3});
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 3}});
     }
 private:
     render::ComputeProgram program_;

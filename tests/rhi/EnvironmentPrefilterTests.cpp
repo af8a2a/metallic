@@ -42,8 +42,11 @@ public:
         if (!result) { log = shader.diagnostics; return result; }
         const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}, {.binding = 1},
             {.binding = 2, .kind = render::ComputeResourceBindingKind::SampledImage}};
-        return program_.initialize(*context.device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .bindings = bindings, .bindingCount = 3, .requiresRayQuery = false}, log);
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv,
+            .bindings = {bindings, 3},
+            .requiresRayQuery = false,
+        }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
@@ -52,9 +55,12 @@ public:
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 0, .buffer = context.outputBuffer("field").buffer()},
             {.binding = 1, .buffer = environment.prefilteredSpecularBuffer},
-            {.binding = 2, .textureViews = &source, .textureViewCount = 1}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings, .bindingCount = 3,
-            .groupCountX = (kTexels + 2 + 63) / 64});
+            {.binding = 2, .textureViews = {&source, 1}}};
+        return program_.dispatch({
+            .commandBuffer = &context.commandBuffer(),
+            .bindings = {bindings, 3},
+            .groupCountX = (kTexels + 2 + 63) / 64,
+        });
     }
 private:
     render::ComputeProgram program_;

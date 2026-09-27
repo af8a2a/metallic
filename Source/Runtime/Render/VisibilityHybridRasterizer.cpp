@@ -71,10 +71,15 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
         result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityHybridRaster",
             .entryPointName = clusterEntries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
-        result = device.createShaderModule({.code = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
-            .debugName = clusterEntries[i]}).transform([&](auto rhiValue) { clusterShaders_[i] = std::move(rhiValue); });
-        if (result) { result = device.createComputePipeline({.computeShader = clusterShaders_[i].get(),
-            .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}).transform([&](auto rhiValue) { clusterPipelines_[i] = std::move(rhiValue); }); }
+        result = device.createShaderModule({
+            .spirv = shader.spirv,
+            .debugName = clusterEntries[i],
+        }).transform([&](auto rhiValue) { clusterShaders_[i] = std::move(rhiValue); });
+        if (result) { result = device.createComputePipeline({
+            .computeShader = {clusterShaders_[i].get()},
+            .usesBindlessHeap = true,
+            .bindlessUserPushDataSize = sizeof(Push),
+        }).transform([&](auto rhiValue) { clusterPipelines_[i] = std::move(rhiValue); }); }
         if (!result) { return result; }
     }
     const char* entries[] = {"hybridResetMain", "hybridArgumentsMain", "hybridRasterMain",
@@ -84,23 +89,31 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
         result = compileSlangShaderToSpirv({.moduleName = "Features/VisibilityBuffer/VisibilityHybridRaster",
             .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log += shader.diagnostics; return result; }
-        result = device.createShaderModule({.code = shader.spirv.data(),
-            .byteSize = shader.spirv.size() * sizeof(uint32_t), .debugName = entries[i]}).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });
+        result = device.createShaderModule({
+            .spirv = shader.spirv,
+            .debugName = entries[i],
+        }).transform([&](auto rhiValue) { shaders_[i] = std::move(rhiValue); });
         if (!result) { return result; }
         if (i < compute_.size()) {
-            result = device.createComputePipeline({.computeShader = shaders_[i].get(),
-                .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(Push)}).transform([&](auto rhiValue) { compute_[i] = std::move(rhiValue); });
+            result = device.createComputePipeline({
+                .computeShader = {shaders_[i].get()},
+                .usesBindlessHeap = true,
+                .bindlessUserPushDataSize = sizeof(Push),
+            }).transform([&](auto rhiValue) { compute_[i] = std::move(rhiValue); });
             if (!result) { return result; }
         }
     }
     for (size_t i = 0; i < resolve_.size(); ++i) {
-        result = device.createGraphicsPipeline({.vertexShader = shaders_[3].get(),
-            .fragmentShader = shaders_[4].get(), .colorFormat = Format::R32Uint,
+        result = device.createGraphicsPipeline({
+            .vertexShader = {shaders_[3].get()},
+            .fragmentShader = {shaders_[4].get()},
+            .colorFormat = Format::R32Uint,
             .depthStencilFormat = Format::D32Sfloat,
             .rasterization = {.cullMode = CullMode::None},
             .depthStencil = {.depthTestEnable = true, .depthWriteEnable = true,
                 .depthCompareOp = i == 0 ? CompareOp::LessEqual : CompareOp::GreaterEqual},
-            .usesBindlessHeap = true}).transform([&](auto rhiValue) { resolve_[i] = std::move(rhiValue); });
+            .usesBindlessHeap = true,
+        }).transform([&](auto rhiValue) { resolve_[i] = std::move(rhiValue); });
         if (!result) { return result; }
     }
     return {};
@@ -134,13 +147,13 @@ Result<> VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPix
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         };
     }
-    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {barriers, 3}}); !commandResult) { return commandResult; }
     commands.bindBindlessHeap(*heap_);
     if (auto commandResult = commands.bindExecution((compute_[0])->execution()); !commandResult) { return commandResult; }
     commands.pushBindlessData(&push_, sizeof(push_));
     commands.dispatch((push_.width + 63u) / 64u, push_.height);
     for (auto& barrier : barriers) { barrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; }
-    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {barriers, 3}}); !commandResult) { return commandResult; }
     commands.endDebugLabel();
     return {};
 }
@@ -154,7 +167,7 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
     };
-    if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     commands.bindBindlessHeap(*heap_);
     if (!softwareRasterized) {
         if (auto commandResult = commands.bindExecution((compute_[1])->execution()); !commandResult) { return commandResult; }
@@ -165,7 +178,7 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
         };
-        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
         if (auto commandResult = commands.bindExecution((compute_[2])->execution()); !commandResult) { return commandResult; }
         commands.pushBindlessData(&push_, sizeof(push_));
         auto result = commands.dispatchIndirect(*buffers_[2]);
@@ -176,14 +189,14 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
         };
-        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     }
     barrier = {
         .buffer = buffers_[1].get(),
         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
     };
-    if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     commands.endDebugLabel();
     commands.beginDebugLabel({.name = "Hybrid raster: merge visibility and depth"});
     const TextureBarrierDesc attachments[] = {
@@ -201,14 +214,17 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
             .before = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
             .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
         }};
-    if (auto commandResult = commands.synchronize({.textures = attachments, .textureCount = 2}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.textures = {attachments, 2}}); !commandResult) { return commandResult; }
     const RenderingAttachmentDesc color{.view = &visibility, .state = ResourceState::ColorAttachment,
         .loadOp = LoadOp::Load, .storeOp = StoreOp::Store};
     const RenderingAttachmentDesc z{.view = &depth, .state = ResourceState::DepthStencilAttachment,
         .loadOp = LoadOp::Load, .storeOp = StoreOp::Store};
     const Rect area{.width = push_.width, .height = push_.height};
-    if (auto rendering = commands.beginRendering({.renderArea = area, .colorAttachments = &color,
-        .colorAttachmentCount = 1, .depthStencilAttachment = &z}); !rendering) { return rendering; }
+    if (auto rendering = commands.beginRendering({
+        .renderArea = area,
+        .colorAttachments = {&color, 1},
+        .depthStencilAttachment = &z,
+    }); !rendering) { return rendering; }
     commands.setViewport({.width = float(push_.width), .height = float(push_.height), .maxDepth = 1.0f});
     commands.setScissor(area);
     if (auto commandResult = commands.bindExecution((resolve_[push_.reversedZ])->execution()); !commandResult) { return commandResult; }
@@ -253,7 +269,7 @@ Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, floa
             .before = resourceSyncScope(clusterInitialized_ ? ResourceState::IndirectArgument : ResourceState::Undefined, PipelineStageBits::AllCommands),
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         }};
-    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {barriers, 3}}); !commandResult) { return commandResult; }
     if (auto commandResult = commands.bindExecution((clusterPipelines_[0])->execution()); !commandResult) { return commandResult; }
     commands.pushBindlessData(&push_, sizeof(push_));
     commands.dispatch(1);
@@ -262,7 +278,7 @@ Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, floa
         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
-    if (auto commandResult = commands.synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {&ready, 1}}); !commandResult) { return commandResult; }
     return {};
 }
 
@@ -279,7 +295,7 @@ Result<> VisibilityHybridRasterizer::prepareClusterCandidates(CommandBuffer& com
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
         }};
-    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {barriers, 2}}); !commandResult) { return commandResult; }
     return {};
 }
 
@@ -311,7 +327,7 @@ Result<> VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffe
                 }};
             // Prefix rewrites arguments after count. Scatter only publishes
             // candidate slots, leaving arguments ready for classification.
-            if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = phase == 1 ? 2u : 1u}); !commandResult) { return commandResult; }
+            if (auto commandResult = commands.synchronize({.buffers = {barriers, phase == 1 ? 2u : 1u}}); !commandResult) { return commandResult; }
         }
     }
     return {};
@@ -336,7 +352,7 @@ Result<> VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
             .before = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         }};
-    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {barriers, 2}}); !commandResult) { return commandResult; }
     push.activeBuildPhase = 1;
     commands.pushBindlessData(&push, sizeof(push));
     commands.dispatch(1);
@@ -352,7 +368,7 @@ Result<> VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
-    if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     commands.bindBindlessHeap(*heap_);
     const uint32_t blocks = (push_.inputClusterCount + 127u) / 128u;
     for (size_t i = 1; i < clusterPipelines_.size(); ++i) {
@@ -364,23 +380,23 @@ Result<> VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
             if (!result) { commands.endDebugLabel(); return result; }
         }
         else if (blocks != 0) { commands.dispatch(std::min(blocks, kDispatchWidth), (blocks + kDispatchWidth - 1u) / kDispatchWidth); }
-        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     }
     barrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
-    if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     barrier = {
         .buffer = clusterArguments_.get(),
         .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
     };
-    if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     if (!compactCandidates_) {
         barrier = {
             .buffer = candidateArguments_.get(),
             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
         };
-        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     }
     clusterInitialized_ = true;
     commands.endDebugLabel();
