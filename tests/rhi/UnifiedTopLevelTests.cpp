@@ -44,6 +44,8 @@ public:
         if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("ray query/descriptor heap unavailable"); }
         TLAS_REQUIRE(created);
         auto& device = **created;
+        TLAS_CHECK(hasError(device.createRayTracingAccelerationStructure(RayTracingAccelerationStructureDesc{}), Error::InvalidArgument));
+        TLAS_CHECK(hasError(device.createRayTracingAccelerationStructure(PartitionedAccelerationStructureDesc{}), Error::InvalidArgument));
         if (partitioned_ && !device.capabilities().partitionedAccelerationStructure) {
             return RhiTestResult::skip("PTLAS unavailable");
         }
@@ -85,7 +87,11 @@ public:
                 .partitionCount = 1, .maxInstancePerPartitionCount = 1};
             auto sizes = device.queryPartitionedAccelerationStructureBuildSizes(inputs);
             TLAS_REQUIRE(sizes);
-            auto resource = device.createPartitionedAccelerationStructure({.inputs = inputs, .sizes = *sizes});
+            auto invalidSizes = *sizes;
+            --invalidSizes.accelerationStructureSize;
+            TLAS_CHECK(hasError(device.createRayTracingAccelerationStructure(PartitionedAccelerationStructureDesc{
+                .inputs = inputs, .sizes = invalidSizes}), Error::InvalidArgument));
+            auto resource = device.createRayTracingAccelerationStructure(PartitionedAccelerationStructureDesc{.inputs = inputs, .sizes = *sizes});
             TLAS_REQUIRE(resource);
             partitioned = std::move(*resource);
             const PartitionedAccelerationStructureInstanceDesc partitionedInstance{

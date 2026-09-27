@@ -8951,7 +8951,7 @@ Result<PartitionedAccelerationStructureBuildSizes> Device::queryPartitionedAccel
 #endif
 }
 
-Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createPartitionedAccelerationStructure(
+Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracingAccelerationStructure(
     const PartitionedAccelerationStructureDesc& desc)
 {
     if (impl_ == nullptr || desc.sizes.accelerationStructureSize == 0 ||

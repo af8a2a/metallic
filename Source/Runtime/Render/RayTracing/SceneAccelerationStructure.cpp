@@ -164,7 +164,7 @@ struct TopLevelBuildStrategy {
         scratchSize = sizes->buildScratchSize;
         instanceBytes = sizes->instanceWriteInfoSize;
         operationBytes = sizes->operationInfoSize + sizes->operationCountSize;
-        return device.createPartitionedAccelerationStructure({.inputs = inputs, .sizes = *sizes});
+        return device.createRayTracingAccelerationStructure(PartitionedAccelerationStructureDesc{.inputs = inputs, .sizes = *sizes});
     }
 
     Result<> encode(Device& device, std::span<const RayTracingInstanceDesc> instances,

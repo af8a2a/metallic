@@ -890,7 +890,8 @@ struct RayTracingAccelerationStructureDesc {
     RayTracingAccelerationStructureBuildFlags buildFlags =
         RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
     uint64_t size = 0;
-    // Partitioned resources are created with createPartitionedAccelerationStructure.
+    // Partitioned resources use the PartitionedAccelerationStructureDesc overload
+    // of createRayTracingAccelerationStructure; this creation descriptor is Standard-only.
     // BottomLevel and OpacityMicromap resources always use Standard.
     RayTracingTopLevelBackend topLevelBackend = RayTracingTopLevelBackend::Standard;
 };
@@ -1012,6 +1013,8 @@ struct PartitionedAccelerationStructureBuildSizes {
 };
 
 struct PartitionedAccelerationStructureDesc {
+    // Selects the Partitioned TopLevel backend at creation. Keep its capacity
+    // and operation-storage requirements separate from the Standard descriptor.
     PartitionedAccelerationStructureBuildInputs inputs;
     PartitionedAccelerationStructureBuildSizes sizes;
 };
@@ -2237,6 +2240,7 @@ public:
     [[nodiscard]] Result<RayTracingAccelerationStructureProperties> queryRayTracingAccelerationStructureProperties() const;
     [[nodiscard]] Result<RayTracingAccelerationStructureBuildSizes> queryRayTracingAccelerationStructureBuildSizes(const RayTracingAccelerationStructureBuildInputs& inputs) const;
     [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createRayTracingAccelerationStructure(const RayTracingAccelerationStructureDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createRayTracingAccelerationStructure(const PartitionedAccelerationStructureDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<Buffer>> createRayTracingInstanceBuffer(std::span<const RayTracingInstanceDesc> instances);
     Result<> writeRayTracingInstances(
         Buffer& buffer,
@@ -2258,7 +2262,6 @@ public:
     [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureMoveSizes(uint32_t maxCount, uint64_t maxBytes) const;
     [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureBottomLevelBuildSizes(const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc) const;
     [[nodiscard]] Result<PartitionedAccelerationStructureBuildSizes> queryPartitionedAccelerationStructureBuildSizes(const PartitionedAccelerationStructureBuildInputs& inputs) const;
-    [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createPartitionedAccelerationStructure(const PartitionedAccelerationStructureDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<Buffer>> createPartitionedAccelerationStructureInstanceBuffer(std::span<const PartitionedAccelerationStructureInstanceDesc> instances);
 
 private:
