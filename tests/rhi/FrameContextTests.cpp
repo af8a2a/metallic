@@ -1257,6 +1257,13 @@ public:
         type = RhiTestType::Rendering;
         name = joined ? "frame_self_submit_two_slots_joined" : "frame_self_submit_two_slots";
     }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "async", .profile = "async", .layer = bench::Layer::RenderGraph,
+            .requirements = {.capabilities = {bench::Capability::IndependentCopy},
+                .queues = {render::QueueType::Graphics, render::QueueType::Copy}},
+            .coverage = {"graph.independentCopy.progress", "graph.frameCompletion.join"}};
+    }
     RhiTestResult run(RhiTestContext& context) override
     {
         auto* copyQueue = context.device.getQueue(render::QueueType::Copy);
@@ -1376,6 +1383,13 @@ public:
 class FrameCrossQueueGraphTest : public RhiTest {
 public:
     FrameCrossQueueGraphTest() { type = RhiTestType::Rendering; name = "frame_cross_queue_graph_dependencies"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "async", .profile = "async", .layer = bench::Layer::RenderGraph,
+            .requirements = {.capabilities = {bench::Capability::IndependentCopy, bench::Capability::IndependentCompute},
+                .queues = {render::QueueType::Graphics, render::QueueType::Compute, render::QueueType::Copy}},
+            .coverage = {"graph.crossQueue.dependencies", "query.ring.reuse"}};
+    }
     RhiTestResult run(RhiTestContext& context) override
     {
         const auto validationBefore = context.validationMessageCount ? context.validationMessageCount->load() : 0u;

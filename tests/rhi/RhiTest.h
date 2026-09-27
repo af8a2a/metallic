@@ -3,6 +3,7 @@
 #include <atomic>
 
 #include "Runtime/Render/GAPI/Rhi.h"
+#include "harness/Requirements.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -17,6 +18,8 @@ class NsightGraphicsCapture;
 } // namespace metallic::render::profiling
 
 namespace metallic::tests {
+
+namespace bench { class Evidence; }
 
 enum class RhiTestType {
     Validation,
@@ -53,6 +56,7 @@ struct RhiTestContext {
     bool enableValidation = false;
     std::atomic_uint* validationMessageCount = nullptr;
     render::profiling::NsightGraphicsCapture* nsightCapture = nullptr;
+    bench::Evidence* evidence = nullptr;
 };
 
 class RhiTest {
@@ -61,6 +65,9 @@ public:
     const char* name = nullptr;
 
     virtual ~RhiTest() = default;
+    virtual std::optional<bench::Metadata> metadata() const { return std::nullopt; }
+    virtual RhiTestResult runCpu(bench::Evidence&) { return RhiTestResult::fail("CPU entry point is not implemented"); }
+    virtual void cleanupCpu() {}
     virtual void init(RhiTestContext&) {}
     virtual RhiTestResult run(RhiTestContext& context) = 0;
     virtual void cleanup(RhiTestContext&) {}

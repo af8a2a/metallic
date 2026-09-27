@@ -1225,13 +1225,17 @@ VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     }
     const auto* sink = context ? &context->validation : nullptr;
     if (sink && sink->callback) {
-        std::array<ValidationObject, 16> objects{};
-        const uint32_t count = std::min(callbackData->objectCount, uint32_t(objects.size()));
-        for (uint32_t i = 0; i < count; ++i) {
-            objects[i] = {callbackData->pObjects[i].objectHandle, static_cast<uint32_t>(callbackData->pObjects[i].objectType), callbackData->pObjects[i].pObjectName};
+        try {
+            std::vector<ValidationObject> objects(callbackData->objectCount);
+            for (uint32_t i = 0; i < callbackData->objectCount; ++i) {
+                objects[i] = {callbackData->pObjects[i].objectHandle, static_cast<uint32_t>(callbackData->pObjects[i].objectType), callbackData->pObjects[i].pObjectName};
+            }
+            sink->callback(sink->context, {static_cast<uint32_t>(severity), type, callbackData->messageIdNumber,
+                callbackData->pMessageIdName, callbackData->pMessage, objects});
+        } catch (...) {
+            sink->callback(sink->context, {VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT, type, 0,
+                "Metallic.ValidationCaptureFailure", "Could not retain validation objects", {}});
         }
-        sink->callback(sink->context, {static_cast<uint32_t>(severity), type, callbackData->messageIdNumber,
-            callbackData->pMessageIdName, callbackData->pMessage, std::span(objects).first(count)});
     }
     return VK_FALSE;
 }
@@ -10749,7 +10753,8 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     }
     VkInstanceCreateInfo instanceInfo{
         .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pNext = desc.shaderPrintf ? &earlyMessages : nullptr,
+        .pNext = desc.shaderPrintf || (validationRequested && debugUtilsAvailable && desc.validationSink.callback)
+            ? &earlyMessages : nullptr,
         .pApplicationInfo = &applicationInfo,
         .enabledLayerCount = static_cast<uint32_t>(instanceLayers.size()),
         .ppEnabledLayerNames = instanceLayers.data(),
@@ -11441,6 +11446,8 @@ struct VulkanNativeAccess {
             .device = device.impl_->device,
             .apiVersion = kVulkanApiVersion,
             .descriptorHeapEnabled = device.impl_->bindlessDescriptorHeapEnabled,
+            .validationEnabled = device.impl_->validationEnabled,
+            .validationMessengerActive = device.impl_->debugMessenger != VK_NULL_HANDLE,
         };
     }
 

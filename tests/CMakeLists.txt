@@ -227,6 +227,14 @@ add_executable(MetallicRhiTests
     rhi/DebugControlTests.cpp
     rhi/Main.cpp
     rhi/RhiTest.h
+    rhi/harness/Requirements.cpp
+    rhi/harness/Evidence.cpp
+    rhi/harness/ValidationRecorder.cpp
+    rhi/harness/VulkanDiagnostics.cpp
+    rhi/harness/ProcessRunner.cpp
+    rhi/harness/Runner.cpp
+    rhi/harness/SampleCases.cpp
+    rhi/harness/HarnessTests.cpp
     rhi/NativeDescriptorHeapTests.cpp
     rhi/NativeDescriptorHeapSpirvTests.cpp
     rhi/BindlessBufferTests.cpp
@@ -326,8 +334,29 @@ target_compile_definitions(MetallicRhiTests PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    OUTPUT_VARIABLE _testbench_revision OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+target_compile_definitions(MetallicRhiTests PRIVATE
+    METALLIC_TESTBENCH_REVISION="${_testbench_revision}"
+    METALLIC_TESTBENCH_COMPILER="${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}"
+)
 if(WIN32)
-    target_link_libraries(MetallicRhiTests PRIVATE dxgi)
+    set(METALLIC_TESTBENCH_LAYER_PATH "" CACHE PATH "Optional explicit Vulkan layer directory for isolated testbench processes")
+    set(_testbench_layer_arguments)
+    if(METALLIC_TESTBENCH_LAYER_PATH)
+        list(APPEND _testbench_layer_arguments --tb-layer-path "${METALLIC_TESTBENCH_LAYER_PATH}")
+    endif()
+    add_test(NAME MetallicTestbench.Harness COMMAND MetallicRhiTests --tb-self-test)
+    add_test(NAME MetallicTestbench.Contract COMMAND MetallicRhiTests --tb-run --tb-suite contract --tb-require-all)
+    add_test(NAME MetallicTestbench.Core COMMAND MetallicRhiTests --tb-run --tb-suite core --tb-require-all ${_testbench_layer_arguments})
+    add_test(NAME MetallicTestbench.Async COMMAND MetallicRhiTests --tb-run --tb-suite async ${_testbench_layer_arguments})
+    set_tests_properties(MetallicTestbench.Harness MetallicTestbench.Contract MetallicTestbench.Core MetallicTestbench.Async
+        PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "testbench" TIMEOUT 180)
+    set_tests_properties(MetallicTestbench.Core MetallicTestbench.Async PROPERTIES RESOURCE_LOCK MetallicGpu)
+endif()
+
+if(WIN32)
+    target_link_libraries(MetallicRhiTests PRIVATE dxgi shell32)
     target_compile_definitions(MetallicRhiTests PRIVATE NOMINMAX)
     target_compile_options(MetallicRhiTests PRIVATE /EHsc)
 
@@ -430,3 +459,12 @@ if(Python3_Interpreter_FOUND)
         COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/rhi/TestShaderTraceP2Evidence.py")
     set_tests_properties(MetallicShaderTraceP2EvidenceTests PROPERTIES LABELS "tools;shader-trace" TIMEOUT 30)
 endif()
+
+# Testbench and existing GPU/editor jobs must not contend under ctest -j.
+get_property(_metallic_registered_tests DIRECTORY PROPERTY TESTS)
+foreach(_test IN LISTS _metallic_registered_tests)
+    get_property(_labels TEST "${_test}" PROPERTY LABELS)
+    if(_labels MATCHES "(^|;)(rhi|editor)(;|$)")
+        set_property(TEST "${_test}" APPEND PROPERTY RESOURCE_LOCK MetallicGpu)
+    endif()
+endforeach()

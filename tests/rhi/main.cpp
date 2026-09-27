@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Runner.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Task/TaskSystem.h"
 
@@ -390,6 +391,7 @@ void registerRhiTests()
 
 int main(int argc, char** argv)
 {
+    if (const auto result = metallic::tests::bench::runIfRequested(argc, argv)) { return *result; }
     Options options;
     std::vector<std::string> gtestArguments;
     if (!parseArguments(argc, argv, options, gtestArguments)) {

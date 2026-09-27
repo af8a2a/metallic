@@ -12,6 +12,8 @@ struct NativeDevice {
     VkDevice device = VK_NULL_HANDLE;
     uint32_t apiVersion = 0;
     bool descriptorHeapEnabled = false;
+    bool validationEnabled = false;
+    bool validationMessengerActive = false;
 };
 
 struct NativeQueue {

@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Evidence.h"
 
 #include <array>
 #include <cmath>
@@ -13,6 +14,11 @@ public:
     {
         type = RhiTestType::Command;
         name = "submit_empty_command_buffer";
+    }
+
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.coverage = {"queue.submit.completion"}};
     }
 
     RhiTestResult run(RhiTestContext& context) override
@@ -100,6 +106,12 @@ public:
         name = "timestamp_query";
     }
 
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.requirements = {.capabilities = {bench::Capability::TimestampQueries}},
+            .coverage = {"query.timestamp.readback", "query.timestamp.hostReset"}, .artifacts = {"timestamps.json"}};
+    }
+
     RhiTestResult run(RhiTestContext& context) override
     {
         if (!context.device.capabilities().timestampQueries ||
@@ -177,6 +189,10 @@ public:
         const double milliseconds = queryPool->durationMilliseconds(
             timestamps[0].value,
             timestamps[1].value);
+        if (context.evidence) {
+            context.evidence->json("timestamps.json", {{"begin", timestamps[0].value}, {"end", timestamps[1].value},
+                {"milliseconds", milliseconds}, {"beginAvailable", timestamps[0].available}, {"endAvailable", timestamps[1].available}});
+        }
         if (!std::isfinite(milliseconds) || milliseconds < 0.0) {
             return RhiTestResult::fail("timestamp duration was invalid");
         }
