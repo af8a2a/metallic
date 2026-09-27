@@ -1,8 +1,8 @@
 #include "RhiTest.h"
-#include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/HzbSpd.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include <spdlog/spdlog.h>

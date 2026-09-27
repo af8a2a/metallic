@@ -12,7 +12,7 @@
 
 - [EditorApplication.cpp](../Source/Editor/EditorApplication.cpp)：`applyViewportCameraProperties()`。
 - [VisibilityBufferPass.cpp](../Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp)：`execute()` 中 `observedHistoryInvalidationRevision_` 与 `cameraCut`。
-- [HistoryResources.cpp](../Source/Runtime/Render/HistoryResources.cpp)：通用 revision 与排除 CameraMotion 的 `reprojectionInvalidationRevision()` 已分开维护。
+- [HistoryResources.cpp](../Source/Runtime/Render/Core/HistoryResources.cpp)：通用 revision 与排除 CameraMotion 的 `reprojectionInvalidationRevision()` 已分开维护。
 
 ## 同 camera、cut、驻留的因果对照
 

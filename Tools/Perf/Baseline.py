@@ -201,7 +201,7 @@ def collect(args):
     head = collector.command("git-head", ["git", "rev-parse", "HEAD"]).strip()
     collector.command("git-status", ["git", "status", "--porcelain=v1"])
     collector.command("git-diff", ["git", "diff", "--binary", "HEAD", "--", "Source", "Shaders", "Tools", "tests", "cmake", "CMakeLists.txt"])
-    source_files = ["Source/Runtime/Render/SlangCompiler.cpp", "Source/Runtime/Render/SlangCompiler.h",
+    source_files = ["Source/Runtime/Render/Core/SlangCompiler.cpp", "Source/Runtime/Render/Core/SlangCompiler.h",
         "Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp",
         "Source/Editor/EditorRasterComparison.cpp", "Source/Runtime/Render/Profiling/NsightGraphicsCapture.cpp",
         "Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang"]

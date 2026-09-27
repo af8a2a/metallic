@@ -17,9 +17,9 @@
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/Profiling/TracyProfiler.h"
-#include "Runtime/Render/SlangCompiler.h"
-#include "Runtime/Render/RenderFrameContext.h"
-#include "Runtime/Render/ResourceRegistry.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_loadso.h>

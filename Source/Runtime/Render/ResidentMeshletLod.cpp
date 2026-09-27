@@ -1,6 +1,6 @@
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/ResidentMeshletLod.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include <algorithm>
 
 namespace metallic::render {

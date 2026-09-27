@@ -1,13 +1,13 @@
 #pragma once
 
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 
 #include <unordered_set>
 
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/GAPI/Rhi.h"
-#include "Runtime/Render/ResourceRegistry.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/Streamer/MeshletStreamClas.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"

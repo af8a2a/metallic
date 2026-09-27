@@ -26,7 +26,7 @@ M0 实施进度见 [能力与证据基线](AgenticShaderOptimizationM0.md)，M1 
 | 工作量诊断 | 已有独立 coverage replay、atomic attempts、HZB 与 shader 身份记录 | 该诊断 shader 不写生产 visibility/depth，不是生产内核的隔离重放器 |
 | 引擎控制面 | `metallicctl`、有类型的 debug provider、job/artifact 协议已有 | 增加有限的 perf 操作，复用传输和证据身份；构建、进程和 Nsight 编排留在引擎外 |
 
-事实来源：[标记层级修正](NsightGpuScopeLabels20260924.md)、[标记复测](ZorahFullMarkerRecheck20260924.md)、[Slang 编译策略](../Source/Runtime/Render/SlangCompiler.cpp)、[SW 身份和实际绑定](../Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp)、[固定状态实验](../Source/Editor/EditorRasterComparison.cpp)、[控制面](DebugControlPlane.md)、[协作装载](ZorahFullCooperativeRaster.md)、[共享顶点与局部分桶](ZorahFullLocalWorkBins.md)。
+事实来源：[标记层级修正](NsightGpuScopeLabels20260924.md)、[标记复测](ZorahFullMarkerRecheck20260924.md)、[Slang 编译策略](../Source/Runtime/Render/Core/SlangCompiler.cpp)、[SW 身份和实际绑定](../Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp)、[固定状态实验](../Source/Editor/EditorRasterComparison.cpp)、[控制面](DebugControlPlane.md)、[协作装载](ZorahFullCooperativeRaster.md)、[共享顶点与局部分桶](ZorahFullLocalWorkBins.md)。
 
 还应立即处理两项可复现性缺口：
 

@@ -1,4 +1,4 @@
-#include "Runtime/Render/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "RhiTest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -6,8 +6,8 @@
 #include <cstring>
 #include <bit>
 #include <limits>
-#include "Runtime/Render/ComputeProgram.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 
 namespace metallic::tests {
 namespace {

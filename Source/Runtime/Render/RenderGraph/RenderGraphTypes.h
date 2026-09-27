@@ -4,8 +4,8 @@
 #include <chrono>
 
 #include "Runtime/Render/GAPI/Rhi.h"
-#include "Runtime/Render/DisplayOutput.h"
-#include "Runtime/Render/RenderView.h"
+#include "Runtime/Render/Core/DisplayOutput.h"
+#include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Render/Streamer/SceneStreamingTypes.h"
 

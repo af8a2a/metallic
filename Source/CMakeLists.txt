@@ -50,16 +50,16 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Debug/WorkControlShaderTrace.cpp
     Runtime/Render/Debug/RenderDebugProviders.cpp
     Runtime/Render/Debug/GpuDebugProbe.cpp
-    Runtime/Render/ComputeProgram.cpp
-    Runtime/Render/ComputeKernel.cpp
-    Runtime/Render/ResourceRegistry.cpp
+    Runtime/Render/Core/ComputeProgram.cpp
+    Runtime/Render/Core/ComputeKernel.cpp
+    Runtime/Render/Core/ResourceRegistry.cpp
     Runtime/Render/VisibilityHybridRasterizer.cpp
     Runtime/Render/MeshletLod.cpp
     Runtime/Render/ResidentMeshletLod.cpp
     Runtime/Render/MaterialBinning.cpp
     Runtime/Render/ClusterLightGrid.cpp
-    Runtime/Render/RenderFrameContext.cpp
-    Runtime/Render/HistoryResources.cpp
+    Runtime/Render/Core/RenderFrameContext.cpp
+    Runtime/Render/Core/HistoryResources.cpp
     Runtime/Render/ImportanceSampling.cpp
     Runtime/Render/ReGIR.cpp
     Runtime/Render/Streamer/SceneResourceManager.cpp
@@ -70,7 +70,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Subsystem/GPUSceneSubsystem.cpp
     Runtime/Render/Subsystem/RenderSubsystem.cpp
     Runtime/Render/Subsystem/RenderWorld.cpp
-    Runtime/Render/RenderView.cpp
+    Runtime/Render/Core/RenderView.cpp
     Runtime/Render/Streamer/MeshletStreamClas.cpp
     Runtime/Render/Streamer/MeshletStreamClasPool.cpp
     Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp
@@ -84,7 +84,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/GAPI/PipelineStateHash.cpp
     Runtime/Render/Streamer/UploadStreamer.cpp
     Runtime/Render/RenderSample.cpp
-    Runtime/Render/SlangCompiler.cpp
+    Runtime/Render/Core/SlangCompiler.cpp
     Runtime/Render/RenderGraph/RenderGraph.cpp
     Runtime/Render/RenderGraph/RenderGraphNode.cpp
     Runtime/Render/RenderGraph/RenderGraphAccessPlan.cpp

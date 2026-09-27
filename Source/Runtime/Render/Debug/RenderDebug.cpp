@@ -1,4 +1,4 @@
-#include "Runtime/Render/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Debug/GpuDebugProbe.h"
 #include "Runtime/Debug/DebugProbe.h"

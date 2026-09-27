@@ -1,6 +1,6 @@
 #include "Editor/EditorApplication.h"
 #include "Runtime/Render/GAPI/Rhi.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 
 #include <cstdlib>

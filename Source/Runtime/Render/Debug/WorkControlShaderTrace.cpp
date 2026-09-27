@@ -1,6 +1,6 @@
 #include "WorkControlShaderTrace.h"
 #include "Runtime/Debug/DebugHash.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include <slang.h>

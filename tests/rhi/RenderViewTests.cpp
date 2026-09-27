@@ -1,9 +1,9 @@
 #include "RhiTest.h"
-#include "Runtime/Render/ComputeProgram.h"
-#include "Runtime/Render/HistoryResources.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
-#include "Runtime/Render/RenderView.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/RenderView.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <cmath>
 #include <cstring>

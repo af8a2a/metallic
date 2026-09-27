@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/ResourceRegistry.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 
 #include <memory>
 #include <span>

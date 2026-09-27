@@ -2,7 +2,7 @@
 # and Metallic/sample targets must never depend on this optional warmup.
 add_executable(MetallicShaderCompiler EXCLUDE_FROM_ALL
     "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmup.cpp"
-    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/SlangCompiler.cpp"
+    "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/SlangCompiler.cpp"
 )
 target_include_directories(MetallicShaderCompiler PRIVATE "${CMAKE_SOURCE_DIR}/Source")
 find_package(Threads REQUIRED)

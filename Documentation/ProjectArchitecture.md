@@ -73,9 +73,10 @@ flowchart TB
 | `Source/Editor/` | 编辑器生命周期、面板、节点编辑、视口、性能分析和 NVML 监控 |
 | `Source/Runtime/Task/` | 进程级 TaskSystem、依赖图执行、取消、快照和观察者事件 |
 | `Source/Runtime/Scene/` | glTF/OpenUSD 导入、场景扁平化、meshlet/LOD 构建与 StreamAsset 文件格式 |
+| `Source/Runtime/Render/Core/` | RHI 上层通用图形封装：shader 编译、compute、资源注册与同步、帧和历史资源、视图与显示输出 |
 | `Source/Runtime/Render/RenderGraph/` | 图模型、Pass 接口、序列化、编译器、执行器和流送帧作用域 |
 | `Source/Runtime/Render/RenderPass/` | 内置 Pass 注册和实现 |
-| `Source/Runtime/Render/GAPI/` | RHI 公共接口、Streamer、场景光追接口 |
+| `Source/Runtime/Render/GAPI/` | RHI 公共接口、后端内部的 pipeline cache/hash、格式及上传完成工具 |
 | `Source/Runtime/Render/GAPI/Vulkan/` | Vulkan RHI、场景光追、NRD、Streamline、CLAS 的具体实现 |
 | `Source/Runtime/Render/Profiling/` | Nsight/NVTX 标记与 Aftermath GPU 崩溃转储 |
 | `Shaders/` | `Libraries/` 公共库与 `Features/` 功能 Shader，见 [目录说明](../Shaders/README.md) |
@@ -343,6 +344,17 @@ Task 子系统由 [`TaskGraph`](../Source/Runtime/Task/TaskGraph.h) 和 [`TaskSy
 TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进入主体前初始化，在所有异步工作排空后关闭。目前它主要服务于 StreamAsset 页面读取，但接口并不依赖渲染模块。
 
 ## 10. RHI 与 Vulkan 后端
+
+`Runtime/Render/Core` 收纳供 RenderGraph、Pass、编辑器和工具复用的图形基础封装：
+`ComputeKernel` / `ComputeProgram`、`ResourceRegistry` / `ResourceSynchronization`、
+`SlangCompiler` / `NativeDescriptorHeapSpirv`、`RenderFrameContext`、`HistoryResources`、
+`RenderView` 和 `DisplayOutput`。公共类型继续使用 `metallic::render` 命名空间，
+调用方直接包含 `Runtime/Render/Core/...`，旧路径不保留转发头。
+
+`GAPI` 保留底层设备、资源和命令接口以及后端内部工具；场景光追构建位于
+`RayTracing`，流送位于 `Streamer`，具体渲染算法和 Pass 不放入 `Core`。
+独立 `MetallicShaderCompiler` 与运行时共享 `Core/SlangCompiler.cpp`，
+shader warmup 仍为手动目标。
 
 ### 10.1 公共 RHI
 

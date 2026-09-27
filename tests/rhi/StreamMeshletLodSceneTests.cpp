@@ -3,7 +3,7 @@
 #include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
-#include "Runtime/Render/RenderView.h"
+#include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 

@@ -1,8 +1,8 @@
-#include "Runtime/Render/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamCompactClasPool.h"
 #include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include <algorithm>
 #include <cstring>
 #include <deque>

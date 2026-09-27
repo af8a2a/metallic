@@ -1,5 +1,5 @@
-#include "Runtime/Render/SlangCompiler.h"
-#include "Runtime/Render/NativeDescriptorHeapSpirv.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/NativeDescriptorHeapSpirv.h"
 
 #include <slang-com-ptr.h>
 #include <slang-tag-version.h>

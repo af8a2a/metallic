@@ -1,10 +1,10 @@
 #include "RhiTest.h"
 #include "RenderGraphViewerTestUi.h"
 #include "Editor/EditorRenderGraphViewer.h"
-#include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 

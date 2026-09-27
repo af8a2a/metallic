@@ -1,7 +1,7 @@
 #include "Runtime/Render/RenderGraph/NrdRuntime.h"
-#include "Runtime/Render/SlangCompiler.h"
-#include "Runtime/Render/ComputeKernel.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #if METALLIC_HAS_NRD
 #include "Runtime/Render/Denoising/NrdPlan.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"

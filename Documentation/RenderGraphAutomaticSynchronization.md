@@ -15,7 +15,7 @@
 | 同文件 `prepareNode`，约 1788 行 | 遍历 reflection 的输入、输出，自动转换并批量调用 synchronize | 已能让简单 pass 不手写图资源 barrier；看不到 pass 内多阶段及私有资源 |
 | 同文件 `lastResourceUse`，约 3469 行 | 每个逻辑资源的所有使用串起来，包括 read/read；Unsafe pass 形成串行边界 | 队列依赖与 barrier 由两条独立路径构造，信息粒度不一致 |
 | [VulkanRhi.cpp](../Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp)，`CommandBuffer::synchronize`，约 5997 行 | 校验 scope；相同 stage pair 合并 global memory barrier；保留 image layout transition；选择 unified GENERAL / optimal fallback | 只能优化调用者已给出的单次 barrier 批；不能恢复未声明的资源访问或跨调用消除依赖 |
-| [HistoryResources.cpp](../Source/Runtime/Render/HistoryResources.cpp)，约 506 / 549 行 | HistoryManager 自己维护状态和 transition | 状态与 graph 的资源账本分离；需要进入同一访问计划 |
+| [HistoryResources.cpp](../Source/Runtime/Render/Core/HistoryResources.cpp)，约 506 / 549 行 | HistoryManager 自己维护状态和 transition | 状态与 graph 的资源账本分离；需要进入同一访问计划 |
 | [NrdRuntime.cpp](../Source/Runtime/Render/RenderGraph/NrdRuntime.cpp)，`dispatch`，约 407 行 | 已有逐 dispatch resource 列表；每阶段显式转 GENERAL，并维护 pool state | 很适合映射为内部图阶段；不需要把 NRD 当作无法分析的黑盒 |
 
 因此，问题不是“现在完全没有自动 barrier”，而是自动化只覆盖 graph field 的 pass 边界，剩余同步分散在复杂 pass、history、GPUScene 和 streaming 中。

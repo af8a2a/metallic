@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Runtime/Debug/DebugTransport.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 
 #include <atomic>
 #include <functional>

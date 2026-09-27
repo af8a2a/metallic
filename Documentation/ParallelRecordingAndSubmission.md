@@ -284,8 +284,8 @@ UE 5.7.4 源码对照还提供了另一候选：其 Vulkan dynamic rendering 并
 
 相关实现：
 
-- [RenderFrameContext.h](E:/metallic/Source/Runtime/Render/RenderFrameContext.h)：`CommandRecordingContext`、全帧录制完成检查。
-- [RenderFrameContext.cpp](E:/metallic/Source/Runtime/Render/RenderFrameContext.cpp)：独占录制、重置与取消、本地资源保留。
+- [RenderFrameContext.h](E:/metallic/Source/Runtime/Render/Core/RenderFrameContext.h)：`CommandRecordingContext`、全帧录制完成检查。
+- [RenderFrameContext.cpp](E:/metallic/Source/Runtime/Render/Core/RenderFrameContext.cpp)：独占录制、重置与取消、本地资源保留。
 - [RenderGraphExecutor.cpp](E:/metallic/Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp)：协调线程准备、节点输入快照、工作量分批、TaskSystem 汇合和结果合并。
 - [VulkanRhi.cpp](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp)：原生命令录制完成发布及队列接受后的资源交接。
 

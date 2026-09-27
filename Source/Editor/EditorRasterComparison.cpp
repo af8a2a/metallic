@@ -1,4 +1,4 @@
-#include "Runtime/Render/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
 #include "Editor/EditorApplication.h"

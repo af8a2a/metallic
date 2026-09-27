@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/GAPI/Rhi.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 
 #include <any>

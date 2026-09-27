@@ -4,7 +4,7 @@
 #include "Runtime/Render/Profiling/CpuProfile.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 
 namespace metallic::render::builtin_pass {
 namespace {

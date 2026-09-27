@@ -7,7 +7,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/RenderGraph/RenderGraphGpuLabels.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
-#include "Runtime/Render/HistoryResources.h"
+#include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"

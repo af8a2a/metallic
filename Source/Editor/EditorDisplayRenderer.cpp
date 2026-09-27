@@ -1,5 +1,5 @@
 #include "Editor/EditorDisplayRenderer.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <imgui.h>
 #include <backends/imgui_impl_vulkan.h>

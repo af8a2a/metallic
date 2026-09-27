@@ -1,6 +1,6 @@
 #include "RhiTest.h"
 
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <chrono>
 #include <filesystem>

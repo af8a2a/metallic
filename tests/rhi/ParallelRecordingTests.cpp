@@ -1,5 +1,5 @@
 #include "RhiTest.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Task/TaskSystem.h"
 

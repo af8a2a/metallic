@@ -1,7 +1,7 @@
 #include <limits>
 #include "RhiTest.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
 

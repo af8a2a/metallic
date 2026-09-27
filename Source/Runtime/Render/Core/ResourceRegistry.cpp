@@ -1,4 +1,4 @@
-#include "Runtime/Render/ResourceRegistry.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 
 #include <algorithm>
 #include <array>

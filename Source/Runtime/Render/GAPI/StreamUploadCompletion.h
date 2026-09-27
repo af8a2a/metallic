@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 
 #include <utility>
 #include <algorithm>

@@ -1,4 +1,4 @@
-#include "Runtime/Render/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "RhiTest.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include <array>

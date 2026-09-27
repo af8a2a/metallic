@@ -1,11 +1,11 @@
 #include "RhiTest.h"
 #include "Runtime/Render/Streamer/MeshletStreamCompactClasPool.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Scene/Scene.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
-#include "Runtime/Render/RenderView.h"
-#include "Runtime/Render/HistoryResources.h"
+#include "Runtime/Render/Core/RenderView.h"
+#include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include <cstdlib>
 #include <cmath>

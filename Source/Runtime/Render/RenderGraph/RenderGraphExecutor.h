@@ -2,7 +2,7 @@
 
 #include "Runtime/Render/RenderGraph/RenderGraphNode.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/SchedulingDiagnostics.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
 #include "Runtime/Scene/SceneLoad.h"

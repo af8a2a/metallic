@@ -1,6 +1,6 @@
-#include "Runtime/Render/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/ClusterLightGrid.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
 #include <cmath>

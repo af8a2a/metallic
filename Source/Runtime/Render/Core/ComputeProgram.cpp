@@ -1,4 +1,4 @@
-#include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Profiling/CpuProfile.h"
 
 #include <algorithm>

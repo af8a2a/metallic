@@ -27,7 +27,7 @@
 | unified layouts | `Source/` 中未发现该扩展的启用代码 | 需要设备能力查询、启用和 backend policy；目前不能假定有扩展效率保证 |
 | 首个纵向样例 | 材质分桶的三个 ComputeProgram 共用 9 个输入/输出绑定，后接现成的间接着色批次 | 先迁移这条链，比一开始覆盖整个 streaming/culling 更集中 |
 
-核心证据：[`ComputeProgram.cpp`](../Source/Runtime/Render/ComputeProgram.cpp) 的 `ComputeDescriptorTables`、`acquireTables()`、`dispatchImpl()`；[`VulkanRhi.cpp`](../Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp) 的 `setupResourceHeap()`、`writeImages()`、`bindBindlessHeap()`、`stateInfo()`；[`UploadStreamer.cpp`](../Source/Runtime/Render/Streamer/UploadStreamer.cpp) 的 `beginFrame()`、`streamConstantData()`。
+核心证据：[`ComputeProgram.cpp`](../Source/Runtime/Render/Core/ComputeProgram.cpp) 的 `ComputeDescriptorTables`、`acquireTables()`、`dispatchImpl()`；[`VulkanRhi.cpp`](../Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp) 的 `setupResourceHeap()`、`writeImages()`、`bindBindlessHeap()`、`stateInfo()`；[`UploadStreamer.cpp`](../Source/Runtime/Render/Streamer/UploadStreamer.cpp) 的 `beginFrame()`、`streamConstantData()`。
 
 当前源码的调用面统计如下，只用于估计迁移规模，不表示动态调用次数：
 

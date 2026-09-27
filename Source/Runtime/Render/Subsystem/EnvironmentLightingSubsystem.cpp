@@ -1,6 +1,6 @@
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
-#include "Runtime/Render/ComputeProgram.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION

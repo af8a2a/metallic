@@ -1,7 +1,7 @@
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 
-#include "Runtime/Render/HistoryResources.h"
+#include "Runtime/Render/Core/HistoryResources.h"
 
 #include <algorithm>
 #include <utility>

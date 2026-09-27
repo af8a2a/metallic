@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/ComputeKernel.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 
 #include <cstdint>
 #include <memory>

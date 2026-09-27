@@ -1,8 +1,8 @@
 #include "RhiTest.h"
-#include "Runtime/Render/ComputeProgram.h"
-#include "Runtime/Render/NativeDescriptorHeapSpirv.h"
-#include "Runtime/Render/RenderFrameContext.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/NativeDescriptorHeapSpirv.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
 #include <array>

@@ -1,6 +1,6 @@
-#include "Runtime/Render/ResourceSynchronization.h"
-#include "Runtime/Render/HistoryResources.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
+#include "Runtime/Render/Core/HistoryResources.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 
 #include <array>
 #include <optional>

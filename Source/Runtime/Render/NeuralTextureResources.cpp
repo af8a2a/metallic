@@ -1,4 +1,4 @@
-#include "Runtime/Render/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/NeuralTextureResources.h"
 
 #include <spdlog/spdlog.h>

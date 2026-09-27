@@ -1,9 +1,9 @@
 #include "RhiTest.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
-#include "Runtime/Render/SlangCompiler.h"
-#include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "json.hpp"
 #include <zstd.h>
 #include <fstream>

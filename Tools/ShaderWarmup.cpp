@@ -1,4 +1,4 @@
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "ShaderWarmupRequests.h"
 
 #include <spdlog/spdlog.h>

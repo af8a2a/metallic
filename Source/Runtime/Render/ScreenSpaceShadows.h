@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Runtime/Render/ComputeProgram.h"
-#include "Runtime/Render/RenderView.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/SceneLightResources.h"
 
 namespace metallic::render {

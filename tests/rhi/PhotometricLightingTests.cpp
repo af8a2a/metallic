@@ -1,9 +1,9 @@
 #include "RhiTest.h"
-#include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/SceneLightResources.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "stb/stb_image_write.h"
 

@@ -1,7 +1,7 @@
 #include "RhiTest.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <gtest/gtest.h>
 #include <array>

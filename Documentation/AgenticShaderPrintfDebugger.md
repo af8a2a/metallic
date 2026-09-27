@@ -40,7 +40,7 @@ shader 原本没有读取的资源，不为了输出而重新计算一次生产�
 关键源码：[Vulkan RHI](../Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp)、
 [RenderDebug](../Source/Runtime/Render/Debug/RenderDebug.cpp)、
 [DebugCore](../Source/Runtime/Debug/DebugCore.cpp)、
-[SlangCompiler](../Source/Runtime/Render/SlangCompiler.cpp)、
+[SlangCompiler](../Source/Runtime/Render/Core/SlangCompiler.cpp)、
 [生产调度](../Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp)、
 [WorkControl](../Shaders/Features/GPUDriven/GPUDrivenStreamWorkRaster.slang)。
 现有协议见 [DebugControlPlane.md](DebugControlPlane.md)。

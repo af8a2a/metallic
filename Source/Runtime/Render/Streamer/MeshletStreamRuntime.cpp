@@ -1,4 +1,4 @@
-#include "Runtime/Render/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
 #include "Runtime/Render/MeshletLod.h"
@@ -6,7 +6,7 @@
 #include "Runtime/Render/Debug/RenderDebug.h"
 
 #include "Runtime/Render/Streamer/MeshletStreamClas.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
 #include <array>

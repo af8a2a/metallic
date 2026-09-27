@@ -1,7 +1,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/MaterialBinningParams.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 
 namespace metallic::render {
 

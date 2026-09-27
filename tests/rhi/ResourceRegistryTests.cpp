@@ -1,8 +1,8 @@
 #include "RhiTest.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
-#include "Runtime/Render/ComputeKernel.h"
-#include "Runtime/Render/ComputeProgram.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <array>
 #include <cstring>

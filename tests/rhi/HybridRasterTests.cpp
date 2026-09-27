@@ -1,9 +1,9 @@
-#include "Runtime/Render/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "RhiTest.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderSample.h"
 #include <algorithm>
 #include <array>

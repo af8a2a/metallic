@@ -1,7 +1,7 @@
 #include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/GAPI/StreamUploadCompletion.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 

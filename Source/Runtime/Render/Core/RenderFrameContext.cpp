@@ -1,4 +1,4 @@
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 #include "Runtime/Render/Profiling/SchedulingDiagnostics.h"
 

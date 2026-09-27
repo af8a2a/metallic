@@ -1,12 +1,12 @@
 #pragma once
 
-#include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
-#include "Runtime/Render/HistoryResources.h"
-#include "Runtime/Render/SlangCompiler.h"
+#include "Runtime/Render/Core/HistoryResources.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Scene/Scene.h"
 

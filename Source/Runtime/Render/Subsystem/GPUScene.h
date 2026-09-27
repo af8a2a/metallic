@@ -4,7 +4,7 @@
 
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/GAPI/Rhi.h"
-#include "Runtime/Render/ResourceRegistry.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Scene/scene.h"
 

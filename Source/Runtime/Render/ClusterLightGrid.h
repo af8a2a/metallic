@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Runtime/Render/ComputeKernel.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 
 #include <array>
 #include <vector>

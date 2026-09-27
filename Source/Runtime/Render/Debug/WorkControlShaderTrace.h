@@ -1,6 +1,6 @@
 #pragma once
 #include "ShaderTraceRuntime.h"
-#include "Runtime/Render/RenderFrameContext.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include <filesystem>
 #include <optional>
 

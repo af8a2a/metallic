@@ -1,10 +1,10 @@
-#include "Runtime/Render/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ResourceSynchronization.h"
 #include <stdexcept>
 #include <string>
 
 #include "RhiTest.h"
 
-#include "Runtime/Render/HistoryResources.h"
+#include "Runtime/Render/Core/HistoryResources.h"
 
 #include <memory>
 #include <string>
