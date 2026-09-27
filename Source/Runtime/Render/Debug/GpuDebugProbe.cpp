@@ -135,17 +135,23 @@ Result<> recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
     BufferBarrierDesc source{.buffer = probe.source->buffer, .before = probe.source->state, .after = ResourceState::ShaderRead,
         .offset = probe.push.byteOffset, .size = probe.scanBytes};
     BufferBarrierDesc destination{.buffer = &output, .before = ResourceState::Undefined, .after = ResourceState::General};
-    commands.barrier({.buffers = &source, .bufferCount = 1});
-    commands.barrier({.buffers = &destination, .bufferCount = 1});
+    if (auto commandResult = commands.synchronize({.buffers = &source, .bufferCount = 1}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.synchronize({.buffers = &destination, .bufferCount = 1}); !commandResult) { return commandResult; }
     const ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = probe.source->buffer}, {.binding = 1, .buffer = &output}};
     const auto result = program.dispatch({.commandBuffer = &commands, .bindings = bindings, .bindingCount = 2,
         .pushData = &probe.push, .pushDataSize = sizeof(probe.push), .groupCountX = probe.push.groupCount});
     std::swap(source.before, source.after);
-    commands.barrier({.buffers = &source, .bufferCount = 1});
+    if (auto commandResult = commands.synchronize({.buffers = &source, .bufferCount = 1}); !commandResult) { return commandResult; }
     if (!result) { return result; }
     destination.before = ResourceState::General; destination.after = ResourceState::TransferSource;
-    commands.barrier({.buffers = &destination, .bufferCount = 1});
-    commands.copyBuffer({.source = &output, .destination = &readback, .size = readback.desc().size});
+    if (auto commandResult = commands.synchronize({.buffers = &destination, .bufferCount = 1}); !commandResult) { return commandResult; }
+    {
+        auto sourceSlice = (&output)->slice(0, readback.desc().size);
+        if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+        auto destinationSlice = (&readback)->slice(0, readback.desc().size);
+        if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+        if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+    }
     return {};
 }
 

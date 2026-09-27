@@ -1587,7 +1587,7 @@ struct ScenePathTraceResources::Impl {
             if (!(result = uploadTexture(*migration.commands, image))) { return result; }
             TextureBarrierDesc barrier{.texture=image.texture.get(), .before=ResourceState::TransferDestination,
                 .after=ResourceState::ShaderRead, .mipCount=image.mipCount, .layerCount=1};
-            migration.commands->barrier({.textures=&barrier, .textureCount=1});
+            if (auto commandResult = migration.commands->synchronize({.textures=&barrier, .textureCount=1}); !commandResult) { return commandResult; }
             image.state = ResourceState::ShaderRead;
         }
         if (migration.timestamps && !(result = migration.commands->writeTimestamp(
@@ -1733,7 +1733,7 @@ struct ScenePathTraceResources::Impl {
         TextureFeedback entry{std::move(buffer),frame->completion(),frameIndex};
         feedback = entry.buffer.get(); frame->retain(entry.buffer);
         BufferBarrierDesc ready{.buffer=feedback, .before=ResourceState::Undefined, .after=ResourceState::General};
-        commands.barrier({.buffers=&ready, .bufferCount=1});
+        if (auto commandResult = commands.synchronize({.buffers=&ready, .bufferCount=1}); !commandResult) { return commandResult; }
         textureFeedback.push_back(std::move(entry));
         return {};
     }
@@ -1903,15 +1903,16 @@ struct ScenePathTraceResources::Impl {
             return result;
         }
         for (const ScenePathTraceBufferUpload& upload : bufferUploads) {
-            batch->uploadCommands->copyBuffer(BufferCopyDesc{
-                .source = upload.stagingBuffer.get(),
-                .destination = upload.destination,
-                .sourceOffset = upload.sourceOffset,
-                .size = upload.byteSize,
-            });
+            {
+                auto sourceSlice = upload.stagingBuffer.get()->slice(upload.sourceOffset, upload.byteSize);
+                if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+                auto destinationSlice = upload.destination->slice(0, upload.byteSize);
+                if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+                if (auto commandResult = batch->uploadCommands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+            }
         }
         if (!requiresGraphicsAcquire) {
-            transitionUploadsForRendering(*batch->uploadCommands);
+            if (auto commandResult = transitionUploadsForRendering(*batch->uploadCommands); !commandResult) { return commandResult; }
         }
         result = batch->uploadCommands->end();
         if (!result) {
@@ -1963,7 +1964,7 @@ struct ScenePathTraceResources::Impl {
                 log += resultMessage("CommandBuffer::begin(scene upload acquire)", result);
                 return result;
             }
-            transitionUploadsForRendering(*batch->acquireCommands);
+            if (auto commandResult = transitionUploadsForRendering(*batch->acquireCommands); !commandResult) { return commandResult; }
             result = batch->acquireCommands->end();
             if (!result) {
                 log += resultMessage("CommandBuffer::end(scene upload acquire)", result);
@@ -2488,10 +2489,10 @@ struct ScenePathTraceResources::Impl {
             .baseLayer = 0,
             .layerCount = 1,
         };
-        commandBuffer.barrier(BarrierDesc{
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
             .textures = &toTransfer,
             .textureCount = 1,
-        });
+        }); !commandResult) { return commandResult; }
         texture.state = ResourceState::TransferDestination;
 
         for (uint32_t mipIndex = 0; mipIndex < texture.mipUploads.size(); ++mipIndex) {
@@ -2516,11 +2517,11 @@ struct ScenePathTraceResources::Impl {
         return {};
     }
 
-    void transitionUploadsForRendering(CommandBuffer& commandBuffer)
+    Result<> transitionUploadsForRendering(CommandBuffer& commandBuffer)
     {
-        auto transitionTexture = [&commandBuffer](ScenePathTraceMaterialTexture& texture) {
+        auto transitionTexture = [&commandBuffer](ScenePathTraceMaterialTexture& texture) -> Result<> {
             if (texture.texture == nullptr || texture.state != ResourceState::TransferDestination) {
-                return;
+                return {};
             }
             TextureBarrierDesc toShaderRead{
                 .texture = texture.texture.get(),
@@ -2531,15 +2532,16 @@ struct ScenePathTraceResources::Impl {
                 .baseLayer = 0,
                 .layerCount = 1,
             };
-            commandBuffer.barrier(BarrierDesc{
+            if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
                 .textures = &toShaderRead,
                 .textureCount = 1,
-            });
+            }); !commandResult) { return commandResult; }
             texture.state = ResourceState::ShaderRead;
+            return {};
         };
 
         for (const auto index : pendingTextures) {
-            transitionTexture(materialTextures[index]);
+            if (auto commandResult = transitionTexture(materialTextures[index]); !commandResult) { return commandResult; }
         }
 
         std::vector<BufferBarrierDesc> bufferBarriers;
@@ -2554,11 +2556,12 @@ struct ScenePathTraceResources::Impl {
             });
         }
         if (!bufferBarriers.empty()) {
-            commandBuffer.barrier(BarrierDesc{
+            if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
                 .buffers = bufferBarriers.data(),
                 .bufferCount = static_cast<uint32_t>(bufferBarriers.size()),
-            });
+            }); !commandResult) { return commandResult; }
         }
+        return {};
     }
 
     Result<> uploadMaterialTextures(CommandBuffer& commandBuffer)

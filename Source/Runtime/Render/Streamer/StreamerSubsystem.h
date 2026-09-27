@@ -34,7 +34,7 @@ public:
     StreamSceneReadiness sceneReadiness() const;
     void collectReleasedStreams();
     void prepareBeforePacing(CpuProfileRecorder* profiler = nullptr);
-    void flush(CommandBuffer& commands, const StreamUploadPhaseCallback& phase = {});
+    [[nodiscard]] Result<> flush(CommandBuffer& commands, const StreamUploadPhaseCallback& phase = {});
     Streamer* streamer() const { return uploads_.streamer(); }
     const RenderGraphStreamingStats& stats() const { return uploads_.stats(); }
     SceneResourceManager& manager() { return resources_; }

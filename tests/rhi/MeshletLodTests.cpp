@@ -185,7 +185,7 @@ public:
             if (test == 0) {
                 for (auto& buffer : buffers) {
                     BufferBarrierDesc barrier{.buffer = buffer.get(), .before = ResourceState::Undefined, .after = ResourceState::ShaderRead};
-                    commands->barrier({.buffers = &barrier, .bufferCount = 1});
+                    if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
             }
             LOD_REQUIRE(selector.record(*commands, *registry, bindings, view, {0, count},
@@ -193,11 +193,23 @@ public:
             BufferBarrierDesc barriers[] = {
                 {.buffer = &selector.selections(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},
                 {.buffer = &selector.arguments(), .before = ResourceState::IndirectArgument, .after = ResourceState::TransferSource}};
-            commands->barrier({.buffers = barriers, .bufferCount = 2});
-            commands->copyBuffer({.source = &selector.selections(), .destination = readback.get(), .size = selectionBytes});
-            commands->copyBuffer({.source = &selector.arguments(), .destination = readback.get(), .destinationOffset = selectionBytes, .size = 24});
+            if (auto commandResult = commands->synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            {
+                auto sourceSlice = (&selector.selections())->slice(0, selectionBytes);
+                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                auto destinationSlice = readback.get()->slice(0, selectionBytes);
+                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            }
+            {
+                auto sourceSlice = (&selector.arguments())->slice(0, 24);
+                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                auto destinationSlice = readback.get()->slice(selectionBytes, 24);
+                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            }
             for (auto& barrier : barriers) { std::swap(barrier.before, barrier.after); }
-            commands->barrier({.buffers = barriers, .bufferCount = 2});
+            if (auto commandResult = commands->synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             LOD_REQUIRE(commands->end());
             CommandBuffer* list[] = {commands.get()};
             LOD_REQUIRE(queue->submit({.commandBuffers = list, .commandBufferCount = 1, .signalFence = fence.get()}));

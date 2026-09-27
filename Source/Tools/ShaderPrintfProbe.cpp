@@ -212,9 +212,9 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     require(commands->begin(&frame), "beginCommands");
     if (heapMode) {
         commands->bindBindlessHeap(*heap);
-        commands->bindComputePipeline(*pipeline, &push, sizeof(push));
+        if (auto commandResult = commands->bindExecution((pipeline)->execution(), &push, sizeof(push)); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); }
     } else {
-        commands->bindComputePipeline(*pipeline);
+        if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); }
     }
     commands->dispatch(2, 1, 1);
     if (heapMode) {

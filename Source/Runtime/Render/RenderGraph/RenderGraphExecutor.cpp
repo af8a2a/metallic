@@ -550,7 +550,7 @@ struct RenderGraphExecutor::Impl {
         frameViewBuffer->unmap();
         frameViewBuffer->flush();
         const BufferBarrierDesc barrier{.buffer = frameViewBuffer, .before = ResourceState::Undefined, .after = ResourceState::ShaderRead};
-        commands.barrier({.buffers = &barrier, .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         if (frame != nullptr) { frame->retain(viewBuffers[slot]); }
         previousView = frameView;
         hasPreviousView = frame != nullptr;
@@ -2264,7 +2264,7 @@ struct RenderGraphExecutor::Impl {
         }
         if (result && upload != nullptr) {
             auto scope = context.profileScope("Upload flush");
-            upload->flush(context.commandBuffer());
+            result = upload->flush(context.commandBuffer());
         }
         lastExecutionStats.preparationTaskCount += context.preparationTaskCount_;
         lastExecutionStats.nodes[nodeIndex].cpuMilliseconds = std::chrono::duration<double, std::milli>(
@@ -2895,7 +2895,7 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
         requiredSubsystems,
         subsystemLog);
     if (result && upload != nullptr) {
-        upload->flush(commandBuffer);
+        result = upload->flush(commandBuffer);
     }
     if (!result) {
         spdlog::error("[RenderGraph] {}", subsystemLog);
@@ -3495,7 +3495,10 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                 upload != nullptr ? upload->streamer() : nullptr, requiredSubsystems, cleanupLog);
             return abort(result);
         }
-        if (upload != nullptr) { upload->flush(commands); }
+        if (upload != nullptr) {
+            result = upload->flush(commands);
+            if (!result) { return abort(result); }
+        }
         result = commands.end();
         if (!result) { return abort(result); }
     }

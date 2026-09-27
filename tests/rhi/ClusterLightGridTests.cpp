@@ -144,7 +144,7 @@ public:
             .memoryLocation = render::MemoryLocation::Device}).transform([&](auto rhiValue) { probe = std::move(rhiValue); }));
         const render::BufferBarrierDesc probeToWrite{.buffer = probe.get(),
             .before = render::ResourceState::Undefined, .after = render::ResourceState::General};
-        commands_->barrier({.buffers = &probeToWrite, .bufferCount = 1});
+        if (auto commandResult = commands_->synchronize({.buffers = &probeToWrite, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         const std::array<render::ComputeDispatchBinding, 6> probeBindings{{
             {.binding = 0, .buffer = output.snapshot.parameters},
             {.binding = 1, .buffer = output.snapshot.lights},
@@ -173,19 +173,35 @@ public:
                 .before = render::ResourceState::Undefined,
                 .after = render::ResourceState::TransferDestination},
         };
-        commands_->barrier({.buffers = barriers.data(), .bufferCount = static_cast<uint32_t>(barriers.size())});
-        commands_->copyBuffer({.source = output.snapshot.cells, .destination = readback.get(), .size = cellBytes});
-        commands_->copyBuffer({.source = output.snapshot.lightIndices, .destination = readback.get(),
-            .destinationOffset = cellBytes, .size = indexBytes});
-        commands_->copyBuffer({.source = probe.get(), .destination = readback.get(),
-            .destinationOffset = cellBytes + indexBytes, .size = sizeof(output.lookup)});
+        if (auto commandResult = commands_->synchronize({.buffers = barriers.data(), .bufferCount = static_cast<uint32_t>(barriers.size())}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        {
+            auto sourceSlice = output.snapshot.cells->slice(0, cellBytes);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = readback.get()->slice(0, cellBytes);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
+        {
+            auto sourceSlice = output.snapshot.lightIndices->slice(0, indexBytes);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = readback.get()->slice(cellBytes, indexBytes);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
+        {
+            auto sourceSlice = probe.get()->slice(0, sizeof(output.lookup));
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = readback.get()->slice(cellBytes + indexBytes, sizeof(output.lookup));
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
         const std::array restore{
             render::BufferBarrierDesc{.buffer = output.snapshot.cells,
                 .before = render::ResourceState::TransferSource, .after = render::ResourceState::ShaderRead},
             render::BufferBarrierDesc{.buffer = output.snapshot.lightIndices,
                 .before = render::ResourceState::TransferSource, .after = render::ResourceState::ShaderRead},
         };
-        commands_->barrier({.buffers = restore.data(), .bufferCount = static_cast<uint32_t>(restore.size())});
+        if (auto commandResult = commands_->synchronize({.buffers = restore.data(), .bufferCount = static_cast<uint32_t>(restore.size())}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         GRID_CHECK(commands_->end());
         host_.endFrame();
         render::CommandBuffer* submissions[] = {commands_.get()};

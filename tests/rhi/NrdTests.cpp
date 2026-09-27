@@ -272,7 +272,7 @@ protected:
                                                .before = initialized ? render::ResourceState::General
                                                                      : render::ResourceState::Undefined,
                                                .after = render::ResourceState::TransferDestination};
-            command->barrier({.textures = &barrier, .textureCount = 1});
+            if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             render::ColorValue value{0, 0, 0, 0};
             const auto resource = static_cast<rd::ResourceType>(i);
             if (resource == rd::ResourceType::IN_DIFF_RADIANCE_HITDIST)
@@ -290,7 +290,7 @@ protected:
             command->clearColorTexture(*textures[i], render::ResourceState::TransferDestination, value);
             barrier.before = render::ResourceState::TransferDestination;
             barrier.after = render::ResourceState::General;
-            command->barrier({.textures = &barrier, .textureCount = 1});
+            if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         }
         auto settings = commonSettings(w, h);
         settings.frameIndex = frameIndex++;
@@ -321,7 +321,7 @@ protected:
             render::TextureBarrierDesc barrier{.texture = output.texture,
                                                .before = render::ResourceState::General,
                                                .after = render::ResourceState::TransferSource};
-            command->barrier({.textures = &barrier, .textureCount = 1});
+            if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             command->copyTextureToBuffer({.texture = output.texture,
                                           .buffer = readback.get(),
                                           .bufferOffset = i * 16,
@@ -332,7 +332,7 @@ protected:
                                           .depth = 1});
             barrier.before = render::ResourceState::TransferSource;
             barrier.after = render::ResourceState::General;
-            command->barrier({.textures = &barrier, .textureCount = 1});
+            if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         }
         require(command->end());
         if (retireRuntime) { runtime.clear(); }
@@ -645,11 +645,11 @@ TEST_F(NrdRayTracingGpu, RayTracedShadowOcclusionAndHistory)
         render::TextureBarrierDesc barrier{.texture = depth.get(),
             .before = depthReady ? render::ResourceState::ShaderRead : render::ResourceState::Undefined,
             .after = render::ResourceState::TransferDestination};
-        command->barrier({.textures = &barrier, .textureCount = 1});
+        if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         command->copyBufferToTexture({.buffer = upload.get(), .texture = depth.get(), .width = w, .height = h});
         barrier.before = render::ResourceState::TransferDestination;
         barrier.after = render::ResourceState::ShaderRead;
-        command->barrier({.textures = &barrier, .textureCount = 1});
+        if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         render::ScreenSpaceShadowResult output;
         std::string log;
         auto result = shadows.record(*device, *command, *streamer, *depthView, view, lights,
@@ -659,11 +659,11 @@ TEST_F(NrdRayTracingGpu, RayTracedShadowOcclusionAndHistory)
         barrier.texture = output.texture;
         barrier.before = render::ResourceState::ShaderRead;
         barrier.after = render::ResourceState::TransferSource;
-        command->barrier({.textures = &barrier, .textureCount = 1});
+        if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         command->copyTextureToBuffer({.texture = output.texture, .buffer = readback.get(), .width = w, .height = h});
         barrier.before = render::ResourceState::TransferSource;
         barrier.after = render::ResourceState::ShaderRead;
-        command->barrier({.textures = &barrier, .textureCount = 1});
+        if (auto commandResult = command->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
         require(command->end());
         if (discard) {
             recording.cancel();

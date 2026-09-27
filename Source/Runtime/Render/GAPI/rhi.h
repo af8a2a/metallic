@@ -1253,14 +1253,6 @@ struct TextureCopyDesc {
     uint32_t destinationBaseLayer = 0;
 };
 
-struct BufferCopyDesc {
-    class Buffer* source = nullptr;
-    class Buffer* destination = nullptr;
-    uint64_t sourceOffset = 0;
-    uint64_t destinationOffset = 0;
-    uint64_t size = 0;
-};
-
 struct BufferDecompressionDesc {
     class Buffer* source = nullptr;
     class Buffer* destination = nullptr;
@@ -1876,7 +1868,6 @@ private:
     std::shared_ptr<detail::GraphicsPipelineImpl> graphics_;
     std::shared_ptr<detail::GraphicsShaderObjectProgramImpl> shaders_;
     RasterExecutionState raster_;
-    bool applyRasterState_ = true;
     friend class ComputePipeline;
     friend class GraphicsPipeline;
     friend class GraphicsShaderObjectProgram;
@@ -2030,7 +2021,7 @@ public:
     // Covers copies currently queued for the next flush. Returns null without
     // beginFrame(frame), or when no copies are pending. See StreamUploadCompletion.h.
     std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion();
-    void copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase = {});
+    [[nodiscard]] Result<> copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase = {});
     void endFrame();
 
 private:
@@ -2086,19 +2077,17 @@ public:
         uint32_t queryIndex,
         RayTracingAccelerationStructure& accelerationStructure);
     // One dependency boundary; compatible resource barriers are coalesced.
-    Result<> synchronize(const BarrierDesc& desc);
+    [[nodiscard]] Result<> synchronize(const BarrierDesc& desc);
     SynchronizationStats synchronizationStats() const;
-    void barrier(const BarrierDesc& desc);
     void hostWriteBarrier();
-    void copyBuffer(const BufferCopyDesc& desc);
-    Result<> copyBuffer(const BufferSlice& source, const BufferSlice& destination);
+    [[nodiscard]] Result<> copyBuffer(const BufferSlice& source, const BufferSlice& destination);
     Result<> decompressBuffers(std::span<const BufferDecompressionDesc> regions);
     Result<> validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const;
     void copyTexture(const TextureCopyDesc& desc);
     void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
     void copyBufferToTexture(const BufferTextureCopyDesc& desc);
     void clearColorTexture(Texture& texture, ResourceState state, const ColorValue& color = {});
-    void copyStreamedData(Streamer& streamer);
+    [[nodiscard]] Result<> copyStreamedData(Streamer& streamer);
     Result<> beginRendering(const RenderingDesc& desc);
     // Native SDK consumers retain the view itself as well as its image.
     Result<> useNativeTextureView(TextureView& view);
@@ -2107,14 +2096,8 @@ public:
     void setViewport(const Viewport& viewport);
     void setScissor(const Rect& scissor);
     void setDepthStencilState(const DepthStencilState& state);
-    Result<> bindExecution(const PreparedExecution& execution);
-    Result<> bindExecution(const PreparedExecution& execution, const void* pushData, uint32_t byteSize);
-    // Compatibility adapters route through bindExecution.
-    void bindGraphicsPipeline(GraphicsPipeline& pipeline);
-    void bindComputePipeline(ComputePipeline& pipeline);
-    void bindComputePipeline(ComputePipeline& pipeline, const void* bindlessData, uint32_t byteSize);
-    void setGraphicsShaderObjectState();
-    void bindGraphicsShaderObjectProgram(GraphicsShaderObjectProgram& program);
+    [[nodiscard]] Result<> bindExecution(const PreparedExecution& execution);
+    [[nodiscard]] Result<> bindExecution(const PreparedExecution& execution, const void* pushData, uint32_t byteSize);
     void bindBindlessHeap(BindlessHeap& heap);
     // Upload the caller's shader parameter ABI at byte zero, without a heap header.
     void pushBindlessData(const void* data, uint32_t byteSize);
@@ -2143,6 +2126,7 @@ public:
 
 private:
     explicit CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl);
+    void setGraphicsShaderObjectState();
     Result<> bindExecutionImpl(const PreparedExecution& execution, const void* data, uint32_t byteSize, bool replaceData);
 
     std::unique_ptr<detail::CommandBufferImpl> impl_;

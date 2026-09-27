@@ -180,17 +180,17 @@ public:
                     const TextureBarrierDesc transitions[] = {
                         {.texture = textures[0].get(), .before = submitted ? ResourceState::TransferSource : ResourceState::Undefined, .after = ResourceState::ColorAttachment},
                         {.texture = textures[1].get(), .before = submitted ? ResourceState::TransferSource : ResourceState::Undefined, .after = ResourceState::DepthStencilAttachment}};
-                    commands->barrier({.textures = transitions, .textureCount = 2});
-                    if (hybridQueue) { rasterizer.begin(*commands, 8, reversed); }
+                    if (auto commandResult = commands->synchronize({.textures = transitions, .textureCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (hybridQueue) { if (auto commandResult = rasterizer.begin(*commands, 8, reversed); !commandResult) { return RhiTestResult::fail(std::string("begin failed: ") + render::resultToString(commandResult)); } }
                     const RenderingAttachmentDesc color{.view = views[0].get(), .state = ResourceState::ColorAttachment,
                         .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
                     const RenderingAttachmentDesc depth{.view = views[1].get(), .state = ResourceState::DepthStencilAttachment,
                         .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = reversed ? 0.f : 1.f};
-                    commands->beginRendering({.renderArea = {.width = width, .height = height},
-                        .colorAttachments = &color, .colorAttachmentCount = 1, .depthStencilAttachment = &depth});
+                    if (auto commandResult = commands->beginRendering({.renderArea = {.width = width, .height = height},
+                        .colorAttachments = &color, .colorAttachmentCount = 1, .depthStencilAttachment = &depth}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                     commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f});
                     commands->setScissor({.width = width, .height = height});
-                    commands->bindBindlessHeap(*heap); commands->bindGraphicsPipeline(*pipelines[(reversed ? 2 : 0) + indexed]);
+                    commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipelines[(reversed ? 2 : 0) + indexed])->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                     MeshletStreamUserPush push{.pageBuffer = handles[Pages].shaderIndex, .activeGroupBuffer = handles[Groups].shaderIndex,
                         .pageTableBuffer = handles[PageTable].shaderIndex, .paramsBuffer = handles[Params].shaderIndex,
                         .activeHeaderBuffer = handles[Header].shaderIndex, .traversalPhase = test == 7 ? 1u : 0u,
@@ -203,14 +203,20 @@ public:
                     if (hybridQueue) {
                         MESH_REQUIRE(rasterizer.resolve(*commands, *textures[0], *views[0], *textures[1], *views[1]));
                         const BufferBarrierDesc copy{.buffer = &rasterizer.queueBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource};
-                        commands->barrier({.buffers = &copy, .bufferCount = 1});
-                        commands->copyBuffer({.source = &rasterizer.queueBuffer(), .destination = queueReadback.get(), .size = 4});
+                        if (auto commandResult = commands->synchronize({.buffers = &copy, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                        {
+                            auto sourceSlice = (&rasterizer.queueBuffer())->slice(0, 4);
+                            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                            auto destinationSlice = queueReadback.get()->slice(0, 4);
+                            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                        }
                         const BufferBarrierDesc restore{.buffer = &rasterizer.queueBuffer(), .before = ResourceState::TransferSource, .after = ResourceState::ShaderRead};
-                        commands->barrier({.buffers = &restore, .bufferCount = 1});
+                        if (auto commandResult = commands->synchronize({.buffers = &restore, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     }
                     for (size_t i = 0; i < 2; ++i) {
                         const TextureBarrierDesc copy{.texture = textures[i].get(), .before = transitions[i].after, .after = ResourceState::TransferSource};
-                        commands->barrier({.textures = &copy, .textureCount = 1});
+                        if (auto commandResult = commands->synchronize({.textures = &copy, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = readbacks[i].get(), .width = width, .height = height});
                     }
                     MESH_REQUIRE(commands->end());

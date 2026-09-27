@@ -86,21 +86,21 @@ Result<> ResidentMeshletLod::record(CommandBuffer& commands, ResourceRegistry& r
             .after = ResourceState::General},
         {.buffer = scratch_.get(), .before = initialized_ ? ResourceState::General : ResourceState::Undefined,
             .after = ResourceState::General}};
-    commands.barrier({.buffers = barriers, .bufferCount = 3});
+    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
     for (uint32_t stage = 0; stage < 4; ++stage) {
-        commands.bindComputePipeline(*pipelines_[stage]);
+        if (auto commandResult = commands.bindExecution((pipelines_[stage])->execution()); !commandResult) { return commandResult; }
         commands.pushBindlessData(&push, sizeof(push));
         uint32_t groups = (stage == 1 || stage == 3) ? (candidates.count + 63u) / 64u : 1u;
         if (groups != 0) { commands.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u); }
         barriers[0].before = ResourceState::General;
-        commands.barrier({.buffers = barriers, .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 1}); !commandResult) { return commandResult; }
         barriers[2].before = ResourceState::General;
-        commands.barrier({.buffers = &barriers[2], .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = &barriers[2], .bufferCount = 1}); !commandResult) { return commandResult; }
     }
     barriers[0].after = ResourceState::ShaderRead;
     barriers[1].before = ResourceState::General;
     barriers[1].after = ResourceState::IndirectArgument;
-    commands.barrier({.buffers = barriers, .bufferCount = 2});
+    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return commandResult; }
     commands.endDebugLabel();
     initialized_ = true;
     return {};

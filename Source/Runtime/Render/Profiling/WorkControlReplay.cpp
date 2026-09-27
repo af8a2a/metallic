@@ -32,7 +32,13 @@ void barrier(CommandBuffer& commands)
 void copy(CommandBuffer& commands, Buffer& source, Buffer& destination)
 {
     require(source.desc().size == destination.desc().size, "replay_copy_size_mismatch");
-    commands.copyBuffer({.source = &source, .destination = &destination, .size = source.desc().size});
+    {
+        auto sourceSlice = (&source)->slice(0, source.desc().size);
+        if (!sourceSlice) { throw std::runtime_error(std::string("source slice failed: ") + metallic::render::resultToString(sourceSlice)); }
+        auto destinationSlice = (&destination)->slice(0, source.desc().size);
+        if (!destinationSlice) { throw std::runtime_error(std::string("destination slice failed: ") + metallic::render::resultToString(destinationSlice)); }
+        if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { throw std::runtime_error(std::string("copyBuffer failed: ") + metallic::render::resultToString(commandResult)); }
+    }
 }
 void write(const std::filesystem::path& path, const std::vector<uint8_t>& bytes)
 {

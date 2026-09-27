@@ -449,11 +449,11 @@ public:
             .storeOp = render::StoreOp::Store,
             .clearColor = render::ColorValue{0.0f, 0.0f, 0.0f, 1.0f},
         };
-        context.commandBuffer().beginRendering(render::RenderingDesc{
+        if (auto commandResult = context.commandBuffer().beginRendering(render::RenderingDesc{
             .renderArea = renderArea,
             .colorAttachments = &attachment,
             .colorAttachmentCount = 1,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().setViewport(render::Viewport{
             .x = 0.0f,
             .y = 0.0f,
@@ -463,7 +463,7 @@ public:
             .maxDepth = 1.0f,
         });
         context.commandBuffer().setScissor(renderArea);
-        context.commandBuffer().bindGraphicsPipeline(*pipeline_);
+        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
         context.commandBuffer().pushBindlessData(&sourceHandle->shaderIndex, sizeof(sourceHandle->shaderIndex));
         context.commandBuffer().draw(3);
         context.commandBuffer().endRendering();
@@ -4868,20 +4868,24 @@ public:
                 .size = requestBuffer->desc().size,
             },
         }};
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = uploadBarriers.data(),
             .bufferCount = static_cast<uint32_t>(uploadBarriers.size()),
-        });
-        commandBuffer->copyBuffer(render::BufferCopyDesc{
-            .source = pageTableUploadBuffer.get(),
-            .destination = pageTableBuffer.get(),
-            .size = pageTableBuffer->desc().size,
-        });
-        commandBuffer->copyBuffer(render::BufferCopyDesc{
-            .source = requestUploadBuffer.get(),
-            .destination = requestBuffer.get(),
-            .size = requestBuffer->desc().size,
-        });
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        {
+            auto sourceSlice = pageTableUploadBuffer.get()->slice(0, pageTableBuffer->desc().size);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = pageTableBuffer.get()->slice(0, pageTableBuffer->desc().size);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
+        {
+            auto sourceSlice = requestUploadBuffer.get()->slice(0, requestBuffer->desc().size);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = requestBuffer.get()->slice(0, requestBuffer->desc().size);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
         std::array<render::BufferBarrierDesc, 2> generalBarriers = {{
             render::BufferBarrierDesc{
                 .buffer = pageTableBuffer.get(),
@@ -4898,10 +4902,10 @@ public:
                 .size = requestBuffer->desc().size,
             },
         }};
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = generalBarriers.data(),
             .bufferCount = static_cast<uint32_t>(generalBarriers.size()),
-        });
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         commandBuffer->bindBindlessHeap(*bindlessHeap);
         render::MeshletStreamUserPush push{
@@ -4974,12 +4978,12 @@ public:
                 .size = traversalWorkBuffer->desc().size,
             },
         }};
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activeBuildBarriers.data(),
             .bufferCount = static_cast<uint32_t>(activeBuildBarriers.size()),
-        });
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
-        commandBuffer->bindComputePipeline(*activeBuildPipeline);
+        if (auto commandResult = commandBuffer->bindExecution((activeBuildPipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         push.activeBuildPhase = render::kMeshletStreamActiveBuildResetPhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
@@ -5035,36 +5039,36 @@ public:
                 .size = traversalWorkBuffer->desc().size,
             },
         }};
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers.data(),
             .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
-        });
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         push.activeBuildPhase = render::kMeshletStreamActiveBuildSeedPhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers.data(),
             .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
-        });
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         push.activeBuildPhase = render::kMeshletStreamActiveBuildRunPhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers.data(),
             .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
-        });
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         push.activeBuildPhase = render::kMeshletStreamActiveBuildFinalizePhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers.data(),
             .bufferCount = static_cast<uint32_t>(activePhaseBarriers.size()),
-        });
-        commandBuffer->bindComputePipeline(*pipeline);
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         push.traversalPhase = render::kMeshletStreamTraversalUnloadPhase;
         push.activeBuildPhase = static_cast<uint32_t>(residentPageIds.size());
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -5114,40 +5118,52 @@ public:
                 .size = traversalHeaderBuffer->desc().size,
             },
         }};
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = readbackBarriers.data(),
             .bufferCount = static_cast<uint32_t>(readbackBarriers.size()),
-        });
-        commandBuffer->copyBuffer(render::BufferCopyDesc{
-            .source = pageTableBuffer.get(),
-            .destination = pageTableReadbackBuffer.get(),
-            .size = pageTableBuffer->desc().size,
-        });
-        commandBuffer->copyBuffer(render::BufferCopyDesc{
-            .source = requestBuffer.get(),
-            .destination = requestReadbackBuffer.get(),
-            .size = requestBuffer->desc().size,
-        });
-        commandBuffer->copyBuffer(render::BufferCopyDesc{
-            .source = activeGroupBuffer.get(),
-            .destination = activeGroupReadbackBuffer.get(),
-            .size = activeGroupBuffer->desc().size,
-        });
-        commandBuffer->copyBuffer(render::BufferCopyDesc{
-            .source = activeHeaderBuffer.get(),
-            .destination = activeHeaderReadbackBuffer.get(),
-            .size = activeHeaderBuffer->desc().size,
-        });
-        commandBuffer->copyBuffer(render::BufferCopyDesc{
-            .source = drawIndirectBuffer.get(),
-            .destination = drawIndirectReadbackBuffer.get(),
-            .size = drawIndirectBuffer->desc().size,
-        });
-        commandBuffer->copyBuffer(render::BufferCopyDesc{
-            .source = traversalHeaderBuffer.get(),
-            .destination = traversalHeaderReadbackBuffer.get(),
-            .size = traversalHeaderBuffer->desc().size,
-        });
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        {
+            auto sourceSlice = pageTableBuffer.get()->slice(0, pageTableBuffer->desc().size);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = pageTableReadbackBuffer.get()->slice(0, pageTableBuffer->desc().size);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
+        {
+            auto sourceSlice = requestBuffer.get()->slice(0, requestBuffer->desc().size);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = requestReadbackBuffer.get()->slice(0, requestBuffer->desc().size);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
+        {
+            auto sourceSlice = activeGroupBuffer.get()->slice(0, activeGroupBuffer->desc().size);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = activeGroupReadbackBuffer.get()->slice(0, activeGroupBuffer->desc().size);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
+        {
+            auto sourceSlice = activeHeaderBuffer.get()->slice(0, activeHeaderBuffer->desc().size);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = activeHeaderReadbackBuffer.get()->slice(0, activeHeaderBuffer->desc().size);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
+        {
+            auto sourceSlice = drawIndirectBuffer.get()->slice(0, drawIndirectBuffer->desc().size);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = drawIndirectReadbackBuffer.get()->slice(0, drawIndirectBuffer->desc().size);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
+        {
+            auto sourceSlice = traversalHeaderBuffer.get()->slice(0, traversalHeaderBuffer->desc().size);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = traversalHeaderReadbackBuffer.get()->slice(0, traversalHeaderBuffer->desc().size);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
         result = commandBuffer->end();
         if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
@@ -8833,17 +8849,17 @@ public:
             .offset = globalViews.meshletDraws.offset,
             .size = globalViews.meshletDraws.size,
         };
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = &residentRecordsToCopy,
             .bufferCount = 1,
-        });
-        commandBuffer->copyBuffer(render::BufferCopyDesc{
-            .source = globalViews.meshletDraws.buffer,
-            .destination = residentRecordReadback.get(),
-            .sourceOffset = globalViews.meshletDraws.offset,
-            .destinationOffset = 0,
-            .size = globalViews.meshletDraws.size,
-        });
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        {
+            auto sourceSlice = globalViews.meshletDraws.buffer->slice(globalViews.meshletDraws.offset, globalViews.meshletDraws.size);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = residentRecordReadback.get()->slice(0, globalViews.meshletDraws.size);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
         const render::BufferBarrierDesc residentRecordsToRead{
             .buffer = globalViews.meshletDraws.buffer,
             .before = render::ResourceState::TransferSource,
@@ -8851,10 +8867,10 @@ public:
             .offset = globalViews.meshletDraws.offset,
             .size = globalViews.meshletDraws.size,
         };
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = &residentRecordsToRead,
             .bufferCount = 1,
-        });
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
             return RhiTestResult::fail(

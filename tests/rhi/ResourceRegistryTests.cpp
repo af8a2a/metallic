@@ -221,7 +221,7 @@ public:
             REG_REQUIRE(writer.encode(params, kAbi, encoded));
             render::BufferBarrierDesc barrier{.buffer = output.get(),
                 .before = render::ResourceState::General, .after = render::ResourceState::General};
-            first.commands->barrier({.buffers = &barrier, .bufferCount = 1});
+            if (auto commandResult = first.commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(secondKernel.dispatch(*first.commands, encoded, 1));
             // Force the parameter arena to grow without moving already encoded roots.
             std::array<uint32_t, 17000> burst{};
@@ -343,11 +343,11 @@ public:
                 REG_REQUIRE(recordings[i].record([&]() -> render::Result<> {
                     render::BufferBarrierDesc barrier{.buffer = output.get(),
                         .before = render::ResourceState::General, .after = render::ResourceState::General};
-                    commands->barrier({.buffers = &barrier, .bufferCount = 1});
+                    if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
                     auto result = kernel.dispatch(*commands, packets[i], 1);
                     // Re-read the very first packet after additional uploads.
                     if (result && i == 2) {
-                        commands->barrier({.buffers = &barrier, .bufferCount = 1});
+                        if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
                         result = kernel.dispatch(*commands, packets[0], 1);
                     }
                     return result ? commands->end() : result;
@@ -496,10 +496,10 @@ public:
             REG_CHECK(registry->stats().descriptorWrites == 3); // storage image, sampled image, output
             render::TextureBarrierDesc barrier{.texture = image.get(),
                 .before = render::ResourceState::Undefined, .after = render::ResourceState::General};
-            recording.commands->barrier({.textures = &barrier, .textureCount = 1});
+            if (auto commandResult = recording.commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[0].dispatch(*recording.commands, encoded, 1));
             barrier.before = render::ResourceState::General; barrier.after = render::ResourceState::ShaderRead;
-            recording.commands->barrier({.textures = &barrier, .textureCount = 1});
+            if (auto commandResult = recording.commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[1].dispatch(*recording.commands, encoded, 1));
         }
         image.reset(); view.reset();
@@ -674,13 +674,13 @@ public:
             REG_CHECK(!recording.commands->dispatchIndirect(invalid));
             render::BufferBarrierDesc workBarrier{.buffer = work.get(),
                 .before = render::ResourceState::Undefined, .after = render::ResourceState::TransferDestination};
-            recording.commands->barrier({.buffers = &workBarrier, .bufferCount = 1});
+            if (auto commandResult = recording.commands->synchronize({.buffers = &workBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(recording.commands->copyBuffer(from, data));
             workBarrier.before = render::ResourceState::TransferDestination; workBarrier.after = render::ResourceState::General;
-            recording.commands->barrier({.buffers = &workBarrier, .bufferCount = 1});
+            if (auto commandResult = recording.commands->synchronize({.buffers = &workBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::BufferBarrierDesc outputBarrier{.buffer = output.get(),
                 .before = render::ResourceState::Undefined, .after = render::ResourceState::General};
-            recording.commands->barrier({.buffers = &outputBarrier, .bufferCount = 1});
+            if (auto commandResult = recording.commands->synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::ParameterWriter writer(*device, recording.frame, *registry);
             const Params params{writer.dataBuffer<uint32_t>(data), writer.dataBuffer<uint32_t>(to),
                 writer.dataBuffer<uint32_t>(arguments), 7};
@@ -690,9 +690,9 @@ public:
             outputBarrier.before = render::ResourceState::General;
             workBarrier.before = render::ResourceState::General; workBarrier.after = render::ResourceState::IndirectArgument;
             const render::BufferBarrierDesc barriers[] = {outputBarrier, workBarrier};
-            recording.commands->barrier({.buffers = barriers, .bufferCount = 2});
+            if (auto commandResult = recording.commands->synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[1].dispatchIndirect(*recording.commands, encoded, arguments));
-            recording.commands->barrier({.buffers = &outputBarrier, .bufferCount = 1});
+            if (auto commandResult = recording.commands->synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::ComputeDispatchBinding binding{.binding = 0, .data = to};
             render::ComputeDispatchDesc dispatch{.commandBuffer = recording.commands.get(), .bindings = &binding, .bindingCount = 1};
             binding.offset = 4;
@@ -1060,7 +1060,7 @@ public:
             }
             const render::BufferBarrierDesc barrier{.buffer = output.get(), .before = render::ResourceState::Undefined,
                 .after = render::ResourceState::General};
-            commands[0]->barrier({.buffers = &barrier, .bufferCount = 1});
+            if (auto commandResult = commands[0]->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             std::jthread recordA([&] { outcomes[0] = contexts[0].record([&]() -> render::Result<> {
                 auto recorded = packets[0].record(*commands[0]); return recorded ? commands[0]->end() : recorded; }); });
             std::jthread recordB([&] { outcomes[1] = contexts[1].record([&]() -> render::Result<> {
@@ -1092,6 +1092,76 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(PreparedDispatchParallelTest);
+
+// Exercise both the legacy mapped adapter and the prepared resource-table path.
+// Two writes to the same word require a memory-only dependency between dispatches.
+class BatchMemoryBarrierTest final : public RhiTest {
+public:
+    BatchMemoryBarrierTest() { type = RhiTestType::Rendering; name = "compute_batch_memory_barrier_and_error_propagation"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        for (uint32_t path = 0; path < 3; ++path) {
+            const bool legacy = path == 0;
+            std::unique_ptr<render::Device> device;
+            REG_REQUIRE(render::createDevice({.applicationName = "Batch barriers",
+                .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+                .transform([&](auto value) { device = std::move(value); }));
+            auto& queue = *device->getQueue(render::QueueType::Graphics);
+            const render::SlangMacroDefine macro{"METALLIC_LEGACY_BINDINGS", legacy ? "1" : "0"};
+            render::ShaderCompileResult shader;
+            REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "BatchBarrierProbe",
+                .entryPointName = "batchBarrierMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+                .macroDefines = &macro, .macroDefineCount = 1,
+                .descriptorHeapMode = path == 2 ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped}, shader));
+            const render::ComputeProgramBindingDesc layout{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer};
+            render::ComputeProgram program;
+            std::string log;
+            REG_REQUIRE(program.initialize(*device, {.spirv = shader.spirv.data(), .byteSize = shader.spirv.size() * 4,
+                .bindings = &layout, .bindingCount = 1, .requiresRayQuery = false, .usesResourceTable = !legacy}, log));
+            std::unique_ptr<render::Buffer> output, arguments;
+            REG_REQUIRE(makeBuffer(*device, output));
+            REG_REQUIRE(makeBuffer(*device, arguments));
+            auto* counts = static_cast<uint32_t*>(arguments->map());
+            REG_CHECK(counts);
+            for (uint32_t i = 0; i < 6; ++i) { counts[i] = 1; }
+            arguments->flush(); arguments->unmap();
+            Commands recording;
+            REG_REQUIRE(recording.initialize(*device, queue));
+            render::QueueSubmissionTracker tracker;
+            REG_REQUIRE(tracker.initialize(*device, queue));
+            std::unique_ptr<render::Semaphore> gate;
+            REG_REQUIRE(device->createSemaphore({.initialValue = 1}).transform([&](auto value) { gate = std::move(value); }));
+            Drain drain{queue, *gate};
+            const render::ComputeDispatchBinding binding{.binding = 0, .buffer = output.get()};
+            const render::ComputeIndirectDispatch items[] = {{.argumentOffset = 0}, {.argumentOffset = 12}};
+            render::MemoryBarrierDesc memory{
+                .before = {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderWrite},
+                .after = {render::PipelineStageBits::ComputeShader, render::AccessBits::ShaderRead | render::AccessBits::ShaderWrite}};
+            const render::BarrierDesc barrier{.memory = &memory, .memoryCount = 1};
+            REG_REQUIRE(recording.begin(0));
+            render::ComputeDispatchDesc dispatch{.commandBuffer = recording.commands.get(), .bindings = &binding,
+                .bindingCount = 1, .indirectArguments = arguments.get()};
+            REG_REQUIRE(program.dispatchIndirectBatch(dispatch, items, barrier));
+            REG_CHECK(recording.commands->synchronizationStats().memoryBarriers == 1);
+            REG_REQUIRE(recording.submit(tracker, *gate));
+            REG_REQUIRE(recording.frame.wait());
+            output->invalidate();
+            const auto* value = static_cast<const uint32_t*>(output->map());
+            REG_CHECK(value);
+            const auto actual = *value;
+            output->unmap();
+            REG_CHECK(actual == 2);
+
+            REG_REQUIRE(recording.begin(1));
+            memory.after = {render::PipelineStageBits::Transfer, render::AccessBits::ShaderRead};
+            REG_CHECK(render::hasError(program.dispatchIndirectBatch(dispatch, items, barrier), render::Error::InvalidArgument));
+            REG_CHECK(recording.commands->synchronizationStats().calls == 0);
+            recording.frame.cancel(); // Discard the first dispatch of the rejected batch.
+        }
+        return RhiTestResult::pass("Legacy mapped and prepared mapped/native: memory-only ordering and barrier errors");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(BatchMemoryBarrierTest);
 
 #undef REG_REQUIRE
 #undef REG_CHECK

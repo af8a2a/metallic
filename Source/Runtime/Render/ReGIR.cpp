@@ -232,7 +232,7 @@ Result<> ReGIRLightSelector::build(
         .offset = 0,
         .size = impl_->layout.bufferByteSize,
     };
-    commandBuffer.barrier(BarrierDesc{.buffers = &toGeneral, .bufferCount = 1});
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = &toGeneral, .bufferCount = 1}); !commandResult) { return commandResult; }
     impl_->state = ResourceState::General;
 
     TextureView* const pdfViews[] = {&localLightPdf};
@@ -277,7 +277,7 @@ Result<> ReGIRLightSelector::build(
         .offset = 0,
         .size = impl_->layout.bufferByteSize,
     };
-    commandBuffer.barrier(BarrierDesc{.buffers = &toShaderRead, .bufferCount = 1});
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = &toShaderRead, .bufferCount = 1}); !commandResult) { return commandResult; }
     impl_->state = ResourceState::ShaderRead;
     return result;
 }

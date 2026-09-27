@@ -762,16 +762,16 @@ private:
                 barriers[index] = {.buffer = buffers[index].get(),
                     .before = frame == 0 ? ResourceState::Undefined : ResourceState::General, .after = ResourceState::General};
             }
-            commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
+            if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             commands->bindBindlessHeap(*heap);
             if (cooperative) {
-                commands->bindComputePipeline(*traversalPipeline);
+                if (auto commandResult = commands->bindExecution((traversalPipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 push.traversalPhase = 2u;
                 commands->pushBindlessData(&push, sizeof(push));
                 commands->dispatch((kGroupCount + 63u) / 64u, 1, 1);
-                commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
+                if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
-            commands->bindComputePipeline(*pipeline);
+            if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             if (frame == caseCount) {
                 // The compatibility linear path predates sparse state. Run
                 // the production initializer once when changing algorithms.
@@ -779,40 +779,49 @@ private:
                 commands->pushBindlessData(&push, sizeof(push));
                 const uint32_t initGroups = static_cast<uint32_t>((sizes[State] / 4 + 63) / 64);
                 commands->dispatch(std::min(initGroups, 65535u), (initGroups + 65534) / 65535, 1);
-                commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
+                if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             for (uint32_t phase : {0u, 12u, 10u, 13u, 5u, 11u, 6u, 7u, 2u, 9u, 9u}) {
                 if (phase == 9u && !prefetch) { continue; }
                 if ((phase == 10u || phase == 11u) && !split) { continue; }
                 if ((phase == 12u || phase == 13u) && !distributed) { continue; }
-                commands->bindComputePipeline(phase == 12u || phase == 13u ? *demandPipeline :
-                    cooperative && (phase == 5u || phase == 7u || phase == 9u || phase == 10u || phase == 11u) ? *cooperativePipeline : *pipeline);
+                if (auto commandResult = commands->bindExecution((phase == 12u || phase == 13u ? *demandPipeline :
+                    cooperative && (phase == 5u || phase == 7u || phase == 9u || phase == 10u || phase == 11u) ? *cooperativePipeline : *pipeline).execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 push.activeBuildPhase = phase;
                 commands->pushBindlessData(&push, sizeof(push));
                 commands->dispatch(phase == 12u ? static_cast<uint32_t>((sizes[Demand] / 4 + 63) / 64) : phase == 13u ? 4u : 1u, 1, 1);
                 for (auto& barrier : barriers) { barrier.before = ResourceState::General; }
-                commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
+                if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             if (cooperative) {
-                commands->bindComputePipeline(*traversalPipeline);
+                if (auto commandResult = commands->bindExecution((traversalPipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 push.traversalPhase = 3u;
                 commands->pushBindlessData(&push, sizeof(push));
                 commands->dispatch((kRequestCapacity + 63u) / 64u, 1, 1);
-                commands->barrier({.buffers = barriers.data(), .bufferCount = BufferCount});
+                if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = BufferCount}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             for (uint32_t index = 0; index < std::size(outputs); ++index) {
                 BufferBarrierDesc barrier{.buffer = buffers[outputs[index]].get(),
                     .before = ResourceState::General, .after = ResourceState::TransferSource};
-                commands->barrier({.buffers = &barrier, .bufferCount = 1});
-                commands->copyBuffer({.source = buffers[outputs[index]].get(), .destination = readback.get(),
-                    .destinationOffset = offsets[index], .size = outputSizes[index]});
+                if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                {
+                    auto sourceSlice = (buffers[outputs[index]].get())->slice(0, outputSizes[index]);
+                    if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                    auto destinationSlice = readback.get()->slice(offsets[index], outputSizes[index]);
+                    if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                    if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                }
                 if (large && outputs[index] == State) {
-                    commands->copyBuffer({.source = buffers[State].get(), .destination = readback.get(),
-                        .sourceOffset = sizes[State] - 3 * sizeof(uint32_t), .destinationOffset = tailOffset,
-                        .size = 3 * sizeof(uint32_t)});
+                    {
+                        auto sourceSlice = (buffers[State].get())->slice(sizes[State] - 3 * sizeof(uint32_t), 3 * sizeof(uint32_t));
+                        if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                        auto destinationSlice = readback.get()->slice(tailOffset, 3 * sizeof(uint32_t));
+                        if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                        if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                    }
                 }
                 std::swap(barrier.before, barrier.after);
-                commands->barrier({.buffers = &barrier, .bufferCount = 1});
+                if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             STREAM_LOD_REQUIRE(commands->end());
             CommandBuffer* submitted[] = {commands.get()};
@@ -1113,8 +1122,8 @@ public:
                 barriers[i] = {.buffer = buffers[i].get(), .before = test == 0 ? ResourceState::Undefined : ResourceState::General,
                     .after = ResourceState::General};
             }
-            commands->barrier({.buffers = barriers.data(), .bufferCount = 3});
-            commands->bindBindlessHeap(*heap); commands->bindComputePipeline(*pipeline);
+            if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = 3}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             MeshletStreamUserPush push{};
             push.paramsBuffer = handles[0].shaderIndex; push.activeHeaderBuffer = handles[2].shaderIndex;
             push.activeBuildPhase = kMeshletStreamActiveBuildPrefixPhase;

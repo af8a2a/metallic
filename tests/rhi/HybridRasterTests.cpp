@@ -136,7 +136,7 @@ public:
                     std::memset(data,0,pixelCount*8); output->flush(); output->unmap();
                 }
                 HYBRID_REQUIRE(commands->begin());
-                commands->bindBindlessHeap(*compareHeap); commands->bindComputePipeline(plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute);
+                commands->bindBindlessHeap(*compareHeap); if (auto commandResult = commands->bindExecution((plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute).execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 uint32_t push[]={vertexHandle.shaderIndex,handles[0].shaderIndex,handles[1].shaderIndex,width,height,reversed,sided,bits,plane,count};
                 commands->pushBindlessData(push,sizeof(push));
                 const uint32_t lanes=plane>=2u ? 128u : 64u;
@@ -233,18 +233,18 @@ public:
                             .after = ResourceState::ColorAttachment},
                         {.texture = textures[1].get(), .before = submitted ? ResourceState::TransferSource : ResourceState::Undefined,
                             .after = ResourceState::DepthStencilAttachment}};
-                    commands->barrier({.textures = transitions, .textureCount = 2});
+                    if (auto commandResult = commands->synchronize({.textures = transitions, .textureCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     const bool hybrid = configuration != 0;
-                    if (hybrid) { rasterizer.begin(*commands, configuration == 1 ? 1.f : configuration == 2 ? 8.f : 32.f, reversed); }
+                    if (hybrid) { if (auto commandResult = rasterizer.begin(*commands, configuration == 1 ? 1.f : configuration == 2 ? 8.f : 32.f, reversed); !commandResult) { return RhiTestResult::fail(std::string("begin failed: ") + render::resultToString(commandResult)); } }
                     const RenderingAttachmentDesc color{.view = views[0].get(), .state = ResourceState::ColorAttachment,
                         .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
                     const RenderingAttachmentDesc depth{.view = views[1].get(), .state = ResourceState::DepthStencilAttachment,
                         .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store, .clearDepth = reversed ? 0.f : 1.f};
-                    commands->beginRendering({.renderArea = {.width = width, .height = height}, .colorAttachments = &color,
-                        .colorAttachmentCount = 1, .depthStencilAttachment = &depth});
+                    if (auto commandResult = commands->beginRendering({.renderArea = {.width = width, .height = height}, .colorAttachments = &color,
+                        .colorAttachmentCount = 1, .depthStencilAttachment = &depth}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                     commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f});
                     commands->setScissor({.width = width, .height = height});
-                    commands->bindBindlessHeap(*heap); commands->bindGraphicsPipeline(*pipeline);
+                    commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                     const uint32_t push[] = {inputHandle.shaderIndex, hybrid ? queueHandle.shaderIndex : UINT32_MAX, doubleSided ? 1u : 0u};
                     commands->pushBindlessData(push, sizeof(push));
                     commands->drawMeshTasks(uint32_t(vertices.size() / 3)); commands->endRendering();
@@ -253,15 +253,27 @@ public:
                         const BufferBarrierDesc bufferTransitions[] = {
                             {.buffer = &rasterizer.queueBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},
                             {.buffer = &rasterizer.pixelBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource}};
-                        commands->barrier({.buffers = bufferTransitions, .bufferCount = 2});
-                        commands->copyBuffer({.source = &rasterizer.queueBuffer(), .destination = queueReadback.get(), .size = 32});
-                        commands->copyBuffer({.source = &rasterizer.pixelBuffer(), .destination = pixelReadback.get(), .size = pixelCount * 8});
+                        if (auto commandResult = commands->synchronize({.buffers = bufferTransitions, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                        {
+                            auto sourceSlice = (&rasterizer.queueBuffer())->slice(0, 32);
+                            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                            auto destinationSlice = queueReadback.get()->slice(0, 32);
+                            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                        }
+                        {
+                            auto sourceSlice = (&rasterizer.pixelBuffer())->slice(0, pixelCount * 8);
+                            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                            auto destinationSlice = pixelReadback.get()->slice(0, pixelCount * 8);
+                            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                        }
                     }
                     TextureBarrierDesc outputTransitions[2];
                     for (size_t i = 0; i < 2; ++i) {
                         outputTransitions[i] = {.texture = textures[i].get(), .before = transitions[i].after, .after = ResourceState::TransferSource};
                     }
-                    commands->barrier({.textures = outputTransitions, .textureCount = 2});
+                    if (auto commandResult = commands->synchronize({.textures = outputTransitions, .textureCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     for (size_t i = 0; i < 2; ++i) {
                         commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = readback[i].get(), .width = width, .height = height});
                     }
@@ -374,7 +386,7 @@ public:
                 return RhiTestResult::fail("Oversized cluster input was accepted");
             }
             HYBRID_REQUIRE(rasterizer.beginClusters(*commands, 8, true, 0, test.count, test.stream));
-            commands->bindBindlessHeap(*heap); commands->bindComputePipeline(*pipeline);
+            commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             const uint32_t push[] = {inputHandle.shaderIndex, binHandle.shaderIndex, test.count};
             commands->pushBindlessData(push, sizeof(push));
             if (test.count != 0) {
@@ -384,9 +396,21 @@ public:
             const BufferBarrierDesc barriers[] = {
                 {.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},
                 {.buffer = &rasterizer.clusterArguments(), .before = ResourceState::IndirectArgument, .after = ResourceState::TransferSource}};
-            commands->barrier({.buffers = barriers, .bufferCount = 2});
-            commands->copyBuffer({.source = &rasterizer.clusterBuffer(), .destination = readback.get(), .size = readbackBytes});
-            commands->copyBuffer({.source = &rasterizer.clusterArguments(), .destination = arguments.get(), .size = 60});
+            if (auto commandResult = commands->synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            {
+                auto sourceSlice = (&rasterizer.clusterBuffer())->slice(0, readbackBytes);
+                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                auto destinationSlice = readback.get()->slice(0, readbackBytes);
+                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            }
+            {
+                auto sourceSlice = (&rasterizer.clusterArguments())->slice(0, 60);
+                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                auto destinationSlice = arguments.get()->slice(0, 60);
+                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            }
             HYBRID_REQUIRE(commands->end());
             CommandBuffer* list[] = {commands.get()};
             HYBRID_REQUIRE(queue->submit({.commandBuffers = list, .commandBufferCount = 1, .signalFence = fence.get()}));

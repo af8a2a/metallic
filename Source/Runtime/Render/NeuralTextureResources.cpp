@@ -684,7 +684,7 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             .baseLayer = 0,
             .layerCount = set.texture->desc().layerCount,
         };
-        commandBuffer.barrier(BarrierDesc{.textures = &toTransfer, .textureCount = 1});
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = &toTransfer, .textureCount = 1}); !commandResult) { return commandResult; }
         set.state = ResourceState::TransferDestination;
         for (const Impl::TextureUpload& upload : set.uploads) {
             commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
@@ -710,7 +710,7 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             .baseLayer = 0,
             .layerCount = set.texture->desc().layerCount,
         };
-        commandBuffer.barrier(BarrierDesc{.textures = &toShaderRead, .textureCount = 1});
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = &toShaderRead, .textureCount = 1}); !commandResult) { return commandResult; }
         set.state = ResourceState::ShaderRead;
     }
 
@@ -725,11 +725,13 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
         if (pair.upload == nullptr || pair.destination == nullptr) {
             return makeError(Error::InvalidArgument);
         }
-        commandBuffer.copyBuffer(BufferCopyDesc{
-            .source = pair.upload,
-            .destination = pair.destination,
-            .size = pair.destination->desc().size,
-        });
+        {
+            auto sourceSlice = pair.upload->slice(0, pair.destination->desc().size);
+            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+            auto destinationSlice = pair.destination->slice(0, pair.destination->desc().size);
+            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+            if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        }
         BufferBarrierDesc toGeneral{
             .buffer = pair.destination,
             .before = ResourceState::TransferDestination,
@@ -737,7 +739,7 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             .offset = 0,
             .size = pair.destination->desc().size,
         };
-        commandBuffer.barrier(BarrierDesc{.buffers = &toGeneral, .bufferCount = 1});
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = &toGeneral, .bufferCount = 1}); !commandResult) { return commandResult; }
     }
 
 #if METALLIC_HAS_NTC
@@ -782,13 +784,13 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
                 return makeError(Error::Failure);
             }
         } else {
-            commandBuffer.copyBuffer(BufferCopyDesc{
-                .source = impl_->weightsUpload.get(),
-                .destination = impl_->weightsBuffer.get(),
-                .sourceOffset = set.sourceWeightOffset,
-                .destinationOffset = set.destinationWeightOffset,
-                .size = set.sourceWeightSize,
-            });
+            {
+                auto sourceSlice = impl_->weightsUpload.get()->slice(set.sourceWeightOffset, set.sourceWeightSize);
+                if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+                auto destinationSlice = impl_->weightsBuffer.get()->slice(set.destinationWeightOffset, set.sourceWeightSize);
+                if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+                if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+            }
         }
     }
 
@@ -820,7 +822,7 @@ Result<> NeuralTextureResources::recordUploads(CommandBuffer& commandBuffer)
             .offset = 0,
             .size = impl_->weightsBuffer->desc().size,
         };
-        commandBuffer.barrier(BarrierDesc{.buffers = &toGeneral, .bufferCount = 1});
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = &toGeneral, .bufferCount = 1}); !commandResult) { return commandResult; }
     }
 #endif
     impl_->uploadRecorded = true;

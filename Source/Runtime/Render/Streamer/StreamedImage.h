@@ -99,10 +99,10 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
                 .baseLayer = 0,
                 .layerCount = 1,
             };
-            commands.barrier(BarrierDesc{
+            if (auto commandResult = commands.synchronize(BarrierDesc{
                 .textures = &toTransfer,
                 .textureCount = 1,
-            });
+            }); !commandResult) { return commandResult; }
             imageState_ = ResourceState::TransferDestination;
 
             commands.copyBufferToTexture(BufferTextureCopyDesc{
@@ -124,10 +124,10 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
                 .baseLayer = 0,
                 .layerCount = 1,
             };
-            commands.barrier(BarrierDesc{
+            if (auto commandResult = commands.synchronize(BarrierDesc{
                 .textures = &toShaderRead,
                 .textureCount = 1,
-            });
+            }); !commandResult) { return commandResult; }
             imageState_ = ResourceState::ShaderRead;
             uploaded_ = true;
             const auto result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(nullptr,

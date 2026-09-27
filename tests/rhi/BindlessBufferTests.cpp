@@ -346,7 +346,7 @@ public:
         };
         commandBuffer->bindBindlessHeap(*bindlessHeap);
         commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->bindComputePipeline(*pipeline);
+        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         commandBuffer->dispatch(1, 1, 1);
 
         render::BufferBarrierDesc outputBarrier{
@@ -356,7 +356,7 @@ public:
             .offset = 0,
             .size = outputBuffer->desc().size,
         };
-        commandBuffer->barrier(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1});
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -536,7 +536,7 @@ public:
             .inputBuffer = inputHandle.shaderIndex,
             .outputBuffer = outputHandle.shaderIndex,
         };
-        commandBuffer->bindComputePipeline(*pipeline);
+        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         commandBuffer->bindBindlessHeap(*bindlessHeap);
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
@@ -548,7 +548,7 @@ public:
             .offset = 0,
             .size = outputBuffer->desc().size,
         };
-        commandBuffer->barrier(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1});
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -711,7 +711,7 @@ public:
             return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
 
-        commandBuffer->bindComputePipeline(*pipeline);
+        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         commandBuffer->bindBindlessHeap(*bindlessHeap);
 
         BindlessBufferUserPush push{
@@ -729,7 +729,7 @@ public:
             .offset = 0,
             .size = rwBuffer->desc().size,
         };
-        commandBuffer->barrier(render::BarrierDesc{.buffers = &rwBarrier, .bufferCount = 1});
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &rwBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         push.passIndex = 1;
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -742,7 +742,7 @@ public:
             .offset = 0,
             .size = outputBuffer->desc().size,
         };
-        commandBuffer->barrier(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1});
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -929,7 +929,7 @@ public:
             .inputBuffer = inputHandle.shaderIndex,
             .outputBuffer = outputHandle.shaderIndex,
         };
-        commandBuffer->bindComputePipeline(*pipeline);
+        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         commandBuffer->bindBindlessHeap(*bindlessHeap);
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
@@ -941,7 +941,7 @@ public:
             .offset = 0,
             .size = outputBuffer->desc().size,
         };
-        commandBuffer->barrier(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1});
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -1107,7 +1107,7 @@ public:
             return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
 
-        commandBuffer->bindComputePipeline(*pipeline);
+        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         commandBuffer->bindBindlessHeap(*bindlessHeap);
 
         BindlessBufferUserPush push{
@@ -1125,7 +1125,7 @@ public:
             .offset = 0,
             .size = rwBuffer->desc().size,
         };
-        commandBuffer->barrier(render::BarrierDesc{.buffers = &rwBarrier, .bufferCount = 1});
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &rwBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         push.passIndex = 1;
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -1138,7 +1138,7 @@ public:
             .offset = 0,
             .size = outputBuffer->desc().size,
         };
-        commandBuffer->barrier(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1});
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -1282,7 +1282,7 @@ public:
         const BindlessBufferUserPush push{
             .outputBuffer = bufferHandle.shaderIndex,
         };
-        commandBuffer->bindComputePipeline(*pipeline);
+        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         commandBuffer->bindBindlessHeap(*bindlessHeap);
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
@@ -1294,7 +1294,7 @@ public:
             .offset = 0,
             .size = buffer->desc().size,
         };
-        commandBuffer->barrier(render::BarrierDesc{.buffers = &barrier, .bufferCount = 1});
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {

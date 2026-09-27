@@ -463,7 +463,7 @@ public:
             const render::BufferBarrierDesc barrier{.buffer = readback.get(),
                 .before = firstReadback ? render::ResourceState::Undefined : render::ResourceState::TransferDestination,
                 .after = render::ResourceState::TransferDestination};
-            commands->barrier({.buffers = &barrier, .bufferCount = 1});
+            if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
                 .width = kExtent, .height = kExtent, .depth = 1});
             LIGHT_DEBUG_CHECK(commands->end());

@@ -1,3 +1,6 @@
+#include <stdexcept>
+#include <string>
+
 #include "RhiTest.h"
 
 #include "Runtime/Render/Streamer/MeshletStreamClas.h"
@@ -635,7 +638,7 @@ public:
             }
             auto result = runtime.cmdBeginFrame(*commands, *streamer, frame);
             if (result) {
-                commands->copyStreamedData(*streamer);
+                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 // Keep the old CLAS queue entry across unload completion, then
                 // admit a new upload before draining it (e.g. deferred traversal).
                 if (!pressure_ || reloadPage == UINT32_MAX || f % 12 != 1) {
@@ -769,7 +772,7 @@ public:
                 require(bool(frame.begin(++frameId)) && bool(pool->reset()) && bool(commands->begin(&frame)) &&
                     bool(streamer->beginFrame(frame)), "Frame begin failed");
                 require(bool(runtime.cmdBeginFrame(*commands, *streamer, view)), "Stream begin failed");
-                commands->copyStreamedData(*streamer);
+                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { throw std::runtime_error(std::string("copyStreamedData failed: ") + metallic::render::resultToString(commandResult)); }
                 require(bool(runtime.cmdPreTraversal(*commands, view)) && bool(runtime.cmdPostTraversal(*commands)) &&
                     bool(runtime.cmdEndFrame(*commands)), "Stream traversal failed");
                 std::vector<DebugResourceBinding> bindings;
@@ -777,10 +780,16 @@ public:
                 const auto found = std::find_if(bindings.begin(), bindings.end(), [](const auto& binding) { return binding.id == "test.blasHeader"; });
                 require(found != bindings.end(), "BLAS telemetry missing");
                 BufferBarrierDesc barrier{.buffer = found->buffer, .before = found->state, .after = ResourceState::TransferSource};
-                commands->barrier({.buffers = &barrier, .bufferCount = 1});
-                commands->copyBuffer({.source = found->buffer, .destination = readback.get(), .size = sizeof(header)});
+                if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+                {
+                    auto sourceSlice = found->buffer->slice(0, sizeof(header));
+                    if (!sourceSlice) { throw std::runtime_error(std::string("source slice failed: ") + metallic::render::resultToString(sourceSlice)); }
+                    auto destinationSlice = readback.get()->slice(0, sizeof(header));
+                    if (!destinationSlice) { throw std::runtime_error(std::string("destination slice failed: ") + metallic::render::resultToString(destinationSlice)); }
+                    if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { throw std::runtime_error(std::string("copyBuffer failed: ") + metallic::render::resultToString(commandResult)); }
+                }
                 std::swap(barrier.before, barrier.after);
-                commands->barrier({.buffers = &barrier, .bufferCount = 1});
+                if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 require(bool(commands->end()), "Frame end failed");
                 const auto readiness = runtime.debugSnapshot(false);
                 if (!cancelledInitialFallback && readiness.at("fallbackBlasRecorded") > readiness.at("fallbackBlasSubmitted")) {
@@ -949,11 +958,11 @@ public:
             .offset = 0,
             .size = kByteSize,
         };
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = &toTransfer,
             .bufferCount = 1,
-        });
-        commandBuffer->copyStreamedData(*streamer);
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
@@ -1092,11 +1101,11 @@ public:
             .baseLayer = 0,
             .layerCount = 1,
         };
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .textures = &textureToTransfer,
             .textureCount = 1,
-        });
-        commandBuffer->copyStreamedData(*streamer);
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         render::TextureBarrierDesc textureToSource{
             .texture = texture.get(),
             .before = render::ResourceState::TransferDestination,
@@ -1106,10 +1115,10 @@ public:
             .baseLayer = 0,
             .layerCount = 1,
         };
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .textures = &textureToSource,
             .textureCount = 1,
-        });
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
             .texture = texture.get(),
             .buffer = readbackBuffer.get(),
@@ -1652,11 +1661,11 @@ public:
             .offset = 0,
             .size = pageBuffer->desc().size,
         };
-        commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = &toTransfer,
             .bufferCount = 1,
-        });
-        commandBuffer->copyStreamedData(*streamer);
+        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
@@ -3277,9 +3286,11 @@ public:
                     const BufferBarrierDesc barrier{.buffer = destination.get(),
                         .before = ResourceState::Undefined, .after = ResourceState::TransferDestination,
                         .size = capacity};
-                    commands->barrier({.buffers = &barrier, .bufferCount = 1});
-                    commands->copyStreamedData(*streamer);
+                    if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    const auto copyResult = commands->copyStreamedData(*streamer);
                     const bool sameRecording = !(scenario == 5 && attempt == 0);
+                    if (sameRecording) { UPLOAD_REQUIRE(copyResult); }
+                    else { UPLOAD_REQUIRE(hasError(copyResult, Error::InvalidArgument)); }
                     UPLOAD_REQUIRE(receipt->isRecordedBefore(*commands) == sameRecording);
                     UPLOAD_REQUIRE(residency.buildOrderedUploadPatches(*commands, orderedPatches) ==
                         (sameRecording ? pageCount : 0u));
@@ -3450,10 +3461,16 @@ public:
             ORDERED_REQUIRE(header != bindings.end());
             BufferBarrierDesc barrier{.buffer = header->buffer, .before = header->state, .after = ResourceState::TransferSource,
                 .size = sizeof(MeshletStreamGpuActiveHeader)};
-            commands->barrier({.buffers = &barrier, .bufferCount = 1});
-            commands->copyBuffer({.source = header->buffer, .destination = readback.get(), .size = sizeof(MeshletStreamGpuActiveHeader)});
+            if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            {
+                auto sourceSlice = header->buffer->slice(0, sizeof(MeshletStreamGpuActiveHeader));
+                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                auto destinationSlice = readback.get()->slice(0, sizeof(MeshletStreamGpuActiveHeader));
+                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            }
             std::swap(barrier.before, barrier.after);
-            commands->barrier({.buffers = &barrier, .bufferCount = 1});
+            if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             ORDERED_REQUIRE(runtime.cmdEndFrame(*commands));
             ORDERED_REQUIRE(commands->end());
             streamer->endFrame();

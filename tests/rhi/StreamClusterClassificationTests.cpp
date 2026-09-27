@@ -294,20 +294,25 @@ public:
                         .hybridQueueBuffer = handles[13 + bufferSet * 2].shaderIndex, .hybridClusterBuffer = handles[12 + bufferSet * 2].shaderIndex};
                     CLASSIFY_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, *pipelines[0], push));
                     if (schedule != 0) {
-                        commands->bindComputePipeline(*pipelines[4]);
+                        if (auto commandResult = commands->bindExecution((pipelines[4])->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                         commands->pushBindlessData(&push, sizeof(push));
                         CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
                         BufferBarrierDesc verifyBarrier{.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General, .after = ResourceState::General};
-                        commands->barrier({.buffers = &verifyBarrier, .bufferCount = 1});
+                        if (auto commandResult = commands->synchronize({.buffers = &verifyBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         CLASSIFY_REQUIRE(rasterizer.cullStreamClusters(*commands, *pipelines[schedule == 1 ? 1 : 8], push));
                         // Inspect the queue before stable bin scatter overwrites it.
                         BufferBarrierDesc queueCopy{.buffer = &rasterizer.clusterBuffer(),
                             .before = ResourceState::General, .after = ResourceState::TransferSource};
-                        commands->barrier({.buffers = &queueCopy, .bufferCount = 1});
-                        commands->copyBuffer({.source = &rasterizer.clusterBuffer(), .destination = exactQueueReadback.get(),
-                            .sourceOffset = 16 * sizeof(uint32_t), .size = uint64_t(capacity) * 16});
+                        if (auto commandResult = commands->synchronize({.buffers = &queueCopy, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                        {
+                            auto sourceSlice = (&rasterizer.clusterBuffer())->slice(16 * sizeof(uint32_t), uint64_t(capacity) * 16);
+                            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                            auto destinationSlice = exactQueueReadback.get()->slice(0, uint64_t(capacity) * 16);
+                            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                        }
                         std::swap(queueCopy.before, queueCopy.after);
-                        commands->barrier({.buffers = &queueCopy, .bufferCount = 1});
+                        if (auto commandResult = commands->synchronize({.buffers = &queueCopy, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     }
                     if (measure) {
                         CLASSIFY_REQUIRE(commands->resetTimestampQueries(*timing, 0, timedDispatches * 2));
@@ -316,27 +321,32 @@ public:
                         for (uint32_t dispatch = 0; dispatch < timedDispatches; ++dispatch) {
                             // Swap AB/BA each pair to balance cache and clock drift.
                             const bool legacy = ((dispatch / 2 + dispatch % 2) & 1u) == 0u;
-                            commands->barrier({.buffers = &tagsReady, .bufferCount = 1});
-                            commands->bindComputePipeline(*pipelines[legacy ? 7 : 2]);
+                            if (auto commandResult = commands->synchronize({.buffers = &tagsReady, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                            if (auto commandResult = commands->bindExecution((pipelines[legacy ? 7 : 2])->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                             commands->pushBindlessData(&push, sizeof(push));
                             CLASSIFY_REQUIRE(commands->writeTimestamp(*timing, dispatch * 2, PipelineStageBits::TopOfPipe));
                             CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
                             CLASSIFY_REQUIRE(commands->writeTimestamp(*timing, dispatch * 2 + 1, PipelineStageBits::BottomOfPipe));
                         }
-                        commands->barrier({.buffers = &tagsReady, .bufferCount = 1});
+                        if (auto commandResult = commands->synchronize({.buffers = &tagsReady, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     }
                     if (schedule == 0 || test.maxPixels != 0) {
-                        commands->bindComputePipeline(*pipelines[schedule == 0 ? 3 : schedule == 1 ? 2 : 7]);
+                        if (auto commandResult = commands->bindExecution((pipelines[schedule == 0 ? 3 : schedule == 1 ? 2 : 7])->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                         commands->pushBindlessData(&push, sizeof(push));
                         CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
                     }
                     if (schedule != 0) {
                         BufferBarrierDesc counterCopy{.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::General, .after = ResourceState::TransferSource};
-                        commands->barrier({.buffers = &counterCopy, .bufferCount = 1});
-                        commands->copyBuffer({.source = &rasterizer.clusterBuffer(), .destination = readback.get(),
-                            .destinationOffset = binBytes + recordBytes + 36, .size = 16});
+                        if (auto commandResult = commands->synchronize({.buffers = &counterCopy, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                        {
+                            auto sourceSlice = (&rasterizer.clusterBuffer())->slice(0, 16);
+                            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                            auto destinationSlice = readback.get()->slice(binBytes + recordBytes + 36, 16);
+                            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                        }
                         std::swap(counterCopy.before,counterCopy.after);
-                        commands->barrier({.buffers = &counterCopy, .bufferCount = 1});
+                        if (auto commandResult = commands->synchronize({.buffers = &counterCopy, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     }
                     CLASSIFY_REQUIRE(rasterizer.finishClusterBins(*commands));
                     if (schedule != 0) {
@@ -344,31 +354,54 @@ public:
                         auto diagnosticPush = push;
                         diagnosticPush.hybridQueueBuffer = handles[16 + bufferSet].shaderIndex;
                         BufferBarrierDesc ready{.buffer = &rasterizer.workloadBuffer(), .before = ResourceState::General, .after = ResourceState::General};
-                        commands->barrier({.buffers = &ready, .bufferCount = 1});
-                        commands->bindComputePipeline(*pipelines[5]);
+                        if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                        if (auto commandResult = commands->bindExecution((pipelines[5])->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                         commands->pushBindlessData(&diagnosticPush, sizeof(diagnosticPush));
                         commands->dispatch(1);
-                        commands->barrier({.buffers = &ready, .bufferCount = 1});
-                        commands->bindComputePipeline(*pipelines[6]);
+                        if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                        if (auto commandResult = commands->bindExecution((pipelines[6])->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                         CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.clusterArguments(), 4 * 3 * sizeof(uint32_t)));
                         ready.after = ResourceState::TransferSource;
-                        commands->barrier({.buffers = &ready, .bufferCount = 1});
-                        commands->copyBuffer({.source = &rasterizer.workloadBuffer(), .destination = readback.get(),
-                            .destinationOffset = binBytes + recordBytes + 52, .size = 128});
+                        if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                        {
+                            auto sourceSlice = (&rasterizer.workloadBuffer())->slice(0, 128);
+                            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                            auto destinationSlice = readback.get()->slice(binBytes + recordBytes + 52, 128);
+                            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                        }
                         std::swap(ready.before, ready.after);
-                        commands->barrier({.buffers = &ready, .bufferCount = 1});
+                        if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     }
                     const BufferBarrierDesc copies[] = {
                         {.buffer = &rasterizer.clusterBuffer(), .before = ResourceState::ShaderRead, .after = ResourceState::TransferSource},
                         {.buffer = inputs[Records].get(), .before = ResourceState::General, .after = ResourceState::TransferSource},
                         {.buffer = &rasterizer.candidateArguments(), .before = ResourceState::IndirectArgument, .after = ResourceState::TransferSource}};
-                    commands->barrier({.buffers = copies, .bufferCount = 3});
-                    commands->copyBuffer({.source = &rasterizer.clusterBuffer(), .destination = readback.get(), .size = binBytes});
-                    commands->copyBuffer({.source = inputs[Records].get(), .destination = readback.get(), .destinationOffset = binBytes, .size = recordBytes});
-                    commands->copyBuffer({.source = &rasterizer.candidateArguments(), .destination = readback.get(), .destinationOffset = binBytes + recordBytes, .size = 36});
+                    if (auto commandResult = commands->synchronize({.buffers = copies, .bufferCount = 3}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    {
+                        auto sourceSlice = (&rasterizer.clusterBuffer())->slice(0, binBytes);
+                        if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                        auto destinationSlice = readback.get()->slice(0, binBytes);
+                        if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                        if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                    }
+                    {
+                        auto sourceSlice = (inputs[Records].get())->slice(0, recordBytes);
+                        if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                        auto destinationSlice = readback.get()->slice(binBytes, recordBytes);
+                        if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                        if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                    }
+                    {
+                        auto sourceSlice = (&rasterizer.candidateArguments())->slice(0, 36);
+                        if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                        auto destinationSlice = readback.get()->slice(binBytes + recordBytes, 36);
+                        if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                        if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                    }
                     std::array<BufferBarrierDesc, 3> restore{copies[0], copies[1], copies[2]};
                     for (auto& barrier : restore) { std::swap(barrier.before, barrier.after); }
-                    commands->barrier({.buffers = restore.data(), .bufferCount = 3});
+                    if (auto commandResult = commands->synchronize({.buffers = restore.data(), .bufferCount = 3}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     CLASSIFY_REQUIRE(commands->end());
                     CommandBuffer* list[] = {commands.get()};
                     CLASSIFY_REQUIRE(queue->submit({.commandBuffers = list, .commandBufferCount = 1, .signalFence = fence.get()}));

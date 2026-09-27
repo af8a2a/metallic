@@ -6850,10 +6850,10 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             .baseLayer = 0,
             .layerCount = 1,
         };
-        frame.commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = frame.commandBuffer->synchronize(render::BarrierDesc{
             .textures = &toColor,
             .textureCount = 1,
-        });
+        }); !commandResult) { return false; }
         swapchainImageStates_[imageIndex] = render::ResourceState::ColorAttachment;
 
         const render::Rect renderArea{
@@ -6907,10 +6907,10 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             .baseLayer = 0,
             .layerCount = 1,
         };
-        frame.commandBuffer->barrier(render::BarrierDesc{
+        if (auto commandResult = frame.commandBuffer->synchronize(render::BarrierDesc{
             .textures = &toPresent,
             .textureCount = 1,
-        });
+        }); !commandResult) { return false; }
         swapchainImageStates_[imageIndex] = render::ResourceState::Present;
     }
 

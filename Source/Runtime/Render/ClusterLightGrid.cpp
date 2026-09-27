@@ -322,7 +322,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
     const std::array<BufferBarrierDesc, 2> toWrite{{
         {.buffer = next->buffers[3].get(), .before = previousState, .after = ResourceState::General},
         {.buffer = next->buffers[4].get(), .before = previousState, .after = ResourceState::General}}};
-    commands.barrier({.buffers = toWrite.data(), .bufferCount = static_cast<uint32_t>(toWrite.size())});
+    if (auto commandResult = commands.synchronize({.buffers = toWrite.data(), .bufferCount = static_cast<uint32_t>(toWrite.size())}); !commandResult) { return commandResult; }
     std::array<ComputeDispatchBinding, 5> bindings;
     for (uint32_t index = 0; index < bindings.size(); ++index) {
         // Bind the entire grow-only allocation. Logical counts in params bound
@@ -340,7 +340,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
     const std::array<BufferBarrierDesc, 2> toRead{{
         {.buffer = next->buffers[3].get(), .before = ResourceState::General, .after = ResourceState::ShaderRead},
         {.buffer = next->buffers[4].get(), .before = ResourceState::General, .after = ResourceState::ShaderRead}}};
-    commands.barrier({.buffers = toRead.data(), .bufferCount = static_cast<uint32_t>(toRead.size())});
+    if (auto commandResult = commands.synchronize({.buffers = toRead.data(), .bufferCount = static_cast<uint32_t>(toRead.size())}); !commandResult) { return commandResult; }
     if (frame && !reuse) {
         std::erase_if(resourcePool_, [&](const auto& candidate) {
             return candidate->completion.isComplete() && !reusable(candidate);

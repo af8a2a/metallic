@@ -105,7 +105,7 @@ void WorkControlShaderTrace::qualify(Device& device, Queue& queue, const std::fi
     QueueSubmissionTracker tracker; require(bool(tracker.initialize(device,queue)),"Echo tracker failed");
     RenderFrameContext frame; require(bool(frame.begin(0)),"Echo frame failed");
     require(bool((*commands)->begin(&frame)),"Echo recording failed");
-    (*commands)->bindComputePipeline(**pipeline); (*commands)->dispatch(1,1,1);
+    if (auto commandResult = (*commands)->bindExecution((*pipeline)->execution()); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); } (*commands)->dispatch(1,1,1);
     require(bool((*commands)->end()),"Echo recording end failed");
     CommandBuffer* submitted[]{commands->get()};
     require(bool(tracker.submit({.commandBuffers=submitted,.commandBufferCount=1},frame)),"Echo submit failed");
@@ -259,7 +259,7 @@ bool WorkControlShaderTrace::bind(CommandBuffer& commands, std::string_view pass
     require(bool(commands.retainResource(lease)),"Cannot retain diagnostic pipeline");
     require(bool(commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
         [lease]{lease->submission.store(1);},[lease]{lease->submission.store(-1);}))),"Cannot track diagnostic submit");
-    commands.bindComputePipeline(*lease->pipeline);
+    require(bool(commands.bindExecution(lease->pipeline->execution())), "Cannot bind diagnostic pipeline");
     evidence_["productionBinding"] = production;
     evidence_["execution"] = execution_.value();
     bound_=true; armed_=false;

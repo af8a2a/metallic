@@ -189,7 +189,7 @@ Result<> allocateAndWriteBuffer(ResourceRegistry& registry, Buffer& buffer,
     return result;
 }
 
-void transitionBuffer(
+Result<> transitionBuffer(
     CommandBuffer& commandBuffer,
     Buffer& buffer,
     ResourceState& state,
@@ -197,7 +197,7 @@ void transitionBuffer(
     bool forceBarrier = false)
 {
     if (!forceBarrier && state == nextState) {
-        return;
+        return {};
     }
     BufferBarrierDesc barrier{
         .buffer = &buffer,
@@ -206,11 +206,12 @@ void transitionBuffer(
         .offset = 0,
         .size = buffer.desc().size,
     };
-    commandBuffer.barrier(BarrierDesc{
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
         .buffers = &barrier,
         .bufferCount = 1,
-    });
+    }); !commandResult) { return commandResult; }
     state = nextState;
+    return {};
 }
 
 Result<> createSlangShaderModule(
@@ -353,12 +354,12 @@ public:
             (totalGroups + kMaxDispatchGroupsPerDimension - 1u) / kMaxDispatchGroupsPerDimension;
 
         push.activeBuildPhase = pageCount;
-        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General);
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
         commandBuffer.bindBindlessHeap(bindlessHeap);
-        commandBuffer.bindComputePipeline(*pageTableInitPipeline_);
+        if (auto commandResult = commandBuffer.bindExecution((pageTableInitPipeline_)->execution()); !commandResult) { return commandResult; }
         commandBuffer.pushBindlessData(&push, sizeof(push));
         commandBuffer.dispatch(groupCountX, groupCountY, 1);
-        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true);
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
         return {};
     }
 
@@ -422,12 +423,12 @@ public:
             sizeof(StreamUpdateBufferHeader) + static_cast<uint64_t>(patchCount) * sizeof(StreamPageTablePatch));
         updateBuffer.unmap();
 
-        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General);
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
         commandBuffer.bindBindlessHeap(bindlessHeap);
-        commandBuffer.bindComputePipeline(*updatePipeline_);
+        if (auto commandResult = commandBuffer.bindExecution((updatePipeline_)->execution()); !commandResult) { return commandResult; }
         commandBuffer.pushBindlessData(&push, sizeof(push));
         commandBuffer.dispatch((patchCount + 63u) / 64u, 1, 1);
-        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true);
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
         return {};
     }
 
@@ -491,16 +492,16 @@ public:
             return makeError(Error::Failure);
         }
 
-        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General);
-        transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General);
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General); !commandResult) { return commandResult; }
         commandBuffer.bindBindlessHeap(bindlessHeap);
-        commandBuffer.bindComputePipeline(*traversalPipeline_);
+        if (auto commandResult = commandBuffer.bindExecution((traversalPipeline_)->execution()); !commandResult) { return commandResult; }
         commandBuffer.pushBindlessData(&push, sizeof(push));
         const uint64_t groups = (uint64_t(threadCount) + 63u) / 64u;
         commandBuffer.dispatch(static_cast<uint32_t>(std::min<uint64_t>(groups, 65535u)),
             static_cast<uint32_t>((groups + 65534u) / 65535u), 1);
-        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General, true);
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         return {};
     }
 
@@ -594,13 +595,13 @@ public:
             return makeError(Error::Failure);
         }
 
-        transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General);
-        transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General);
-        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General);
-        transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General);
-        transitionBuffer(commandBuffer, drawIndirectBuffer, drawIndirectBufferState, ResourceState::General);
-        transitionBuffer(commandBuffer, traversalHeaderBuffer, traversalHeaderBufferState, ResourceState::General);
-        transitionBuffer(commandBuffer, traversalWorkBuffer, traversalWorkBufferState, ResourceState::General);
+        if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, drawIndirectBuffer, drawIndirectBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, traversalHeaderBuffer, traversalHeaderBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, traversalWorkBuffer, traversalWorkBufferState, ResourceState::General); !commandResult) { return commandResult; }
         commandBuffer.bindBindlessHeap(bindlessHeap);
         const bool cooperative = push.activeBuildPhase == kMeshletStreamActiveBuildFrontierPhase ||
             push.activeBuildPhase == kMeshletStreamActiveBuildEmitPhase ||
@@ -609,17 +610,17 @@ public:
             push.activeBuildPhase == kMeshletStreamActiveBuildMaskPhase;
         const bool demand = push.activeBuildPhase == kMeshletStreamActiveBuildDemandPhase ||
             push.activeBuildPhase == kMeshletStreamActiveBuildDemandResetPhase;
-        commandBuffer.bindComputePipeline(demand ? *demandPipeline_ : cooperative ? *cooperativePipeline_ : *activeBuildPipeline_);
+        if (auto commandResult = commandBuffer.bindExecution((demand ? *demandPipeline_ : cooperative ? *cooperativePipeline_ : *activeBuildPipeline_).execution()); !commandResult) { return commandResult; }
         commandBuffer.pushBindlessData(&push, sizeof(push));
         const uint32_t groups = cooperative ? threadCount : threadCount / 64u + (threadCount % 64u != 0u ? 1u : 0u);
         commandBuffer.dispatch(std::min(groups, 65535u), (groups + 65534u) / 65535u, 1);
-        transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, drawIndirectBuffer, drawIndirectBufferState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, traversalHeaderBuffer, traversalHeaderBufferState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, traversalWorkBuffer, traversalWorkBufferState, ResourceState::General, true);
+        if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, requestBuffer, requestBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, drawIndirectBuffer, drawIndirectBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, traversalHeaderBuffer, traversalHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, traversalWorkBuffer, traversalWorkBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         return {};
     }
 
@@ -691,31 +692,31 @@ public:
             return makeError(Error::Failure);
         }
 
-        transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General);
-        transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General);
-        transitionBuffer(commandBuffer, blasHeaderBuffer, blasHeaderBufferState, ResourceState::General);
-        transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General);
-        transitionBuffer(commandBuffer, blasBuildInfoBuffer, blasBuildInfoBufferState, ResourceState::General);
-        transitionBuffer(
+        if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, blasHeaderBuffer, blasHeaderBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, blasBuildInfoBuffer, blasBuildInfoBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(
             commandBuffer,
             blasClusterReferenceBuffer,
             blasClusterReferenceBufferState,
-            ResourceState::General);
+            ResourceState::General); !commandResult) { return commandResult; }
         commandBuffer.bindBindlessHeap(bindlessHeap);
-        commandBuffer.bindComputePipeline(*blasInputPipeline_);
+        if (auto commandResult = commandBuffer.bindExecution((blasInputPipeline_)->execution()); !commandResult) { return commandResult; }
         commandBuffer.pushBindlessData(&push, sizeof(push));
         commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1);
-        transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, blasHeaderBuffer, blasHeaderBufferState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, blasBuildInfoBuffer, blasBuildInfoBufferState, ResourceState::General, true);
-        transitionBuffer(
+        if (auto commandResult = transitionBuffer(commandBuffer, activeGroupBuffer, activeGroupBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, activeHeaderBuffer, activeHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, blasHeaderBuffer, blasHeaderBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, blasBuildInfoBuffer, blasBuildInfoBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(
             commandBuffer,
             blasClusterReferenceBuffer,
             blasClusterReferenceBufferState,
             ResourceState::General,
-            true);
+            true); !commandResult) { return commandResult; }
         return {};
     }
 
@@ -773,14 +774,14 @@ public:
         if (!ready()) {
             return makeError(Error::Failure);
         }
-        transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General);
-        transitionBuffer(commandBuffer, tlasInstanceBuffer, tlasInstanceBufferState, ResourceState::General);
+        if (auto commandResult = transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, tlasInstanceBuffer, tlasInstanceBufferState, ResourceState::General); !commandResult) { return commandResult; }
         commandBuffer.bindBindlessHeap(bindlessHeap);
-        commandBuffer.bindComputePipeline(*tlasInputPipeline_);
+        if (auto commandResult = commandBuffer.bindExecution((tlasInputPipeline_)->execution()); !commandResult) { return commandResult; }
         commandBuffer.pushBindlessData(&push, sizeof(push));
         commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1);
-        transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General, true);
-        transitionBuffer(commandBuffer, tlasInstanceBuffer, tlasInstanceBufferState, ResourceState::General, true);
+        if (auto commandResult = transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
+        if (auto commandResult = transitionBuffer(commandBuffer, tlasInstanceBuffer, tlasInstanceBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         return {};
     }
 
@@ -2386,7 +2387,7 @@ Result<> MeshletStreamRuntime::cmdBeginFrame(
     CommandBuffer& commandBuffer,
     Streamer& streamer,
     const MeshletStreamFrameDesc& frame,
-    const std::function<void()>& flushUploads)
+    const std::function<Result<>()>& flushUploads)
 {
     if (!registry_) { return makeError(Error::InvalidArgument); }
     for (const auto& lease : {
@@ -2498,10 +2499,10 @@ Result<> MeshletStreamRuntime::cmdBeginFrame(
     }
     if (currentFrameUploadCount_ != 0) {
         profile.next("Record page copies");
-        transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::TransferDestination);
-        if (flushUploads) { flushUploads(); }
-        else { commandBuffer.copyStreamedData(streamer); }
-        transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::ShaderRead);
+        if (auto commandResult = transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::TransferDestination); !commandResult) { return commandResult; }
+        if (flushUploads) { if (auto commandResult = flushUploads(); !commandResult) { return commandResult; } }
+        else { if (auto commandResult = commandBuffer.copyStreamedData(streamer); !commandResult) { return commandResult; } }
+        if (auto commandResult = transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::ShaderRead); !commandResult) { return commandResult; }
     }
     profile.next("Queue resident CLAS");
     if (clasPool_) {
@@ -2679,7 +2680,7 @@ Result<> MeshletStreamRuntime::cmdEndFrame(CommandBuffer& commandBuffer)
     }
 
     if (currentFrameUploadCount_ > 0 && pageBufferState_ != ResourceState::TransferDestination) {
-        transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::TransferDestination);
+        if (auto commandResult = transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::TransferDestination); !commandResult) { return commandResult; }
     }
     return {};
 }
@@ -2741,17 +2742,17 @@ Result<> MeshletStreamRuntime::cmdPrepareVisibility(CommandBuffer& commandBuffer
     if (!ready()) {
         return makeError(Error::InvalidArgument);
     }
-    transitionBuffer(
+    if (auto commandResult = transitionBuffer(
         commandBuffer,
         *drawIndirectBuffer_,
         drawIndirectBufferState_,
-        ResourceState::IndirectArgument);
-    transitionBuffer(
+        ResourceState::IndirectArgument); !commandResult) { return commandResult; }
+    if (auto commandResult = transitionBuffer(
         commandBuffer,
         *visibleClusterBuffer_,
         visibleClusterBufferState_,
         ResourceState::General,
-        visibleClusterBufferState_ == ResourceState::General);
+        visibleClusterBufferState_ == ResourceState::General); !commandResult) { return commandResult; }
     return {};
 }
 
@@ -2760,12 +2761,12 @@ Result<> MeshletStreamRuntime::cmdPrepareDeferred(CommandBuffer& commandBuffer)
     if (!ready()) {
         return makeError(Error::InvalidArgument);
     }
-    transitionBuffer(
+    if (auto commandResult = transitionBuffer(
         commandBuffer,
         *visibleClusterBuffer_,
         visibleClusterBufferState_,
         ResourceState::ShaderRead,
-        true);
+        true); !commandResult) { return commandResult; }
     return {};
 }
 
@@ -3346,15 +3347,15 @@ Result<> MeshletStreamRuntime::clearRequestBuffer(CommandBuffer& commandBuffer)
         return result;
     }
 
-    transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferDestination);
-    commandBuffer.copyBuffer(BufferCopyDesc{
-        .source = requestClearBuffer_.get(),
-        .destination = requestBuffer_.get(),
-        .sourceOffset = 0,
-        .destinationOffset = 0,
-        .size = sizeof(StreamRequestBufferHeader),
-    });
-    transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::General);
+    if (auto commandResult = transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferDestination); !commandResult) { return commandResult; }
+    {
+        auto sourceSlice = requestClearBuffer_.get()->slice(0, sizeof(StreamRequestBufferHeader));
+        if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+        auto destinationSlice = requestBuffer_.get()->slice(0, sizeof(StreamRequestBufferHeader));
+        if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+        if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+    }
+    if (auto commandResult = transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::General); !commandResult) { return commandResult; }
     return {};
 }
 
@@ -3379,30 +3380,35 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
         slot->frame = frameIndex_;
         readback = slot->buffer.get();
     }
-    transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferSource);
-    commandBuffer.copyBuffer(BufferCopyDesc{
-        .source = requestBuffer_.get(),
-        .destination = readback,
-        .sourceOffset = 0,
-        .destinationOffset = 0,
-        .size = readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader),
-    });
+    if (auto commandResult = transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
+    {
+        auto sourceSlice = requestBuffer_.get()->slice(0, readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader));
+        if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+        auto destinationSlice = readback->slice(0, readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader));
+        if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+        if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+    }
     if (distributedPageDemand_) {
         // Piggyback one work counter on the existing completed request feedback;
         // no additional CPU wait or GPU-to-CPU submission is introduced.
-        transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::TransferSource);
-        commandBuffer.copyBuffer(BufferCopyDesc{
-            .source = demandBuffer_.get(), .destination = readback,
-            .sourceOffset = 18u * sizeof(uint32_t),
-            .destinationOffset = readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader),
-            .size = sizeof(uint32_t),
-        });
+        if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
+        {
+            auto sourceSlice = demandBuffer_.get()->slice(18u * sizeof(uint32_t), sizeof(uint32_t));
+            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+            auto destinationSlice = readback->slice(readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader), sizeof(uint32_t));
+            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+            if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        }
     }
     if (clusterRtxEnabled_ && blasHeaderBuffer_) {
-        transitionBuffer(commandBuffer, *blasHeaderBuffer_, blasHeaderBufferState_, ResourceState::TransferSource);
-        commandBuffer.copyBuffer({.source=blasHeaderBuffer_.get(), .destination=readback,
-            .sourceOffset=0, .destinationOffset=readback->desc().size - sizeof(MeshletStreamGpuBlasHeader),
-            .size=sizeof(MeshletStreamGpuBlasHeader)});
+        if (auto commandResult = transitionBuffer(commandBuffer, *blasHeaderBuffer_, blasHeaderBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
+        {
+            auto sourceSlice = blasHeaderBuffer_.get()->slice(0, sizeof(MeshletStreamGpuBlasHeader));
+            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+            auto destinationSlice = readback->slice(readback->desc().size - sizeof(MeshletStreamGpuBlasHeader), sizeof(MeshletStreamGpuBlasHeader));
+            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+            if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        }
     }
     requestReadbackValid_ = commandBuffer.frameContext() == nullptr;
     return {};
@@ -3556,8 +3562,8 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
 
     MeshletStreamUserPush push = userPush();
     const bool initializeState = lodStateBufferState_ == ResourceState::Undefined;
-    transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true);
-    if (distributedPageDemand_) { transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); }
+    if (auto commandResult = transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true); !commandResult) { return commandResult; }
+    if (distributedPageDemand_) { if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); !commandResult) { return commandResult; } }
     const auto dispatchPhase = [&](uint32_t phase, uint32_t threadCount) {
         push.activeBuildPhase = phase;
         Result<> result = activeBuildPass_->dispatch(
@@ -3569,8 +3575,8 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
             *traversalHeaderBuffer_, traversalHeaderBufferState_,
             *traversalWorkBuffer_, traversalWorkBufferState_);
         if (result) {
-            transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true);
-            if (distributedPageDemand_) { transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); }
+            if (auto commandResult = transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true); !commandResult) { return commandResult; }
+            if (distributedPageDemand_) { if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); !commandResult) { return commandResult; } }
         }
         return result;
     };
@@ -3906,7 +3912,7 @@ Result<> MeshletStreamRuntime::transitionPageBufferForTraversal(CommandBuffer& c
     if (drawTaskCount() == 0) {
         return {};
     }
-    transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::ShaderRead);
+    if (auto commandResult = transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::ShaderRead); !commandResult) { return commandResult; }
     return {};
 }
 

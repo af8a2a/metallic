@@ -18,7 +18,7 @@ public:
     // Previously recorded commands already contain their own push-constant extent.
     bool supportsRenderExtent(uint32_t width, uint32_t height) const;
     Result<> setRenderExtent(uint32_t width, uint32_t height);
-    void begin(CommandBuffer& commands, float maxPixels, bool reversedZ);
+    [[nodiscard]] Result<> begin(CommandBuffer& commands, float maxPixels, bool reversedZ);
     Result<> resolve(CommandBuffer& commands, Texture& visibilityTexture, TextureView& visibility,
         Texture& depthTexture, TextureView& depth, bool softwareRasterized = false);
     Result<> beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
@@ -45,7 +45,7 @@ public:
     uint32_t height() const { return push_.height; }
 
 private:
-    void prepareClusterCandidates(CommandBuffer& commands);
+    [[nodiscard]] Result<> prepareClusterCandidates(CommandBuffer& commands);
     struct Push {
         uint32_t queueBuffer = 0;
         uint32_t pixelBuffer = 0;

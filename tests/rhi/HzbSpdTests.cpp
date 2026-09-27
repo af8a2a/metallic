@@ -94,7 +94,7 @@ public:
             .before = render::ResourceState::General, .after = render::ResourceState::ShaderRead};
         const render::BufferBarrierDesc counterBarrier{.buffer = counter,
             .before = render::ResourceState::General, .after = render::ResourceState::General};
-        context.commandBuffer().barrier({.textures = &depthBarrier, .textureCount = 1, .buffers = &counterBarrier, .bufferCount = 1});
+        if (auto commandResult = context.commandBuffer().synchronize({.textures = &depthBarrier, .textureCount = 1, .buffers = &counterBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         result = heap_->writeSampledImage(depth_, *depth.view(), render::ResourceState::ShaderRead);
         if (result) { result = heap_->writeStorageBuffer(data_, *data); }
         if (result) { result = heap_->writeStorageBuffer(counter_, *counter); }
@@ -105,11 +105,11 @@ public:
             .counterBuffer = counter_.shaderIndex, .width = context.width(), .height = context.height(),
             .mipCount = mips, .reversedZ = reversed};
         context.commandBuffer().bindBindlessHeap(*heap_);
-        context.commandBuffer().bindComputePipeline(*pipeline_);
+        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
         context.commandBuffer().dispatch((context.width() + 63) / 64, (context.height() + 63) / 64);
         std::swap(depthBarrier.before, depthBarrier.after);
-        context.commandBuffer().barrier({.textures = &depthBarrier, .textureCount = 1});
+        if (auto commandResult = context.commandBuffer().synchronize({.textures = &depthBarrier, .textureCount = 1}); !commandResult) { return commandResult; }
         return {};
     }
 private:

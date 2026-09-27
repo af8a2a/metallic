@@ -76,7 +76,7 @@ Result<> StreamingUploads::beginFrame(RenderFrameContext& frame)
     return result;
 }
 
-void StreamingUploads::flush(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase)
+Result<> StreamingUploads::flush(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase)
 {
     if (streamer_ != nullptr) {
         const StreamerStats streamerStats = streamer_->stats();
@@ -92,9 +92,10 @@ void StreamingUploads::flush(CommandBuffer& commandBuffer, const StreamUploadPha
         stats_.bufferTransferBytes += pendingCopies.bufferCopyBytes;
         stats_.textureTransferBytes += pendingCopies.textureCopyBytes;
         stats_.streamer = streamerStats;
-        streamer_->copyStreamedData(commandBuffer, phase);
+        if (auto commandResult = streamer_->copyStreamedData(commandBuffer, phase); !commandResult) { return commandResult; }
         stats_.streamer = streamer_->stats();
     }
+    return {};
 }
 
 void StreamingUploads::endFrame()

@@ -5973,11 +5973,6 @@ SynchronizationStats CommandBuffer::synchronizationStats() const
     return impl_ ? impl_->synchronizationStats : SynchronizationStats{};
 }
 
-void CommandBuffer::barrier(const BarrierDesc& desc)
-{
-    (void)synchronize(desc);
-}
-
 Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
 {
     if (!impl_ || !recording_ || (desc.textureCount && !desc.textures) ||
@@ -6101,15 +6096,6 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
     auto& stats = impl_->synchronizationStats;
     ++stats.calls; stats.memoryBarriers += memory.size(); stats.imageTransitions += images.size(); stats.coalescedResources += coalesced;
     return {};
-}
-
-void CommandBuffer::copyBuffer(const BufferCopyDesc& desc)
-{
-    if (!desc.source || !desc.destination || !desc.size) { return; }
-    BufferSlice source, destination;
-    if (!desc.source->slice(desc.sourceOffset, desc.size).transform([&](auto rhiValue) { source = std::move(rhiValue); }) ||
-        !desc.destination->slice(desc.destinationOffset, desc.size).transform([&](auto rhiValue) { destination = std::move(rhiValue); })) { return; }
-    (void)copyBuffer(source, destination);
 }
 
 Result<> CommandBuffer::copyBuffer(const BufferSlice& source, const BufferSlice& destination)
@@ -6674,21 +6660,20 @@ Result<> CommandBuffer::bindExecutionImpl(const PreparedExecution& execution, co
         impl_->currentGraphicsPipelineUsesBindlessHeap = false;
         impl_->currentGraphicsShaderObjectBound = true;
         impl_->currentGraphicsShaderObjectUsesBindlessHeap = program.usesBindlessHeap;
-        if (execution.applyRasterState_) {
-            setGraphicsShaderObjectState();
-            setDepthStencilState(execution.raster_.depthStencil);
-            vkCmdSetCullModeEXT(impl_->commandBuffer, toVkCullMode(execution.raster_.rasterization.cullMode));
-            vkCmdSetFrontFaceEXT(impl_->commandBuffer, toVkFrontFace(execution.raster_.rasterization.frontFace));
-            for (uint32_t i = 0; i < execution.raster_.colorAttachmentCount; ++i) {
-                const VkBool32 blend = VK_FALSE;
-                const VkColorBlendEquationEXT equation{VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD,
-                    VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD};
-                const VkColorComponentFlags mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-                vkCmdSetColorBlendEnableEXT(impl_->commandBuffer, i, 1, &blend);
-                vkCmdSetColorBlendEquationEXT(impl_->commandBuffer, i, 1, &equation);
-                vkCmdSetColorWriteMaskEXT(impl_->commandBuffer, i, 1, &mask);
-            }
+        setGraphicsShaderObjectState();
+        setDepthStencilState(execution.raster_.depthStencil);
+        vkCmdSetCullModeEXT(impl_->commandBuffer, toVkCullMode(execution.raster_.rasterization.cullMode));
+        vkCmdSetFrontFaceEXT(impl_->commandBuffer, toVkFrontFace(execution.raster_.rasterization.frontFace));
+        for (uint32_t i = 0; i < execution.raster_.colorAttachmentCount; ++i) {
+            const VkBool32 blend = VK_FALSE;
+            const VkColorBlendEquationEXT equation{VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD,
+                VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ZERO, VK_BLEND_OP_ADD};
+            const VkColorComponentFlags mask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+            vkCmdSetColorBlendEnableEXT(impl_->commandBuffer, i, 1, &blend);
+            vkCmdSetColorBlendEquationEXT(impl_->commandBuffer, i, 1, &equation);
+            vkCmdSetColorWriteMaskEXT(impl_->commandBuffer, i, 1, &mask);
         }
+
     }
     if (replaceData) {
         impl_->currentBindlessUserData.resize(byteSize);
@@ -6701,21 +6686,6 @@ Result<> CommandBuffer::bindExecutionImpl(const PreparedExecution& execution, co
 Result<> CommandBuffer::bindExecution(const PreparedExecution& execution, const void* data, uint32_t byteSize)
 {
     return bindExecutionImpl(execution, data, byteSize, true);
-}
-
-void CommandBuffer::bindGraphicsPipeline(GraphicsPipeline& pipeline)
-{
-    (void)bindExecution(pipeline.execution());
-}
-
-void CommandBuffer::bindComputePipeline(ComputePipeline& pipeline)
-{
-    (void)bindExecution(pipeline.execution());
-}
-
-void CommandBuffer::bindComputePipeline(ComputePipeline& pipeline, const void* data, uint32_t byteSize)
-{
-    (void)bindExecution(pipeline.execution(), data, byteSize);
 }
 
 void CommandBuffer::setGraphicsShaderObjectState()
@@ -6830,15 +6800,6 @@ void CommandBuffer::setGraphicsShaderObjectState()
         };
         vkCmdSetScissorWithCountEXT(impl_->commandBuffer, 1, &scissor);
     }
-}
-
-void CommandBuffer::bindGraphicsShaderObjectProgram(GraphicsShaderObjectProgram& program)
-{
-    // Legacy permutations supplied dynamic state separately. New callers pass a
-    // complete RasterExecutionState through PreparedExecution.
-    auto execution = program.execution();
-    execution.applyRasterState_ = false;
-    (void)bindExecution(execution);
 }
 
 void CommandBuffer::bindBindlessHeap(BindlessHeap& heap)
@@ -11970,7 +11931,7 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
         .baseLayer = 0,
         .layerCount = 1,
     };
-    commandBuffer->barrier(BarrierDesc{.textures = &toColor, .textureCount = 1});
+    if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = &toColor, .textureCount = 1}); !commandResult) { return commandResult; }
 
     const Rect renderArea{
         .x = 0,
@@ -11985,11 +11946,11 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
         .storeOp = StoreOp::Store,
         .clearColor = ColorValue{0.04f, 0.06f, 0.09f, 1.0f},
     };
-    commandBuffer->beginRendering(RenderingDesc{
+    if (auto commandResult = commandBuffer->beginRendering(RenderingDesc{
         .renderArea = renderArea,
         .colorAttachments = &colorAttachment,
         .colorAttachmentCount = 1,
-    });
+    }); !commandResult) { return commandResult; }
     commandBuffer->setViewport(Viewport{
         .x = 0.0f,
         .y = 0.0f,
@@ -11999,7 +11960,7 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
         .maxDepth = 1.0f,
     });
     commandBuffer->setScissor(renderArea);
-    commandBuffer->bindGraphicsPipeline(*pipeline);
+    if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return commandResult; }
     commandBuffer->draw(3);
     commandBuffer->endRendering();
 
@@ -12012,7 +11973,7 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
         .baseLayer = 0,
         .layerCount = 1,
     };
-    commandBuffer->barrier(BarrierDesc{.textures = &toTransfer, .textureCount = 1});
+    if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = &toTransfer, .textureCount = 1}); !commandResult) { return commandResult; }
     commandBuffer->copyTextureToBuffer(TextureBufferCopyDesc{
         .texture = colorTexture.get(),
         .buffer = readbackBuffer.get(),
@@ -12370,7 +12331,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .baseLayer = 0,
                         .layerCount = 1,
                     };
-                    commandBuffer->barrier(BarrierDesc{.textures = &sourceToColor, .textureCount = 1});
+                    if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = &sourceToColor, .textureCount = 1}); !commandResult) { return 1; }
 
                     const Rect renderArea{
                         .x = 0,
@@ -12385,11 +12346,11 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .storeOp = StoreOp::Store,
                         .clearColor = ColorValue{0.25f, 0.50f, 0.75f, 1.0f},
                     };
-                    commandBuffer->beginRendering(RenderingDesc{
+                    if (auto commandResult = commandBuffer->beginRendering(RenderingDesc{
                         .renderArea = renderArea,
                         .colorAttachments = &sourceAttachment,
                         .colorAttachmentCount = 1,
-                    });
+                    }); !commandResult) { return 1; }
                     commandBuffer->endRendering();
 
                     TextureBarrierDesc sourceToShaderRead{
@@ -12401,7 +12362,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .baseLayer = 0,
                         .layerCount = 1,
                     };
-                    commandBuffer->barrier(BarrierDesc{.textures = &sourceToShaderRead, .textureCount = 1});
+                    if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = &sourceToShaderRead, .textureCount = 1}); !commandResult) { return 1; }
 
                     TextureBarrierDesc outputToColor{
                         .texture = outputTexture.get(),
@@ -12412,7 +12373,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .baseLayer = 0,
                         .layerCount = 1,
                     };
-                    commandBuffer->barrier(BarrierDesc{.textures = &outputToColor, .textureCount = 1});
+                    if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = &outputToColor, .textureCount = 1}); !commandResult) { return 1; }
 
                     RenderingAttachmentDesc outputAttachment{
                         .view = outputTextureView.get(),
@@ -12421,11 +12382,11 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .storeOp = StoreOp::Store,
                         .clearColor = ColorValue{0.0f, 0.0f, 0.0f, 1.0f},
                     };
-                    commandBuffer->beginRendering(RenderingDesc{
+                    if (auto commandResult = commandBuffer->beginRendering(RenderingDesc{
                         .renderArea = renderArea,
                         .colorAttachments = &outputAttachment,
                         .colorAttachmentCount = 1,
-                    });
+                    }); !commandResult) { return 1; }
                     commandBuffer->setViewport(Viewport{
                         .x = 0.0f,
                         .y = 0.0f,
@@ -12435,7 +12396,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .maxDepth = 1.0f,
                     });
                     commandBuffer->setScissor(renderArea);
-                    commandBuffer->bindGraphicsPipeline(*pipeline);
+                    if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return 1; }
                     commandBuffer->bindBindlessHeap(*bindlessHeap);
                     commandBuffer->pushBindlessData(&sourceImageHandle.shaderIndex, sizeof(sourceImageHandle.shaderIndex));
                     commandBuffer->draw(3);
@@ -12450,7 +12411,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .baseLayer = 0,
                         .layerCount = 1,
                     };
-                    commandBuffer->barrier(BarrierDesc{.textures = &outputToTransfer, .textureCount = 1});
+                    if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = &outputToTransfer, .textureCount = 1}); !commandResult) { return 1; }
                     commandBuffer->copyTextureToBuffer(TextureBufferCopyDesc{
                         .texture = outputTexture.get(),
                         .buffer = readbackBuffer.get(),
@@ -12695,7 +12656,7 @@ int runRhiSmokeTest(bool enableValidation)
         .baseLayer = 0,
         .layerCount = 1,
     };
-    commandBuffer->barrier(BarrierDesc{.textures = &toColor, .textureCount = 1});
+    if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = &toColor, .textureCount = 1}); !commandResult) { return 1; }
 
     const Rect renderArea{
         .x = 0,
@@ -12711,11 +12672,11 @@ int runRhiSmokeTest(bool enableValidation)
         .storeOp = StoreOp::Store,
         .clearColor = clearColor,
     };
-    commandBuffer->beginRendering(RenderingDesc{
+    if (auto commandResult = commandBuffer->beginRendering(RenderingDesc{
         .renderArea = renderArea,
         .colorAttachments = &colorAttachment,
         .colorAttachmentCount = 1,
-    });
+    }); !commandResult) { return 1; }
     commandBuffer->clearColorAttachment(0, clearColor, renderArea);
     commandBuffer->endRendering();
 
@@ -12728,7 +12689,7 @@ int runRhiSmokeTest(bool enableValidation)
         .baseLayer = 0,
         .layerCount = 1,
     };
-    commandBuffer->barrier(BarrierDesc{.textures = &toPresent, .textureCount = 1});
+    if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = &toPresent, .textureCount = 1}); !commandResult) { return 1; }
 
     result = commandBuffer->end();
     if (!checkResult(result, "CommandBuffer::end")) {

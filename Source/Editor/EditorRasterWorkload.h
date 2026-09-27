@@ -33,10 +33,16 @@ public:
             if (!device_->createBuffer({.size = 128, .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { copy.buffer = std::move(rhiValue); })) { throw std::runtime_error("SW workload readback allocation failed"); }
             render::BufferBarrierDesc barrier{.buffer = resource.buffer, .before = resource.state, .after = render::ResourceState::TransferSource};
-            commands.barrier({.buffers = &barrier, .bufferCount = 1});
-            commands.copyBuffer({.source = resource.buffer, .destination = copy.buffer.get(), .size = 128});
+            if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+            {
+                auto sourceSlice = resource.buffer->slice(0, 128);
+                if (!sourceSlice) { throw std::runtime_error(std::string("source slice failed: ") + metallic::render::resultToString(sourceSlice)); }
+                auto destinationSlice = copy.buffer.get()->slice(0, 128);
+                if (!destinationSlice) { throw std::runtime_error(std::string("destination slice failed: ") + metallic::render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { throw std::runtime_error(std::string("copyBuffer failed: ") + metallic::render::resultToString(commandResult)); }
+            }
             std::swap(barrier.before, barrier.after);
-            commands.barrier({.buffers = &barrier, .bufferCount = 1});
+            if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             copies_.push_back(std::move(copy));
         }
     }

@@ -43,12 +43,24 @@ public:
     {
         auto* output = context.output("values");
         auto& commands = context.commandBuffer();
-        commands.copyBuffer({.source = upload_.get(), .destination = output->buffer, .size = 16});
+        {
+            auto sourceSlice = upload_.get()->slice(0, 16);
+            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+            auto destinationSlice = output->buffer->slice(0, 16);
+            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+            if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        }
         const DebugResourceBinding binding{.id = "Ids", .buffer = output->buffer, .state = output->state, .size = 16};
         context.debugCheckpoint("Early", std::span(&binding, 1), {{"sourcePhase", "Early"}});
         BufferBarrierDesc barrier{.buffer = output->buffer, .before = output->state, .after = output->state};
-        commands.barrier({.buffers = &barrier, .bufferCount = 1});
-        commands.copyBuffer({.source = upload_.get(), .destination = output->buffer, .sourceOffset = 16, .size = 16});
+        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        {
+            auto sourceSlice = upload_.get()->slice(16, 16);
+            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+            auto destinationSlice = output->buffer->slice(0, 16);
+            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+            if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        }
         context.debugCheckpoint("Late", std::span(&binding, 1), {{"sourcePhase", "Late"}});
         return context.properties().value("fail", false) ? makeError(Error::Failure) : Result<>{};
     }
@@ -303,22 +315,34 @@ public:
         auto& commands = *frame.commands;
         commands.hostWriteBarrier();
         BufferBarrierDesc sourceBarrier{.buffer = ids.get(), .before = ResourceState::Undefined, .after = ResourceState::TransferDestination};
-        commands.barrier({.buffers = &sourceBarrier, .bufferCount = 1});
-        commands.copyBuffer({.source = upload.get(), .destination = ids.get(), .size = kCount * 4});
+        if (auto commandResult = commands.synchronize({.buffers = &sourceBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        {
+            auto sourceSlice = upload.get()->slice(0, kCount * 4);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = ids.get()->slice(0, kCount * 4);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
         sourceBarrier.before = ResourceState::TransferDestination; sourceBarrier.after = ResourceState::ShaderRead;
-        commands.barrier({.buffers = &sourceBarrier, .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = &sourceBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         BufferBarrierDesc outBarrier{.buffer = sentinel.get(), .before = ResourceState::Undefined, .after = ResourceState::General};
-        commands.barrier({.buffers = &outBarrier, .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = &outBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         const ComputeDispatchBinding originalBindings[] = {{.binding = 0, .buffer = ids.get()}, {.binding = 1, .buffer = sentinel.get()}};
         const uint32_t index = 0;
         DEBUG_REQUIRE(original.dispatch({.commandBuffer = &commands, .bindings = originalBindings, .bindingCount = 2,
             .pushData = &index, .pushDataSize = 4}));
         runtime.beginExecution(*device, {.graph = "probe-graph", .generation = 1, .execution = 9}, nullptr);
         runtime.boundary(commands, "Early", 0, "Probe", bindings, DebugValue::object());
-        std::swap(sourceBarrier.before, sourceBarrier.after); commands.barrier({.buffers = &sourceBarrier, .bufferCount = 1});
-        commands.copyBuffer({.source = upload.get(), .destination = ids.get(), .sourceOffset = kCount * 4, .size = kCount * 4});
-        std::swap(sourceBarrier.before, sourceBarrier.after); commands.barrier({.buffers = &sourceBarrier, .bufferCount = 1});
-        outBarrier.before = ResourceState::General; commands.barrier({.buffers = &outBarrier, .bufferCount = 1});
+        std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = &sourceBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        {
+            auto sourceSlice = upload.get()->slice(kCount * 4, kCount * 4);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = ids.get()->slice(0, kCount * 4);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
+        std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = &sourceBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        outBarrier.before = ResourceState::General; if (auto commandResult = commands.synchronize({.buffers = &outBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         // No rebind: debug instrumentation must restore heap, pipeline and push data.
         commands.dispatch(1);
         runtime.boundary(commands, "Late", 0, "Probe", bindings, DebugValue::object());

@@ -140,7 +140,7 @@ public:
         if (frameIndex_ == 0) {
             const render::TextureBarrierDesc barrier{.texture = dummyEnvironment_.get(),
                 .before = render::ResourceState::Undefined, .after = render::ResourceState::ShaderRead};
-            commands_->barrier({.textures = &barrier, .textureCount = 1});
+            if (auto commandResult = commands_->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         }
         const auto lightCount = static_cast<uint32_t>(lights.size() - 1);
         render::ReGIRBuildParameters parameters;
@@ -170,7 +170,7 @@ public:
             if (parameters.frameIndex == 0) {
                 const render::TextureBarrierDesc retryBarrier{.texture = dummyEnvironment_.get(),
                     .before = render::ResourceState::Undefined, .after = render::ResourceState::ShaderRead};
-                commands_->barrier({.textures = &retryBarrier, .textureCount = 1});
+                if (auto commandResult = commands_->synchronize({.textures = &retryBarrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             REGIR_CHECK(wrappedLights.update(*device_, *commands_, samplingHost,
                 nullptr, *cancelledWrapperSettings));
@@ -219,7 +219,7 @@ public:
             .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         const render::BufferBarrierDesc outputBarrier{.buffer = probe.get(),
             .before = render::ResourceState::Undefined, .after = render::ResourceState::General};
-        commands_->barrier({.buffers = &outputBarrier, .bufferCount = 1});
+        if (auto commandResult = commands_->synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         render::TextureView* pdfViews[] = {
             cancelledWrapperSettings != nullptr ? wrappedLights.lightPdfView() : pdf_.view()};
         const std::array<render::ComputeDispatchBinding, 4> bindings{{
@@ -241,9 +241,15 @@ public:
             render::BufferBarrierDesc{.buffer = readback.get(), .before = render::ResourceState::Undefined,
                 .after = render::ResourceState::TransferDestination},
         };
-        commands_->barrier({.buffers = transferBarriers.data(),
-            .bufferCount = static_cast<uint32_t>(transferBarriers.size())});
-        commands_->copyBuffer({.source = probe.get(), .destination = readback.get(), .size = outputBytes});
+        if (auto commandResult = commands_->synchronize({.buffers = transferBarriers.data(),
+            .bufferCount = static_cast<uint32_t>(transferBarriers.size())}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        {
+            auto sourceSlice = probe.get()->slice(0, outputBytes);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = readback.get()->slice(0, outputBytes);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
         REGIR_CHECK(commands_->end());
         render::CommandBuffer* submissions[] = {commands_.get()};
         if (cancelledWrapperSettings != nullptr) {

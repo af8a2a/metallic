@@ -28,11 +28,11 @@ public:
             .storeOp = render::StoreOp::Store,
             .clearColor = render::ColorValue{0.2f, 0.4f, 0.8f, 0.0f},
         };
-        context.commandBuffer().beginRendering(render::RenderingDesc{
+        if (auto commandResult = context.commandBuffer().beginRendering(render::RenderingDesc{
             .renderArea = render::Rect{0, 0, context.width(), context.height()},
             .colorAttachments = &attachment,
             .colorAttachmentCount = 1,
-        });
+        }); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }

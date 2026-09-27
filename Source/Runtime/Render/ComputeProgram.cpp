@@ -865,8 +865,8 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
             desc.commandBuffer->pushBindlessData(pushData.data(), static_cast<uint32_t>(pushData.size()));
             auto result = desc.commandBuffer->dispatchIndirect(*desc.indirectArguments, dispatches[index].argumentOffset);
             if (!result) { return result; }
-            if (index + 1 < dispatches.size() && (betweenDispatches.bufferCount > 0 || betweenDispatches.textureCount > 0)) {
-                desc.commandBuffer->barrier(betweenDispatches);
+            if (index + 1 < dispatches.size()) {
+                if (auto commandResult = desc.commandBuffer->synchronize(betweenDispatches); !commandResult) { return commandResult; }
             }
         }
         return {};
@@ -916,8 +916,8 @@ Result<> PreparedComputeDispatch::record(CommandBuffer& commands, const BarrierD
         if (item.arguments.valid()) { result = commands.dispatchIndirect(item.arguments); }
         else { commands.dispatch(impl_->x, impl_->y, impl_->z); }
         if (!result) { return result; }
-        if (i + 1 < impl_->items.size() && (betweenDispatches.bufferCount || betweenDispatches.textureCount)) {
-            commands.barrier(betweenDispatches);
+        if (i + 1 < impl_->items.size()) {
+            if (auto commandResult = commands.synchronize(betweenDispatches); !commandResult) { return commandResult; }
         }
     }
     return {};

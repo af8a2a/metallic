@@ -542,7 +542,7 @@ public:
     RayTracingAccelerationStructure* accelerationStructure() const;
 
     Result<> cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame,
-        const std::function<void()>& flushUploads = {});
+        const std::function<Result<>()>& flushUploads = {});
     // CPU-only, non-blocking maintenance for the next recorded frame. A caller
     // may invoke this before pacing; cmdBeginFrame remains the fallback owner.
     void prepareMaintenance(CpuProfileRecorder* profiler = nullptr, bool allowLegacyReadback = false);

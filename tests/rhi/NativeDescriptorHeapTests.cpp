@@ -219,10 +219,10 @@ public:
                 if (i == 0) {
                     commands->bindBindlessHeap(*heaps[i]);
                     commands->pushBindlessData(&push, sizeof(push));
-                    commands->bindComputePipeline(*pipeline);
+                    if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 } else {
                     // Rebinding the heap must preserve/replay the exact user payload.
-                    commands->bindComputePipeline(*pipeline, &push, sizeof(push));
+                    if (auto commandResult = commands->bindExecution((pipeline)->execution(), &push, sizeof(push)); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                     commands->bindBindlessHeap(*heaps[i]);
                 }
                 commands->dispatch(1, 1, 1);
@@ -351,10 +351,10 @@ public:
                 {.buffer = buffers[0].get(), .after = render::ResourceState::General},
                 {.buffer = buffers[1].get(), .after = render::ResourceState::General},
                 {.buffer = buffers[2].get(), .after = render::ResourceState::ShaderRead}};
-            commands->barrier({.buffers = barriers, .bufferCount = 3});
+            if (auto commandResult = commands->synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             const Push push{handles[0].shaderIndex, handles[1].shaderIndex, handles[2].shaderIndex, count, base};
             commands->bindBindlessHeap(*heap);
-            commands->bindComputePipeline(*pipeline, &push, sizeof(push));
+            if (auto commandResult = commands->bindExecution((pipeline)->execution(), &push, sizeof(push)); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             commands->dispatch(count / 64, 1, 1);
             NATIVE_REQUIRE(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};

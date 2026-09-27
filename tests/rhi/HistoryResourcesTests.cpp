@@ -1,3 +1,6 @@
+#include <stdexcept>
+#include <string>
+
 #include "RhiTest.h"
 
 #include "Runtime/Render/HistoryResources.h"
@@ -318,6 +321,18 @@ public:
             return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
         }
 
+        // Failed recording must not publish a state that never reached the GPU.
+        const auto oldTextureState = manager.texture("color", render::HistorySlot::Current).state;
+        if (!render::hasError(manager.transitionTexture(*commandBuffer, "color", render::HistorySlot::Current,
+                render::ResourceState::General), render::Error::InvalidArgument) ||
+            !render::hasError(manager.transitionBuffer(*commandBuffer, "historyData", render::HistorySlot::Current,
+                render::ResourceState::ShaderRead), render::Error::InvalidArgument) ||
+            !render::hasError(manager.transitionBuffer(*commandBuffer, "historyData", render::HistorySlot::Current,
+                render::ResourceState::ShaderRead), render::Error::InvalidArgument) ||
+            manager.texture("color", render::HistorySlot::Current).state != oldTextureState) {
+            return RhiTestResult::fail("Failed barrier advanced history resource state");
+        }
+
         result = commandBuffer->begin();
         if (!result) {
             return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
@@ -431,7 +446,7 @@ public:
             const auto texture = manager.texture("color", HistorySlot::Current);
             const TextureBarrierDesc barrier{.texture = texture.texture,
                 .before = texture.state, .after = after, .mipCount = 1, .layerCount = 1};
-            commands->barrier({.textures = &barrier, .textureCount = 1});
+            if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             return manager.publishTextureState(*commands, "color", HistorySlot::Current, after, written);
         };
         manager.beginFrame(0);

@@ -119,7 +119,7 @@ Result<> VisibilityHybridRasterizer::setRenderExtent(uint32_t width, uint32_t he
     return {};
 }
 
-void VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPixels, bool reversedZ)
+Result<> VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPixels, bool reversedZ)
 {
     commands.beginDebugLabel({.name = "Hybrid raster: clear queue and depth"});
     push_.maxPixels = std::clamp(std::isfinite(maxPixels) ? maxPixels : 8.0f, 1.0f, 32.0f);
@@ -130,14 +130,15 @@ void VisibilityHybridRasterizer::begin(CommandBuffer& commands, float maxPixels,
         barriers[i] = {.buffer = buffers_[i].get(),
             .before = initialized_ ? finals[i] : ResourceState::Undefined, .after = ResourceState::General};
     }
-    commands.barrier({.buffers = barriers, .bufferCount = 3});
+    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
     commands.bindBindlessHeap(*heap_);
-    commands.bindComputePipeline(*compute_[0]);
+    if (auto commandResult = commands.bindExecution((compute_[0])->execution()); !commandResult) { return commandResult; }
     commands.pushBindlessData(&push_, sizeof(push_));
     commands.dispatch((push_.width + 63u) / 64u, push_.height);
     for (auto& barrier : barriers) { barrier.before = ResourceState::General; }
-    commands.barrier({.buffers = barriers, .bufferCount = 3});
+    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
     commands.endDebugLabel();
+    return {};
 }
 
 Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& visibilityTexture,
@@ -146,30 +147,30 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
     commands.beginDebugLabel({.name = "Hybrid raster: software triangles"});
     BufferBarrierDesc barrier{.buffer = buffers_[0].get(),
         .before = ResourceState::General, .after = ResourceState::ShaderRead};
-    commands.barrier({.buffers = &barrier, .bufferCount = 1});
+    if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
     commands.bindBindlessHeap(*heap_);
     if (!softwareRasterized) {
-        commands.bindComputePipeline(*compute_[1]);
+        if (auto commandResult = commands.bindExecution((compute_[1])->execution()); !commandResult) { return commandResult; }
         commands.pushBindlessData(&push_, sizeof(push_));
         commands.dispatch(1);
         barrier = {.buffer = buffers_[2].get(), .before = ResourceState::General, .after = ResourceState::IndirectArgument};
-        commands.barrier({.buffers = &barrier, .bufferCount = 1});
-        commands.bindComputePipeline(*compute_[2]);
+        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+        if (auto commandResult = commands.bindExecution((compute_[2])->execution()); !commandResult) { return commandResult; }
         commands.pushBindlessData(&push_, sizeof(push_));
         auto result = commands.dispatchIndirect(*buffers_[2]);
         if (!result) { commands.endDebugLabel(); return result; }
     } else {
         barrier = {.buffer = buffers_[2].get(), .before = ResourceState::General, .after = ResourceState::IndirectArgument};
-        commands.barrier({.buffers = &barrier, .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
     }
     barrier = {.buffer = buffers_[1].get(), .before = ResourceState::General, .after = ResourceState::ShaderRead};
-    commands.barrier({.buffers = &barrier, .bufferCount = 1});
+    if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
     commands.endDebugLabel();
     commands.beginDebugLabel({.name = "Hybrid raster: merge visibility and depth"});
     const TextureBarrierDesc attachments[] = {
         {.texture = &visibilityTexture, .before = ResourceState::ColorAttachment, .after = ResourceState::ColorAttachment},
         {.texture = &depthTexture, .before = ResourceState::DepthStencilAttachment, .after = ResourceState::DepthStencilAttachment}};
-    commands.barrier({.textures = attachments, .textureCount = 2});
+    if (auto commandResult = commands.synchronize({.textures = attachments, .textureCount = 2}); !commandResult) { return commandResult; }
     const RenderingAttachmentDesc color{.view = &visibility, .state = ResourceState::ColorAttachment,
         .loadOp = LoadOp::Load, .storeOp = StoreOp::Store};
     const RenderingAttachmentDesc z{.view = &depth, .state = ResourceState::DepthStencilAttachment,
@@ -179,7 +180,7 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
         .colorAttachmentCount = 1, .depthStencilAttachment = &z}); !rendering) { return rendering; }
     commands.setViewport({.width = float(push_.width), .height = float(push_.height), .maxDepth = 1.0f});
     commands.setScissor(area);
-    commands.bindGraphicsPipeline(*resolve_[push_.reversedZ]);
+    if (auto commandResult = commands.bindExecution((resolve_[push_.reversedZ])->execution()); !commandResult) { return commandResult; }
     commands.pushBindlessData(&push_, sizeof(push_));
     commands.draw(3);
     commands.endRendering();
@@ -197,7 +198,9 @@ Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, floa
     if (stream && maxPixels == 0.0f) {
         push_.maxPixels = 0.0f;
         push_.reversedZ = reversedZ ? 1u : 0u;
-    } else { begin(commands, maxPixels, reversedZ); }
+    } else {
+        if (auto result = begin(commands, maxPixels, reversedZ); !result) { return result; }
+    }
     commands.bindBindlessHeap(*heap_);
     push_.producerPixelBuffer = producerPixelBuffer;
     push_.inputClusterCount = inputCount;
@@ -210,27 +213,28 @@ Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, floa
             .after = ResourceState::General},
         {.buffer = candidateArguments_.get(), .before = clusterInitialized_ ? ResourceState::IndirectArgument : ResourceState::Undefined,
             .after = ResourceState::General}};
-    commands.barrier({.buffers = barriers, .bufferCount = 3});
-    commands.bindComputePipeline(*clusterPipelines_[0]);
+    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
+    if (auto commandResult = commands.bindExecution((clusterPipelines_[0])->execution()); !commandResult) { return commandResult; }
     commands.pushBindlessData(&push_, sizeof(push_));
     commands.dispatch(1);
     const BufferBarrierDesc ready{.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General};
-    commands.barrier({.buffers = &ready, .bufferCount = 1});
+    if (auto commandResult = commands.synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { return commandResult; }
     return {};
 }
 
-void VisibilityHybridRasterizer::prepareClusterCandidates(CommandBuffer& commands)
+Result<> VisibilityHybridRasterizer::prepareClusterCandidates(CommandBuffer& commands)
 {
     const BufferBarrierDesc barriers[] = {
         {.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General},
         {.buffer = candidateArguments_.get(), .before = ResourceState::General, .after = ResourceState::IndirectArgument}};
-    commands.barrier({.buffers = barriers, .bufferCount = 2});
+    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return commandResult; }
+    return {};
 }
 
 Result<> VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffer& commands,
     ComputePipeline& pipeline, MeshletStreamUserPush push)
 {
-    commands.bindComputePipeline(pipeline);
+    if (auto commandResult = commands.bindExecution((pipeline).execution()); !commandResult) { return commandResult; }
     // The prepare entry uses activeBuildPhase for setup/count/prefix/scatter.
     // Only the small block-count prefix stays on a single workgroup.
     for (uint32_t phase = 0; phase < 4; ++phase) {
@@ -238,7 +242,7 @@ Result<> VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffe
         commands.pushBindlessData(&push, sizeof(push));
         if (phase == 0 || phase == 2) {
             commands.dispatch(1);
-            prepareClusterCandidates(commands);
+            if (auto commandResult = prepareClusterCandidates(commands); !commandResult) { return commandResult; }
         } else {
             const Result<> result = commands.dispatchIndirect(*candidateArguments_, kCandidateBuildArgumentsOffset);
             if (!result) { return result; }
@@ -248,7 +252,7 @@ Result<> VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffe
                     .after = ResourceState::General}};
             // Prefix rewrites arguments after count. Scatter only publishes
             // candidate slots, leaving arguments ready for classification.
-            commands.barrier({.buffers = barriers, .bufferCount = phase == 1 ? 2u : 1u});
+            if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = phase == 1 ? 2u : 1u}); !commandResult) { return commandResult; }
         }
     }
     return {};
@@ -257,7 +261,7 @@ Result<> VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffe
 Result<> VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
     ComputePipeline& pipeline, MeshletStreamUserPush push)
 {
-    commands.bindComputePipeline(pipeline);
+    if (auto commandResult = commands.bindExecution((pipeline).execution()); !commandResult) { return commandResult; }
     push.activeBuildPhase = 0;
     commands.pushBindlessData(&push, sizeof(push));
     const Result<> result = commands.dispatchIndirect(*candidateArguments_, 12);
@@ -265,11 +269,11 @@ Result<> VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
     const BufferBarrierDesc barriers[] = {
         {.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General},
         {.buffer = candidateArguments_.get(), .before = ResourceState::IndirectArgument, .after = ResourceState::General}};
-    commands.barrier({.buffers = barriers, .bufferCount = 2});
+    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 2}); !commandResult) { return commandResult; }
     push.activeBuildPhase = 1;
     commands.pushBindlessData(&push, sizeof(push));
     commands.dispatch(1);
-    prepareClusterCandidates(commands);
+    if (auto commandResult = prepareClusterCandidates(commands); !commandResult) { return commandResult; }
     return {};
 }
 
@@ -277,11 +281,11 @@ Result<> VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
 {
     commands.beginDebugLabel({.name = "Hybrid raster: stable cluster bins"});
     BufferBarrierDesc barrier{.buffer = clusterBuffer_.get(), .before = ResourceState::General, .after = ResourceState::General};
-    commands.barrier({.buffers = &barrier, .bufferCount = 1});
+    if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
     commands.bindBindlessHeap(*heap_);
     const uint32_t blocks = (push_.inputClusterCount + 127u) / 128u;
     for (size_t i = 1; i < clusterPipelines_.size(); ++i) {
-        commands.bindComputePipeline(*clusterPipelines_[i]);
+        if (auto commandResult = commands.bindExecution((clusterPipelines_[i])->execution()); !commandResult) { return commandResult; }
         commands.pushBindlessData(&push_, sizeof(push_));
         if (i == 2) { commands.dispatch(5); }
         else if (compactCandidates_) {
@@ -289,15 +293,15 @@ Result<> VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
             if (!result) { commands.endDebugLabel(); return result; }
         }
         else if (blocks != 0) { commands.dispatch(std::min(blocks, kDispatchWidth), (blocks + kDispatchWidth - 1u) / kDispatchWidth); }
-        commands.barrier({.buffers = &barrier, .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
     }
     barrier.after = ResourceState::ShaderRead;
-    commands.barrier({.buffers = &barrier, .bufferCount = 1});
+    if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
     barrier = {.buffer = clusterArguments_.get(), .before = ResourceState::General, .after = ResourceState::IndirectArgument};
-    commands.barrier({.buffers = &barrier, .bufferCount = 1});
+    if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
     if (!compactCandidates_) {
         barrier = {.buffer = candidateArguments_.get(), .before = ResourceState::General, .after = ResourceState::IndirectArgument};
-        commands.barrier({.buffers = &barrier, .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
     }
     clusterInitialized_ = true;
     commands.endDebugLabel();

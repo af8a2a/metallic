@@ -52,16 +52,22 @@ public:
             if (color) {
                 checkDebug(resource.texture->desc().format == Format::Rgba8Unorm, "Unexpected debug color format");
                 TextureBarrierDesc barrier{.texture = resource.texture, .before = resource.state, .after = ResourceState::TransferSource};
-                commands.barrier({.textures = &barrier, .textureCount = 1});
+                if (auto commandResult = commands.synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 commands.copyTextureToBuffer({.texture = resource.texture, .buffer = copy.get(),
                     .width = resource.texture->desc().width, .height = resource.texture->desc().height});
-                std::swap(barrier.before, barrier.after); commands.barrier({.textures = &barrier, .textureCount = 1});
+                std::swap(barrier.before, barrier.after); if (auto commandResult = commands.synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             } else {
                 BufferBarrierDesc barrier{.buffer = resource.buffer, .before = resource.state, .after = ResourceState::TransferSource,
                     .offset = resource.offset, .size = bytes};
-                commands.barrier({.buffers = &barrier, .bufferCount = 1});
-                commands.copyBuffer({.source = resource.buffer, .destination = copy.get(), .sourceOffset = resource.offset, .size = bytes});
-                std::swap(barrier.before, barrier.after); commands.barrier({.buffers = &barrier, .bufferCount = 1});
+                if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+                {
+                    auto sourceSlice = resource.buffer->slice(resource.offset, bytes);
+                    if (!sourceSlice) { throw std::runtime_error(std::string("source slice failed: ") + metallic::render::resultToString(sourceSlice)); }
+                    auto destinationSlice = copy.get()->slice(0, bytes);
+                    if (!destinationSlice) { throw std::runtime_error(std::string("destination slice failed: ") + metallic::render::resultToString(destinationSlice)); }
+                    if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { throw std::runtime_error(std::string("copyBuffer failed: ") + metallic::render::resultToString(commandResult)); }
+                }
+                std::swap(barrier.before, barrier.after); if (auto commandResult = commands.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
             }
         }
     }

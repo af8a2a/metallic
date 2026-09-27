@@ -77,12 +77,18 @@ public:
                 requireGpuPage(streamer->streamDecompressedBufferData(stored, tiles, *destination, 0), "GPU page staging");
                 auto receipt = streamer->pendingCopyCompletion();
                 requireGpuPage(receipt && !receipt->isRecordedBefore(*commands) && !receipt->isComplete(), "Premature upload completion");
-                commands->copyStreamedData(*streamer);
+                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 requireGpuPage(receipt->isRecordedBefore(*commands), "Decode not covered by upload receipt");
                 const BufferBarrierDesc barrier{.buffer = destination.get(), .before = ResourceState::General,
                     .after = ResourceState::TransferSource, .size = decoded.size()};
-                commands->barrier({.buffers = &barrier, .bufferCount = 1});
-                commands->copyBuffer({.source = destination.get(), .destination = readback.get(), .size = decoded.size()});
+                if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                {
+                    auto sourceSlice = destination.get()->slice(0, decoded.size());
+                    if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                    auto destinationSlice = readback.get()->slice(0, decoded.size());
+                    if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                    if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                }
                 requireGpuPage(bool(commands->end()), "Command end");
                 streamer->endFrame();
                 if (iteration == 0) {
@@ -150,15 +156,20 @@ public:
                     requireGpuPage(bool(frame.begin(frameIndex++)) && bool(pool->reset()) && bool(commands->begin(&frame)) && bool(streamer->beginFrame(frame)), "Begin");
                     residency.beginFrame();
                     const uint32_t uploads = residency.processUploads(*streamer, *destination, 1);
-                    commands->copyStreamedData(*streamer);
+                    if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                     if (uploads) {
                         requireGpuPage(residency.throughputSnapshot().totals.geometryReadyPages == 0, "Premature ready counter");
                         const BufferBarrierDesc barrier{.buffer = destination.get(),
                             .before = expectGpu ? ResourceState::General : ResourceState::TransferDestination,
                             .after = ResourceState::TransferSource, .size = destination->desc().size};
-                        commands->barrier({.buffers = &barrier, .bufferCount = 1});
-                        commands->copyBuffer({.source = destination.get(), .destination = readback.get(),
-                            .sourceOffset = residency.deviceOffsetForPage(0), .size = reference.size()});
+                        if (auto commandResult = commands->synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                        {
+                            auto sourceSlice = destination.get()->slice(residency.deviceOffsetForPage(0), reference.size());
+                            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                            auto destinationSlice = readback.get()->slice(0, reference.size());
+                            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                        }
                     }
                     requireGpuPage(bool(commands->end()), "End");
                     streamer->endFrame();

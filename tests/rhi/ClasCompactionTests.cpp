@@ -317,11 +317,16 @@ class CompactClasLifecycleTest final : public RhiTest {
                         log);
                 BufferBarrierDesc tableBarrier{.buffer = pool.pageTableBuffer(), .before = ResourceState::General,
                     .after = ResourceState::TransferSource};
-                cmd->barrier({.buffers = &tableBarrier, .bufferCount = 1});
-                cmd->copyBuffer({.source = pool.pageTableBuffer(), .destination = publicationReadback.get(),
-                    .sourceOffset = uint64_t(pageIndex) * 4u, .size = 4});
+                if (auto commandResult = cmd->synchronize({.buffers = &tableBarrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+                {
+                    auto sourceSlice = pool.pageTableBuffer()->slice(uint64_t(pageIndex) * 4u, 4);
+                    if (!sourceSlice) { throw std::runtime_error(std::string("source slice failed: ") + metallic::render::resultToString(sourceSlice)); }
+                    auto destinationSlice = publicationReadback.get()->slice(0, 4);
+                    if (!destinationSlice) { throw std::runtime_error(std::string("destination slice failed: ") + metallic::render::resultToString(destinationSlice)); }
+                    if (auto commandResult = cmd->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { throw std::runtime_error(std::string("copyBuffer failed: ") + metallic::render::resultToString(commandResult)); }
+                }
                 std::swap(tableBarrier.before, tableBarrier.after);
-                cmd->barrier({.buffers = &tableBarrier, .bufferCount = 1});
+                if (auto commandResult = cmd->synchronize({.buffers = &tableBarrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 require(bool(cmd->end()), "End failed");
                 if (cancel) {
                     frame.cancel();

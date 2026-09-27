@@ -139,26 +139,26 @@ public:
                 for (uint32_t i = 0; i < 2; ++i) {
                     TextureBarrierDesc barrier{.texture = textures[i].get(),
                         .before = submitted ? ResourceState::ShaderRead : ResourceState::Undefined, .after = ResourceState::TransferDestination};
-                    commands->barrier({.textures = &barrier, .textureCount = 1});
+                    if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     commands->copyBufferToTexture({.buffer = uploads[i].get(), .texture = textures[i].get(), .width = width, .height = 1});
                     barrier.before = ResourceState::TransferDestination; barrier.after = ResourceState::ShaderRead;
-                    commands->barrier({.textures = &barrier, .textureCount = 1});
+                    if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
                 TextureBarrierDesc barrier{.texture = textures[2].get(),
                     .before = submitted ? ResourceState::TransferSource : ResourceState::Undefined, .after = ResourceState::ColorAttachment};
-                commands->barrier({.textures = &barrier, .textureCount = 1});
+                if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 const RenderingAttachmentDesc color{.view = views[2].get(), .state = ResourceState::ColorAttachment,
                     .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
-                commands->beginRendering({.renderArea = {.width = width, .height = 1}, .colorAttachments = &color, .colorAttachmentCount = 1});
+                if (auto commandResult = commands->beginRendering({.renderArea = {.width = width, .height = 1}, .colorAttachments = &color, .colorAttachmentCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                 commands->setViewport({.width = float(width), .height = 1.f, .maxDepth = 1.f});
                 commands->setScissor({.width = width, .height = 1});
-                commands->bindBindlessHeap(*heap); commands->bindGraphicsPipeline(*pipeline);
+                commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 const VisibilityBufferCompositeUserPush push{.paramsBuffer = handles[Params].shaderIndex, .visibilityImage = images[0].shaderIndex,
                     .depthImage = images[1].shaderIndex, .residentRecords = handles[Resident].shaderIndex, .meshletBuffer = handles[Clusters].shaderIndex,
                     .residentRecordCapacity = base, .streamRecords = handles[Stream].shaderIndex, .streamGroups = handles[Groups].shaderIndex};
                 commands->pushBindlessData(&push, sizeof(push)); commands->draw(3); commands->endRendering();
                 barrier.before = ResourceState::ColorAttachment; barrier.after = ResourceState::TransferSource;
-                commands->barrier({.textures = &barrier, .textureCount = 1});
+                if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 commands->copyTextureToBuffer({.texture = textures[2].get(), .buffer = readback.get(), .width = width, .height = 1});
                 DEBUG_REQUIRE(commands->end());
                 CommandBuffer* list[] = {commands.get()};

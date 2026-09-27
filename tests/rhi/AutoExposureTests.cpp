@@ -79,9 +79,20 @@ public:
             return render::makeError(render::Error::InvalidArgument);
         }
         auto& commands = context.commandBuffer();
-        commands.copyBuffer({.source = exposure.buffer(), .destination = data.buffer(), .size = 16});
-        commands.copyBuffer({.source = histogram.buffer(), .destination = data.buffer(),
-            .destinationOffset = 16, .size = histogram.desc().size});
+        {
+            auto sourceSlice = exposure.buffer()->slice(0, 16);
+            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+            auto destinationSlice = data.buffer()->slice(0, 16);
+            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+            if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        }
+        {
+            auto sourceSlice = histogram.buffer()->slice(0, histogram.desc().size);
+            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+            auto destinationSlice = data.buffer()->slice(16, histogram.desc().size);
+            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+            if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        }
         commands.copyTextureToBuffer({.texture = color.texture(), .buffer = data.buffer(),
             .bufferOffset = 16 + histogram.desc().size, .width = context.width(), .height = context.height()});
         return {};

@@ -18,10 +18,11 @@ constexpr auto kCompactBufferUsage = BufferUsageBits::Storage | BufferUsageBits:
                                      BufferUsageBits::AccelerationStructureStorage |
                                      BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::TransferSource |
                                      BufferUsageBits::TransferDestination;
-void publicationBarrier(CommandBuffer& cmd, Buffer& buffer, ResourceState before, ResourceState after)
+Result<> publicationBarrier(CommandBuffer& cmd, Buffer& buffer, ResourceState before, ResourceState after)
 {
     const BufferBarrierDesc barrier{.buffer = &buffer, .before = before, .after = after};
-    cmd.barrier({.buffers = &barrier, .bufferCount = 1});
+    if (auto commandResult = cmd.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { return commandResult; }
+    return {};
 }
 } // namespace
 
@@ -128,22 +129,32 @@ struct MeshletStreamCompactClasPool::Impl {
         result = cmd.retainResource(upload);
         if (!result) { return result; }
         for (Buffer* target : {addresses.get(), pageTable.get()}) {
-            publicationBarrier(cmd, *target, ResourceState::General, ResourceState::TransferDestination);
+            if (auto commandResult = publicationBarrier(cmd, *target, ResourceState::General, ResourceState::TransferDestination); !commandResult) { return commandResult; }
         }
-        publicationBarrier(cmd, *upload, ResourceState::Undefined, ResourceState::TransferSource);
+        if (auto commandResult = publicationBarrier(cmd, *upload, ResourceState::Undefined, ResourceState::TransferSource); !commandResult) { return commandResult; }
         offset = 0;
         for (const auto& [id, update] : *updates) {
             const uint64_t size = update.addresses.size() * 8u;
             if (size) {
-                cmd.copyBuffer({.source = upload.get(), .destination = addresses.get(), .sourceOffset = offset,
-                    .destinationOffset = uint64_t(update.addressOffset) * 8u, .size = size});
+                {
+                    auto sourceSlice = upload.get()->slice(offset, size);
+                    if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+                    auto destinationSlice = addresses.get()->slice(uint64_t(update.addressOffset) * 8u, size);
+                    if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+                    if (auto commandResult = cmd.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+                }
             }
-            cmd.copyBuffer({.source = upload.get(), .destination = pageTable.get(), .sourceOffset = offset + size,
-                .destinationOffset = uint64_t(id) * 4u, .size = 4u});
+            {
+                auto sourceSlice = upload.get()->slice(offset + size, 4u);
+                if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+                auto destinationSlice = pageTable.get()->slice(uint64_t(id) * 4u, 4u);
+                if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+                if (auto commandResult = cmd.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+            }
             offset += size + 8u;
         }
         for (Buffer* target : {addresses.get(), pageTable.get()}) {
-            publicationBarrier(cmd, *target, ResourceState::TransferDestination, ResourceState::General);
+            if (auto commandResult = publicationBarrier(cmd, *target, ResourceState::TransferDestination, ResourceState::General); !commandResult) { return commandResult; }
         }
         publications->clear();
         return {};

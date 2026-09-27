@@ -123,7 +123,7 @@ public:
         // Read argument bytes as shader data, then restore their indirect state.
         render::BufferBarrierDesc argumentBarrier{.buffer = bins.arguments,
             .before = render::ResourceState::IndirectArgument, .after = render::ResourceState::ShaderRead};
-        commands.barrier({.buffers = &argumentBarrier, .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = &argumentBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         const render::ComputeDispatchBinding bindings[] = {
             {.binding = 5, .buffer = bins.bins}, {.binding = 6, .buffer = bins.tiles},
             {.binding = 7, .buffer = bins.arguments}, {.binding = 8, .buffer = context.outputBuffer("data").buffer()}};
@@ -132,7 +132,7 @@ public:
         result = programs_[0].dispatch(dispatch);
         if (!result) { return result; }
         std::swap(argumentBarrier.before, argumentBarrier.after);
-        commands.barrier({.buffers = &argumentBarrier, .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = &argumentBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         render::BufferBarrierDesc outputBarrier{.buffer = context.outputBuffer("data").buffer(),
             .before = render::ResourceState::General, .after = render::ResourceState::General};
         dispatch.indirectArguments = bins.arguments;
@@ -149,11 +149,11 @@ public:
                 items[bin] = {.pushData = pushes[bin].data(), .argumentOffset = uint64_t(bin) * 12,
                     .program = (bin & 1u) != 0 ? &programs_[2] : nullptr};
             }
-            commands.barrier({.buffers = &outputBarrier, .bufferCount = 1});
+            if (auto commandResult = commands.synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
             return programs_[1].dispatchIndirectBatch(dispatch, items, {.buffers = &outputBarrier, .bufferCount = 1});
         }
         for (uint32_t bin = 0; bin < bins.binCount; ++bin) {
-            commands.barrier({.buffers = &outputBarrier, .bufferCount = 1});
+            if (auto commandResult = commands.synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
             push[3] = bin;
             dispatch.indirectOffset = uint64_t(bin) * 12;
             result = programs_[1].dispatch(dispatch);
@@ -182,11 +182,11 @@ private:
         if (!result) { return result; }
         render::BufferBarrierDesc argumentBarrier{.buffer = bins.arguments,
             .before = render::ResourceState::IndirectArgument, .after = render::ResourceState::ShaderRead};
-        commands.barrier({.buffers = &argumentBarrier, .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = &argumentBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         result = kernels_[0].dispatch(commands, encoded, std::min(groups, 65535u), (groups + 65534) / 65535);
         if (!result) { return result; }
         std::swap(argumentBarrier.before, argumentBarrier.after);
-        commands.barrier({.buffers = &argumentBarrier, .bufferCount = 1});
+        if (auto commandResult = commands.synchronize({.buffers = &argumentBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         for (uint64_t offset : {uint64_t(1), bins.arguments->desc().size - 4, UINT64_MAX}) {
             if (!render::hasError(kernels_[1].dispatchIndirect(commands, encoded, *bins.arguments, offset),
                 render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
@@ -202,7 +202,7 @@ private:
             params.bin = bin;
             result = writer.encode(params, kProbeAbi, encoded);
             if (!result) { return result; }
-            commands.barrier({.buffers = &outputBarrier, .bufferCount = 1});
+            if (auto commandResult = commands.synchronize({.buffers = &outputBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
             const size_t permutation = (context.frameIndex() & 1u) && (bin & 1u) ? 2 : 1;
             result = kernels_[permutation].dispatchIndirect(commands, encoded, *bins.arguments, uint64_t(bin) * 12);
             if (!result) { return result; }

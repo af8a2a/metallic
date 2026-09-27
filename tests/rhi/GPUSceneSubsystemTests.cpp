@@ -1243,14 +1243,14 @@ public:
                 .offset = 0,
                 .size = kCanonicalReadbackSize,
             };
-            commandBuffer.barrier(render::BarrierDesc{
+            if (auto commandResult = commandBuffer.synchronize(render::BarrierDesc{
                 .buffers = &readbackDestination,
                 .bufferCount = 1,
-            });
-            commandBuffer.barrier(render::BarrierDesc{
+            }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commandBuffer.synchronize(render::BarrierDesc{
                 .buffers = toCopy.data(),
                 .bufferCount = static_cast<uint32_t>(toCopy.size()),
-            });
+            }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             const std::array destinationOffsets{
                 kGeometryReadbackOffset,
                 kMeshletReadbackOffset,
@@ -1261,18 +1261,18 @@ public:
                 kTriangleWordReadbackOffset,
             };
             for (size_t index = 0; index < sourceViews.size(); ++index) {
-                commandBuffer.copyBuffer(render::BufferCopyDesc{
-                    .source = sourceViews[index]->buffer,
-                    .destination = canonicalReadback.get(),
-                    .sourceOffset = 0,
-                    .destinationOffset = destinationOffsets[index],
-                    .size = sourceViews[index]->size,
-                });
+                {
+                    auto sourceSlice = (sourceViews[index]->buffer)->slice(0, sourceViews[index]->size);
+                    if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                    auto destinationSlice = canonicalReadback.get()->slice(destinationOffsets[index], sourceViews[index]->size);
+                    if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                    if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                }
             }
-            commandBuffer.barrier(render::BarrierDesc{
+            if (auto commandResult = commandBuffer.synchronize(render::BarrierDesc{
                 .buffers = toRead.data(),
                 .bufferCount = static_cast<uint32_t>(toRead.size()),
-            });
+            }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             return RhiTestResult::pass();
         });
         if (!frameResult.passed) {
@@ -1966,12 +1966,17 @@ public:
                     .after = render::ResourceState::TransferSource},
                 render::BufferBarrierDesc{.buffer = readback.get(), .before = render::ResourceState::Undefined,
                     .after = render::ResourceState::TransferDestination}};
-            commands->barrier({.buffers = barriers.data(), .bufferCount = 2});
-            commands->copyBuffer({.source = instances, .destination = readback.get(),
-                .size = sizeof(render::GPUSceneGpuInstanceRecord)});
+            if (auto commandResult = commands->synchronize({.buffers = barriers.data(), .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            {
+                auto sourceSlice = instances->slice(0, sizeof(render::GPUSceneGpuInstanceRecord));
+                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                auto destinationSlice = readback.get()->slice(0, sizeof(render::GPUSceneGpuInstanceRecord));
+                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            }
             const render::BufferBarrierDesc restore{.buffer = instances, .before = render::ResourceState::TransferSource,
                 .after = render::ResourceState::ShaderRead};
-            commands->barrier({.buffers = &restore, .bufferCount = 1});
+            if (auto commandResult = commands->synchronize({.buffers = &restore, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             SUBMISSION_CHECK(host.recordPostGraph(*commands, nullptr, required, log));
             SUBMISSION_CHECK(commands->end());
             host.endFrame();

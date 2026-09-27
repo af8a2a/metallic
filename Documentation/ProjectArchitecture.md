@@ -357,6 +357,8 @@ TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进�
 
 命令接口覆盖动态渲染、barrier、buffer/texture copy、传统 draw、Mesh Task indirect draw 和 compute dispatch。能力以 `DeviceCapabilities` 暴露，调用方通过软请求创建设备，再对实际 capability 做降级处理。
 
+命令同步统一使用返回 `Result<>` 的 `synchronize()`；pipeline 与 shader object 通过 `execution()` 快照交给 `bindExecution()`；buffer copy 使用两个经过范围校验的 `BufferSlice`。这些入口的失败必须传回调用方，禁止用忽略结果的兼容包装。`Streamer::copyStreamedData()` 和上传 flush 同样返回结果；失败会取消对应上传发布事务，调用方必须放弃失败的录制。
+
 ### 10.2 Vulkan 实现
 
 `VulkanRhi.cpp` 使用 Volk 加载 Vulkan，并用 VMA 管理资源内存。PImpl 隔离大多数 Vulkan 类型，但以下位置仍显式依赖 Vulkan：

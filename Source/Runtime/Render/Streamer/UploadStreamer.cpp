@@ -622,89 +622,80 @@ struct StreamerImpl {
         return pendingCompletion;
     }
 
-    void copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase)
+    Result<> copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase)
     {
         std::lock_guard lock(mutex);
         const auto installation = pendingCompletion;
-        // Preflight before recording ANY writes. Cancelling after partial GPU
-        // writes would allow residency to recycle their allocation too early.
-        if (!decompressions.empty() && !commandBuffer.validateDecompressionBuffers(decompressions)) {
-            if (installation) { installation->submission_->cancel(); }
-            pendingCompletion.reset();
-            bufferRequests.clear();
-            decompressions.clear();
-            decompressionCopyBarriers.clear();
-            textureRequests.clear();
-            return;
-        }
-        if (pendingCompletion) {
-            // Attach to the recording containing the copies, not an earlier pass
-            // segment. A failed attachment must not leave untracked GPU writes.
-            if (commandBuffer.frameContext() == nullptr ||
-                !pendingCompletion->completion_.sameSubmission(commandBuffer.frameContext()->completion()) ||
-                !commandBuffer.addSubmissionTransaction(pendingCompletion->submission_)) {
-                pendingCompletion->submission_->cancel();
-                pendingCompletion.reset();
-                bufferRequests.clear();
-                decompressions.clear();
-                decompressionCopyBarriers.clear();
-                textureRequests.clear();
-                return;
+        const auto result = [&]() -> Result<> {
+            // Validate before recording writes; failed recordings cancel their
+            // publication transaction so partial uploads cannot be submitted.
+            if (!decompressions.empty()) {
+                auto validated = commandBuffer.validateDecompressionBuffers(decompressions);
+                if (!validated) { return validated; }
             }
-            pendingCompletion.reset();
-        }
-        const profiling::NsightProfileRange copyMarker(
-            profiling::NsightDomain::Render,
-            "Upload Copies",
-            profiling::NsightCategory::ResourceUpload,
-            bufferRequests.size() + textureRequests.size());
-        if (phase) { phase("Upload copies"); }
-        if (!decompressionCopyBarriers.empty()) {
-            commandBuffer.barrier({.buffers = decompressionCopyBarriers.data(), .bufferCount = uint32_t(decompressionCopyBarriers.size())});
-        }
-        for (const BufferCopyRequest& request : bufferRequests) {
-            commandBuffer.copyBuffer(BufferCopyDesc{
-                .source = request.source,
-                .destination = request.destination,
-                .sourceOffset = request.sourceOffset,
-                .destinationOffset = request.destinationOffset,
-                .size = request.size,
-            });
-        }
-
-        for (const TextureCopyRequest& request : textureRequests) {
-            commandBuffer.copyBufferToTexture(request.copy);
-        }
-        if (!decompressions.empty()) {
-            if (phase) { phase("Decompression input barrier"); }
-            std::vector<BufferBarrierDesc> barriers;
-            for (const auto& region : decompressions) {
-                barriers.push_back({.buffer = region.source, .before = ResourceState::TransferDestination,
-                    .after = ResourceState::DecompressionSource, .offset = region.sourceOffset, .size = region.compressedBytes});
-                barriers.push_back({.buffer = region.destination, .before = ResourceState::General,
-                    .after = ResourceState::DecompressionDestination, .offset = region.destinationOffset, .size = region.decodedBytes});
-            }
-            commandBuffer.barrier({.buffers = barriers.data(), .bufferCount = uint32_t(barriers.size())});
-            if (phase) { phase("GPU decompression"); }
-            if (!commandBuffer.decompressBuffers(decompressions)) {
-                if (installation) { installation->submission_->cancel(); }
-            } else {
-                if (phase) { phase("Decompression publish barrier"); }
-                barriers.clear();
-                for (const auto& region : decompressions) {
-                    // General covers both shader consumers and AS build input
-                    // reads. The runtime retains its ordinary copy transitions.
-                    barriers.push_back({.buffer = region.destination, .before = ResourceState::DecompressionDestination,
-                        .after = ResourceState::General, .offset = region.destinationOffset, .size = region.decodedBytes});
+            if (installation) {
+                if (!commandBuffer.frameContext() ||
+                    !installation->completion_.sameSubmission(commandBuffer.frameContext()->completion())) {
+                    return makeError(Error::InvalidArgument);
                 }
-                commandBuffer.barrier({.buffers = barriers.data(), .bufferCount = uint32_t(barriers.size())});
+                auto attached = commandBuffer.addSubmissionTransaction(installation->submission_);
+                if (!attached) { return attached; }
             }
-        }
+            const profiling::NsightProfileRange copyMarker(
+                profiling::NsightDomain::Render,
+                "Upload Copies",
+                profiling::NsightCategory::ResourceUpload,
+                bufferRequests.size() + textureRequests.size());
+            if (phase) { phase("Upload copies"); }
+            if (!decompressionCopyBarriers.empty()) {
+                if (auto commandResult = commandBuffer.synchronize({.buffers = decompressionCopyBarriers.data(), .bufferCount = uint32_t(decompressionCopyBarriers.size())}); !commandResult) { return commandResult; }
+            }
+            for (const BufferCopyRequest& request : bufferRequests) {
+                {
+                    auto sourceSlice = request.source->slice(request.sourceOffset, request.size);
+                    if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+                    auto destinationSlice = request.destination->slice(request.destinationOffset, request.size);
+                    if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+                    if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+                }
+            }
+
+            for (const TextureCopyRequest& request : textureRequests) {
+                commandBuffer.copyBufferToTexture(request.copy);
+            }
+            if (!decompressions.empty()) {
+                if (phase) { phase("Decompression input barrier"); }
+                std::vector<BufferBarrierDesc> barriers;
+                for (const auto& region : decompressions) {
+                    barriers.push_back({.buffer = region.source, .before = ResourceState::TransferDestination,
+                        .after = ResourceState::DecompressionSource, .offset = region.sourceOffset, .size = region.compressedBytes});
+                    barriers.push_back({.buffer = region.destination, .before = ResourceState::General,
+                        .after = ResourceState::DecompressionDestination, .offset = region.destinationOffset, .size = region.decodedBytes});
+                }
+                if (auto commandResult = commandBuffer.synchronize({.buffers = barriers.data(), .bufferCount = uint32_t(barriers.size())}); !commandResult) { return commandResult; }
+                if (phase) { phase("GPU decompression"); }
+                if (auto result = commandBuffer.decompressBuffers(decompressions); !result) { return result; }
+                {
+                    if (phase) { phase("Decompression publish barrier"); }
+                    barriers.clear();
+                    for (const auto& region : decompressions) {
+                        // General covers both shader consumers and AS build input
+                        // reads. The runtime retains its ordinary copy transitions.
+                        barriers.push_back({.buffer = region.destination, .before = ResourceState::DecompressionDestination,
+                            .after = ResourceState::General, .offset = region.destinationOffset, .size = region.decodedBytes});
+                    }
+                    if (auto commandResult = commandBuffer.synchronize({.buffers = barriers.data(), .bufferCount = uint32_t(barriers.size())}); !commandResult) { return commandResult; }
+                }
+            }
+            return {};
+        }();
+        if (!result && installation) { installation->submission_->cancel(); }
+        pendingCompletion.reset();
         decompressions.clear();
         decompressionCopyBarriers.clear();
-
         bufferRequests.clear();
         textureRequests.clear();
+        return result;
     }
 
     void endFrame()
@@ -886,11 +877,9 @@ std::shared_ptr<StreamUploadCompletion> Streamer::pendingCopyCompletion()
     return impl_ != nullptr ? impl_->pendingCopyCompletion() : nullptr;
 }
 
-void Streamer::copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase)
+Result<> Streamer::copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase)
 {
-    if (impl_ != nullptr) {
-        impl_->copyStreamedData(commandBuffer, phase);
-    }
+    return impl_ ? impl_->copyStreamedData(commandBuffer, phase) : makeError(Error::InvalidArgument);
 }
 
 void Streamer::endFrame()
@@ -905,9 +894,9 @@ Result<> Streamer::beginFrame(RenderFrameContext& frame)
     return impl_ != nullptr ? impl_->beginFrame(frame) : makeError(Error::InvalidArgument);
 }
 
-void CommandBuffer::copyStreamedData(Streamer& streamer)
+Result<> CommandBuffer::copyStreamedData(Streamer& streamer)
 {
-    streamer.copyStreamedData(*this);
+    return streamer.copyStreamedData(*this);
 }
 
 Result<std::unique_ptr<Streamer>> Device::createStreamer(const StreamerDesc& desc)

@@ -158,10 +158,10 @@ Result<> ImportancePdfTexture::initialize(
     return {};
 }
 
-void ImportancePdfTexture::beginGpuBuild(CommandBuffer& commandBuffer)
+Result<> ImportancePdfTexture::beginGpuBuild(CommandBuffer& commandBuffer)
 {
     if (!valid()) {
-        return;
+        return {};
     }
     if (auto* frame = commandBuffer.frameContext()) { frame->retain(impl_); }
     TextureBarrierDesc toGeneral{
@@ -173,14 +173,15 @@ void ImportancePdfTexture::beginGpuBuild(CommandBuffer& commandBuffer)
         .baseLayer = 0,
         .layerCount = 1,
     };
-    commandBuffer.barrier(BarrierDesc{.textures = &toGeneral, .textureCount = 1});
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = &toGeneral, .textureCount = 1}); !commandResult) { return commandResult; }
     impl_->state = ResourceState::General;
+    return {};
 }
 
-void ImportancePdfTexture::synchronizeGpuBuild(CommandBuffer& commandBuffer)
+Result<> ImportancePdfTexture::synchronizeGpuBuild(CommandBuffer& commandBuffer)
 {
     if (!valid() || impl_->state != ResourceState::General) {
-        return;
+        return {};
     }
     TextureBarrierDesc synchronize{
         .texture = impl_->texture.get(),
@@ -191,13 +192,14 @@ void ImportancePdfTexture::synchronizeGpuBuild(CommandBuffer& commandBuffer)
         .baseLayer = 0,
         .layerCount = 1,
     };
-    commandBuffer.barrier(BarrierDesc{.textures = &synchronize, .textureCount = 1});
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = &synchronize, .textureCount = 1}); !commandResult) { return commandResult; }
+    return {};
 }
 
-void ImportancePdfTexture::endGpuBuild(CommandBuffer& commandBuffer)
+Result<> ImportancePdfTexture::endGpuBuild(CommandBuffer& commandBuffer)
 {
     if (!valid() || impl_->state != ResourceState::General) {
-        return;
+        return {};
     }
     TextureBarrierDesc toShaderRead{
         .texture = impl_->texture.get(),
@@ -208,8 +210,9 @@ void ImportancePdfTexture::endGpuBuild(CommandBuffer& commandBuffer)
         .baseLayer = 0,
         .layerCount = 1,
     };
-    commandBuffer.barrier(BarrierDesc{.textures = &toShaderRead, .textureCount = 1});
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.textures = &toShaderRead, .textureCount = 1}); !commandResult) { return commandResult; }
     impl_->state = ResourceState::ShaderRead;
+    return {};
 }
 
 void ImportancePdfTexture::clear()
@@ -439,7 +442,7 @@ Result<> ImportancePdfCompute::buildLocalLights(
         });
     };
 
-    localLightPdf.beginGpuBuild(commandBuffer);
+    if (auto commandResult = localLightPdf.beginGpuBuild(commandBuffer); !commandResult) { return commandResult; }
     PrepareLightsPdfPush push;
     push.mode = kPrepareLocalLightsMode;
     push.lightCount = lightCount;
@@ -449,7 +452,7 @@ Result<> ImportancePdfCompute::buildLocalLights(
     push.destinationSize[1] = localLightPdf.textureHeight();
     Result<> result = dispatch(push, 0u);
     if (result) {
-        localLightPdf.synchronizeGpuBuild(commandBuffer);
+        if (auto commandResult = localLightPdf.synchronizeGpuBuild(commandBuffer); !commandResult) { return commandResult; }
     }
     for (uint32_t sourceMip = 0;
          result && sourceMip + 1u < localLightPdf.mipCount();
@@ -462,10 +465,10 @@ Result<> ImportancePdfCompute::buildLocalLights(
         push.destinationSize[1] = dimensionAtMip(localLightPdf.textureHeight(), sourceMip + 1u);
         result = dispatch(push, sourceMip + 1u);
         if (result) {
-            localLightPdf.synchronizeGpuBuild(commandBuffer);
+            if (auto commandResult = localLightPdf.synchronizeGpuBuild(commandBuffer); !commandResult) { return commandResult; }
         }
     }
-    localLightPdf.endGpuBuild(commandBuffer);
+    if (auto commandResult = localLightPdf.endGpuBuild(commandBuffer); !commandResult) { return commandResult; }
     return result;
 }
 
@@ -516,7 +519,7 @@ Result<> ImportancePdfCompute::buildEnvironment(
         });
     };
 
-    environmentPdf.beginGpuBuild(commandBuffer);
+    if (auto commandResult = environmentPdf.beginGpuBuild(commandBuffer); !commandResult) { return commandResult; }
     PrepareLightsPdfPush push;
     push.mode = kPrepareEnvironmentMode;
     push.sourceSize[0] = environmentPdf.sourceWidth();
@@ -525,7 +528,7 @@ Result<> ImportancePdfCompute::buildEnvironment(
     push.destinationSize[1] = environmentPdf.textureHeight();
     Result<> result = dispatch(push, kImportancePdfMaxMipCount);
     if (result) {
-        environmentPdf.synchronizeGpuBuild(commandBuffer);
+        if (auto commandResult = environmentPdf.synchronizeGpuBuild(commandBuffer); !commandResult) { return commandResult; }
     }
     for (uint32_t sourceMip = 0;
          result && sourceMip + 1u < environmentPdf.mipCount();
@@ -538,10 +541,10 @@ Result<> ImportancePdfCompute::buildEnvironment(
         push.destinationSize[1] = dimensionAtMip(environmentPdf.textureHeight(), sourceMip + 1u);
         result = dispatch(push, kImportancePdfMaxMipCount + sourceMip + 1u);
         if (result) {
-            environmentPdf.synchronizeGpuBuild(commandBuffer);
+            if (auto commandResult = environmentPdf.synchronizeGpuBuild(commandBuffer); !commandResult) { return commandResult; }
         }
     }
-    environmentPdf.endGpuBuild(commandBuffer);
+    if (auto commandResult = environmentPdf.endGpuBuild(commandBuffer); !commandResult) { return commandResult; }
     return result;
 }
 

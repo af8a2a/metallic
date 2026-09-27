@@ -85,8 +85,8 @@ public:
         const render::RenderingAttachmentDesc attachment{.view = context.outputTexture("color").view(),
             .state = render::ResourceState::ColorAttachment, .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store, .clearColor = {level, level, level, 1.0f}};
-        context.commandBuffer().beginRendering({.renderArea = {0, 0, context.width(), context.height()},
-            .colorAttachments = &attachment, .colorAttachmentCount = 1});
+        if (auto commandResult = context.commandBuffer().beginRendering({.renderArea = {0, 0, context.width(), context.height()},
+            .colorAttachments = &attachment, .colorAttachmentCount = 1}); !commandResult) { return commandResult; }
         context.commandBuffer().endRendering();
         return {};
     }

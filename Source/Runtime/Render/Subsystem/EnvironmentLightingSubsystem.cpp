@@ -232,7 +232,7 @@ struct EnvironmentLightingSubsystem::GpuPrecompute {
             .offset = 0,
             .size = partials.desc().size,
         };
-        commandBuffer.barrier(BarrierDesc{.buffers = &partialsBarrier, .bufferCount = 1});
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = &partialsBarrier, .bufferCount = 1}); !commandResult) { return commandResult; }
         push.mode = 1;
         result = program.dispatch(ComputeDispatchDesc{
             .commandBuffer = &commandBuffer,
@@ -681,14 +681,14 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
             .size = kSphericalHarmonicsBytes,
         },
     };
-    context.commandBuffer->barrier(BarrierDesc{
+    if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
         .buffers = precomputeToGeneral.data(),
         .bufferCount = static_cast<uint32_t>(precomputeToGeneral.size()),
-    });
-    context.commandBuffer->barrier(BarrierDesc{
+    }); !commandResult) { return commandResult; }
+    if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
         .textures = &textureToTransfer,
         .textureCount = 1,
-    });
+    }); !commandResult) { return commandResult; }
 
     for (uint32_t mip = 0; mip < mipCount; ++mip) {
         context.commandBuffer->copyBufferToTexture(BufferTextureCopyDesc{
@@ -711,10 +711,10 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
         .baseLayer = 0,
         .layerCount = 1,
     };
-    context.commandBuffer->barrier(BarrierDesc{
+    if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
         .textures = &textureToRead,
         .textureCount = 1,
-    });
+    }); !commandResult) { return commandResult; }
     result = pdfCompute_.buildEnvironment(
         *context.commandBuffer,
         *next->radianceView,
@@ -744,13 +744,13 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
         .offset = 0,
         .size = kSphericalHarmonicsBytes,
     };
-    context.commandBuffer->barrier(BarrierDesc{
+    if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
         .buffers = &sphericalHarmonicsToRead,
         .bufferCount = 1,
-    });
+    }); !commandResult) { return commandResult; }
     BufferBarrierDesc specularToRead{.buffer = next->prefilteredSpecularBuffer.get(),
         .before = ResourceState::General, .after = ResourceState::ShaderRead};
-    context.commandBuffer->barrier({.buffers = &specularToRead, .bufferCount = 1});
+    if (auto commandResult = context.commandBuffer->synchronize({.buffers = &specularToRead, .bufferCount = 1}); !commandResult) { return commandResult; }
     if (resources_ != nullptr) {
         context.host.retire(std::static_pointer_cast<void>(resources_));
     }

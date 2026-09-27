@@ -188,7 +188,7 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
         auto scope = context.profileScope("Stream Begin");
         result = stream.cmdBeginFrame(context.commandBuffer(), *streamer(), view, [&] {
             auto upload = context.profileScope("Upload preflight");
-            flush(context.commandBuffer(), [&](const char* name) { upload.next(name); });
+            return flush(context.commandBuffer(), [&](const char* name) { upload.next(name); });
         });
         context.publishCpuProfile(stream.beginFrameCpuProfile().sections);
         if (!result) { return result; }
@@ -315,9 +315,10 @@ void StreamerSubsystem::collectReleasedStreams()
     std::erase_if(streams_, [](const auto& session) { return session.use_count() == 1; });
 }
 
-void StreamerSubsystem::flush(CommandBuffer& commands, const StreamUploadPhaseCallback& phase)
+Result<> StreamerSubsystem::flush(CommandBuffer& commands, const StreamUploadPhaseCallback& phase)
 {
-    if (streamer() && streamer()->stats().pendingCopies.copyCount() != 0) { uploads_.flush(commands, phase); }
+    if (streamer() && streamer()->stats().pendingCopies.copyCount() != 0) { if (auto commandResult = uploads_.flush(commands, phase); !commandResult) { return commandResult; } }
+    return {};
 }
 
 } // namespace metallic::render

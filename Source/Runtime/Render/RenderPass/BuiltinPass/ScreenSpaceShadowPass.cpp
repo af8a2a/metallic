@@ -176,7 +176,7 @@ public:
             .placementAlignment = 16, .dstBuffer = parameters.buffer()});
         shadow.parameters->unmap();
         if (!uploaded.valid()) { return makeError(Error::OutOfMemory); }
-        commands.copyStreamedData(*context.streamer());
+        if (auto commandResult = commands.copyStreamedData(*context.streamer()); !commandResult) { return commandResult; }
         profile.next("Publish camera history");
         history_->view = view;
         history_->sceneIdentity = info.sceneIdentity;

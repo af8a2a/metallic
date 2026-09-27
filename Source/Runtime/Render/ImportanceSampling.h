@@ -38,9 +38,9 @@ public:
         std::string& log);
     void clear();
 
-    void beginGpuBuild(CommandBuffer& commandBuffer);
-    void synchronizeGpuBuild(CommandBuffer& commandBuffer);
-    void endGpuBuild(CommandBuffer& commandBuffer);
+    [[nodiscard]] Result<> beginGpuBuild(CommandBuffer& commandBuffer);
+    [[nodiscard]] Result<> synchronizeGpuBuild(CommandBuffer& commandBuffer);
+    [[nodiscard]] Result<> endGpuBuild(CommandBuffer& commandBuffer);
 
     bool valid() const;
     TextureView* view() const;

@@ -573,10 +573,10 @@ Result<> HistoryResourceManager::transitionTexture(
         .baseLayer = 0,
         .layerCount = record->textureDesc.layerCount,
     };
-    commandBuffer.barrier(BarrierDesc{
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
         .textures = &barrier,
         .textureCount = 1,
-    });
+    }); !commandResult) { return commandResult; }
     textureSlot.state = after;
     return {};
 }
@@ -612,10 +612,10 @@ Result<> HistoryResourceManager::transitionBuffer(
         .offset = 0,
         .size = record->bufferDesc.size,
     };
-    commandBuffer.barrier(BarrierDesc{
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
         .buffers = &barrier,
         .bufferCount = 1,
-    });
+    }); !commandResult) { return commandResult; }
     bufferSlot.state = after;
     return {};
 }

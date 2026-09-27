@@ -86,7 +86,7 @@ Result<> MaterialBinning::record(Device& device, CommandBuffer& commands,
             .before = allocation->initialized ? finalStates[i] : ResourceState::Undefined,
             .after = ResourceState::General};
     }
-    commands.barrier({.buffers = barriers, .bufferCount = 3});
+    if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
     std::shared_ptr<ResourceRegistry> registry;
     auto result = device.resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
     if (!result) { return result; }
@@ -112,7 +112,7 @@ Result<> MaterialBinning::record(Device& device, CommandBuffer& commands,
             barriers[b] = {.buffer = buffers[b].get(), .before = ResourceState::General,
                 .after = i == 2 ? finalStates[b] : ResourceState::General};
         }
-        commands.barrier({.buffers = barriers, .bufferCount = 3});
+        if (auto commandResult = commands.synchronize({.buffers = barriers, .bufferCount = 3}); !commandResult) { return commandResult; }
     }
     allocation->initialized = true;
     output = {.bins = buffers[0].get(), .tiles = buffers[1].get(),

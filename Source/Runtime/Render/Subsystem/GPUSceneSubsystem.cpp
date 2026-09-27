@@ -1092,10 +1092,10 @@ Result<> GPUSceneSubsystem::recordInitialize(
         }
     }
     if (!barriers.empty()) {
-        commandBuffer.barrier(BarrierDesc{
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
             .buffers = barriers.data(),
             .bufferCount = gpuCount(barriers.size()),
-        });
+        }); !commandResult) { return commandResult; }
     }
     slot.initialized = true;
     resources.hzbInitialized = true;
@@ -1594,25 +1594,25 @@ Result<> GPUSceneSubsystem::uploadFullScene(
     }
     context.host.retire(std::static_pointer_cast<void>(next));
     if (!toTransfer.empty()) {
-        context.commandBuffer->barrier(BarrierDesc{
+        if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
             .buffers = toTransfer.data(),
             .bufferCount = gpuCount(toTransfer.size()),
-        });
+        }); !commandResult) { return commandResult; }
     }
     for (const PendingCopy& copy : copies) {
-        context.commandBuffer->copyBuffer(BufferCopyDesc{
-            .source = copy.source,
-            .destination = copy.destination,
-            .sourceOffset = 0,
-            .destinationOffset = 0,
-            .size = copy.byteSize,
-        });
+        {
+            auto sourceSlice = copy.source->slice(0, copy.byteSize);
+            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+            auto destinationSlice = copy.destination->slice(0, copy.byteSize);
+            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+            if (auto commandResult = context.commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        }
     }
     if (!toRead.empty()) {
-        context.commandBuffer->barrier(BarrierDesc{
+        if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
             .buffers = toRead.data(),
             .bufferCount = gpuCount(toRead.size()),
-        });
+        }); !commandResult) { return commandResult; }
     }
 
     if (!scene_.setGlobalBufferViews(views)) {
@@ -1689,17 +1689,17 @@ Result<> GPUSceneSubsystem::uploadInstances(
         .offset = 0,
         .size = byteSize,
     };
-    context.commandBuffer->barrier(BarrierDesc{
+    if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
         .buffers = &toTransfer,
         .bufferCount = 1,
-    });
-    context.commandBuffer->copyBuffer(BufferCopyDesc{
-        .source = staging.get(),
-        .destination = resource.buffer.get(),
-        .sourceOffset = 0,
-        .destinationOffset = 0,
-        .size = byteSize,
-    });
+    }); !commandResult) { return commandResult; }
+    {
+        auto sourceSlice = staging.get()->slice(0, byteSize);
+        if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+        auto destinationSlice = resource.buffer.get()->slice(0, byteSize);
+        if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+        if (auto commandResult = context.commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+    }
     BufferBarrierDesc toRead{
         .buffer = resource.buffer.get(),
         .before = ResourceState::TransferDestination,
@@ -1707,10 +1707,10 @@ Result<> GPUSceneSubsystem::uploadInstances(
         .offset = 0,
         .size = byteSize,
     };
-    context.commandBuffer->barrier(BarrierDesc{
+    if (auto commandResult = context.commandBuffer->synchronize(BarrierDesc{
         .buffers = &toRead,
         .bufferCount = 1,
-    });
+    }); !commandResult) { return commandResult; }
 
     uploads->stagingBuffers.push_back(std::move(staging));
     context.host.retire(std::static_pointer_cast<void>(uploads));
@@ -1929,7 +1929,7 @@ Result<> GPUSceneSubsystem::recordCull(
 
     commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
     commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
-    commandBuffer.bindComputePipeline(*desc.resetPipeline);
+    if (auto commandResult = commandBuffer.bindExecution((desc.resetPipeline)->execution()); !commandResult) { return commandResult; }
     commandBuffer.dispatch(1, 1, 1);
 
     std::vector<BufferBarrierDesc> resetBarriers;
@@ -1946,13 +1946,13 @@ Result<> GPUSceneSubsystem::recordCull(
             .after = ResourceState::General,
         });
     }
-    commandBuffer.barrier(BarrierDesc{
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
         .buffers = resetBarriers.data(),
         .bufferCount = gpuCount(resetBarriers.size()),
-    });
+    }); !commandResult) { return commandResult; }
 
     commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
-    commandBuffer.bindComputePipeline(*desc.instanceCullPipeline);
+    if (auto commandResult = commandBuffer.bindExecution((desc.instanceCullPipeline)->execution()); !commandResult) { return commandResult; }
     commandBuffer.dispatch(desc.instanceGroupCountX, 1, 1);
 
     std::vector<BufferBarrierDesc> cullBarriers;
@@ -1981,13 +1981,13 @@ Result<> GPUSceneSubsystem::recordCull(
             .after = ResourceState::General,
         });
     }
-    commandBuffer.barrier(BarrierDesc{
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
         .buffers = cullBarriers.data(),
         .bufferCount = gpuCount(cullBarriers.size()),
-    });
+    }); !commandResult) { return commandResult; }
 
     commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
-    commandBuffer.bindComputePipeline(*desc.compactPipeline);
+    if (auto commandResult = commandBuffer.bindExecution((desc.compactPipeline)->execution()); !commandResult) { return commandResult; }
     commandBuffer.dispatch(desc.meshletGroupCountX, 1, 1);
 
     std::vector<BufferBarrierDesc> compactBarriers;
@@ -2016,10 +2016,10 @@ Result<> GPUSceneSubsystem::recordCull(
             .after = ResourceState::General,
         });
     }
-    commandBuffer.barrier(BarrierDesc{
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
         .buffers = compactBarriers.data(),
         .bufferCount = gpuCount(compactBarriers.size()),
-    });
+    }); !commandResult) { return commandResult; }
     return {};
 }
 
@@ -2056,7 +2056,7 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
 
     commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
     commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
-    commandBuffer.bindComputePipeline(*desc.resetPipeline);
+    if (auto commandResult = commandBuffer.bindExecution((desc.resetPipeline)->execution()); !commandResult) { return commandResult; }
     commandBuffer.dispatch(1u, 1u, 1u);
 
     BufferBarrierDesc resetBarrier{
@@ -2064,13 +2064,13 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
         .before = ResourceState::General,
         .after = ResourceState::General,
     };
-    commandBuffer.barrier(BarrierDesc{
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
         .buffers = &resetBarrier,
         .bufferCount = 1,
-    });
+    }); !commandResult) { return commandResult; }
 
     commandBuffer.pushBindlessData(desc.pushData, desc.pushDataSize);
-    commandBuffer.bindComputePipeline(*desc.instanceCullPipeline);
+    if (auto commandResult = commandBuffer.bindExecution((desc.instanceCullPipeline)->execution()); !commandResult) { return commandResult; }
     commandBuffer.dispatch(desc.instanceGroupCountX, 1u, 1u);
 
     std::array<BufferBarrierDesc, 3> barriers{};
@@ -2092,10 +2092,10 @@ Result<> GPUSceneSubsystem::recordInstanceCull(
         .before = ResourceState::General,
         .after = ResourceState::General,
     };
-    commandBuffer.barrier(BarrierDesc{
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
         .buffers = barriers.data(),
         .bufferCount = barrierCount,
-    });
+    }); !commandResult) { return commandResult; }
     return {};
 }
 
@@ -2158,12 +2158,18 @@ Result<> GPUSceneSubsystem::recordBuildHzb(
         const BufferBarrierDesc resetBarriers[] = {
             {.buffer = desc.counterResetSource, .before = ResourceState::General, .after = ResourceState::TransferSource},
             {.buffer = desc.counterBuffer, .before = ResourceState::General, .after = ResourceState::TransferDestination}};
-        commandBuffer.barrier({.buffers = resetBarriers, .bufferCount = 2});
-        commandBuffer.copyBuffer({.source = desc.counterResetSource, .destination = desc.counterBuffer, .size = sizeof(uint32_t)});
+        if (auto commandResult = commandBuffer.synchronize({.buffers = resetBarriers, .bufferCount = 2}); !commandResult) { return commandResult; }
+        {
+            auto sourceSlice = desc.counterResetSource->slice(0, sizeof(uint32_t));
+            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+            auto destinationSlice = desc.counterBuffer->slice(0, sizeof(uint32_t));
+            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+            if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        }
         const BufferBarrierDesc readyBarriers[] = {
             {.buffer = desc.counterResetSource, .before = ResourceState::TransferSource, .after = ResourceState::General},
             {.buffer = desc.counterBuffer, .before = ResourceState::TransferDestination, .after = ResourceState::General}};
-        commandBuffer.barrier({.buffers = readyBarriers, .bufferCount = 2});
+        if (auto commandResult = commandBuffer.synchronize({.buffers = readyBarriers, .bufferCount = 2}); !commandResult) { return commandResult; }
     }
     commandBuffer.bindBindlessHeap(*desc.bindlessHeap);
     const BufferBarrierDesc writeBarrier{
@@ -2171,21 +2177,21 @@ Result<> GPUSceneSubsystem::recordBuildHzb(
         .before = ResourceState::General,
         .after = ResourceState::General,
     };
-    commandBuffer.barrier(BarrierDesc{
+    if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
         .buffers = &writeBarrier,
         .bufferCount = 1,
-    });
+    }); !commandResult) { return commandResult; }
     for (const GPUSceneComputeDispatchDesc& dispatch : desc.dispatches) {
         commandBuffer.pushBindlessData(dispatch.pushData, dispatch.pushDataSize);
-        commandBuffer.bindComputePipeline(*desc.pipeline);
+        if (auto commandResult = commandBuffer.bindExecution((desc.pipeline)->execution()); !commandResult) { return commandResult; }
         commandBuffer.dispatch(
             dispatch.groupCountX,
             dispatch.groupCountY,
             dispatch.groupCountZ);
-        commandBuffer.barrier(BarrierDesc{
+        if (auto commandResult = commandBuffer.synchronize(BarrierDesc{
             .buffers = &writeBarrier,
             .bufferCount = 1,
-        });
+        }); !commandResult) { return commandResult; }
     }
     return {};
 }

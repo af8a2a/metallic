@@ -174,7 +174,7 @@ std::array<float, 12> sampleTexture(RhiTestContext& context, ScenePathTraceResou
     require(commands->begin(), "sample begin");
     const BufferBarrierDesc ready{
         .buffer = output.get(), .before = ResourceState::Undefined, .after = ResourceState::General};
-    commands->barrier({.buffers = &ready, .bufferCount = 1});
+    if (auto commandResult = commands->synchronize({.buffers = &ready, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
     const ComputeDispatchBinding bindings[] = {{.binding = 0,
                                                 .textureViews = resources.materialTextureViews().data(),
                                                 .textureViewCount = resources.materialTextureCount()},
@@ -864,11 +864,11 @@ class BcTextureUploadTest final : public RhiTest {
                 TextureBarrierDesc barrier{.texture = texture.get(),
                                            .before = ResourceState::Undefined,
                                            .after = ResourceState::TransferDestination};
-                commands->barrier({.textures = &barrier, .textureCount = 1});
-                commands->copyStreamedData(*streamer);
+                if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 barrier.before = ResourceState::TransferDestination;
                 barrier.after = ResourceState::TransferSource;
-                commands->barrier({.textures = &barrier, .textureCount = 1});
+                if (auto commandResult = commands->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 commands->copyTextureToBuffer(
                     {.texture = texture.get(), .buffer = readback.get(), .width = width, .height = height});
                 require(commands->end(), "BC end");

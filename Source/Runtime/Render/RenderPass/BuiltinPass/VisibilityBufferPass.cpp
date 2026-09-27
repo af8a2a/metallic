@@ -1152,9 +1152,10 @@ private:
         return value != properties().end() && value->is_number() ? value->get<float>() : 8.0f;
     }
 
-    void beginHybridRaster(CommandBuffer& commandBuffer, bool reversedZ)
+    Result<> beginHybridRaster(CommandBuffer& commandBuffer, bool reversedZ)
     {
-        hybridRasterizer_->begin(commandBuffer, softwareRasterMaxPixels(), reversedZ);
+        if (auto commandResult = hybridRasterizer_->begin(commandBuffer, softwareRasterMaxPixels(), reversedZ); !commandResult) { return commandResult; }
+        return {};
     }
 
     void debugClusterBins(RenderGraphExecutionContext& context, std::string_view checkpoint, ResourceState state = ResourceState::ShaderRead)
@@ -2158,13 +2159,13 @@ private:
             const auto push = makePush(passIndex, 0, projectWithCullingCamera);
             const PrivateBufferComputeStage classification[] = {
                 {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() -> Result<> {
-                    commandBuffer.bindComputePipeline(*clusterCountPipeline_);
+                    if (auto commandResult = commandBuffer.bindExecution((clusterCountPipeline_)->execution()); !commandResult) { return commandResult; }
                     commandBuffer.pushBindlessData(&push, sizeof(push));
                     commandBuffer.dispatch(1);
                     return {};
                 }},
                 {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
-                    commandBuffer.bindComputePipeline(*clusterBinPipeline_);
+                    if (auto commandResult = commandBuffer.bindExecution((clusterBinPipeline_)->execution()); !commandResult) { return commandResult; }
                     commandBuffer.pushBindlessData(&push, sizeof(push));
                     return commandBuffer.dispatchIndirect(residentLods_[activeFrameSlot_]->arguments());
                 }},
@@ -2179,7 +2180,7 @@ private:
                 debugClusterBins(context, passIndex == 0 ? "AfterResidentEarlyBins" : "AfterResidentLateBins");
             }
         } else if (hybridRasterEnabled()) {
-            beginHybridRaster(commandBuffer, reversedZ);
+            if (auto commandResult = beginHybridRaster(commandBuffer, reversedZ); !commandResult) { return commandResult; }
         }
         const bool async = !tessellationEnabled() && prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
             context.supportsParallelCompute();
@@ -2190,7 +2191,7 @@ private:
             // and pixel writes visible to this compute branch.
             commands.beginDebugLabel({.name = "Hybrid raster: resident software clusters"});
             commands.bindBindlessHeap(*registry_->heap());
-            commands.bindComputePipeline(*clusterRasterPipeline_);
+            if (auto commandResult = commands.bindExecution((clusterRasterPipeline_)->execution()); !commandResult) { return commandResult; }
             const auto push = makePush(passIndex, 0, projectWithCullingCamera);
             commands.pushBindlessData(&push, sizeof(push));
             const Result<> result = commands.dispatchIndirect(hybridRasterizer_->clusterArguments(),
@@ -2223,7 +2224,7 @@ private:
                 const auto& pipelines = tessellationEnabled() && projectWithCullingCamera
                     ? (reversedZ ? frozenVisibilityPipelines_ : frozenStandardZVisibilityPipelines_)
                     : (reversedZ ? visibilityPipelines_ : standardZVisibilityPipelines_);
-                commands.bindGraphicsPipeline(*pipelines[bucketIndex]);
+                if (auto commandResult = commands.bindExecution((pipelines[bucketIndex])->execution()); !commandResult) { return commandResult; }
                 const GPUDrivenPreviewUserPush push =
                     makePush(passIndex, bucketIndex, projectWithCullingCamera);
                 commands.pushBindlessData(&push, sizeof(push));
@@ -2350,7 +2351,7 @@ private:
         // Stream rasterization binds its own heap; the frozen-camera path does
         // not run a final viewport HZB dispatch to restore this pass's heap.
         commandBuffer.bindBindlessHeap(*registry_->heap());
-        commandBuffer.bindGraphicsPipeline(*compositePipeline_);
+        if (auto commandResult = commandBuffer.bindExecution((compositePipeline_)->execution()); !commandResult) { return commandResult; }
         const VisibilityBufferCompositeUserPush push{
             .paramsBuffer = activeFrameResources().paramsHandle.shaderIndex(),
             .visibilityImage = visibilityImageHandle_.shaderIndex(),
@@ -2818,7 +2819,7 @@ private:
             if (!forceHardware) {
                 binProfile.next("Soft/hard classification");
                 commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify stream clusters"});
-                commandBuffer.bindComputePipeline(divertHardware ? *streamClusterBinPipeline_ : *streamClusterBinP0Pipeline_);
+                if (auto commandResult = commandBuffer.bindExecution((divertHardware ? *streamClusterBinPipeline_ : *streamClusterBinP0Pipeline_).execution()); !commandResult) { return commandResult; }
                 commandBuffer.pushBindlessData(&push, sizeof(push));
                 result = commandBuffer.dispatchIndirect(hybridRasterizer_->candidateArguments());
                 commandBuffer.endDebugLabel();
@@ -2836,13 +2837,13 @@ private:
                 counterPush.hybridQueueBuffer = streamWorkloadHandle_.shaderIndex();
                 const PrivateBufferComputeStage workload[] = {
                     {RenderGraphResourceAccess::BufferStorageWrite, [&]() -> Result<> {
-                        commandBuffer.bindComputePipeline(*streamWorkloadPipelines_[0]);
+                        if (auto commandResult = commandBuffer.bindExecution((streamWorkloadPipelines_[0])->execution()); !commandResult) { return commandResult; }
                         commandBuffer.pushBindlessData(&counterPush, sizeof(counterPush));
                         commandBuffer.dispatch(1, 1, 1);
                         return {};
                     }},
                     {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
-                        commandBuffer.bindComputePipeline(*streamWorkloadPipelines_[1]);
+                        if (auto commandResult = commandBuffer.bindExecution((streamWorkloadPipelines_[1])->execution()); !commandResult) { return commandResult; }
                         return commandBuffer.dispatchIndirect(hybridRasterizer_->clusterArguments(),
                             VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
                     }},
@@ -2859,7 +2860,7 @@ private:
             }
 
         } else if (hybridRasterEnabled()) {
-            beginHybridRaster(commandBuffer, reversedZ);
+            if (auto commandResult = beginHybridRaster(commandBuffer, reversedZ); !commandResult) { return commandResult; }
         }
         const bool async = !forceHardware && !tessellationEnabled() && prebin && boolProperty(&properties(), "asyncSoftwareRaster", true) &&
             (phase == GPUSceneCullPhase::Early || boolProperty(&properties(), "asyncLateRaster", false)) &&
@@ -2874,7 +2875,7 @@ private:
             // Cooperative loading with shared screen vertices is the measured default.
             // Local work bins and the older prepared-camera experiment remain opt-in.
             const size_t rasterMode = softwareRasterMode();
-            commands.bindComputePipeline(*streamClusterRasterPipelines_[rasterMode]);
+            if (auto commandResult = commands.bindExecution((streamClusterRasterPipelines_[rasterMode])->execution()); !commandResult) { return commandResult; }
 
             if (context.debugEnabled()) {
                 auto identity = softwareRasterIdentity();
@@ -2939,7 +2940,7 @@ private:
             });
             commands.setScissor(renderArea);
             commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
-            commands.bindGraphicsPipeline(*(reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_));
+            if (auto commandResult = commands.bindExecution(((reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_))->execution()); !commandResult) { return commandResult; }
             commands.pushBindlessData(&push, sizeof(push));
             if (prebin) {
                 commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments());

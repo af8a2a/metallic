@@ -1,3 +1,6 @@
+#include <stdexcept>
+#include <string>
+
 #include "RhiTest.h"
 #include "Runtime/Render/ComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -127,7 +130,7 @@ void storageBarrier(render::CommandBuffer& commandBuffer, render::Buffer& buffer
         .before = render::ResourceState::General,
         .after = render::ResourceState::General,
     };
-    commandBuffer.barrier({.buffers = &barrier, .bufferCount = 1});
+    if (auto commandResult = commandBuffer.synchronize({.buffers = &barrier, .bufferCount = 1}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
 }
 
 class FrameCompletionLifecycleTest : public RhiTest {
@@ -317,7 +320,7 @@ public:
         if (firstUpload.buffer == nullptr || secondUpload.buffer == nullptr || firstUpload.buffer == secondUpload.buffer) {
             return RhiTestResult::fail("upload growth did not create the expected old/new allocations");
         }
-        streamer->copyStreamedData(*commands.buffer);
+        if (auto commandResult = streamer->copyStreamedData(*commands.buffer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         streamer->endFrame();
         FRAME_REQUIRE(commands.submit(tracker, gate.get()));
         FRAME_REQUIRE(conflictingSlot.begin(1));
@@ -384,7 +387,7 @@ public:
         if (allocations > 8 || capacity < kBytes || capacity >= 2 * kBytes || allocatedBytes >= capacity * 4) {
             return RhiTestResult::fail("burst uploads amplified retained staging allocations");
         }
-        streamer->copyStreamedData(*commands.buffer);
+        if (auto commandResult = streamer->copyStreamedData(*commands.buffer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         streamer->endFrame();
         FRAME_REQUIRE(commands.submit(tracker, gate.get()));
         for (int index = 0; index < 8; ++index) { streamer->endFrame(); }
@@ -546,12 +549,12 @@ public:
                 for (size_t j = 0; j < 3; ++j) {
                     render::TextureBarrierDesc barrier{.texture = images->textures[j].get(),
                         .before = render::ResourceState::Undefined, .after = render::ResourceState::TransferDestination};
-                    commands.buffer->barrier({.textures = &barrier, .textureCount = 1});
+                    if (auto commandResult = commands.buffer->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     commands.buffer->clearColorTexture(*images->textures[j], render::ResourceState::TransferDestination,
                         {float((j + 1) * 10), 0, 0, 0});
                     barrier.before = render::ResourceState::TransferDestination;
                     barrier.after = render::ResourceState::ShaderRead;
-                    commands.buffer->barrier({.textures = &barrier, .textureCount = 1});
+                    if (auto commandResult = commands.buffer->synchronize({.textures = &barrier, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
             }
             storageBarrier(*commands.buffer, *output);
@@ -720,7 +723,7 @@ public:
             const auto upload = streamer->streamBufferData({.dataChunks = &chunk, .dataChunkCount = 1,
                 .dstBuffer = uploadReadback.get(), .dstOffset = index * sizeof(value)});
             if (upload.buffer == nullptr) { return RhiTestResult::fail("slot upload allocation failed"); }
-            streamer->copyStreamedData(*commands.buffer);
+            if (auto commandResult = streamer->copyStreamedData(*commands.buffer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
             streamer->endFrame();
             FRAME_REQUIRE(executor.execute(*commands.buffer));
             if (executor.streamingStats().streamer.queuedFrameCount != 2) {
@@ -893,17 +896,29 @@ public:
         auto result = transaction(context.commandBuffer(), 1);
         if (!result) { return result; }
         auto* output = context.outputBuffer("data").buffer();
-        result = context.parallelCompute([&](render::CommandBuffer& commands) {
+        result = context.parallelCompute([&](render::CommandBuffer& commands) -> metallic::render::Result<> {
             auto profile = context.profileScope(commands, "Compute branch");
             auto result = transaction(commands, 2);
             if (!result) { return result; }
-            commands.copyBuffer({.source = input_.get(), .destination = output, .size = 8});
+            {
+                auto sourceSlice = input_.get()->slice(0, 8);
+                if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+                auto destinationSlice = output->slice(0, 8);
+                if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+                if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+            }
             return properties().value("fail", 0) == 2 ? render::makeError(render::Error::Failure) : render::Result<>{};
-        }, [&](render::CommandBuffer& commands) {
+        }, [&](render::CommandBuffer& commands) -> metallic::render::Result<> {
             auto profile = context.profileScope(commands, "Graphics branch");
             auto result = transaction(commands, 3);
             if (!result) { return result; }
-            commands.copyBuffer({.source = input_.get(), .destination = output, .sourceOffset = 8, .destinationOffset = 8, .size = 8});
+            {
+                auto sourceSlice = input_.get()->slice(8, 8);
+                if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+                auto destinationSlice = output->slice(8, 8);
+                if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+                if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+            }
             return properties().value("fail", 0) == 3 ? render::makeError(render::Error::Failure) : render::Result<>{};
         });
         return result ? transaction(context.commandBuffer(), 4) : result;
@@ -978,8 +993,13 @@ public:
                     .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
                 FRAME_REQUIRE(consumer.begin(0));
                 FRAME_REQUIRE(executor.transitionOutput(*consumer.buffer, "Branches.data", render::ResourceState::TransferSource));
-                consumer.buffer->copyBuffer({.source = executor.outputResource("Branches.data")->buffer,
-                    .destination = readback.get(), .size = 16});
+                {
+                    auto sourceSlice = (executor.outputResource("Branches.data")->buffer)->slice(0, 16);
+                    if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                    auto destinationSlice = readback.get()->slice(0, 16);
+                    if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                    if (auto commandResult = consumer.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                }
                 FRAME_REQUIRE(consumer.submit(tracker)); FRAME_REQUIRE(consumer.frame.wait(kWaitTimeout));
                 readback->invalidate(); const auto* words = static_cast<const uint32_t*>(readback->map());
                 const bool correct = words && words[0] == 11 && words[1] == 12 && words[2] == 21 && words[3] == 22;
@@ -1018,8 +1038,13 @@ public:
         if (properties().value("fail", false)) { return render::makeError(render::Error::Failure); }
         auto* output = context.outputBuffer("data").buffer();
         if (properties().value("copy", false)) {
-            context.commandBuffer().copyBuffer({.source = context.inputBuffer("source").buffer(),
-                .destination = output, .size = 16});
+            {
+                auto sourceSlice = (context.inputBuffer("source").buffer())->slice(0, 16);
+                if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+                auto destinationSlice = output->slice(0, 16);
+                if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+                if (auto commandResult = context.commandBuffer().copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+            }
             return {};
         }
         const uint32_t value = 100 + static_cast<uint32_t>(context.frameIndex());
@@ -1051,16 +1076,26 @@ public:
             render::HistorySlot::Current, render::ResourceState::TransferDestination);
         if (!result) { return result; }
         auto* source = context.inputBuffer("source").buffer();
-        context.commandBuffer().copyBuffer({.source = source,
-            .destination = history->buffer("self-submit-history", render::HistorySlot::Current).buffer, .size = 16});
+        {
+            auto sourceSlice = source->slice(0, 16);
+            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+            auto destinationSlice = (history->buffer("self-submit-history", render::HistorySlot::Current).buffer)->slice(0, 16);
+            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+            if (auto commandResult = context.commandBuffer().copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        }
         if (history->hasPrevious("self-submit-history")) {
             result = history->transitionBuffer(context.commandBuffer(), "self-submit-history",
                 render::HistorySlot::Previous, render::ResourceState::TransferSource);
             if (!result) { return result; }
             source = history->buffer("self-submit-history", render::HistorySlot::Previous).buffer;
         }
-        context.commandBuffer().copyBuffer({.source = source,
-            .destination = context.outputBuffer("data").buffer(), .size = 16});
+        {
+            auto sourceSlice = source->slice(0, 16);
+            if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
+            auto destinationSlice = (context.outputBuffer("data").buffer())->slice(0, 16);
+            if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
+            if (auto commandResult = context.commandBuffer().copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
+        }
         history->markWritten("self-submit-history");
         return {};
     }
@@ -1122,8 +1157,13 @@ public:
                 FRAME_REQUIRE(executor.transitionOutput(*reader.buffer, "Output.data", render::ResourceState::TransferSource));
                 // Duplicate output requests must not multiply dependencies.
                 FRAME_REQUIRE(executor.transitionOutput(*reader.buffer, "Output.data", render::ResourceState::TransferSource));
-                reader.buffer->copyBuffer({.source = executor.outputResource("Output.data")->buffer,
-                    .destination = readback.get(), .size = 16});
+                {
+                    auto sourceSlice = (executor.outputResource("Output.data")->buffer)->slice(0, 16);
+                    if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                    auto destinationSlice = readback.get()->slice(0, 16);
+                    if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                    if (auto commandResult = reader.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                }
                 FRAME_REQUIRE(reader.submit(readerTracker, gate.get()));
                 const uint32_t queries = FrameGraphTransferPass::overlapQueryCount;
                 FRAME_REQUIRE(executor.execute(submit));
@@ -1154,8 +1194,13 @@ public:
             DeviceDrain drain{*device, gate.get()};
             FRAME_REQUIRE(reader.begin(4));
             FRAME_REQUIRE(executor.transitionOutput(*reader.buffer, "Output.data", render::ResourceState::TransferSource));
-            reader.buffer->copyBuffer({.source = executor.outputResource("Output.data")->buffer,
-                .destination = readback.get(), .size = 16});
+            {
+                auto sourceSlice = (executor.outputResource("Output.data")->buffer)->slice(0, 16);
+                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                auto destinationSlice = readback.get()->slice(0, 16);
+                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = reader.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            }
             FRAME_REQUIRE(reader.submit(readerTracker, gate.get()));
             if (executor.waitForSubmittedWork(0)) { return RhiTestResult::fail("Lost pending consumer before rebuild"); }
             std::jthread release([&] {
@@ -1235,8 +1280,13 @@ public:
         FRAME_REQUIRE(consumer.begin(0));
         FRAME_REQUIRE(executor.transitionOutput(*consumer.buffer, "Upload.data", render::ResourceState::TransferSource));
         FRAME_REQUIRE(consumer.buffer->addDependency(second)); // Duplicate is coalesced.
-        consumer.buffer->copyBuffer({.source = executor.outputResource("Upload.data")->buffer,
-            .destination = consumerReadback.get(), .size = 16});
+        {
+            auto sourceSlice = (executor.outputResource("Upload.data")->buffer)->slice(0, 16);
+            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            auto destinationSlice = consumerReadback.get()->slice(0, 16);
+            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = consumer.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+        }
         FRAME_REQUIRE(consumer.submit(consumerTracker));
         if (consumer.frame.completion().isComplete()) {
             return RhiTestResult::fail("external consumer ignored pending graph completion");

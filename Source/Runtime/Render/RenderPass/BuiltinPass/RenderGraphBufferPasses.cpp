@@ -70,7 +70,7 @@ public:
             .padding = 0,
         };
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
-        context.commandBuffer().bindComputePipeline(*pipeline_);
+        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
         context.commandBuffer().dispatch(1, 1, 1);
         return {};
     }
@@ -155,7 +155,7 @@ public:
             .padding = 0,
         };
         context.commandBuffer().pushBindlessData(&push, sizeof(push));
-        context.commandBuffer().bindComputePipeline(*pipeline_);
+        if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
         context.commandBuffer().dispatch(1, 1, 1);
         return {};
     }

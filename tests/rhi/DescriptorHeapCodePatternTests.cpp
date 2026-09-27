@@ -341,11 +341,11 @@ public:
         const render::BufferBarrierDesc toGeneral[] = {
             {.buffer = input.get(), .before = render::ResourceState::Undefined, .after = render::ResourceState::General},
             {.buffer = output.get(), .before = render::ResourceState::Undefined, .after = render::ResourceState::General}};
-        commands.buffer->barrier({.textures = &toTransfer, .textureCount = 1, .buffers = toGeneral, .bufferCount = 2});
+        if (auto commandResult = commands.buffer->synchronize({.textures = &toTransfer, .textureCount = 1, .buffers = toGeneral, .bufferCount = 2}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commands.buffer->copyBufferToTexture({.buffer = upload.get(), .texture = texture.get(), .width = 1, .height = 1});
         const render::TextureBarrierDesc toRead{.texture = texture.get(),
             .before = render::ResourceState::TransferDestination, .after = render::ResourceState::ShaderRead};
-        commands.buffer->barrier({.textures = &toRead, .textureCount = 1});
+        if (auto commandResult = commands.buffer->synchronize({.textures = &toRead, .textureCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         if (prefixPdf) {
             PATTERN_REQUIRE(pdfCompute.buildEnvironment(*commands.buffer, *view, pdfTexture));
         }
@@ -361,7 +361,7 @@ public:
             const render::BufferBarrierDesc partialsBarrier{.buffer = input.get(),
                 .before = render::ResourceState::General, .after = render::ResourceState::General,
                 .size = inputBytes};
-            commands.buffer->barrier({.buffers = &partialsBarrier, .bufferCount = 1});
+            if (auto commandResult = commands.buffer->synchronize({.buffers = &partialsBarrier, .bufferCount = 1}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             PatternValues finalizePush = push;
             finalizePush.a = 1;
             PATTERN_REQUIRE(program.dispatch({.commandBuffer = commands.buffer.get(),
