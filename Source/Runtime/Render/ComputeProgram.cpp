@@ -79,8 +79,6 @@ ShaderBindingType shaderBindingType(ComputeResourceBindingKind kind)
         return ShaderBindingType::Sampler;
     case ComputeResourceBindingKind::AccelerationStructure:
         return ShaderBindingType::AccelerationStructure;
-    case ComputeResourceBindingKind::PartitionedAccelerationStructure:
-        return ShaderBindingType::PartitionedAccelerationStructure;
     case ComputeResourceBindingKind::StorageImage:
         return ShaderBindingType::StorageImage;
     case ComputeResourceBindingKind::DataBuffer:
@@ -204,8 +202,6 @@ struct ComputeProgram::Impl : ComputeDescriptorTables {
                         allocated = tables->heap->allocateSampler(); break;
                     case ComputeResourceBindingKind::AccelerationStructure:
                         allocated = tables->heap->allocateAccelerationStructure(); break;
-                    case ComputeResourceBindingKind::PartitionedAccelerationStructure:
-                        allocated = tables->heap->allocatePartitionedAccelerationStructure(); break;
                     case ComputeResourceBindingKind::StorageImage:
                         allocated = tables->heap->allocateStorageImage(); break;
                     case ComputeResourceBindingKind::StorageBuffer:
@@ -337,7 +333,6 @@ Result<> ComputeProgram::initialize(
         const uint32_t descriptorCount = std::max(binding.descriptorCount, 1u);
         if ((binding.kind == ComputeResourceBindingKind::Sampler ||
              binding.kind == ComputeResourceBindingKind::AccelerationStructure ||
-             binding.kind == ComputeResourceBindingKind::PartitionedAccelerationStructure ||
              binding.kind == ComputeResourceBindingKind::StorageBuffer) &&
             descriptorCount != 1) {
             log = "ComputeProgram buffer and RTAS bindings must have descriptorCount 1";
@@ -360,7 +355,6 @@ Result<> ComputeProgram::initialize(
             break;
         case ComputeResourceBindingKind::StorageBuffer:
         case ComputeResourceBindingKind::AccelerationStructure:
-        case ComputeResourceBindingKind::PartitionedAccelerationStructure:
             bufferCount += slotCount;
             break;
         }
@@ -461,9 +455,6 @@ Result<> ComputeProgram::initialize(
                         break;
                     case ComputeResourceBindingKind::AccelerationStructure:
                         allocated = impl_->heap->allocateAccelerationStructure();
-                        break;
-                    case ComputeResourceBindingKind::PartitionedAccelerationStructure:
-                        allocated = impl_->heap->allocatePartitionedAccelerationStructure();
                         break;
                     case ComputeResourceBindingKind::StorageImage:
                         allocated = impl_->heap->allocateStorageImage();
@@ -745,20 +736,6 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
             result = tables->heap->writeAccelerationStructure(
                 expectedBinding.handles[firstHandle],
                 *binding->accelerationStructure);
-            break;
-        }
-        case ComputeResourceBindingKind::PartitionedAccelerationStructure: {
-            if (binding->partitionedAccelerationStructure == nullptr ||
-                !binding->partitionedAccelerationStructure->valid()) {
-                spdlog::error(
-                    "[ComputeProgram:{}] invalid partitioned RTAS binding {}",
-                    impl_->debugName,
-                    expectedBinding.desc.binding);
-                return makeError(Error::InvalidArgument);
-            }
-            result = tables->heap->writePartitionedAccelerationStructure(
-                expectedBinding.handles[firstHandle],
-                *binding->partitionedAccelerationStructure);
             break;
         }
         case ComputeResourceBindingKind::StorageImage: {
@@ -1078,10 +1055,6 @@ Result<> ComputeProgram::prepareShared(RenderFrameContext* frame, const ComputeD
             case ComputeResourceBindingKind::AccelerationStructure:
                 if (!binding->accelerationStructure) { return makeError(Error::InvalidArgument); }
                 result = registry.accelerationStructure(*binding->accelerationStructure, lease);
-                break;
-            case ComputeResourceBindingKind::PartitionedAccelerationStructure:
-                if (!binding->partitionedAccelerationStructure) { return makeError(Error::InvalidArgument); }
-                result = registry.partitionedAccelerationStructure(*binding->partitionedAccelerationStructure, lease);
                 break;
             case ComputeResourceBindingKind::Sampler:
                 if (!binding->sampler) { return makeError(Error::InvalidArgument); }

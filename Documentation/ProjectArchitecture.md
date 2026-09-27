@@ -146,7 +146,7 @@ flowchart LR
 - SDL 窗口、RHI Device/Queue/Swapchain/CommandBuffer 和同步对象；
 - ImGui/ImNodes 上下文和 Vulkan 后端资源；
 - `RenderGraph`、`RenderGraphExecutor`、`HistoryResourceManager`；
-- 编辑器侧 `Scene` 和 `SceneRtxBuilder`；
+- 编辑器侧 `Scene` 和 `SceneAccelerationStructureBuilder`；
 - Profiler、NVML Monitor、视口描述符和 UI 状态。
 
 初始化顺序是：全局 TaskSystem → SDL/窗口 → Vulkan RHI → 历史资源 → Swapchain → ImGui/ImNodes → NVML → RenderGraph/样例。关闭顺序反向执行，并在销毁 GPU 资源前等待 Device idle。
@@ -372,13 +372,17 @@ TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进�
 
 场景光追层包含：
 
-- `SceneRtxBuilder`：普通三角形 BLAS + TLAS；
-- `SceneClusterRtxBuilder`：cluster acceleration structure、cluster BLAS + TLAS；
-- `ScenePartitionedRtxBuilder`：partitioned TLAS；
-- `SceneRayQueryProgram`：SPIR-V、descriptor binding 和 compute dispatch 封装；
+- `SceneAccelerationStructureBuilder`：普通三角形 BLAS + TLAS；
+- `SceneClusterAccelerationStructureBuilder`：cluster acceleration structure、cluster BLAS + TLAS；
+- `ScenePartitionedAccelerationStructureBuilder`：partitioned TLAS；
+- `ComputeProgram`：SPIR-V、descriptor binding 和 compute dispatch 封装；
 - `MeshletStreamClasPool`：面向驻留 page 的 CLAS 分配和更新。
 
 这些能力均必须先检查扩展/设备能力。普通场景路径与 StreamAsset 路径分别维护加速结构，避免强迫所有场景进入同一种驻留模型。
+
+普通 TLAS 与 PTLAS 共用 `RayTracingAccelerationStructure`，`desc().type` 均为 `TopLevel`，由 `desc().topLevelBackend` 的 `Standard` / `Partitioned` 区分后端。两者共用资源保活、`ResourceRegistry::accelerationStructure()`、`ComputeDispatchBinding::accelerationStructure` 和 `BindlessHeap::writeAccelerationStructure()`；shader 仍接收完整的 64-bit AS device address，mapped/native 模式均走 `Core.resolveDescriptor`。
+
+构建数据仍按后端区分：普通 TLAS 使用 `createRayTracingAccelerationStructure()` / `buildRayTracingAccelerationStructure()`；PTLAS 使用 `createPartitionedAccelerationStructure()` / `buildPartitionedAccelerationStructure()`，创建结果同为 `Result<std::unique_ptr<RayTracingAccelerationStructure>>`。PTLAS 的分区配置、operation buffer 和 operation count buffer 由统一实现内部的可选状态持有。KHR 构建、更新、压缩和压缩尺寸查询拒绝 PTLAS；PTLAS 构建拒绝普通 TLAS。当前 PTLAS 仍执行完整构建，资源类型统一不改变场景构建策略或增加增量更新。
 
 ## 11. Shader、Pipeline 与 Sample 的关系
 

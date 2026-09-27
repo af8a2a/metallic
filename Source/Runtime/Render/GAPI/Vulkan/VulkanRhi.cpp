@@ -2881,7 +2881,6 @@ public:
             break;
         case BindlessHandleKind::Buffer:
         case BindlessHandleKind::AccelerationStructure:
-        case BindlessHandleKind::PartitionedAccelerationStructure:
             if (handle.index < maxBuffers_) {
                 freeBufferSlots_.push_back(handle.index);
             }
@@ -3051,7 +3050,7 @@ public:
         VkDeviceSize size,
         void* resourceHeapBase)
     {
-        if (handle.kind != BindlessHandleKind::PartitionedAccelerationStructure ||
+        if (handle.kind != BindlessHandleKind::AccelerationStructure ||
             handle.index >= maxBuffers_ || resourceHeapBase == nullptr) {
             return VK_ERROR_VALIDATION_FAILED_EXT;
         }
@@ -3280,6 +3279,12 @@ struct MicromapIdentityIndexBuffer {
     ~MicromapIdentityIndexBuffer();
 };
 
+struct PartitionedTopLevelState {
+    PartitionedAccelerationStructureDesc desc;
+    std::unique_ptr<Buffer> operationBuffer;
+    std::unique_ptr<Buffer> operationCountBuffer;
+};
+
 struct RayTracingAccelerationStructureImpl {
     DeviceImpl* device = nullptr;
     RayTracingAccelerationStructureDesc desc;
@@ -3290,16 +3295,9 @@ struct RayTracingAccelerationStructureImpl {
     std::mutex micromapIndexMutex;
     std::vector<std::unique_ptr<MicromapIdentityIndexBuffer>> micromapIndexBuffers;
 
-    ~RayTracingAccelerationStructureImpl();
-};
+    std::unique_ptr<PartitionedTopLevelState> partitioned;
 
-struct PartitionedAccelerationStructureImpl {
-    DeviceImpl* device = nullptr;
-    PartitionedAccelerationStructureDesc desc;
-    std::unique_ptr<Buffer> storage;
-    std::unique_ptr<Buffer> operationBuffer;
-    std::unique_ptr<Buffer> operationCountBuffer;
-    VkDeviceAddress address = 0;
+    ~RayTracingAccelerationStructureImpl();
 };
 
 struct BufferViewImpl {
@@ -5071,50 +5069,16 @@ const RayTracingAccelerationStructureDesc& RayTracingAccelerationStructure::desc
 
 bool RayTracingAccelerationStructure::valid() const
 {
+    if (impl_ && impl_->desc.topLevelBackend == RayTracingTopLevelBackend::Partitioned) {
+        return impl_->desc.type == RayTracingAccelerationStructureType::TopLevel &&
+            impl_->partitioned && impl_->storage && impl_->address != 0;
+    }
     return impl_ != nullptr &&
         (impl_->micromap != VK_NULL_HANDLE ||
             (impl_->accelerationStructure != VK_NULL_HANDLE && impl_->address != 0));
 }
 
 uint64_t RayTracingAccelerationStructure::deviceAddress() const
-{
-    return valid() ? impl_->address : 0;
-}
-
-PartitionedAccelerationStructure::PartitionedAccelerationStructure(
-    std::unique_ptr<detail::PartitionedAccelerationStructureImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-std::shared_ptr<void> PartitionedAccelerationStructure::retainAllocation() const
-{
-    return impl_;
-}
-
-const void* PartitionedAccelerationStructure::deviceIdentity() const
-{
-    return impl_ ? impl_->device : nullptr;
-}
-
-PartitionedAccelerationStructure::~PartitionedAccelerationStructure() = default;
-PartitionedAccelerationStructure::PartitionedAccelerationStructure(
-    PartitionedAccelerationStructure&&) noexcept = default;
-PartitionedAccelerationStructure& PartitionedAccelerationStructure::operator=(
-    PartitionedAccelerationStructure&&) noexcept = default;
-
-const PartitionedAccelerationStructureDesc& PartitionedAccelerationStructure::desc() const
-{
-    static const PartitionedAccelerationStructureDesc emptyDesc;
-    return impl_ != nullptr ? impl_->desc : emptyDesc;
-}
-
-bool PartitionedAccelerationStructure::valid() const
-{
-    return impl_ != nullptr && impl_->storage != nullptr && impl_->address != 0;
-}
-
-uint64_t PartitionedAccelerationStructure::deviceAddress() const
 {
     return valid() ? impl_->address : 0;
 }
@@ -5575,16 +5539,6 @@ Result<BindlessHandle> BindlessHeap::allocateAccelerationStructure()
     return handle;
 }
 
-Result<BindlessHandle> BindlessHeap::allocatePartitionedAccelerationStructure()
-{
-    BindlessHandle handle{};
-    if (impl_ == nullptr || !impl_->heap.allocateBuffer(handle)) {
-        return makeError(impl_ == nullptr ? Error::InvalidArgument : Error::OutOfMemory);
-    }
-    handle.kind = BindlessHandleKind::PartitionedAccelerationStructure;
-    return handle;
-}
-
 Result<> BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view, ResourceState state)
 {
     const BindlessImageWrite write{
@@ -5735,48 +5689,15 @@ Result<> BindlessHeap::writeAccelerationStructure(
     if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr ||
         accelerationStructure.impl_ == nullptr || !accelerationStructure.valid() ||
         accelerationStructure.impl_->device != impl_->device ||
-        accelerationStructure.impl_->accelerationStructure == VK_NULL_HANDLE) {
+        accelerationStructure.desc().type != RayTracingAccelerationStructureType::TopLevel) {
         return makeError(Error::InvalidArgument);
     }
 
     activateVolkDevice(impl_->device->device);
-    const VkAccelerationStructureDeviceAddressInfoKHR addressInfo{
-        .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
-        .accelerationStructure = accelerationStructure.impl_->accelerationStructure,
-    };
-    const VkDeviceAddress address = vkGetAccelerationStructureDeviceAddressKHR(
-        impl_->device->device,
-        &addressInfo);
-    if (address == 0) {
-        return makeError(Error::Failure);
-    }
-
-    const VkResult result = impl_->heap.writeAccelerationStructureDescriptor(
-        handle,
-        address,
-        0,
-        impl_->resourceHeap.mapped);
-    if (result != VK_SUCCESS) {
-        return resultFromVk(result);
-    }
-    impl_->flushResourceDirty();
-    return {};
-}
-
-Result<> BindlessHeap::writePartitionedAccelerationStructure(
-    BindlessHandle handle,
-    PartitionedAccelerationStructure& accelerationStructure)
-{
-    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr ||
-        accelerationStructure.impl_ == nullptr || !accelerationStructure.valid() ||
-        accelerationStructure.impl_->device != impl_->device) {
-        return makeError(Error::InvalidArgument);
-    }
-    const VkResult result = impl_->heap.writePartitionedAccelerationStructureDescriptor(
-        handle,
-        accelerationStructure.impl_->address,
-        0,
-        impl_->resourceHeap.mapped);
+    const VkDeviceAddress address = accelerationStructure.deviceAddress();
+    const VkResult result = accelerationStructure.desc().topLevelBackend == RayTracingTopLevelBackend::Partitioned
+        ? impl_->heap.writePartitionedAccelerationStructureDescriptor(handle, address, 0, impl_->resourceHeap.mapped)
+        : impl_->heap.writeAccelerationStructureDescriptor(handle, address, 0, impl_->resourceHeap.mapped);
     if (result != VK_SUCCESS) {
         return resultFromVk(result);
     }
@@ -6010,6 +5931,7 @@ Result<> CommandBuffer::writeRayTracingAccelerationStructureCompactedSize(
         accelerationStructure.impl_ == nullptr ||
         accelerationStructure.impl_->device != impl_->device ||
         !accelerationStructure.valid() ||
+        accelerationStructure.impl_->accelerationStructure == VK_NULL_HANDLE ||
         !hasFlag(
             accelerationStructure.impl_->desc.buildFlags,
             RayTracingAccelerationStructureBuildFlags::AllowCompaction)) {
@@ -7069,6 +6991,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         desc.destination == nullptr ||
         desc.destination->impl_ == nullptr || !desc.destination->valid() ||
         desc.destination->impl_->device != impl_->device ||
+        desc.destination->desc().topLevelBackend != RayTracingTopLevelBackend::Standard ||
         desc.scratchBuffer == nullptr || desc.scratchBuffer->impl_ == nullptr ||
         desc.scratchBuffer->impl_->device != impl_->device ||
         !hasFlag(desc.scratchBuffer->desc().usage, BufferUsageBits::Storage)) {
@@ -7087,6 +7010,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
                 RayTracingAccelerationStructureBuildFlags::AllowUpdate) ||
             desc.source == nullptr || desc.source->impl_ == nullptr ||
             !desc.source->valid() || desc.source->impl_->device != impl_->device ||
+            desc.source->desc().topLevelBackend != RayTracingTopLevelBackend::Standard ||
             desc.source->impl_->desc.type != destinationDesc.type) {
             return makeError(Error::InvalidArgument);
         }
@@ -7386,6 +7310,8 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
         source.impl_.get() == destination.impl_.get() ||
         source.impl_->device != impl_->device || destination.impl_->device != impl_->device ||
         !source.valid() || !destination.valid() ||
+        source.impl_->accelerationStructure == VK_NULL_HANDLE ||
+        destination.impl_->accelerationStructure == VK_NULL_HANDLE ||
         source.impl_->desc.type != destination.impl_->desc.type ||
         source.impl_->desc.buildFlags != destination.impl_->desc.buildFlags ||
         !hasFlag(
@@ -8076,15 +8002,18 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         vkCmdBuildPartitionedAccelerationStructuresNV == nullptr) {
         return makeError(Error::Unsupported);
     }
-    if (desc.destination == nullptr || desc.destination->impl_ == nullptr ||
+    if ((impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+        desc.destination == nullptr || desc.destination->impl_ == nullptr ||
         !desc.destination->valid() ||
+        desc.destination->desc().topLevelBackend != RayTracingTopLevelBackend::Partitioned ||
+        !desc.destination->impl_->partitioned ||
         desc.destination->impl_->device != impl_->device ||
         desc.instanceBuffer == nullptr || desc.instanceBuffer->impl_ == nullptr ||
         desc.instanceBuffer->impl_->device != impl_->device ||
         desc.scratchBuffer == nullptr || desc.scratchBuffer->impl_ == nullptr ||
         desc.scratchBuffer->impl_->device != impl_->device ||
         desc.instanceCount == 0 ||
-        desc.instanceCount != desc.destination->impl_->desc.inputs.instanceCount ||
+        desc.instanceCount != desc.destination->impl_->partitioned->desc.inputs.instanceCount ||
         !hasFlag(
             desc.instanceBuffer->desc().usage,
             BufferUsageBits::AccelerationStructureBuildInput) ||
@@ -8095,9 +8024,9 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
     const uint64_t instanceAddress = desc.instanceBuffer->deviceAddress();
     const uint64_t scratchBase = desc.scratchBuffer->deviceAddress();
     const uint64_t operationAddress =
-        desc.destination->impl_->operationBuffer->deviceAddress();
+        desc.destination->impl_->partitioned->operationBuffer->deviceAddress();
     const uint64_t operationCountAddress =
-        desc.destination->impl_->operationCountBuffer->deviceAddress();
+        desc.destination->impl_->partitioned->operationCountBuffer->deviceAddress();
     if (instanceAddress == 0 || scratchBase == 0 || operationAddress == 0 ||
         operationCountAddress == 0) {
         return makeError(Error::Failure);
@@ -8119,7 +8048,7 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         (unalignedScratchAddress + scratchAlignment - 1u) & ~(scratchAlignment - 1u);
     const uint64_t alignedScratchOffset = scratchAddress - scratchBase;
     if (alignedScratchOffset >= desc.scratchBuffer->desc().size ||
-        desc.destination->impl_->desc.sizes.buildScratchSize >
+        desc.destination->impl_->partitioned->desc.sizes.buildScratchSize >
             desc.scratchBuffer->desc().size - alignedScratchOffset) {
         return makeError(Error::InvalidArgument);
     }
@@ -8132,27 +8061,27 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
             .strideInBytes = sizeof(VkPartitionedAccelerationStructureWriteInstanceDataNV),
         },
     };
-    void* mappedOperation = desc.destination->impl_->operationBuffer->map();
-    void* mappedOperationCount = desc.destination->impl_->operationCountBuffer->map();
+    void* mappedOperation = desc.destination->impl_->partitioned->operationBuffer->map();
+    void* mappedOperationCount = desc.destination->impl_->partitioned->operationCountBuffer->map();
     if (mappedOperation == nullptr || mappedOperationCount == nullptr) {
         if (mappedOperation != nullptr) {
-            desc.destination->impl_->operationBuffer->unmap();
+            desc.destination->impl_->partitioned->operationBuffer->unmap();
         }
         if (mappedOperationCount != nullptr) {
-            desc.destination->impl_->operationCountBuffer->unmap();
+            desc.destination->impl_->partitioned->operationCountBuffer->unmap();
         }
         return makeError(Error::Failure);
     }
     std::memcpy(mappedOperation, &operation, sizeof(operation));
     const uint32_t operationCount = 1;
     std::memcpy(mappedOperationCount, &operationCount, sizeof(operationCount));
-    desc.destination->impl_->operationBuffer->flush(0, sizeof(operation));
-    desc.destination->impl_->operationCountBuffer->flush(0, sizeof(operationCount));
-    desc.destination->impl_->operationBuffer->unmap();
-    desc.destination->impl_->operationCountBuffer->unmap();
+    desc.destination->impl_->partitioned->operationBuffer->flush(0, sizeof(operation));
+    desc.destination->impl_->partitioned->operationCountBuffer->flush(0, sizeof(operationCount));
+    desc.destination->impl_->partitioned->operationBuffer->unmap();
+    desc.destination->impl_->partitioned->operationCountBuffer->unmap();
 
     const PartitionedAccelerationStructureBuildInputs& inputs =
-        desc.destination->impl_->desc.inputs;
+        desc.destination->impl_->partitioned->desc.inputs;
     VkPartitionedAccelerationStructureFlagsNV partitionedFlags{
         .sType = VK_STRUCTURE_TYPE_PARTITIONED_ACCELERATION_STRUCTURE_FLAGS_NV,
         .enablePartitionTranslation = inputs.allowPartitionTranslation ? VK_TRUE : VK_FALSE,
@@ -8704,7 +8633,8 @@ Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAcceler
 
 Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracingAccelerationStructure(const RayTracingAccelerationStructureDesc& desc)
 {
-    if (impl_ == nullptr || desc.size == 0) {
+    if (impl_ == nullptr || desc.size == 0 ||
+        desc.topLevelBackend != RayTracingTopLevelBackend::Standard) {
         return makeError(Error::InvalidArgument);
     }
     if (!impl_->rayTracingAccelerationStructureEnabled ||
@@ -9097,7 +9027,7 @@ Result<PartitionedAccelerationStructureBuildSizes> Device::queryPartitionedAccel
 #endif
 }
 
-Result<std::unique_ptr<PartitionedAccelerationStructure>> Device::createPartitionedAccelerationStructure(const PartitionedAccelerationStructureDesc& desc)
+Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createPartitionedAccelerationStructure(const PartitionedAccelerationStructureDesc& desc)
 {
     if (impl_ == nullptr || desc.sizes.accelerationStructureSize == 0 ||
         desc.sizes.operationInfoSize == 0 || desc.sizes.operationCountSize == 0) {
@@ -9114,9 +9044,16 @@ Result<std::unique_ptr<PartitionedAccelerationStructure>> Device::createPartitio
         return makeError(Error::InvalidArgument);
     }
 
-    auto implementation = std::make_unique<detail::PartitionedAccelerationStructureImpl>();
+    auto implementation = std::make_unique<detail::RayTracingAccelerationStructureImpl>();
     implementation->device = impl_.get();
-    implementation->desc = desc;
+    implementation->desc = RayTracingAccelerationStructureDesc{
+        .type = RayTracingAccelerationStructureType::TopLevel,
+        .buildFlags = desc.inputs.flags,
+        .size = desc.sizes.accelerationStructureSize,
+        .topLevelBackend = RayTracingTopLevelBackend::Partitioned,
+    };
+    implementation->partitioned = std::make_unique<detail::PartitionedTopLevelState>();
+    implementation->partitioned->desc = desc;
     result = createBuffer(BufferDesc{
             .size = desc.sizes.accelerationStructureSize,
             .usage = BufferUsageBits::AccelerationStructureStorage |
@@ -9132,7 +9069,7 @@ Result<std::unique_ptr<PartitionedAccelerationStructure>> Device::createPartitio
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::HostUpload,
-        }).transform([&](auto rhiValue) { implementation->operationBuffer = std::move(rhiValue); });
+        }).transform([&](auto rhiValue) { implementation->partitioned->operationBuffer = std::move(rhiValue); });
     if (!result) {
         return std::unexpected(result.error());
     }
@@ -9142,7 +9079,7 @@ Result<std::unique_ptr<PartitionedAccelerationStructure>> Device::createPartitio
                 BufferUsageBits::AccelerationStructureBuildInput |
                 BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::HostUpload,
-        }).transform([&](auto rhiValue) { implementation->operationCountBuffer = std::move(rhiValue); });
+        }).transform([&](auto rhiValue) { implementation->partitioned->operationCountBuffer = std::move(rhiValue); });
     if (!result) {
         return std::unexpected(result.error());
     }
@@ -9150,7 +9087,7 @@ Result<std::unique_ptr<PartitionedAccelerationStructure>> Device::createPartitio
     if (implementation->address == 0) {
         return makeError(Error::Failure);
     }
-    return std::unique_ptr<PartitionedAccelerationStructure>(new PartitionedAccelerationStructure(std::move(implementation)));
+    return std::unique_ptr<RayTracingAccelerationStructure>(new RayTracingAccelerationStructure(std::move(implementation)));
 }
 
 Result<std::unique_ptr<Buffer>> Device::createPartitionedAccelerationStructureInstanceBuffer(const PartitionedAccelerationStructureInstanceDesc* instances,
@@ -10336,7 +10273,6 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
                     descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize());
                     break;
                 case ShaderBindingType::AccelerationStructure:
-                case ShaderBindingType::PartitionedAccelerationStructure:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_ACCELERATION_STRUCTURE_BIT_EXT;
                     descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize());
                     break;
@@ -10353,8 +10289,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
                     (source.source == ShaderBindingSource::DeviceAddressFromPushData &&
                      source.type != ShaderBindingType::ConstantBuffer &&
                      source.type != ShaderBindingType::StorageBuffer &&
-                     source.type != ShaderBindingType::AccelerationStructure &&
-                     source.type != ShaderBindingType::PartitionedAccelerationStructure)) {
+                     source.type != ShaderBindingType::AccelerationStructure)) {
                     return makeError(Error::InvalidArgument);
                 }
 

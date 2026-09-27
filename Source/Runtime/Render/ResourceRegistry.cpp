@@ -230,27 +230,13 @@ Result<> ResourceRegistry::sampler(const SamplerDesc& sampler, ResourceLease& ou
 Result<> ResourceRegistry::accelerationStructure(RayTracingAccelerationStructure& structure, ResourceLease& out)
 {
     out = {};
-    if (!state_ || structure.deviceIdentity() != state_->device || !structure.valid()) {
+    if (!state_ || structure.deviceIdentity() != state_->device || !structure.valid() ||
+        structure.desc().type != RayTracingAccelerationStructureType::TopLevel) {
         return makeError(Error::InvalidArgument);
     }
     auto allocation = structure.retainAllocation();
     return acquire(state_, keyFor(ShaderResourceKind::AccelerationStructure, allocation),
         ShaderResourceKind::AccelerationStructure, allocation, false, [&](auto& entry) {
-            // Matches Core.resolveDescriptor's explicit AS address contract in both modes.
-            entry.value = structure.deviceAddress();
-            return Result<>{};
-        }, out.state_);
-}
-
-Result<> ResourceRegistry::partitionedAccelerationStructure(PartitionedAccelerationStructure& structure, ResourceLease& out)
-{
-    out = {};
-    if (!state_ || structure.deviceIdentity() != state_->device || !structure.valid()) {
-        return makeError(Error::InvalidArgument);
-    }
-    auto allocation = structure.retainAllocation();
-    return acquire(state_, keyFor(ShaderResourceKind::PartitionedAccelerationStructure, allocation),
-        ShaderResourceKind::PartitionedAccelerationStructure, allocation, false, [&](auto& entry) {
             // Matches Core.resolveDescriptor's explicit AS address contract in both modes.
             entry.value = structure.deviceAddress();
             return Result<>{};

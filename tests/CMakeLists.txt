@@ -298,6 +298,7 @@ add_executable(MetallicRhiTests
     rhi/Ktx2TextureTests.cpp
     rhi/MemoryBudgetTests.cpp
     rhi/RayTracingAccelerationStructureTests.cpp
+    rhi/UnifiedTopLevelTests.cpp
         rhi/ClasCompactionTests.cpp
     rhi/RayTracingPositionFetchTests.cpp
     rhi/OpacityMicromapTests.cpp

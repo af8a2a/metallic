@@ -402,7 +402,6 @@ public:
             {&BindlessHeap::allocateStorageImage, BindlessHandleKind::StorageImage},
             {&BindlessHeap::allocateBuffer, BindlessHandleKind::Buffer},
             {&BindlessHeap::allocateAccelerationStructure, BindlessHandleKind::AccelerationStructure},
-            {&BindlessHeap::allocatePartitionedAccelerationStructure, BindlessHandleKind::PartitionedAccelerationStructure},
         };
         for (const auto& [allocate, kind] : cases) {
             const auto handle = (heap.*allocate)();

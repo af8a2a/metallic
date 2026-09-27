@@ -858,12 +858,21 @@ struct RayTracingAccelerationStructureBuildSizes {
     uint64_t updateScratchSize = 0;
 };
 
+// Both backends expose a traceable TopLevel resource and the same shader address ABI.
+enum class RayTracingTopLevelBackend : uint8_t {
+    Standard,
+    Partitioned,
+};
+
 struct RayTracingAccelerationStructureDesc {
     RayTracingAccelerationStructureType type =
         RayTracingAccelerationStructureType::BottomLevel;
     RayTracingAccelerationStructureBuildFlags buildFlags =
         RayTracingAccelerationStructureBuildFlags::PreferFastTrace;
     uint64_t size = 0;
+    // Partitioned resources are created with createPartitionedAccelerationStructure.
+    // BottomLevel and OpacityMicromap resources always use Standard.
+    RayTracingTopLevelBackend topLevelBackend = RayTracingTopLevelBackend::Standard;
 };
 
 struct RayTracingInstanceDesc {
@@ -1004,7 +1013,7 @@ struct PartitionedAccelerationStructureInstanceDesc {
 };
 
 struct PartitionedAccelerationStructureBuildDesc {
-    class PartitionedAccelerationStructure* destination = nullptr;
+    class RayTracingAccelerationStructure* destination = nullptr;
     class Buffer* instanceBuffer = nullptr;
     uint32_t instanceCount = 0;
     class Buffer* scratchBuffer = nullptr;
@@ -1100,7 +1109,6 @@ enum class ShaderBindingType : uint8_t {
     ConstantBuffer,
     StorageBuffer,
     AccelerationStructure,
-    PartitionedAccelerationStructure,
 };
 
 enum class ShaderBindingSource : uint8_t {
@@ -1372,7 +1380,6 @@ enum class BindlessHandleKind : uint8_t {
     StorageImage,
     Buffer,
     AccelerationStructure,
-    PartitionedAccelerationStructure,
 };
 
 struct BindlessHandle {
@@ -1436,7 +1443,6 @@ struct SwapchainSemaphoreImpl;
 struct BufferImpl;
 struct BufferViewImpl;
 struct RayTracingAccelerationStructureImpl;
-struct PartitionedAccelerationStructureImpl;
 struct TextureImpl;
 struct TextureViewImpl;
 struct StreamerImpl;
@@ -1743,33 +1749,6 @@ private:
     friend struct detail::VulkanNativeAccess;
 };
 
-class PartitionedAccelerationStructure {
-public:
-    PartitionedAccelerationStructure() = default;
-    ~PartitionedAccelerationStructure();
-    PartitionedAccelerationStructure(PartitionedAccelerationStructure&&) noexcept;
-    PartitionedAccelerationStructure& operator=(PartitionedAccelerationStructure&&) noexcept;
-
-    PartitionedAccelerationStructure(const PartitionedAccelerationStructure&) = delete;
-    PartitionedAccelerationStructure& operator=(const PartitionedAccelerationStructure&) = delete;
-
-    const PartitionedAccelerationStructureDesc& desc() const;
-    bool valid() const;
-    uint64_t deviceAddress() const;
-    std::shared_ptr<void> retainAllocation() const;
-    const void* deviceIdentity() const;
-
-private:
-    explicit PartitionedAccelerationStructure(
-        std::unique_ptr<detail::PartitionedAccelerationStructureImpl> impl);
-
-    std::shared_ptr<detail::PartitionedAccelerationStructureImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
-    friend class BindlessHeap;
-};
-
 class Texture {
 public:
     Texture() = default;
@@ -2000,7 +1979,6 @@ public:
     [[nodiscard]] Result<BindlessHandle> allocateStorageImage();
     [[nodiscard]] Result<BindlessHandle> allocateBuffer();
     [[nodiscard]] Result<BindlessHandle> allocateAccelerationStructure();
-    [[nodiscard]] Result<BindlessHandle> allocatePartitionedAccelerationStructure();
     void release(BindlessHandle handle);
     Result<> writeSampler(BindlessHandle handle, const SamplerDesc& sampler);
     Result<> writeSamplers(const BindlessSamplerWrite* writes, uint32_t writeCount);
@@ -2013,9 +1991,6 @@ public:
     Result<> writeAccelerationStructure(
         BindlessHandle handle,
         RayTracingAccelerationStructure& accelerationStructure);
-    Result<> writePartitionedAccelerationStructure(
-        BindlessHandle handle,
-        PartitionedAccelerationStructure& accelerationStructure);
 
 private:
     explicit BindlessHeap(std::unique_ptr<detail::BindlessHeapImpl> impl);
@@ -2298,7 +2273,7 @@ public:
     [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureMoveSizes(uint32_t maxCount, uint64_t maxBytes) const;
     [[nodiscard]] Result<ClusterAccelerationStructureBuildSizes> queryClusterAccelerationStructureBottomLevelBuildSizes(const ClusterAccelerationStructureBottomLevelBuildSizesDesc& desc) const;
     [[nodiscard]] Result<PartitionedAccelerationStructureBuildSizes> queryPartitionedAccelerationStructureBuildSizes(const PartitionedAccelerationStructureBuildInputs& inputs) const;
-    [[nodiscard]] Result<std::unique_ptr<PartitionedAccelerationStructure>> createPartitionedAccelerationStructure(const PartitionedAccelerationStructureDesc& desc);
+    [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createPartitionedAccelerationStructure(const PartitionedAccelerationStructureDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<Buffer>> createPartitionedAccelerationStructureInstanceBuffer(const PartitionedAccelerationStructureInstanceDesc* instances,
         uint32_t instanceCount);
 

@@ -454,7 +454,7 @@ struct ScenePartitionedAccelerationStructureBuilder::Impl {
     std::unique_ptr<Buffer> indexBuffer;
     std::unique_ptr<Buffer> instanceBuffer;
     std::unique_ptr<Buffer> scratchBuffer;
-    std::unique_ptr<PartitionedAccelerationStructure> ptlas;
+    std::unique_ptr<RayTracingAccelerationStructure> ptlas;
     std::vector<BuiltBlas> blases;
 
     ~Impl()
@@ -865,7 +865,7 @@ bool ScenePartitionedAccelerationStructureBuilder::valid() const
     return impl_ != nullptr && impl_->ptlas != nullptr && impl_->ptlas->valid();
 }
 
-PartitionedAccelerationStructure*
+RayTracingAccelerationStructure*
 ScenePartitionedAccelerationStructureBuilder::accelerationStructure() const
 {
     return valid() ? impl_->ptlas.get() : nullptr;

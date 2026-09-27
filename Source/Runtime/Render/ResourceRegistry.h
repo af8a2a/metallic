@@ -11,7 +11,7 @@
 
 namespace metallic::render {
 
-enum class ShaderResourceKind : uint8_t { Buffer, SampledImage, StorageImage, Sampler, AccelerationStructure, PartitionedAccelerationStructure };
+enum class ShaderResourceKind : uint8_t { Buffer, SampledImage, StorageImage, Sampler, AccelerationStructure };
 
 // GPU wire values are independent of the CPU allocator's BindlessHandle.
 template<ShaderResourceKind Kind>
@@ -97,7 +97,6 @@ public:
     Result<> storageImage(TextureView& view, ResourceLease& out);
     Result<> sampler(const SamplerDesc& sampler, ResourceLease& out);
     Result<> accelerationStructure(RayTracingAccelerationStructure& structure, ResourceLease& out);
-    Result<> partitionedAccelerationStructure(PartitionedAccelerationStructure& structure, ResourceLease& out);
     void collect();
     ResourceRegistryStats stats() const;
     // Borrowed heap for prepared raster/SDK pipelines. Only registry registration writes descriptors.

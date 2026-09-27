@@ -12,7 +12,6 @@ namespace metallic::render {
 
 enum class ComputeResourceBindingKind : uint8_t {
     AccelerationStructure,
-    PartitionedAccelerationStructure,
     StorageImage,
     StorageBuffer,
     DataBuffer,
@@ -66,7 +65,6 @@ struct ComputeDispatchBinding {
         RayTracingAccelerationStructure* accelerationStructure = nullptr;
         const SamplerDesc* sampler;
     };
-    PartitionedAccelerationStructure* partitionedAccelerationStructure = nullptr;
     TextureView* textureView = nullptr;
     TextureView* const* textureViews = nullptr;
     uint32_t textureViewCount = 0;

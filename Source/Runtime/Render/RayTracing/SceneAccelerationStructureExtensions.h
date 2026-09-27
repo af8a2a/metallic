@@ -87,7 +87,7 @@ public:
     void clear();
 
     bool valid() const;
-    PartitionedAccelerationStructure* accelerationStructure() const;
+    RayTracingAccelerationStructure* accelerationStructure() const;
     const ScenePartitionedAccelerationStructureStats& stats() const;
 
 private:
