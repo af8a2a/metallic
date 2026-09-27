@@ -233,6 +233,7 @@ add_executable(MetallicRhiTests
     rhi/harness/VulkanDiagnostics.cpp
     rhi/harness/ProcessRunner.cpp
     rhi/harness/Runner.cpp
+    rhi/harness/ExtensionCases.cpp
     rhi/harness/CoreCases.cpp
     rhi/harness/SampleCases.cpp
     rhi/harness/HarnessTests.cpp
@@ -355,10 +356,19 @@ if(WIN32)
     add_test(NAME MetallicTestbench.SyncActivation COMMAND ${CMAKE_COMMAND}
         "-DEXECUTABLE=$<TARGET_FILE:MetallicRhiTests>" "-DSOURCE=${CMAKE_SOURCE_DIR}"
         "-DLAYER_PATH=${METALLIC_TESTBENCH_LAYER_PATH}" -P "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/VerifySyncProbe.cmake")
+    set(METALLIC_TESTBENCH_REQUIRED_EXTENSIONS "" CACHE STRING "GoogleTest filter of extensions required on this reference machine")
+    if(METALLIC_TESTBENCH_REQUIRED_EXTENSIONS)
+        add_test(NAME MetallicTestbench.ExtensionsRequired COMMAND MetallicRhiTests --tb-run --tb-suite extensions
+            --tb-filter "${METALLIC_TESTBENCH_REQUIRED_EXTENSIONS}" --tb-require-all ${_testbench_layer_arguments})
+        set_tests_properties(MetallicTestbench.ExtensionsRequired PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+            LABELS "testbench;extensions-required" TIMEOUT 600 RESOURCE_LOCK MetallicGpu)
+    endif()
+    add_test(NAME MetallicTestbench.Extensions COMMAND MetallicRhiTests --tb-run --tb-suite extensions ${_testbench_layer_arguments})
     add_test(NAME MetallicTestbench.Async COMMAND MetallicRhiTests --tb-run --tb-suite async ${_testbench_layer_arguments})
-    set_tests_properties(MetallicTestbench.Harness MetallicTestbench.Contract MetallicTestbench.Core MetallicTestbench.Async MetallicTestbench.Binding MetallicTestbench.Sync MetallicTestbench.SyncActivation
+    set_tests_properties(MetallicTestbench.Harness MetallicTestbench.Contract MetallicTestbench.Core MetallicTestbench.Async MetallicTestbench.Binding MetallicTestbench.Sync MetallicTestbench.SyncActivation MetallicTestbench.Extensions
         PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "testbench" TIMEOUT 180)
-    set_tests_properties(MetallicTestbench.Core MetallicTestbench.Async MetallicTestbench.Binding MetallicTestbench.Sync MetallicTestbench.SyncActivation PROPERTIES RESOURCE_LOCK MetallicGpu)
+    set_tests_properties(MetallicTestbench.Extensions PROPERTIES TIMEOUT 600)
+    set_tests_properties(MetallicTestbench.Core MetallicTestbench.Async MetallicTestbench.Binding MetallicTestbench.Sync MetallicTestbench.SyncActivation MetallicTestbench.Extensions PROPERTIES RESOURCE_LOCK MetallicGpu)
 endif()
 
 if(WIN32)

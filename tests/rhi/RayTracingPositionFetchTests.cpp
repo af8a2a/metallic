@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -30,6 +31,12 @@ public:
         type = RhiTestType::Rendering;
         name = native ? "scene_ray_tracing_position_fetch_native" :
             (authoredTangents ? "scene_ray_tracing_position_fetch_authored_tangents" : "scene_ray_tracing_position_fetch");
+    }
+
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::comparisonMetadata({"positionFetch.scene.compaction.refit.attributes"}, bench::Layer::Core,
+            "ray-query", {"ray-query-position", "positionFetch", bench::Capability::PositionFetch, 0.0001}, native_);
     }
 
     RhiTestResult run(RhiTestContext& context) override
@@ -75,10 +82,12 @@ public:
 
         // Retain fallback results for both the original and refitted instance.
         std::array<std::array<float, 96>, 2> baseline{};
-        for (bool positionFetch : {false, true}) {
+        std::vector<float> observations;
+        const auto variants = context.deviceDesc ? std::vector<bool>{context.deviceDesc->enableRayTracingPositionFetch} : std::vector<bool>{false, true};
+        for (bool positionFetch : variants) {
             std::string log;
-            std::unique_ptr<render::Device> device;
-            const auto setup = render::createDevice({
+            bench::TestDevice device;
+            const auto setup = bench::createTestDevice(context, {
                 .applicationName = "Scene position fetch test",
                 .enableValidation = context.enableValidation,
                 .enableBindlessDescriptorHeap = true,
@@ -239,6 +248,8 @@ public:
                 output->invalidate();
                 std::memcpy(actual.data(), mapped, sizeof(actual));
                 output->unmap();
+                bench::readbackEvidence(context, "readback.bin", std::span<const float>(actual));
+                observations.insert(observations.end(), actual.begin(), actual.end());
                 auto near = [](float a, float b) { return std::isfinite(a) && std::abs(a - b) < 0.0001f; };
                 for (uint32_t ray = 0; ray < 3; ++ray) {
                     const float* hit = actual.data() + ray * 24;
@@ -260,13 +271,17 @@ public:
                 if (!near(actual[3 * 24 + 11], 0.0f)) { return RhiTestResult::fail("miss ray reported a hit"); }
                 if (!positionFetch) { baseline[step] = actual; }
                 for (size_t value = 0; value < actual.size(); ++value) {
-                    if (!near(actual[value], baseline[step][value])) {
+                    if (!context.evidence && !near(actual[value], baseline[step][value])) {
                         return RhiTestResult::fail("position fetch changed a hit attribute at float " + std::to_string(value) +
                             ": fetch=" + std::to_string(actual[value]) + ", fallback=" + std::to_string(baseline[step][value]));
                     }
                 }
             }
         }
+        bench::comparisonEvidence(context, {{"mesh", bench::fileHash(directory / "mesh.bin")},
+            {"scene", bench::fileHash(path)}, {"authoredTangents", authoredTangents_}, {"native", native_}, {"steps", 2}}, observations,
+            context.deviceDesc && context.deviceDesc->enableRayTracingPositionFetch);
+        if (context.evidence) { return RhiTestResult::pass("analytic transformed hits and refit passed; pair comparison is performed by parent"); }
         return RhiTestResult::pass("fetch/fallback agree after BLAS compaction and TLAS refit, including UVs and back-face TBN");
     }
 

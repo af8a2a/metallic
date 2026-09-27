@@ -1,5 +1,6 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 #include "GpuPageCodecChecks.h"
 #include "Runtime/Render/GAPI/StreamUploadCompletion.h"
 #include "Runtime/Render/Streamer/MeshletStreamClas.h"
@@ -30,6 +31,13 @@ public:
 class GpuPageDecompressionTest final : public RhiTest {
 public:
     GpuPageDecompressionTest() { name = "streamer_gpu_decompression"; type = RhiTestType::Command; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        auto result = bench::gpuMetadata({"decompression.cpu.gpu.bytes.completion"}, bench::Layer::Core,
+            "decompression", "extensions", {"expected.bin", "readback.bin"});
+        result.requirements.capabilities.push_back(bench::Capability::MemoryDecompression);
+        return result;
+    }
     RhiTestResult run(RhiTestContext& context) override
     {
         using namespace render;
@@ -47,6 +55,7 @@ public:
         try {
             std::string reason;
             const auto decoded = makeMixedTileGpuPagePayload();
+            bench::readbackEvidence(context, "expected.bin", std::span<const uint8_t>(decoded));
             std::vector<uint8_t> stored;
             requireGpuPage(scene::encodeMeshletStreamGpuPage(decoded, true, stored, reason), reason);
             scene::MeshletStreamPageInfo page;
@@ -107,6 +116,7 @@ public:
                 readback->invalidate({0, decoded.size()});
                 auto* data = readback->map();
                 requireGpuPage(data != nullptr, "Readback mapping");
+                bench::readbackEvidence(context, "readback.bin", std::span<const uint8_t>(static_cast<const uint8_t*>(data), decoded.size()));
                 bool equal = std::memcmp(data, decoded.data(), decoded.size()) == 0;
                 readback->unmap();
                 requireGpuPage(equal, "GPU GDeflate output differs from CPU oracle");
@@ -122,6 +132,13 @@ METALLIC_REGISTER_RHI_TEST(GpuPageDecompressionTest);
 class GpuPageAdaptiveTest final : public RhiTest {
 public:
     GpuPageAdaptiveTest() { name = "streamer_gpu_adaptive_batch"; type = RhiTestType::Command; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        auto result = bench::gpuMetadata({"decompression.cpu.gpu.bytes.completion"}, bench::Layer::Core,
+            "decompression", "extensions", {"expected.bin", "readback.bin"});
+        result.requirements.capabilities.push_back(bench::Capability::MemoryDecompression);
+        return result;
+    }
     RhiTestResult run(RhiTestContext& context) override
     {
         using namespace render;
@@ -133,6 +150,7 @@ public:
             requireGpuPage(asset.open(context.outputDirectory / "gpu_page_compressed.meshstream.bin", reason), reason);
             std::vector<uint8_t> reference;
             requireGpuPage(scene::decodeMeshletStreamGpuPage(asset.pages()[0], asset.pagePayload(0), reference, reason), reason);
+            bench::readbackEvidence(context, "expected.bin", std::span<const uint8_t>(reference));
             for (uint64_t threshold : {uint64_t(0), uint64_t(reference.size()), uint64_t(reference.size() + 1)}) {
                 const bool expectGpu = threshold <= reference.size();
                 MeshletStreamResidencyManager residency;
@@ -195,6 +213,7 @@ public:
                 readback->invalidate();
                 const auto* data = readback->map();
                 requireGpuPage(data != nullptr, "Readback map");
+                bench::readbackEvidence(context, "readback.bin", std::span<const uint8_t>(static_cast<const uint8_t*>(data), reference.size()));
                 const bool equal = std::memcmp(data, reference.data(), reference.size()) == 0;
                 readback->unmap();
                 requireGpuPage(equal, "Adaptive CPU/GPU geometry differs");

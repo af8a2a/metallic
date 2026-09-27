@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -75,13 +76,20 @@ public:
         name = "device_generated_commands_compute_readback";
     }
 
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::comparisonMetadata({"dgc.backend.compute.pipelineSet.push.count.preprocess.rebind"}, bench::Layer::Backend,
+            "binding", {"binding-dgc", "dgc", bench::Capability::GeneratedCommands});
+    }
+
     RhiTestResult run(RhiTestContext& context) override
     {
         auto& device = context.device;
-        if (!device.capabilities().deviceGeneratedCommands) { return RhiTestResult::skip("DGC unsupported"); }
+        const bool useGenerated = !context.deviceDesc || context.deviceDesc->enableDeviceGeneratedCommands;
+        if (useGenerated && !device.capabilities().deviceGeneratedCommands) { return RhiTestResult::skip("DGC unsupported"); }
         const auto properties = rv::queryGeneratedCommandsProperties(device);
-        if (!properties ||
-            !(properties->supportedIndirectCommandsShaderStagesPipelineBinding & VK_SHADER_STAGE_COMPUTE_BIT)) {
+        if (useGenerated && (!properties ||
+            !(properties->supportedIndirectCommandsShaderStagesPipelineBinding & VK_SHADER_STAGE_COMPUTE_BIT))) {
             return RhiTestResult::skip("DGC compute pipeline binding unsupported");
         }
         const auto native = rv::nativeDevice(device);
@@ -110,7 +118,7 @@ public:
                 .codeSize = shader.spirv.size() * 4, .pCode = shader.spirv.data()};
             DGC_VK(vkCreateShaderModule(native.device, &shaderInfo, nullptr, &resources.shaders[i]));
             const VkPipelineCreateFlags2CreateInfo flags{.sType = VK_STRUCTURE_TYPE_PIPELINE_CREATE_FLAGS_2_CREATE_INFO,
-                .flags = VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT};
+                .flags = useGenerated ? VK_PIPELINE_CREATE_2_INDIRECT_BINDABLE_BIT_EXT : 0u};
             const VkComputePipelineCreateInfo pipelineInfo{.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                 .pNext = &flags, .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                     .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = resources.shaders[i], .pName = "main"},
@@ -118,7 +126,7 @@ public:
             DGC_VK(vkCreateComputePipelines(native.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &resources.pipelines[i]));
         }
         std::unique_ptr<render::Buffer> output, arguments;
-        DGC_RHI(device.createBuffer({.size = 12, .usage = render::BufferUsageBits::Storage,
+        DGC_RHI(device.createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
             .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         DGC_RHI(device.createBuffer({.size = 80, .usage = render::BufferUsageBits::Indirect,
             .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { arguments = std::move(rhiValue); }));
@@ -130,11 +138,12 @@ public:
         const VkDescriptorSetAllocateInfo setAllocation{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
             .descriptorPool = resources.pool, .descriptorSetCount = 1, .pSetLayouts = &resources.setLayout};
         DGC_VK(vkAllocateDescriptorSets(native.device, &setAllocation, &set));
-        const VkDescriptorBufferInfo bufferInfo{rv::nativeBuffer(*output).buffer, 0, 12};
+        const VkDescriptorBufferInfo bufferInfo{rv::nativeBuffer(*output).buffer, 0, 16};
         const VkWriteDescriptorSet write{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
             .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &bufferInfo};
         vkUpdateDescriptorSets(native.device, 1, &write, 0, nullptr);
 
+        std::vector<uint32_t> observations;
         // Exercise fixed state, pipeline switching, and explicit preprocessing.
         for (uint32_t mode = 0; mode < 3; ++mode) {
             const VkIndirectCommandsExecutionSetTokenEXT executionToken{VK_INDIRECT_EXECUTION_SET_INFO_TYPE_PIPELINES_EXT, VK_SHADER_STAGE_COMPUTE_BIT};
@@ -150,18 +159,20 @@ public:
             const VkIndirectExecutionSetCreateInfoEXT executionSet{.sType = VK_STRUCTURE_TYPE_INDIRECT_EXECUTION_SET_CREATE_INFO_EXT,
                 .type = VK_INDIRECT_EXECUTION_SET_INFO_TYPE_PIPELINES_EXT, .info = {.pPipelineInfo = &pipelineSet}};
             rv::GeneratedCommands generated;
-            DGC_RHI(generated.initialize(device, {
-                .layout = {.sType = VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_CREATE_INFO_EXT,
-                    .flags = mode == 2 ? VK_INDIRECT_COMMANDS_LAYOUT_USAGE_EXPLICIT_PREPROCESS_BIT_EXT : 0u,
-                    .shaderStages = VK_SHADER_STAGE_COMPUTE_BIT, .indirectStride = 24, .pipelineLayout = resources.layout,
-                    .tokenCount = mode ? 3u : 2u, .pTokens = mode ? tokens : tokens + 1},
-                .executionSet = mode ? &executionSet : nullptr, .pipeline = mode ? VK_NULL_HANDLE : resources.pipelines[0],
-                .maxSequenceCount = 3}));
-            if (mode) {
-                const VkWriteIndirectExecutionSetPipelineEXT update{.sType = VK_STRUCTURE_TYPE_WRITE_INDIRECT_EXECUTION_SET_PIPELINE_EXT,
-                    .index = 1, .pipeline = resources.pipelines[1]};
-                DGC_RHI(generated.updatePipelines(std::span(&update, 1)));
-                DGC_RHI(generated.prepare());
+            if (useGenerated) {
+                DGC_RHI(generated.initialize(device, {
+                    .layout = {.sType = VK_STRUCTURE_TYPE_INDIRECT_COMMANDS_LAYOUT_CREATE_INFO_EXT,
+                        .flags = mode == 2 ? VK_INDIRECT_COMMANDS_LAYOUT_USAGE_EXPLICIT_PREPROCESS_BIT_EXT : 0u,
+                        .shaderStages = VK_SHADER_STAGE_COMPUTE_BIT, .indirectStride = 24, .pipelineLayout = resources.layout,
+                        .tokenCount = mode ? 3u : 2u, .pTokens = mode ? tokens : tokens + 1},
+                    .executionSet = mode ? &executionSet : nullptr, .pipeline = mode ? VK_NULL_HANDLE : resources.pipelines[0],
+                    .maxSequenceCount = 3}));
+                if (mode) {
+                    const VkWriteIndirectExecutionSetPipelineEXT update{.sType = VK_STRUCTURE_TYPE_WRITE_INDIRECT_EXECUTION_SET_PIPELINE_EXT,
+                        .index = 1, .pipeline = resources.pipelines[1]};
+                    DGC_RHI(generated.updatePipelines(std::span(&update, 1)));
+                    DGC_RHI(generated.prepare());
+                }
             }
             // Header holds a GPU-readable count and padding. The third sequence must not execute.
             const uint32_t stream[] = {2, 0, 0, 0, 7, 1, 1, 1, 1, 1, 9, 1, 1, 1, 0, 2, 999, 1, 1, 1};
@@ -169,7 +180,7 @@ public:
             auto* mappedOutput = output->map();
             if (!mappedArguments || !mappedOutput) { return RhiTestResult::fail("Map failed"); }
             std::memcpy(mappedArguments, stream, sizeof(stream));
-            std::memset(mappedOutput, 0, 12);
+            std::memset(mappedOutput, 0, 16);
             arguments->flush(); output->flush();
             arguments->unmap(); output->unmap();
             std::unique_ptr<render::CommandPool> pool;
@@ -178,22 +189,38 @@ public:
             DGC_RHI(device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
             DGC_RHI(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
             DGC_RHI(device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
+            struct Drain { render::Queue& queue; ~Drain() { (void)queue.waitIdle(); } } drain{context.graphicsQueue};
             DGC_RHI(commands->begin());
             const auto cmd = rv::nativeCommandBuffer(*commands);
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
             const rv::GeneratedCommandsArguments args{.commands = arguments.get(), .offset = 8, .sequenceCount = 3,
                 .countBuffer = arguments.get()};
-            auto invalid = args;
-            invalid.offset = 1;
-            if (!render::hasError(generated.execute(*commands, invalid, mode == 2), render::Error::InvalidArgument)) {
-                return RhiTestResult::fail("Misaligned indirect stream was accepted");
+            if (useGenerated) {
+                auto invalid = args;
+                invalid.offset = 1;
+                if (!render::hasError(generated.execute(*commands, invalid, mode == 2), render::Error::InvalidArgument)) {
+                    return RhiTestResult::fail("Misaligned indirect stream was accepted");
+                }
+                if (mode == 2) {
+                    DGC_RHI(generated.preprocess(*commands, args, *commands));
+                    DGC_RHI(generated.preprocessBarrier(*commands));
+                }
+                DGC_RHI(generated.execute(*commands, args, mode == 2));
+            } else {
+                for (uint32_t index = 0; index < 2; ++index) {
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[mode && index ? 1 : 0]);
+                    const uint32_t pushValues[]{index, index ? 9u : 7u};
+                    vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushValues), pushValues);
+                    vkCmdDispatch(cmd, 1, 1, 1);
+                }
             }
-            if (mode == 2) {
-                DGC_RHI(generated.preprocess(*commands, args, *commands));
-                DGC_RHI(generated.preprocessBarrier(*commands));
-            }
-            DGC_RHI(generated.execute(*commands, args, mode == 2));
+            // Generated execution invalidates native binding state; explicitly establish all state again.
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.pipelines[0]);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, resources.layout, 0, 1, &set, 0, nullptr);
+            const uint32_t rebound[]{3, 777};
+            vkCmdPushConstants(cmd, resources.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(rebound), rebound);
+            vkCmdDispatch(cmd, 1, 1, 1);
             const VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
                 .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,
                 .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT, .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT};
@@ -202,14 +229,20 @@ public:
             DGC_RHI(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
             DGC_RHI(context.graphicsQueue.submit({.commandBuffers = {submitted, 1}, .signalFence = fence.get()}));
-            const auto waitResult = fence->wait(UINT64_MAX);
+            const auto waitResult = fence->wait(5'000'000'000ull);
             DGC_RHI(waitResult);
             output->invalidate();
             const auto* values = static_cast<const uint32_t*>(output->map());
-            const bool correct = values && values[0] == 7 && values[1] == (mode ? 1009u : 9u) && values[2] == 0;
+            const bool correct = values && values[0] == 7 && values[1] == (mode ? 1009u : 9u) && values[2] == 0 && values[3] == 777;
+            if (values) {
+                bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(values, 4));
+                observations.insert(observations.end(), values, values + 4);
+            }
             output->unmap();
             if (!correct) { return RhiTestResult::fail("DGC pipeline/push/count readback mismatch"); }
         }
+        bench::comparisonEvidence(context, {{"modes", {"fixed", "pipelineSet", "preprocess"}}, {"count", 2},
+            {"maximumCount", 3}, {"values", {7, 9, 999}}, {"rebind", 777}}, observations, useGenerated);
 #undef DGC_RHI
 #undef DGC_VK
         return RhiTestResult::pass();

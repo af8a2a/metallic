@@ -9,8 +9,9 @@
 
 namespace metallic::tests::bench {
 
-enum class Capability { ShaderObject, TimestampQueries, Bindless, IndependentCopy, IndependentCompute };
-enum class Layer { Rhi, Core, RenderGraph, Harness };
+enum class Capability { ShaderObject, TimestampQueries, Bindless, IndependentCopy, IndependentCompute, RayQuery, PositionFetch, OpacityMicromap,
+    UnifiedLayouts, PartitionedAS, ClusterAS, GeneratedCommands, MemoryDecompression };
+enum class Layer { Rhi, Core, RenderGraph, Backend, Harness };
 enum class Validation { Off, Core, Synchronization };
 
 struct Requirements {
@@ -22,6 +23,15 @@ struct Requirements {
     bool nativeDescriptorPointers = false;
 };
 
+struct Comparison {
+    std::string targetProfile;
+    std::string toggle;
+    Capability capability;
+    double absoluteTolerance = 0.0;
+    double relativeTolerance = 0.0;
+    std::string reductionCounter;
+};
+
 struct Metadata {
     std::string suite = "core";
     std::string profile = "core";
@@ -30,6 +40,7 @@ struct Metadata {
     std::vector<std::string> coverage;
     std::chrono::milliseconds timeout{30000};
     std::vector<std::string> artifacts;
+    std::optional<Comparison> comparison;
 };
 
 struct Profile {

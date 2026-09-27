@@ -173,6 +173,61 @@ void resultProtocol()
     EXPECT_EQ(verifyChild(directory, input, {0, false}).at("status"), "InfrastructureFailure");
 }
 
+void differentialProtocol()
+{
+    const auto root = outputDirectory();
+    const auto reference = root / "reference", target = root / "target";
+    const Json spec{{"toggle", "positionFetch"}, {"capability", "positionFetch"},
+        {"absoluteTolerance", 0.0001}, {"relativeTolerance", 0.0}};
+    const auto populate = [&](const std::filesystem::path& directory, bool enabled) {
+        Evidence evidence(directory);
+        evidence.json("parent-result.json", {{"status", "Pass"}, {"executed", true}, {"failed", false}});
+        evidence.json("input.json", {{"id", "case"}, {"seed", 1}, {"iteration", 0}, {"binaryHash", "binary"},
+            {"shaderFingerprint", "shader"}, {"validation", "core"}, {"layerPath", "layers"},
+            {"variant", enabled ? "target" : "reference"}});
+        evidence.json("capabilities.json", {{"uuid", "gpu"}, {"driverVersion", 1}, {"driverInfo", "driver"},
+            {"apiVersion", 1}, {"validationMode", "core"}, {"capabilities", Json::array({
+                {{"id", "positionFetch"}, {"requested", enabled}, {"enabled", enabled}}})}});
+        evidence.json("profile.json", {{"id", enabled ? "target" : "reference"}, {"positionFetch", enabled}, {"rayQuery", true}});
+        evidence.json("fixture.json", {{"vertices", {0, 1, 2}}});
+        evidence.json("execution.json", {{"targetUsed", enabled}});
+        evidence.json("observations.json", {37, 1.25, 0.5});
+    };
+    const auto check = [&] { return compareEvidence(reference, target, spec); };
+    populate(reference, false); populate(target, true);
+    EXPECT_EQ(check().at("status"), "Pass");
+    writeJson(target / "observations.json", {37, 1.25001, 0.5});
+    EXPECT_EQ(check().at("status"), "Pass");
+    writeJson(target / "observations.json", {38, 1.25, 0.5});
+    EXPECT_EQ(check().at("status"), "Fail");
+    populate(target, true);
+    writeJson(target / "execution.json", {{"targetUsed", false}});
+    EXPECT_EQ(check().at("status"), "Fail");
+    populate(target, true);
+    auto device = readJson(target / "capabilities.json"); device["uuid"] = "another-gpu";
+    writeJson(target / "capabilities.json", device);
+    EXPECT_EQ(check().at("status"), "Fail");
+    populate(target, true);
+    auto profile = readJson(target / "profile.json"); profile["rayQuery"] = false;
+    writeJson(target / "profile.json", profile);
+    EXPECT_EQ(check().at("status"), "Fail");
+    populate(target, true);
+    auto input = readJson(target / "input.json"); input["seed"] = 2;
+    writeJson(target / "input.json", input);
+    EXPECT_EQ(check().at("status"), "Fail");
+    populate(target, true);
+    writeJson(target / "fixture.json", {{"vertices", {3, 2, 1}}});
+    EXPECT_EQ(check().at("status"), "Fail");
+    populate(target, true);
+    writeJson(target / "observations.json", {37, nullptr, 0.5});
+    EXPECT_EQ(check().at("status"), "Fail");
+    writeJson(target / "parent-result.json", {{"status", "SkipUnsupported"}, {"executed", false}, {"failed", false}});
+    EXPECT_EQ(check().at("status"), "SkipUnsupported");
+    EXPECT_EQ(readJson(reference / "parent-result.json").at("status"), "Pass");
+    writeJson(target / "parent-result.json", {{"status", "Fail"}, {"executed", true}, {"failed", true}});
+    EXPECT_EQ(check().at("status"), "Fail");
+}
+
 class HarnessAdapter : public ::testing::Test {
 public:
     explicit HarnessAdapter(void (*body)()) : body_(body) {}
@@ -187,7 +242,7 @@ void registerHarnessTests()
     for (const auto& entry : std::vector<std::pair<const char*, void (*)()>>{
         {"Requirements", requirements}, {"RecorderLifetime", recorderLifetime}, {"RecorderThreads", recorderThreads},
         {"Filtering", filtering}, {"EvidenceIntegrity", evidenceIntegrity}, {"ChildFailures", childFailures},
-        {"ReplayAndPaths", replayAndPaths}, {"ResultProtocol", resultProtocol}}) {
+        {"ReplayAndPaths", replayAndPaths}, {"ResultProtocol", resultProtocol}, {"DifferentialProtocol", differentialProtocol}}) {
         ::testing::RegisterTest("TestbenchHarness", entry.first, nullptr, nullptr, __FILE__, __LINE__,
             [body = entry.second]() -> HarnessAdapter* { return new HarnessAdapter(body); });
     }

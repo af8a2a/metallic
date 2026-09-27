@@ -40,6 +40,27 @@ inline Metadata gpuMetadata(std::vector<std::string> coverage, Layer layer = Lay
     return result;
 }
 
+inline Metadata comparisonMetadata(std::vector<std::string> coverage, Layer layer,
+    std::string referenceProfile, Comparison comparison, bool nativePointers = false)
+{
+    auto result = gpuMetadata(std::move(coverage), layer, std::move(referenceProfile), "extensions",
+        {"fixture.json", "observations.json", "execution.json", "readback.bin"}, nativePointers);
+    if (result.profile.starts_with("ray-query")) { result.requirements.capabilities.push_back(Capability::RayQuery); }
+    if (!comparison.reductionCounter.empty()) { result.artifacts.push_back(comparison.reductionCounter); }
+    result.comparison = std::move(comparison);
+    result.timeout = std::chrono::seconds(120);
+    return result;
+}
+
+inline void comparisonEvidence(RhiTestContext& context, const Json& fixture, const Json& observations,
+    bool targetUsed)
+{
+    if (!context.evidence) { return; }
+    context.evidence->json("fixture.json", fixture);
+    context.evidence->json("observations.json", observations);
+    context.evidence->json("execution.json", {{"targetUsed", targetUsed}});
+}
+
 // Declare after resources so exceptional exits drain before resource destruction.
 class GpuCommands {
 public:

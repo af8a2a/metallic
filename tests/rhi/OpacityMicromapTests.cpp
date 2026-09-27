@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/Fixtures.h"
 
 #include "Runtime/Render/RayTracing/OpacityMicromapBake.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -32,8 +33,21 @@ public:
         name = "opacity_micromap_bake";
         type = RhiTestType::Resource;
     }
-    RhiTestResult run(RhiTestContext&) override
+    std::optional<bench::Metadata> metadata() const override
     {
+        bench::Metadata result{.suite = "extensions", .layer = bench::Layer::Core,
+            .coverage = {"opacityMicromap.bake.opaque.transparent.unknown"}, .artifacts = {"bake.json"}};
+        result.requirements.requiresDevice = false;
+        result.requirements.validation = bench::Validation::Off;
+        result.requirements.queues.clear();
+        return result;
+    }
+    RhiTestResult runCpu(bench::Evidence& evidence) override { return check(&evidence); }
+    RhiTestResult run(RhiTestContext&) override { return check(nullptr); }
+private:
+    RhiTestResult check(bench::Evidence* evidence)
+    {
+        bench::Json counts = bench::Json::array();
         scene::RenderPrimitive primitive;
         primitive.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
         primitive.texcoords0 = {{0, 0}, {1, 0}, {0, 1}};
@@ -51,6 +65,8 @@ public:
             for (uint32_t i = 0; i < (1u << (2 * level)); ++i) {
                 ++packedCounts[(baked.data[i / 4] >> ((i % 4) * 2)) & 3];
             }
+            counts.push_back({{"subdivision", level}, {"states", packedCounts}});
+            if (evidence) { evidence->bytes("bake-" + std::to_string(level) + ".bin", std::as_bytes(std::span(baked.data))); }
             OMM_EXPECT(packedCounts == baked.stateCounts, "bird-curve indexing is not bijective");
             if (level >= 3) {
                 OMM_EXPECT(baked.stateCounts[0] && baked.stateCounts[1] && baked.stateCounts[3], "coverage lost transparent/opaque/boundary states");
@@ -78,6 +94,7 @@ public:
         std::vector<uint32_t> invalid = {0x07230203, 0x10600, 0, 1, 0, 0};
         std::vector<uint32_t> patched;
         OMM_EXPECT(!render::vulkan::enableOpacityMicromapSpirv(invalid, patched), "invalid SPIR-V instruction accepted");
+        if (evidence) { evidence->json("bake.json", counts); }
         return RhiTestResult::pass("coverage, packed bird order, cutoff equality, constant triangles, and partial-alpha states");
     }
 };
@@ -90,6 +107,13 @@ public:
         name = partitioned ? "opacity_micromap_ray_query_partitioned" : "opacity_micromap_ray_query";
         type = RhiTestType::Rendering;
     }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        if (partitioned_) { return std::nullopt; } // Combined PTLAS/OMM remains an integration case.
+        return bench::comparisonMetadata({"opacityMicromap.scene.alpha.compaction.edits.refit"}, bench::Layer::Core,
+            "ray-query", {"ray-query-omm", "opacityMicromap", bench::Capability::OpacityMicromap, 0.0, 0.0, "alpha-candidates.json"});
+    }
+
     RhiTestResult run(RhiTestContext& context) override
     {
         std::string log;
@@ -131,10 +155,12 @@ public:
         using Probe = std::array<std::array<uint32_t, 2>, 64 * 64>;
         std::array<Probe, 9> baseline{};
         uint64_t fallbackCandidates = 0, ommCandidates = 0;
-        for (bool enable : {false, true}) {
+        bench::Json observations = bench::Json::array();
+        const auto variants = context.deviceDesc ? std::vector<bool>{context.deviceDesc->enableOpacityMicromap} : std::vector<bool>{false, true};
+        for (bool enable : variants) {
             { std::ofstream restore(path); restore << originalGltf; }
-            std::unique_ptr<render::Device> device;
-            const auto setup = render::createDevice({.applicationName = "Opacity Micromap Test",
+            bench::TestDevice device;
+            const auto setup = bench::createTestDevice(context, {.applicationName = "Opacity Micromap Test",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
                 .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
                 .enableOpacityMicromap = enable, .enablePartitionedAccelerationStructure = partitioned_, .enableAsyncCompute = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
@@ -290,6 +316,7 @@ public:
                 output->invalidate();
                 std::memcpy(actual.data(), mapped, sizeof(actual));
                 output->unmap();
+                bench::readbackEvidence(context, "readback.bin", std::span<const std::array<uint32_t, 2>>(actual));
                 uint32_t hits = 0;
                 for (size_t ray = 0; ray < actual.size(); ++ray) {
                     hits += actual[ray][0];
@@ -317,7 +344,8 @@ public:
                         " actual=" + std::to_string(actual[ray][0]) + " OMM=" + std::to_string(enable));
                     if (!enable) { baseline[step][ray] = actual[ray]; fallbackCandidates += actual[ray][1]; }
                     else { ommCandidates += actual[ray][1]; }
-                    OMM_EXPECT(actual[ray][0] == baseline[step][ray][0], "OMM changed visibility at step " + std::to_string(step) + " ray " + std::to_string(ray));
+                    observations.push_back(actual[ray][0]);
+                    OMM_EXPECT(context.evidence || actual[ray][0] == baseline[step][ray][0], "OMM changed visibility at step " + std::to_string(step) + " ray " + std::to_string(ray));
                 }
                 if (step == 0) { OMM_EXPECT(hits > 0 && hits < 4096, "alpha fixture needs both hits and holes"); }
 
@@ -330,6 +358,12 @@ public:
                     OMM_EXPECT(saveRgba8Png(directory / ("visibility-" + std::to_string(step) + ".png"), png.data(), 64, 64, log), "could not save output");
                 }
             }
+        }
+        bench::comparisonEvidence(context, {{"gltf", originalGltf}, {"alpha", pixels}, {"steps", 7}}, observations,
+            context.deviceDesc && context.deviceDesc->enableOpacityMicromap);
+        if (context.evidence) {
+            context.evidence->json("alpha-candidates.json", {{"candidates", fallbackCandidates + ommCandidates}});
+            return RhiTestResult::pass("CPU bilinear alpha oracle passed for all material/transform steps");
         }
         OMM_EXPECT(ommCandidates < fallbackCandidates / 2, "OMM did not reduce shader alpha candidates: " +
             std::to_string(fallbackCandidates) + " -> " + std::to_string(ommCandidates));

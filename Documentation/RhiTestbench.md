@@ -1,6 +1,6 @@
 # Metallic RHI Testbench 使用说明
 
-M1/M2 已实现：在原 `MetallicRhiTests` 中增加声明式 requirements、三个设备配置、逐用例进程隔离、验证消息审查、完整产物检查和重放；M2 增加基础 RHI/Core/RenderGraph 覆盖、共享 fixture 和显式同步验证。旧 `--rhi-*` / GoogleTest 入口保持可用。设计背景见 [实现方案](RhiTestbenchPlan.md)。
+M1/M2/M3 的执行入口已实现：在原 `MetallicRhiTests` 中增加声明式 requirements、设备配置、逐用例进程隔离、验证消息审查、完整产物检查和重放；M2 覆盖基础 RHI/Core/RenderGraph 和显式同步验证，M3 增加扩展的独立 reference/target 执行与父进程比较。旧 `--rhi-*` / GoogleTest 入口保持可用。设计背景见 [实现方案](RhiTestbenchPlan.md)。
 
 ## 构建和首次运行
 
@@ -21,6 +21,8 @@ ctest --test-dir build-pass-stages-nrd -R '^MetallicTestbench\.' --output-on-fai
 | `MetallicTestbench.Binding` | bindless、参数生命周期、BufferSlice、ComputeKernel 与 prepared dispatch |
 | `MetallicTestbench.Sync` | 显式同步验证：Core barrier、RenderGraph、Joined/Pipelined、query ring、copy timestamp |
 | `MetallicTestbench.SyncActivation` | 真实层的 core/sync 对照负例：只录制图像 WAW，不提交 |
+| `MetallicTestbench.Extensions` | 扩展 A/B、解析 AS、OMM bake、CPU/GPU 解压；允许能力缺失时显式 skip |
+| `MetallicTestbench.ExtensionsRequired` | 可选参考机器策略，所选用例与 comparison 必须通过 |
 | `MetallicTestbench.Async` | 两种提交模式的独立 copy 进度、跨队列依赖与 query ring |
 
 所有 GPU testbench 作业与当前目录中已有 rhi/editor CTest 使用 `MetallicGpu` 锁。外部手工启动的编辑器和其他项目不受 CTest 锁控制。Contract/Core 要求所有选择用例通过；Binding/Sync/Async 允许缺少声明能力或队列时显式 skip。参考 GPU 验收必须加 `--tb-require-all`，禁止将 skip 视为通过。Sync 自动包含 Async 的三个提交/query ring 回归。
@@ -40,7 +42,7 @@ $test = '.\build-pass-stages-nrd\tests\MetallicRhiTests.exe'
 & $test --tb-run --tb-suite core --tb-profile binding --tb-filter '*timestamp*'
 ```
 
-`--tb-plan` 不初始化 SDL、TaskSystem 或 GPU；它枚举已迁移 case，落盘配置计划、shader 输入指纹和构建身份。三个 profile 是 `core`（关闭可关闭的 RT/DGC/SDK、optimal layouts）、`binding`（加 bindless）、`async`（再请求独立 compute）。每个 case/iteration 都使用新子进程；尚未优化为同 profile 的多用例设备复用。
+`--tb-plan` 不初始化 SDL、TaskSystem 或 GPU；它枚举已迁移 case，落盘配置计划、shader 输入指纹和构建身份。基础 profile 是 `core`（关闭可关闭的 RT/DGC/SDK、optimal layouts）、`binding`（加 bindless）、`async`（再请求独立 compute）。每个 case/iteration 都使用新子进程；尚未优化为同 profile 的多用例设备复用。
 
 支持 `--tb-filter` 或 `--gtest_filter` 的 `*`、`?`、`:`、排除表达式；`--tb-repeat` 或 `--gtest_repeat` 范围 1–1000；`--tb-seed` 是 uint64。新模式拒绝与 `--rhi-*` 混用，以免配置不明确。未迁移用例只在旧入口运行，新模式匹配不到用例会失败。
 
@@ -108,7 +110,7 @@ requirements 在运行用例前检查。profile 没有请求必要能力时为 S
 
 恢复 case、profile、validation、seed 和 layerPath，并写入新的输出目录。可执行文件或 shader 输入指纹变化时拒绝；修复后用 `--tb-allow-version-mismatch` 明确允许新版本，原始输入保留在新 run.json 中供比较。不会使用原目录覆盖结果。
 
-覆盖率只报告已选择且已迁移的格子，不代表全部 RHI；多轮通过不会被描述为新增独立覆盖。尚未提供通用格式 requirements、完整物理能力 probe、跨设备 differential 调度、后端 trace 或 fuzz/shrinker。基础纹理用例限定 RGBA8/R32Uint/D32 等既有格式，不声称覆盖所有格式组合。
+覆盖率只报告已选择且已迁移的格子，不代表全部 RHI；多轮通过不会被描述为新增独立覆盖。尚未提供通用格式 requirements、完整物理能力 probe、跨机器 differential 调度、后端 trace 或 fuzz/shrinker。基础纹理用例限定 RGBA8/R32Uint/D32 等既有格式，不声称覆盖所有格式组合。
 
 ## M2 覆盖与边界
 
@@ -123,7 +125,51 @@ requirements 在运行用例前检查。profile 没有请求必要能力时为 S
 
 `Fixtures.h` 共用测试设备借用/所有权、提交等待和读回保存。可信入口借用 runner 的 Device；旧入口仍按原配置创建 Device。跨设备契约所需的第二个 Device 使用相同配置与 recorder。mapped/native 双路径测试声明 native descriptor pointer 前置条件。GPU 数据保存为必需产物；内部多轮读回带编号保留；既有解析式预期和断言仍在测试代码中，新 probe 另存 expected/actual/diff。
 
-测试分清证据类型：访问计划纯 CPU 检查和 barrier 编码计数不算 GPU 数据读回。同步验证也不覆盖所有访问：本机 1.4.350 层未报告初始 `vkCmdCopyMemoryKHR` 地址复制 WAW 探针，因此激活探针采用图像 clear WAW；地址复制、BDA、bindless 的正确性仍依赖数据 oracle 与计划/编码断言。不能把“零同步消息”解释为这些路径已被层完整检查。当前 API 没有独立的 blend state 配置，因此没有宣称任意混合状态覆盖。扩展 AS/OMM/PTLAS/DGC 对比留在 M3。
+测试分清证据类型：访问计划纯 CPU 检查和 barrier 编码计数不算 GPU 数据读回。同步验证也不覆盖所有访问：本机 1.4.350 层未报告初始 `vkCmdCopyMemoryKHR` 地址复制 WAW 探针，因此激活探针采用图像 clear WAW；地址复制、BDA、bindless 的正确性仍依赖数据 oracle 与计划/编码断言。不能把“零同步消息”解释为这些路径已被层完整检查。当前 API 没有独立的 blend state 配置，因此没有宣称任意混合状态覆盖。扩展对比的实际范围见下节。
+
+## M3 扩展对比
+
+`--tb-suite extensions` 包含 12 个逻辑用例：9 个 pair、2 个 GPU 解压用例、1 个 CPU OMM bake 用例。每个 pair 的 reference 和 target 使用同一 executable，在不同子进程创建 Device。目标能力不可用时保留已通过的 reference，target 与 comparison 单独 skip；任何一侧失败都会使 comparison 失败。
+
+| 对比 / 检查 | 实际覆盖 | 责任层 |
+| --- | --- | --- |
+| optimal / unified layouts | 三次 pipeline → shader object → pipeline 绘制与全像素 copy 读回；lazy view、早释放、取消 | RHI |
+| Standard TLAS / PTLAS，mapped + native | 共用 6 条解析射线，hit/miss、mask、instance/primitive ID、t、重心、正反面；变换后 Standard refit / PTLAS 同存储重建；typed backend 拒绝与分配退休 | RHI |
+| 普通三角形 BLAS / CLAS | GPU 实际尺寸、两次 relocation；每次完成后释放旧 CLAS，再用新地址构建 BLAS/TLAS 并查询；旧 allocation 必须过期 | RHI |
+| fallback positions / PositionFetch，默认 + authored tangent + native | 合成 glTF；BLAS 压缩、释放 build-only 几何、TLAS refit、变换、UV、normal、back-face TBN 的独立解析断言与 192 个浮点值对比 | Core scene integration |
+| shader alpha / OMM | 合成 alpha texture；7 步 cutoff、UV、alpha、BLEND、变换；每步 4096 rays 对 CPU bilinear repeat oracle；父进程比较 visibility 并要求 shader alpha candidates 减少超过一半 | Core scene integration |
+| direct / DGC | 固定 pipeline、execution set 切换、push constants、GPU count、显式 preprocess、执行后显式重绑；12 个整数结果 | Vulkan Backend |
+| GPU 解压 | CPU 原始字节、mixed Raw/GDeflate tiles、尾块、取消、slot 复用、CPU/GPU 阈值切换 | Core streamer |
+| OMM bake | 无 Device；subdivision 0–5 的 packed states、opaque/transparent/unknown、双线性边界、repeat seam、cutoff 等号、BLEND | Core CPU |
+
+`RayQueryFixture.h` 的 CPU oracle 独立计算单位三角形的交点与重心，probe 在 `UnifiedTopLevelProbe.slang`。射线避开三角形边界，正反面判据依据 [Vulkan ray-space signed area](https://docs.vulkan.org/spec/latest/chapters/raytraversal.html#ray-traversal-culling-face)。测试不会调用生产场景交点代码来生成预期。
+
+新增 profile：`core-unified`；`ray-query` 与 `ray-query-position/omm/ptlas/clas`；`binding-dgc`；`decompression`。每个 pair 只改变声明的一个 feature 请求。父进程核对 GPU UUID、driver、API/validation mode、seed/iteration、binary/shader 指纹、fixture 内容、目标能力 requested/enabled 和 `execution.json` 的实际分支标记。配置中其他已记录字段必须相同。整数严格比较，RT 浮点绝对容差为 1e-5，PositionFetch 为 1e-4；非有限值/空观察结果失败。OMM 的 visibility 不比较本来就应不同的 candidate 次数。
+
+原始 `readback.bin`（内部轮次追加 `.1` 等）、`fixture.json`、`observations.json`、`execution.json` 是 pair 的必需产物，接受之前仍经过 M1 的 manifest/hash 检查。汇总额外生成 `comparisons.json` 和 `comparisons/<case>/<iteration>/diff.json`，记录容差、数值数量、最大绝对误差、首个不一致位置和两侧证据路径。JUnit/coverage 中 comparison 与两个执行结果分开，不能把相同 fallback 的两次运行判成扩展通过。当前所有 fixture 是固定输入，seed 被记录并核对，不宣称已有随机生成器。
+
+```powershell
+& $test --tb-plan --tb-suite extensions
+& $test --tb-run --tb-suite extensions --tb-layer-path C:/VulkanSDK/1.4.350.0/Bin
+# 参考机器：根据它应支持的范围填写 filter，skip 将导致非零退出。
+& $test --tb-run --tb-suite extensions --tb-filter '*-RhiRendering.opacity_micromap_ray_query' `
+    --tb-require-all --tb-layer-path C:/VulkanSDK/1.4.350.0/Bin
+# 可选 CTest 必测策略；这里只修改该构建树的新测试选项。
+cmake -S . -B build-pass-stages-nrd `
+    '-DMETALLIC_TESTBENCH_REQUIRED_EXTENSIONS=*-RhiRendering.opacity_micromap_ray_query'
+```
+
+上面的排除项仅适用于当前验证层环境：本机 1.4.350 被生产后端的 KHR OMM 版本检查禁用，后端要求至少 1.4.357。OMM reference 与 CPU bake 可以通过，但 target 为 SkipUnsupported，不能据此宣称 OMM GPU 路径已验证。安装兼容层后应将必测 filter 改为 `*`，重新执行 OMM pair；测试没有关闭 validation 绕过这个限制。
+
+pair 不允许 `--tb-profile` 覆盖，防止两侧配置含义漂移。`--tb-replay <variant-directory>` 只重放这一侧，保留其 target requirements；输出空的 comparison 集合，不声称重放了完整 pair。需要重新比较时用原 case filter 运行 extensions suite。
+
+覆盖边界：PTLAS 当前公共调用重写完整实例，并非任意 partition operation/update 队列；布局 pair 尚不涵盖所有 sampled/storage/格式组合；DGC 是 native compute pipeline 探针，不覆盖公共 draw/mesh/shader-object execution set。OMM/PositionFetch 仍复用合成场景集成 fixture，未把两套完整 scene builder 搬入裸 RHI。高级 AS/扩展的全格式、容量边界、压力和随机序列测试不因本轮通过而视作完成。
+
+### 本机验证记录（2026-09-27）
+
+已在 NVIDIA GeForce RTX 5070 Ti / 616.92、Release/MSVC、验证层 1.4.350 上构建 `MetallicRhiTests` 与 `Metallic`。全部 9 个 testbench CTest 作业通过；extensions 的 21 个 child 中 20 Pass、1 OMM target skip，9 个 comparison 中 8 Pass、1 OMM skip，全部 validation recorder 为零消息且无 overflow。必测策略排除上述 OMM pair 后 27 个执行/比较结果全部 Pass。
+
+另外验证了 PTLAS target 单侧 replay（Pass，comparison 集合为空）、把不可用 OMM 设为 require-all（保留 reference Pass，整体退出 1），以及旧入口 14 个受影响用例（13 Pass、1 OMM skip）。编辑器 smoke 完成 recorded/submitted/presented frame；这只是启动与提交检查，不代表新做过长期视觉稳定性验收。
 
 ## 添加用例
 

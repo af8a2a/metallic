@@ -1033,15 +1033,22 @@ METALLIC_REGISTER_RHI_TEST(SynchronizationEncodingTest);
 class PreparedExecutionViewsTest final : public RhiTest {
 public:
     PreparedExecutionViewsTest() { type = RhiTestType::Rendering; name = "prepared_execution_lazy_views_layout_policy"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::comparisonMetadata({"layouts.optimal.unified.preparedViews.draw.copy"}, bench::Layer::Rhi,
+            "core", {"core-unified", "unifiedLayouts", bench::Capability::UnifiedLayouts});
+    }
     RhiTestResult run(RhiTestContext& context) override
     {
         constexpr uint32_t extent = 32, bytes = extent * extent * 4;
         std::array<uint8_t, bytes> reference{};
         bool unifiedTested = false;
-        for (bool preferUnified : {false, true}) {
+        std::vector<uint8_t> observations;
+        const auto variants = context.deviceDesc ? std::vector<bool>{context.deviceDesc->preferUnifiedImageLayouts} : std::vector<bool>{false, true};
+        for (bool preferUnified : variants) {
             std::atomic_uint errors{0};
-            std::unique_ptr<render::Device> device;
-            REG_REQUIRE(render::createDevice({.applicationName = "Prepared execution lifetime", .enableValidation = context.enableValidation,
+            bench::TestDevice device;
+            REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Prepared execution lifetime", .enableValidation = context.enableValidation,
                 .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
                     if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
                         ++*static_cast<std::atomic_uint*>(target);
@@ -1061,7 +1068,9 @@ public:
                     .spirv = compiled[i].spirv,
                 }).transform([&](auto value) { modules[i] = std::move(value); }));
             }
-            auto foreign = context.device.createShaderModule({.spirv = compiled[0].spirv});
+            auto foreignDevice = bench::createTestDevice(context, {.enableValidation = context.enableValidation}, true);
+            REG_CHECK(foreignDevice);
+            auto foreign = foreignDevice->get()->createShaderModule({.spirv = compiled[0].spirv});
             REG_CHECK(foreign);
             const render::ShaderStageDesc fragment{modules[1].get()};
             REG_CHECK(render::hasError(device->createGraphicsPipeline({.vertexShader = {foreign->get()},
@@ -1157,7 +1166,9 @@ public:
                 readbacks[i]->invalidate();
                 const auto* pixels = static_cast<const uint8_t*>(readbacks[i]->map());
                 REG_CHECK(pixels && pixels[(extent / 2 * extent + extent / 2) * 4] > 0);
-                if (!preferUnified && i == 0) { std::memcpy(reference.data(), pixels, bytes); }
+                if ((!preferUnified || context.evidence) && i == 0) { std::memcpy(reference.data(), pixels, bytes); }
+                bench::readbackEvidence(context, "readback.bin", std::span<const uint8_t>(pixels, bytes));
+                observations.insert(observations.end(), pixels, pixels + bytes);
                 const bool same = std::memcmp(reference.data(), pixels, bytes) == 0;
                 readbacks[i]->unmap();
                 REG_CHECK(same);
@@ -1183,6 +1194,9 @@ public:
             REG_CHECK(cancelled.expired());
             REG_CHECK(errors.load() == 0);
         }
+        bench::comparisonEvidence(context, {{"extent", extent}, {"draws", 3}}, observations,
+            context.deviceDesc && context.deviceDesc->preferUnifiedImageLayouts);
+        if (context.evidence) { return RhiTestResult::pass("prepared views and three readbacks passed; parent compares layout policies"); }
         return RhiTestResult::pass(unifiedTested ? "GENERAL and optimal layouts produced identical PSO/shader-object readback" :
             "Optimal-layout fallback passed; unified image layouts unavailable on this device");
     }

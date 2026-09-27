@@ -2,6 +2,7 @@
 #include "RhiTest.h"
 #include "ValidationRecorder.h"
 #include "VulkanDiagnostics.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.h"
 #include "Runtime/Task/TaskSystem.h"
 #include <SDL3/SDL.h>
 #include <gtest/gtest.h>
@@ -13,6 +14,7 @@
 #include <thread>
 #include <set>
 #include <cstdlib>
+#include <cmath>
 
 namespace metallic::tests {
 std::vector<RhiTestRegistry::Factory> testbenchFaultFactories();
@@ -127,12 +129,19 @@ Json metadataJson(const Metadata& value)
     for (auto cap : value.requirements.capabilities) { caps.push_back(name(cap)); }
     for (auto queue : value.requirements.queues) { queues.push_back(int(queue)); }
     for (auto queue : value.requirements.timestampQueues) { timestampQueues.push_back(int(queue)); }
-    return {{"suite", value.suite}, {"layer", name(value.layer)}, {"profile", value.profile},
+    Json result{{"suite", value.suite}, {"layer", name(value.layer)}, {"profile", value.profile},
         {"isolation", "FreshProcess"}, {"requiresDevice", value.requirements.requiresDevice},
         {"validationRequired", value.requirements.validation != Validation::Off},
         {"minimumValidation", name(value.requirements.validation)},
         {"capabilities", caps}, {"queues", queues}, {"timestampQueues", timestampQueues}, {"nativeDescriptorPointers", value.requirements.nativeDescriptorPointers}, {"coverage", value.coverage}, {"timeoutMs", value.timeout.count()},
         {"artifacts", value.artifacts}};
+    if (value.comparison) {
+        const auto& pair = *value.comparison;
+        result["comparison"] = {{"targetProfile", pair.targetProfile}, {"toggle", pair.toggle},
+            {"capability", name(pair.capability)}, {"absoluteTolerance", pair.absoluteTolerance},
+            {"relativeTolerance", pair.relativeTolerance}, {"reductionCounter", pair.reductionCounter}};
+    }
+    return result;
 }
 
 Json profileJson(const Profile& value)
@@ -141,7 +150,8 @@ Json profileJson(const Profile& value)
     return {{"id", value.id}, {"validation", desc.enableSynchronizationValidation ? "sync" : desc.enableValidation ? "core" : "off"},
         {"shaderObject", desc.enableShaderObject}, {"bindless", desc.enableBindlessDescriptorHeap},
         {"asyncCompute", desc.enableAsyncCompute}, {"unifiedLayouts", desc.preferUnifiedImageLayouts},
-        {"rayQuery", desc.enableRayQuery}, {"opacityMicromap", desc.enableOpacityMicromap},
+        {"rayQuery", desc.enableRayQuery}, {"rayTracingAS", desc.enableRayTracingAccelerationStructure},
+        {"partitionedAS", desc.enablePartitionedAccelerationStructure}, {"clusterAS", desc.enableClusterAccelerationStructure}, {"opacityMicromap", desc.enableOpacityMicromap},
         {"positionFetch", desc.enableRayTracingPositionFetch}, {"dgc", desc.enableDeviceGeneratedCommands},
         {"streamline", desc.enableStreamline}, {"aftermath", desc.enableAftermath}};
 }
@@ -242,6 +252,13 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
         }
         verdict = evaluate(selected.metadata.requirements, config, device->capabilities(), queues, activeValidation(*device));
         if (verdict.status != Status::Pass) { return; }
+        if (selected.metadata.comparison && selected.metadata.comparison->capability == Capability::GeneratedCommands &&
+            input.value("variant", "reference") == "target") {
+            const auto properties = render::vulkan::queryGeneratedCommandsProperties(*device);
+            if (!properties || !(properties->supportedIndirectCommandsShaderStagesPipelineBinding & VK_SHADER_STAGE_COMPUTE_BIT)) {
+                verdict = {Status::SkipUnsupported, "DGC compute pipeline binding is unavailable"}; return;
+            }
+        }
         if (selected.metadata.requirements.nativeDescriptorPointers && !nativeDescriptorPointersEnabled(*device)) {
             verdict = {Status::SkipUnsupported, "native descriptor pointers are not enabled"}; return;
         }
@@ -324,6 +341,10 @@ int child(const Options& options)
     const auto catalog = cases();
     const auto selected = std::find_if(catalog.begin(), catalog.end(), [&](const auto& value) { return value.id == input.at("id").get<std::string>(); });
     if (selected == catalog.end()) { throw std::runtime_error("case is not migrated to testbench"); }
+    auto selectedCase = *selected;
+    if (selectedCase.metadata.comparison && input.value("variant", "reference") == "target") {
+        selectedCase.metadata.requirements.capabilities.push_back(selectedCase.metadata.comparison->capability);
+    }
     const auto id = selected->id;
     const auto dot = id.find('.');
     const auto directory = options.input.parent_path();
@@ -336,7 +357,7 @@ int child(const Options& options)
     // Write its observed verdict through filesystem::path after RUN_ALL_TESTS.
     GTEST_FLAG_SET(output, "");
     ::testing::RegisterTest(id.substr(0, dot).c_str(), id.substr(dot + 1).c_str(), nullptr, nullptr,
-        __FILE__, __LINE__, [value = *selected, input, directory]() -> ChildAdapter* { return new ChildAdapter(value, input, directory); });
+        __FILE__, __LINE__, [value = selectedCase, input, directory]() -> ChildAdapter* { return new ChildAdapter(value, input, directory); });
     const int result = RUN_ALL_TESTS();
     if (childResult.is_null()) { throw std::runtime_error("child did not produce a verdict"); }
     if (result && !childResult["failed"].get<bool>()) {
@@ -429,14 +450,27 @@ int parent(const Options& options)
         const auto configId = replay.is_null() ? (options.profile.empty() ? selected.metadata.profile : options.profile) : replay.at("profile").get<std::string>();
         const auto validation = replay.is_null() ? options.validation : parseValidation(replay.at("validation").get<std::string>());
         if (!profile(configId, validation)) { throw std::runtime_error("invalid replay/profile"); }
+        std::vector<std::string> configurations{configId};
+        if (selected.metadata.comparison && replay.is_null()) {
+            if (!options.profile.empty()) { throw std::runtime_error("paired cases require their declared profiles"); }
+            configurations.push_back(selected.metadata.comparison->targetProfile);
+        }
         for (uint32_t iteration = 0; iteration < options.repeat; ++iteration) {
-            plan.push_back({{"schema", 1}, {"id", selected.id}, {"profile", configId},
-                {"validation", name(validation)},
-                {"seed", replay.is_null() ? options.seed : replay.at("seed").get<uint64_t>()},
-                {"iteration", iteration}, {"metadata", metadataJson(selected.metadata)},
-                {"binaryHash", executableHash}, {"timeoutMs", selected.metadata.timeout.count()}});
-            plan.back()["layerPath"] = replay.is_null() ? utf8(options.layerPath) : replay.value("layerPath", std::string{});
-            plan.back()["shaderFingerprint"] = shaderFingerprint;
+            for (const auto& configuration : configurations) {
+                plan.push_back({{"schema", 1}, {"id", selected.id}, {"profile", configuration},
+                    {"validation", name(validation)},
+                    {"seed", replay.is_null() ? options.seed : replay.at("seed").get<uint64_t>()},
+                    {"iteration", iteration}, {"metadata", metadataJson(selected.metadata)},
+                    {"binaryHash", executableHash}, {"timeoutMs", selected.metadata.timeout.count()}});
+                plan.back()["layerPath"] = replay.is_null() ? utf8(options.layerPath) : replay.value("layerPath", std::string{});
+                plan.back()["shaderFingerprint"] = shaderFingerprint;
+                if (selected.metadata.comparison) {
+                    plan.back()["variant"] = configuration == selected.metadata.profile ? "reference" : "target";
+                    if (configuration == selected.metadata.comparison->targetProfile) {
+                        plan.back()["metadata"]["capabilities"].push_back(name(selected.metadata.comparison->capability));
+                    }
+                }
+            }
         }
     }
     if (plan.empty()) { throw std::runtime_error("no migrated cases selected"); }
@@ -491,6 +525,35 @@ int parent(const Options& options)
                 {"executed", result.at("executed")}, {"status", result.at("status")}});
         }
     }
+    Json comparisons = Json::array();
+    if (replay.is_null()) {
+        for (const auto& input : plan) {
+            if (input.value("variant", "") != "target") { continue; }
+            const auto& spec = input.at("metadata").at("comparison");
+            const auto id = input.at("id").get<std::string>();
+            const auto iteration = std::to_string(input.at("iteration").get<uint32_t>());
+            const auto reference = root / input.at("metadata").at("profile").get<std::string>() / id / iteration;
+            const auto target = root / input.at("profile").get<std::string>() / id / iteration;
+            auto result = compareEvidence(reference, target, spec);
+            result["id"] = id + ".comparison";
+            result["profile"] = "comparison";
+            result["iteration"] = input.at("iteration");
+            if (options.requireAll && result.at("status") != "Pass" && !result.at("failed").get<bool>()) {
+                result["policyFailure"] = true;
+            }
+            failure |= result.at("failed").get<bool>() || result.value("policyFailure", false);
+            result["specification"] = spec;
+            Evidence(root / "comparisons" / id / iteration).json("diff.json", result);
+            comparisons.push_back(result);
+            results.push_back(result);
+            coverage.push_back({{"claim", spec.at("toggle").get<std::string>() + ".differential"},
+                {"id", result.at("id")}, {"profile", "comparison"}, {"iteration", input.at("iteration")},
+                {"executed", result.at("executed")}, {"status", result.at("status")}});
+            std::cout << result.at("status").get<std::string>() << " " << id << " [comparison] "
+                << result.at("message").get<std::string>() << '\n';
+        }
+    }
+    evidence.json("comparisons.json", comparisons);
     evidence.json("results.json", {{"schema", 1}, {"failed", failure}, {"cases", results}});
     evidence.json("coverage.json", {{"schema", 1}, {"scope", "selected migrated cases only; iterations are not independent coverage"}, {"observations", coverage}});
     writeReport(root / "gtest.xml", results);
@@ -572,6 +635,102 @@ Json verifyChild(const std::filesystem::path& directory, const Json& input, Proc
     } catch (const std::exception& error) { failure["message"] = error.what(); return failure; }
 }
 
+Json compareEvidence(const std::filesystem::path& reference, const std::filesystem::path& target, const Json& spec)
+{
+    Json result{{"status", "Fail"}, {"failed", true}, {"executed", false}, {"message", ""},
+        {"reference", utf8(reference)}, {"target", utf8(target)}, {"comparedValues", 0}, {"maximumAbsoluteError", 0.0}};
+    try {
+        const auto aResult = readJson(reference / "parent-result.json"), bResult = readJson(target / "parent-result.json");
+        if (aResult.at("failed").get<bool>() || bResult.at("failed").get<bool>()) {
+            throw std::runtime_error("reference or target failed; comparison cannot pass");
+        }
+        if (aResult.at("status") != "Pass" || bResult.at("status") != "Pass") {
+            result["status"] = "SkipUnsupported"; result["failed"] = false;
+            result["message"] = "reference or target unavailable; individual verdicts retained";
+            return result;
+        }
+        if (!aResult.at("executed").get<bool>() || !bResult.at("executed").get<bool>()) {
+            throw std::runtime_error("both paths must execute");
+        }
+        const auto aInput = readJson(reference / "input.json"), bInput = readJson(target / "input.json");
+        for (const auto* key : {"id", "seed", "iteration", "binaryHash", "shaderFingerprint", "validation", "layerPath"}) {
+            if (aInput.at(key) != bInput.at(key)) { throw std::runtime_error(std::string("input mismatch: ") + key); }
+        }
+        if (aInput.at("variant") != "reference" || bInput.at("variant") != "target") {
+            throw std::runtime_error("reference/target identities are missing");
+        }
+        const auto aDevice = readJson(reference / "capabilities.json"), bDevice = readJson(target / "capabilities.json");
+        for (const auto* key : {"uuid", "driverVersion", "driverInfo", "apiVersion", "validationMode"}) {
+            if (aDevice.at(key) != bDevice.at(key)) { throw std::runtime_error(std::string("device mismatch: ") + key); }
+        }
+        bool targetEnabled = false;
+        for (const auto& cap : bDevice.at("capabilities")) {
+            if (cap.at("id") == spec.at("capability")) {
+                targetEnabled = cap.at("requested").get<bool>() && cap.at("enabled").get<bool>();
+            }
+        }
+        if (!targetEnabled) { throw std::runtime_error("target feature was not requested and enabled"); }
+        auto aProfile = readJson(reference / "profile.json"), bProfile = readJson(target / "profile.json");
+        const auto toggle = spec.at("toggle").get<std::string>();
+        if (aProfile.at(toggle).get<bool>() || !bProfile.at(toggle).get<bool>()) {
+            throw std::runtime_error("feature toggle did not select distinct paths");
+        }
+        aProfile.erase("id"); bProfile.erase("id"); aProfile.erase(toggle); bProfile.erase(toggle);
+        if (aProfile != bProfile) { throw std::runtime_error("profiles differ beyond the declared feature toggle"); }
+        if (readJson(reference / "fixture.json") != readJson(target / "fixture.json")) {
+            throw std::runtime_error("fixture inputs differ");
+        }
+        if (readJson(reference / "execution.json").at("targetUsed").get<bool>() ||
+            !readJson(target / "execution.json").at("targetUsed").get<bool>()) {
+            throw std::runtime_error("missing target execution evidence (fallback/fallback is not a comparison)");
+        }
+        const auto a = readJson(reference / "observations.json"), b = readJson(target / "observations.json");
+        const double absolute = spec.at("absoluteTolerance"), relative = spec.at("relativeTolerance");
+        if (!std::isfinite(absolute) || !std::isfinite(relative) || absolute < 0 || relative < 0) {
+            throw std::runtime_error("invalid numeric tolerance");
+        }
+        size_t count = 0;
+        double maximumError = 0;
+        std::string mismatch;
+        const auto compare = [&](auto&& self, const Json& left, const Json& right, std::string path) -> void {
+            if (left.is_number() && right.is_number()) {
+                ++count;
+                const double x = left.get<double>(), y = right.get<double>(), error = std::abs(x - y);
+                maximumError = std::max(maximumError, error);
+                const bool exact = left.is_number_integer() || right.is_number_integer();
+                if (!std::isfinite(x) || !std::isfinite(y) ||
+                    (exact ? left != right : error > absolute + relative * std::max(std::abs(x), std::abs(y)))) {
+                    if (mismatch.empty()) { mismatch = path + ": " + left.dump() + " != " + right.dump(); }
+                }
+            } else if (left.is_array() && right.is_array() && left.size() == right.size()) {
+                for (size_t i = 0; i < left.size(); ++i) { self(self, left[i], right[i], path + "/" + std::to_string(i)); }
+            } else if (left.is_object() && right.is_object() && left.size() == right.size()) {
+                for (auto it = left.begin(); it != left.end(); ++it) {
+                    if (!right.contains(it.key())) { throw std::runtime_error("observation keys differ at " + path); }
+                    self(self, it.value(), right.at(it.key()), path + "/" + it.key());
+                }
+            } else if (left != right || left.is_null()) {
+                if (mismatch.empty()) { mismatch = "observation mismatch/nonfinite value at " + path; }
+            }
+        };
+        result["executed"] = true;
+        compare(compare, a, b, "observations");
+        result["comparedValues"] = count;
+        result["maximumAbsoluteError"] = maximumError;
+        if (!mismatch.empty()) { throw std::runtime_error(mismatch); }
+        if (!count) { throw std::runtime_error("empty numeric observations"); }
+        if (const auto counter = spec.value("reductionCounter", std::string{}); !counter.empty()) {
+            const auto referenceCount = readJson(reference / counter).at("candidates").get<uint64_t>();
+            const auto targetCount = readJson(target / counter).at("candidates").get<uint64_t>();
+            result["referenceCandidates"] = referenceCount; result["targetCandidates"] = targetCount;
+            if (targetCount >= referenceCount / 2) { throw std::runtime_error("target did not halve shader alpha candidates"); }
+        }
+        result["status"] = "Pass"; result["failed"] = false;
+        result["message"] = "isolated reference/target outputs agree";
+    } catch (const std::exception& error) { result["message"] = error.what(); }
+    return result;
+}
+
 std::optional<int> runIfRequested(int argc, char** argv)
 {
     bool requested = false;
@@ -583,9 +742,9 @@ std::optional<int> runIfRequested(int argc, char** argv)
         for (auto& argument : arguments) { pointers.push_back(argument.data()); }
         const auto options = parse(int(pointers.size()), pointers.data());
         if (options.mode == "--tb-help") {
-            std::cout << "Metallic M1/M2 testbench (Windows process isolation)\n"
+            std::cout << "Metallic M1/M2/M3 testbench (Windows process isolation)\n"
                 "  --tb-plan | --tb-run | --tb-replay <case-directory> | --tb-self-test\n"
-                "  --tb-suite core|contract|binding|sync|async  --tb-profile core|binding|async\n"
+                "  --tb-suite core|contract|binding|sync|async|extensions  --tb-profile <standalone-profile>\n"
                 "  --tb-filter <GoogleTest-pattern>  --tb-repeat 1..1000  --tb-seed <uint64>\n"
                 "  --tb-validation core|sync|off  --tb-require-all  --output-dir <empty-directory>\n"
                 "  --tb-layer-path <explicit-layer-directory> (isolates implicit layers in child)\n"

@@ -1,4 +1,5 @@
 #include "RhiTest.h"
+#include "harness/RayQueryFixture.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -27,15 +28,23 @@ public:
             : (native ? "unified_top_level_standard_native" : "unified_top_level_standard");
     }
 
+    std::optional<bench::Metadata> metadata() const override
+    {
+        if (!partitioned_) { return std::nullopt; }
+        return bench::comparisonMetadata({"rayQuery.analytic.hit.miss.mask.distance.barycentric.frontFace", "topLevel.typedBackend.contract.lifetime", "topLevel.transform.standardRefit.partitionedRebuild"},
+            bench::Layer::Rhi, "ray-query", {"ray-query-ptlas", "partitionedAS", bench::Capability::PartitionedAS, 0.00001}, native_);
+    }
+
     RhiTestResult run(RhiTestContext& context) override
     {
         using namespace render;
+        const bool usePartitioned = context.deviceDesc ? context.deviceDesc->enablePartitionedAccelerationStructure : partitioned_;
         std::string log;
         std::atomic_uint validationErrors = 0;
-        auto created = createDevice({.applicationName = "Unified TLAS test",
+        auto created = bench::createTestDevice(context, {.applicationName = "Unified TLAS test",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
             .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
-            .enablePartitionedAccelerationStructure = partitioned_,
+            .enablePartitionedAccelerationStructure = usePartitioned,
             .validationSink = {.callback = [](void* data, const ValidationMessage& message) noexcept {
                 if (message.messageIdName && std::strstr(message.messageIdName, "VUID-")) {
                     ++*static_cast<std::atomic_uint*>(data);
@@ -46,18 +55,18 @@ public:
         auto& device = **created;
         TLAS_CHECK(hasError(device.createRayTracingAccelerationStructure(RayTracingAccelerationStructureDesc{}), Error::InvalidArgument));
         TLAS_CHECK(hasError(device.createRayTracingAccelerationStructure(PartitionedAccelerationStructureDesc{}), Error::InvalidArgument));
-        if (partitioned_ && !device.capabilities().partitionedAccelerationStructure) {
+        if (usePartitioned && !device.capabilities().partitionedAccelerationStructure) {
             return RhiTestResult::skip("PTLAS unavailable");
         }
         auto& queue = *device.getQueue(QueueType::Graphics);
-        constexpr float vertices[] = {0, 0, 2, 1, 0, 2, 0, 1, 2};
+        const auto& vertices = bench::kRayVertices;
         auto vertex = device.createBuffer({.size = sizeof(vertices),
             .usage = BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress,
             .memoryLocation = MemoryLocation::HostUpload});
         TLAS_REQUIRE(vertex);
         void* mapped = (*vertex)->map();
         TLAS_CHECK(mapped);
-        std::memcpy(mapped, vertices, sizeof(vertices));
+        std::memcpy(mapped, vertices.data(), sizeof(vertices));
         (*vertex)->flush();
         (*vertex)->unmap();
         const RayTracingTriangleGeometryDesc geometry{.vertexBuffer = vertex->get(), .vertexStride = 12,
@@ -81,8 +90,8 @@ public:
         TLAS_REQUIRE(instances);
         std::unique_ptr<RayTracingAccelerationStructure> partitioned;
         std::unique_ptr<Buffer> partitionedInstances;
-        uint64_t scratchSize = std::max(blasSizes->buildScratchSize, standardSizes->buildScratchSize);
-        if (partitioned_) {
+        uint64_t scratchSize = std::max({blasSizes->buildScratchSize, standardSizes->buildScratchSize, standardSizes->updateScratchSize});
+        if (usePartitioned) {
             const PartitionedAccelerationStructureBuildInputs inputs{.instanceCount = 1,
                 .partitionCount = 1, .maxInstancePerPartitionCount = 1};
             auto sizes = device.queryPartitionedAccelerationStructureBuildSizes(inputs);
@@ -125,8 +134,8 @@ public:
         }, log);
         if (native_ && hasError(initialized, Error::Unsupported)) { return RhiTestResult::skip("native descriptor heap unavailable"); }
         TLAS_REQUIRE(initialized);
-        using Probe = std::array<std::array<uint32_t, 2>, 3>;
-        auto output = device.createBuffer({.size = sizeof(Probe), .structureStride = 8, .usage = BufferUsageBits::Storage,
+        using Probe = bench::RayObservations;
+        auto output = device.createBuffer({.size = sizeof(Probe), .structureStride = sizeof(bench::RayObservation), .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::HostReadback});
         TLAS_REQUIRE(output);
         ResourceRegistry registry;
@@ -167,7 +176,7 @@ public:
         }));
         TLAS_REQUIRE((*commands)->buildRayTracingAccelerationStructure({.destination = standard->get(),
             .instanceBuffer = instances->get(), .instanceCount = 1, .scratchBuffer = scratch->get()}));
-        if (partitioned_) {
+        if (usePartitioned) {
             TLAS_CHECK(hasError((*commands)->buildRayTracingAccelerationStructure({.destination = partitioned.get(),
                 .instanceBuffer = instances->get(), .instanceCount = 1, .scratchBuffer = scratch->get()}), Error::InvalidArgument));
             TLAS_CHECK(hasError((*commands)->buildRayTracingAccelerationStructure({.destination = standard->get(), .source = partitioned.get(),
@@ -183,7 +192,7 @@ public:
         }
         // Reuse the same shader, program, layout, binding slot and heap handle for both backends.
         std::array<RayTracingAccelerationStructure*, 2> structures{standard->get(), partitioned.get()};
-        for (uint32_t backend = 0; backend < (partitioned_ ? 2u : 1u); ++backend) {
+        for (uint32_t backend = context.evidence && usePartitioned ? 1u : 0u; backend < (usePartitioned ? 2u : 1u); ++backend) {
             auto& structure = *structures[backend];
             const auto address = structure.deviceAddress();
             TLAS_CHECK(structure.valid() && address && structure.desc().type == RayTracingAccelerationStructureType::TopLevel);
@@ -194,29 +203,54 @@ public:
             TLAS_REQUIRE((*heap)->writeAccelerationStructure(*handle, structure));
             TLAS_REQUIRE(registry.accelerationStructure(structure).transform([&](auto value) { lease = std::move(value); }));
             TLAS_CHECK(lease.kind() == ShaderResourceKind::AccelerationStructure && lease.shaderValue() == address);
-            const ComputeDispatchBinding bindings[] = {{.binding = 0, .accelerationStructure = &structure}, {.binding = 1, .buffer = output->get()}};
-            TLAS_REQUIRE(program.dispatch({.commandBuffer = commands->get(), .bindings = {bindings, 2}}));
-            TLAS_REQUIRE((*commands)->end());
-            CommandBuffer* submitted[] = {commands->get()};
-            TLAS_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
-            TLAS_REQUIRE(frame.wait(10'000'000'000ull));
-            Probe actual{};
-            const void* readback = (*output)->map();
-            TLAS_CHECK(readback);
-            (*output)->invalidate();
-            std::memcpy(actual.data(), readback, sizeof(actual));
-            (*output)->unmap();
-            const Probe expected{{{1, 37}, {0, UINT32_MAX}, {0, UINT32_MAX}}};
-            TLAS_CHECK(actual == expected);
-            TLAS_REQUIRE((*pool)->reset());
-            TLAS_REQUIRE(frame.reset());
+            bench::Json observations = bench::Json::array();
+            for (uint32_t step = 0; step < 2; ++step) {
+                const float translationX = step ? 0.4f : 0.0f;
+                if (step) {
+                    TLAS_REQUIRE(frame.begin(step));
+                    TLAS_REQUIRE((*commands)->begin(&frame));
+                    if (backend == 0) {
+                        auto changed = instance; changed.transform[0][3] = translationX;
+                        TLAS_REQUIRE(device.createRayTracingInstanceBuffer({&changed, 1}).transform([&](auto value) { *instances = std::move(value); }));
+                        TLAS_REQUIRE((*commands)->buildRayTracingAccelerationStructure({.destination = &structure, .source = &structure,
+                            .mode = RayTracingAccelerationStructureBuildMode::Update, .instanceBuffer = instances->get(),
+                            .instanceCount = 1, .scratchBuffer = scratch->get()}));
+                    } else {
+                        PartitionedAccelerationStructureInstanceDesc changed{.bottomLevel = blas->get(), .customIndex = 37, .mask = 1};
+                        changed.transform[0][3] = translationX;
+                        TLAS_REQUIRE(device.createPartitionedAccelerationStructureInstanceBuffer({&changed, 1}).transform([&](auto value) { partitionedInstances = std::move(value); }));
+                        // The public PTLAS API currently rewrites all instances into the same allocation.
+                        TLAS_REQUIRE((*commands)->buildPartitionedAccelerationStructure({.destination = &structure,
+                            .instanceBuffer = partitionedInstances.get(), .instanceCount = 1, .scratchBuffer = scratch->get()}));
+                    }
+                    TLAS_CHECK(structure.deviceAddress() == address);
+                }
+                const ComputeDispatchBinding bindings[] = {{.binding = 0, .accelerationStructure = &structure}, {.binding = 1, .buffer = output->get()}};
+                TLAS_REQUIRE(program.dispatch({.commandBuffer = commands->get(), .bindings = {bindings, 2}}));
+                TLAS_REQUIRE((*commands)->end());
+                CommandBuffer* submitted[] = {commands->get()};
+                TLAS_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
+                TLAS_REQUIRE(frame.wait(10'000'000'000ull));
+                Probe actual{};
+                const void* readback = (*output)->map();
+                TLAS_CHECK(readback);
+                (*output)->invalidate();
+                std::memcpy(actual.data(), readback, sizeof(actual));
+                (*output)->unmap();
+                bench::readbackEvidence(context, "readback.bin", std::span<const bench::RayObservation>(actual));
+                observations.push_back(bench::rayOracle(actual, translationX));
+                TLAS_REQUIRE((*pool)->reset());
+                TLAS_REQUIRE(frame.reset());
+            }
+            auto fixture = bench::rayFixture(); fixture["native"] = native_; fixture["translationX"] = {0.0f, 0.4f};
+            bench::comparisonEvidence(context, fixture, observations, backend == 1);
             std::weak_ptr<void> allocation = structure.retainAllocation();
             structure = {};
             TLAS_CHECK(!allocation.expired());
             lease = {};
             registry.collect();
             TLAS_CHECK(allocation.expired());
-            if (partitioned_ && backend == 0) {
+            if (usePartitioned && backend == 0) {
                 TLAS_REQUIRE(frame.begin(1));
                 TLAS_REQUIRE((*commands)->begin(&frame));
             }
