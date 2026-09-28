@@ -28,6 +28,7 @@
                 "maxResidentPages": 0,
                 "maxLockedFallbackPages": 65536,
                 "maxActiveGroups": 1048575,
+                "maxRasterCandidates": 8388608,
                 "maxPageUploadsPerFrame": 256,
                 "maxUploadBytesPerFrame": 8388608,
                 "maxPageLoadsInFlight": 1024,

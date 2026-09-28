@@ -38,7 +38,7 @@ public:
         const uint32_t strides[] = {sizeof(MeshletStreamGpuActiveHeader), sizeof(MeshletStreamGpuActiveGroup),
             sizeof(MeshletStreamGpuParams), 4, sizeof(StreamPageTableEntry), sizeof(MeshletStreamGpuRasterBindings),
             4, sizeof(VisibleClusterRecord), sizeof(GPUSceneGpuInstanceRecord), 4};
-        const uint32_t counts[] = {1, 2, 1, pageBytes / 4, 1, 1, 2, capacity, 2, 16 + 5 * capacity};
+        const uint32_t counts[] = {1, 2, 1, pageBytes / 4, 1, 1, 2, capacity, 2, 16 + 9 * capacity + 5};
         std::unique_ptr<BindlessHeap> heap;
         MESH_REQUIRE(device->createBindlessHeap({.maxBuffers = InputCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<BindlessHandle, InputCount> handles;
@@ -168,7 +168,7 @@ public:
                 .instanceVisibilityBuffer = handles[Visibility].shaderIndex, .visibleRecordBase = kVisibilityMaxRecordCount - capacity,
                 .visibleRecordCapacity = capacity, .gpuSceneInstanceBuffer = handles[Instances].shaderIndex};
             const std::array<uint32_t, 2> visibility{test == 7 ? 3u : 1u, test == 7 ? 3u : 1u};
-            std::array<uint32_t, 16 + 5 * capacity> bins{};
+            std::array<uint32_t, 16 + 9 * capacity + 5> bins{};
             bins[0] = capacity; bins[5] = capacity;
             // Deliberately reordered records exercise stable primitive order at equal depth.
             bins[16] = 2; bins[17] = 0; bins[18] = 3; bins[19] = 1;
@@ -176,9 +176,15 @@ public:
             MESH_REQUIRE(upload(Params, &params, sizeof(params))); MESH_REQUIRE(upload(Pages, page.data(), page.size()));
             MESH_REQUIRE(upload(PageTable, &entry, sizeof(entry))); MESH_REQUIRE(upload(Bindings, &bindings, sizeof(bindings)));
             MESH_REQUIRE(upload(Visibility, visibility.data(), sizeof(visibility))); MESH_REQUIRE(upload(Instances, instances.data(), sizeof(instances)));
-            MESH_REQUIRE(upload(Bins, bins.data(), sizeof(bins)));
-            for (uint32_t mode = 0; mode < 3; ++mode) {
-                const bool prebinned = mode == 0, hybridQueue = mode == 2;
+            for (uint32_t mode = 0; mode < 4; ++mode) {
+                const bool fallback = mode == 3;
+                const bool prebinned = mode == 0 || fallback, hybridQueue = mode == 2;
+                if (fallback) {
+                    // Four record IDs through two candidate slots. Bin 0 holds group masks.
+                    bins.fill(0); bins[0] = capacity; bins[5] = 2; bins[13] = 2;
+                    bins[14] = 2; bins[15] = 2; bins[16] = bins[17] = 3;
+                }
+                MESH_REQUIRE(upload(Bins, bins.data(), sizeof(bins)));
                 std::array<std::vector<uint32_t>, 2> reference;
                 for (uint32_t indexed = 0; indexed < 2; ++indexed) {
                     if (submitted) { MESH_REQUIRE(fence->reset()); MESH_REQUIRE(pool->reset()); }
@@ -217,7 +223,7 @@ public:
                         .activeHeaderBuffer = handles[Header].shaderIndex, .traversalPhase = test == 7 ? 1u : 0u,
                         .rasterBindingsBuffer = handles[Bindings].shaderIndex,
                         .hybridQueueBuffer = hybridQueue ? handles[Queue].shaderIndex : UINT32_MAX,
-                        .hybridClusterBuffer = prebinned ? handles[Bins].shaderIndex : UINT32_MAX};
+                        .hybridClusterBuffer = prebinned && (!fallback || indexed != 0) ? handles[Bins].shaderIndex : UINT32_MAX};
                     commands->pushBindlessData(&push, sizeof(push));
                     commands->drawMeshTasks(prebinned && indexed ? capacity : capacity * 2);
                     commands->endRendering();
@@ -286,7 +292,7 @@ public:
         }
         if (!sawSecondChunk || !sawHighId || softwareTriangles == 0) { return RhiTestResult::fail("Missing primitive ID or queue coverage"); }
         return RhiTestResult::pass(std::to_string(comparisons) +
-            " bit-exact HW/legacy-queue attachment comparisons: indexed vertices, 0/1/63/64/65/127/128 triangles, high IDs, clipping, equal depth, both windings/Z and render jitter");
+            " bit-exact HW/overflow/legacy-queue attachment comparisons: indexed vertices, 0/1/63/64/65/127/128 triangles, high IDs, clipping, equal depth, both windings/Z and render jitter");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamIndexedMeshTest);

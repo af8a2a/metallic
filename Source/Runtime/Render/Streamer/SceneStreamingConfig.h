@@ -231,6 +231,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
                 "maxActiveGroups",
                 kMeshletStreamDefaultMaxActiveGroups),
             1u),
+        .maxRasterCandidates = previewStreamUintProperty(properties, "maxRasterCandidates", kMeshletStreamDefaultMaxRasterCandidates),
         .maxTraversalWorkers = std::max(
             previewStreamUintProperty(
                 properties,
@@ -299,6 +300,7 @@ MeshletStreamRuntimeDesc assetStreamRuntimeDesc(const RenderGraphProperties& pro
         .maxActiveGroups = std::max<uint32_t>(
             previewStreamUintProperty(properties, "maxActiveGroups", kMeshletStreamDefaultMaxActiveGroups),
             1u),
+        .maxRasterCandidates = previewStreamUintProperty(properties, "maxRasterCandidates", kMeshletStreamDefaultMaxRasterCandidates),
         .maxTraversalWorkers = std::max<uint32_t>(
             previewStreamUintProperty(properties, "maxTraversalWorkers", kMeshletStreamDefaultTraversalWorkers),
             1u),

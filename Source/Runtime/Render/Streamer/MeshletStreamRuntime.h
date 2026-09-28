@@ -101,6 +101,7 @@ inline constexpr uint32_t kMeshletStreamBlasInstanceFallback = 1u << 0;
 inline constexpr uint32_t kMeshletStreamBlasInstanceDynamic = 1u << 1;
 inline constexpr uint32_t kMeshletStreamBlasInstanceOverflow = 1u << 2;
 inline constexpr uint32_t kMeshletStreamDefaultMaxActiveGroups = 262144;
+inline constexpr uint32_t kMeshletStreamDefaultMaxRasterCandidates = 8u * 1024u * 1024u;
 inline constexpr uint32_t kMeshletStreamDefaultTraversalWorkers = 1024;
 inline constexpr uint32_t kMeshletStreamDefaultTraversalWorkItems = 1048576;
 inline constexpr uint32_t kMeshletStreamDefaultMaxBlasBuilds = 65536;
@@ -449,6 +450,9 @@ struct MeshletStreamRuntimeDesc {
     uint32_t maxGpuPageRequests = kMeshletStreamDefaultMaxGpuPageRequests;
     uint32_t maxGpuPageUnloadRequests = kMeshletStreamDefaultMaxGpuPageRequests;
     uint32_t maxActiveGroups = kMeshletStreamDefaultMaxActiveGroups;
+    // Candidate/bin scratch is independent of the padded visibility record namespace.
+    // Zero restores legacy sizing. The resolved capacity also covers per-group masks.
+    uint32_t maxRasterCandidates = kMeshletStreamDefaultMaxRasterCandidates;
     uint32_t maxTraversalWorkers = kMeshletStreamDefaultTraversalWorkers;
     uint32_t maxTraversalWorkItems = kMeshletStreamDefaultTraversalWorkItems;
     uint32_t pageLoadConcurrency = 2;
@@ -562,6 +566,7 @@ public:
     MeshletStreamDeferredGpuResourcesView deferredGpuResources() const;
     uint32_t frameIndex() const { return frameIndex_; }
     uint32_t visibleClusterCapacity() const;
+    uint32_t rasterCandidateCapacity() const { return rasterCandidateCapacity_; }
     uint32_t drawTaskCount() const;
     void cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation = false) const;
     const scene::Bounds& bounds() const { return drawBounds_; }
@@ -780,6 +785,7 @@ private:
     uint64_t maxResidentBytes_ = 0;
     std::vector<uint32_t> lockedFallbackPages_;
     uint32_t maxActiveGroups_ = 0;
+    uint32_t rasterCandidateCapacity_ = 0;
     uint32_t maxActiveGroupClusters_ = 0;
     uint32_t maxPrimitiveGroupCount_ = 0;
     uint32_t traversalWorkerCount_ = 0;

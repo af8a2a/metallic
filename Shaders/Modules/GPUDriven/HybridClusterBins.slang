@@ -25,6 +25,16 @@ public bool hybridBinRecord(StructuredBuffer<uint> bins, uint bin, uint item, ou
     return true;
 }
 
+// Overflow stream stages retain their complete phase masks instead of emitting
+// a truncated list. HW scans the original record namespace; stable IDs survive.
+public bool hybridStreamHardwareRecord(StructuredBuffer<uint> bins, uint item, out uint record)
+{
+    if (bins[14] == 0u) { return hybridBinRecord(bins, 0u, item, record); }
+    record = item;
+    if (item >= bins[15] * bins[13]) { return false; }
+    return (bins[kHybridBinHeaderWords + item / bins[13]] & (1u << (item % bins[13]))) != 0u;
+}
+
 public static const uint kHybridBinBlockSize = 128u;
 public uint hybridCandidateBase(uint capacity) { return kHybridBinHeaderWords + kHybridBinCount * capacity; }
 public uint hybridRankBase(uint capacity) { return hybridCandidateBase(capacity) + 2u * capacity; }

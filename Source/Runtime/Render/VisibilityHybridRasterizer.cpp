@@ -239,7 +239,9 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
 Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
     uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact, bool tessellation)
 {
-    if (inputCount > push_.clusterCapacity) { return makeError(Error::InvalidArgument); }
+    // Compact stream preparation checks its actual candidate count on GPU and
+    // falls back to HW when scratch is exhausted. Record IDs remain unbounded by scratch.
+    if (inputCount > push_.clusterCapacity && !(stream && compact)) { return makeError(Error::InvalidArgument); }
     // Full HW never touches the software queue/pixel buffers; retain their
     // last resolved state so switching back to hybrid remains valid.
     if (stream && maxPixels == 0.0f) {
@@ -256,7 +258,7 @@ Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, floa
     const BufferBarrierDesc barriers[] = {
         {
             .buffer = clusterBuffer_.get(),
-            .before = resourceSyncScope(clusterInitialized_ ? ResourceState::ShaderRead : ResourceState::Undefined, PipelineStageBits::AllCommands),
+            .before = {PipelineStageBits::AllCommands, clusterInitialized_ ? AccessBits::MemoryRead | AccessBits::MemoryWrite : AccessBits::None},
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         },
         {
@@ -382,7 +384,8 @@ Result<> VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
         else if (blocks != 0) { commands.dispatch(std::min(blocks, kDispatchWidth), (blocks + kDispatchWidth - 1u) / kDispatchWidth); }
         if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     }
-    barrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
+    // Overflow HW raster publishes early-phase retry masks in this buffer.
+    barrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite};
     if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
     barrier = {
         .buffer = clusterArguments_.get(),

@@ -18,15 +18,18 @@ void streamTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     bool prebinned = push.hybridClusterBuffer != 0xffffffffu;
     uint record = candidate;
     bool valid = true;
+    bool overflowHardware = false;
     if (prebinned) {
         DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
-        valid = hybridBinRecord(bins, 0u, candidate, record);
+        overflowHardware = bins[14] != 0u;
+        valid = hybridStreamHardwareRecord(bins, candidate, record);
     }
     if (lane == 0u) {
-        bool retry;
-        // Only the first task updates the early/late retry state for this cluster.
-        g_StreamMeshValid = valid && loadStreamRasterCluster(record, !prebinned,
-            !prebinned && first == 0u, push, g_StreamMeshCluster, retry) ? 1u : 0u;
+        bool retry = false;
+        // Only the first task publishes records and the early/late retry mask.
+        g_StreamMeshValid = valid && loadStreamRasterCluster(record, !prebinned || overflowHardware,
+            (!prebinned || overflowHardware) && first == 0u, push, g_StreamMeshCluster, retry) ? 1u : 0u;
+        if (overflowHardware && first == 0u) { publishStreamHardwareRetry(record, retry, push); }
     }
     GroupMemoryBarrierWithGroupSync();
     valid = g_StreamMeshValid != 0u;

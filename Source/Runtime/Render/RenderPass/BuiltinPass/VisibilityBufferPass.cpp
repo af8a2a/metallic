@@ -1137,6 +1137,8 @@ private:
         return {{"mode", mode}, {"module", module}, {"entryPoint", entries[mode]},
             {"spirvFnv1a64", hash == shaderHashes_.end() ? "" : hash->second},
             {"thresholdPixels", softwareRasterMaxPixels()}, {"prebin", clusterPrebinEnabled()},
+            {"candidateCapacity", hybridRasterizer_ ? hybridRasterizer_->clusterCapacity() : 0u},
+            {"candidateBufferBytes", hybridRasterizer_ ? hybridRasterizer_->clusterBuffer().desc().size : 0ull},
             {"cullHardwareClassification", boolProperty(&properties(), "cullHardwareClassification", false)},
             {"forceHardware", boolProperty(&properties(), "benchmarkForceHardwareRaster", false)},
             {"asyncRequested", boolProperty(&properties(), "asyncSoftwareRaster", true)},
@@ -1168,7 +1170,8 @@ private:
                     ? RenderGraphProperties{{"headerWords", 16}, {"exactWord", 0}, {"fastSoftwareWord", 1}, {"fastHardwareWord", 2},
                         {"validity", "Post-cull counters; stable bin lists are not built yet"}}
                     : RenderGraphProperties{{"capacity", hybridRasterizer_->clusterCapacity()}, {"headerWords", 16},
-                        {"binCount", 5}, {"softwareBin", 4}, {"validity", "Each list has header[bin] live indices at 16 + bin * capacity"}}},
+                        {"binCount", 5}, {"softwareBin", 4}, {"overflowWord", 14},
+                        {"validity", "Normal: lists at 16 + bin * capacity. Stream overflow: HW scans group masks at 16; no live bin lists."}}},
             {.id = prefix + "arguments", .buffer = &hybridRasterizer_->clusterArguments(),
                 .state = ResourceState::IndirectArgument, .size = hybridRasterizer_->clusterArguments().desc().size}};
         // Before binning, the draw arguments are not ready for indirect use.
@@ -1920,8 +1923,8 @@ private:
         const bool ownerMaskLayoutChanged = streamEnabled_ &&
             (streamOwnerMaskBuffer_ == nullptr ||
                 streamOwnerMaskBuffer_->desc().size != expectedOwnerMaskBytes);
-        const bool clusterCapacityChanged = (hybridRasterizer_ && hybridRasterizer_->clusterCapacity() <
-            std::max(residentRecordCapacity_, streamEnabled_ ? streamRuntime_->visibleClusterCapacity() : 0u)) ||
+        const bool clusterCapacityChanged = (hybridRasterizer_ && hybridRasterizer_->clusterCapacity() !=
+            std::max({1u, residentRecordCapacity_, streamEnabled_ ? streamRuntime_->rasterCandidateCapacity() : 0u})) ||
             residentLods_.empty() || residentLods_.front()->capacity() < std::max(adaptiveMeshletRange_.count, 1u);
         if (!gpuSceneBindings_.drawSetGeneration &&
             !clusterCapacityChanged &&
@@ -3081,12 +3084,12 @@ private:
         height = height != 0 ? height : frameHeight_;
         GPUDrivenPreviewBindingBundle bundle;
         const uint32_t clusterCapacity = std::max({1u, residentRecordCapacity_,
-            streamEnabled_ ? streamRuntime_->visibleClusterCapacity() : 0u});
+            streamEnabled_ ? streamRuntime_->rasterCandidateCapacity() : 0u});
         if (device_->capabilities().shaderBufferInt64Atomics &&
             device_->capabilities().subPixelPrecisionBits >= 1 &&
             device_->capabilities().subPixelPrecisionBits <= 8) {
             if (includeGPUSceneBindings && hybridRasterizer_ && hybridRasterizer_->supportsRenderExtent(width, height) &&
-                hybridRasterizer_->clusterCapacity() >= clusterCapacity) {
+                hybridRasterizer_->clusterCapacity() == clusterCapacity) {
                 bundle.hybridRasterizer = hybridRasterizer_;
             } else {
                 bundle.hybridRasterizer = std::make_shared<VisibilityHybridRasterizer>();

@@ -128,6 +128,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         if (!vbuffer) { throw std::runtime_error("Missing VBuffer"); }
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "cullHardwareClassification", config.value("cullHardwareClassification", false));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "metadataFastClassification", config.value("metadataFastClassification", true));
+        if (config.contains("maxRasterCandidates")) {
+            renderGraph_.setNodeRuntimeProperty(vbuffer->id, "maxRasterCandidates", config.at("maxRasterCandidates").get<uint32_t>());
+        }
         if (config.contains("temporalJitter")) {
             auto view = viewportCameraProperties();
             const bool jitter = config.at("temporalJitter").get<bool>();

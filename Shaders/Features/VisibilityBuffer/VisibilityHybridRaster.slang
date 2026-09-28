@@ -172,6 +172,10 @@ void hybridClusterArgumentsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     }
     if (lane == 127u) {
         uint count = g_BinPrefix[127];
+        if ((push.streamMode & 1u) != 0u && bins[14] != 0u) {
+            // Group masks remain intact: scatter/cull/classify have zero work.
+            count = bin == 0u ? bins[15] * bins[13] : 0u;
+        }
         bins[bin] = count;
         uint groups = bin == kHybridSoftwareBin ? count :
             (push.streamMode & 2u) != 0u ? count * 8u :

@@ -31,7 +31,7 @@ public:
             if (!((binHeader || cullHeader) ? resource.id.ends_with(".clusters") : resource.id.ends_with(".workload"))) { continue; }
             if (copies_.size() >= 4096) { throw std::runtime_error("SW workload snapshot limit exceeded"); }
             Copy copy;
-            copy.metadata = {{"frame", editorFrame}, {"phase", checkpoint}, {"camera", camera}, {"shader", values}, {"binHeader", binHeader}, {"cullHeader", cullHeader}};
+            copy.metadata = {{"frame", editorFrame}, {"phase", checkpoint}, {"camera", camera}, {"shader", values}, {"binHeader", binHeader}, {"cullHeader", cullHeader}, {"bufferBytes", resource.buffer->desc().size}};
             if (!device_->createBuffer({.size = 128, .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { copy.buffer = std::move(rhiValue); })) { throw std::runtime_error("SW workload readback allocation failed"); }
             render::BufferBarrierDesc barrier{
@@ -75,7 +75,9 @@ public:
                 std::array<uint32_t, 32> words{};
                 std::memcpy(words.data(), counters.data(), sizeof(words));
                 row["bins"] = {{"softwareClusters", words[4]}, {"hardwareClusters", uint64_t(words[0])+words[1]+words[2]+words[3]},
-                    {"candidates", words[12]}, {"capacity", words[5]}};
+                    {"candidates", words[12]}, {"capacity", words[5]}, {"candidateOverflow", words[14]},
+                    {"requestedCandidates", words[14] != 0u ? uint64_t(words[5]) + words[14] : words[12]},
+                    {"hardwareFallback", words[14] != 0u}, {"hardwareCountIsRecordSlots", words[14] != 0u}};
             } else {
                 for (size_t i = 0; i < counters.size(); ++i) { row["counts"][names[i]] = counters[i]; }
             }

@@ -1041,6 +1041,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         log = "MeshletStreamRuntime active group draw task count overflowed";
         return makeError(Error::Failure);
     }
+    rasterCandidateCapacity_ = desc.maxRasterCandidates == 0 ? visibleClusterCapacity() :
+        std::min(visibleClusterCapacity(), std::max(maxActiveGroups_, desc.maxRasterCandidates));
     if (desc.enableClusterRtx) {
         const uint32_t activeClusterCapacity = visibleClusterCapacity();
         blasClusterReferenceCapacity_ = desc.maxBlasClusterReferences == 0
@@ -2259,6 +2261,7 @@ void MeshletStreamRuntime::reset()
     maxResidentBytes_ = 0;
     lockedFallbackPages_.clear();
     maxActiveGroups_ = 0;
+    rasterCandidateCapacity_ = 0;
     maxActiveGroupClusters_ = 0;
     maxPrimitiveGroupCount_ = 0;
     traversalWorkerCount_ = 0;
@@ -4113,6 +4116,11 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
     const auto readiness = sceneReadiness();
     return {{"generation", debugGeneration_}, {"frame", frameIndex_},
         {"orderedUploadPages", currentFrameOrderedUploadCount_},
+        {"activeGroupCapacity", maxActiveGroups_},
+        {"visibleRecordCapacity", visibleClusterCapacity()},
+        {"visibleRecordBytes", visibleClusterBuffer_ ? visibleClusterBuffer_->desc().size : 0ull},
+        {"rasterCandidateCapacity", rasterCandidateCapacity_},
+        {"blasClusterReferenceCapacity", blasClusterReferenceCapacity_},
         {"sceneReady", readiness.ready}, {"scenePreparationFraction", readiness.fraction()},
         {"sceneReadinessScans", sceneReadinessCache_->scans},
         {"sceneRootsInvalidated", sceneReadinessCache_->rootsInvalidated},

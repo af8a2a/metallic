@@ -3833,6 +3833,16 @@ bool streamAlphaAccepts(uint instanceIndex, float2 uv, GPUDrivenStreamAssetPush 
     return (instance.identity.w & 4u) != 0u ? alpha >= material.params.z : alpha > 0.0;
 }
 
+// Used by the bounded-queue HW fallback as well as tessellation task shaders.
+void publishStreamHardwareRetry(uint record, bool retryLate, GPUDrivenStreamAssetPush push)
+{
+    if (push.traversalPhase == 0u && retryLate) {
+        DescriptorHandle<RWStructuredBuffer<uint>> bins =
+            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+        InterlockedOr(bins[hybridRetryBase(bins[5]) + record / bins[13]], 1u << (record % bins[13]));
+    }
+}
+
 groupshared StreamRasterCluster g_StreamMeshCluster;
 groupshared uint g_StreamMeshValid;
 
@@ -3853,16 +3863,19 @@ void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_Gro
     bool prebinned = push.hybridClusterBuffer != 0xffffffffu;
     uint record = prebinned ? draw : draw / kMeshletTriangleChunkCount;
     uint chunk = prebinned ? 0u : draw % kMeshletTriangleChunkCount;
+    bool overflowHardware = false;
     if (prebinned) {
         DescriptorHandle<StructuredBuffer<uint>> bins =
             DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
         uint item = record;
-        if (!hybridBinRecord(bins, 0u, item, record)) { SetMeshOutputCounts(0, 0); return; }
+        overflowHardware = bins[14] != 0u;
+        if (!hybridStreamHardwareRecord(bins, item, record)) { SetMeshOutputCounts(0, 0); return; }
     }
     if (lane == 0u) {
         bool retryLate;
-        g_StreamMeshValid = loadStreamRasterCluster(record, !prebinned, !prebinned && chunk == 0u,
-            push, g_StreamMeshCluster, retryLate) ? 1u : 0u;
+        g_StreamMeshValid = loadStreamRasterCluster(record, !prebinned || overflowHardware,
+            (!prebinned || overflowHardware) && chunk == 0u, push, g_StreamMeshCluster, retryLate) ? 1u : 0u;
+        if (overflowHardware) { publishStreamHardwareRetry(record, retryLate, push); }
     }
     GroupMemoryBarrierWithGroupSync();
     if (g_StreamMeshValid == 0u) { SetMeshOutputCounts(0, 0); return; }
@@ -3982,9 +3995,12 @@ void streamClusterPrepareMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIn
             offset += blockCount;
         }
         if (lane == 127u) {
-            uint candidates = min(g_StreamCandidatePrefix[127], capacity);
+            uint totalCandidates = g_StreamCandidatePrefix[127];
+            // Never partially render a cut. Keep the phase masks and route the
+            // entire stage to HW when the independent candidate budget is exceeded.
+            uint candidates = totalCandidates <= capacity ? totalCandidates : 0u;
             bins[12] = candidates;
-            bins[14] = g_StreamCandidatePrefix[127] - candidates;
+            bins[14] = totalCandidates > capacity ? totalCandidates - capacity : 0u;
             args[0] = min(candidates, kHybridDispatchWidth);
             args[1] = max(1u, (candidates + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
             args[2] = 1u;
@@ -4011,7 +4027,7 @@ void streamClusterPrepareMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIn
             bins[hybridRankBase(capacity) + index] = offset;
         }
         if (lane == 127u) { bins[blockBase + block] = g_StreamCandidatePrefix[127]; }
-    } else if (push.activeBuildPhase == 3u && index < count) {
+    } else if (push.activeBuildPhase == 3u && index < count && bins[14] == 0u) {
         uint mask = bins[kHybridBinHeaderWords + index];
         uint offset = bins[blockBase + block] + bins[hybridRankBase(capacity) + index];
         while (mask != 0u) {
