@@ -87,14 +87,30 @@ void MeshletStreamStorage::reset()
     freeBlockBoundsValid_ = false;
 }
 
-MeshletStreamStorageAllocation MeshletStreamStorage::allocate(uint64_t byteSize)
+MeshletStreamStorageAllocation MeshletStreamStorage::allocate(uint64_t byteSize, bool bestFit)
 {
     const uint64_t alignedSize = allocationSize(byteSize);
     if (alignedSize == 0 || !canAllocate(byteSize)) {
         return {};
     }
 
-    for (size_t index = 0; index < freeBlocks_.size(); ++index) {
+    size_t first = 0;
+    if (bestFit) {
+        uint64_t smallest = UINT64_MAX;
+        first = freeBlocks_.size();
+        for (size_t i = 0; i < freeBlocks_.size(); ++i) {
+            const auto& block = freeBlocks_[i];
+            const uint64_t offset = alignUp(block.offset, alignmentBytes_);
+            if (offset < block.offset || offset - block.offset > block.size) { continue; }
+            const uint64_t available = block.size - (offset - block.offset);
+            if (available >= alignedSize && available < smallest) {
+                first = i;
+                smallest = available;
+                if (available == alignedSize) { break; }
+            }
+        }
+    }
+    for (size_t index = first; index < freeBlocks_.size(); ++index) {
         FreeBlock& block = freeBlocks_[index];
         const uint64_t alignedOffset = alignUp(block.offset, alignmentBytes_);
         if (alignedOffset < block.offset) {

@@ -3291,6 +3291,24 @@ public:
     {
         render::MeshletStreamStorage storage;
         std::string reason;
+        if (!storage.initialize(4096, 256, reason)) { return RhiTestResult::fail(reason); }
+        const auto large = storage.allocate(1024);
+        const auto separator = storage.allocate(256);
+        const auto small = storage.allocate(512);
+        const auto tail = storage.allocate(2304);
+        if (!large.valid() || !separator.valid() || !small.valid() || !tail.valid()) {
+            return RhiTestResult::fail("Best-fit setup failed");
+        }
+        storage.release(large); storage.release(small);
+        const auto fitted = storage.allocate(257, true);
+        const auto preserved = storage.allocate(1024, true);
+        if (fitted.offset != small.offset || preserved.offset != large.offset || storage.allocate(UINT64_MAX, true).valid()) {
+            return RhiTestResult::fail("Best-fit consumed a larger hole or accepted overflow");
+        }
+        storage.release(fitted); storage.release(preserved); storage.release(separator); storage.release(tail);
+        if (storage.largestFreeBlockBytes() != 4096 || storage.freeBlockCount() != 1) {
+            return RhiTestResult::fail("Best-fit releases failed to coalesce");
+        }
         if (!storage.initialize(4096u * 256u, 256, reason)) { return RhiTestResult::fail(reason); }
         std::vector<render::MeshletStreamStorageAllocation> pages;
         for (uint32_t i = 0; i < 4096; ++i) {

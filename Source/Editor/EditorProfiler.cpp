@@ -420,6 +420,13 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
         ImGui::Text("CLAS backing %.1f MiB in %u chunks | Free inside backing %.1f MiB",
             last.clasAllocatedBytes / mib, last.clasStorageChunks,
             (last.clasAllocatedBytes >= last.clasUsedBytes ? last.clasAllocatedBytes - last.clasUsedBytes : 0) / mib);
+        ImGui::Text("CLAS start/grow %.1f / %.1f MiB | empty %.1f MiB | growths %llu | returned %.1f MiB",
+            last.clasStartBytes / mib, last.clasGrowBytes / mib, last.clasEmptyBytes / mib,
+            static_cast<unsigned long long>(last.clasGrowthCount), last.clasReleasedBytes / mib);
+        ImGui::Text("CLAS roots used/backing %.1f / %.1f MiB | transient %.1f / %.1f MiB | fragmented free %.1f MiB",
+            last.clasPersistentUsedBytes / mib, last.clasPersistentAllocatedBytes / mib,
+            last.clasTransientUsedBytes / mib, last.clasTransientAllocatedBytes / mib, last.clasFragmentedFreeBytes / mib);
+        ImGui::Text("CLAS root growth %.1f MiB", last.clasPersistentGrowBytes / mib);
         if (last.clasEncodedBytes) {
             ImGui::Text("CLAS encoded %.1f MiB | Fixed slots %.1f MiB | Build/move workspace %.1f MiB",
                 last.clasEncodedBytes / mib, last.clasWorstCaseBytes / mib, last.clasScratchBytes / mib);

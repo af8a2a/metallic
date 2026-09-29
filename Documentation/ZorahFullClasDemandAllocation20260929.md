@@ -1,5 +1,7 @@
 # CLAS 按需物理分配（2026-09-29）
 
+后续独立 start/grow/max 配置与空块保留策略见 [容量策略补充](ZorahFullClasCapacityPolicy20260929.md)；原 `storageChunkBytes` 已由 `growStorageBytes` 取代。
+
 ## 实现范围
 
 `MeshletStreamCompactClasPool` 的持久 CLAS 存储从一次性申请 `maxStorageBytes` 改为独立 Buffer 分块分配。Full 的上限仍为 2 GiB；默认增长粒度为 64 MiB，通过 `MeshletStreamClasPoolDesc::storageChunkBytes` 配置。初始化不申请持久 CLAS 数据块，已有暂存构建池、MOVE scratch、地址表和页表仍预分配。

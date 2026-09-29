@@ -290,7 +290,7 @@ class CompactClasLifecycleTest final : public RhiTest {
                                           .maxStorageBytes = 1024 * 1024,
                                           .maxBuildClusters = asset.maxPageClusters(),
                                           .queuedFrameCount = 2,
-                                          .storageChunkBytes = 4096},
+                                          .growStorageBytes = 4096},
                                          log)),
                     log);
             require(pool.stats().storageBytes == 0 && pool.stats().storageChunkCount == 0 &&
@@ -472,9 +472,83 @@ class CompactClasLifecycleTest final : public RhiTest {
             pool.beginFrame();
             require(pool.stats().storageBytes == 0 && pool.stats().usedStorageBytes == 0, "Final chunk leaked");
 
+            require(pool.stats().totalStorageGrowthCount >= 2 && pool.stats().totalStorageReleasedBytes >= bothBytes,
+                "Growth/release counters did not observe physical lifecycle");
+            {
+                MeshletStreamCompactClasPool warm;
+                require(bool(warm.initialize(*device, {.asset = &asset, .maxStorageBytes = 16384,
+                    .maxBuildClusters = asset.maxPageClusters(), .queuedFrameCount = 2,
+                    .startStorageBytes = 4096, .growStorageBytes = 8192, .emptyChunkRetentionFrames = 3}, log)), log);
+                require(warm.stats().storageBytes == 4096 && warm.stats().startStorageBytes == 4096 &&
+                    warm.stats().growStorageBytes == 8192 && warm.stats().storageBudgetBytes == 16384,
+                    "Start/grow/max were not independent");
+                warm.beginFrame(); warm.beginFrame();
+                require(warm.stats().storageBytes == 4096 && warm.stats().emptyStorageBytes == 4096,
+                    "Empty retention released warm backing too early");
+                warm.beginFrame();
+                require(warm.stats().storageBytes == 0 && warm.stats().totalStorageReleasedBytes == 4096 &&
+                    warm.stats().frameStorageReleaseCount == 1,
+                    "Unused start allocation did not return after retention");
+            }
+            {
+                MeshletStreamCompactClasPool invalid;
+                require(!invalid.initialize(*device, {.asset = &asset, .maxStorageBytes = 4096,
+                    .startStorageBytes = 8192}, log), "Start greater than max was accepted");
+                require(!invalid.initialize(*device, {.asset = &asset, .growStorageBytes = 0}, log),
+                    "Zero growth was accepted");
+            }
+            {
+                // A large page needs one contiguous segment. Retained empty
+                // small chunks may be returned early under the max budget.
+                MeshletStreamCompactClasPool pressure;
+                const uint64_t capacity = stats.usedStorageBytes * 2;
+                require(bool(pressure.initialize(*device, {.asset = &asset, .maxStorageBytes = capacity,
+                    .maxBuildClusters = asset.maxPageClusters(), .queuedFrameCount = 2,
+                    .startStorageBytes = capacity, .growStorageBytes = 256, .emptyChunkRetentionFrames = 60}, log)), log);
+                for (uint32_t i = 0; i < 5 && !pressure.pageHasClas(pageIndex); ++i) {
+                    pressure.beginFrame();
+                    require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Pressure begin");
+                    require(bool(pressure.cmdBuildPages(*cmd, *pageBuffer, std::span(&build, 1), log)) && bool(cmd->end()), log);
+                    CommandBuffer* list[] = {cmd.get()};
+                    require(bool(tracker.submit({.commandBuffers = {list, 1}}, frame)) && bool(frame.wait(5000000000ull)), "Pressure submit");
+                }
+                require(pressure.pageHasClas(pageIndex) && pressure.stats().totalStorageReleasedBytes >= capacity &&
+                    pressure.stats().storageBytes <= capacity, "Empty retention blocked a page that fits the max budget");
+            }
+            {
+                MeshletStreamCompactClasPool segregated;
+                require(bool(segregated.initialize(*device, {.asset = &asset, .maxStorageBytes = 2 * 1024 * 1024,
+                    .maxBuildClusters = asset.maxPageClusters(), .queuedFrameCount = 2,
+                    .growStorageBytes = 64 * 1024 * 1024, .persistentGrowStorageBytes = 512 * 1024,
+                    .persistentPages = std::span(&pageIndex, 1)}, log)), log);
+                auto tick = [&](std::span<const MeshletStreamClasPageBuild> requests) {
+                    segregated.beginFrame();
+                    require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Segregated begin");
+                    require(bool(segregated.cmdBuildPages(*cmd, *pageBuffer, requests, log)) && bool(cmd->end()), log);
+                    CommandBuffer* list[] = {cmd.get()};
+                    require(bool(tracker.submit({.commandBuffers = {list, 1}}, frame)) && bool(frame.wait(5000000000ull)), "Segregated submit");
+                };
+                for (uint32_t i = 0; i < 8 && (!segregated.pageHasClas(pageIndex) || !segregated.pageHasClas(secondPage)); ++i) {
+                    tick(twoBuilds);
+                }
+                const auto separated = segregated.stats();
+                require(segregated.pageHasClas(pageIndex) && segregated.pageHasClas(secondPage) &&
+                    separated.usedStorageBytes < 1024 * 1024 && separated.storageChunkCount == 2 &&
+                    separated.persistentStorageBytes == 512 * 1024 && separated.persistentGrowStorageBytes == 512 * 1024 && separated.transientStorageBytes == 1024 * 1024 &&
+                    separated.persistentUsedBytes + separated.transientUsedBytes == separated.usedStorageBytes &&
+                    segregated.pageStorageBuffer(pageIndex) != segregated.pageStorageBuffer(secondPage),
+                    "Root and transient pages mixed despite fitting in one block");
+                const uint64_t rootAddress = segregated.clusterAddress(pageIndex, 0);
+                segregated.retirePages(std::span(&secondPage, 1));
+                for (uint32_t i = 0; i < 4; ++i) { tick(std::span(&build, 1)); }
+                require(segregated.stats().transientStorageBytes == 0 && segregated.stats().storageBytes == 512 * 1024 &&
+                    segregated.stats().totalStorageReleasedBytes == 1024 * 1024 &&
+                    segregated.clusterAddress(pageIndex, 0) == rootAddress,
+                    "Transient block did not return independently of the stable root");
+            }
             MeshletStreamCompactClasPool constrained;
             require(bool(constrained.initialize(*device, {.asset = &asset, .maxStorageBytes = 256,
-                .maxBuildClusters = asset.maxPageClusters(), .queuedFrameCount = 2, .storageChunkBytes = 256}, log)), log);
+                .maxBuildClusters = asset.maxPageClusters(), .queuedFrameCount = 2, .growStorageBytes = 256}, log)), log);
             for (uint32_t i = 0; i < 3; ++i) {
                 constrained.beginFrame();
                 require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Budget test begin");

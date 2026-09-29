@@ -496,6 +496,10 @@ struct MeshletStreamRuntimeDesc {
     bool compactClas = false;
     uint32_t coldPageRetentionFrames = 0; // Zero preserves budget-only eviction.
     uint64_t maxClasBytes = 512ull * 1024ull * 1024ull;
+    uint64_t startClasBytes = 0;
+    uint64_t growClasBytes = 64ull * 1024ull * 1024ull;
+    uint32_t clasEmptyChunkRetentionFrames = 0;
+    uint64_t persistentClasGrowBytes = 0;
     uint32_t maxClasBuildClusters = 0;
     uint32_t maxBlasClusterReferences = 0;
     uint64_t maxBlasBytes = 512ull * 1024ull * 1024ull;

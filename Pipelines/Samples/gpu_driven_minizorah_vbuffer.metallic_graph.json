@@ -15,6 +15,7 @@
                 "sceneBinding": "asset", "viewBinding": "global", "streamAssetOnly": true, "enableMeshletStreaming": true,
                 "autoBuildStreamAsset": false, "enableClusterRtx": false, "enableClas": true,
                 "compactClas": true, "coldPageRetentionFrames": 120,
+                "startClasBytes": 0, "growClasBytes": 67108864, "clasEmptyChunkRetentionFrames": 30,
                 "maxClasBytes": 536870912, "maxClasBuildClusters": 8192,
                 "maxResidentBytes": 1073741824, "maxResidentPages": 0, "maxLockedFallbackPages": 4096,
                 "maxActiveGroups": 131072, "maxPageUploadsPerFrame": 256, "maxPageLoadsInFlight": 1024,

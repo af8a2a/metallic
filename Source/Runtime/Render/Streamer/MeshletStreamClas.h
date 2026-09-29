@@ -89,7 +89,11 @@ struct MeshletStreamClasPoolDesc {
     uint32_t maxBuildClusters = 2048;
     uint32_t queuedFrameCount = 3;
     bool compactStorage = false; // Opt-in until the compact path is validated.
-    uint64_t storageChunkBytes = 64ull * 1024ull * 1024ull; // Compact physical growth granularity.
+    uint64_t startStorageBytes = 0; // Initial physical commitment; may shrink to zero when unused.
+    uint64_t growStorageBytes = 64ull * 1024ull * 1024ull;
+    uint32_t emptyChunkRetentionFrames = 0; // After all GPU readers finish; zero releases immediately.
+    uint64_t persistentGrowStorageBytes = 0; // Zero uses the common growth quantum.
+    std::span<const uint32_t> persistentPages; // Copied at initialization; segregate locked roots from evictable pages.
 };
 
 struct MeshletStreamClasPageBuild {
@@ -116,6 +120,13 @@ struct MeshletStreamClasPoolStats {
     uint64_t storageBytes = 0; // Physical backing, including empty chunks awaiting GPU completion.
     uint64_t storageBudgetBytes = 0;
     uint32_t storageChunkCount = 0;
+    uint64_t startStorageBytes = 0, growStorageBytes = 0;
+    uint64_t emptyStorageBytes = 0;
+    uint64_t persistentStorageBytes = 0, persistentUsedBytes = 0, persistentGrowStorageBytes = 0;
+    uint64_t transientStorageBytes = 0, transientUsedBytes = 0;
+    uint64_t fragmentedFreeBytes = 0; // Sum of free bytes outside each chunk's largest hole.
+    uint64_t totalStorageGrowthCount = 0, totalStorageReleasedBytes = 0;
+    uint32_t frameStorageGrowthCount = 0, frameStorageReleaseCount = 0;
     uint64_t usedStorageBytes = 0;
     uint64_t clusterStrideBytes = 0;
     uint64_t scratchBytes = 0;

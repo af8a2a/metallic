@@ -95,6 +95,10 @@ struct SceneStreamingProfile {
     uint64_t clasCapacityBytes = 0; // Configured budget; not physical allocation.
     uint64_t clasAllocatedBytes = 0;
     uint32_t clasStorageChunks = 0;
+    uint64_t clasStartBytes = 0, clasGrowBytes = 0, clasEmptyBytes = 0;
+    uint64_t clasGrowthCount = 0, clasReleasedBytes = 0;
+    uint64_t clasPersistentAllocatedBytes = 0, clasPersistentUsedBytes = 0, clasPersistentGrowBytes = 0;
+    uint64_t clasTransientAllocatedBytes = 0, clasTransientUsedBytes = 0, clasFragmentedFreeBytes = 0;
     uint64_t clasEncodedBytes = 0;
     uint64_t clasWorstCaseBytes = 0;
     uint64_t clasScratchBytes = 0;

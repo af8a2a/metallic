@@ -34,6 +34,7 @@ Result<> publicationBarrier(CommandBuffer& cmd, Buffer& buffer, ResourceState be
 struct MeshletStreamCompactClasPool::Impl {
     enum class State { Pending, Active, Retiring };
     enum class Phase { Free, Building, Sized, Moving };
+    enum class Lifetime { Unassigned, Persistent, Transient };
     struct FrameUse {
         GpuCompletionPoint completion;
         std::vector<std::shared_ptr<Buffer>> buffers;
@@ -44,6 +45,8 @@ struct MeshletStreamCompactClasPool::Impl {
         std::shared_ptr<Buffer> buffer;
         MeshletStreamStorage storage;
         FrameUses uses;
+        uint64_t emptySinceFrame = UINT64_MAX;
+        Lifetime lifetime = Lifetime::Unassigned;
     };
     struct Page {
         State state = State::Pending;
@@ -72,9 +75,11 @@ struct MeshletStreamCompactClasPool::Impl {
     const scene::MeshletStreamAsset* asset = nullptr;
     MeshletStreamStorage addressStorage;
     std::vector<std::unique_ptr<Chunk>> chunks;
+    std::vector<bool> persistentPages;
     FrameUses frameUses;
     std::unique_ptr<Buffer> scratch, addresses, pageTable;
-    uint64_t chunkBytes = 0, retryGrowthFrame = 0;
+    uint64_t chunkBytes = 0, persistentChunkBytes = 0, retryGrowthFrame = 0;
+    uint32_t emptyChunkRetentionFrames = 0;
     std::unordered_map<uint32_t, Page> pages;
     struct Retirement {
         uint64_t deadline;
@@ -134,49 +139,87 @@ struct MeshletStreamCompactClasPool::Impl {
         chunk.uses.push_back(use);
         return {};
     }
-    void collectChunks()
+    void collectChunks(bool pressure = false)
     {
         for (auto& chunk : chunks) { std::erase_if(chunk->uses, completed); }
         std::erase_if(chunks, [&](const auto& chunk) {
-            if (chunk->storage.usedBytes() || !chunk->uses.empty()) { return false; }
-            stats.storageBytes -= chunk->buffer->desc().size;
+            if (chunk->storage.usedBytes() || !chunk->uses.empty()) {
+                chunk->emptySinceFrame = UINT64_MAX;
+                return false;
+            }
+            if (chunk->emptySinceFrame == UINT64_MAX) { chunk->emptySinceFrame = frame; }
+            if (!pressure && frame - chunk->emptySinceFrame < emptyChunkRetentionFrames) { return false; }
+            const auto bytes = chunk->buffer->desc().size;
+            stats.storageBytes -= bytes;
+            stats.totalStorageReleasedBytes += bytes;
+            ++stats.frameStorageReleaseCount;
             retryGrowthFrame = 0;
             return true;
         });
         stats.storageChunkCount = uint32_t(chunks.size());
     }
-    bool allocate(Page& page, uint64_t bytes)
+    Result<> grow(uint64_t capacity)
     {
-        // Fill existing chunks first. Live addresses never change when the pool grows.
-        for (auto& chunk : chunks) {
-            page.allocation = chunk->storage.allocate(bytes);
-            if (page.allocation.valid()) { page.chunk = chunk.get(); return true; }
-        }
-        const uint64_t remaining = stats.storageBudgetBytes - stats.storageBytes;
-        bytes = compactAlign(bytes, alignment);
-        if (bytes > remaining || frame < retryGrowthFrame) { return false; }
-        const uint64_t capacity = std::min(std::max(chunkBytes, bytes), remaining);
         auto chunk = std::make_unique<Chunk>();
         std::string reason;
         if (!chunk->storage.initialize(capacity, alignment, reason, UINT64_MAX)) {
             error = reason;
-            return false;
+            return makeError(Error::InvalidArgument);
         }
         std::unique_ptr<Buffer> backing;
         auto result = buffer(capacity, MemoryLocation::Device, backing, MemoryBudgetDomain::Clas);
+        if (!result) { return result; }
+        chunk->buffer = std::shared_ptr<Buffer>(std::move(backing));
+        chunk->emptySinceFrame = frame;
+        stats.storageBytes += capacity;
+        ++stats.totalStorageGrowthCount;
+        ++stats.frameStorageGrowthCount;
+        chunks.push_back(std::move(chunk));
+        stats.storageChunkCount = uint32_t(chunks.size());
+        return {};
+    }
+    bool allocate(uint32_t pageIndex, Page& page, uint64_t bytes)
+    {
+        const auto lifetime = persistentPages[pageIndex] ? Lifetime::Persistent : Lifetime::Transient;
+        // Pack into the fullest compatible block, then consume its smallest
+        // suitable hole. Root pages never pin blocks containing evictable pages.
+        Chunk* selected = nullptr;
+        uint64_t leastFree = UINT64_MAX;
+        for (auto& chunk : chunks) {
+            if (chunk->storage.usedBytes() && chunk->lifetime != lifetime) { continue; }
+            if (chunk->storage.freeBytes() >= leastFree || !chunk->storage.canAllocate(bytes)) { continue; }
+            selected = chunk.get();
+            leastFree = chunk->storage.freeBytes();
+        }
+        if (selected) {
+            page.allocation = selected->storage.allocate(bytes, true);
+            page.chunk = selected;
+            selected->lifetime = lifetime;
+            selected->emptySinceFrame = UINT64_MAX;
+            return true;
+        }
+        bytes = compactAlign(bytes, alignment);
+        uint64_t remaining = stats.storageBudgetBytes - stats.storageBytes;
+        if (bytes > remaining) {
+            // A retained empty block must not prevent a larger page from fitting
+            // under max. This still requires every GPU reader to be complete.
+            collectChunks(true);
+            remaining = stats.storageBudgetBytes - stats.storageBytes;
+        }
+        if (bytes > remaining || frame < retryGrowthFrame) { return false; }
+        const auto quantum = lifetime == Lifetime::Persistent ? persistentChunkBytes : chunkBytes;
+        const uint64_t capacity = std::min(std::max(quantum, bytes), remaining);
+        auto result = grow(capacity);
         if (!result) {
-            // Keep the sized source available for retry; do not hammer the global
-            // memory budget once per page when physical growth is denied.
             if (hasError(result, Error::OutOfMemory)) { retryGrowthFrame = frame + 30; }
             else { error = "Compact CLAS backing allocation failed: " + std::string(resultToString(result)); }
             return false;
         }
-        chunk->buffer = std::shared_ptr<Buffer>(std::move(backing));
+        auto& chunk = chunks.back();
         page.allocation = chunk->storage.allocate(bytes);
         page.chunk = chunk.get();
-        stats.storageBytes += capacity;
-        chunks.push_back(std::move(chunk));
-        stats.storageChunkCount = uint32_t(chunks.size());
+        chunk->lifetime = lifetime;
+        chunk->emptySinceFrame = UINT64_MAX;
         return true;
     }
     void publish(uint32_t id, const Page* page, bool orderedMove = false)
@@ -381,8 +424,17 @@ Result<> MeshletStreamCompactClasPool::initialize(Device& device, const MeshletS
     p.device = &device;
     p.asset = desc.asset;
     if (!desc.asset || !desc.asset->valid() || !desc.maxStorageBytes || !desc.maxBuildClusters ||
-        !desc.queuedFrameCount || !desc.storageChunkBytes) {
+        !desc.queuedFrameCount || !desc.growStorageBytes || desc.startStorageBytes > desc.maxStorageBytes) {
+        log = "Compact CLAS requires a valid asset, nonzero max/grow/build/queue limits, and start <= max";
         return makeError(Error::InvalidArgument);
+    }
+    p.persistentPages.assign(desc.asset->pageCount(), false);
+    for (uint32_t id : desc.persistentPages) {
+        if (id >= p.persistentPages.size()) {
+            log = "Compact CLAS persistent page index is out of range";
+            return makeError(Error::InvalidArgument);
+        }
+        p.persistentPages[id] = true;
     }
     ClusterAccelerationStructureProperties properties;
     auto result = device.queryClusterAccelerationStructureProperties().transform([&](auto rhiValue) { properties = std::move(rhiValue); });
@@ -457,7 +509,31 @@ Result<> MeshletStreamCompactClasPool::initialize(Device& device, const MeshletS
     p.stats.clusterSlotCapacity = uint32_t(slots);
     p.stats.clusterStrideBytes = p.stride;
     p.stats.storageBudgetBytes = capacity;
-    p.chunkBytes = std::min(capacity, compactAlign(std::min(desc.storageChunkBytes, capacity), p.alignment));
+    p.chunkBytes = std::min(capacity, compactAlign(std::min(desc.growStorageBytes, capacity), p.alignment));
+    const auto persistentCount = std::count(p.persistentPages.begin(), p.persistentPages.end(), true);
+    if (persistentCount && persistentCount < p.persistentPages.size()) {
+        // An oversized growth quantum must not reserve the entire small pool
+        // for the first lifetime. This caps block size, not either class's quota.
+        const uint64_t sharedQuantum = capacity / 2 / p.alignment * p.alignment;
+        if (sharedQuantum) { p.chunkBytes = std::min(p.chunkBytes, sharedQuantum); }
+    }
+    p.persistentChunkBytes = desc.persistentGrowStorageBytes
+        ? std::min(p.chunkBytes, compactAlign(std::min(desc.persistentGrowStorageBytes, capacity), p.alignment))
+        : p.chunkBytes;
+    p.emptyChunkRetentionFrames = desc.emptyChunkRetentionFrames;
+    p.stats.growStorageBytes = p.chunkBytes;
+    p.stats.persistentGrowStorageBytes = p.persistentChunkBytes;
+    p.stats.startStorageBytes = std::min(capacity, compactAlign(std::min(desc.startStorageBytes, capacity), p.alignment));
+    while (p.stats.storageBytes < p.stats.startStorageBytes) {
+        if (!(result = p.grow(std::min(p.chunkBytes, p.stats.startStorageBytes - p.stats.storageBytes)))) {
+            log = "Compact CLAS initial backing allocation failed: " + std::string(resultToString(result));
+            // Failed initialization never holds a partial initial commitment.
+            p.chunks.clear();
+            p.stats.storageBytes = 0;
+            p.stats.storageChunkCount = 0;
+            return result;
+        }
+    }
     p.initialized = true;
     return {};
 }
@@ -471,6 +547,7 @@ void MeshletStreamCompactClasPool::beginFrame(CpuProfileRecorder* profiler)
     ++p.frame;
     p.stats.frameBuiltPageCount = p.stats.frameBuiltClusterCount = p.stats.frameRejectedPageCount = 0;
     p.stats.frameMovedPageCount = p.stats.frameMovedClusterCount = 0;
+    p.stats.frameStorageGrowthCount = p.stats.frameStorageReleaseCount = 0;
     CpuProfileScope profile(profiler, "Collect completed CLAS");
     p.collectFrameUses();
     p.collect();
@@ -574,7 +651,7 @@ Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
             for (auto size : item.sizes) {
                 bytes += compactAlign(size, p.alignment);
             }
-            p.allocate(page, bytes);
+            p.allocate(item.page, page, bytes);
             if (page.allocation.valid()) {
                 page.addresses = p.addressStorage.allocate(item.sizes.size());
             }
@@ -777,7 +854,18 @@ MeshletStreamClasPoolStats MeshletStreamCompactClasPool::stats() const
 {
     auto result = impl_->stats;
     result.trackedPageCount = uint32_t(impl_->pages.size());
-    for (const auto& chunk : impl_->chunks) { result.usedStorageBytes += chunk->storage.usedBytes(); }
+    for (const auto& chunk : impl_->chunks) {
+        result.usedStorageBytes += chunk->storage.usedBytes();
+        if (!chunk->storage.usedBytes()) { result.emptyStorageBytes += chunk->buffer->desc().size; }
+        if (chunk->lifetime == Impl::Lifetime::Persistent) {
+            result.persistentStorageBytes += chunk->buffer->desc().size;
+            result.persistentUsedBytes += chunk->storage.usedBytes();
+        } else if (chunk->lifetime == Impl::Lifetime::Transient) {
+            result.transientStorageBytes += chunk->buffer->desc().size;
+            result.transientUsedBytes += chunk->storage.usedBytes();
+        }
+        result.fragmentedFreeBytes += chunk->storage.freeBytes() - chunk->storage.largestFreeBlockBytes();
+    }
     return result;
 }
 } // namespace metallic::render

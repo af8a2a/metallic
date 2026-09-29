@@ -1002,6 +1002,11 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                 .maxBuildClusters = static_cast<uint32_t>(buildClusters),
                 .queuedFrameCount = std::max(desc.queuedFrameCount, 1u),
                 .compactStorage = desc.compactClas,
+                .startStorageBytes = desc.startClasBytes,
+                .growStorageBytes = desc.growClasBytes,
+                .emptyChunkRetentionFrames = desc.clasEmptyChunkRetentionFrames,
+                .persistentGrowStorageBytes = desc.persistentClasGrowBytes,
+                .persistentPages = lockedFallbackPages_,
             },
             log);
         if (!result) {
@@ -4072,6 +4077,17 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
         result.clasCapacityBytes = clas.storageBudgetBytes;
         result.clasAllocatedBytes = clas.storageBytes;
         result.clasStorageChunks = clas.storageChunkCount;
+        result.clasStartBytes = clas.startStorageBytes;
+        result.clasGrowBytes = clas.growStorageBytes;
+        result.clasEmptyBytes = clas.emptyStorageBytes;
+        result.clasGrowthCount = clas.totalStorageGrowthCount;
+        result.clasReleasedBytes = clas.totalStorageReleasedBytes;
+        result.clasPersistentAllocatedBytes = clas.persistentStorageBytes;
+        result.clasPersistentGrowBytes = clas.persistentGrowStorageBytes;
+        result.clasPersistentUsedBytes = clas.persistentUsedBytes;
+        result.clasTransientAllocatedBytes = clas.transientStorageBytes;
+        result.clasTransientUsedBytes = clas.transientUsedBytes;
+        result.clasFragmentedFreeBytes = clas.fragmentedFreeBytes;
         result.clasEncodedBytes = clas.encodedStorageBytes;
         result.clasWorstCaseBytes = clas.worstCaseStorageBytes;
         result.clasScratchBytes = clas.scratchBytes;

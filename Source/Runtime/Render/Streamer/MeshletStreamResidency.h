@@ -165,7 +165,7 @@ public:
         uint64_t maxCapacityBytes = UINT32_MAX);
     void reset();
 
-    MeshletStreamStorageAllocation allocate(uint64_t byteSize);
+    MeshletStreamStorageAllocation allocate(uint64_t byteSize, bool bestFit = false);
     void release(const MeshletStreamStorageAllocation& allocation);
 
     uint64_t allocationSize(uint64_t byteSize) const;
