@@ -331,6 +331,10 @@ void MeshletStreamResidencyManager::reset()
     preparedPageLoads_.clear();
     requestTaskQueue_.reset();
     residentDemandFeedback_ = false;
+    unusedResidentPages_.clear();
+    prefetchedResidentPages_.clear();
+    demandEpoch_ = completeDemandEpoch_ = completeDemandFrame_ = 0;
+    completeDemandSourceFrame_ = latestDemandSourceFrame_ = 0;
     geometryReclaimPressure_ = clasReclaimPressure_ = false;
     for (auto& taskPages : requestTaskPages_) {
         taskPages.clear();
@@ -996,44 +1000,92 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     unloadDetail.end();
     profile.next("Update resident demand");
     if (requests.residentDemandFeedback) {
-        residentDemandFeedback_ = true;
-        bool newColdPage = false;
-        const bool complete = requests.unloadOverflowCounter == 0 && requests.invalidPageCounter == 0 &&
-            requests.unloadRequestCounter <= requests.unloadPageIds.size();
-        for (size_t i = 0; i < residentPages_.size(); ++i) {
-            ++stats_.cpuWork.demandVisited;
-            const uint32_t pageIndex = residentPages_[i];
-            PageEntry& page = *residentPageEntries_[i];
-            // This page was not in an older frame's resident list. Its absence
-            // from that frame's unused list cannot imply a prefetch hit.
-            if (requests.frameIndex != 0 && page.residentSinceFrame > requests.frameIndex) {
-                ++stats_.cpuWork.demandNewerThanFeedback;
-                continue;
+        // A delayed older view must not undo a newer hot/cold decision.
+        // Legacy batches without a producer frame describe the current view.
+        // Normalize them so mixing legacy/dated batches cannot regress an epoch.
+        const uint64_t sourceFrame = requests.frameIndex != 0 ? requests.frameIndex : frameIndex_;
+        const bool stale = sourceFrame < latestDemandSourceFrame_;
+        if (stale) {
+            ++stats_.cpuWork.demandStaleBatches;
+        } else {
+            residentDemandFeedback_ = true;
+            latestDemandSourceFrame_ = sourceFrame;
+            const uint64_t epoch = ++demandEpoch_;
+            const bool complete = requests.unloadOverflowCounter == 0 && requests.invalidPageCounter == 0 &&
+                requests.unloadRequestCounter <= requests.unloadPageIds.size();
+            const auto eligible = [&](const PageEntry& page) {
+                return page.residentSinceFrame <= sourceFrame;
+            };
+            const auto unused = [&](uint32_t id) {
+                return (unloadRequestBits_[id / 64] & (uint64_t(1) << (id % 64))) != 0;
+            };
+            bool newColdPage = false;
+            // Restore only formerly cold pages omitted from this feedback. An
+            // incomplete view protects them without inventing a last-use time.
+            for (auto it = unusedResidentPages_.begin(); it != unusedResidentPages_.end();) {
+                const uint32_t id = *it;
+                ++stats_.cpuWork.demandMembershipTests;
+                if (unused(id)) { ++it; continue; }
+                PageEntry& page = pages_.at(id);
+                ++stats_.cpuWork.demandVisited;
+                if (!eligible(page)) { ++stats_.cpuWork.demandNewerThanFeedback; ++it; continue; }
+                page.gpuUnused = false;
+                page.demandBlockedThroughEpoch = epoch;
+                if (complete) {
+                    page.lastUsedFrame = frameIndex_;
+                    ++stats_.cpuWork.demandRefreshed;
+                    ++stats_.frameResidentDemandTransitionCount;
+                } else {
+                    ++stats_.cpuWork.demandIncompleteProtected;
+                }
+                ++stats_.cpuWork.demandTransitions;
+                it = unusedResidentPages_.erase(it);
             }
-            // Only explicitly unused pages may be budget victims. Truncated
-            // feedback must not infer that an omitted page is cold.
-            const bool unused = (unloadRequestBits_[pageIndex / 64] & (uint64_t(1) << (pageIndex % 64))) != 0;
-            newColdPage |= unused && !page.gpuUnused;
-            page.gpuUnused = unused;
-            if (page.gpuUnused) {
+            for (uint32_t id : uniqueUnloadRequests) {
+                const auto found = pages_.find(id);
+                if (found == pages_.end() || !residentState(found->second.state)) { continue; }
+                PageEntry& page = found->second;
+                ++stats_.cpuWork.demandVisited;
+                if (!eligible(page)) {
+                    ++stats_.cpuWork.demandNewerThanFeedback;
+                    continue;
+                }
                 ++stats_.cpuWork.demandUnused;
                 ++stats_.frameCachedUnusedPageCount;
-            } else if (complete) {
-                ++stats_.cpuWork.demandRefreshed;
-                page.lastUsedFrame = frameIndex_;
-                if (page.prefetch) { ++stats_.totalPrefetchUsed; page.prefetch = false; }
-                ++stats_.frameResidentDemandCount;
-            } else {
-                ++stats_.cpuWork.demandIncompleteProtected;
+                if (!page.gpuUnused) {
+                    // Materialize the PREVIOUS hot epoch before publishing this
+                    // batch: its unused pages must not acquire this frame's age.
+                    page.lastUsedFrame = effectiveLastUsedFrame(page);
+                    page.gpuUnused = true;
+                    page.demandBlockedThroughEpoch = epoch;
+                    unusedResidentPages_.insert(id);
+                    newColdPage = true;
+                    ++stats_.cpuWork.demandTransitions;
+                }
             }
-        }
-        // New feedback can expose victims after admission exhausted the snapshot.
-        if (newColdPage && evictionCandidatesBuilt_) {
-            evictionCandidates_.clear();
-            evictionCandidateCursor_ = 0;
-            evictionCandidatesBuilt_ = false;
-            evictionAgeRejected_ = false;
-            budgetAdmissionExhausted_ = false;
+            if (complete) {
+                completeDemandEpoch_ = epoch;
+                completeDemandFrame_ = frameIndex_;
+                completeDemandSourceFrame_ = sourceFrame;
+                ++stats_.cpuWork.demandEpochUpdates;
+                // Prefetch hits are side effects, so process just this cohort.
+                for (auto it = prefetchedResidentPages_.begin(); it != prefetchedResidentPages_.end();) {
+                    PageEntry& page = pages_.at(*it);
+                    ++stats_.cpuWork.demandPrefetchVisited;
+                    if (!page.prefetch) { it = prefetchedResidentPages_.erase(it); continue; }
+                    if (page.gpuUnused || !eligible(page)) { ++it; continue; }
+                    ++stats_.totalPrefetchUsed;
+                    page.prefetch = false;
+                    it = prefetchedResidentPages_.erase(it);
+                }
+            }
+            if (newColdPage && evictionCandidatesBuilt_) {
+                evictionCandidates_.clear();
+                evictionCandidateCursor_ = 0;
+                evictionCandidatesBuilt_ = false;
+                evictionAgeRejected_ = false;
+                budgetAdmissionExhausted_ = false;
+            }
         }
         uniqueUnloadRequests.clear();
     }
@@ -1494,6 +1546,14 @@ bool MeshletStreamResidencyManager::pageResident(uint32_t pageIndex) const
     return residentState(pageState(pageIndex));
 }
 
+uint64_t MeshletStreamResidencyManager::effectiveLastUsedFrame(const PageEntry& page) const
+{
+    const bool inheritsDemand = residentState(page.state) && !page.gpuUnused &&
+        completeDemandEpoch_ > page.demandBlockedThroughEpoch &&
+        page.residentSinceFrame <= completeDemandSourceFrame_;
+    return inheritsDemand ? std::max(page.lastUsedFrame, completeDemandFrame_) : page.lastUsedFrame;
+}
+
 uint64_t MeshletStreamResidencyManager::pageAge(uint32_t pageIndex) const
 {
     if (pageIndex >= pageCount_) {
@@ -1503,7 +1563,7 @@ uint64_t MeshletStreamResidencyManager::pageAge(uint32_t pageIndex) const
     if (pageIter == pages_.end()) {
         return 0;
     }
-    const uint64_t lastUsedFrame = pageIter->second.lastUsedFrame;
+    const uint64_t lastUsedFrame = effectiveLastUsedFrame(pageIter->second);
     return frameIndex_ >= lastUsedFrame ? frameIndex_ - lastUsedFrame : 0;
 }
 
@@ -1581,19 +1641,26 @@ size_t MeshletStreamResidencyManager::prepareEvictionCandidates(CpuProfileRecord
         evictionSortedCount_ = 0;
         evictionSortedMinimumAge_ = UINT64_MAX;
         ++stats_.frameEvictionScanCount;
-        for (size_t i = 0; i < residentPages_.size(); ++i) {
-            const uint32_t candidate = residentPages_[i];
+        const auto appendCandidate = [&](uint32_t candidate, const PageEntry& entry) {
             ++stats_.frameEvictionCandidateTests;
-            const PageEntry& entry = *residentPageEntries_[i];
+            ++stats_.cpuWork.coldCandidateTests;
             if (entry.lockedFallback || !streamableEvictionState(entry.state) ||
-                (residentDemandFeedback_ && !entry.gpuUnused)) { continue; }
-            const uint64_t age = frameIndex_ >= entry.lastUsedFrame ? frameIndex_ - entry.lastUsedFrame : 0;
+                (residentDemandFeedback_ && !entry.gpuUnused)) { return; }
+            const uint64_t lastUsed = effectiveLastUsedFrame(entry);
+            const uint64_t age = frameIndex_ >= lastUsed ? frameIndex_ - lastUsed : 0;
             if (age < evictionAgeThresholdFrames_) {
                 evictionAgeRejected_ = true;
-                continue;
+                return;
             }
-            evictionCandidates_.push_back({entry.lastUsedFrame, candidate});
+            evictionCandidates_.push_back({lastUsed, candidate});
             ++stats_.cpuWork.coldCandidates;
+        };
+        if (residentDemandFeedback_) {
+            for (uint32_t id : unusedResidentPages_) { appendCandidate(id, pages_.at(id)); }
+        } else {
+            for (size_t i = 0; i < residentPages_.size(); ++i) {
+                appendCandidate(residentPages_[i], *residentPageEntries_[i]);
+            }
         }
     }
     CpuProfileScope profile(profiler, "Sort cold candidates");
@@ -1911,6 +1978,16 @@ void MeshletStreamResidencyManager::setPageState(uint32_t pageIndex, MeshletStre
         return;
     }
     const MeshletStreamPageResidencyState oldState = page.state;
+    if (residentState(oldState) && !residentState(state)) {
+        page.lastUsedFrame = effectiveLastUsedFrame(page);
+        unusedResidentPages_.erase(pageIndex);
+        prefetchedResidentPages_.erase(pageIndex);
+        page.gpuUnused = false;
+    }
+    if (!residentState(oldState) && residentState(state)) {
+        page.demandBlockedThroughEpoch = demandEpoch_;
+        if (page.prefetch) { prefetchedResidentPages_.insert(pageIndex); }
+    }
     page.state = state;
     updateLatencyEligibility(pageIndex, page);
     updateStateTables(pageIndex, oldState, state);
@@ -2115,7 +2192,7 @@ void MeshletStreamResidencyManager::resetFrameStats()
     stats_.cpuWork = {};
     stats_.frameAllocationDeferredCount = 0;
     stats_.frameCachedUnusedPageCount = 0;
-    stats_.frameResidentDemandCount = 0;
+    stats_.frameResidentDemandTransitionCount = 0;
     stats_.frameUploadBytes = 0;
     stats_.frameStoredUploadBytes = 0;
     stats_.frameGpuDecompressedPages = 0;

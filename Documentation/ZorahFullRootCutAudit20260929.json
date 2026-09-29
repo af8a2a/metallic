@@ -1,0 +1,1129 @@
+{
+  "belowMaxLodRootBytes": 1783538432,
+  "byteAccounting": "device payload plus 256-byte allocation alignment; not measured VRAM",
+  "levels": {
+    "0": {
+      "bytes": 1993576192,
+      "clusters": 747463,
+      "pages": 30353,
+      "triangles": 26601537
+    },
+    "1": {
+      "bytes": 187564032,
+      "clusters": 67588,
+      "pages": 2866,
+      "triangles": 3362321
+    },
+    "10": {
+      "bytes": 14218752,
+      "clusters": 4952,
+      "pages": 626,
+      "triangles": 337651
+    },
+    "11": {
+      "bytes": 5733888,
+      "clusters": 1975,
+      "pages": 371,
+      "triangles": 116415
+    },
+    "12": {
+      "bytes": 1364480,
+      "clusters": 449,
+      "pages": 157,
+      "triangles": 27947
+    },
+    "13": {
+      "bytes": 310016,
+      "clusters": 105,
+      "pages": 78,
+      "triangles": 6664
+    },
+    "14": {
+      "bytes": 299008,
+      "clusters": 94,
+      "pages": 83,
+      "triangles": 4102
+    },
+    "15": {
+      "bytes": 486400,
+      "clusters": 161,
+      "pages": 143,
+      "triangles": 6325
+    },
+    "16": {
+      "bytes": 28928,
+      "clusters": 11,
+      "pages": 11,
+      "triangles": 387
+    },
+    "17": {
+      "bytes": 7168,
+      "clusters": 2,
+      "pages": 2,
+      "triangles": 78
+    },
+    "2": {
+      "bytes": 201583872,
+      "clusters": 73321,
+      "pages": 3088,
+      "triangles": 4757026
+    },
+    "3": {
+      "bytes": 143735552,
+      "clusters": 46312,
+      "pages": 2076,
+      "triangles": 2835377
+    },
+    "4": {
+      "bytes": 107420416,
+      "clusters": 36184,
+      "pages": 1671,
+      "triangles": 2192452
+    },
+    "5": {
+      "bytes": 170712064,
+      "clusters": 57373,
+      "pages": 2736,
+      "triangles": 3307305
+    },
+    "6": {
+      "bytes": 117367040,
+      "clusters": 39454,
+      "pages": 1951,
+      "triangles": 2254509
+    },
+    "7": {
+      "bytes": 112491264,
+      "clusters": 39116,
+      "pages": 2339,
+      "triangles": 2230777
+    },
+    "8": {
+      "bytes": 63596544,
+      "clusters": 21950,
+      "pages": 1462,
+      "triangles": 1192928
+    },
+    "9": {
+      "bytes": 53031936,
+      "clusters": 18391,
+      "pages": 1751,
+      "triangles": 1093143
+    }
+  },
+  "lod0RootBytes": 1993576192,
+  "rootBytes": 3173527552,
+  "rootClusters": 1154901,
+  "rootInstanceClusters": 11519969,
+  "rootInstanceGroups": 512130,
+  "rootPages": 51764,
+  "rootTriangles": 50326944,
+  "scope": "all instantiated primitives, independent of camera and instance visibility",
+  "stopReason": "not serialized in V9; multi-cluster terminals and lower-level roots are probe candidates, not seam/error attribution",
+  "topologyValidation": "runtime open validated refinement ownership, ordering and terminal flags",
+  "source": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+  "rootBytesByAlphaMode": {
+    "OPAQUE": 3155846400,
+    "MASK": 17680640,
+    "BLEND": 512
+  },
+  "exactAccessorSharingPotentialBytes": 50530304,
+  "topPrimitives": [
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 153710080,
+      "instances": 1,
+      "lod0Triangles": 1733192,
+      "material": 1413,
+      "maxLod": 2,
+      "multiClusterTerminalPages": 2181,
+      "primitive": 5152,
+      "rootBytes": 153835008,
+      "rootClusters": 54120,
+      "rootLevels": {
+        "0": {
+          "bytes": 153315584,
+          "clusters": 53947,
+          "pages": 2173,
+          "triangles": 1717669
+        },
+        "1": {
+          "bytes": 394496,
+          "clusters": 130,
+          "pages": 6,
+          "triangles": 6163
+        },
+        "2": {
+          "bytes": 124928,
+          "clusters": 43,
+          "pages": 2,
+          "triangles": 1924
+        }
+      },
+      "rootPages": 2181,
+      "rootTriangleFraction": 0.9957096501714755,
+      "rootTriangles": 1725756,
+      "rootVertices": 5095574,
+      "sourcePrimitive": 6512,
+      "sourceMesh": 2513,
+      "sourceMeshPrimitive": 0,
+      "name": "SM_Courtyard_Dome_A1_Top_A4_1_b71abedfe7112090",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 11,
+      "belowMaxLodRootBytes": 115695872,
+      "instances": 1,
+      "lod0Triangles": 3678446,
+      "material": 241,
+      "maxLod": 3,
+      "multiClusterTerminalPages": 2662,
+      "primitive": 4108,
+      "rootBytes": 115910912,
+      "rootClusters": 66232,
+      "rootLevels": {
+        "0": {
+          "bytes": 101256192,
+          "clusters": 58708,
+          "pages": 2368,
+          "triangles": 2562100
+        },
+        "1": {
+          "bytes": 1911552,
+          "clusters": 1000,
+          "pages": 41,
+          "triangles": 56015
+        },
+        "2": {
+          "bytes": 12528128,
+          "clusters": 6416,
+          "pages": 249,
+          "triangles": 374638
+        },
+        "3": {
+          "bytes": 215040,
+          "clusters": 108,
+          "pages": 4,
+          "triangles": 6234
+        }
+      },
+      "rootPages": 2662,
+      "rootTriangleFraction": 0.8152864008333954,
+      "rootTriangles": 2998987,
+      "rootVertices": 6226127,
+      "sourcePrimitive": 5046,
+      "sourceMesh": 1902,
+      "sourceMeshPrimitive": 0,
+      "name": "SM_Courtyard_Part0_A1_1_Cylinder_022_e664e7c15d538ea9",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION"
+      ]
+    },
+    {
+      "attributeFlags": 11,
+      "belowMaxLodRootBytes": 115666176,
+      "instances": 1,
+      "lod0Triangles": 3678446,
+      "material": 241,
+      "maxLod": 3,
+      "multiClusterTerminalPages": 2677,
+      "primitive": 2624,
+      "rootBytes": 115907584,
+      "rootClusters": 66224,
+      "rootLevels": {
+        "0": {
+          "bytes": 101249280,
+          "clusters": 58674,
+          "pages": 2377,
+          "triangles": 2562353
+        },
+        "1": {
+          "bytes": 1929472,
+          "clusters": 1052,
+          "pages": 44,
+          "triangles": 56257
+        },
+        "2": {
+          "bytes": 12487424,
+          "clusters": 6372,
+          "pages": 250,
+          "triangles": 373147
+        },
+        "3": {
+          "bytes": 241408,
+          "clusters": 126,
+          "pages": 6,
+          "triangles": 7019
+        }
+      },
+      "rootPages": 2677,
+      "rootTriangleFraction": 0.8152290396542453,
+      "rootTriangles": 2998776,
+      "rootVertices": 6226074,
+      "sourcePrimitive": 3013,
+      "sourceMesh": 1095,
+      "sourceMeshPrimitive": 0,
+      "name": "SM_Courtyard_Part0_A1_1_Cylinder_007_ed1134fdc4d1a2b6",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 0,
+      "instances": 16,
+      "lod0Triangles": 986422,
+      "material": 423,
+      "maxLod": 0,
+      "multiClusterTerminalPages": 1240,
+      "primitive": 820,
+      "rootBytes": 88488192,
+      "rootClusters": 30424,
+      "rootLevels": {
+        "0": {
+          "bytes": 88488192,
+          "clusters": 30424,
+          "pages": 1240,
+          "triangles": 986422
+        }
+      },
+      "rootPages": 1240,
+      "rootTriangleFraction": 1.0,
+      "rootTriangles": 986422,
+      "rootVertices": 2934640,
+      "sourcePrimitive": 905,
+      "sourceMesh": 333,
+      "sourceMeshPrimitive": 0,
+      "name": "SM_ThroneRoom_CircularWindow_A1_1_249558999338a8e1",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 0,
+      "instances": 1,
+      "lod0Triangles": 986368,
+      "material": 423,
+      "maxLod": 0,
+      "multiClusterTerminalPages": 1231,
+      "primitive": 2186,
+      "rootBytes": 88485376,
+      "rootClusters": 30458,
+      "rootLevels": {
+        "0": {
+          "bytes": 88485376,
+          "clusters": 30458,
+          "pages": 1231,
+          "triangles": 986368
+        }
+      },
+      "rootPages": 1231,
+      "rootTriangleFraction": 1.0,
+      "rootTriangles": 986368,
+      "rootVertices": 2934478,
+      "sourcePrimitive": 2431,
+      "sourceMesh": 901,
+      "sourceMeshPrimitive": 0,
+      "name": "SM_ThroneRoom_CircularWindow_A2_1_f4c3d578388590a1",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 81893376,
+      "instances": 6,
+      "lod0Triangles": 1110847,
+      "material": 279,
+      "maxLod": 7,
+      "multiClusterTerminalPages": 1196,
+      "primitive": 939,
+      "rootBytes": 81982208,
+      "rootClusters": 29449,
+      "rootLevels": {
+        "0": {
+          "bytes": 76898560,
+          "clusters": 27732,
+          "pages": 1125,
+          "triangles": 851960
+        },
+        "1": {
+          "bytes": 3985152,
+          "clusters": 1349,
+          "pages": 54,
+          "triangles": 45723
+        },
+        "2": {
+          "bytes": 744704,
+          "clusters": 251,
+          "pages": 11,
+          "triangles": 8580
+        },
+        "3": {
+          "bytes": 61184,
+          "clusters": 19,
+          "pages": 1,
+          "triangles": 680
+        },
+        "4": {
+          "bytes": 42240,
+          "clusters": 16,
+          "pages": 1,
+          "triangles": 466
+        },
+        "5": {
+          "bytes": 93952,
+          "clusters": 33,
+          "pages": 2,
+          "triangles": 1074
+        },
+        "6": {
+          "bytes": 67584,
+          "clusters": 21,
+          "pages": 1,
+          "triangles": 749
+        },
+        "7": {
+          "bytes": 88832,
+          "clusters": 28,
+          "pages": 1,
+          "triangles": 987
+        }
+      },
+      "rootPages": 1196,
+      "rootTriangleFraction": 0.8193918694473676,
+      "rootTriangles": 910219,
+      "rootVertices": 2714263,
+      "sourcePrimitive": 1024,
+      "sourceMesh": 372,
+      "sourceMeshPrimitive": 4,
+      "name": "SM_Courtyard_TreePlatform_Stairs_A1_1_277fcb4561c325bf",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 81811456,
+      "instances": 4,
+      "lod0Triangles": 1008148,
+      "material": 279,
+      "maxLod": 7,
+      "multiClusterTerminalPages": 1192,
+      "primitive": 947,
+      "rootBytes": 81841664,
+      "rootClusters": 29438,
+      "rootLevels": {
+        "0": {
+          "bytes": 79629056,
+          "clusters": 28692,
+          "pages": 1161,
+          "triangles": 880876
+        },
+        "1": {
+          "bytes": 1478912,
+          "clusters": 498,
+          "pages": 20,
+          "triangles": 17101
+        },
+        "2": {
+          "bytes": 323840,
+          "clusters": 111,
+          "pages": 5,
+          "triangles": 3652
+        },
+        "3": {
+          "bytes": 131328,
+          "clusters": 45,
+          "pages": 2,
+          "triangles": 1453
+        },
+        "4": {
+          "bytes": 150528,
+          "clusters": 51,
+          "pages": 2,
+          "triangles": 1674
+        },
+        "5": {
+          "bytes": 97792,
+          "clusters": 32,
+          "pages": 1,
+          "triangles": 1083
+        },
+        "7": {
+          "bytes": 30208,
+          "clusters": 9,
+          "pages": 1,
+          "triangles": 335
+        }
+      },
+      "rootPages": 1192,
+      "rootTriangleFraction": 0.8988501688244186,
+      "rootTriangles": 906174,
+      "rootVertices": 2709741,
+      "sourcePrimitive": 1032,
+      "sourceMesh": 373,
+      "sourceMeshPrimitive": 4,
+      "name": "SM_Courtyard_TreePlatform_Stairs_A2_1_f787315cfdd930ea",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 70972672,
+      "instances": 4,
+      "lod0Triangles": 1291100,
+      "material": 276,
+      "maxLod": 8,
+      "multiClusterTerminalPages": 1015,
+      "primitive": 452,
+      "rootBytes": 71134720,
+      "rootClusters": 25305,
+      "rootLevels": {
+        "0": {
+          "bytes": 66552832,
+          "clusters": 23763,
+          "pages": 950,
+          "triangles": 738885
+        },
+        "1": {
+          "bytes": 2539008,
+          "clusters": 865,
+          "pages": 35,
+          "triangles": 28985
+        },
+        "2": {
+          "bytes": 987904,
+          "clusters": 331,
+          "pages": 15,
+          "triangles": 11238
+        },
+        "3": {
+          "bytes": 577024,
+          "clusters": 192,
+          "pages": 8,
+          "triangles": 6551
+        },
+        "4": {
+          "bytes": 137984,
+          "clusters": 47,
+          "pages": 2,
+          "triangles": 1529
+        },
+        "5": {
+          "bytes": 132864,
+          "clusters": 42,
+          "pages": 2,
+          "triangles": 1475
+        },
+        "6": {
+          "bytes": 45056,
+          "clusters": 14,
+          "pages": 1,
+          "triangles": 498
+        },
+        "8": {
+          "bytes": 162048,
+          "clusters": 51,
+          "pages": 2,
+          "triangles": 1884
+        }
+      },
+      "rootPages": 1015,
+      "rootTriangleFraction": 0.6126907288358764,
+      "rootTriangles": 791045,
+      "rootVertices": 2356022,
+      "sourcePrimitive": 452,
+      "sourceMesh": 149,
+      "sourceMeshPrimitive": 2,
+      "name": "SM_Courtyard_Stairs_Module_05_B1_01_b6123eb72e24f6e8",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 58340608,
+      "instances": 1,
+      "lod0Triangles": 1167558,
+      "material": 416,
+      "maxLod": 2,
+      "multiClusterTerminalPages": 779,
+      "primitive": 3750,
+      "rootBytes": 59025664,
+      "rootClusters": 18778,
+      "rootLevels": {
+        "1": {
+          "bytes": 58340608,
+          "clusters": 18559,
+          "pages": 769,
+          "triangles": 740816
+        },
+        "2": {
+          "bytes": 685056,
+          "clusters": 219,
+          "pages": 10,
+          "triangles": 8928
+        }
+      },
+      "rootPages": 779,
+      "rootTriangleFraction": 0.6421471138907018,
+      "rootTriangles": 749744,
+      "rootVertices": 1953583,
+      "sourcePrimitive": 4514,
+      "sourceMesh": 1673,
+      "sourceMeshPrimitive": 0,
+      "name": "SM_ThroneRoom_Floor_A5_1_4eb0edefaa126c8e",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TANGENT",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 11,
+      "belowMaxLodRootBytes": 0,
+      "instances": 1,
+      "lod0Triangles": 1449984,
+      "material": 241,
+      "maxLod": 0,
+      "multiClusterTerminalPages": 1333,
+      "primitive": 5327,
+      "rootBytes": 56560128,
+      "rootClusters": 32849,
+      "rootLevels": {
+        "0": {
+          "bytes": 56560128,
+          "clusters": 32849,
+          "pages": 1333,
+          "triangles": 1449984
+        }
+      },
+      "rootPages": 1333,
+      "rootTriangleFraction": 1.0,
+      "rootTriangles": 1449984,
+      "rootVertices": 3037350,
+      "sourcePrimitive": 6742,
+      "sourceMesh": 2605,
+      "sourceMeshPrimitive": 0,
+      "name": "SM_Courtyard_Part0_A1_1_Cylinder_072_36c62849ae5ac907",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 0,
+      "instances": 2,
+      "lod0Triangles": 506772,
+      "material": 378,
+      "maxLod": 0,
+      "multiClusterTerminalPages": 645,
+      "primitive": 5093,
+      "rootBytes": 45842944,
+      "rootClusters": 15837,
+      "rootLevels": {
+        "0": {
+          "bytes": 45842944,
+          "clusters": 15837,
+          "pages": 645,
+          "triangles": 506772
+        }
+      },
+      "rootPages": 645,
+      "rootTriangleFraction": 1.0,
+      "rootTriangles": 506772,
+      "rootVertices": 1520316,
+      "sourcePrimitive": 6434,
+      "sourceMesh": 2482,
+      "sourceMeshPrimitive": 0,
+      "name": "SM_StoneFloor_Border_Round_A1_01_e7a989a2f634446c",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 38839040,
+      "instances": 1,
+      "lod0Triangles": 3538692,
+      "material": 416,
+      "maxLod": 4,
+      "multiClusterTerminalPages": 496,
+      "primitive": 5420,
+      "rootBytes": 38883584,
+      "rootClusters": 12000,
+      "rootLevels": {
+        "2": {
+          "bytes": 3413504,
+          "clusters": 1093,
+          "pages": 50,
+          "triangles": 62374
+        },
+        "3": {
+          "bytes": 35425536,
+          "clusters": 10893,
+          "pages": 445,
+          "triangles": 643594
+        },
+        "4": {
+          "bytes": 44544,
+          "clusters": 14,
+          "pages": 1,
+          "triangles": 792
+        }
+      },
+      "rootPages": 496,
+      "rootTriangleFraction": 0.19972351365984947,
+      "rootTriangles": 706760,
+      "rootVertices": 1265502,
+      "sourcePrimitive": 6914,
+      "sourceMesh": 2675,
+      "sourceMeshPrimitive": 0,
+      "name": "SM_ThroneRoom_Platform_A5_1_83431a997f4f45c4",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 0,
+      "instances": 2,
+      "lod0Triangles": 409861,
+      "material": 53,
+      "maxLod": 0,
+      "multiClusterTerminalPages": 525,
+      "primitive": 5095,
+      "rootBytes": 37076224,
+      "rootClusters": 12809,
+      "rootLevels": {
+        "0": {
+          "bytes": 37076224,
+          "clusters": 12809,
+          "pages": 525,
+          "triangles": 409861
+        }
+      },
+      "rootPages": 525,
+      "rootTriangleFraction": 1.0,
+      "rootTriangles": 409861,
+      "rootVertices": 1229583,
+      "sourcePrimitive": 6436,
+      "sourceMesh": 2482,
+      "sourceMeshPrimitive": 2,
+      "name": "SM_StoneFloor_Border_Round_A1_01_e7a989a2f634446c",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 34518784,
+      "instances": 1,
+      "lod0Triangles": 13449981,
+      "material": 325,
+      "maxLod": 11,
+      "multiClusterTerminalPages": 468,
+      "primitive": 2859,
+      "rootBytes": 34581760,
+      "rootClusters": 11598,
+      "rootLevels": {
+        "1": {
+          "bytes": 14599936,
+          "clusters": 4885,
+          "pages": 195,
+          "triangles": 216235
+        },
+        "10": {
+          "bytes": 213248,
+          "clusters": 73,
+          "pages": 3,
+          "triangles": 3492
+        },
+        "11": {
+          "bytes": 62976,
+          "clusters": 21,
+          "pages": 1,
+          "triangles": 1166
+        },
+        "2": {
+          "bytes": 8620288,
+          "clusters": 2885,
+          "pages": 113,
+          "triangles": 128658
+        },
+        "3": {
+          "bytes": 3404544,
+          "clusters": 1141,
+          "pages": 45,
+          "triangles": 50621
+        },
+        "4": {
+          "bytes": 2382080,
+          "clusters": 802,
+          "pages": 32,
+          "triangles": 35405
+        },
+        "5": {
+          "bytes": 1435904,
+          "clusters": 479,
+          "pages": 22,
+          "triangles": 21484
+        },
+        "6": {
+          "bytes": 1304832,
+          "clusters": 440,
+          "pages": 19,
+          "triangles": 19137
+        },
+        "7": {
+          "bytes": 796672,
+          "clusters": 269,
+          "pages": 14,
+          "triangles": 11798
+        },
+        "8": {
+          "bytes": 1132544,
+          "clusters": 390,
+          "pages": 16,
+          "triangles": 17076
+        },
+        "9": {
+          "bytes": 628736,
+          "clusters": 213,
+          "pages": 8,
+          "triangles": 9894
+        }
+      },
+      "rootPages": 468,
+      "rootTriangleFraction": 0.03828748903065365,
+      "rootTriangles": 514966,
+      "rootVertices": 1134161,
+      "sourcePrimitive": 3366,
+      "sourceMesh": 1245,
+      "sourceMeshPrimitive": 2,
+      "name": "SM_StoneFloor_Round_A1_01_92c1f659f9929c37",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 33343744,
+      "instances": 1,
+      "lod0Triangles": 13348799,
+      "material": 439,
+      "maxLod": 7,
+      "multiClusterTerminalPages": 468,
+      "primitive": 4874,
+      "rootBytes": 34398976,
+      "rootClusters": 11506,
+      "rootLevels": {
+        "1": {
+          "bytes": 57856,
+          "clusters": 23,
+          "pages": 1,
+          "triangles": 2570
+        },
+        "2": {
+          "bytes": 1307904,
+          "clusters": 533,
+          "pages": 23,
+          "triangles": 60961
+        },
+        "3": {
+          "bytes": 8614144,
+          "clusters": 2882,
+          "pages": 117,
+          "triangles": 167480
+        },
+        "4": {
+          "bytes": 10087680,
+          "clusters": 3303,
+          "pages": 134,
+          "triangles": 194526
+        },
+        "5": {
+          "bytes": 9133824,
+          "clusters": 2998,
+          "pages": 121,
+          "triangles": 178063
+        },
+        "6": {
+          "bytes": 4142336,
+          "clusters": 1393,
+          "pages": 56,
+          "triangles": 89740
+        },
+        "7": {
+          "bytes": 1055232,
+          "clusters": 374,
+          "pages": 16,
+          "triangles": 27216
+        }
+      },
+      "rootPages": 468,
+      "rootTriangleFraction": 0.05397908830599667,
+      "rootTriangles": 720556,
+      "rootVertices": 1105857,
+      "sourcePrimitive": 6069,
+      "sourceMesh": 2322,
+      "sourceMeshPrimitive": 2,
+      "name": "SM_ThroneRoom_Stairs_A1_1_a0fcab481298d5dc",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 0,
+      "instances": 2,
+      "lod0Triangles": 373292,
+      "material": 52,
+      "maxLod": 0,
+      "multiClusterTerminalPages": 474,
+      "primitive": 5101,
+      "rootBytes": 33767424,
+      "rootClusters": 11666,
+      "rootLevels": {
+        "0": {
+          "bytes": 33767424,
+          "clusters": 11666,
+          "pages": 474,
+          "triangles": 373292
+        }
+      },
+      "rootPages": 474,
+      "rootTriangleFraction": 1.0,
+      "rootTriangles": 373292,
+      "rootVertices": 1119876,
+      "sourcePrimitive": 6442,
+      "sourceMesh": 2482,
+      "sourceMeshPrimitive": 8,
+      "name": "SM_StoneFloor_Border_Round_A1_01_e7a989a2f634446c",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 32899072,
+      "instances": 1,
+      "lod0Triangles": 2989825,
+      "material": 416,
+      "maxLod": 4,
+      "multiClusterTerminalPages": 425,
+      "primitive": 4073,
+      "rootBytes": 32940032,
+      "rootClusters": 10210,
+      "rootLevels": {
+        "2": {
+          "bytes": 2594048,
+          "clusters": 821,
+          "pages": 37,
+          "triangles": 47225
+        },
+        "3": {
+          "bytes": 30305024,
+          "clusters": 9376,
+          "pages": 387,
+          "triangles": 549677
+        },
+        "4": {
+          "bytes": 40960,
+          "clusters": 13,
+          "pages": 1,
+          "triangles": 715
+        }
+      },
+      "rootPages": 425,
+      "rootTriangleFraction": 0.19988360522773072,
+      "rootTriangles": 597617,
+      "rootVertices": 1071962,
+      "sourcePrimitive": 4996,
+      "sourceMesh": 1881,
+      "sourceMeshPrimitive": 0,
+      "name": "SM_ThroneRoom_Platform_A6_1_4c775801b1e84861",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 32079616,
+      "instances": 46,
+      "lod0Triangles": 850617,
+      "material": 79,
+      "maxLod": 13,
+      "multiClusterTerminalPages": 382,
+      "primitive": 93,
+      "rootBytes": 32083200,
+      "rootClusters": 9439,
+      "rootLevels": {
+        "0": {
+          "bytes": 31919360,
+          "clusters": 9393,
+          "pages": 380,
+          "triangles": 378153
+        },
+        "1": {
+          "bytes": 160256,
+          "clusters": 45,
+          "pages": 2,
+          "triangles": 1878
+        },
+        "13": {
+          "bytes": 3584,
+          "clusters": 1,
+          "pages": 1,
+          "triangles": 57
+        }
+      },
+      "rootPages": 383,
+      "rootTriangleFraction": 0.4468380011215388,
+      "rootTriangles": 380088,
+      "rootVertices": 1067708,
+      "sourcePrimitive": 93,
+      "sourceMesh": 32,
+      "sourceMeshPrimitive": 3,
+      "name": "SM_Courtyard_FacadeWall_B1_Ornaments_1_2a8976736cc7017d",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 30348032,
+      "instances": 4,
+      "lod0Triangles": 1849316,
+      "material": 416,
+      "maxLod": 4,
+      "multiClusterTerminalPages": 402,
+      "primitive": 1583,
+      "rootBytes": 30471680,
+      "rootClusters": 9616,
+      "rootLevels": {
+        "2": {
+          "bytes": 25334784,
+          "clusters": 7992,
+          "pages": 332,
+          "triangles": 455607
+        },
+        "3": {
+          "bytes": 5013248,
+          "clusters": 1586,
+          "pages": 68,
+          "triangles": 90665
+        },
+        "4": {
+          "bytes": 123648,
+          "clusters": 38,
+          "pages": 2,
+          "triangles": 2508
+        }
+      },
+      "rootPages": 402,
+      "rootTriangleFraction": 0.2967475542308616,
+      "rootTriangles": 548780,
+      "rootVertices": 991452,
+      "sourcePrimitive": 1743,
+      "sourceMesh": 658,
+      "sourceMeshPrimitive": 0,
+      "name": "SM_ThroneRoom_Floor_A2_1_3890f9933be0dd1f",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    },
+    {
+      "attributeFlags": 31,
+      "belowMaxLodRootBytes": 0,
+      "instances": 2,
+      "lod0Triangles": 336297,
+      "material": 387,
+      "maxLod": 0,
+      "multiClusterTerminalPages": 424,
+      "primitive": 5094,
+      "rootBytes": 30418944,
+      "rootClusters": 10510,
+      "rootLevels": {
+        "0": {
+          "bytes": 30418944,
+          "clusters": 10510,
+          "pages": 424,
+          "triangles": 336297
+        }
+      },
+      "rootPages": 424,
+      "rootTriangleFraction": 1.0,
+      "rootTriangles": 336297,
+      "rootVertices": 1008891,
+      "sourcePrimitive": 6435,
+      "sourceMesh": 2482,
+      "sourceMeshPrimitive": 1,
+      "name": "SM_StoneFloor_Border_Round_A1_01_e7a989a2f634446c",
+      "alphaMode": "OPAQUE",
+      "attributes": [
+        "NORMAL",
+        "POSITION",
+        "TEXCOORD_0"
+      ]
+    }
+  ]
+}

@@ -29,7 +29,13 @@ struct StreamCpuWorkCounters {
     uint32_t priorityReused = 0;
     uint32_t admissionCalls = 0;
     uint32_t admissionBypassed = 0;
-    uint32_t demandVisited = 0;
+    uint32_t demandVisited = 0; // Demand classification visits, excluding prefetch side effects.
+    uint32_t demandMembershipTests = 0; // Previous unused set bit checks, without PageEntry lookups.
+    uint32_t demandPrefetchVisited = 0;
+    uint32_t coldCandidateTests = 0;
+    uint32_t demandTransitions = 0;
+    uint32_t demandEpochUpdates = 0;
+    uint32_t demandStaleBatches = 0;
     uint32_t demandNewerThanFeedback = 0;
     uint32_t demandUnused = 0;
     uint32_t demandRefreshed = 0;

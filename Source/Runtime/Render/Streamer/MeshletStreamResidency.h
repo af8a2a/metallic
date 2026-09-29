@@ -16,6 +16,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace metallic::render {
@@ -279,7 +280,7 @@ struct MeshletStreamResidencyStats {
     uint32_t frameEvictionCandidateTests = 0;
     uint32_t frameAllocationDeferredCount = 0;
     uint32_t frameCachedUnusedPageCount = 0;
-    uint32_t frameResidentDemandCount = 0;
+    uint32_t frameResidentDemandTransitionCount = 0;
     uint64_t frameUploadBytes = 0;
     uint64_t frameStoredUploadBytes = 0;
     uint64_t totalStoredUploadBytes = 0;
@@ -425,6 +426,7 @@ private:
         uint64_t lastUsedFrame = 0;
         uint64_t firstRequestFrame = 0;
         uint64_t residentSinceFrame = 0;
+        uint64_t demandBlockedThroughEpoch = 0;
         uint32_t deviceOffsetBytes = kInvalidStreamDeviceOffsetBytes;
         uint32_t allocationBytes = 0;
         uint32_t deviceSizeBytes = 0;
@@ -438,7 +440,9 @@ private:
         float screenBenefit = -1.0f;
         bool prefetch = false;
     };
-    static_assert(sizeof(PageEntry) == 64);
+    static_assert(sizeof(PageEntry) == 72);
+
+    uint64_t effectiveLastUsedFrame(const PageEntry& page) const;
 
     using PagePositionMember = uint32_t PageEntry::*;
 
@@ -505,6 +509,15 @@ private:
     // Capacity gate only; smaller pages and completed frees still pass.
     bool budgetAdmissionExhausted_ = false;
     bool residentDemandFeedback_ = false;
+    // Only transitions and pending prefetch hits need per-page writes. Hot pages
+    // inherit the most recent complete feedback lazily until becoming unused.
+    std::unordered_set<uint32_t> unusedResidentPages_;
+    std::unordered_set<uint32_t> prefetchedResidentPages_;
+    uint64_t demandEpoch_ = 0;
+    uint64_t completeDemandEpoch_ = 0;
+    uint64_t completeDemandFrame_ = 0;
+    uint64_t completeDemandSourceFrame_ = 0;
+    uint64_t latestDemandSourceFrame_ = 0;
     bool geometryReclaimPressure_ = false;
     bool clasReclaimPressure_ = false;
     uint32_t frameUnloadTaskIndex_ = kInvalidStreamingTaskIndex;

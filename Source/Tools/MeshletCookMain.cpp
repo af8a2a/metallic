@@ -82,6 +82,78 @@ uint64_t alignedPageBytes(uint64_t bytes)
     return (bytes + 255u) & ~uint64_t(255u);
 }
 
+// Uses the runtime-validated topology and device payload policy. Terminal roots
+// can occur at every LOD; highest-level pages alone are not a complete cut.
+Json auditRootCut(const MeshletStreamAsset& asset)
+{
+    std::vector<uint32_t> instances(asset.primitiveCount(), 0);
+    for (const auto& instance : asset.instances()) { ++instances[instance.primitiveIndex]; }
+    Json primitives = Json::array(), levels = Json::object();
+    uint64_t totalBytes = 0, totalPages = 0, totalClusters = 0, totalTriangles = 0;
+    uint64_t lowerLevelBytes = 0, lod0Bytes = 0, instanceGroups = 0, instanceClusters = 0;
+    for (uint32_t index = 0; index < asset.primitiveCount(); ++index) {
+        if (instances[index] == 0) { continue; }
+        const auto& primitive = asset.primitives()[index];
+        uint32_t maxLod = 0;
+        uint64_t baseTriangles = 0;
+        for (uint32_t p = primitive.pageOffset; p < primitive.pageOffset + primitive.pageCount; ++p) {
+            const auto& page = asset.pages()[p];
+            maxLod = std::max(maxLod, page.lodLevel);
+            if (page.lodLevel == 0) { baseTriangles += page.triangleIndexCount / 3u; }
+        }
+        uint64_t bytes = 0, triangles = 0, clusters = 0, vertices = 0, lowerBytes = 0;
+        uint64_t multiClusterPages = 0;
+        uint32_t attributes = 0;
+        Json rootLevels = Json::object();
+        const auto roots = asset.primitiveTerminalGroups(index);
+        for (uint32_t id : roots) {
+            const auto& group = asset.groups()[id];
+            const auto& page = asset.pages()[group.pageIndex];
+            const uint64_t size = alignedPageBytes(meshletStreamDevicePayloadSize(page));
+            bytes += size;
+            triangles += page.triangleIndexCount / 3u;
+            vertices += page.vertexCount;
+            clusters += group.clusterCount;
+            attributes |= page.attributeFlags;
+            multiClusterPages += group.clusterCount > 1;
+            if (group.lodLevel < maxLod) { lowerBytes += size; }
+            if (group.lodLevel == 0) { lod0Bytes += size; }
+            for (Json* histogram : {&levels, &rootLevels}) {
+                Json& level = (*histogram)[std::to_string(group.lodLevel)];
+                if (level.is_null()) { level = Json::object(); }
+                for (const auto& [key, value] : std::initializer_list<std::pair<const char*, uint64_t>>{
+                        {"pages", 1}, {"bytes", size}, {"clusters", group.clusterCount},
+                        {"triangles", page.triangleIndexCount / 3u}}) {
+                    level[key] = level.value(key, uint64_t(0)) + value;
+                }
+            }
+        }
+        totalBytes += bytes; totalPages += roots.size(); totalClusters += clusters; totalTriangles += triangles;
+        lowerLevelBytes += lowerBytes;
+        instanceGroups += roots.size() * instances[index];
+        instanceClusters += clusters * instances[index];
+        primitives.push_back({{"primitive", index}, {"sourcePrimitive", primitive.renderPrimitiveIndex},
+            {"material", primitive.materialIndex}, {"instances", instances[index]}, {"maxLod", maxLod},
+            {"rootPages", roots.size()}, {"rootBytes", bytes}, {"rootClusters", clusters},
+            {"rootTriangles", triangles}, {"rootVertices", vertices}, {"lod0Triangles", baseTriangles},
+            {"rootTriangleFraction", baseTriangles ? double(triangles) / baseTriangles : 0.0},
+            {"belowMaxLodRootBytes", lowerBytes}, {"multiClusterTerminalPages", multiClusterPages},
+            {"attributeFlags", attributes}, {"rootLevels", rootLevels}});
+    }
+    std::sort(primitives.begin(), primitives.end(), [](const Json& a, const Json& b) {
+        if (a["rootBytes"] != b["rootBytes"]) { return a["rootBytes"] > b["rootBytes"]; }
+        return a["primitive"] < b["primitive"];
+    });
+    return {{"scope", "all instantiated primitives, independent of camera and instance visibility"},
+        {"topologyValidation", "runtime open validated refinement ownership, ordering and terminal flags"},
+        {"byteAccounting", "device payload plus 256-byte allocation alignment; not measured VRAM"},
+        {"rootPages", totalPages}, {"rootBytes", totalBytes}, {"rootClusters", totalClusters},
+        {"rootTriangles", totalTriangles}, {"rootInstanceGroups", instanceGroups},
+        {"rootInstanceClusters", instanceClusters}, {"lod0RootBytes", lod0Bytes},
+        {"belowMaxLodRootBytes", lowerLevelBytes}, {"levels", levels}, {"primitivesByRootBytes", primitives},
+        {"stopReason", "not serialized in V9; multi-cluster terminals and lower-level roots are probe candidates, not seam/error attribution"}};
+}
+
 Json inspectAsset(const MeshletStreamAsset& asset, bool validatePayloads)
 {
     Json levels = Json::object();
@@ -151,6 +223,7 @@ Json inspectAsset(const MeshletStreamAsset& asset, bool validatePayloads)
         {"minimumResidentBytesIncludingOneStreamPage", terminalBytes +
             (terminalPages.size() < asset.pageCount() ? alignedPageBytes(asset.maxPagePayloadBytes()) : 0)},
         {"terminalInstanceGroups", terminalInstanceGroups}, {"terminalInstanceClusters", terminalInstanceClusters},
+        {"rootCutAudit", auditRootCut(asset)},
         {"payloadValidation", validatePayloads ? "all-pages" : "not-requested"}, {"geometries", geometries}};
 }
 

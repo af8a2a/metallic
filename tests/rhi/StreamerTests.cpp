@@ -2186,6 +2186,35 @@ public:
         if (!bounded.pageAllocated(pages[0]) || !bounded.pageAllocated(pages[1])) {
             return RhiTestResult::fail("Actual demand could not use reserved capacity");
         }
+        // Resident speculation must survive old/truncated feedback and count
+        // exactly one hit when a complete eligible view first needs it.
+        const uint32_t prefetched[] = {missing[0] == pages[0] ? pages[1] : pages[0]};
+        std::unique_ptr<Streamer> uploader;
+        auto uploadResult = context.device.createStreamer(makeTestStreamerDesc(2 * asset.maxPagePayloadBytes() + 4096))
+            .transform([&](auto value) { uploader = std::move(value); });
+        if (!uploadResult) { return RhiTestResult::fail(toString(uploadResult)); }
+        std::unique_ptr<Buffer> destination;
+        uploadResult = context.device.createBuffer({.size = bounded.pageBufferSize(),
+            .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback})
+            .transform([&](auto value) { destination = std::move(value); });
+        if (!uploadResult) { return RhiTestResult::fail(toString(uploadResult)); }
+        if (bounded.processUploads(*uploader, *destination, 2) != 2) {
+            return RhiTestResult::fail("Cannot upload prefetch cohort");
+        }
+        for (uint32_t frame = 0; frame < 4; ++frame) { bounded.beginFrame(); }
+        (void)bounded.consumeGpuRequests({.frameIndex = 1, .residentDemandFeedback = true});
+        (void)bounded.consumeGpuRequests({.unloadRequestCounter = 1, .unloadOverflowCounter = 1,
+            .residentDemandFeedback = true});
+        (void)bounded.consumeGpuRequests({.unloadPageIds = prefetched, .unloadRequestCounter = 1,
+            .residentDemandFeedback = true});
+        if (bounded.stats().totalPrefetchUsed != 0) {
+            return RhiTestResult::fail("Old, truncated or unused feedback invented a prefetch hit");
+        }
+        (void)bounded.consumeGpuRequests({.residentDemandFeedback = true});
+        (void)bounded.consumeGpuRequests({.residentDemandFeedback = true});
+        if (bounded.stats().totalPrefetchUsed != 1) {
+            return RhiTestResult::fail("Resident prefetch cohort lost or repeated its hit");
+        }
         MeshletStreamResidencyManager queued;
         if (!queued.initialize({.asset = &asset, .maxResidentBytes = bytes,
                 .pageLoadConcurrency = 1, .maxPageLoadsInFlight = 4, .immediateGpuRequests = true}, reason)) {
@@ -2996,8 +3025,8 @@ public:
             return RhiTestResult::fail("Unused feedback eagerly unloaded cached geometry");
         }
         const auto initialWork = residency.stats().cpuWork;
-        if (initialWork.demandUnused != 1 || initialWork.demandVisited != roots.size() + 2 ||
-            initialWork.demandRefreshed + initialWork.demandUnused != initialWork.demandVisited) {
+        if (initialWork.demandUnused != 1 || initialWork.demandVisited != 1 || initialWork.demandEpochUpdates != 1 ||
+            initialWork.demandTransitions != 1) {
             return RhiTestResult::fail("Complete feedback counters do not match resident work");
         }
         residency.beginFrame();
@@ -3010,6 +3039,43 @@ public:
         if (residency.pageAge(pages[0]) != 0 || !residency.requestPage(pages[0]) ||
             residency.stats().totalScheduledUploadCount != uploads || residency.queuedUploadCount() != 0) {
             return RhiTestResult::fail("Returning demand did not reuse its cached payload");
+        }
+        // Compare lazy age against the former eager refresh semantics across
+        // complete, truncated and duplicate unused feedback, including two
+        // batches in one CPU frame. Stable hot cohorts require zero visits.
+        std::array<uint64_t, 2> lastUse{residency.stats().frameIndex, residency.stats().frameIndex};
+        for (uint32_t step = 0; step < 96; ++step) {
+            if ((step % 3) != 0) { residency.beginFrame(); }
+            const bool complete = (step % 5) != 0;
+            const uint32_t mask = (step * 13u / 7u) % 4u;
+            std::vector<uint32_t> unused;
+            for (uint32_t i = 0; i < 2; ++i) {
+                if (mask & (1u << i)) { unused.push_back(pages[i]); unused.push_back(pages[i]); }
+                else if (complete) { lastUse[i] = residency.stats().frameIndex; }
+            }
+            (void)residency.consumeGpuRequests({.unloadPageIds = unused,
+                .unloadRequestCounter = static_cast<uint32_t>(unused.size()) + !complete,
+                .unloadOverflowCounter = complete ? 0u : 1u, .residentDemandFeedback = true});
+            for (uint32_t i = 0; i < 2; ++i) {
+                if (residency.pageAge(pages[i]) != residency.stats().frameIndex - lastUse[i]) {
+                    return RhiTestResult::fail("Incremental demand age differs from eager reference");
+                }
+            }
+        }
+        (void)residency.consumeGpuRequests(StreamGpuRequestBatch{.residentDemandFeedback = true});
+        residency.beginFrame();
+        (void)residency.consumeGpuRequests(StreamGpuRequestBatch{.residentDemandFeedback = true});
+        if (residency.stats().cpuWork.demandVisited != 0 || residency.pageAge(pages[0]) != 0 ||
+            residency.pageAge(pages[1]) != 0 || residency.stats().cpuWork.demandEpochUpdates != 1) {
+            return RhiTestResult::fail("Stable hot feedback did not use constant-time epoch refresh");
+        }
+        // Monotonic producer frames: old feedback cannot turn a newly hot page cold.
+        const auto sourceFrame = static_cast<uint32_t>(residency.stats().frameIndex);
+        (void)residency.consumeGpuRequests({.frameIndex = sourceFrame, .residentDemandFeedback = true});
+        (void)residency.consumeGpuRequests({.unloadPageIds = firstUnused, .unloadRequestCounter = 2,
+            .frameIndex = sourceFrame - 1, .residentDemandFeedback = true});
+        if (residency.stats().cpuWork.demandStaleBatches != 1 || residency.pageAge(pages[0]) != 0) {
+            return RhiTestResult::fail("Stale producer feedback changed a newer demand epoch");
         }
         residency.beginFrame();
         (void)residency.requestPage(pages[2]);
@@ -3025,7 +3091,7 @@ public:
             .unloadOverflowCounter = 1, .residentDemandFeedback = true});
         const auto incompleteWork = residency.stats().cpuWork;
         if (incompleteWork.demandUnused != 1 || incompleteWork.demandRefreshed != 0 ||
-            incompleteWork.demandIncompleteProtected + 1 != incompleteWork.demandVisited) {
+            incompleteWork.demandVisited != 1 || incompleteWork.demandEpochUpdates != 0) {
             return RhiTestResult::fail("Truncated feedback counters lost protected pages");
         }
         (void)residency.requestPage(pages[2]);
@@ -3042,6 +3108,29 @@ public:
             if (!residency.pageResident(page) || residency.unloadPage(page)) { return RhiTestResult::fail("Demand cache lost a root"); }
         }
         if (!residency.unloadPage(pages[0])) { return RhiTestResult::fail("Explicit unload no longer works"); }
+        const auto beforeReupload = static_cast<uint32_t>(residency.stats().frameIndex);
+        residency.beginFrame();
+        (void)residency.requestPage(pages[1]);
+        if (residency.processUploads(*streamer, *destination, 2) != 2) {
+            return RhiTestResult::fail("Could not reupload the previously cold page");
+        }
+        for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
+        const auto ageBeforeOldView = residency.pageAge(pages[1]);
+        (void)residency.consumeGpuRequests({.unloadPageIds = secondUnused, .unloadRequestCounter = 1,
+            .frameIndex = beforeReupload, .residentDemandFeedback = true});
+        if (!residency.pageResident(pages[1]) || residency.pageAge(pages[1]) != ageBeforeOldView ||
+            residency.stats().cpuWork.demandNewerThanFeedback == 0) {
+            return RhiTestResult::fail("Old view altered a new residency of the same page");
+        }
+        (void)residency.consumeGpuRequests({.frameIndex = beforeReupload, .residentDemandFeedback = true});
+        if (residency.pageAge(pages[1]) != ageBeforeOldView) {
+            return RhiTestResult::fail("Lazy complete epoch refreshed a page absent from the producer view");
+        }
+        (void)residency.consumeGpuRequests({.frameIndex = static_cast<uint32_t>(residency.stats().frameIndex),
+            .residentDemandFeedback = true});
+        if (residency.pageAge(pages[1]) != 0) {
+            return RhiTestResult::fail("New residency did not join an eligible complete epoch");
+        }
         // Exercise duplicate bits, every asset word (including the final partial
         // word), invalid IDs, and clearing/reusing all touched words.
         std::vector<uint32_t> allUnused;

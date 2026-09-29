@@ -453,6 +453,10 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
         const auto& work = last.cpuWork;
         ImGui::Text("Allocation attempts %u | Budget retries suppressed %u",
             work.allocationAttempts, work.budgetRetrySuppressed);
+        ImGui::Text("Demand transitions %u | Epoch updates %u | Stale batches %u",
+            work.demandTransitions, work.demandEpochUpdates, work.demandStaleBatches);
+        ImGui::Text("Unused membership checks %u | Prefetch checks %u | Cold candidate checks %u",
+            work.demandMembershipTests, work.demandPrefetchVisited, work.coldCandidateTests);
         ImGui::Text("Resident visits %u | Newer than feedback %u", work.demandVisited, work.demandNewerThanFeedback);
         ImGui::Text("Unused %u | Refreshed %u | Incomplete feedback protected %u",
             work.demandUnused, work.demandRefreshed, work.demandIncompleteProtected);

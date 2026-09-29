@@ -4172,7 +4172,7 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
             {"frameEvictedPageCount", stats.frameEvictedPageCount}, {"frameAllocationFailureCount", stats.frameAllocationFailureCount},
             {"frameEvictionScanCount", stats.frameEvictionScanCount}, {"frameEvictionCandidateTests", stats.frameEvictionCandidateTests},
             {"frameAllocationDeferredCount", stats.frameAllocationDeferredCount}, {"frameAdmissionDeferredCount", stats.frameAdmissionDeferredCount},
-            {"frameCachedUnusedPageCount", stats.frameCachedUnusedPageCount}, {"frameResidentDemandCount", stats.frameResidentDemandCount},
+            {"frameCachedUnusedPageCount", stats.frameCachedUnusedPageCount}, {"frameResidentDemandTransitionCount", stats.frameResidentDemandTransitionCount},
             {"frameUploadBytes", stats.frameUploadBytes}, {"totalUploadBytes", stats.totalUploadBytes},
             {"frameStoredUploadBytes", stats.frameStoredUploadBytes}, {"totalStoredUploadBytes", stats.totalStoredUploadBytes},
             {"frameGpuDecompressedPages", stats.frameGpuDecompressedPages}, {"totalGpuDecompressedPages", stats.totalGpuDecompressedPages},
