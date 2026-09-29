@@ -1927,6 +1927,8 @@ private:
             std::max({1u, residentRecordCapacity_, streamEnabled_ ? streamRuntime_->rasterCandidateCapacity() : 0u})) ||
             residentLods_.empty() || residentLods_.front()->capacity() < std::max(adaptiveMeshletRange_.count, 1u);
         if (!gpuSceneBindings_.drawSetGeneration &&
+            !materialBindingsDirty_ &&
+            bindingViewAllocationId_ == gpuSceneViewAllocationId_ &&
             !clusterCapacityChanged &&
             !remapLayoutChanged &&
             !streamEnabled_ &&
@@ -1939,6 +1941,7 @@ private:
             streamDebugResources.visibleClusterBuffer != streamDebugResources_.visibleClusterBuffer ||
             streamDebugResources.activeGroupBuffer != streamDebugResources_.activeGroupBuffer;
         if (!clusterCapacityChanged && !remapLayoutChanged && !streamDebugBindingsChanged &&
+            !materialBindingsDirty_ && bindingViewAllocationId_ == gpuSceneViewAllocationId_ &&
             !ownerMaskLayoutChanged &&
             gpuSceneBindings_.validFor(views)) {
             return {};
@@ -1952,6 +1955,11 @@ private:
             log);
         if (!result) {
             return result;
+        }
+        // A replaced GPUScene allocation contains new HZB buffers, but the
+        // pass-owned screen targets still match the current extent.
+        if (bindingViewAllocationId_ != gpuSceneViewAllocationId_) {
+            invalidateHzbHistory();
         }
         auto retired = std::make_shared<GPUDrivenPreviewRetiredViewResources>();
         retired->residentLods = residentLods_;
@@ -2464,16 +2472,24 @@ private:
             (sharedTextureResources_ && sharedTextureResources_->materialTextureSnapshot() != materialSnapshot_)) {
             if (device_ == nullptr) { return makeError(Error::InvalidArgument); }
             std::string log;
+            const bool materialChanged = runtimeScene->materialRevision() != sceneMaterialRevision_;
+            const auto previousViews = materialViews_;
+            const auto previousTextureIndices = logicalTextureToMaterialTexture_;
             const auto result = prepareAlphaTestResources(*device_, *runtimeScene, log);
             if (!result) {
                 spdlog::error("[VisibilityBufferPass] Runtime material snapshot update failed: {}", log);
                 return result;
             }
-            // Rebuild derived remaps whenever the published texture generation
-            // changes, including mip streaming and material edits with the same slots.
-            bindingViewAllocationId_ = 0;
+            // Shading-only mip publication usually leaves the raster's pinned
+            // alpha/displacement views unchanged. Retain those descriptors and
+            // history; actual raster/material changes require a binding refresh,
+            // never a resize of the screen targets.
+            if (materialChanged || previousViews != materialViews_ ||
+                previousTextureIndices != logicalTextureToMaterialTexture_) {
+                materialBindingsDirty_ = true;
+                invalidateHzbHistory();
+            }
             sceneMaterialRevision_ = runtimeScene->materialRevision();
-            invalidateHzbHistory();
         }
         const bool transformsChanged = runtimeScene->transformRevision() != sceneRevision_;
         const bool visibilityChanged =
@@ -2963,7 +2979,6 @@ private:
         std::string& log)
     {
         materialViews_.clear();
-        materialTextureHandles_.clear();
         logicalTextureToMaterialTexture_.clear();
 
         if (!sharedTextureResources_) { return makeError(Error::InvalidArgument); }
@@ -3429,6 +3444,7 @@ private:
             resources.indirectHandles = bindings.indirectHandles;
         }
         bindingViewAllocationId_ = gpuSceneViewAllocationId_;
+        materialBindingsDirty_ = false;
     }
 
     Result<> ensureFrameResources(
@@ -3438,9 +3454,7 @@ private:
     {
         width = std::max(width, 1u);
         height = std::max(height, 1u);
-        if (frameWidth_ == width &&
-            frameHeight_ == height &&
-            bindingViewAllocationId_ == gpuSceneViewAllocationId_) {
+        if (frameWidth_ == width && frameHeight_ == height) {
             return {};
         }
         if (device_ == nullptr || registry_ == nullptr || subsystemHost == nullptr) {
@@ -4504,6 +4518,7 @@ private:
     uint64_t gpuSceneDrawSetRevision_ = 0;
     uint64_t gpuSceneViewAllocationId_ = 0;
     uint64_t bindingViewAllocationId_ = 0;
+    bool materialBindingsDirty_ = false;
     uint32_t gpuSceneDrawSetGeneration_ = 0;
     GPUDrivenPreviewMeshletRange baseMeshletRange_;
     std::vector<GPUDrivenPreviewMeshletRange> lodLevelRanges_;
