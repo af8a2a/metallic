@@ -1,0 +1,21 @@
+{
+  "benchmarkCamera": {
+    "eye": [
+      6.456737,
+      4.134918,
+      -7.741189
+    ],
+    "center": [
+      -2.162123,
+      2.872261,
+      -5.52432
+    ]
+  },
+  "primeCameraOffset": [
+    0,
+    0,
+    3
+  ],
+  "requireNonzeroLate": true,
+  "swGroupRoamSeconds": 60
+}

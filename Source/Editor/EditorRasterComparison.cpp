@@ -209,6 +209,10 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         const uint32_t settle = config.value("settleFrames",8u);
         const uint32_t rounds = config.value("rounds",3u);
         const bool workloadCase = config.contains("workloadCase");
+        const bool groupComparison = config.value("swGroupComparison", false);
+        const double roamSeconds = config.value("swGroupRoamSeconds", 0.0);
+        checkRaster(std::isfinite(roamSeconds) && roamSeconds >= 0 && roamSeconds <= 600 &&
+            (!roamSeconds || groupComparison), "Invalid group correctness roam duration");
         const std::map<std::string, uint32_t> registeredVariants{{"swLegacy",10},{"swPrepared",11},
             {"swPlane",12},{"swCooperative",13},{"swWorkBins",14},{"swWorkControl",15}};
         uint32_t selectedMode = 0;
@@ -228,7 +232,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         const bool primeHistory = config.contains("primeCameraOffset");
         if (primeHistory) {
             const auto& offset = config.at("primeCameraOffset");
-            checkRaster(workloadCase && offset.is_array() && offset.size() == 3 &&
+            checkRaster((workloadCase || groupComparison) && offset.is_array() && offset.size() == 3 &&
                 profileHoldSeconds == 0 && traceFrames <= 1, "Invalid history priming configuration");
             bool nonzero = false;
             for (const auto& component : offset) {
@@ -339,7 +343,8 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         report["measurementKind"] = shaderTrace_ || nvPerfRequested || profileHoldSeconds > 0 || traceFrames || pipelineStatisticsRequested
             ? "diagnostic" : "normal-timing";
         report["camera"] = viewportCameraProperties();
-        const auto targetCamera = viewportCameraProperties();
+        auto targetCamera = viewportCameraProperties();
+        const auto routeCamera = targetCamera;
         auto primeCamera = targetCamera;
         if (primeHistory) {
             for (const auto* key : {"eye", "center"}) {
@@ -370,7 +375,6 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}});
         }
         // Reverse and rotate order to expose warm-cache/clock/order effects.
-        const bool groupComparison = config.value("swGroupComparison", false);
         const bool historyComparison = config.value("historyComparison", false);
         checkRaster(!groupComparison || (!workloadCase && !historyComparison &&
             device_->capabilities().subgroupSize == 32 && device_->capabilities().minSubgroupSize == 32 &&
@@ -405,11 +409,86 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                 "Frozen cut or resident page mappings changed between cases");
             return snap;
         };
+        report["liveRoam"] = Json::array();
         for (uint32_t round=0; round<rounds; ++round) {
+            if (roamSeconds > 0) {
+                report["measurementKind"] = "correctness-diagnostic";
+                drain();
+                set("VBuffer", "benchmarkFreezeStreaming", false);
+                set("Deferred", "benchmarkFreezeStreaming", false);
+                set("VBuffer", "benchmarkSoftwareGroupSize", config.value("swGroupUseDefault32", false) ? 0u : 32u);
+                set("VBuffer", "benchmarkSoftwareReference128", false);
+                const auto segmentStart = Clock::now();
+                uint64_t liveFrames = 0;
+                Json live = Json::array();
+                profiler_.beginCapture();
+                while (true) {
+                    const double elapsed = std::chrono::duration<double>(Clock::now()-segmentStart).count();
+                    const double t = std::min(elapsed / roamSeconds, 1.0);
+                    const double progress = (round + t) / rounds;
+                    const double angle = std::sin(progress * 6.28318530718) * 0.7;
+                    auto camera = routeCamera;
+                    const auto& base = routeCamera.at("camera");
+                    const double dx = base["center"][0].get<double>() - base["eye"][0].get<double>();
+                    const double dz = base["center"][2].get<double>() - base["eye"][2].get<double>();
+                    const double distance = std::hypot(dx, dz);
+                    checkRaster(distance > 1e-6, "Roam needs horizontal camera direction");
+                    const double travel = 6.0 * std::sin(progress * 3.14159265359);
+                    camera["camera"]["eye"][0] = base["eye"][0].get<double>() + dx / distance * travel;
+                    camera["camera"]["eye"][2] = base["eye"][2].get<double>() + dz / distance * travel;
+                    camera["camera"]["center"][0] = camera["camera"]["eye"][0].get<double>() + std::cos(angle)*dx + std::sin(angle)*dz;
+                    camera["camera"]["center"][2] = camera["camera"]["eye"][2].get<double>() - std::sin(angle)*dx + std::cos(angle)*dz;
+                    applyViewportCameraProperties(camera, nullptr);
+                    draw(); ++liveFrames;
+                    if (liveFrames % 30 == 0 || t == 1.0) {
+                        const auto profiles = subsystemHost_.get<StreamerSubsystem>()->sceneReadiness();
+                        live.push_back({{"frame", profiler_.nextFrameIndex()-1}, {"seconds",elapsed},
+                            {"camera",viewportCameraProperties()}, {"ready",profiles.ready}});
+                    }
+                    if (t == 1.0) { break; }
+                }
+                profiler_.endCapture(); drain();
+                checkRaster(!profiler_.captureOverflow(), "Live roam capture overflow");
+                Json telemetry = Json::array();
+                for (const auto& frame : profiler_.capturedFrames()) {
+                    for (const auto& stream : frame.streaming) {
+                        checkRaster(!stream.softwareRasterIdentity.empty(), "Missing live raster identity");
+                        const auto identity = Json::parse(stream.softwareRasterIdentity);
+                        checkRaster(identity.value("groupSize", 0u) == 32, "Live roam lost 32-thread pipeline");
+                        telemetry.push_back({{"frame",frame.index}, {"shader",identity},
+                            {"residentPages",stream.residentPages}, {"uploads",stream.uploads}, {"evictions",stream.evictions},
+                            {"loadFailures",stream.loadFailures}, {"requestOverflows",stream.requestOverflows},
+                            {"blasOverflowCount",stream.blasOverflowCount}, {"geometryBytes",stream.geometryUsedBytes},
+                            {"clasBytes",stream.clasUsedBytes}, {"textureBytes",stream.textureResidentBytes}});
+                    }
+                }
+                checkRaster(telemetry.size() > 1, "Missing live streaming telemetry");
+                const auto telemetryFile = "round"+std::to_string(round+1)+"-live.json";
+                std::ofstream(output/telemetryFile) << telemetry.dump() << '\n';
+                targetCamera = viewportCameraProperties();
+                primeCamera = targetCamera;
+                if (primeHistory) {
+                    for (const auto* key : {"eye", "center"}) {
+                        for (size_t axis=0; axis<3; ++axis) {
+                            primeCamera["camera"][key][axis] = targetCamera["camera"][key][axis].get<double>() +
+                                config.at("primeCameraOffset")[axis].get<double>();
+                        }
+                    }
+                }
+                set("VBuffer", "benchmarkFreezeStreaming", true);
+                set("Deferred", "benchmarkFreezeStreaming", true);
+                report["camera"] = targetCamera;
+                report["liveRoam"].push_back({{"round",round+1}, {"frames",liveFrames},
+                    {"seconds",std::chrono::duration<double>(Clock::now()-segmentStart).count()}, {"samples",live}, {"telemetryFile",telemetryFile},
+                    {"targetCamera",targetCamera}, {"primeCamera",primeCamera}});
+                cutHash.clear(); mappingHash.clear();
+                spdlog::info("[Raster Comparison] Live 32-thread segment {} complete: {} frames", round+1, liveFrames);
+            }
             const auto sequence = groupComparison ? std::span<const uint32_t>(groupOrders[round]) : workloadCase ? std::span<const uint32_t>(&selectedMode, 1) : historyComparison ? std::span<const uint32_t>(historyOrders[round]) : swWorkComparison ? std::span<const uint32_t>(workOrders[round]) : swLoadComparison ? std::span<const uint32_t>(loadOrders[round]) : swComparison ? std::span<const uint32_t>(swOrders[round]) : metadataComparison ? std::span<const uint32_t>(metadataOrders[round]) : std::span<const uint32_t>(orders[round]);
             for (uint32_t mode : sequence) {
                 const std::string variant = !mode ? "0" : mode == 17 ? "swGroup32" : mode == 18 ? "swGroup64" : mode == 19 ? "swGroup128" : swComparison ? (mode == 16 ? "swCameraReapply" : mode == 10 ? "swLegacy" : mode == 15 ? "swWorkControl" : mode == 14 ? "swWorkBins" : mode == 13 ? "swCooperative" : mode == 11 ? "swPrepared" : "swPlane") : metadataComparison ? (mode == 8 ? "exact8" : "fast8") : std::to_string(mode);
-                set("VBuffer", "benchmarkSoftwareGroupSize", mode == 17 ? 32u : mode == 18 ? 64u : mode == 19 ? 128u : 0u);
+                set("VBuffer", "benchmarkSoftwareGroupSize", mode == 17 && !config.value("swGroupUseDefault32", false) ? 32u : mode == 18 ? 64u : mode == 19 ? 128u : 0u);
+                set("VBuffer", "benchmarkSoftwareReference128", mode == 15 || mode == 16);
                 reapplyCamera = historyComparison && mode == 16;
                 const std::string name = "round"+std::to_string(round+1)+"-"+variant;
                 set("VBuffer","softwareRasterPreparedVertices", swComparison && (mode == 11 || mode == 12));
@@ -582,6 +661,11 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
                     rows.push_back(std::move(row));
                 }
                 const auto after=checkpoint(name+"-after");
+                if (config.value("requireNonzeroLate", false)) {
+                    checkRaster(before["AfterStreamLateBins"]["softwareClusters"].get<uint32_t>() > 0 &&
+                        after["AfterStreamLateBins"]["softwareClusters"].get<uint32_t>() > 0,
+                        "Correctness case did not exercise nonzero late software raster");
+                }
                 if (!mode) { checkRaster(after["AfterStreamEarlyBins"]["softwareClusters"]==0 &&
                     after["AfterStreamLateBins"]["softwareClusters"]==0,"Full HW emitted software clusters"); }
                 const auto file=name+"-frames.json";
@@ -606,6 +690,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         set("VBuffer","softwareRasterSharedScreenVertices",true);
         set("VBuffer","softwareRasterIncrementalDepth",false);
         set("VBuffer","benchmarkSoftwareGroupSize",0u);
+        set("VBuffer","benchmarkSoftwareReference128",false);
         report["status"]="capture_complete"; passed=true;
     } catch (const std::exception& e) {
         if (shaderTrace_) { shaderTrace_->abort(e.what()); }

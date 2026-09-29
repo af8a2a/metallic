@@ -298,6 +298,7 @@ add_executable(MetallicRhiTests
     rhi/HybridRasterTests.cpp
     rhi/StreamClusterCandidateTests.cpp
     rhi/StreamClusterClassificationTests.cpp
+    rhi/StreamGroupRasterTests.cpp
     rhi/StreamIndexedMeshTests.cpp
     rhi/VisibilityDebugStabilityTests.cpp
     rhi/MiniZorahDebugStabilityTests.cpp

@@ -14,6 +14,7 @@ param(
     [switch]$SwLoadComparison,
     [switch]$SwWorkComparison,
     [switch]$SwGroupComparison,
+    [ValidateSet(0,32,64,128)][int]$SoftwareGroupSize=0,
     [string]$Executable='',
     [switch]$WorkloadCounters,
     [switch]$HistoryComparison,
@@ -52,6 +53,10 @@ if ($SwLoadComparison) { $config.swLoadComparison=$true }
 if ($SwWorkComparison) { $config.swWorkComparison=$true }
 if ($HistoryComparison) { $config.historyComparison=$true }
 if ($SwGroupComparison) { $config.swGroupComparison=$true }
+if ($SoftwareGroupSize) {
+    if ($RasterComparison) { throw "SoftwareGroupSize is for live roaming; use SwGroupComparison for frozen A/B" }
+    $config.softwareGroupSize=$SoftwareGroupSize
+}
 if ($WorkloadCounters) { $config.workloadCounters=$true; $config.workloadEvery=60 }
 $analyzer=if ($config.rasterComparison) {"AnalyzeZorahFullRasterComparison.py"} else {"AnalyzeZorahFullRoam.py"}
 New-Item -ItemType Directory -Path $output | Out-Null
@@ -76,7 +81,7 @@ $asset=Get-Item -LiteralPath (Join-Path $repo 'Asset/ZorahFull/zorah_textured_pu
 $manifest.asset=@{path=$asset.FullName; bytes=$asset.Length; modifiedUtc=$asset.LastWriteTimeUtc.ToString('o')}
 $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $output 'Manifest.json') -Encoding utf8
 try {
-    $env:METALLIC_SW_GROUP_EXPERIMENT=if ($SwGroupComparison) {'1'} else {$null}
+    $env:METALLIC_SW_GROUP_EXPERIMENT=if ($SwGroupComparison -or $SoftwareGroupSize -in @(64,128)) {'1'} else {$null}
     $env:METALLIC_FULL_ROAM_CONFIG=Join-Path $output 'Config.json'
     $env:METALLIC_FULL_ROAM_HIDDEN='1'
     $env:METALLIC_FULL_ROAM_NO_VSYNC=if ($NoVSync) {'1'} else {$null}

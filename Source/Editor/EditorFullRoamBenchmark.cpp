@@ -152,6 +152,17 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         loadBuiltInSample(sampleId.c_str());
         const auto* vbuffer = renderGraph_.findNode("VBuffer");
         if (!vbuffer) { throw std::runtime_error("Missing VBuffer"); }
+        const uint32_t groupSize = config.value("softwareGroupSize", 0u);
+        if (groupSize != 0 && groupSize != 32 && groupSize != 64 && groupSize != 128) {
+            throw std::runtime_error("Unsupported experimental SW group size");
+        }
+        if (groupSize) {
+            const char* experiment = std::getenv("METALLIC_SW_GROUP_EXPERIMENT");
+            if (groupSize != 32 && (!experiment || std::string_view(experiment) != "1")) {
+                throw std::runtime_error("Experimental SW group size requires explicit process opt-in");
+            }
+            renderGraph_.setNodeRuntimeProperty(vbuffer->id, "benchmarkSoftwareGroupSize", groupSize);
+        }
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "cullHardwareClassification", config.value("cullHardwareClassification", false));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "metadataFastClassification", config.value("metadataFastClassification", true));
         if (config.contains("maxRasterCandidates")) {
@@ -222,7 +233,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         report["config"]={{"durationSeconds",duration},{"warmupSeconds",warmup},{"distance",distance},{"keyframes",points},
             {"routeFrames",routeFrames},{"sample",sampleId},{"cullHardwareClassification",config.value("cullHardwareClassification",false)},
             {"metadataFastClassification",config.value("metadataFastClassification",true)},
-            {"temporalJitter",viewportView_.temporalJitter()}};
+            {"temporalJitter",viewportView_.temporalJitter()}, {"softwareGroupSize",groupSize}};
         report["absoluteKeyframes"]=Json::array();
         for (const auto& p : points) { report["absoluteKeyframes"].push_back({{"seconds",p.at("t").get<double>()*duration},
             {"stage",p.at("stage")},{"camera",cameraAt(p.at("forward"),p.at("yaw"))}}); }
@@ -344,6 +355,12 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             }
             if (!graphGpu) { ++missingGpu; }
             for (const auto& s : f.streaming) {
+                if (groupSize) {
+                    const auto identity = s.softwareRasterIdentity.empty() ? Json::object() : Json::parse(s.softwareRasterIdentity);
+                    if (identity.value("groupSize", 0u) != groupSize) {
+                        throw std::runtime_error("Live roam did not bind requested SW group size");
+                    }
+                }
                 row["streaming"].push_back(streamSample(s));
                 if (s.textureUpload.sequence && uploads.insert({s.generation,s.textureUpload.sequence}).second) {
                     auto upload=uploadSample(s.textureUpload); upload["streamGeneration"]=s.generation;

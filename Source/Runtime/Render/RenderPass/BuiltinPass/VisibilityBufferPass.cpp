@@ -27,6 +27,13 @@ namespace {
 
 using GPUDrivenCompileClock = std::chrono::steady_clock;
 
+bool supportsStreamRasterWave32(const Device& device)
+{
+    const auto& caps = device.capabilities();
+    return caps.subgroupSize == 32 && caps.minSubgroupSize == 32 && caps.maxSubgroupSize == 32 &&
+        caps.computeSubgroupBallotArithmetic;
+}
+
 struct PrivateBufferComputeStage {
     RenderGraphResourceAccess access;
     std::function<Result<>()> record;
@@ -1126,11 +1133,15 @@ private:
             const auto size = group->get<uint32_t>();
             if (size == 32 || size == 64 || size == 128) { return size == 32 ? 6u : size == 64 ? 7u : 8u; }
         }
-        return !boolProperty(&properties(), "softwareRasterPreparedVertices", false) ?
+        const size_t mode = !boolProperty(&properties(), "softwareRasterPreparedVertices", false) ?
             (boolProperty(&properties(), "softwareRasterCooperativeLoad", true) ?
                 (boolProperty(&properties(), "softwareRasterWorkBins", false) ? 4u :
                     boolProperty(&properties(), "softwareRasterSharedScreenVertices", true) ? 5u : 3u) : 1u) :
             boolProperty(&properties(), "softwareRasterIncrementalDepth", false) ? 2u : 0u;
+        // Promote only the shared-screen-vertex production path. Explicit legacy
+        // experiments and WorkControl capture/replay retain their original entry.
+        return mode == 5 && device_ && supportsStreamRasterWave32(*device_) &&
+            !boolProperty(&properties(), "benchmarkSoftwareReference128", false) ? 6u : mode;
     }
     RenderGraphProperties softwareRasterIdentity() const
     {
@@ -1625,13 +1636,15 @@ private:
             for (size_t i=0; result && i<streamClusterRasterShaders_.size(); ++i) {
                 if (i >= 6) {
                     const char* experiment = std::getenv("METALLIC_SW_GROUP_EXPERIMENT");
-                    if (!experiment || std::strcmp(experiment, "1") != 0) { continue; }
-                    const auto& caps = device.capabilities();
-                    if (caps.subgroupSize != 32 || caps.minSubgroupSize != 32 || caps.maxSubgroupSize != 32 ||
-                        !caps.computeSubgroupBallotArithmetic) {
-                        log = "SW group experiment requires fixed wave32";
-                        return makeError(Error::Unsupported);
+                    const bool experiments = experiment && std::strcmp(experiment, "1") == 0;
+                    if (!supportsStreamRasterWave32(device)) {
+                        if (experiments) {
+                            log = "SW group experiment requires fixed wave32";
+                            return makeError(Error::Unsupported);
+                        }
+                        continue; // Production falls back to the 128-thread path.
                     }
+                    if (i != 6 && !experiments) { continue; }
                 }
                 result = createShader(device, i >= 6 ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : i >= 4 ? "Features/GPUDriven/GPUDrivenStreamWorkRaster" : kMeshletStreamShaderModuleName, rasterEntries[i], false, streamClusterRasterShaders_[i], log);
                 if (result) { result = createStreamCompute(*streamClusterRasterShaders_[i], streamClusterRasterPipelines_[i], rasterEntries[i]); }
@@ -2895,8 +2908,8 @@ private:
             // producer's private cluster/argument and pixel resources.
             commands.beginDebugLabel({.name = "Hybrid raster: stream software clusters"});
             commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
-            // Cooperative loading with shared screen vertices is the measured default.
-            // Local work bins and the older prepared-camera experiment remain opt-in.
+            // Fixed wave32 devices use the validated 32-thread strided kernel.
+            // WorkControl 128 and the other comparison kernels remain explicit references.
             const size_t rasterMode = softwareRasterMode();
             if (!streamClusterRasterPipelines_[rasterMode]) { return makeError(Error::Unsupported); }
             if (auto commandResult = commands.bindExecution((streamClusterRasterPipelines_[rasterMode])->execution()); !commandResult) { return commandResult; }

@@ -48,6 +48,7 @@ def image_difference(directory, ref, other):
     u1 = words(directory / other["VBuffer.depth"]["file"])
     assert len(ids0) == len(ids1) == len(z0) == len(z1)
     covered = sum(x != 0 for x in ids0)
+    assert covered > 0, "Reference raster image has no covered pixels"
     coverage = sum(bool(x) != bool(y) for x, y in zip(ids0, ids1))
     differing = sum(x != y for x, y in zip(ids0, ids1))
     errors = [abs(a - b) for a, b, x, y in zip(z0, z1, ids0, ids1) if x and y]
@@ -65,19 +66,27 @@ def analyze(directory):
     assert capture["protocol"] == "zorah-full-raster-comparison-v1"
     base = capture["cases"][0]["before"]
     group_comparison = capture["config"].get("swGroupComparison", False)
+    roaming = bool(capture["config"].get("swGroupRoamSeconds", 0))
     reference = next(c["after"] for c in capture["cases"]
                      if (c["variant"] == "swWorkControl" if group_comparison else c["fullHardware"]))
     results = []
     pooled = {}
     residency = None
     mode_snapshots = {}
+    last_round = None
     for case in capture["cases"]:
+        if roaming:
+            base = next(c["before"] for c in capture["cases"] if c["round"] == case["round"])
+            reference = next(c["after"] for c in capture["cases"] if c["round"] == case["round"] and c["variant"] == "swWorkControl")
+            if last_round != case["round"]:
+                residency = None
+            last_round = case["round"]
         for stamp in (case["before"], case["after"]):
             assert stamp["cutHash"] == base["cutHash"]
             assert stamp["pageMappingsHash"] == base["pageMappingsHash"]
         for resource in ("VBuffer.visibility", "VBuffer.depth"):
             assert case["before"][resource]["hash"] == case["after"][resource]["hash"], "Unstable image within fixed mode"
-            key = (case.get("variant",str(case["maxPixels"])), resource)
+            key = (case.get("variant",str(case["maxPixels"])) + (str(case["round"]) if roaming else ""), resource)
             if key in mode_snapshots:
                 assert mode_snapshots[key] == case["after"][resource]["hash"], "Image changed across rounds"
             mode_snapshots[key] = case["after"][resource]["hash"]
@@ -121,6 +130,8 @@ def analyze(directory):
         assert set(pooled) == {"swWorkControl", "swGroup32", "swGroup64", "swGroup128"}
         fingerprints = {}
         for case in capture["cases"]:
+            if roaming:
+                reference = next(c["after"] for c in capture["cases"] if c["round"] == case["round"] and c["variant"] == "swWorkControl")
             expected_size = {"swWorkControl": 128, "swGroup32": 32, "swGroup64": 64, "swGroup128": 128}[case["variant"]]
             expected_entry = "streamClusterRasterWorkControlMain" if case["variant"] == "swWorkControl" else f"streamClusterRasterGroup{expected_size}Main"
             for point in ("before", "after"):
@@ -130,6 +141,8 @@ def analyze(directory):
                     assert (directory / stamp[resource]["file"]).read_bytes() == (directory / reference[resource]["file"]).read_bytes()
                 for phase in ("AfterStreamEarlyBins", "AfterStreamLateBins"):
                     assert stamp[phase] == reference[phase], "Group size changed work lists or dispatch"
+                if capture["config"].get("requireNonzeroLate"):
+                    assert stamp["AfterStreamLateBins"]["softwareClusters"] > 0, "Late SW workload was empty"
                 bindings = stamp["productionDispatches"]
                 assert len(bindings) == 2
                 for binding in bindings:
@@ -198,6 +211,27 @@ def analyze(directory):
         summary["reference"] = "production WorkControl, 128 threads"
         summary["groupOutputsByteEqual"] = True
         summary["pipelineFingerprints"] = fingerprints
+    if roaming:
+        segments = capture["liveRoam"]
+        assert len(segments) == capture["config"]["rounds"]
+        assert all(s["frames"] > 1 and s["seconds"] >= capture["config"]["swGroupRoamSeconds"] for s in segments)
+        assert len({c["before"]["cutHash"] for c in capture["cases"]}) > 1, "Roam never changed cut"
+        live_rows = [row for segment in segments for row in load(directory / segment["telemetryFile"])]
+        assert live_rows and all(row["shader"]["groupSize"] == 32 for row in live_rows)
+        assert all(row["shader"]["entryPoint"] == "streamClusterRasterGroup32Main" for row in live_rows)
+        assert all(row["shader"]["spirvFnv1a64"] == fingerprints["swGroup32"] for row in live_rows)
+        for field in ("loadFailures", "requestOverflows", "blasOverflowCount"):
+            assert all(row[field] == 0 for row in live_rows), f"Live roam {field}"
+        summary["liveTelemetry"] = {"frames": len(live_rows),
+            "residentPagesMin": min(row["residentPages"] for row in live_rows),
+            "residentPagesMax": max(row["residentPages"] for row in live_rows),
+            "uploadsMax": max(row["uploads"] for row in live_rows),
+            "evictionsMax": max(row["evictions"] for row in live_rows),
+            "loadFailures": 0, "requestOverflows": 0, "blasOverflowCount": 0}
+        assert summary["liveTelemetry"]["residentPagesMin"] < summary["liveTelemetry"]["residentPagesMax"], "Residency never changed"
+        summary["liveRoam"] = segments
+        summary["sameCutAndResidency"] = "within each checkpoint round only"
+        summary["measurementKind"] = "correctness-diagnostic; timings not a performance acceptance"
     (directory / "Summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     lines = ["# Frozen Full raster comparison", "", f"Output {capture['outputExtent']}, render {capture['renderExtent']}; fixed camera, jitter disabled, serialized HW/SW.",
              "Diagnostic readbacks and recovery frames excluded. Frozen traversal/streaming/TLAS: graph/editor time is not live-roaming FPS.",
@@ -206,7 +240,7 @@ def analyze(directory):
     for mode, stats in sorted(summary["pooled"].items(), key=lambda x: {"exact8": 8,"fast8": 9}.get(x[0],int(x[0]) if x[0].isdigit() else 10)):
         label = {"0":"Full HW","exact8":"8 px exact","fast8":"8 px metadata","swLegacy":"8 px legacy SW","swPrepared":"8 px prepared SW","swPlane":"8 px depth plane","swCooperative":"8 px cooperative load","swWorkBins":"8 px local work bins","swWorkControl":"8 px reused setup control","swCameraReapply":"same camera reapplied"}.get(mode,mode + " px")
         if group_comparison:
-            label = {"swWorkControl": "Production 128", "swGroup32": "Strided 32", "swGroup64": "Strided 64", "swGroup128": "Strided 128"}[mode]
+            label = {"swWorkControl": "Reference WorkControl 128", "swGroup32": "Default 32" if capture["config"].get("swGroupUseDefault32") else "Strided 32", "swGroup64": "Strided 64", "swGroup128": "Strided 128"}[mode]
         t = stats["rasterTotal"]
         lines.append(f"| {label} | {t['count']} | {t['mean']:.3f} | {t['p50']:.3f} | {t['p95']:.3f} | {stats['classification']['mean']:.3f} | {stats['software']['mean']:.3f} | {stats['hardware']['mean']:.3f} | {stats['graphGpu']['mean']:.3f} |")
     lines += ["", "| Case | Early HW / SW | Coverage different vs HW | Visibility different % | Max depth abs | Depth >8 ULP |", "|---|---:|---:|---:|---:|---:|"]
@@ -222,8 +256,13 @@ def analyze(directory):
                 continue
             d = r["vsLegacySoftware"]
             lines.append(f"| {r['name']} | {d['coverageDifferentPixels']} | {d['visibilityDifferentPixels']} | {d['coveredDepthMaxUlp']} |")
+    if roaming:
+        lines[:6] = ["# Full SW group correctness after live roaming", "",
+            "Live 32-thread streaming segments alternate with frozen A/B checkpoints.",
+            "Cut/camera/residency equality applies within each checkpoint round. Timings are diagnostic only.",
+            f"Live telemetry: {summary['liveTelemetry']}", ""]
     if group_comparison:
-        lines = [line.replace("vs HW", "vs production 128-thread SW") for line in lines]
+        lines = [line.replace("vs HW", "vs reference WorkControl 128") for line in lines]
     (directory / "Summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines[:14]))
     return summary

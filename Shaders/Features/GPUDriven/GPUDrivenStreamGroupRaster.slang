@@ -1,4 +1,4 @@
-// Opt-in NVIDIA wave32 experiment. Production WorkControl remains unchanged.
+// Production stream raster for fixed wave32 devices; 64/128 are A/B references.
 #include "GPUDrivenStreamWorkRaster.slang"
 
 void rasterStreamClusterGroup(uint3 group, uint lane, GPUDrivenStreamAssetPush push, uint groupSize)
@@ -30,7 +30,7 @@ void rasterStreamClusterGroup(uint3 group, uint lane, GPUDrivenStreamAssetPush p
     }
 }
 
-// The host gates these experimental entries on fixed subgroup size 32.
+// The host gates these entries on fixed subgroup size 32.
 [shader("compute")]
 [numthreads(32, 1, 1)]
 void streamClusterRasterGroup32Main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)

@@ -67,6 +67,28 @@ def analyze(root):
                   uploadGpuMs=distribution([s['gpuMs'] for s in uploads if s['gpuMs'] is not None]),
                   uploadMissingGpu=sum(s['gpuMs'] is None for s in uploads),
                   slowest=[{k:r[k] for k in ('frame','seconds','stage','frameMs','availableBytes','streaming')} for r in slowest])
+    group_size = capture.get("config", {}).get("softwareGroupSize", 0)
+    if group_size:
+        streams = [s for row in rows for s in row["streaming"]]
+        if len(streams) != len(rows):
+            raise ValueError("Missing experimental group streaming samples")
+        identities = [s.get("softwareRaster", {}) for s in streams]
+        if any(s.get("groupSize") != group_size or s.get("subgroupSize") != 32 or
+               s.get("entryPoint") != f"streamClusterRasterGroup{group_size}Main" or
+               s.get("snapshotFrozen") for s in identities):
+            raise ValueError("Live SW group identity/freeze mismatch")
+        fingerprints = {s.get("spirvFnv1a64") for s in identities}
+        if len(fingerprints) != 1 or not next(iter(fingerprints)):
+            raise ValueError("Live SW shader changed")
+        errors = {k: max(s[k] for s in streams) for k in ("loadFailures", "requestOverflows", "blasOverflowCount")}
+        if any(errors.values()):
+            raise ValueError(f"Live SW group correctness failures: {errors}")
+        result["softwareGroupCorrectness"] = dict(groupSize=group_size, frames=len(streams),
+            spirvFnv1a64=next(iter(fingerprints)), snapshotFrozen=False, **errors,
+            uploads=sum(s["uploads"] for s in streams), evictions=sum(s["evictions"] for s in streams),
+            allocationFailures=sum(s["allocationFailures"] for s in streams),
+            residentPagesMin=min(s["residentPages"] for s in streams),
+            residentPagesMax=max(s["residentPages"] for s in streams))
     (root/'Summary.json').write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding='utf-8')
     gpu = sorted((s for s in scopes if s['gpuMs']), key=lambda s:s['gpuMs']['mean'], reverse=True)
     lines = ['# Full editor roam', '', f"Output {capture['outputExtent']}; render {capture['renderExtent']}; validation={capture['validationRequested']}.",
