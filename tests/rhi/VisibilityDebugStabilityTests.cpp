@@ -33,7 +33,7 @@ public:
         constexpr uint32_t width = 12, capacity = 32;
         enum Input { Params, Resident, Clusters, Stream, Groups, InputCount };
         const uint32_t strides[] = {sizeof(builtin_pass::GPUDrivenPreviewGpuParams), sizeof(VisibleClusterRecord),
-            80, sizeof(VisibleClusterRecord), sizeof(MeshletStreamGpuActiveGroup)};
+            80, sizeof(CompactStreamVisibleRecord), sizeof(MeshletStreamGpuActiveGroup)};
         const uint32_t counts[] = {1, capacity, 8, capacity, 8};
         std::unique_ptr<BindlessHeap> heap;
         DEBUG_REQUIRE(device->createBindlessHeap({.maxSampledImages = 2, .maxBuffers = InputCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
@@ -58,7 +58,7 @@ public:
                 .entryPointName = i == 0 ? "visibilityBufferCompositeVertexMain" : "visibilityBufferCompositeFragmentMain",
                 .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
             log = compiled.diagnostics; DEBUG_REQUIRE(result);
-            DEBUG_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { i == 0 ? vertex : fragment = std::move(rhiValue); }));
+            DEBUG_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { (i == 0 ? vertex : fragment) = std::move(rhiValue); }));
         }
         std::unique_ptr<GraphicsPipeline> pipeline;
         DEBUG_REQUIRE(device->createGraphicsPipeline({
@@ -106,7 +106,8 @@ public:
                 const uint32_t base = permutation == 0 ? 8 : 16;
                 const auto slot = [permutation](uint32_t i) { return permutation == 0 ? i : 15u - i; };
                 const auto groupSlot = [permutation](uint32_t i) { return permutation == 0 ? i : 7u - i; };
-                std::array<VisibleClusterRecord, capacity> resident{}, stream{};
+                std::array<VisibleClusterRecord, capacity> resident{};
+                std::array<CompactStreamVisibleRecord, capacity> stream{};
                 std::array<MeshletStreamGpuActiveGroup, 8> groups{};
                 std::array<std::array<uint32_t, 20>, 8> meshlets{};
                 meshlets[2][4] = 3; meshlets[4][4] = 1;
@@ -121,13 +122,12 @@ public:
                     group.pageDeviceOffsetBytes = (permutation * 8 + g) * 4096;
                 }
                 const auto record = [&](uint32_t cluster, uint32_t g) {
-                    return VisibleClusterRecord{.clusterIndex = cluster, .instanceIndex = g + 10,
-                        .dataIndex = groupSlot(g), .flags = visibleClusterFlags(VisibleClusterSource::StreamPage)};
+                    return packStreamVisibleRecord(groupSlot(g), cluster, 0);
                 };
                 stream[slot(0)] = record(2, 0); stream[slot(1)] = record(2, 1);
                 stream[slot(2)] = record(2, 2); stream[slot(3)] = record(3, 0);
-                stream[slot(4)] = record(0, 0); stream[slot(4)].flags = 0; // Wrong producer.
-                stream[slot(5)] = record(0, 0); stream[slot(5)].dataIndex = 99;
+                stream[slot(4)] = {}; // Invalid packed record.
+                stream[slot(5)] = packStreamVisibleRecord(99, 0, 0);
                 const auto id = [](uint32_t r, uint32_t t = 0) { return ((r + 1) << 7) | t; };
                 const std::array<uint32_t, width> visibility{ id(slot(0)), id(slot(1)), id(slot(2), 1),
                     id(base + slot(0)), id(base + slot(1)), id(base + slot(0), 1),

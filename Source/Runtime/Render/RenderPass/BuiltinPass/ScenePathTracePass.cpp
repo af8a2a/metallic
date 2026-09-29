@@ -2041,6 +2041,7 @@ public:
                     .shadingMaterials = sceneResources_.materialBuffer(),
                     .width = push.width, .height = push.height,
                     .streamRecords = deferredStream ? deferredStream->visibleClusterBuffer : nullptr,
+                    .streamGroups = deferredStream ? deferredStream->activeGroupBuffer : nullptr,
                     .residentRecordCount = info.residentRecordCount}, binningLog).transform([&](auto value) { materialBins = std::move(value); });
                 if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
                 bindings.push_back({.binding = 70, .buffer = materialBins.bins});

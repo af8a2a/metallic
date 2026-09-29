@@ -559,12 +559,12 @@ bool decodeStreamDeferredSurface(
     GPUDrivenStreamDeferredParams streamParams = streamParamsBuffer[0];
     GPUDrivenStreamDeferredActiveHeader activeHeader = activeHeaders[0];
     uint activeGroupCount = min(activeHeader.activeGroupCount, activeHeader.activeGroupCapacity);
-    if (record.dataIndex >= activeGroupCount ||
-        record.instanceIndex >= previewParams.instanceCount) {
+    if (record.dataIndex >= activeGroupCount) {
         return false;
     }
     GPUDrivenStreamDeferredActiveGroup group = activeGroups[record.dataIndex];
-    if (record.instanceIndex != group.gpuSceneInstanceIndex ||
+    record.instanceIndex = group.gpuSceneInstanceIndex;
+    if (record.instanceIndex >= previewParams.instanceCount ||
         group.pageIndex >= streamParams.scenePageCount ||
         record.clusterIndex >= group.clusterCount) {
         return false;
@@ -1215,12 +1215,12 @@ bool decodeStreamVisibilitySurface(
     }
 
     uint localRecordIndex = recordIndex - bindings.visibleRecordBase;
-    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> streamRecordHandle =
-        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(
+    DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>> streamRecordHandle =
+        DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>>(uint2(
             bindings.visibleClusterBuffer,
             0));
-    StructuredBuffer<VisibleClusterRecord> streamRecords = streamRecordHandle;
-    VisibleClusterRecord record = streamRecords[localRecordIndex];
+    StructuredBuffer<CompactStreamVisibleRecord> streamRecords = streamRecordHandle;
+    VisibleClusterRecord record = unpackStreamVisibleRecord(streamRecords[localRecordIndex]);
     if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) {
         return false;
     }

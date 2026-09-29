@@ -136,4 +136,28 @@ static_assert(offsetof(VisibleClusterRecord, dataIndex) == 8);
 static_assert(offsetof(VisibleClusterRecord, flags) == 12);
 static_assert(std::is_trivially_copyable_v<VisibleClusterRecord>);
 
+// Stream records keep their sparse visibility ID. Instance identity comes from
+// the active group; resident records retain the general 16-byte layout.
+struct CompactStreamVisibleRecord {
+    uint32_t packed = 0; // cluster[0:4], group+1[5:29], raster flags[30:31]
+};
+static_assert(sizeof(CompactStreamVisibleRecord) == 4);
+static_assert(kVisibilityMaxRecordCount == 0x01ffffffu);
+inline constexpr CompactStreamVisibleRecord packStreamVisibleRecord(uint32_t group, uint32_t cluster, uint32_t flags)
+{
+    return {((group + 1u) << 5u) | (cluster & 31u) | ((flags & 3u) << 30u)};
+}
+inline constexpr VisibleClusterRecord unpackStreamVisibleRecord(CompactStreamVisibleRecord value, uint32_t instance = UINT32_MAX)
+{
+    const uint32_t group = (value.packed >> 5u) & 0x01ffffffu;
+    return {value.packed & 31u, instance, group - 1u,
+        group ? ((1u << 28u) | (value.packed >> 30u)) : 0u};
+}
+static_assert(packStreamVisibleRecord(kVisibilityMaxRecordCount - 1u, 31u, 3u).packed == UINT32_MAX);
+static_assert(unpackStreamVisibleRecord({UINT32_MAX}).dataIndex == kVisibilityMaxRecordCount - 1u);
+static_assert(unpackStreamVisibleRecord({UINT32_MAX}).clusterIndex == 31u);
+static_assert(unpackStreamVisibleRecord({}).dataIndex == UINT32_MAX);
+
+
+
 } // namespace metallic::render

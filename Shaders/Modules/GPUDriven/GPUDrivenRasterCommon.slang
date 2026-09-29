@@ -23,6 +23,25 @@ public struct VisibleClusterRecord
     public uint flags;
 };
 
+// The group field stores index+1 so a cleared record remains invalid.
+public struct CompactStreamVisibleRecord { public uint packed; };
+public CompactStreamVisibleRecord packStreamVisibleRecord(uint group, uint cluster, uint flags)
+{
+    CompactStreamVisibleRecord value;
+    value.packed = ((group + 1u) << 5u) | (cluster & 31u) | ((flags & 3u) << 30u);
+    return value;
+}
+public VisibleClusterRecord unpackStreamVisibleRecord(CompactStreamVisibleRecord value)
+{
+    uint group = (value.packed >> 5u) & 0x01ffffffu;
+    VisibleClusterRecord record;
+    record.clusterIndex = value.packed & 31u;
+    record.instanceIndex = 0xffffffffu; // filled from the bounds-checked active group
+    record.dataIndex = group - 1u;
+    record.flags = group != 0u ? (kVisibleClusterSourceStreamPage << kVisibleClusterSourceShift) | (value.packed >> 30u) : 0u;
+    return record;
+}
+
 public uint visibleClusterDrawBucket(VisibleClusterRecord record)
 {
     return record.flags & kVisibleClusterDrawBucketMask;

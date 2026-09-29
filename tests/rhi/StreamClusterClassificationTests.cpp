@@ -55,7 +55,7 @@ public:
         enum Input { Header, Groups, Params, Pages, PageTable, Bindings, Visibility, Requests, Records, Hzb0, Hzb1, Instances, InputCount };
         const uint32_t strides[] = {sizeof(MeshletStreamGpuActiveHeader), sizeof(MeshletStreamGpuActiveGroup),
             sizeof(MeshletStreamGpuParams), 4, sizeof(StreamPageTableEntry), sizeof(MeshletStreamGpuRasterBindings),
-            4, 4, sizeof(VisibleClusterRecord), 4, 4, sizeof(GPUSceneGpuInstanceRecord)};
+            4, 4, sizeof(CompactStreamVisibleRecord), 4, 4, sizeof(GPUSceneGpuInstanceRecord)};
         const uint32_t counts[] = {1, groupCapacity, 1, pageBytes / 4, 3, 1, instanceCount, 16, capacity,
             hzbElements, hzbElements, instanceCount};
         std::array<std::unique_ptr<Buffer>, InputCount> inputs;
@@ -288,7 +288,7 @@ public:
                     auto& rasterizer = rasterizers[bufferSet];
                     const bool measure = timing && schedule == 1 && phase == 0 &&
                         (caseIndex == 0 || caseIndex == 4 || caseIndex == 5 || caseIndex == 6 || caseIndex == 21);
-                    std::vector<VisibleClusterRecord> records(capacity);
+                    std::vector<CompactStreamVisibleRecord> records(capacity);
                     std::array<uint32_t, 16> requests{};
                     CLASSIFY_REQUIRE(upload(Records, records.data(), recordBytes));
                     CLASSIFY_REQUIRE(upload(Requests, requests.data(), sizeof(requests)));
@@ -451,6 +451,21 @@ public:
                     if (!mapped) { return RhiTestResult::fail("Cannot map classification output"); }
                     std::vector<uint32_t> actual(mapped, mapped + (binBytes + recordBytes + 52 + 128) / 4);
                     readback->unmap();
+                    // Validate the production GPU writer independently of the schedule
+                    // comparison: the physical stride is 4 B, logical IDs are unchanged.
+                    for (uint32_t id = 0; id < capacity; ++id) {
+                        const uint32_t packed = actual[binBytes / 4 + id];
+                        if (packed == 0) { continue; }
+                        const auto record = unpackStreamVisibleRecord({packed});
+                        if (record.dataIndex != id / 32 || record.clusterIndex != id % 32 ||
+                            record.dataIndex >= groups.size()) {
+                            return RhiTestResult::fail("Compact stream record lost stable group/cluster identity");
+                        }
+                        const auto flags = instances[groups[record.dataIndex].gpuSceneInstanceIndex].identity[3];
+                        if ((record.flags & 3u) != ((flags >> 1u) & 3u)) {
+                            return RhiTestResult::fail("Compact stream record lost two-sided/winding flags");
+                        }
+                    }
                     if (schedule == 0) { reference = std::move(actual); continue; }
                     bool equal = std::equal(reference.begin(), reference.begin() + 16, actual.begin());
                     equal &= std::equal(reference.begin() + candidateBase, reference.begin() + candidateBase + 2 * reference[12], actual.begin() + candidateBase);

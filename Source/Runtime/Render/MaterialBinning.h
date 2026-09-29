@@ -21,6 +21,7 @@ struct MaterialBinningDesc {
     uint32_t width = 0;
     uint32_t height = 0;
     Buffer* streamRecords = nullptr;
+    Buffer* streamGroups = nullptr;
     uint32_t residentRecordCount = UINT32_MAX;
 };
 

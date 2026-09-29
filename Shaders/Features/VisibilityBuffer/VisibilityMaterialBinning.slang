@@ -6,6 +6,8 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
+#include "VisibilityStreamDecode.slang"
+
 // Wire layout matches MaterialBinningParams.h, verified by GPU producer/consumer tests.
 struct MaterialBinningParams
 {
@@ -17,7 +19,8 @@ struct MaterialBinningParams
     DataSpan<MaterialBin> bins;
     DataSpan<MaterialTile> tiles;
     DataSpan<uint> arguments;
-    DataSpan<VisibleClusterRecord> streamRecords;
+    DataSpan<CompactStreamVisibleRecord> streamRecords;
+    DataSpan<StreamActiveGroup> streamGroups;
     uint width;
     uint height;
     uint tileCount;
@@ -50,7 +53,9 @@ uint materialClassForPixel(uint2 pixel)
         recordIndex -= push.residentRecordCount;
         count = push.streamRecords.length();
         if (recordIndex >= count) { return kMaterialClassBackground; }
-        record = gStreamRecords[recordIndex];
+        record = unpackStreamVisibleRecord(gStreamRecords[recordIndex]);
+        if (record.dataIndex >= push.streamGroups.length()) { return kMaterialClassBackground; }
+        record.instanceIndex = push.streamGroups.data[record.dataIndex].gpuSceneInstanceIndex;
         if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) { return kMaterialClassBackground; }
     }
     count = push.instances.length();

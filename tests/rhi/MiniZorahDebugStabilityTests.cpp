@@ -160,7 +160,7 @@ public:
                     renderFrame(true);
                     const auto groups = observer.read<MeshletStreamGpuActiveGroup>("streaming.GPUDriven.activeGroups");
                     const auto header = observer.read<MeshletStreamGpuActiveHeader>("streaming.GPUDriven.activeHeader").front();
-                    const auto records = observer.read<VisibleClusterRecord>("streaming.GPUDriven.visibleClusters");
+                    const auto records = observer.read<CompactStreamVisibleRecord>("streaming.GPUDriven.visibleClusters");
                     const auto colors = observer.read<uint32_t>("GPUDriven.color");
                     std::map<uint64_t, uint32_t> currentColors;
                     std::map<InstanceKey, uint32_t> currentSlots;
@@ -172,9 +172,10 @@ public:
                         if (id == 0) { continue; }
                         const uint32_t slot = (id >> 7) - 1, triangle = triangleMode ? id & 127 : 0;
                         checkDebug(slot < records.size(), "Stream visibility outside record storage");
-                        const auto& record = records[slot];
+                        auto record = unpackStreamVisibleRecord(records[slot]);
                         checkDebug(record.dataIndex < header.activeGroupCount, "Invalid active group");
                         const auto& group = groups[record.dataIndex];
+                        record.instanceIndex = group.gpuSceneInstanceIndex;
                         checkDebug(record.clusterIndex < group.clusterCount, "Invalid local cluster");
                         const uint64_t key = lodMode ? group.lodLevel : (uint64_t(group.pageIndex) << 12) | (record.clusterIndex << 7) | triangle;
                         const uint32_t color = colors[pixel];

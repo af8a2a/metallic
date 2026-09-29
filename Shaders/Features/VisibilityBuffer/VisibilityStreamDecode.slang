@@ -63,7 +63,7 @@ bool decodeStreamTriangleAtPage(uint pageIndex, uint clusterIndex, uint triangle
     return true;
 }
 
-bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<VisibleClusterRecord> records,
+bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<CompactStreamVisibleRecord> records,
     StructuredBuffer<StreamActiveGroup> groups, StructuredBuffer<uint> pages,
     StructuredBuffer<uint2> pageTable, uint pageWordCount, out VisibleClusterRecord record,
     out float3 a, out float3 b, out float3 c)
@@ -72,15 +72,16 @@ bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<VisibleClu
     uint recordCount, recordStride;
     records.GetDimensions(recordCount, recordStride);
     if (index >= recordCount) { return false; }
-    record = records[index];
+    record = unpackStreamVisibleRecord(records[index]);
     if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) { return false; }
     uint count, stride;
     groups.GetDimensions(count, stride);
     if (record.dataIndex >= count) { return false; }
     StreamActiveGroup group = groups[record.dataIndex];
+    record.instanceIndex = group.gpuSceneInstanceIndex;
     pageTable.GetDimensions(count, stride);
     if (group.pageIndex >= count || record.clusterIndex >= group.clusterCount ||
-        record.instanceIndex != group.gpuSceneInstanceIndex) { return false; }
+        record.instanceIndex == 0xffffffffu) { return false; }
     return decodeStreamTriangleAtPage(group.pageIndex, record.clusterIndex, triangle, pages, pageTable, pageWordCount, a, b, c);
 }
 

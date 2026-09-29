@@ -37,7 +37,7 @@ public:
         enum Input { Header, Groups, Params, Pages, PageTable, Bindings, Visibility, Records, Instances, Bins, Queue, InputCount };
         const uint32_t strides[] = {sizeof(MeshletStreamGpuActiveHeader), sizeof(MeshletStreamGpuActiveGroup),
             sizeof(MeshletStreamGpuParams), 4, sizeof(StreamPageTableEntry), sizeof(MeshletStreamGpuRasterBindings),
-            4, sizeof(VisibleClusterRecord), sizeof(GPUSceneGpuInstanceRecord), 4};
+            4, sizeof(CompactStreamVisibleRecord), sizeof(GPUSceneGpuInstanceRecord), 4};
         const uint32_t counts[] = {1, 2, 1, pageBytes / 4, 1, 1, 2, capacity, 2, 16 + 9 * capacity + 5};
         std::unique_ptr<BindlessHeap> heap;
         MESH_REQUIRE(device->createBindlessHeap({.maxBuffers = InputCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));

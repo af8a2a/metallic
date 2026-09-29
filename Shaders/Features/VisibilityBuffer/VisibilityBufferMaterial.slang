@@ -17,7 +17,7 @@ struct MaterialPush { uint width, height, residentCount, streamCount, mode; floa
 #define gVertexIndices getResource<StructuredBuffer<uint>>(7)
 #define gTriangles getResource<StructuredBuffer<uint>>(8)
 #define gGeometries getResource<StructuredBuffer<GPUDrivenPreviewGeometry>>(9)
-#define gStreamRecords getResource<StructuredBuffer<VisibleClusterRecord>>(10)
+#define gStreamRecords getResource<StructuredBuffer<CompactStreamVisibleRecord>>(10)
 #define gGroups getResource<StructuredBuffer<StreamActiveGroup>>(11)
 #define gPages getResource<StructuredBuffer<uint>>(12)
 #define gPageTable getResource<StructuredBuffer<uint2>>(13)

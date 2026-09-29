@@ -1780,8 +1780,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         device,
         BufferDesc{
             .size = static_cast<uint64_t>(visibleClusterCapacity()) *
-                sizeof(VisibleClusterRecord),
-            .structureStride = sizeof(VisibleClusterRecord),
+                sizeof(CompactStreamVisibleRecord),
+            .structureStride = sizeof(CompactStreamVisibleRecord),
             .usage = debugReadbackEnabled_ ? BufferUsageBits::Storage | BufferUsageBits::TransferSource : BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
         },
@@ -1791,6 +1791,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     if (!result) {
         return result;
     }
+    spdlog::info("[MeshletStreamRuntime] Visible records capacity={} stride={} bytes={}",
+        visibleClusterCapacity(), sizeof(CompactStreamVisibleRecord), visibleClusterBuffer_->desc().size);
     visibleClusterBufferState_ = ResourceState::Undefined;
     result = createHostStorageBuffer(
         device,
@@ -4007,7 +4009,7 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
     add("activeGroups", activeGroupBuffer_.get(), activeGroupBufferState_, "MeshletStreamGpuActiveGroup");
     add("lodState", lodStateBuffer_.get(), lodStateBufferState_, "u32");
     if (distributedPageDemand_) { add("demandStats", demandBuffer_.get(), demandBufferState_, "u32", 0, kMeshletStreamDemandStatsWords * sizeof(uint32_t)); }
-    add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "VisibleClusterRecord");
+    add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "CompactStreamVisibleRecord");
 }
 
 SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
@@ -4128,6 +4130,7 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"blasBuildCapacity", blasBuildCapacity_},
         {"blasClusterReferenceCapacity", blasClusterReferenceCapacity_},
         {"maxBlasClustersPerBuild", maxBlasClustersPerBuild_},
+        {"visibleRecordStride", sizeof(CompactStreamVisibleRecord)},
         {"visibleRecordBytes", visibleClusterBuffer_ ? visibleClusterBuffer_->desc().size : 0ull},
         {"rasterCandidateCapacity", rasterCandidateCapacity_},
         {"sceneReady", readiness.ready}, {"scenePreparationFraction", readiness.fraction()},

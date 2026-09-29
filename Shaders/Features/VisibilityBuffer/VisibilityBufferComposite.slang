@@ -87,20 +87,21 @@ bool visibilityDebugIdentity(uint index, VisibilityBufferCompositePush push,
         return true;
     }
     if (push.streamRecords == 0xffffffffu || push.streamGroups == 0xffffffffu) { return false; }
-    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> recordsHandle =
-        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.streamRecords, 0));
+    DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>> recordsHandle =
+        DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>>(uint2(push.streamRecords, 0));
     DescriptorHandle<StructuredBuffer<VisibilityDebugActiveGroup>> groupsHandle =
         DescriptorHandle<StructuredBuffer<VisibilityDebugActiveGroup>>(uint2(push.streamGroups, 0));
-    StructuredBuffer<VisibleClusterRecord> records = recordsHandle;
+    StructuredBuffer<CompactStreamVisibleRecord> records = recordsHandle;
     StructuredBuffer<VisibilityDebugActiveGroup> groups = groupsHandle;
     index -= push.residentRecordCapacity;
     records.GetDimensions(count, stride);
     if (index >= count) { return false; }
-    VisibleClusterRecord record = records[index];
+    VisibleClusterRecord record = unpackStreamVisibleRecord(records[index]);
     groups.GetDimensions(count, stride);
     if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage || record.dataIndex >= count) { return false; }
     VisibilityDebugActiveGroup group = groups[record.dataIndex];
-    if (record.clusterIndex >= group.clusterCount || record.instanceIndex != group.gpuSceneInstanceIndex) { return false; }
+    record.instanceIndex = group.gpuSceneInstanceIndex;
+    if (record.clusterIndex >= group.clusterCount || record.instanceIndex == 0xffffffffu) { return false; }
     clusterSeed = visibilityHash(group.pageIndex ^ 0x9e3779b9u) ^ visibilityHash(record.clusterIndex + 1u);
     lodLevel = group.lodLevel;
     return true;

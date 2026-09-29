@@ -3899,19 +3899,14 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
         return false;
     }
 
-    DescriptorHandle<RWStructuredBuffer<VisibleClusterRecord>> visibleClusterHandle =
-        DescriptorHandle<RWStructuredBuffer<VisibleClusterRecord>>(uint2(
+    DescriptorHandle<RWStructuredBuffer<CompactStreamVisibleRecord>> visibleClusterHandle =
+        DescriptorHandle<RWStructuredBuffer<CompactStreamVisibleRecord>>(uint2(
             rasterBindings.visibleClusterBuffer,
             0));
-    RWStructuredBuffer<VisibleClusterRecord> visibleClusters = visibleClusterHandle;
+    RWStructuredBuffer<CompactStreamVisibleRecord> visibleClusters = visibleClusterHandle;
     if (publishRecord) {
-        VisibleClusterRecord record;
-        record.clusterIndex = clusterIndex;
-        record.instanceIndex = group.gpuSceneInstanceIndex;
-        record.dataIndex = activeGroupIndex;
-        record.flags = kVisibleClusterSourceStreamPage << kVisibleClusterSourceShift;
-        record.flags |= ((instanceFlags & 2u) != 0u ? 1u : 0u) | ((instanceFlags & 4u) != 0u ? 2u : 0u);
-        visibleClusters[localRecordIndex] = record;
+        uint flags = ((instanceFlags & 2u) != 0u ? 1u : 0u) | ((instanceFlags & 4u) != 0u ? 2u : 0u);
+        visibleClusters[localRecordIndex] = packStreamVisibleRecord(activeGroupIndex, clusterIndex, flags);
     }
 
     output.params = params;
@@ -4520,8 +4515,8 @@ void gpuDrivenStreamAssetDeferredMain(
         return;
     }
 
-    DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> visibleClusterHandle =
-        DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(
+    DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>> visibleClusterHandle =
+        DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>>(uint2(
             rasterBindings.visibleClusterBuffer,
             0));
     DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
@@ -4536,13 +4531,13 @@ void gpuDrivenStreamAssetDeferredMain(
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(
             push.pageTableBuffer,
             0));
-    StructuredBuffer<VisibleClusterRecord> visibleClusters = visibleClusterHandle;
+    StructuredBuffer<CompactStreamVisibleRecord> visibleClusters = visibleClusterHandle;
     StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
     StructuredBuffer<uint> pageWords = pageHandle;
     StructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
 
     uint localRecordIndex = recordIndex - rasterBindings.visibleRecordBase;
-    VisibleClusterRecord record = visibleClusters[localRecordIndex];
+    VisibleClusterRecord record = unpackStreamVisibleRecord(visibleClusters[localRecordIndex]);
     if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) {
         output[outputIndex] = packStreamColor(params.clearColor.xyz);
         return;
@@ -4560,6 +4555,7 @@ void gpuDrivenStreamAssetDeferredMain(
         return;
     }
     GPUDrivenStreamAssetActiveGroup group = activeGroups[record.dataIndex];
+    record.instanceIndex = group.gpuSceneInstanceIndex;
     if (record.instanceIndex == kInvalidClusterIndex ||
         record.instanceIndex != group.gpuSceneInstanceIndex ||
         group.pageIndex >= params.scenePageCount) {

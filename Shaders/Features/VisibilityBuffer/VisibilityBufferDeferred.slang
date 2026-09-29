@@ -45,7 +45,7 @@ ScenePathTracePush deferredViewPush()
 #define gRasterInstances getResource<StructuredBuffer<GPUDrivenPreviewInstance>>(68)
 #define gRasterMaterials getResource<StructuredBuffer<GPUDrivenPreviewMaterial>>(69)
 #include "VisibilityStreamDecode.slang"
-#define gStreamRecords getResource<StructuredBuffer<VisibleClusterRecord>>(83)
+#define gStreamRecords getResource<StructuredBuffer<CompactStreamVisibleRecord>>(83)
 #define gStreamGroups getResource<StructuredBuffer<StreamActiveGroup>>(84)
 #define gStreamPages getResource<StructuredBuffer<uint>>(85)
 #define gStreamPageTable getResource<StructuredBuffer<uint2>>(86)

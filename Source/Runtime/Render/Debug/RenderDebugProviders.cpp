@@ -31,6 +31,9 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
         {"sphere", "f32", offsetof(MeshletLodGroupRecord, sphere), 4},
         {"error", "f32", offsetof(MeshletLodGroupRecord, error)},
         DEBUG_FIELD(MeshletLodGroupRecord, level), DEBUG_FIELD(MeshletLodGroupRecord, flags)}});
+    add({"CompactStreamVisibleRecord", sizeof(CompactStreamVisibleRecord), {
+        {"packed", "u32", 0}, {"clusterIndex", "u32", 0, 1, 0, 5},
+        {"groupIndexPlusOne", "u32", 0, 1, 5, 25}, {"rasterFlags", "u32", 0, 1, 30, 2}}});
     static_assert(sizeof(VisibleClusterRecord) == 16 && offsetof(VisibleClusterRecord, flags) == 12);
     add({"VisibleClusterRecord", sizeof(VisibleClusterRecord), {
         DEBUG_FIELD(VisibleClusterRecord, clusterIndex), DEBUG_FIELD(VisibleClusterRecord, instanceIndex),
@@ -148,10 +151,10 @@ void gpuDrivenDebugCheckpoint(RenderGraphExecutionContext& context, std::string_
     if (streaming && streaming->ready()) {
         streaming->appendDebugBindings(bindings, "streaming." + context.passName() + ".");
         for (auto& binding : bindings) {
-            if (binding.layout == "VisibleClusterRecord" && binding.id.starts_with("streaming.")) {
+            if (binding.layout == "CompactStreamVisibleRecord" && binding.id.starts_with("streaming.")) {
                 binding.metadata["captureSupported"] = checkpoint == "AfterPass" && phase < kGPUSceneCullPhaseCount;
                 binding.metadata["visibleRecordBase"] = streamVisibleRecordBase;
-                binding.metadata["reason"] = "VisibleClusterRecord is written during drawing; capture at AfterPass and validate sparse slots using visibility pixels";
+                binding.metadata["reason"] = "CompactStreamVisibleRecord is written during drawing; capture at AfterPass and validate sparse slots using visibility pixels";
                 binding.metadata["validity"] = "Sparse storage; capacity is not a live record count";
             }
         }
