@@ -1,8 +1,12 @@
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 
 #include <algorithm>
+#include <chrono>
 #include <numeric>
+#include <thread>
+#include <spdlog/spdlog.h>
 #include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
+#include "Runtime/Render/Streamer/MeshletStreamInitialLoader.h"
 #include "Runtime/Render/Streamer/StreamedImage.h"
 #include "Runtime/Render/Streamer/SceneStreamingConfig.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -23,9 +27,13 @@ Result<> StreamerSubsystem::initialize(const RenderSubsystemInitContext& context
     return uploads_.initialize(context.device, log, context.host.frameSlotCount());
 }
 
-Result<> StreamerSubsystem::beginFrame(const RenderSubsystemFrameContext& context, RenderChangeBits&, std::string&)
+Result<> StreamerSubsystem::beginFrame(const RenderSubsystemFrameContext& context, RenderChangeBits&, std::string& log)
 {
     collectReleasedStreams();
+    // Scene/pass replacement has finished and old borrowers have retired. Run
+    // initialization before this frame opens the normal graph upload stream.
+    const auto result = completeInitialLoads(log);
+    if (!result) { return result; }
     textureFrames_.clear();
     if (context.frameResources) { return uploads_.beginFrame(*context.frameResources); }
     uploads_.beginFrame();
@@ -48,6 +56,7 @@ void StreamerSubsystem::prepareBeforePacing(CpuProfileRecorder* profiler)
 void StreamerSubsystem::shutdown()
 {
     // The host waits for submitted work and retires graph passes before this.
+    initialLoads_.clear();
     streams_.clear();
     resources_.clear();
     uploads_.reset();
@@ -295,9 +304,66 @@ Result<std::shared_ptr<MeshletStreamRuntime>> StreamerSubsystem::acquireStream(
     session->setDebugReadbackEnabled(debugReadback);
     Result<> result = session->initialize(*device_, desc, log, cache);
     if (!result) { return makeError(result.error()); }
+    if (desc.initialLoad) { initialLoads_.push_back({.runtime = session}); }
     streams_.push_back(session);
     outSession = std::move(session);
     return outSession;
+}
+
+Result<> StreamerSubsystem::completeInitialLoads(std::string& log)
+{
+    for (auto& pending : initialLoads_) {
+        const auto session = pending.runtime.lock();
+        if (!session) { continue; }
+        if (pending.failure) { log = pending.failureLog; return makeError(*pending.failure); }
+        const auto fail = [&](Result<> result) {
+            // A failed decode/build can consume a root request. Require a fresh
+            // session instead of retrying the same partial state every frame.
+            pending.failure = result.error();
+            pending.failureLog = log;
+            return result;
+        };
+        // No graph command has used this new session. Keep initialization
+        // submissions independent of render frames, and drain before recording.
+        MeshletStreamInitialLoader loader;
+        auto result = loader.initialize(*device_, log);
+        if (!result) { return fail(result); }
+        const auto start = std::chrono::steady_clock::now();
+        auto progressAt = start;
+        bool complete = false;
+        while (!complete) {
+            const auto beforeBytes = loader.stats().uploadBytes;
+            const auto beforePages = session->sceneReadiness().completedPages;
+            result = loader.pump(*session, 16.0, complete, log);
+            if (!result) { return fail(result); }
+            const auto now = std::chrono::steady_clock::now();
+            const auto readiness = session->sceneReadiness();
+            if (!complete && now - progressAt >= std::chrono::seconds(5)) {
+                spdlog::info("[StreamInitialLoad] resources={}/{} batches={} uploadedMiB={:.1f}",
+                    readiness.completedPages, readiness.requiredPages, loader.stats().batches,
+                    double(loader.stats().uploadBytes) / (1024.0 * 1024.0));
+                progressAt = now;
+            }
+            if (!complete && now - start >= std::chrono::minutes(5)) {
+                log = "Initial geometry loading did not become ready within 5 minutes";
+                return fail(makeError(Error::Failure));
+            }
+            if (!complete && beforeBytes == loader.stats().uploadBytes && beforePages == readiness.completedPages) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        const auto stats = loader.stats();
+        result = loader.reset();
+        if (!result) { log = "Initial geometry loader handoff failed"; return fail(result); }
+        spdlog::info("[StreamInitialLoad] ready resources={} batches={} uploadedMiB={:.1f} elapsedMs={:.3f} gpuWaitMs={:.3f}",
+            session->sceneReadiness().requiredPages, stats.batches,
+            double(stats.uploadBytes) / (1024.0 * 1024.0),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
+            stats.gpuWaitMilliseconds);
+        pending.runtime.reset();
+    }
+    initialLoads_.clear();
+    return {};
 }
 
 StreamSceneReadiness StreamerSubsystem::sceneReadiness() const

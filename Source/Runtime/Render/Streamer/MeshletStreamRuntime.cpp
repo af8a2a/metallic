@@ -2349,6 +2349,31 @@ Result<> MeshletStreamRuntime::cmdBeginFrame(
     const MeshletStreamFrameDesc& frame,
     const std::function<Result<>()>& flushUploads)
 {
+    return beginUploadBatch(commandBuffer, streamer, frame, flushUploads, false);
+}
+
+Result<> MeshletStreamRuntime::cmdLoadInitialResources(
+    CommandBuffer& commandBuffer, Streamer& streamer, const std::function<Result<>()>& flushUploads)
+{
+    if (!commandBuffer.frameContext() || !commandBuffer.frameContext()->recording()) {
+        return makeError(Error::InvalidArgument);
+    }
+    auto result = beginUploadBatch(commandBuffer, streamer, {}, flushUploads, true);
+    if (!result) { return result; }
+    if (residency_.stats().framePageLoadFailureCount != 0) { return makeError(Error::Failure); }
+    if (!(result = initializePageTableIfNeeded(commandBuffer))) { return result; }
+    if (!(result = applyPageTablePatches(commandBuffer))) { return result; }
+    if (!(result = transitionPageBufferForTraversal(commandBuffer))) { return result; }
+    return cmdBuildPendingClas(commandBuffer);
+}
+
+Result<> MeshletStreamRuntime::beginUploadBatch(
+    CommandBuffer& commandBuffer,
+    Streamer& streamer,
+    const MeshletStreamFrameDesc& frame,
+    const std::function<Result<>()>& flushUploads,
+    bool initialLoad)
+{
     if (!registry_) { return makeError(Error::InvalidArgument); }
     for (const auto& lease : {
         pageHandle_, activeGroupHandle_, activeHeaderHandle_, pageTableHandle_,
@@ -2451,8 +2476,12 @@ Result<> MeshletStreamRuntime::cmdBeginFrame(
         };
     }
     profile.next("Prepare page uploads");
-    currentFrameUploadCount_ = residency_.processUploads(streamer, *pageBuffer_, maxPageUploadsPerFrame_,
-        prepareClas, profiler, maxUploadBytesPerFrame_, prepareGpuClas);
+    // Initialization advances by submission completion rather than Present. Keep
+    // staging bounded independently of the steady-state per-frame controls.
+    const uint32_t uploadPages = initialLoad ? std::min(1024u, maxUpdatePatches_) : maxPageUploadsPerFrame_;
+    const uint64_t uploadBytes = initialLoad ? 64ull * 1024ull * 1024ull : maxUploadBytesPerFrame_;
+    currentFrameUploadCount_ = residency_.processUploads(streamer, *pageBuffer_, uploadPages,
+        prepareClas, profiler, uploadBytes, prepareGpuClas);
     if (!planError.empty()) {
         spdlog::error("[MeshletStreamRuntime] CLAS upload plan failed: {}", planError);
         return makeError(Error::Failure);
@@ -2542,6 +2571,33 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
         return result;
     }
 
+    result = cmdBuildPendingClas(commandBuffer, checkpoint);
+    if (!result || !clusterRtxEnabled_) { return result; }
+    result = buildBlasInputs(commandBuffer, checkpoint);
+    if (!result) {
+        return result;
+    }
+    if (checkpoint) { checkpoint("BeforeBlasBuild"); }
+    result = cmdBuildBlas(commandBuffer);
+    if (!result) {
+        return result;
+    }
+    if (checkpoint) { checkpoint("BeforeTlasInput"); }
+    result = buildTlasInstances(commandBuffer);
+    if (!result) {
+        return result;
+    }
+    if (checkpoint) { checkpoint("BeforeTlasBuild"); }
+    result = cmdBuildTlas(commandBuffer);
+    if (checkpoint) { checkpoint("AfterTlasBuild"); }
+    return result;
+}
+
+Result<> MeshletStreamRuntime::cmdBuildPendingClas(CommandBuffer& commandBuffer,
+    const TraversalCheckpoint& checkpoint)
+{
+    if (!clasPool_) { return {}; }
+    Result<> result;
     if (checkpoint) { checkpoint("BeforeStreamClasBuild"); }
     std::vector<MeshletStreamClasPageBuild> clasBuilds;
     uint32_t clusterCount = 0;
@@ -2596,23 +2652,6 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
     if (!result) {
         return result;
     }
-    result = buildBlasInputs(commandBuffer, checkpoint);
-    if (!result) {
-        return result;
-    }
-    if (checkpoint) { checkpoint("BeforeBlasBuild"); }
-    result = cmdBuildBlas(commandBuffer);
-    if (!result) {
-        return result;
-    }
-    if (checkpoint) { checkpoint("BeforeTlasInput"); }
-    result = buildTlasInstances(commandBuffer);
-    if (!result) {
-        return result;
-    }
-    if (checkpoint) { checkpoint("BeforeTlasBuild"); }
-    result = cmdBuildTlas(commandBuffer);
-    if (checkpoint) { checkpoint("AfterTlasBuild"); }
     return result;
 }
 

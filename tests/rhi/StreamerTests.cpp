@@ -5,6 +5,7 @@
 #include "RhiTest.h"
 
 #include "Runtime/Render/Streamer/MeshletStreamClas.h"
+#include "Runtime/Render/Streamer/MeshletStreamInitialLoader.h"
 #include "Runtime/Render/Streamer/MeshletStreamPageLoader.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -899,6 +900,200 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamBlasCacheTest);
+
+class StreamInitialLoadingTest final : public RhiTest {
+public:
+    StreamInitialLoadingTest() { type = RhiTestType::Rendering; name = "stream_initial_loading"; }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        const auto require = [](bool condition, const std::string& reason) {
+            if (!condition) { throw std::runtime_error(reason); }
+        };
+        std::atomic_uint validationMessages = 0;
+        std::unique_ptr<Device> device;
+        const auto created = createDevice({.applicationName = "Stream initial loading regression",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .enableShaderObject = true, .enableRayTracingAccelerationStructure = true,
+            .enableRayQuery = true, .enableClusterAccelerationStructure = true,
+            .validationSink = {.callback = [](void* data, const ValidationMessage& message) noexcept {
+                if (message.messageIdName && std::strstr(message.messageIdName, "VUID-")) {
+                    ++*static_cast<std::atomic_uint*>(data);
+                }
+            }, .context = &validationMessages}})
+            .transform([&](auto value) { device = std::move(value); });
+        if (!created) { return hasError(created, Error::Unsupported) ? RhiTestResult::skip("CLAS unavailable")
+            : RhiTestResult::fail("Initial loading device creation failed"); }
+        try {
+            {
+                // Four independent primitives force a root batch larger than the
+                // one-page steady-state budget, while retaining refinement pages.
+                const auto directory = std::filesystem::absolute(context.outputDirectory / "InitialLoading");
+                std::filesystem::create_directories(directory);
+                const auto original = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
+                std::ifstream input(original);
+                auto source = nlohmann::json::parse(input);
+                const auto primitive = source.at("meshes").at(0).at("primitives").at(0);
+                for (uint32_t index = 1; index < 4; ++index) {
+                    source["meshes"][0]["primitives"].push_back(primitive);
+                }
+                for (const auto& buffer : source.at("buffers")) {
+                    const auto uri = buffer.at("uri").get<std::string>();
+                    std::filesystem::copy_file(original.parent_path() / uri, directory / uri,
+                        std::filesystem::copy_options::overwrite_existing);
+                }
+                const auto sourcePath = directory / "Scene.gltf";
+                { std::ofstream output(sourcePath); output << source.dump(2); }
+                scene::Scene scene;
+                require(scene.load(sourcePath), scene.lastLoadResult().error);
+                const auto assetPath = directory / "Scene.meshstream.bin";
+                std::string log;
+                require(scene::buildMeshletStreamAsset({.scene = &scene, .sourcePath = sourcePath,
+                    .outputPath = assetPath, .compressionMode = scene::MeshletStreamPayloadCompression::ByteRle}, log), log);
+
+                MeshletStreamRuntime runtime;
+                MeshletStreamInitialLoader loader;
+                MeshletStreamRuntimeDesc desc{.sourcePath = sourcePath, .streamAssetPath = assetPath,
+                    .maxResidentBytes = 32ull << 20, .maxResidentPages = 1024, .maxLockedFallbackPages = 1024,
+                    .maxPageUploadsPerFrame = 1, .maxUploadBytesPerFrame = 1,
+                    .maxGpuPageRequests = 1024, .maxGpuPageUnloadRequests = 1024,
+                    .maxActiveGroups = 2048, .maxTraversalWorkers = 64, .maxTraversalWorkItems = 4096,
+                    .pageLoadConcurrency = 0, .maxPageLoadsInFlight = 256, .queuedFrameCount = 2,
+                    .enableClusterRtx = true, .enableClas = true, .compactClas = true,
+                    .maxClasBytes = 32ull << 20, .maxClasBuildClusters = 4096,
+                    .maxBlasClusterReferences = 4096, .maxBlasBytes = 16ull << 20, .maxBlasBuilds = 8,
+                    .maxFallbackBlasBytes = 4ull << 20, .prefetchPages = false};
+                auto& queue = *device->getQueue(QueueType::Graphics);
+                QueueSubmissionTracker tracker;
+                RenderFrameContext frame;
+                std::unique_ptr<CommandPool> pool;
+                std::unique_ptr<CommandBuffer> commands;
+                std::unique_ptr<Streamer> streamer;
+                std::unique_ptr<Semaphore> gate;
+                struct Drain {
+                    Queue& queue;
+                    RenderFrameContext& frame;
+                    std::unique_ptr<Semaphore>& gate;
+                    ~Drain()
+                    {
+                        if (gate && gate->currentValue() < 1) { (void)gate->signal(1); }
+                        frame.cancel();
+                        (void)queue.waitIdle();
+                    }
+                } drain{queue, frame, gate};
+                require(bool(tracker.initialize(*device, queue)) &&
+                    bool(device->createCommandPool(queue).transform([&](auto value) { pool = std::move(value); })) &&
+                    bool(pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); })) &&
+                    bool(device->createStreamer(makeTestStreamerDesc()).transform([&](auto value) { streamer = std::move(value); })) &&
+                    bool(device->createSemaphore().transform([&](auto value) { gate = std::move(value); })),
+                    "Initial loading command resources failed");
+                uint64_t frameId = 0;
+                nlohmann::json report = nlohmann::json::array();
+                for (uint32_t cycle = 0; cycle < 2; ++cycle) {
+                    require(bool(runtime.initialize(*device, desc, log)), log);
+                    require(bool(loader.initialize(*device, log)), log);
+                    require(!runtime.sceneReady() && runtime.sceneReadiness().completedPages == 0,
+                        "Initial loading retained readiness across reload");
+                    require(runtime.asset().primitiveCount() == 4 &&
+                        runtime.debugSnapshot(false).at("terminalPageCount").get<uint32_t>() >= 4,
+                        "Initial loading fixture must contain multiple independent roots");
+                    if (cycle == 0) {
+                        for (uint32_t attempt = 0; attempt < 2; ++attempt) {
+                            require(bool(frame.begin(++frameId)) && bool(pool->reset()) &&
+                                bool(commands->begin(&frame)) && bool(streamer->beginFrame(frame)),
+                                "Initial upload begin failed");
+                            require(bool(runtime.cmdLoadInitialResources(*commands, *streamer)),
+                                "Initial upload recording failed");
+                            const auto snapshot = runtime.debugSnapshot(false);
+                            require(snapshot.at("orderedUploadPages").get<uint32_t>() >= 4 &&
+                                runtime.residency().stats().frameUploadBytes > desc.maxUploadBytesPerFrame,
+                                "Initial root uploads remained limited by normal frame budgets");
+                            require(!runtime.sceneReady() && runtime.residency().residentPageCount() == 0,
+                                "Unsubmitted initial uploads made the scene ready");
+                            require(bool(commands->end()), "Initial upload end failed");
+                            streamer->endFrame();
+                            if (attempt == 0) {
+                                frame.cancel();
+                                require(!runtime.sceneReady(), "Cancelled initial uploads made the scene ready");
+                                continue;
+                            }
+                            CommandBuffer* list[]{commands.get()};
+                            const SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
+                            require(bool(tracker.submit({.waitSemaphores = {&wait, 1},
+                                .commandBuffers = {list, 1}}, frame)), "Initial gated upload submit failed");
+                            for (uint32_t query = 0; query < 16; ++query) {
+                                runtime.prepareMaintenance();
+                                require(!frame.completion().isComplete() && !runtime.sceneReady() &&
+                                    runtime.residency().residentPageCount() == 0,
+                                    "Queue acceptance or CPU polling published an incomplete root copy");
+                            }
+                            require(bool(gate->signal(1)) && bool(frame.wait(5'000'000'000ull)),
+                                "Initial gated upload did not complete");
+                        }
+                    }
+
+                    bool complete = false;
+                    for (uint32_t call = 0; call < 64 && !complete; ++call) {
+                        require(bool(loader.pump(runtime, .001, complete, log)), log);
+                        const auto stats = runtime.profilingStats();
+                        require(stats.clasBuiltClusters <= desc.maxClasBuildClusters &&
+                            stats.clasUsedBytes <= stats.clasCapacityBytes &&
+                            stats.geometryUsedBytes <= stats.geometryBudgetBytes && stats.loadFailures == 0,
+                            "Initial loading exceeded a resource budget or failed page IO");
+                    }
+                    require(complete && runtime.sceneReady(), "Initial loading did not converge in bounded submissions");
+                    require(loader.stats().batches > 0 && loader.stats().batches <= 64,
+                        "Initial loading did not use a bounded independent submission sequence");
+                    require(!runtime.tlasReady() && !runtime.accelerationStructure() &&
+                        runtime.profilingStats().feedbackFrame == UINT64_MAX,
+                        "Initial loading unexpectedly required traversal, TLAS, or rendered-frame feedback");
+                    const auto snapshot = runtime.debugSnapshot(false);
+                    require(snapshot.at("fallbackBlasSubmitted").get<uint32_t>() == 4 &&
+                        snapshot.at("maxUploadBytesPerFrame") == desc.maxUploadBytesPerFrame,
+                        "Initial loading omitted fallback BLAS or changed the normal byte budget");
+                    report.push_back({{"cycle", cycle}, {"batches", loader.stats().batches},
+                        {"rootPages", snapshot.at("terminalPageCount")}, {"runtime", snapshot}});
+
+                    auto& residency = const_cast<MeshletStreamResidencyManager&>(runtime.residency());
+                    std::vector<uint32_t> refinements;
+                    for (uint32_t page = 0; page < runtime.asset().pageCount() && refinements.size() < 3; ++page) {
+                        if (residency.pageState(page) == MeshletStreamPageResidencyState::Unloaded) {
+                            const auto queued = residency.queuedUploadCount();
+                            // requestPage returns true only for an already resident
+                            // or pending-upload page; a newly queued request is false.
+                            (void)residency.requestPage(page);
+                            require(residency.pageAllocated(page) && residency.queuedUploadCount() == queued + 1,
+                                "Could not queue a refinement page");
+                            refinements.push_back(page);
+                        }
+                    }
+                    require(refinements.size() == 3, "Initial fixture has insufficient refinement pages");
+                    require(bool(frame.begin(++frameId)) && bool(pool->reset()) &&
+                        bool(commands->begin(&frame)) && bool(streamer->beginFrame(frame)), "Normal frame begin failed");
+                    require(bool(runtime.cmdBeginFrame(*commands, *streamer, MeshletStreamFrameDesc{})),
+                        "Normal frame upload failed after initial loading");
+                    require(residency.stats().frameScheduledUploadCount == 1 &&
+                        residency.stats().frameUploadBytes > 0,
+                        "Normal frame did not restore its one-page upload limit");
+                    require(bool(commands->end()), "Normal frame end failed");
+                    streamer->endFrame();
+                    frame.cancel();
+                    require(bool(loader.reset()), "Initial loader reset failed");
+                    runtime.reset();
+                    require(!runtime.sceneReady() && runtime.sceneReadiness().requiredPages == 0,
+                        "Initial loading reset retained scene readiness");
+                }
+                std::ofstream(directory / "InitialLoading.json") << report.dump(2) << '\n';
+            }
+            // Include retirement and device destruction in the validation verdict.
+            device.reset();
+            require(validationMessages.load() == 0, "Initial loading produced Vulkan validation errors");
+            return RhiTestResult::pass("Independent root/CLAS/fallback loading, cancellation, GPU-gated readiness, steady-state budgets and reload");
+        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamInitialLoadingTest);
 
 
 class StreamerBufferUploadTest : public RhiTest {

@@ -517,6 +517,9 @@ struct MeshletStreamRuntimeDesc {
     bool prefetchPages = true;
     uint32_t rasterMaterialTextureCapacity = 0;
     bool compactShadingAttributes = false;
+    // The subsystem drains a dedicated root-loading queue after scene/pass
+    // replacement, before graph recording. Direct callers may use the loader.
+    bool initialLoad = true;
 
     bool operator==(const MeshletStreamRuntimeDesc&) const = default;
 };
@@ -584,6 +587,10 @@ public:
 
     Result<> cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame,
         const std::function<Result<>()>& flushUploads = {});
+    // Record one bounded root-only batch in a dedicated, completion-tracked
+    // submission. Drain it before another batch or any normal graph recording.
+    Result<> cmdLoadInitialResources(CommandBuffer& commandBuffer, Streamer& streamer,
+        const std::function<Result<>()>& flushUploads = {});
     // CPU-only, non-blocking maintenance for the next recorded frame. A caller
     // may invoke this before pacing; cmdBeginFrame remains the fallback owner.
     void prepareMaintenance(CpuProfileRecorder* profiler = nullptr, bool allowLegacyReadback = false);
@@ -617,6 +624,9 @@ public:
     MeshletStreamClasPool* clasPool() const { return clasPool_.get(); }
 
 private:
+    Result<> beginUploadBatch(CommandBuffer& commandBuffer, Streamer& streamer,
+        const MeshletStreamFrameDesc& frame, const std::function<Result<>()>& flushUploads, bool initialLoad);
+    Result<> cmdBuildPendingClas(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint = {});
     struct SceneReadinessCache {
         StreamSceneReadiness value{.ready = false};
         bool valid = false;

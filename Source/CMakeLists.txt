@@ -74,6 +74,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Streamer/MeshletStreamClas.cpp
     Runtime/Render/Streamer/MeshletStreamClasPool.cpp
     Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp
+    Runtime/Render/Streamer/MeshletStreamInitialLoader.cpp
     Runtime/Render/Streamer/MeshletStreamPageLoader.cpp
     Runtime/Render/Streamer/MeshletStreamResidency.cpp
     Runtime/Render/Streamer/MeshletStreamRuntime.cpp

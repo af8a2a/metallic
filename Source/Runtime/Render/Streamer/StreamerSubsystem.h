@@ -5,6 +5,8 @@
 #include "Runtime/Render/Streamer/StreamingUploads.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
+#include <optional>
+
 namespace metallic::render {
 
 // One owner for scene resources, geometry residency, page IO, CLAS pools and
@@ -47,6 +49,7 @@ public:
     const SceneResourceManager& manager() const { return resources_; }
 
 private:
+    Result<> completeInitialLoads(std::string& log);
     std::unordered_map<const ScenePathTraceResources*, Buffer*> textureFrames_;
     Device* device_ = nullptr;
     StreamingUploads uploads_;
@@ -54,6 +57,13 @@ private:
     // Sessions are view-specific: traversal feedback must not be consumed by
     // another view. The subsystem retains ownership until all borrowers retire.
     std::vector<std::shared_ptr<MeshletStreamRuntime>> streams_;
+    // Do not populate replacement roots while old passes still own their stream.
+    struct InitialLoad {
+        std::weak_ptr<MeshletStreamRuntime> runtime;
+        std::optional<Error> failure;
+        std::string failureLog;
+    };
+    std::vector<InitialLoad> initialLoads_;
 };
 
 } // namespace metallic::render

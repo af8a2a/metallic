@@ -165,6 +165,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         }
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "cullHardwareClassification", config.value("cullHardwareClassification", false));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "metadataFastClassification", config.value("metadataFastClassification", true));
+        renderGraph_.setNodeRuntimeProperty(vbuffer->id, "initialLoad", config.value("initialLoad", true));
         if (config.contains("maxRasterCandidates")) {
             renderGraph_.setNodeRuntimeProperty(vbuffer->id, "maxRasterCandidates", config.at("maxRasterCandidates").get<uint32_t>());
         }
@@ -233,6 +234,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         report["config"]={{"durationSeconds",duration},{"warmupSeconds",warmup},{"distance",distance},{"keyframes",points},
             {"routeFrames",routeFrames},{"sample",sampleId},{"cullHardwareClassification",config.value("cullHardwareClassification",false)},
             {"metadataFastClassification",config.value("metadataFastClassification",true)},
+            {"initialLoad",config.value("initialLoad",true)},
             {"temporalJitter",viewportView_.temporalJitter()}, {"softwareGroupSize",groupSize}};
         report["absoluteKeyframes"]=Json::array();
         for (const auto& p : points) { report["absoluteKeyframes"].push_back({{"seconds",p.at("t").get<double>()*duration},

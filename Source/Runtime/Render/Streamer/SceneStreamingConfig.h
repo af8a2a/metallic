@@ -280,6 +280,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .prefetchPages = boolProperty(&properties, "prefetchPages", true),
         .rasterMaterialTextureCapacity = textureCapacity,
         .compactShadingAttributes = boolProperty(&properties, "compactShadingAttributes", false),
+        .initialLoad = boolProperty(&properties, "initialLoad", true),
     };
 }
 MeshletStreamRuntimeDesc assetStreamRuntimeDesc(const RenderGraphProperties& properties)
@@ -348,6 +349,7 @@ MeshletStreamRuntimeDesc assetStreamRuntimeDesc(const RenderGraphProperties& pro
         .gpuDecompressionMinBatchBytes = previewStreamUint64Property(properties, "gpuDecompressionMinBatchBytes", 1024 * 1024),
         .prefetchPages = boolProperty(&properties, "prefetchPages", true),
         .compactShadingAttributes = boolProperty(&properties, "compactShadingAttributes", false),
+        .initialLoad = boolProperty(&properties, "initialLoad", true),
     };
 }
 } // namespace metallic::render::streaming_detail
