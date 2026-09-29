@@ -201,7 +201,8 @@ bool meshletStreamBuildParamsMatch(const MeshletStreamFileHeader& header)
 
 bool meshletStreamPartialBuildParamsMatch(const MeshletStreamPartialFileHeader& header)
 {
-    return header.pagePayloadAlignment == kPageSlotAlignment &&
+    return header.reserved1 == kGeometryCookRevision &&
+        header.pagePayloadAlignment == kPageSlotAlignment &&
         header.maxVertices == kMeshletClusterMaxVertices &&
         header.minTriangles == kMeshletClusterMinTriangles &&
         header.maxTriangles == kMeshletClusterMaxTriangles &&
@@ -3465,6 +3466,7 @@ MeshletStreamPartialFileHeader makePartialBuildHeader(
     header.sourceWriteTime = state.header.sourceWriteTime;
     header.sourceDependencyFingerprint = state.header.sourceDependencyFingerprint;
     header.payloadWriteOffset = payloadWriteOffset;
+    header.reserved1 = kGeometryCookRevision;
     header.compressionMode = static_cast<uint32_t>(compressionMode);
     header.nextRenderPrimitiveIndex = state.nextRenderPrimitiveIndex;
     header.primitiveCount = static_cast<uint32_t>(state.primitives.size());
@@ -4607,11 +4609,17 @@ bool MeshletStreamAsset::isRuntimeCompatibleForSource(const std::filesystem::pat
     if (impl_->header.reserved1 == kGeometryCookRevision) {
         return true;
     }
+    // Revision 3 canonicalizes exact duplicates and tolerates normal seam noise.
+    // Revision 2 remains valid at runtime, but is not current for offline cooking.
+    if (kGeometryCookRevision == 3 && impl_->header.reserved1 == 2) {
+        return true;
+    }
     reason = "geometry cook revision " + std::to_string(impl_->header.reserved1) +
         " requires re-cooking for revision " + std::to_string(kGeometryCookRevision);
-    // Revisions 1/2 changed attribute simplification/zero-normal repair, not
-    // position-only pages. Do not automatically extend this to future policies.
-    if ((kGeometryCookRevision != 1 && kGeometryCookRevision != 2) || impl_->header.reserved1 != 0) {
+    // Revisions 1/2 changed attributes; revision 3 changes LOD topology without
+    // invalidating position-only pages. Do not extend this to future policies.
+    if ((kGeometryCookRevision != 1 && kGeometryCookRevision != 2 && kGeometryCookRevision != 3) ||
+        impl_->header.reserved1 != 0) {
         return false;
     }
     constexpr uint32_t compatibleFlags = kMeshletStreamPayloadAttributePosition | kMeshletStreamPayloadAttributeMaterial;

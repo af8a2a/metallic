@@ -4,6 +4,7 @@
 #include "meshoptimizer.h"
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <chrono>
 #include <cmath>
@@ -131,6 +132,262 @@ TEST(GeometryAttributes, CoarseLodsPreserveChartsAndUseUvError)
         }
     }
     EXPECT_GT(coarseTriangles, 0u);
+}
+
+using AttributeVertexKey = std::array<uint32_t, 12>;
+using OrientedAttributeTriangle = std::array<AttributeVertexKey, 3>;
+
+AttributeVertexKey attributeVertexKey(const RenderPrimitive& primitive, uint32_t vertex)
+{
+    AttributeVertexKey key{};
+    std::memcpy(key.data(), &primitive.positions[vertex].x, 3 * sizeof(float));
+    std::memcpy(key.data() + 3, &primitive.normals[vertex].x, 3 * sizeof(float));
+    std::memcpy(key.data() + 6, &primitive.texcoords0[vertex].x, 2 * sizeof(float));
+    std::memcpy(key.data() + 8, &primitive.tangents[vertex].x, 4 * sizeof(float));
+    return key;
+}
+
+OrientedAttributeTriangle orientedAttributeTriangle(OrientedAttributeTriangle triangle)
+{
+    // Cyclic rotations have the same winding; reversing two corners does not.
+    const OrientedAttributeTriangle second{triangle[1], triangle[2], triangle[0]};
+    const OrientedAttributeTriangle third{triangle[2], triangle[0], triangle[1]};
+    return std::min(triangle, std::min(second, third));
+}
+
+void expectLodAttributePreservation(const RenderPrimitive& source, const RenderPrimitive& built)
+{
+    ASSERT_EQ(built.positions.size(), source.positions.size());
+    ASSERT_EQ(built.normals.size(), source.normals.size());
+    ASSERT_EQ(built.texcoords0.size(), source.texcoords0.size());
+    ASSERT_EQ(built.tangents.size(), source.tangents.size());
+    EXPECT_EQ(built.indices, source.indices);
+    EXPECT_EQ(built.vertexCount, source.vertexCount);
+    EXPECT_EQ(built.indexCount, source.indexCount);
+    EXPECT_EQ(built.triangleCount, source.triangleCount);
+    EXPECT_EQ(built.hasAuthoredNormals, source.hasAuthoredNormals);
+    EXPECT_EQ(built.hasAuthoredTangents, source.hasAuthoredTangents);
+    std::set<AttributeVertexKey> sourceTuples;
+    for (uint32_t vertex = 0; vertex < source.positions.size(); ++vertex) {
+        const auto key = attributeVertexKey(source, vertex);
+        EXPECT_EQ(attributeVertexKey(built, vertex), key) << "source vertex " << vertex;
+        sourceTuples.insert(key);
+    }
+    for (uint32_t vertex : built.meshletLodVertices) {
+        ASSERT_LT(vertex, built.positions.size());
+        EXPECT_TRUE(sourceTuples.contains(attributeVertexKey(built, vertex)));
+    }
+    std::multiset<OrientedAttributeTriangle> sourceTriangles, lod0Triangles;
+    ASSERT_EQ(source.indices.size() % 3, 0u);
+    for (size_t index = 0; index < source.indices.size(); index += 3) {
+        OrientedAttributeTriangle triangle;
+        for (uint32_t corner = 0; corner < 3; ++corner) {
+            ASSERT_LT(source.indices[index + corner], source.positions.size());
+            triangle[corner] = attributeVertexKey(source, source.indices[index + corner]);
+        }
+        sourceTriangles.insert(orientedAttributeTriangle(triangle));
+    }
+    for (const auto& cluster : built.meshletLodClusters) {
+        if (cluster.lodLevel != 0) { continue; }
+        for (uint32_t triangleIndex = 0; triangleIndex < cluster.triangleCount; ++triangleIndex) {
+            OrientedAttributeTriangle triangle;
+            for (uint32_t corner = 0; corner < 3; ++corner) {
+                const size_t index = size_t(cluster.triangleOffset) + triangleIndex * 3 + corner;
+                ASSERT_LT(index, built.meshletLodTriangles.size());
+                const uint32_t localVertex = built.meshletLodTriangles[index];
+                ASSERT_LT(localVertex, cluster.vertexCount);
+                const size_t vertexIndex = size_t(cluster.vertexOffset) + localVertex;
+                ASSERT_LT(vertexIndex, built.meshletLodVertices.size());
+                const uint32_t vertex = built.meshletLodVertices[vertexIndex];
+                ASSERT_LT(vertex, built.positions.size());
+                triangle[corner] = attributeVertexKey(built, vertex);
+            }
+            lod0Triangles.insert(orientedAttributeTriangle(triangle));
+        }
+    }
+    EXPECT_EQ(lod0Triangles, sourceTriangles);
+}
+
+RenderPrimitive attributedGrid(bool triangleSoup)
+{
+    RenderPrimitive grid;
+    constexpr uint32_t cells = 32;
+    for (uint32_t y = 0; y <= cells; ++y) {
+        for (uint32_t x = 0; x <= cells; ++x) {
+            const float u = float(x) / cells, v = float(y) / cells;
+            grid.positions.emplace_back(u, v, 0.0f);
+            grid.normals.emplace_back(0.0f, 0.0f, 1.0f);
+            grid.texcoords0.emplace_back(u, v);
+            grid.tangents.emplace_back(1.0f, 0.0f, 0.0f, 1.0f);
+        }
+    }
+    for (uint32_t y = 0; y < cells; ++y) {
+        for (uint32_t x = 0; x < cells; ++x) {
+            const uint32_t a = y * (cells + 1) + x, b = a + 1, c = a + cells + 1, d = c + 1;
+            grid.indices.insert(grid.indices.end(), {a, b, c, b, d, c});
+        }
+    }
+    RenderPrimitive result;
+    if (triangleSoup) {
+        for (uint32_t vertex : grid.indices) {
+            result.indices.push_back(static_cast<uint32_t>(result.positions.size()));
+            result.positions.push_back(grid.positions[vertex]);
+            result.normals.push_back(grid.normals[vertex]);
+            result.texcoords0.push_back(grid.texcoords0[vertex]);
+            result.tangents.push_back(grid.tangents[vertex]);
+        }
+    } else {
+        result = std::move(grid);
+    }
+    result.vertexCount = result.positions.size();
+    result.indexCount = result.indices.size();
+    result.triangleCount = result.indices.size() / 3;
+    result.hasAuthoredNormals = true;
+    result.hasAuthoredTangents = true;
+    for (const auto& position : result.positions) { result.localBounds.include(position); }
+    return result;
+}
+
+std::array<uint64_t, 3> rootCutSize(const RenderPrimitive& primitive)
+{
+    std::vector<bool> refined(primitive.meshletLodGroups.size(), false);
+    for (const auto& cluster : primitive.meshletLodClusters) {
+        if (cluster.refinedGroupIndex >= 0) {
+            refined.at(static_cast<size_t>(cluster.refinedGroupIndex)) = true;
+        }
+    }
+    std::array<uint64_t, 3> result{};
+    for (size_t groupIndex = 0; groupIndex < refined.size(); ++groupIndex) {
+        if (refined[groupIndex]) { continue; }
+        const auto& group = primitive.meshletLodGroups[groupIndex];
+        ++result[0];
+        result[1] += group.clusterCount;
+        for (uint32_t cluster = 0; cluster < group.clusterCount; ++cluster) {
+            result[2] += primitive.meshletLodClusters.at(size_t(group.clusterOffset) + cluster).triangleCount;
+        }
+    }
+    return result;
+}
+
+TEST(GeometryAttributes, ExactAttributeDuplicatesRecoverEquivalentCoarseRootCut)
+{
+    auto welded = attributedGrid(false);
+    auto soup = attributedGrid(true);
+    const auto originalWelded = welded, originalSoup = soup;
+    MeshletLodBuildStats weldedStats, soupStats;
+    ASSERT_TRUE(buildStreamMeshletsForPrimitive(welded, {.maxWorkers = 1, .lodStats = &weldedStats}));
+    ASSERT_TRUE(buildStreamMeshletsForPrimitive(soup, {.maxWorkers = 1, .lodStats = &soupStats}));
+    EXPECT_EQ(weldedStats.referencedSourceVertexCount, originalWelded.positions.size());
+    EXPECT_EQ(weldedStats.uniqueAttributeVertexCount, originalWelded.positions.size());
+    EXPECT_EQ(soupStats.referencedSourceVertexCount, originalSoup.positions.size());
+    EXPECT_EQ(soupStats.uniqueAttributeVertexCount, originalWelded.positions.size());
+    EXPECT_GT(soupStats.referencedSourceVertexCount, soupStats.uniqueAttributeVertexCount * 4);
+    ASSERT_GT(welded.meshletLodLevels.size(), 1u);
+    ASSERT_GT(soup.meshletLodLevels.size(), 1u);
+    const auto weldedRoots = rootCutSize(welded), soupRoots = rootCutSize(soup);
+    EXPECT_EQ(soupRoots, weldedRoots);
+    EXPECT_GT(soupRoots[0], 0u);
+    EXPECT_GT(soupRoots[2], 0u);
+    EXPECT_LT(soupRoots[2], originalSoup.triangleCount / 4);
+    expectLodAttributePreservation(originalWelded, welded);
+    expectLodAttributePreservation(originalSoup, soup);
+}
+
+TEST(GeometryAttributes, ExactAttributeWeldingRetainsNormalUvAndTangentSeams)
+{
+    for (uint32_t seam = 0; seam < 10; ++seam) {
+        // Exact duplicate, normal, UV, tangent sign/direction/signed zero,
+        // normal below/above the direction tolerance, tiny UV, and short normals.
+        SCOPED_TRACE(seam);
+        RenderPrimitive primitive;
+        primitive.positions = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {9, 9, 9}};
+        primitive.normals.assign(7, float3(0, 0, 1));
+        primitive.texcoords0 = {{0, 0}, {1, 0}, {0, 1}, {0, 0}, {1, 0}, {0, 1}, {9, 9}};
+        primitive.tangents.assign(7, float4(1, 0, 0, 1));
+        primitive.indices = {0, 1, 2, 3, 4, 5};
+        primitive.vertexCount = 7; primitive.indexCount = 6; primitive.triangleCount = 2;
+        primitive.hasAuthoredNormals = true;
+        primitive.hasAuthoredTangents = true;
+        if (seam == 9) { primitive.normals.assign(7, float3(0, 0, 1e-4f)); }
+        for (uint32_t vertex = 3; vertex < 6; ++vertex) {
+            if (seam == 1) { primitive.normals[vertex].z = -1.0f; }
+            if (seam == 2) { primitive.texcoords0[vertex].x += 2.0f; }
+            if (seam == 3) { primitive.tangents[vertex].w = -1.0f; }
+            if (seam == 4) { primitive.tangents[vertex] = float4(0, 1, 0, 1); }
+            if (seam == 5) { primitive.tangents[vertex].y = -0.0f; }
+            if (seam == 6) { primitive.normals[vertex].y = 0.999e-3f; }
+            if (seam == 7) { primitive.normals[vertex].y = 1.001e-3f; }
+            if (seam == 8) { primitive.texcoords0[vertex].x += 1e-7f; }
+            if (seam == 9) { primitive.normals[vertex] = float3(0, 1e-4f, 0); }
+        }
+        for (const auto& position : primitive.positions) { primitive.localBounds.include(position); }
+        std::string reason;
+        ASSERT_TRUE(validateGeometryAttributes(primitive, reason)) << reason;
+        const auto original = primitive;
+        MeshletLodBuildStats stats;
+        ASSERT_TRUE(buildStreamMeshletsForPrimitive(primitive, {.maxWorkers = 1, .lodStats = &stats}));
+        EXPECT_EQ(stats.sourceVertexCount, 7u);
+        EXPECT_EQ(stats.referencedSourceVertexCount, 6u);
+        EXPECT_EQ(stats.uniqueAttributeVertexCount, seam == 0 ? 3u : 6u);
+        const bool protectedSeam = seam == 1 || seam == 2 || seam == 3 || seam == 7 || seam == 8 || seam == 9;
+        EXPECT_EQ(stats.protectedVertexCount, protectedSeam ? 3u : 0u);
+        expectLodAttributePreservation(original, primitive);
+    }
+}
+
+TEST(GeometryAttributes, TinyPerCornerNormalDifferencesAllowCoarseRootReduction)
+{
+    auto primitive = attributedGrid(true);
+    for (uint32_t vertex = 0; vertex < primitive.positions.size(); ++vertex) {
+        // Every corner has a different normal tuple. Exact vertex welding alone
+        // cannot reconnect this soup, while all differences remain below 1e-3.
+        const float jitter = 5e-4f * float(vertex + 1) / float(primitive.positions.size());
+        primitive.normals[vertex] = float3(0, jitter, std::sqrt(1.0f - jitter * jitter));
+    }
+    const auto original = primitive;
+    MeshletLodBuildStats stats;
+    ASSERT_TRUE(buildStreamMeshletsForPrimitive(primitive, {.maxWorkers = 1, .lodStats = &stats}));
+    EXPECT_EQ(stats.uniqueAttributeVertexCount, original.positions.size());
+    EXPECT_EQ(stats.referencedSourceVertexCount, original.positions.size());
+    EXPECT_GT(stats.normalDifferences.differentVertexCount, 0u);
+    EXPECT_GT(stats.normalDifferences.maxComponentAbsoluteDifference, 0.0);
+    EXPECT_LE(stats.normalDifferences.maxComponentAbsoluteDifference, 1e-3);
+    EXPECT_EQ(stats.uvDifferences.differentVertexCount, 0u);
+    EXPECT_EQ(stats.tangentSignDifferentVertexCount, 0u);
+    EXPECT_EQ(stats.protectedVertexCount, 0u);
+    ASSERT_GT(primitive.meshletLodLevels.size(), 1u);
+    const auto roots = rootCutSize(primitive);
+    EXPECT_GT(roots[0], 0u);
+    EXPECT_GT(roots[2], 0u);
+    EXPECT_LT(roots[2], original.triangleCount / 4);
+    expectLodAttributePreservation(original, primitive);
+}
+
+TEST(GeometryAttributes, NormalMagnitudeDifferencesDoNotCreateHardSeams)
+{
+    auto primitive = attributedGrid(true);
+    for (uint32_t vertex = 0; vertex < primitive.positions.size(); ++vertex) {
+        // Authored lengths differ at every corner, but all shading directions
+        // agree. Keep these original values while relaxing only seam protection.
+        const float magnitude = 0.5f + float(vertex + 1) / float(primitive.positions.size());
+        primitive.normals[vertex] = float3(0, 0, magnitude);
+    }
+    std::string reason;
+    ASSERT_TRUE(validateGeometryAttributes(primitive, reason)) << reason;
+    const auto original = primitive;
+    MeshletLodBuildStats stats;
+    ASSERT_TRUE(buildStreamMeshletsForPrimitive(primitive, {.maxWorkers = 1, .lodStats = &stats}));
+    EXPECT_EQ(stats.uniqueAttributeVertexCount, original.positions.size());
+    EXPECT_EQ(stats.referencedSourceVertexCount, original.positions.size());
+    EXPECT_GT(stats.normalDifferences.differentVertexCount, 0u);
+    EXPECT_GT(stats.normalDifferences.maxComponentAbsoluteDifference, 1e-3);
+    EXPECT_EQ(stats.protectedVertexCount, 0u);
+    ASSERT_GT(primitive.meshletLodLevels.size(), 1u);
+    const auto roots = rootCutSize(primitive);
+    EXPECT_GT(roots[0], 0u);
+    EXPECT_GT(roots[2], 0u);
+    EXPECT_LT(roots[2], original.triangleCount / 4);
+    expectLodAttributePreservation(original, primitive);
 }
 
 struct AttributeFixture {
@@ -261,6 +518,88 @@ void setCookRevision(const std::filesystem::path& path, uint32_t revision)
     file.seekp(212);
     file.write(reinterpret_cast<const char*>(&revision), sizeof(revision));
     ASSERT_TRUE(file.good());
+}
+
+TEST(GeometryAttributes, PreviousExactAttributeCookIsRuntimeCompatibleButNotCurrent)
+{
+    AttributeFixture fixture;
+    const auto source = fixture.save();
+    const auto output = fixture.directory / "previous.meshstream.bin";
+    std::string reason;
+    ASSERT_GT(kGeometryCookRevision, 2u);
+    ASSERT_TRUE(buildMeshletStreamAssetOffline({.sourcePath = source, .outputPath = output}, reason)) << reason;
+    setCookRevision(output, 2);
+    MeshletStreamAsset asset;
+    ASSERT_TRUE(asset.open(output, reason)) << reason;
+    EXPECT_FALSE(asset.isCurrentForSource(source));
+    EXPECT_TRUE(asset.isRuntimeCompatibleForSource(source, reason)) << reason;
+    EXPECT_TRUE(reason.empty());
+    std::vector<MeshletStreamAttributeValidation> validation;
+    EXPECT_TRUE(validateMeshletStreamAttributes(asset, source, validation, reason)) << reason;
+    const auto binary = fixture.directory / "mesh.bin";
+    const auto oldWriteTime = std::filesystem::last_write_time(binary);
+    std::filesystem::last_write_time(binary, oldWriteTime + std::chrono::seconds(2));
+    EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
+    EXPECT_NE(reason.find("dependencies"), std::string::npos) << reason;
+    std::filesystem::last_write_time(binary, oldWriteTime);
+    EXPECT_TRUE(asset.isRuntimeCompatibleForSource(source, reason)) << reason;
+    asset.close();
+
+    setCookRevision(output, 1);
+    ASSERT_TRUE(asset.open(output, reason)) << reason;
+    EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
+    EXPECT_NE(reason.find("cook revision"), std::string::npos) << reason;
+}
+
+TEST(GeometryAttributes, StalePartialCookRevisionRestartsAllGeometries)
+{
+    // A matching checkpoint is the control: it must resume, while revisions
+    // before exact attribute welding must rebuild even the completed geometry.
+    for (uint32_t revision : {0u, 2u, kGeometryCookRevision}) {
+        SCOPED_TRACE(revision);
+        AttributeFixture fixture;
+        const auto source = fixture.save();
+        const auto output = fixture.directory / "partial.meshstream.bin";
+        auto partial = output;
+        partial += ".partial";
+        std::string reason;
+        MeshletStreamAssetOfflineBuildDesc desc{
+            .sourcePath = source, .outputPath = output, .maxNewGeometriesPerInvocation = 1};
+        ASSERT_FALSE(buildMeshletStreamAssetOffline(desc, reason));
+        EXPECT_NE(reason.find("paused"), std::string::npos) << reason;
+        ASSERT_TRUE(std::filesystem::exists(partial));
+        {
+            // Partial container v10 stores the cook revision in its final word.
+            std::fstream checkpoint(partial, std::ios::binary | std::ios::in | std::ios::out);
+            ASSERT_TRUE(checkpoint.is_open());
+            checkpoint.seekg(132);
+            uint32_t savedRevision = 0;
+            checkpoint.read(reinterpret_cast<char*>(&savedRevision), sizeof(savedRevision));
+            ASSERT_TRUE(checkpoint.good());
+            ASSERT_EQ(savedRevision, kGeometryCookRevision);
+            checkpoint.seekp(132);
+            checkpoint.write(reinterpret_cast<const char*>(&revision), sizeof(revision));
+            ASSERT_TRUE(checkpoint.good());
+        }
+        std::vector<uint32_t> decodedPrimitives;
+        desc.maxNewGeometriesPerInvocation = 0;
+        desc.progress = [&](const MeshletStreamCookProgress& progress) {
+            if (std::strcmp(progress.phase, "decode") == 0) {
+                decodedPrimitives.push_back(progress.sourcePrimitiveIndex);
+            }
+        };
+        ASSERT_TRUE(buildMeshletStreamAssetOffline(desc, reason)) << reason;
+        const std::vector<uint32_t> expected = revision == kGeometryCookRevision ?
+            std::vector<uint32_t>{2, 3} : std::vector<uint32_t>{0, 2, 3};
+        EXPECT_EQ(decodedPrimitives, expected);
+        EXPECT_FALSE(std::filesystem::exists(partial));
+        MeshletStreamAsset asset;
+        ASSERT_TRUE(asset.open(output, reason)) << reason;
+        EXPECT_TRUE(asset.isCurrentForSource(source));
+        EXPECT_EQ(asset.primitiveCount(), 3u);
+        std::vector<MeshletStreamAttributeValidation> validation;
+        EXPECT_TRUE(validateMeshletStreamAttributes(asset, source, validation, reason)) << reason;
+    }
 }
 
 void usePositionOnly(AttributeFixture& fixture)

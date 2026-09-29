@@ -1,5 +1,6 @@
 #include "RhiTest.h"
 #include "Runtime/Render/RenderSample.h"
+#include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include <algorithm>
@@ -7,6 +8,7 @@
 #include <cmath>
 #include <fstream>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <cstdlib>
 #include <cstring>
@@ -376,18 +378,48 @@ public:
         try {
             Json manifest,report=Json::array();
             { std::ifstream input(manifestPath); input>>manifest; }
+            uint32_t executedProbes=0;
             for(const auto& probe : manifest["probes"]) {
                 const std::string name=probe["name"];
                 if(name!="StoneUdim" && name!="MaskedLeaves" && name!="TextureTransformBc4" && name!="MirroredInstances" &&
-                    name!="InstancingNoTangent" && name!="Unlit" && name!="Glass" && name!="Blend") { continue; }
+                    name!="InstancingNoTangent" && name!="Unlit" && name!="Glass" && name!="Blend" &&
+                    !probe.value("runMaterialProbe",false)) { continue; }
+                ++executedProbes;
                 const auto directory=std::filesystem::absolute(context.outputDirectory/name);
                 std::filesystem::create_directories(directory);
                 const std::filesystem::path source=probe["path"].get<std::string>();
                 auto cache=source; cache.replace_extension("meshstream.bin");
+                if(probe.contains("cache")) { cache=probe.at("cache").get<std::string>(); }
+                const bool captureRootCut=probe.value("captureRootCut",false);
+                const bool fullBoundsView=probe.value("fullBoundsView",false);
+                require(!fullBoundsView || captureRootCut,"fullBoundsView requires captureRootCut");
+                scene::MeshletStreamAsset asset;
+                std::string assetLog;
+                require(asset.open(cache,assetLog),assetLog);
+                std::set<uint32_t> terminalPages;
+                for(const uint32_t group : asset.terminalGroups()) {
+                    terminalPages.insert(asset.groups()[group].pageIndex);
+                }
+                uint64_t terminalGroups=0,terminalClusters=0,instanceGroups=0;
+                for(const auto& instance : asset.instances()) {
+                    require(instance.primitiveIndex<asset.primitiveCount(),"Probe instance primitive is invalid");
+                    instanceGroups+=asset.primitives()[instance.primitiveIndex].groupCount;
+                    for(const uint32_t group : asset.primitiveTerminalGroups(instance.primitiveIndex)) {
+                        ++terminalGroups;
+                        terminalClusters+=asset.groups()[group].clusterCount;
+                    }
+                }
+                require(terminalGroups!=0 && instanceGroups<=UINT32_MAX/2,"Invalid probe root capacity");
+                Json evidence{{"source",source.generic_string()},{"cache",cache.generic_string()},
+                    {"terminalPages",terminalPages.size()},{"terminalInstanceGroups",terminalGroups},
+                    {"terminalInstanceClusters",terminalClusters},
+                    {"materialComparisonScope","LOD0 close-up of the largest authored triangle"}};
+                const auto saveEvidence=[&]() { std::ofstream(directory/"ProbeEvidence.json")<<evidence.dump(2); };
                 const auto referencePath=residentProbe(source,directory);
                 std::map<std::string,std::vector<uint32_t>> reference;
                 float3 probeCenter(0.0f), probeDirection(0,0,1);
                 float probeRadius=1;
+                scene::Bounds fullBounds;
                 for(bool streamed : {false,true}) {
                     scene::SceneDocument scene;
                     require(streamed ? scene.loadStreamMetadata(source) : scene.load(referencePath),scene.lastLoadResult().error);
@@ -400,6 +432,12 @@ public:
                     light.direction=float3(-.3f,-.4f,-1); lighting.lights={light}; preview.setLighting(lighting);
                     auto graph=materialGraph(streamed ? source : referencePath,cache,streamed);
                     const auto raster=graph.findNode("Raster")->id,deferred=graph.findNode("Deferred")->id;
+                    const auto rasterProperties=[&]() {
+                        const auto* node=graph.findNode("Raster");
+                        auto properties=node->properties;
+                        properties.merge_patch(node->runtimeProperties);
+                        return properties;
+                    };
                     if(!streamed) {
                         // City-wide instance bounds and long, thin stalk bounds can
                         // produce empty probes. Frame the largest authored triangle.
@@ -408,10 +446,18 @@ public:
                         float maximumArea=0;
                         std::vector<bool> visited(scene.renderPrimitives().size(),false);
                         for(const auto& instance : scene.renderNodes()) {
-                            if(visited[instance.renderPrimitiveIndex]) { continue; }
-                            visited[instance.renderPrimitiveIndex]=true;
                             const auto& primitive=scene.renderPrimitives()[instance.renderPrimitiveIndex];
                             const auto& m=instance.worldMatrix;
+                            if(fullBoundsView && primitive.localBounds.valid) {
+                                for(uint32_t corner=0;corner<8;++corner) {
+                                    const float3 point((corner&1) ? primitive.localBounds.max.x : primitive.localBounds.min.x,
+                                        (corner&2) ? primitive.localBounds.max.y : primitive.localBounds.min.y,
+                                        (corner&4) ? primitive.localBounds.max.z : primitive.localBounds.min.z);
+                                    fullBounds.include((m*float4(point,1)).xyz);
+                                }
+                            }
+                            if(visited[instance.renderPrimitiveIndex]) { continue; }
+                            visited[instance.renderPrimitiveIndex]=true;
                             const float determinant=m.a00*(m.a11*m.a22-m.a12*m.a21)-m.a01*(m.a10*m.a22-m.a12*m.a20)+m.a02*(m.a10*m.a21-m.a11*m.a20);
                             for(size_t index=0;index+2<primitive.indices.size();index+=3) {
                                 const float3 a=(m*float4(primitive.positions[primitive.indices[index]],1)).xyz;
@@ -426,21 +472,79 @@ public:
                         }
                         require(maximumArea>0,"Probe has no nondegenerate triangles");
                     }
-                    const auto eye=probeCenter+probeDirection*(probeRadius*2.6f);
                     lighting.lights.front().direction=-probeDirection;
                     preview.setLighting(lighting);
-                    graph.setNodeRuntimeProperty(raster,"camera.eye",{eye.x,eye.y,eye.z});
-                    graph.setNodeRuntimeProperty(raster,"camera.center",{probeCenter.x,probeCenter.y,probeCenter.z});
-                    graph.setNodeRuntimeProperty(raster,"camera.up",std::abs(probeDirection.y)>.95f ? Json({0,0,1}) : Json({0,1,0}));
-                    graph.setNodeRuntimeProperty(raster,"camera.znear",probeRadius*.001f);
-                    graph.setNodeRuntimeProperty(raster,"camera.zfar",probeRadius*16);
-                    graph.setNodeRuntimeProperty(raster,"maxResidentPages",512);
-                    graph.setNodeRuntimeProperty(raster,"maxLockedFallbackPages",512);
-                    graph.setNodeRuntimeProperty(raster,"maxActiveGroups",4096);
-                    graph.setNodeRuntimeProperty(raster,"maxTraversalWorkItems",8192);
+                    const auto setCamera=[&](const float3& center,float radius) {
+                        const auto eye=center+probeDirection*(radius*2.6f);
+                        graph.setNodeRuntimeProperty(raster,"camera.eye",{eye.x,eye.y,eye.z});
+                        graph.setNodeRuntimeProperty(raster,"camera.center",{center.x,center.y,center.z});
+                        graph.setNodeRuntimeProperty(raster,"camera.up",std::abs(probeDirection.y)>.95f ? Json({0,0,1}) : Json({0,1,0}));
+                        graph.setNodeRuntimeProperty(raster,"camera.znear",radius*.001f);
+                        graph.setNodeRuntimeProperty(raster,"camera.zfar",radius*16);
+                    };
+                    setCamera(probeCenter,probeRadius);
+                    // Test fixture capacities follow metadata; production budgets remain unchanged.
+                    graph.setNodeRuntimeProperty(raster,"maxResidentPages",std::max<uint64_t>(512,asset.pageCount()));
+                    graph.setNodeRuntimeProperty(raster,"maxLockedFallbackPages",std::max<uint64_t>(512,terminalPages.size()));
+                    graph.setNodeRuntimeProperty(raster,"maxActiveGroups",std::max<uint64_t>(4096,instanceGroups));
+                    graph.setNodeRuntimeProperty(raster,"maxTraversalWorkItems",std::max<uint64_t>(8192,instanceGroups*2));
                     graph.setNodeRuntimeProperty(raster,"enableClusterRtx",streamed);
                     graph.setNodeRuntimeProperty(raster,"enableClas",streamed);
                     graph.setNodeRuntimeProperty(raster,"maxClasBytes",134217728);
+                    if(streamed && probe.contains("runtimeProperties")) {
+                        require(probe.at("runtimeProperties").is_object(),"runtimeProperties must be an object");
+                        for(const auto& [key,value] : probe.at("runtimeProperties").items()) {
+                            graph.setNodeRuntimeProperty(raster,key,value);
+                        }
+                    }
+                    const bool instanceFrustumCull=rasterProperties().value("instanceFrustumCull",true);
+                    const bool meshletFrustumCull=rasterProperties().value("meshletFrustumCull",true);
+                    if((streamed && captureRootCut) || (!streamed && fullBoundsView)) {
+                        if(fullBoundsView) {
+                            require(fullBounds.valid,"Probe has no complete world bounds");
+                            setCamera(fullBounds.center(),std::max(fullBounds.radius(),.001f));
+                        }
+                        if(streamed) {
+                            graph.setNodeRuntimeProperty(raster,"initialLoad",true);
+                            graph.setNodeRuntimeProperty(raster,"autoLod",false);
+                            graph.setNodeRuntimeProperty(raster,"lodLevel",31);
+                            graph.setNodeRuntimeProperty(raster,"instanceFrustumCull",false);
+                            graph.setNodeRuntimeProperty(raster,"meshletFrustumCull",false);
+                            evidence["rootRuntimeProperties"]=rasterProperties();
+                        }
+                        for(const char* view : {"mappedNormal","baseColor"}) {
+                            graph.setNodeRuntimeProperty(deferred,"debugView",view);
+                            require(bool(preview.render(graph,256,256)),name+": "+preview.lastLog());
+                            if(streamed && std::string_view(view)=="mappedNormal") {
+                                auto* streamer=preview.subsystemHost()->get<StreamerSubsystem>();
+                                require(streamer && streamer->streamCount()==1,"Probe has no unique stream session");
+                                const auto ready=streamer->sceneReadiness();
+                                // Runtime readiness counts CLAS only when required by cluster RT.
+                                const bool clas=rasterProperties().value("enableClusterRtx",false);
+                                const uint64_t expectedResources=terminalPages.size()*(clas ? 2u : 1u);
+                                const size_t coveredPixels=std::count_if(preview.pixels().begin(),preview.pixels().end(),
+                                    [](uint32_t pixel) { return (pixel&0xffffffu)!=0; });
+                                evidence["firstRootFrame"]={{"ready",ready.ready},{"requiredResources",ready.requiredPages},
+                                    {"completedResources",ready.completedPages},{"expectedResources",expectedResources},
+                                    {"frame",1},{"view",view},{"fullBoundsView",fullBoundsView},{"coveredPixels",coveredPixels},
+                                    {"scope","Initial root geometry/CLAS completion before detail feedback; image evidence, not per-triangle coverage proof"}};
+                                saveEvidence();
+                                require(ready.ready && ready.requiredPages==expectedResources && ready.completedPages==expectedResources,
+                                    "First probe frame has incomplete initial root resources");
+                                require(coveredPixels>20,"First probe root frame has no useful image coverage");
+                            }
+                            std::string imageLog;
+                            const std::string label=std::string(streamed ? "stream-root-" : "resident-full-lod0-")+view;
+                            require(saveRgba8Png(directory/(label+".png"),reinterpret_cast<const uint8_t*>(preview.pixels().data()),
+                                256,256,imageLog),imageLog);
+                        }
+                        setCamera(probeCenter,probeRadius);
+                        graph.setNodeRuntimeProperty(raster,"autoLod",false);
+                        graph.setNodeRuntimeProperty(raster,"lodLevel",0);
+                        graph.setNodeRuntimeProperty(raster,"instanceFrustumCull",instanceFrustumCull);
+                        graph.setNodeRuntimeProperty(raster,"meshletFrustumCull",meshletFrustumCull);
+                    }
+                    if(streamed) { evidence["materialRuntimeProperties"]=rasterProperties(); saveEvidence(); }
                     for(const char* view : {"mappedNormal","baseColor","normalTexture","final"}) {
                         graph.setNodeRuntimeProperty(deferred,"debugView",view);
                         for(uint32_t frame=0;frame<(streamed ? 24u : 1u);++frame) { require(bool(preview.render(graph,256,256)),name+": "+preview.lastLog()); }
@@ -477,6 +581,7 @@ public:
                     }
                 }
             }
+            require(executedProbes!=0,"Manifest selected no material probes; use a known fixture name or runMaterialProbe=true");
             return RhiTestResult::pass("Zorah KTX2 attribute/material probes rendered and compared with independently decoded resident geometry");
         } catch(const std::exception& error) { return RhiTestResult::fail(error.what()); }
     }

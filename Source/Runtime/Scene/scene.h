@@ -265,9 +265,56 @@ struct RenderMaterial {
 };
 
 bool buildMeshletsForPrimitive(RenderPrimitive& primitive);
+
+struct MeshletLodAttributeDifferenceStats {
+    static constexpr std::array<double, 5> kThresholds{1e-7, 1e-6, 1e-5, 1e-4, 1e-3};
+    // Compare each noncanonical vertex with its exact-position remap vertex.
+    uint64_t differentVertexCount = 0;
+    uint64_t nonFiniteDifferenceVertexCount = 0;
+    // Maximum over vertices whose component differences are all finite.
+    double maxComponentAbsoluteDifference = 0.0;
+    // Cumulative counts of nonzero, finite max-component differences <= threshold.
+    std::array<uint64_t, kThresholds.size()> atOrBelowThresholdCounts{};
+};
+
+struct MeshletLodDepthBuildStats {
+    uint32_t depth = 0;
+    uint64_t inputGroupCount = 0;
+    uint64_t inputClusterCount = 0;
+    uint64_t inputTriangleCount = 0;
+    uint64_t simplificationAttemptCount = 0;
+    uint64_t targetTriangleCount = 0;
+    // Includes rejected simplification results; a final singleton root has no attempt.
+    uint64_t simplifiedTriangleCount = 0;
+    uint64_t terminalGroupCount = 0;
+    uint64_t terminalClusterCount = 0;
+    uint64_t terminalTriangleCount = 0;
+    uint64_t emptyResultGroupCount = 0;
+    // The simplifier retained more than simplify_threshold (currently 85%).
+    uint64_t noReductionGroupCount = 0;
+};
+
+struct MeshletLodBuildStats {
+    uint64_t sourceVertexCount = 0;
+    uint64_t sourceTriangleCount = 0;
+    // Referenced source IDs before welding and exact attribute tuples after welding.
+    uint64_t referencedSourceVertexCount = 0;
+    uint64_t uniqueAttributeVertexCount = 0;
+    uint64_t uniquePositionCount = 0;
+    uint64_t remappedVertexCount = 0;
+    // Actual noncanonical vertices with meshopt_SimplifyVertex_Protect set.
+    uint64_t protectedVertexCount = 0;
+    MeshletLodAttributeDifferenceStats normalDifferences;
+    MeshletLodAttributeDifferenceStats uvDifferences;
+    uint64_t tangentSignDifferentVertexCount = 0;
+    std::vector<MeshletLodDepthBuildStats> depths;
+};
+
 struct MeshletBuildOptions {
     // Zero preserves the normal importer worker limit. Does not change geometry.
     uint32_t maxWorkers = 0;
+    // Optional diagnostics, reset per primitive build; do not share concurrent builds.
+    MeshletLodBuildStats* lodStats = nullptr;
 };
 bool buildStreamMeshletsForPrimitive(RenderPrimitive& primitive, const MeshletBuildOptions& options = {});
 

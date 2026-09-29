@@ -1,0 +1,235 @@
+{
+  "date": "2026-09-29",
+  "scope": "Three isolated primitives from ZorahFull; complete terminal cuts at every LOD, one instance each",
+  "deviceByteAccounting": "Compact shading payload plus 256-byte allocation alignment; not total GPU memory",
+  "normalSeamNormalizedComponentTolerance": 0.001,
+  "uvAndTangentHandednessProtection": "exact",
+  "baselineCookBinarySha256": "834E5CD1B69A359282888962762416091587471545158EF2BB36A246321069EB",
+  "candidateCookBinarySha256": "DA16E9A143064AF9D682044CBABC427A2024682D9487735C403694C3A95CBADA",
+  "cacheConditions": "Existing source files; OS file cache not flushed; no end-to-end loading speed claim",
+  "fullCacheRebuilt": false,
+  "probes": [
+    {
+      "name": "Dome",
+      "sourceTriangles": 1733192,
+      "baseline": {
+        "rootPages": 2181,
+        "rootClusters": 54120,
+        "rootTriangles": 1725756,
+        "rootBytes": 153835008,
+        "fileBytes": 272257124
+      },
+      "candidate": {
+        "rootPages": 167,
+        "rootClusters": 4097,
+        "rootTriangles": 203357,
+        "rootBytes": 12653824,
+        "fileBytes": 469782436
+      },
+      "rootByteReductionPercent": 91.77441847306955,
+      "attributeValidation": "exact-source-match",
+      "payloadValidation": "all-pages",
+      "protectedVertices": 116687
+    },
+    {
+      "name": "Cylinder",
+      "sourceTriangles": 3678446,
+      "baseline": {
+        "rootPages": 2662,
+        "rootClusters": 66232,
+        "rootTriangles": 2998987,
+        "rootBytes": 115910912,
+        "fileBytes": 257495643
+      },
+      "candidate": {
+        "rootPages": 2282,
+        "rootClusters": 56739,
+        "rootTriangles": 2638158,
+        "rootBytes": 101414656,
+        "fileBytes": 308868427
+      },
+      "rootByteReductionPercent": 12.506377311568384,
+      "attributeValidation": "exact-source-match",
+      "payloadValidation": "all-pages",
+      "protectedVertices": 3675769
+    },
+    {
+      "name": "Window",
+      "sourceTriangles": 986422,
+      "baseline": {
+        "rootPages": 1240,
+        "rootClusters": 30424,
+        "rootTriangles": 986422,
+        "rootBytes": 88488192,
+        "fileBytes": 155788968
+      },
+      "candidate": {
+        "rootPages": 480,
+        "rootClusters": 11798,
+        "rootTriangles": 480896,
+        "rootBytes": 36527104,
+        "fileBytes": 256931496
+      },
+      "rootByteReductionPercent": 58.720928550557346,
+      "attributeValidation": "exact-source-match",
+      "payloadValidation": "all-pages",
+      "protectedVertices": 636719
+    }
+  ],
+  "gpu": {
+    "device": "NVIDIA GeForce RTX 5070 Ti, driver 616.92",
+    "validation": true,
+    "probeResult": "passed",
+    "probeLog": "build-scheduling-release/root-reduction-gpu-fixed.log",
+    "materialComparisons": [
+      {
+        "comparable": true,
+        "meanError": 0.26662119990906646,
+        "outliers": 0,
+        "pixels": 64516,
+        "probe": "Dome",
+        "view": "mappedNormal"
+      },
+      {
+        "comparable": true,
+        "meanError": 0.000248000496000992,
+        "outliers": 0,
+        "pixels": 64516,
+        "probe": "Dome",
+        "view": "baseColor"
+      },
+      {
+        "comparable": true,
+        "meanError": 2.5833385000103333E-05,
+        "outliers": 0,
+        "pixels": 64516,
+        "probe": "Dome",
+        "view": "normalTexture"
+      },
+      {
+        "comparable": true,
+        "meanError": 0.039395912125157584,
+        "outliers": 12,
+        "pixels": 64516,
+        "probe": "Dome",
+        "view": "final"
+      },
+      {
+        "comparable": true,
+        "meanError": 0.007223652390982136,
+        "outliers": 3,
+        "pixels": 21365,
+        "probe": "Cylinder",
+        "view": "mappedNormal"
+      },
+      {
+        "comparable": true,
+        "meanError": 0.0,
+        "outliers": 0,
+        "pixels": 21365,
+        "probe": "Cylinder",
+        "view": "baseColor"
+      },
+      {
+        "comparable": true,
+        "meanError": 0.0,
+        "outliers": 0,
+        "pixels": 21365,
+        "probe": "Cylinder",
+        "view": "normalTexture"
+      },
+      {
+        "comparable": true,
+        "meanError": 0.007676105780482097,
+        "outliers": 2,
+        "pixels": 21365,
+        "probe": "Cylinder",
+        "view": "final"
+      },
+      {
+        "comparable": true,
+        "meanError": 0.07529969758283837,
+        "outliers": 15,
+        "pixels": 15321,
+        "probe": "Window",
+        "view": "mappedNormal"
+      },
+      {
+        "comparable": true,
+        "meanError": 0.006178883014598699,
+        "outliers": 7,
+        "pixels": 15321,
+        "probe": "Window",
+        "view": "baseColor"
+      },
+      {
+        "comparable": true,
+        "meanError": 0.003785653677958358,
+        "outliers": 6,
+        "pixels": 15321,
+        "probe": "Window",
+        "view": "normalTexture"
+      },
+      {
+        "comparable": true,
+        "meanError": 0.04836498923046798,
+        "outliers": 2,
+        "pixels": 15321,
+        "probe": "Window",
+        "view": "final"
+      }
+    ],
+    "firstRootFrames": [
+      {
+        "name": "Dome",
+        "evidence": {
+          "completedResources": 334,
+          "coveredPixels": 3529,
+          "expectedResources": 334,
+          "frame": 1,
+          "fullBoundsView": true,
+          "ready": true,
+          "requiredResources": 334,
+          "scope": "Initial root geometry/CLAS completion before detail feedback; image evidence, not per-triangle coverage proof",
+          "view": "mappedNormal"
+        }
+      },
+      {
+        "name": "Cylinder",
+        "evidence": {
+          "completedResources": 4564,
+          "coveredPixels": 10966,
+          "expectedResources": 4564,
+          "frame": 1,
+          "fullBoundsView": true,
+          "ready": true,
+          "requiredResources": 4564,
+          "scope": "Initial root geometry/CLAS completion before detail feedback; image evidence, not per-triangle coverage proof",
+          "view": "mappedNormal"
+        }
+      },
+      {
+        "name": "Window",
+        "evidence": {
+          "completedResources": 960,
+          "coveredPixels": 5714,
+          "expectedResources": 960,
+          "frame": 1,
+          "fullBoundsView": true,
+          "ready": true,
+          "requiredResources": 960,
+          "scope": "Initial root geometry/CLAS completion before detail feedback; image evidence, not per-triangle coverage proof",
+          "view": "mappedNormal"
+        }
+      }
+    ]
+  },
+  "tests": {
+    "cpuPassed": 19,
+    "cpuSkipped": 1,
+    "cpuLog": "build-scheduling-release/root-reduction-scene-normalized.log",
+    "lodRhiPassed": 6,
+    "lodRhiLog": "build-scheduling-release/root-reduction-gpu.log",
+    "note": "First probe attempt failed due to test reading static instead of effective runtime properties; corrected probe run passed. No renderer readiness failure or VUID was observed."
+  }
+}

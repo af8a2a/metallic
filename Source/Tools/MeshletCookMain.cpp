@@ -1,4 +1,5 @@
 #include "Runtime/Scene/MeshletStreamAsset.h"
+#include "Runtime/Scene/GeometryAttributes.h"
 #include "json.hpp"
 
 #include <algorithm>
@@ -227,6 +228,36 @@ Json inspectAsset(const MeshletStreamAsset& asset, bool validatePayloads)
         {"payloadValidation", validatePayloads ? "all-pages" : "not-requested"}, {"geometries", geometries}};
 }
 
+Json inspectLodStats(const MeshletLodBuildStats& stats)
+{
+    const auto differences = [](const MeshletLodAttributeDifferenceStats& value) {
+        return Json{{"differentVertices", value.differentVertexCount},
+            {"nonFiniteDifferences", value.nonFiniteDifferenceVertexCount},
+            {"maxComponentAbsoluteDifference", value.maxComponentAbsoluteDifference},
+            {"thresholds", MeshletLodAttributeDifferenceStats::kThresholds},
+            {"nonzeroDifferencesAtOrBelowThreshold", value.atOrBelowThresholdCounts}};
+    };
+    Json depths = Json::array();
+    for (const auto& depth : stats.depths) {
+        depths.push_back({{"depth", depth.depth}, {"inputGroups", depth.inputGroupCount},
+            {"inputClusters", depth.inputClusterCount}, {"inputTriangles", depth.inputTriangleCount},
+            {"simplificationAttempts", depth.simplificationAttemptCount},
+            {"targetTriangles", depth.targetTriangleCount}, {"simplifiedTriangles", depth.simplifiedTriangleCount},
+            {"terminalGroups", depth.terminalGroupCount}, {"terminalClusters", depth.terminalClusterCount},
+            {"terminalTriangles", depth.terminalTriangleCount},
+            {"emptyResultGroups", depth.emptyResultGroupCount}, {"noReductionGroups", depth.noReductionGroupCount}});
+    }
+    return {{"comparison", "source vertex versus canonical vertex at exactly equal position; cumulative nonzero difference buckets"},
+        {"normalSeamNormalizedComponentTolerance", kMeshletLodNormalSeamTolerance},
+        {"sourceVertices", stats.sourceVertexCount}, {"sourceTriangles", stats.sourceTriangleCount},
+        {"referencedSourceVertices", stats.referencedSourceVertexCount},
+        {"uniqueAttributeVertices", stats.uniqueAttributeVertexCount},
+        {"uniquePositions", stats.uniquePositionCount}, {"remappedVertices", stats.remappedVertexCount},
+        {"protectedVertices", stats.protectedVertexCount}, {"normalDifferences", differences(stats.normalDifferences)},
+        {"uvDifferences", differences(stats.uvDifferences)},
+        {"tangentSignDifferentVertices", stats.tangentSignDifferentVertexCount}, {"depths", std::move(depths)}};
+}
+
 int run(int argc, char** argv)
 {
     MeshletStreamAssetOfflineBuildDesc desc;
@@ -234,10 +265,12 @@ int run(int argc, char** argv)
     uint64_t memoryMiB = 0;
     bool inspectOnly = false, validatePayloads = false, validateAttributes = false;
     bool compactShading = false;
+    bool lodDiagnostics = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view option(argv[i]);
         if (option == "--inspect") { inspectOnly = true; continue; }
         if (option == "--compact-shading") { compactShading = true; continue; }
+        if (option == "--lod-diagnostics") { lodDiagnostics = true; continue; }
         if (option == "--validate-payloads") { validatePayloads = true; continue; }
         if (option == "--validate-attributes") { validateAttributes = true; validatePayloads = true; continue; }
         if (option == "--help") {
@@ -247,6 +280,7 @@ int run(int argc, char** argv)
                 "  --inspect (skip cooking) --validate-payloads (check every page)\n"
                 "  --compact-shading (inspect runtime packed normal/tangent sizes; requires --inspect)\n"
                 "  --validate-attributes (requires --source; exact LOD0 and all-LOD vertex attributes)\n"
+                "  --lod-diagnostics (record simplification stops and source attribute discontinuities)\n"
                 "Exit 2 means a recoverable geometry-budget pause. Zero budgets preserve library defaults.");
             return 0;
         }
@@ -274,6 +308,7 @@ int run(int argc, char** argv)
     if (compactShading && (!inspectOnly || validateAttributes)) {
         throw std::runtime_error("--compact-shading requires --inspect and cannot use exact raw attribute validation");
     }
+    if (lodDiagnostics && inspectOnly) { throw std::runtime_error("--lod-diagnostics requires cooking"); }
     if (memoryMiB > UINT64_MAX / (1024u * 1024u)) { throw std::runtime_error("Memory budget overflow"); }
     MemoryBudget budget;
     budget.apply(memoryMiB * 1024u * 1024u);
@@ -282,6 +317,9 @@ int run(int argc, char** argv)
     std::ofstream events(manifestPath.string() + ".events.jsonl", std::ios::app);
     if (!events) { throw std::runtime_error("Cannot open cook events"); }
     const auto started = Clock::now();
+    MeshletLodBuildStats lodStats;
+    Json lodReports = Json::array();
+    if (lodDiagnostics) { desc.meshletOptions.lodStats = &lodStats; }
     desc.progress = [&](const MeshletStreamCookProgress& progress) {
         const auto memory = sampleMemory();
         Json event = {{"phase", progress.phase}, {"sourcePrimitive", progress.sourcePrimitiveIndex},
@@ -293,6 +331,12 @@ int run(int argc, char** argv)
             {"elapsedSeconds", std::chrono::duration<double>(Clock::now() - started).count()},
             {"privateBytes", memory.privateBytes}, {"peakPrivateBytes", memory.peakPrivateBytes},
             {"peakWorkingSetBytes", memory.peakWorkingSetBytes}};
+        if (lodDiagnostics && std::string_view(progress.phase) == "complete") {
+            event["lodDiagnostics"] = inspectLodStats(lodStats);
+            lodReports.push_back({{"sourcePrimitive", progress.sourcePrimitiveIndex},
+                {"mesh", progress.meshIndex}, {"primitive", progress.primitiveIndex},
+                {"statistics", event["lodDiagnostics"]}});
+        }
         events << event.dump() << '\n';
         events.flush();
         std::printf("[%s] geometry=%u mesh=%u triangles=%llu elapsed=%.2fs peakCommit=%.1f MiB\n",
@@ -338,6 +382,7 @@ int run(int argc, char** argv)
     report["peakProcessCommitBytes"] = memory.peakPrivateBytes;
     report["peakWorkingSetBytes"] = memory.peakWorkingSetBytes;
     report["maxWorkers"] = desc.meshletOptions.maxWorkers;
+    if (lodDiagnostics) { report["lodDiagnosticsThisInvocation"] = std::move(lodReports); }
     report["sourceRangeReadBytesThisInvocation"] = stats.accessorRangeReadBytes;
     report["maxSourceRangeReadBytesThisInvocation"] = stats.maxAccessorRangeReadBytes;
     report["checkpointsThisInvocation"] = stats.partialCheckpointCount;
