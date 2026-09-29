@@ -34,11 +34,24 @@ Result<> publicationBarrier(CommandBuffer& cmd, Buffer& buffer, ResourceState be
 struct MeshletStreamCompactClasPool::Impl {
     enum class State { Pending, Active, Retiring };
     enum class Phase { Free, Building, Sized, Moving };
+    struct FrameUse {
+        GpuCompletionPoint completion;
+        std::vector<std::shared_ptr<Buffer>> buffers;
+        bool completed = false;
+    };
+    using FrameUses = std::vector<std::shared_ptr<FrameUse>>;
+    struct Chunk {
+        std::shared_ptr<Buffer> buffer;
+        MeshletStreamStorage storage;
+        FrameUses uses;
+    };
     struct Page {
         State state = State::Pending;
         bool wanted = true;
         uint64_t retireFrame = 0, encodedBytes = 0;
+        Chunk* chunk = nullptr;
         MeshletStreamStorageAllocation allocation, addresses;
+        FrameUses retirementUses;
         std::vector<uint32_t> offsets;
     };
     struct Item {
@@ -57,14 +70,17 @@ struct MeshletStreamCompactClasPool::Impl {
     };
     Device* device = nullptr;
     const scene::MeshletStreamAsset* asset = nullptr;
-    MeshletStreamStorage storage, addressStorage;
-    std::unique_ptr<Buffer> storageBuffer, scratch, addresses, pageTable;
+    MeshletStreamStorage addressStorage;
+    std::vector<std::unique_ptr<Chunk>> chunks;
+    FrameUses frameUses;
+    std::unique_ptr<Buffer> scratch, addresses, pageTable;
+    uint64_t chunkBytes = 0, retryGrowthFrame = 0;
     std::unordered_map<uint32_t, Page> pages;
     struct Retirement {
         uint64_t deadline;
         uint32_t pageIndex;
     };
-    std::deque<Retirement> retirements;
+    std::deque<Retirement> retirements, waitingRetirements;
     std::vector<Batch> batches;
     MeshletStreamClasPoolStats stats;
     uint64_t frame = 0, alignment = 0, stride = 0, scratchOffset = 0;
@@ -87,6 +103,82 @@ struct MeshletStreamCompactClasPool::Impl {
         return device->createBuffer({.size = std::max(bytes, uint64_t(8)), .usage = kCompactBufferUsage, .memoryLocation = location,
                 .memoryDomain = domain}).transform([&](auto rhiValue) { output = std::move(rhiValue); });
     }
+    static bool completed(const std::shared_ptr<FrameUse>& use)
+    {
+        return use->completed;
+    }
+    void collectFrameUses()
+    {
+        // Query each submission once, not once per chunk or retired page.
+        for (auto& use : frameUses) {
+            const auto& point = use->completion;
+            use->completed = point.isCancelled() || (point.isSubmitted() && point.isComplete());
+            // Command wrappers may survive completion until their frame slot is
+            // reused. Release backing here, so an empty chunk really frees its
+            // allocation before another chunk consumes the pool budget.
+            if (use->completed) { use->buffers.clear(); }
+        }
+        std::erase_if(frameUses, completed);
+    }
+    Result<> retain(CommandBuffer& cmd, Chunk& chunk)
+    {
+        const auto point = cmd.frameContext()->completion();
+        if (!chunk.uses.empty() && chunk.uses.back()->completion.sameSubmission(point)) { return {}; }
+        if (frameUses.empty() || !frameUses.back()->completion.sameSubmission(point)) {
+            frameUses.push_back(std::make_shared<FrameUse>(FrameUse{.completion = point}));
+        }
+        auto& use = frameUses.back();
+        auto result = cmd.retainResource(use);
+        if (!result) { return result; }
+        use->buffers.push_back(chunk.buffer);
+        chunk.uses.push_back(use);
+        return {};
+    }
+    void collectChunks()
+    {
+        for (auto& chunk : chunks) { std::erase_if(chunk->uses, completed); }
+        std::erase_if(chunks, [&](const auto& chunk) {
+            if (chunk->storage.usedBytes() || !chunk->uses.empty()) { return false; }
+            stats.storageBytes -= chunk->buffer->desc().size;
+            retryGrowthFrame = 0;
+            return true;
+        });
+        stats.storageChunkCount = uint32_t(chunks.size());
+    }
+    bool allocate(Page& page, uint64_t bytes)
+    {
+        // Fill existing chunks first. Live addresses never change when the pool grows.
+        for (auto& chunk : chunks) {
+            page.allocation = chunk->storage.allocate(bytes);
+            if (page.allocation.valid()) { page.chunk = chunk.get(); return true; }
+        }
+        const uint64_t remaining = stats.storageBudgetBytes - stats.storageBytes;
+        bytes = compactAlign(bytes, alignment);
+        if (bytes > remaining || frame < retryGrowthFrame) { return false; }
+        const uint64_t capacity = std::min(std::max(chunkBytes, bytes), remaining);
+        auto chunk = std::make_unique<Chunk>();
+        std::string reason;
+        if (!chunk->storage.initialize(capacity, alignment, reason, UINT64_MAX)) {
+            error = reason;
+            return false;
+        }
+        std::unique_ptr<Buffer> backing;
+        auto result = buffer(capacity, MemoryLocation::Device, backing, MemoryBudgetDomain::Clas);
+        if (!result) {
+            // Keep the sized source available for retry; do not hammer the global
+            // memory budget once per page when physical growth is denied.
+            if (hasError(result, Error::OutOfMemory)) { retryGrowthFrame = frame + 30; }
+            else { error = "Compact CLAS backing allocation failed: " + std::string(resultToString(result)); }
+            return false;
+        }
+        chunk->buffer = std::shared_ptr<Buffer>(std::move(backing));
+        page.allocation = chunk->storage.allocate(bytes);
+        page.chunk = chunk.get();
+        stats.storageBytes += capacity;
+        chunks.push_back(std::move(chunk));
+        stats.storageChunkCount = uint32_t(chunks.size());
+        return true;
+    }
     void publish(uint32_t id, const Page* page, bool orderedMove = false)
     {
         Publication update;
@@ -97,7 +189,7 @@ struct MeshletStreamCompactClasPool::Impl {
                     : orderedMove ? MeshletStreamClasPageState::Active : MeshletStreamClasPageState::Retiring);
             update.addressOffset = uint32_t(page->addresses.offset);
             for (uint32_t offset : page->offsets) {
-                update.addresses.push_back(storageBuffer->deviceAddress() + page->allocation.offset + offset);
+                update.addresses.push_back(page->chunk->buffer->deviceAddress() + page->allocation.offset + offset);
             }
         }
         (*publications)[id] = std::move(update);
@@ -171,7 +263,8 @@ struct MeshletStreamCompactClasPool::Impl {
         }
         stats.encodedStorageBytes -= page.encodedBytes;
         stats.worstCaseStorageBytes -= uint64_t(page.offsets.size()) * stride;
-        storage.release(page.allocation);
+        page.chunk->storage.release(page.allocation);
+        page.chunk = nullptr;
         addressStorage.release(page.addresses);
         page.allocation = {};
         page.addresses = {};
@@ -287,7 +380,7 @@ Result<> MeshletStreamCompactClasPool::initialize(Device& device, const MeshletS
     p.device = &device;
     p.asset = desc.asset;
     if (!desc.asset || !desc.asset->valid() || !desc.maxStorageBytes || !desc.maxBuildClusters ||
-        !desc.queuedFrameCount) {
+        !desc.queuedFrameCount || !desc.storageChunkBytes) {
         return makeError(Error::InvalidArgument);
     }
     ClusterAccelerationStructureProperties properties;
@@ -316,14 +409,12 @@ Result<> MeshletStreamCompactClasPool::initialize(Device& device, const MeshletS
     const uint64_t slots =
         std::min(capacity / p.alignment, uint64_t(p.asset->pageCount()) * p.asset->maxPageClusters());
     if (!capacity || slots > kMeshletStreamClasPageAddressOffsetMask ||
-        !p.storage.initialize(capacity, p.alignment, log, UINT64_MAX) ||
         !p.addressStorage.initialize(slots, 1, log, UINT64_MAX)) {
         return makeError(Error::InvalidArgument);
     }
     // MOVE_OBJECTS uses updateScratchSize; buildScratchSize may be zero.
     // Keep the alignment padding inside the allocation as for triangle builds.
-    if (!(result = p.buffer(capacity, MemoryLocation::Device, p.storageBuffer, MemoryBudgetDomain::Clas)) ||
-        !(result = p.buffer(move.updateScratchSize + properties.scratchAlignment, MemoryLocation::Device, p.scratch)) ||
+    if (!(result = p.buffer(move.updateScratchSize + properties.scratchAlignment, MemoryLocation::Device, p.scratch)) ||
         !(result = p.buffer(slots * 8, MemoryLocation::HostUpload, p.addresses)) ||
         !(result = p.buffer(uint64_t(p.asset->pageCount()) * 4, MemoryLocation::HostUpload, p.pageTable))) {
         return result;
@@ -364,7 +455,8 @@ Result<> MeshletStreamCompactClasPool::initialize(Device& device, const MeshletS
     p.stats.pageCapacity = p.asset->pageCount();
     p.stats.clusterSlotCapacity = uint32_t(slots);
     p.stats.clusterStrideBytes = p.stride;
-    p.stats.storageBytes = capacity;
+    p.stats.storageBudgetBytes = capacity;
+    p.chunkBytes = std::min(capacity, compactAlign(std::min(desc.storageChunkBytes, capacity), p.alignment));
     p.initialized = true;
     return {};
 }
@@ -379,17 +471,27 @@ void MeshletStreamCompactClasPool::beginFrame(CpuProfileRecorder* profiler)
     p.stats.frameBuiltPageCount = p.stats.frameBuiltClusterCount = p.stats.frameRejectedPageCount = 0;
     p.stats.frameMovedPageCount = p.stats.frameMovedClusterCount = 0;
     CpuProfileScope profile(profiler, "Collect completed CLAS");
+    p.collectFrameUses();
     p.collect();
     profile.next("Expire retired CLAS");
     // The queued-frame delay is fixed, so retirement deadlines arrive in order.
     while (!p.retirements.empty() && p.retirements.front().deadline <= p.frame) {
-        const auto retirement = p.retirements.front();
+        p.waitingRetirements.push_back(p.retirements.front());
         p.retirements.pop_front();
+    }
+    const size_t retirementCount = p.waitingRetirements.size();
+    for (size_t i = 0; i < retirementCount; ++i) {
+        const auto retirement = p.waitingRetirements.front();
+        p.waitingRetirements.pop_front();
         const auto it = p.pages.find(retirement.pageIndex);
         if (it == p.pages.end()) { continue; }
         auto& page = it->second;
         // A revived page may have been retired again with a later deadline.
         if (page.state == Impl::State::Retiring && page.retireFrame == retirement.deadline) {
+            if (!std::all_of(page.retirementUses.begin(), page.retirementUses.end(), Impl::completed)) {
+                p.waitingRetirements.push_back(retirement);
+                continue;
+            }
             --p.stats.retiringPageCount;
             p.stats.retiringClusterCount -= uint32_t(page.offsets.size());
             p.stats.retiringStorageBytes -= page.allocation.allocatedSize;
@@ -398,6 +500,7 @@ void MeshletStreamCompactClasPool::beginFrame(CpuProfileRecorder* profiler)
             p.pages.erase(it);
         }
     }
+    p.collectChunks();
 }
 
 Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer& geometry,
@@ -412,6 +515,12 @@ Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
     if (!cmd.frameContext() || !cmd.frameContext()->recording()) {
         log = "Compact CLAS requires tracked frame completion";
         return makeError(Error::InvalidArgument);
+    }
+    // These addresses can be consumed later in this frame by BLAS/TLAS work.
+    // Retain physical backing even if the CPU subsequently retires every page.
+    for (auto& chunk : p.chunks) {
+        if (!chunk->storage.usedBytes()) { continue; }
+        if (auto result = p.retain(cmd, *chunk); !result) { return result; }
     }
     for (const auto& request : requests) {
         if (request.pageIndex >= p.asset->pageCount()) {
@@ -431,6 +540,7 @@ Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
         page.wanted = true;
         if (page.state == Impl::State::Retiring) {
             page.state = Impl::State::Active;
+            page.retirementUses.clear();
             --p.stats.retiringPageCount;
             p.stats.retiringClusterCount -= uint32_t(page.offsets.size());
             p.stats.retiringStorageBytes -= page.allocation.allocatedSize;
@@ -463,13 +573,14 @@ Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
             for (auto size : item.sizes) {
                 bytes += compactAlign(size, p.alignment);
             }
-            page.allocation = p.storage.allocate(bytes);
+            p.allocate(page, bytes);
             if (page.allocation.valid()) {
                 page.addresses = p.addressStorage.allocate(item.sizes.size());
             }
             if (!page.allocation.valid() || !page.addresses.valid()) {
                 if (page.allocation.valid()) {
-                    p.storage.release(page.allocation);
+                    page.chunk->storage.release(page.allocation);
+                    page.chunk = nullptr;
                     page.allocation = {};
                 }
                 ++p.stats.frameRejectedPageCount;
@@ -482,7 +593,7 @@ Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
                 moves.push_back({.sourceBuffer = batch.builder->storageBuffer(),
                                  .sourceOffset = batch.builder->clusterAddress(item.page, i) -
                                                  batch.builder->storageBuffer()->deviceAddress(),
-                                 .destinationBuffer = p.storageBuffer.get(),
+                                 .destinationBuffer = page.chunk->buffer.get(),
                                  .destinationOffset = page.allocation.offset + offset,
                                  .size = item.sizes[i]});
                 offset += compactAlign(item.sizes[i], p.alignment);
@@ -493,15 +604,26 @@ Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
             item.moving = true;
         }
         if (moves.empty()) {
+            if (!p.error.empty()) { log = p.error; return makeError(Error::Failure); }
             continue;
         }
-        auto result = cmd.moveClusterAccelerationStructures({
-            .objects = moves,
-            .sourceAddressBuffer = batch.moveSources.get(),
-            .destinationAddressBuffer = batch.moveDestinations.get(),
-            .scratchBuffer = p.scratch.get(),
-            .scratchBufferOffset = p.scratchOffset,
-        });
+        Result<> result;
+        for (auto& item : batch.items) {
+            if (item.moving) {
+                result = p.retain(cmd, *p.pages.at(item.page).chunk);
+                if (!result) { break; }
+            }
+        }
+        if (!p.error.empty()) { result = makeError(Error::Failure); log = p.error; }
+        if (result) {
+            result = cmd.moveClusterAccelerationStructures({
+                .objects = moves,
+                .sourceAddressBuffer = batch.moveSources.get(),
+                .destinationAddressBuffer = batch.moveDestinations.get(),
+                .scratchBuffer = p.scratch.get(),
+                .scratchBufferOffset = p.scratchOffset,
+            });
+        }
         if (result) {
             result = p.track(cmd, batch);
         }
@@ -593,6 +715,7 @@ void MeshletStreamCompactClasPool::retirePages(std::span<const uint32_t> ids)
         }
         page.state = Impl::State::Retiring;
         page.retireFrame = p.frame + p.queuedFrames;
+        page.retirementUses = page.chunk->uses;
         p.retirements.push_back({page.retireFrame, id});
         --p.stats.builtPageCount;
         p.stats.builtClusterCount -= uint32_t(page.offsets.size());
@@ -633,12 +756,13 @@ uint64_t MeshletStreamCompactClasPool::clusterAddress(uint32_t id, uint32_t clus
     }
     const auto& page = impl_->pages.at(id);
     return cluster < page.offsets.size()
-               ? impl_->storageBuffer->deviceAddress() + page.allocation.offset + page.offsets[cluster]
+               ? page.chunk->buffer->deviceAddress() + page.allocation.offset + page.offsets[cluster]
                : 0;
 }
-Buffer* MeshletStreamCompactClasPool::storageBuffer() const
+Buffer* MeshletStreamCompactClasPool::pageStorageBuffer(uint32_t id) const
 {
-    return impl_->storageBuffer.get();
+    const auto it = impl_->pages.find(id);
+    return it != impl_->pages.end() && it->second.chunk ? it->second.chunk->buffer.get() : nullptr;
 }
 Buffer* MeshletStreamCompactClasPool::clusterAddressBuffer() const
 {
@@ -652,7 +776,7 @@ MeshletStreamClasPoolStats MeshletStreamCompactClasPool::stats() const
 {
     auto result = impl_->stats;
     result.trackedPageCount = uint32_t(impl_->pages.size());
-    result.usedStorageBytes = impl_->storage.usedBytes();
+    for (const auto& chunk : impl_->chunks) { result.usedStorageBytes += chunk->storage.usedBytes(); }
     return result;
 }
 } // namespace metallic::render

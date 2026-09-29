@@ -289,9 +289,13 @@ class CompactClasLifecycleTest final : public RhiTest {
                                          {.asset = &asset,
                                           .maxStorageBytes = 1024 * 1024,
                                           .maxBuildClusters = asset.maxPageClusters(),
-                                          .queuedFrameCount = 2},
+                                          .queuedFrameCount = 2,
+                                          .storageChunkBytes = 4096},
                                          log)),
                     log);
+            require(pool.stats().storageBytes == 0 && pool.stats().storageChunkCount == 0 &&
+                        pool.stats().storageBudgetBytes == 1024 * 1024,
+                    "Compact pool allocated its budget at initialization");
             MeshletStreamClasPagePlan plan;
             require(buildMeshletStreamClasPagePlan(asset.pages()[pageIndex], decodedPayload, pageIndex,
                                                    pageIndex * asset.maxPageClusters(), plan, log),
@@ -310,12 +314,13 @@ class CompactClasLifecycleTest final : public RhiTest {
             require(bool(device->createBuffer({.size = 4, .usage = BufferUsageBits::TransferDestination,
                 .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { publicationReadback = std::move(rhiValue); })), "Publication readback failed");
             uint32_t gpuPageEntry = 0;
+            std::span<const MeshletStreamClasPageBuild> activeRequests(&build, 1);
             auto record = [&](bool request, bool cancel = false) {
                 require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)),
                         "Begin failed");
                 require(bool(pool.cmdBuildPages(
                             *cmd, *pageBuffer,
-                            request ? std::span(&build, 1) : std::span<const MeshletStreamClasPageBuild>{}, log)),
+                            request ? activeRequests : std::span<const MeshletStreamClasPageBuild>{}, log)),
                         log);
                 BufferBarrierDesc tableBarrier{
                     .buffer = pool.pageTableBuffer(),
@@ -365,7 +370,13 @@ class CompactClasLifecycleTest final : public RhiTest {
             require(stats.encodedStorageBytes > 0 && stats.usedStorageBytes < stats.worstCaseStorageBytes &&
                         stats.usedStorageBytes >= stats.encodedStorageBytes,
                     "Pool did not allocate actual sizes");
+            require(stats.storageBytes >= stats.usedStorageBytes && stats.storageBytes < stats.storageBudgetBytes &&
+                        stats.storageChunkCount == 1, "Physical backing did not grow on demand");
             const uint64_t address = pool.clusterAddress(pageIndex, 0);
+            const auto* backing = pool.pageStorageBuffer(pageIndex);
+            require(backing && address >= backing->deviceAddress() &&
+                        address + pool.pageStorageBytes(pageIndex) <= backing->deviceAddress() + backing->desc().size,
+                    "Published address is outside its physical chunk");
             pool.retirePages(std::span(&pageIndex, 1));
             pool.beginFrame();
             record(true);
@@ -378,7 +389,10 @@ class CompactClasLifecycleTest final : public RhiTest {
                     "Stale retirement expired a revived page before its new deadline");
             pool.beginFrame();
             require(pool.stats().usedStorageBytes == 0 && pool.stats().retiringPageCount == 0 &&
-                        !pool.pageHasClas(pageIndex), "Retirement leaked storage or double-counted a stale entry");
+                        !pool.pageHasClas(pageIndex) && pool.stats().storageBytes == 0 && pool.stats().storageChunkCount == 0,
+                    "Retirement leaked physical storage or double-counted a stale entry");
+            require(device->memoryBudget().domains[size_t(MemoryBudgetDomain::Clas)].allocationBytes == 0,
+                    "Completed command wrapper retained retired CLAS physical memory");
             record(true, true);
             pool.beginFrame();
             require(!pool.pageBuildPending(pageIndex) && pool.stats().trackedPageCount == 0,
@@ -402,6 +416,75 @@ class CompactClasLifecycleTest final : public RhiTest {
             pool.beginFrame();
             require(pool.stats().usedStorageBytes == 0 && pool.stats().trackedPageCount == 0,
                     "Abandoned build leaked storage");
+            require(pool.stats().storageBytes == 0, "Abandoned build kept physical backing");
+
+            // Two different pages must occupy distinct physical chunks, while the
+            // GPU address of one survives growth and reclamation of the other.
+            uint32_t secondPage = 0;
+            while (secondPage < asset.pageCount() &&
+                   (secondPage == pageIndex || !asset.pages()[secondPage].clusterCount)) { ++secondPage; }
+            require(secondPage < asset.pageCount(), "Need two pages for physical growth regression");
+            std::vector<uint8_t> secondStorage;
+            std::span<const uint8_t> secondPayload;
+            require(scene::decodeMeshletStreamPayloadForDevice(asset.pages()[secondPage], asset.pagePayload(secondPage),
+                secondStorage, secondPayload, log), log);
+            MeshletStreamClasPagePlan secondPlan;
+            require(buildMeshletStreamClasPagePlan(asset.pages()[secondPage], secondPayload, secondPage,
+                secondPage * asset.maxPageClusters(), secondPlan, log), log);
+            const uint64_t secondOffset = (decodedPayload.size() + 255) / 256 * 256;
+            require(bool(device->createBuffer({.size = secondOffset + secondPayload.size(),
+                .usage = BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress |
+                         BufferUsageBits::AccelerationStructureBuildInput,
+                .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto value) { pageBuffer = std::move(value); })),
+                "Two-page geometry allocation failed");
+            auto* geometry = static_cast<uint8_t*>(pageBuffer->map());
+            require(geometry != nullptr, "Two-page geometry map failed");
+            std::memcpy(geometry, decodedPayload.data(), decodedPayload.size());
+            std::memcpy(geometry + secondOffset, secondPayload.data(), secondPayload.size());
+            pageBuffer->flush();
+            pageBuffer->unmap();
+            const MeshletStreamClasPageBuild twoBuilds[] = {build,
+                {.pageIndex = secondPage, .deviceOffsetBytes = secondOffset, .plan = &secondPlan}};
+            activeRequests = twoBuilds;
+            for (uint32_t i = 0; i < 8 && (!pool.pageHasClas(pageIndex) || !pool.pageHasClas(secondPage)); ++i) {
+                record(true);
+                pool.beginFrame();
+            }
+            require(pool.pageHasClas(pageIndex) && pool.pageHasClas(secondPage) && pool.stats().storageChunkCount == 2,
+                "Demand growth did not build two pages in separate chunks");
+            require(pool.pageStorageBuffer(pageIndex) != pool.pageStorageBuffer(secondPage), "Pages share a chunk unexpectedly");
+            const uint64_t secondAddress = pool.clusterAddress(secondPage, 0);
+            const uint64_t bothBytes = pool.stats().storageBytes;
+            require(bothBytes <= pool.stats().storageBudgetBytes, "Physical growth exceeded budget");
+            require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Begin pending frame");
+            require(bool(pool.cmdBuildPages(*cmd, *pageBuffer, {}, log)) && bool(cmd->end()), "Record pending frame");
+            pool.retirePages(std::span(&pageIndex, 1));
+            for (uint32_t i = 0; i < 4; ++i) { pool.beginFrame(); }
+            require(pool.pageHasClas(pageIndex) && pool.stats().storageBytes == bothBytes,
+                "Retirement freed storage referenced by an unsubmitted frame");
+            frame.cancel();
+            pool.beginFrame();
+            require(!pool.pageHasClas(pageIndex) && pool.stats().storageChunkCount == 1 &&
+                pool.stats().storageBytes < bothBytes && pool.clusterAddress(secondPage, 0) == secondAddress,
+                "Empty chunk reclaim changed a live address or retained cancelled work");
+            pool.retirePages(std::span(&secondPage, 1));
+            pool.beginFrame();
+            pool.beginFrame();
+            require(pool.stats().storageBytes == 0 && pool.stats().usedStorageBytes == 0, "Final chunk leaked");
+
+            MeshletStreamCompactClasPool constrained;
+            require(bool(constrained.initialize(*device, {.asset = &asset, .maxStorageBytes = 256,
+                .maxBuildClusters = asset.maxPageClusters(), .queuedFrameCount = 2, .storageChunkBytes = 256}, log)), log);
+            for (uint32_t i = 0; i < 3; ++i) {
+                constrained.beginFrame();
+                require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Budget test begin");
+                require(bool(constrained.cmdBuildPages(*cmd, *pageBuffer, std::span(&build, 1), log)) && bool(cmd->end()), log);
+                CommandBuffer* list[] = {cmd.get()};
+                require(bool(tracker.submit({.commandBuffers = {list, 1}}, frame)) && bool(frame.wait(5000000000ull)), "Budget test submit");
+            }
+            require(constrained.pageBuildPending(pageIndex) && constrained.stats().totalRejectedPageCount > 0 &&
+                constrained.stats().storageBytes == 0 && constrained.clusterAddress(pageIndex, 0) == 0,
+                "Budget rejection must retain sized source without allocating/publishing storage");
             std::ofstream(context.outputDirectory / "CompactClasLifecycle.txt")
                 << "worstCaseBytes=" << stats.worstCaseStorageBytes << " allocatedBytes=" << stats.usedStorageBytes
                 << " encodedBytes=" << stats.encodedStorageBytes << '\n';
@@ -505,7 +588,11 @@ class MiniZorahClasInFlightTest final : public RhiTest {
             if (!result) { return RhiTestResult::fail("Frame " + std::to_string(f) + ": " + toString(result)); }
             const auto& stats = executor.executionStats();
             const auto& stream = stats.streaming.at(0);
+            if (stream.clasUsedBytes > stream.clasAllocatedBytes || stream.clasAllocatedBytes > stream.clasCapacityBytes) {
+                return RhiTestResult::fail("CLAS physical storage accounting exceeded budget");
+            }
             trace << nlohmann::json{{"frame", f}, {"overlappingFrames", overlappingFrames}, {"clasBytes", stream.clasUsedBytes},
+                {"clasAllocatedBytes", stream.clasAllocatedBytes}, {"clasStorageChunks", stream.clasStorageChunks},
                 {"clasBuilt", stream.clasBuiltClusters}, {"clasMoved", stream.clasMovedClusters}, {"clasPending", stream.clasPendingPages}}.dump() << std::endl;
         }
         result = executor.waitForSubmittedWork();

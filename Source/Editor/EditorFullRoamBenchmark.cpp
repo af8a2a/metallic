@@ -26,7 +26,7 @@ Json streamSample(const render::SceneStreamingProfile& s)
     return {{"softwareRaster",s.softwareRasterIdentity.empty() ? Json(nullptr) : Json::parse(s.softwareRasterIdentity)},
         {"frame",s.frameIndex},{"feedbackFrame",s.feedbackFrame},{"generation",s.generation},
         {"geometryBytes",s.geometryUsedBytes},{"geometryCapacity",s.geometryBudgetBytes},
-        {"clasBytes",s.clasUsedBytes},{"clasCapacity",s.clasCapacityBytes},{"clasScratchBytes",s.clasScratchBytes},
+        {"clasBytes",s.clasUsedBytes},{"clasCapacity",s.clasCapacityBytes},{"clasAllocatedBytes",s.clasAllocatedBytes},{"clasStorageChunks",s.clasStorageChunks},{"clasScratchBytes",s.clasScratchBytes},
         {"clasBuiltClusters",s.clasBuiltClusters},{"clasMovedClusters",s.clasMovedClusters},
         {"clasPendingPages",s.clasPendingPages},{"residentPages",s.residentPages},{"pendingPages",s.pendingPages},
         {"ioQueued",s.ioQueued},{"ioActive",s.ioActive},{"uploadQueued",s.uploadQueued},

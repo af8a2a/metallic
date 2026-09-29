@@ -20,7 +20,7 @@ class MeshletStreamCompactClasPool {
     uint64_t pageStorageBytes(uint32_t) const;
     uint32_t pageClasAddressOffset(uint32_t) const;
     uint64_t clusterAddress(uint32_t, uint32_t) const;
-    Buffer* storageBuffer() const;
+    Buffer* pageStorageBuffer(uint32_t) const;
     Buffer* clusterAddressBuffer() const;
     Buffer* pageTableBuffer() const;
     MeshletStreamClasPoolStats stats() const;

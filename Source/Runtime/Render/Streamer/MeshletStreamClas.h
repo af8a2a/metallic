@@ -88,6 +88,7 @@ struct MeshletStreamClasPoolDesc {
     uint32_t maxBuildClusters = 2048;
     uint32_t queuedFrameCount = 3;
     bool compactStorage = false; // Opt-in until the compact path is validated.
+    uint64_t storageChunkBytes = 64ull * 1024ull * 1024ull; // Compact physical growth granularity.
 };
 
 struct MeshletStreamClasPageBuild {
@@ -111,7 +112,9 @@ struct MeshletStreamClasPoolStats {
     uint64_t totalBuiltPageCount = 0;
     uint64_t totalBuiltClusterCount = 0;
     uint64_t totalRejectedPageCount = 0;
-    uint64_t storageBytes = 0;
+    uint64_t storageBytes = 0; // Physical backing, including empty chunks awaiting GPU completion.
+    uint64_t storageBudgetBytes = 0;
+    uint32_t storageChunkCount = 0;
     uint64_t usedStorageBytes = 0;
     uint64_t clusterStrideBytes = 0;
     uint64_t scratchBytes = 0;
@@ -156,7 +159,9 @@ public:
     bool pageHasClas(uint32_t pageIndex) const;
     bool pageBuildPending(uint32_t pageIndex) const;
     uint64_t pageStorageBytes(uint32_t pageIndex) const;
+    // Only the legacy staging builder has one contiguous storage buffer.
     Buffer* storageBuffer() const;
+    Buffer* pageStorageBuffer(uint32_t pageIndex) const;
     uint32_t pageClasAddressOffset(uint32_t pageIndex) const;
     uint64_t clusterAddress(uint32_t pageIndex, uint32_t clusterIndex) const;
     Buffer* clusterAddressBuffer() const;

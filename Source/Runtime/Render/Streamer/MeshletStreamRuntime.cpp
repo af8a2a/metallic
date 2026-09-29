@@ -2370,7 +2370,7 @@ void MeshletStreamRuntime::prepareMaintenance(CpuProfileRecorder* profiler, bool
     profile.next("Joint cold page reclaim");
     if (coldPageRetentionFrames_ != 0) {
         const auto clas = clasPool_ ? clasPool_->stats() : MeshletStreamClasPoolStats{};
-        residency_.reclaimColdPages({.clasUsedBytes = clas.usedStorageBytes, .clasCapacityBytes = clas.storageBytes,
+        residency_.reclaimColdPages({.clasUsedBytes = clas.usedStorageBytes, .clasCapacityBytes = clas.storageBudgetBytes,
             .clasRetiringBytes = clas.retiringStorageBytes, .retentionFrames = coldPageRetentionFrames_,
             .clasPageBytes = [this](uint32_t page) { return clasPool_ ? clasPool_->pageStorageBytes(page) : 0; }}, profiler);
     }
@@ -4062,7 +4062,9 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     if (result.clasEnabled) {
         const auto clas = clasPool_->stats();
         result.clasUsedBytes = clas.usedStorageBytes;
-        result.clasCapacityBytes = clas.storageBytes;
+        result.clasCapacityBytes = clas.storageBudgetBytes;
+        result.clasAllocatedBytes = clas.storageBytes;
+        result.clasStorageChunks = clas.storageChunkCount;
         result.clasEncodedBytes = clas.encodedStorageBytes;
         result.clasWorstCaseBytes = clas.worstCaseStorageBytes;
         result.clasScratchBytes = clas.scratchBytes;

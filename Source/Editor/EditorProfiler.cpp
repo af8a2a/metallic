@@ -417,6 +417,9 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
     if (last.clasEnabled) {
         ImGui::Text("CLAS %.1f / %.1f MiB | Resident %u pages / %u clusters", last.clasUsedBytes / mib,
             last.clasCapacityBytes / mib, last.clasResidentPages, last.clasResidentClusters);
+        ImGui::Text("CLAS backing %.1f MiB in %u chunks | Free inside backing %.1f MiB",
+            last.clasAllocatedBytes / mib, last.clasStorageChunks,
+            (last.clasAllocatedBytes >= last.clasUsedBytes ? last.clasAllocatedBytes - last.clasUsedBytes : 0) / mib);
         if (last.clasEncodedBytes) {
             ImGui::Text("CLAS encoded %.1f MiB | Fixed slots %.1f MiB | Build/move workspace %.1f MiB",
                 last.clasEncodedBytes / mib, last.clasWorstCaseBytes / mib, last.clasScratchBytes / mib);

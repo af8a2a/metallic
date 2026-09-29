@@ -416,6 +416,8 @@ Result<> MeshletStreamClasPool::initialize(
     impl_->stats.pageCapacity = desc.asset->pageCount();
     impl_->stats.clusterSlotCapacity = static_cast<uint32_t>(clusterSlotCapacity);
     impl_->stats.storageBytes = storageBytes;
+    impl_->stats.storageBudgetBytes = storageBytes;
+    impl_->stats.storageChunkCount = 1;
     impl_->stats.clusterStrideBytes = clusterStride;
     impl_->stats.scratchBytes = scratchBytes;
     return {};
@@ -756,8 +758,14 @@ uint64_t MeshletStreamClasPool::pageStorageBytes(uint32_t pageIndex) const
 }
 Buffer* MeshletStreamClasPool::storageBuffer() const
 {
-    if (compact_) { return compact_->storageBuffer(); }
+    if (compact_) { return nullptr; }
     return impl_->storageBuffer.get();
+}
+
+Buffer* MeshletStreamClasPool::pageStorageBuffer(uint32_t pageIndex) const
+{
+    if (compact_) { return compact_->pageStorageBuffer(pageIndex); }
+    return pageHasClas(pageIndex) ? impl_->storageBuffer.get() : nullptr;
 }
 
 Buffer* MeshletStreamClasPool::clusterAddressBuffer() const
