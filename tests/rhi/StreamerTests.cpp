@@ -751,13 +751,14 @@ public:
             std::unique_ptr<Buffer> readback;
             require(bool(tracker.initialize(*device, *queue)) && bool(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); })) &&
                 bool(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })) && bool(device->createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) &&
-                bool(device->createBuffer({.size = sizeof(MeshletStreamGpuBlasHeader), .usage = BufferUsageBits::TransferDestination,
+                bool(device->createBuffer({.size = sizeof(MeshletStreamGpuBlasHeader) + sizeof(MeshletStreamGpuActiveHeader) + 2048 * sizeof(MeshletStreamGpuActiveGroup), .usage = BufferUsageBits::TransferDestination,
                     .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); })), "Frame resources failed");
             MeshletStreamFrameDesc view{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
             view.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f}, .znear = .001f, .zfar = 10.f};
             uint64_t frameId = 0;
             bool cancelledInitialFallback = false;
             MeshletStreamGpuBlasHeader header;
+            std::vector<uint32_t> referencedPages;
             uint64_t lastAcceptedFeedback = UINT64_MAX;
             const auto record = [&](bool cancel = false) {
                 const auto recordedFrame = runtime.frameIndex();
@@ -794,6 +795,22 @@ public:
                 }
                 std::swap(barrier.before, barrier.after);
                 if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
+                uint64_t readOffset = sizeof(header);
+                for (const auto& [name, bytes] : {std::pair{"test.activeHeader", uint64_t(sizeof(MeshletStreamGpuActiveHeader))},
+                        std::pair{"test.activeGroups", uint64_t(2048 * sizeof(MeshletStreamGpuActiveGroup))}}) {
+                    const auto source = std::find_if(bindings.begin(), bindings.end(), [&](const auto& binding) { return binding.id == name; });
+                    require(source != bindings.end(), "Active cut telemetry missing");
+                    BufferBarrierDesc copyBarrier{.buffer = source->buffer,
+                        .before = resourceSyncScope(source->state, PipelineStageBits::AllCommands),
+                        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                    require(bool(commands->synchronize({.buffers = {&copyBarrier, 1}})), "Cut copy barrier");
+                    const uint64_t copyBytes = std::min(bytes, source->buffer->desc().size);
+                    auto src = source->buffer->slice({0, copyBytes}); auto dst = readback->slice({readOffset, copyBytes});
+                    require(bool(src) && bool(dst) && bool(commands->copyBuffer(*src, *dst)), "Cut copy");
+                    std::swap(copyBarrier.before, copyBarrier.after);
+                    require(bool(commands->synchronize({.buffers = {&copyBarrier, 1}})), "Cut restore barrier");
+                    readOffset += bytes;
+                }
                 require(bool(commands->end()), "Frame end failed");
                 const auto readiness = runtime.debugSnapshot(false);
                 if (!cancelledInitialFallback && readiness.at("fallbackBlasRecorded") > readiness.at("fallbackBlasSubmitted")) {
@@ -817,6 +834,14 @@ public:
                 const auto* data = readback->map();
                 require(data != nullptr, "BLAS readback failed");
                 std::memcpy(&header, data, sizeof(header));
+                MeshletStreamGpuActiveHeader active;
+                std::memcpy(&active, static_cast<const uint8_t*>(data) + sizeof(header), sizeof(active));
+                referencedPages.clear();
+                for (uint32_t group = 0; group < std::min(active.activeGroupCount, 2048u); ++group) {
+                    MeshletStreamGpuActiveGroup entry;
+                    std::memcpy(&entry, static_cast<const uint8_t*>(data) + sizeof(header) + sizeof(active) + group * sizeof(entry), sizeof(entry));
+                    referencedPages.push_back(entry.pageIndex);
+                }
                 readback->unmap();
             };
             uint32_t builds = 0, reused = 0;
@@ -849,7 +874,8 @@ public:
             require(header.padding0 == 0, "Retry did not restore reuse");
             const auto residents = runtime.residency().residentPages();
             const auto nonRoot = std::find_if(residents.begin(), residents.end(), [&](uint32_t page) {
-                return runtime.residency().pageState(page) == MeshletStreamPageResidencyState::Resident;
+                return runtime.residency().pageState(page) == MeshletStreamPageResidencyState::Resident &&
+                    std::find(referencedPages.begin(), referencedPages.end(), page) != referencedPages.end();
             });
             require(nonRoot != residents.end(), "Need a non-root CLAS retirement");
             const uint32_t page = *nonRoot;

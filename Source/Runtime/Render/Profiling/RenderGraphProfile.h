@@ -66,6 +66,23 @@ struct SceneStreamingProfile {
     bool blasFeedbackAvailable = false;
     uint64_t blasFeedbackFrame = 0;
     uint32_t blasBuildCount = 0, blasClusterReferences = 0, blasOverflowCount = 0;
+    uint32_t blasRequestedClusterReferences = 0;
+    uint32_t blasRequestedInstances = 0;
+    uint32_t blasReferenceBudgetRejected = 0;
+    uint32_t blasBuildBudgetRejected = 0;
+    uint32_t blasOversizedInstances = 0;
+    uint32_t blasMissingClasInstances = 0;
+    uint32_t blasInvalidGroups = 0;
+    uint32_t blasLiveClusterReferences = 0, blasAdmittedInstances = 0;
+    bool blasInstanceReuseEnabled = true;
+    uint32_t blasDirtyInstances = 0;
+    uint32_t blasReusedInstances = 0;
+    uint32_t blasStorageRejected = 0;
+    uint32_t blasArenaUsedBytes = 0;
+    uint32_t blasArenaRepack = 0;
+    uint32_t blasPublicationInvalidated = 0;
+
+
     uint64_t geometryUsedBytes = 0;
     uint64_t geometryBudgetBytes = 0;
     uint64_t clasUsedBytes = 0;

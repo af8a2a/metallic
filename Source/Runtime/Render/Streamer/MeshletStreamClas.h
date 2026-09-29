@@ -54,9 +54,10 @@ inline constexpr uint32_t kMeshletStreamClasPageStateShift = 30u;
 
 struct MeshletStreamClasPageEntry {
     uint32_t addressOffsetAndState = 0;
+    uint32_t publicationGeneration = 0;
 };
 
-static_assert(sizeof(MeshletStreamClasPageEntry) == 4);
+static_assert(sizeof(MeshletStreamClasPageEntry) == 8);
 
 inline constexpr uint32_t packMeshletStreamClasPageEntry(
     uint32_t addressOffset,

@@ -325,6 +325,7 @@ add_executable(MetallicRhiTests
     rhi/RayTracingPositionFetchTests.cpp
     rhi/OpacityMicromapTests.cpp
     rhi/StreamerTests.cpp
+    rhi/StreamBlasAllocationTests.cpp
     rhi/GpuDecompressionTests.cpp
     rhi/TestOutput.cpp
     rhi/ValidationTests.cpp

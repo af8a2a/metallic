@@ -14,6 +14,7 @@
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -97,6 +98,8 @@ inline constexpr uint32_t kMeshletStreamBlasInputResetPhase = 0;
 inline constexpr uint32_t kMeshletStreamBlasInputCountPhase = 1;
 inline constexpr uint32_t kMeshletStreamBlasInputSetupPhase = 2;
 inline constexpr uint32_t kMeshletStreamBlasInputInsertPhase = 3;
+inline constexpr uint32_t kMeshletStreamBlasInputPrefixPhase = 6;
+inline constexpr uint32_t kMeshletStreamBlasInputBlockPrefixPhase = 7;
 inline constexpr uint32_t kMeshletStreamBlasInstanceFallback = 1u << 0;
 inline constexpr uint32_t kMeshletStreamBlasInstanceDynamic = 1u << 1;
 inline constexpr uint32_t kMeshletStreamBlasInstanceOverflow = 1u << 2;
@@ -250,6 +253,22 @@ struct MeshletStreamGpuBlasHeader {
     uint32_t padding0 = 0;
     uint32_t padding1 = 0;
     uint32_t padding2 = 0;
+    uint32_t requestedClusterReferences = 0;
+    uint32_t requestedInstances = 0;
+    uint32_t referenceBudgetRejected = 0;
+    uint32_t buildBudgetRejected = 0;
+    uint32_t oversizedInstances = 0;
+    uint32_t missingClasInstances = 0;
+    uint32_t invalidGroups = 0;
+    uint32_t liveClusterReferences = 0;
+    uint32_t dirtyInstances = 0;
+    uint32_t reusedInstances = 0;
+    uint32_t storageRejected = 0;
+    uint32_t arenaUsedBytes = 0;
+    uint32_t arenaRepack = 0;
+    uint32_t arenaBase = 0;
+    uint32_t admittedInstances = 0;
+    uint32_t publicationInvalidated = 0;
 };
 
 struct MeshletStreamGpuInstanceBlas {
@@ -259,8 +278,16 @@ struct MeshletStreamGpuInstanceBlas {
     uint32_t insertedClusterCount = 0;
     uint32_t blasBuildIndex = kMeshletStreamInvalidClusterIndex;
     uint32_t flags = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
+    uint32_t firstGroup = UINT32_MAX;
+    uint32_t groupCount = 0;
+    uint32_t previousFirstGroup = 0;
+    uint32_t previousGroupCount = 0;
+    uint32_t storageOffset = 0;
+    uint32_t storageCapacity = 0;
+    uint32_t allocationPrefix = 0;
+    uint32_t packedPrefix = 0;
+    uint32_t buildPrefix = 0;
+    uint32_t cachedValid = 0;
 };
 
 struct MeshletStreamGpuBlasBuildInfo {
@@ -322,7 +349,13 @@ struct MeshletStreamGpuParams {
     uint32_t splitFrontier = 0;
     uint32_t demandInstanceOffsetsOffset = 0; // Group/tile bit bases and task start/count per instance.
     uint32_t demandStatsBuffer = UINT32_MAX;
-    uint32_t demandPadding[2] = {};
+    uint32_t maxBlasClustersPerBuild = 0;
+    uint32_t blasStorageBytes = 0;
+    uint32_t blasStorageAddressLow = 0;
+    uint32_t blasStorageAddressHigh = 0;
+    uint32_t enableBlasInstanceReuse = 1;
+    uint32_t blasStoragePadding = 0;
+    uint32_t blasSizeClasses[32] = {};
 };
 
 struct MeshletStreamGpuRasterBindings {
@@ -428,11 +461,11 @@ static_assert(sizeof(MeshletStreamGpuNode) == 48);
 static_assert(sizeof(MeshletStreamGpuDrawIndirect) == 12);
 static_assert(sizeof(MeshletStreamGpuTraversalHeader) == 32);
 static_assert(sizeof(MeshletStreamGpuTraversalWorkItem) == 16);
-static_assert(sizeof(MeshletStreamGpuBlasHeader) == 32);
-static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 32);
+static_assert(sizeof(MeshletStreamGpuBlasHeader) == 96);
+static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 64);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGpuParams) == 416);
+static_assert(sizeof(MeshletStreamGpuParams) == 560);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
 static_assert(offsetof(MeshletStreamGpuParams, pageBufferBytes) == 100);
 static_assert(sizeof(MeshletStreamGpuRasterBindings) == 96);
@@ -793,6 +826,10 @@ private:
     uint32_t blasClusterReferenceCapacity_ = 0;
     uint32_t blasBuildCapacity_ = 0;
     uint32_t maxBlasClustersPerBuild_ = 0;
+    std::array<uint32_t, 32> blasSizeClasses_{};
+    bool blasInstanceReuse_ = true;
+    uint32_t blasPublicationEpoch_ = 0;
+    ResourceState blasAddressBufferState_ = ResourceState::Undefined;
     uint64_t blasClusterReferenceAddress_ = 0;
     bool tlasBuilt_ = false;
     std::vector<FallbackBlasPrimitive> fallbackBlasPrimitives_;

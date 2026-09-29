@@ -329,7 +329,7 @@ class CompactClasLifecycleTest final : public RhiTest {
                 };
                 if (auto commandResult = cmd->synchronize({.buffers = {&tableBarrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 {
-                    auto sourceSlice = pool.pageTableBuffer()->slice({uint64_t(pageIndex) * 4u, 4});
+                    auto sourceSlice = pool.pageTableBuffer()->slice({uint64_t(pageIndex) * sizeof(MeshletStreamClasPageEntry), 4});
                     if (!sourceSlice) { throw std::runtime_error(std::string("source slice failed: ") + metallic::render::resultToString(sourceSlice)); }
                     auto destinationSlice = publicationReadback.get()->slice({0, 4});
                     if (!destinationSlice) { throw std::runtime_error(std::string("destination slice failed: ") + metallic::render::resultToString(destinationSlice)); }

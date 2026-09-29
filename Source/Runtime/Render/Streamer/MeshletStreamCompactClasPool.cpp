@@ -183,6 +183,7 @@ struct MeshletStreamCompactClasPool::Impl {
     {
         Publication update;
         update.revision = ++stats.publicationRevision;
+        update.entry.publicationGeneration = uint32_t(update.revision);
         if (page && (page->state != State::Pending || orderedMove)) {
             update.entry.addressOffsetAndState = packMeshletStreamClasPageEntry(
                 uint32_t(page->addresses.offset), page->state == State::Active ? MeshletStreamClasPageState::Active
@@ -242,9 +243,9 @@ struct MeshletStreamCompactClasPool::Impl {
                 }
             }
             {
-                auto sourceSlice = upload.get()->slice({offset + size, 4u});
+                auto sourceSlice = upload.get()->slice({offset + size, sizeof(MeshletStreamClasPageEntry)});
                 if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-                auto destinationSlice = pageTable.get()->slice({uint64_t(id) * 4u, 4u});
+                auto destinationSlice = pageTable.get()->slice({uint64_t(id) * sizeof(MeshletStreamClasPageEntry), sizeof(MeshletStreamClasPageEntry)});
                 if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
                 if (auto commandResult = cmd.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
             }
@@ -416,7 +417,7 @@ Result<> MeshletStreamCompactClasPool::initialize(Device& device, const MeshletS
     // Keep the alignment padding inside the allocation as for triangle builds.
     if (!(result = p.buffer(move.updateScratchSize + properties.scratchAlignment, MemoryLocation::Device, p.scratch)) ||
         !(result = p.buffer(slots * 8, MemoryLocation::HostUpload, p.addresses)) ||
-        !(result = p.buffer(uint64_t(p.asset->pageCount()) * 4, MemoryLocation::HostUpload, p.pageTable))) {
+        !(result = p.buffer(uint64_t(p.asset->pageCount()) * sizeof(MeshletStreamClasPageEntry), MemoryLocation::HostUpload, p.pageTable))) {
         return result;
     }
     for (Buffer* buffer : {p.addresses.get(), p.pageTable.get()}) {

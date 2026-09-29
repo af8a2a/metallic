@@ -97,6 +97,7 @@ struct MeshletStreamClasPool::Impl {
             return;
         }
         MeshletStreamClasPageEntry entry;
+        entry.publicationGeneration = static_cast<uint32_t>(stats.publicationRevision);
         auto pageIter = pages.find(pageIndex);
         if (pageIter != pages.end()) {
             const PageEntry& page = pageIter->second;
