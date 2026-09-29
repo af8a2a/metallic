@@ -254,6 +254,17 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             "Unregistered workload sample");
         loadBuiltInSample(sampleId.c_str());
         auto view = viewportCameraProperties();
+        if (config.contains("benchmarkCamera")) {
+            const auto& camera = config.at("benchmarkCamera");
+            checkRaster(camera.is_object() && camera.contains("eye") && camera.contains("center"), "Invalid benchmark camera");
+            for (const auto* key : {"eye", "center"}) {
+                checkRaster(camera[key].is_array() && camera[key].size() == 3, "Invalid benchmark camera vector");
+                for (const auto& component : camera[key]) {
+                    checkRaster(component.is_number() && std::isfinite(component.get<double>()), "Nonfinite benchmark camera");
+                }
+                view["camera"][key] = camera[key];
+            }
+        }
         view["temporalJitter"] = false;
         applyViewportCameraProperties(view,nullptr);
         viewportView_.setTemporalJitter(false);
@@ -359,8 +370,13 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}});
         }
         // Reverse and rotate order to expose warm-cache/clock/order effects.
+        const bool groupComparison = config.value("swGroupComparison", false);
         const bool historyComparison = config.value("historyComparison", false);
-        const bool swWorkComparison = workloadCase || historyComparison || config.value("swWorkComparison", false);
+        checkRaster(!groupComparison || (!workloadCase && !historyComparison &&
+            device_->capabilities().subgroupSize == 32 && device_->capabilities().minSubgroupSize == 32 &&
+            device_->capabilities().maxSubgroupSize == 32), "Group comparison requires fixed wave32 and its own suite");
+        constexpr uint32_t groupOrders[3][4] = {{15,17,18,19},{19,18,17,15},{18,15,19,17}};
+        const bool swWorkComparison = groupComparison || workloadCase || historyComparison || config.value("swWorkComparison", false);
         const bool swLoadComparison = config.value("swLoadComparison", false);
         const bool swComparison = swWorkComparison || swLoadComparison || config.value("swComparison", false);
         constexpr uint32_t historyOrders[3][3] = {{0,15,16},{16,15,0},{15,0,16}};
@@ -390,9 +406,10 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
             return snap;
         };
         for (uint32_t round=0; round<rounds; ++round) {
-            const auto sequence = workloadCase ? std::span<const uint32_t>(&selectedMode, 1) : historyComparison ? std::span<const uint32_t>(historyOrders[round]) : swWorkComparison ? std::span<const uint32_t>(workOrders[round]) : swLoadComparison ? std::span<const uint32_t>(loadOrders[round]) : swComparison ? std::span<const uint32_t>(swOrders[round]) : metadataComparison ? std::span<const uint32_t>(metadataOrders[round]) : std::span<const uint32_t>(orders[round]);
+            const auto sequence = groupComparison ? std::span<const uint32_t>(groupOrders[round]) : workloadCase ? std::span<const uint32_t>(&selectedMode, 1) : historyComparison ? std::span<const uint32_t>(historyOrders[round]) : swWorkComparison ? std::span<const uint32_t>(workOrders[round]) : swLoadComparison ? std::span<const uint32_t>(loadOrders[round]) : swComparison ? std::span<const uint32_t>(swOrders[round]) : metadataComparison ? std::span<const uint32_t>(metadataOrders[round]) : std::span<const uint32_t>(orders[round]);
             for (uint32_t mode : sequence) {
-                const std::string variant = !mode ? "0" : swComparison ? (mode == 16 ? "swCameraReapply" : mode == 10 ? "swLegacy" : mode == 15 ? "swWorkControl" : mode == 14 ? "swWorkBins" : mode == 13 ? "swCooperative" : mode == 11 ? "swPrepared" : "swPlane") : metadataComparison ? (mode == 8 ? "exact8" : "fast8") : std::to_string(mode);
+                const std::string variant = !mode ? "0" : mode == 17 ? "swGroup32" : mode == 18 ? "swGroup64" : mode == 19 ? "swGroup128" : swComparison ? (mode == 16 ? "swCameraReapply" : mode == 10 ? "swLegacy" : mode == 15 ? "swWorkControl" : mode == 14 ? "swWorkBins" : mode == 13 ? "swCooperative" : mode == 11 ? "swPrepared" : "swPlane") : metadataComparison ? (mode == 8 ? "exact8" : "fast8") : std::to_string(mode);
+                set("VBuffer", "benchmarkSoftwareGroupSize", mode == 17 ? 32u : mode == 18 ? 64u : mode == 19 ? 128u : 0u);
                 reapplyCamera = historyComparison && mode == 16;
                 const std::string name = "round"+std::to_string(round+1)+"-"+variant;
                 set("VBuffer","softwareRasterPreparedVertices", swComparison && (mode == 11 || mode == 12));
@@ -588,6 +605,7 @@ bool EditorApplication::runZorahFullRasterComparison(const Json& config, const s
         set("VBuffer","softwareRasterWorkBins",false);
         set("VBuffer","softwareRasterSharedScreenVertices",true);
         set("VBuffer","softwareRasterIncrementalDepth",false);
+        set("VBuffer","benchmarkSoftwareGroupSize",0u);
         report["status"]="capture_complete"; passed=true;
     } catch (const std::exception& e) {
         if (shaderTrace_) { shaderTrace_->abort(e.what()); }

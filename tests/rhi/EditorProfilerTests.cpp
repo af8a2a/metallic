@@ -21,6 +21,9 @@ void checkProfile(bool condition, const std::string& message)
     if (!condition) { throw std::runtime_error(message); }
 }
 
+bool saveProfilerPanel(EditorProfiler& profiler, const char* tab, const std::filesystem::path& path,
+    std::string& message, bool sortGpu);
+
 class EditorProfilerHistoryTest final : public RhiTest {
 public:
     EditorProfilerHistoryTest() { type = RhiTestType::Command; name = "editor_profiler_history"; }
@@ -127,6 +130,67 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerCaptureTest);
+
+class EditorProfilerIntermittentScopesTest final : public RhiTest {
+public:
+    EditorProfilerIntermittentScopesTest() { type = RhiTestType::Command; name = "editor_profiler_intermittent_scopes"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        try {
+            EditorProfiler profiler;
+            profiler.beginCapture();
+            auto emit = [&](bool optional) {
+                auto frame = profiler.beginFrame();
+                auto parent = profiler.scope("Raster");
+                if (optional) { auto scope = profiler.scope("Optional HZB"); }
+                { auto stable = profiler.scope("Always"); auto child = profiler.scope("Child"); }
+            };
+            const auto find = [&](const EditorProfiler::Frame& frame, const char* name) {
+                for (size_t i = 0; i < frame.nodes.size(); ++i) { if (frame.nodes[i].name == name) { return i; } }
+                return SIZE_MAX;
+            };
+            emit(false);
+            const auto first = profiler.presentationFrame();
+            const auto stable = find(first, "Always"), child = find(first, "Child");
+            emit(true);
+            const auto withOptional = profiler.presentationFrame();
+            const auto optional = find(withOptional, "Optional HZB");
+            checkProfile(optional != SIZE_MAX && find(withOptional, "Always") == stable && find(withOptional, "Child") == child,
+                "New conditional scope changed existing UI node identities");
+            for (int i = 0; i < 20; ++i) {
+                emit(i % 2 == 0);
+                const auto view = profiler.presentationFrame();
+                checkProfile(view.nodes.size() == withOptional.nodes.size() && find(view, "Always") == stable &&
+                    view.nodes[child].parent == stable && std::isfinite(view.nodes[optional].cpuMilliseconds) == (i % 2 == 0),
+                    "Intermittent scope changed topology or retained a stale last duration");
+            }
+            checkProfile(find(profiler.displayFrame(), "Optional HZB") == SIZE_MAX &&
+                find(profiler.capturedFrames().back(), "Optional HZB") == SIZE_MAX,
+                "Presentation placeholders leaked into raw history/capture");
+            std::filesystem::create_directories(context.outputDirectory);
+            std::string log;
+            checkProfile(saveProfilerPanel(profiler, "Table", context.outputDirectory / "Profiler-Stable-Scopes.png", log, false), log);
+            for (int i = 0; i < 501; ++i) { emit(false); }
+            checkProfile(find(profiler.presentationFrame(), "Optional HZB") == optional,
+                "History rollover removed a known scope");
+            profiler.clearHistory();
+            checkProfile(find(profiler.presentationFrame(), "Optional HZB") == SIZE_MAX,
+                "Clear history retained old UI scope catalog");
+            RenderGraphExecutionStats stats{.executionId = 1, .graphGeneration = 1};
+            stats.nodes.push_back({.id = 1, .name = "GPU pass", .cpuMilliseconds = 1});
+            { auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stats); }
+            profiler.presentationFrame();
+            stats.graphGeneration = 2; stats.nodes[0].name = "New pass";
+            { auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stats); }
+            checkProfile(find(profiler.presentationFrame(), "GPU pass ()") == SIZE_MAX,
+                "Graph generation retained stale UI topology");
+            { auto frame = profiler.beginFrame(); }
+            checkProfile(profiler.presentationFrame().nodes.size() == 1, "Scene exit retained old graph rows");
+            return RhiTestResult::pass("Stable intermittent topology and identities, missing last values, history rollover, raw capture isolation and reset");
+        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+    }
+};
+METALLIC_REGISTER_RHI_TEST(EditorProfilerIntermittentScopesTest);
 
 class EditorProfilerSortingTest final : public RhiTest {
 public:
@@ -240,6 +304,20 @@ public:
             text = draw(false);
             checkProfile(table()->InnerWindow->StateStorage.GetInt(id, -1) == 0 && text.find("Alpha child low") == std::string::npos,
                 "sorting changed collapsed scope identity");
+            const auto stableNodeCount = profiler.presentationFrame().nodes.size();
+            for (uint32_t i = 0; i < 12; ++i) {
+                stats.executionId = 100 + i;
+                stats.nodes[0].sections.clear();
+                if (i % 2 == 0) {
+                    stats.nodes[0].sections = {{.name = "Alpha child low", .gpuTimingAvailable = true},
+                        {.name = "Alpha child high", .gpuTimingAvailable = true}};
+                }
+                { auto frame = profiler.beginFrame(); profiler.addRenderGraphStats(stats); }
+                text = draw(false);
+                checkProfile(profiler.presentationFrame().nodes.size() == stableNodeCount &&
+                    table()->InnerWindow->StateStorage.GetInt(id, -1) == 0 && text.find("Alpha child low") == std::string::npos,
+                    "Conditional child changed the live ImGui collapse state");
+            }
             std::filesystem::create_directories(testContext.outputDirectory);
             std::ofstream(testContext.outputDirectory / "ProfilerSortedTable.txt") << text;
             return RhiTestResult::pass("Real column clicks: tri-state, all timing/name/queue columns, missing/zero/ties, subtree ordering, GPU backfill and collapsed identity");
@@ -395,8 +473,15 @@ public:
                             checkProfile(section.parent == UINT32_MAX, "streaming and raster must be separate top-level scopes");
                         }
                         if (section.name == "Stream early" || section.name == "Stream late") {
-                            checkProfile(section.parent < pass.sections.size() && pass.sections[section.parent].name == "Visibility raster",
-                                "raster phases missing their visibility-only parent");
+                            // Stage instrumentation wraps the helper's scope of
+                            // the same name. Both must remain inside raster work.
+                            bool insideRaster = false;
+                            for (uint32_t ancestor = section.parent, depth = 0;
+                                 ancestor < pass.sections.size() && depth < pass.sections.size(); ++depth) {
+                                if (pass.sections[ancestor].name == "Visibility raster") { insideRaster = true; break; }
+                                ancestor = pass.sections[ancestor].parent;
+                            }
+                            checkProfile(insideRaster, "raster phases missing their visibility-only ancestor");
                         }
                         sawCompute |= section.name == "Software raster" && section.queue == QueueType::Compute;
                         if (section.name == "Software raster") {

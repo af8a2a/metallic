@@ -57,6 +57,9 @@ public:
 
     // Latest completed GPU sample keeps CPU/GPU rows on the same execution.
     const Frame& displayFrame() const;
+    // Stable UI topology; absent samples are NaN, never injected into raw history/captures.
+    Frame presentationFrame();
+    void clearHistory();
     const std::vector<Frame>& history() const { return history_; }
     const std::vector<StreamingHistory>& streamingHistory() const { return streamingHistory_; }
 
@@ -122,6 +125,8 @@ private:
     std::vector<Node> currentNodes_;
     std::vector<size_t> stack_;
     Frame latestFrame_;
+    Frame scopeTree_;
+    uint64_t scopeTreeNextFrame_ = 0;
     std::vector<Frame> history_;
     uint64_t frameIndex_ = 0;
     uint64_t graphGeneration_ = UINT64_MAX;

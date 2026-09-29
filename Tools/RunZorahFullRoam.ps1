@@ -13,6 +13,8 @@ param(
     [switch]$SwComparison,
     [switch]$SwLoadComparison,
     [switch]$SwWorkComparison,
+    [switch]$SwGroupComparison,
+    [string]$Executable='',
     [switch]$WorkloadCounters,
     [switch]$HistoryComparison,
     [ValidateRange(8,512)][int]$SampleFrames=64,
@@ -21,6 +23,10 @@ param(
     [int]$TimeoutSeconds=900
 )
 $ErrorActionPreference='Stop'
+if ($SwGroupComparison -and ($HistoryComparison -or $SwComparison -or $SwWorkComparison -or $SwLoadComparison -or $MetadataComparison)) {
+    throw 'Choose the SW group comparison alone'
+}
+if ($SwGroupComparison) { $RasterComparison=$true }
 if ($HistoryComparison) { $SwWorkComparison=$true }
 if ($SwLoadComparison -or $SwWorkComparison) { $SwComparison=$true }
 if ($SwLoadComparison -and $SwWorkComparison) { throw "Choose one SW comparison suite" }
@@ -28,7 +34,7 @@ if ($MetadataComparison -or $SwComparison) { $RasterComparison=$true }
 if ($MetadataComparison -and $SwComparison) { throw "Choose one comparison suite" }
 $repo=Split-Path -Parent $PSScriptRoot
 $output=[IO.Path]::GetFullPath($OutputRoot)
-$exe=Join-Path $repo 'build-release/Source/MetallicGPUDrivenSample.exe'
+$exe=if ($Executable) {[IO.Path]::GetFullPath($Executable)} else {Join-Path $repo 'build-release/Source/MetallicGPUDrivenSample.exe'}
 if (Test-Path -LiteralPath $output) { throw 'Choose a new output directory' }
 if (($Width -eq 0) -ne ($Height -eq 0)) { throw 'Specify both Width and Height' }
 $config=@{durationSeconds=$DurationSeconds; warmupSeconds=$WarmupSeconds}
@@ -45,11 +51,12 @@ if ($SwComparison) { $config.swComparison=$true }
 if ($SwLoadComparison) { $config.swLoadComparison=$true }
 if ($SwWorkComparison) { $config.swWorkComparison=$true }
 if ($HistoryComparison) { $config.historyComparison=$true }
+if ($SwGroupComparison) { $config.swGroupComparison=$true }
 if ($WorkloadCounters) { $config.workloadCounters=$true; $config.workloadEvery=60 }
 $analyzer=if ($config.rasterComparison) {"AnalyzeZorahFullRasterComparison.py"} else {"AnalyzeZorahFullRoam.py"}
 New-Item -ItemType Directory -Path $output | Out-Null
 $config | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath (Join-Path $output 'Config.json') -Encoding utf8
-$keys=@('METALLIC_FULL_ROAM_OUTPUT','METALLIC_FULL_ROAM_CONFIG','METALLIC_FULL_ROAM_HIDDEN','METALLIC_FULL_ROAM_NO_VSYNC','METALLIC_NSIGHT_GRAPHICS_CAPTURE','METALLIC_DEBUG_CONTROL','METALLIC_DEBUG_VALIDATION')
+$keys=@('METALLIC_SW_GROUP_EXPERIMENT','METALLIC_FULL_ROAM_OUTPUT','METALLIC_FULL_ROAM_CONFIG','METALLIC_FULL_ROAM_HIDDEN','METALLIC_FULL_ROAM_NO_VSYNC','METALLIC_NSIGHT_GRAPHICS_CAPTURE','METALLIC_DEBUG_CONTROL','METALLIC_DEBUG_VALIDATION')
 $previous=@{}
 foreach ($key in $keys) { $previous[$key]=[Environment]::GetEnvironmentVariable($key,'Process') }
 function Get-ShaderDigest {
@@ -69,6 +76,7 @@ $asset=Get-Item -LiteralPath (Join-Path $repo 'Asset/ZorahFull/zorah_textured_pu
 $manifest.asset=@{path=$asset.FullName; bytes=$asset.Length; modifiedUtc=$asset.LastWriteTimeUtc.ToString('o')}
 $manifest | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $output 'Manifest.json') -Encoding utf8
 try {
+    $env:METALLIC_SW_GROUP_EXPERIMENT=if ($SwGroupComparison) {'1'} else {$null}
     $env:METALLIC_FULL_ROAM_CONFIG=Join-Path $output 'Config.json'
     $env:METALLIC_FULL_ROAM_HIDDEN='1'
     $env:METALLIC_FULL_ROAM_NO_VSYNC=if ($NoVSync) {'1'} else {$null}

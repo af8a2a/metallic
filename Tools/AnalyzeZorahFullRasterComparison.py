@@ -11,6 +11,16 @@ def load(path):
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
+def raster_parent_scopes(scopes):
+    candidates = [s for s in scopes if s["path"].endswith(("/Stream early", "/Stream late"))]
+    # The stage wrapper and helper can have identical labels. Select only the
+    # outer interval per phase; including both would double-count GPU work.
+    result = [s for s in candidates if not any(s["path"].startswith(p["path"] + "/") for p in candidates)]
+    assert len(result) == 2 and all(s["gpuMs"] is not None for s in result)
+    assert {s["path"].rsplit("/", 1)[1] for s in result} == {"Stream early", "Stream late"}
+    return result
+
+
 def distribution(values):
     values = sorted(values)
     def percentile(q):
@@ -54,7 +64,9 @@ def analyze(directory):
     assert capture["status"] == "capture_complete", capture.get("error")
     assert capture["protocol"] == "zorah-full-raster-comparison-v1"
     base = capture["cases"][0]["before"]
-    reference = next(c["after"] for c in capture["cases"] if c["fullHardware"])
+    group_comparison = capture["config"].get("swGroupComparison", False)
+    reference = next(c["after"] for c in capture["cases"]
+                     if (c["variant"] == "swWorkControl" if group_comparison else c["fullHardware"]))
     results = []
     pooled = {}
     residency = None
@@ -76,8 +88,7 @@ def analyze(directory):
                   "cull": "Cluster cull", "candidates": "Candidates", "bins": "Stable bins", "merge": "Raster merge"}
         for row in rows:
             scopes = row["scopes"]
-            totals = [s for s in scopes if s["path"].endswith(("/Stream early", "/Stream late"))]
-            assert len(totals) == 2 and all(s["gpuMs"] is not None for s in totals)
+            totals = raster_parent_scopes(scopes)
             values["rasterTotal"].append(sum(s["gpuMs"] for s in totals))
             for key, leaf in leaves.items():
                 selected = [s for s in scopes if ("/Stream early/" in s["path"] or "/Stream late/" in s["path"]) and s["path"].endswith("/" + leaf)]
@@ -104,8 +115,30 @@ def analyze(directory):
                         "classificationCounts": {k: v for k,v in case["after"].items() if k.endswith("ClusterCull")},
                         "timingsMs": {k: distribution(v) for k, v in values.items()},
                         "earlyBins": case["after"]["AfterStreamEarlyBins"], "lateBins": case["after"]["AfterStreamLateBins"],
-                        "vsFullHardware": image_difference(directory, reference, case["after"]),
+                        ("vsProductionSoftware" if group_comparison else "vsFullHardware"): image_difference(directory, reference, case["after"]),
                         "beforeAfter": image_difference(directory, case["before"], case["after"])})
+    if group_comparison:
+        assert set(pooled) == {"swWorkControl", "swGroup32", "swGroup64", "swGroup128"}
+        fingerprints = {}
+        for case in capture["cases"]:
+            expected_size = {"swWorkControl": 128, "swGroup32": 32, "swGroup64": 64, "swGroup128": 128}[case["variant"]]
+            expected_entry = "streamClusterRasterWorkControlMain" if case["variant"] == "swWorkControl" else f"streamClusterRasterGroup{expected_size}Main"
+            for point in ("before", "after"):
+                stamp = case[point]
+                for resource in ("VBuffer.visibility", "VBuffer.depth"):
+                    assert stamp[resource]["hash"] == reference[resource]["hash"], "Group size changed packed output"
+                    assert (directory / stamp[resource]["file"]).read_bytes() == (directory / reference[resource]["file"]).read_bytes()
+                for phase in ("AfterStreamEarlyBins", "AfterStreamLateBins"):
+                    assert stamp[phase] == reference[phase], "Group size changed work lists or dispatch"
+                bindings = stamp["productionDispatches"]
+                assert len(bindings) == 2
+                for binding in bindings:
+                    assert binding["entryPoint"] == expected_entry
+                    assert binding["groupSize"] == expected_size and binding["subgroupSize"] == 32
+                    fingerprint = binding["spirvFnv1a64"]
+                    assert fingerprint
+                    assert fingerprints.setdefault(case["variant"], fingerprint) == fingerprint
+        assert len(set(fingerprints.values())) == 4, "Experimental pipelines are not distinct"
     if capture["config"].get("metadataComparison"):
         for resource in ("VBuffer.visibility", "VBuffer.depth"):
             assert mode_snapshots[("exact8",resource)] == mode_snapshots[("fast8",resource)], "Metadata path changed raster output"
@@ -161,6 +194,10 @@ def analyze(directory):
                "cutHash": base["cutHash"], "pageMappingsHash": base["pageMappingsHash"], "activeGroups": base["activeGroups"],
                "residentState": residency, "sameCutAndResidency": True, "sameModeImagesStable": True, "cases": results,
                "pooled": {mode: {k: distribution(v) for k, v in values.items()} for mode, values in pooled.items()}}
+    if group_comparison:
+        summary["reference"] = "production WorkControl, 128 threads"
+        summary["groupOutputsByteEqual"] = True
+        summary["pipelineFingerprints"] = fingerprints
     (directory / "Summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     lines = ["# Frozen Full raster comparison", "", f"Output {capture['outputExtent']}, render {capture['renderExtent']}; fixed camera, jitter disabled, serialized HW/SW.",
              "Diagnostic readbacks and recovery frames excluded. Frozen traversal/streaming/TLAS: graph/editor time is not live-roaming FPS.",
@@ -168,11 +205,13 @@ def analyze(directory):
              "| Mode | Samples | Raster mean ms | Raster p50 | Raster p95 | Classify mean | SW mean | HW mean | Graph mean |", "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
     for mode, stats in sorted(summary["pooled"].items(), key=lambda x: {"exact8": 8,"fast8": 9}.get(x[0],int(x[0]) if x[0].isdigit() else 10)):
         label = {"0":"Full HW","exact8":"8 px exact","fast8":"8 px metadata","swLegacy":"8 px legacy SW","swPrepared":"8 px prepared SW","swPlane":"8 px depth plane","swCooperative":"8 px cooperative load","swWorkBins":"8 px local work bins","swWorkControl":"8 px reused setup control","swCameraReapply":"same camera reapplied"}.get(mode,mode + " px")
+        if group_comparison:
+            label = {"swWorkControl": "Production 128", "swGroup32": "Strided 32", "swGroup64": "Strided 64", "swGroup128": "Strided 128"}[mode]
         t = stats["rasterTotal"]
         lines.append(f"| {label} | {t['count']} | {t['mean']:.3f} | {t['p50']:.3f} | {t['p95']:.3f} | {stats['classification']['mean']:.3f} | {stats['software']['mean']:.3f} | {stats['hardware']['mean']:.3f} | {stats['graphGpu']['mean']:.3f} |")
     lines += ["", "| Case | Early HW / SW | Coverage different vs HW | Visibility different % | Max depth abs | Depth >8 ULP |", "|---|---:|---:|---:|---:|---:|"]
     for r in results:
-        b, d = r["earlyBins"], r["vsFullHardware"]
+        b, d = r["earlyBins"], r["vsProductionSoftware" if group_comparison else "vsFullHardware"]
         lines.append(f"| {r['name']} | {b['hardwareClusters']} / {b['softwareClusters']} | {d['coverageDifferentPixels']} | {d['visibilityDifferentPercent']:.5f} | {d['coveredDepthMaxAbs']:.7g} | {d['coveredDepthOver8UlpPixels']} |")
     if not capture["config"].get("historyComparison") and any(capture["config"].get(key) for key in ("swComparison", "swLoadComparison", "swWorkComparison")):
         lines += ["", "Prepared SW is required to match legacy depth/visibility and bins exactly.", "",
@@ -183,6 +222,8 @@ def analyze(directory):
                 continue
             d = r["vsLegacySoftware"]
             lines.append(f"| {r['name']} | {d['coverageDifferentPixels']} | {d['visibilityDifferentPixels']} | {d['coveredDepthMaxUlp']} |")
+    if group_comparison:
+        lines = [line.replace("vs HW", "vs production 128-thread SW") for line in lines]
     (directory / "Summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines[:14]))
     return summary

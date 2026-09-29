@@ -1121,6 +1121,11 @@ private:
 
     size_t softwareRasterMode() const
     {
+        const auto group = properties().find("benchmarkSoftwareGroupSize");
+        if (group != properties().end() && group->is_number_unsigned()) {
+            const auto size = group->get<uint32_t>();
+            if (size == 32 || size == 64 || size == 128) { return size == 32 ? 6u : size == 64 ? 7u : 8u; }
+        }
         return !boolProperty(&properties(), "softwareRasterPreparedVertices", false) ?
             (boolProperty(&properties(), "softwareRasterCooperativeLoad", true) ?
                 (boolProperty(&properties(), "softwareRasterWorkBins", false) ? 4u :
@@ -1131,10 +1136,10 @@ private:
     {
         const size_t mode = softwareRasterMode();
         const char* entries[] = {"streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain",
-            "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"};
-        const std::string module = mode >= 4 ? "Features/GPUDriven/GPUDrivenStreamWorkRaster" : kMeshletStreamShaderModuleName;
+            "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain", "streamClusterRasterGroup32Main", "streamClusterRasterGroup64Main", "streamClusterRasterGroup128Main"};
+        const std::string module = mode >= 6 ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : mode >= 4 ? "Features/GPUDriven/GPUDrivenStreamWorkRaster" : kMeshletStreamShaderModuleName;
         const auto hash = shaderHashes_.find(module + "." + entries[mode]);
-        return {{"mode", mode}, {"module", module}, {"entryPoint", entries[mode]},
+        return {{"mode", mode}, {"groupSize", mode == 6 ? 32u : mode == 7 ? 64u : 128u}, {"subgroupSize", device_ ? device_->capabilities().subgroupSize : 0u}, {"module", module}, {"entryPoint", entries[mode]},
             {"spirvFnv1a64", hash == shaderHashes_.end() ? "" : hash->second},
             {"thresholdPixels", softwareRasterMaxPixels()}, {"prebin", clusterPrebinEnabled()},
             {"candidateCapacity", hybridRasterizer_ ? hybridRasterizer_->clusterCapacity() : 0u},
@@ -1616,9 +1621,19 @@ private:
             if (result) { result = createShader(device, kMeshletStreamShaderModuleName,
                 "streamClusterBinP0Main", false, streamClusterBinP0Shader_, log); }
             if (result) { result = createStreamCompute(*streamClusterBinP0Shader_, streamClusterBinP0Pipeline_, "P0 cluster bin"); }
-            const char* rasterEntries[] = {"streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"};
+            const char* rasterEntries[] = {"streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain", "streamClusterRasterGroup32Main", "streamClusterRasterGroup64Main", "streamClusterRasterGroup128Main"};
             for (size_t i=0; result && i<streamClusterRasterShaders_.size(); ++i) {
-                result = createShader(device, i >= 4 ? "Features/GPUDriven/GPUDrivenStreamWorkRaster" : kMeshletStreamShaderModuleName, rasterEntries[i], false, streamClusterRasterShaders_[i], log);
+                if (i >= 6) {
+                    const char* experiment = std::getenv("METALLIC_SW_GROUP_EXPERIMENT");
+                    if (!experiment || std::strcmp(experiment, "1") != 0) { continue; }
+                    const auto& caps = device.capabilities();
+                    if (caps.subgroupSize != 32 || caps.minSubgroupSize != 32 || caps.maxSubgroupSize != 32 ||
+                        !caps.computeSubgroupBallotArithmetic) {
+                        log = "SW group experiment requires fixed wave32";
+                        return makeError(Error::Unsupported);
+                    }
+                }
+                result = createShader(device, i >= 6 ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : i >= 4 ? "Features/GPUDriven/GPUDrivenStreamWorkRaster" : kMeshletStreamShaderModuleName, rasterEntries[i], false, streamClusterRasterShaders_[i], log);
                 if (result) { result = createStreamCompute(*streamClusterRasterShaders_[i], streamClusterRasterPipelines_[i], rasterEntries[i]); }
             }
             const char* workloadEntries[] = {"streamWorkloadResetMain", "streamWorkloadMain"};
@@ -2862,7 +2877,7 @@ private:
                     .buffer = &hybridRasterizer_->workloadBuffer(), .state = ResourceState::General, .size = 128};
                 auto identity = softwareRasterIdentity();
                 identity["counterSemantics"] = "Coverage replay; atomic attempts, not winning writes; diagnostic timings excluded";
-                identity["exactCoverageSupported"] = softwareRasterMode() == 5 || softwareRasterMode() == 4;
+                identity["exactCoverageSupported"] = softwareRasterMode() >= 4;
                 context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "StreamEarlyWorkload" : "StreamLateWorkload",
                     std::span<const DebugResourceBinding>(&resource, 1), identity);
             }
@@ -2883,6 +2898,7 @@ private:
             // Cooperative loading with shared screen vertices is the measured default.
             // Local work bins and the older prepared-camera experiment remain opt-in.
             const size_t rasterMode = softwareRasterMode();
+            if (!streamClusterRasterPipelines_[rasterMode]) { return makeError(Error::Unsupported); }
             if (auto commandResult = commands.bindExecution((streamClusterRasterPipelines_[rasterMode])->execution()); !commandResult) { return commandResult; }
 
             if (context.debugEnabled()) {
@@ -4413,7 +4429,7 @@ private:
     std::unique_ptr<ShaderModule> streamClusterBinP0Shader_;
     std::unique_ptr<ShaderModule> streamClusterCullShader_;
     std::unique_ptr<ShaderModule> streamClusterCullP0Shader_;
-    std::array<std::unique_ptr<ShaderModule>, 6> streamClusterRasterShaders_;
+    std::array<std::unique_ptr<ShaderModule>, 9> streamClusterRasterShaders_;
     std::unique_ptr<ComputePipeline> clusterBinPipeline_;
     std::unique_ptr<ComputePipeline> clusterCountPipeline_;
     std::unique_ptr<ComputePipeline> clusterRasterPipeline_;
@@ -4421,7 +4437,7 @@ private:
     std::unique_ptr<ComputePipeline> streamClusterBinP0Pipeline_;
     std::unique_ptr<ComputePipeline> streamClusterCullPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterCullP0Pipeline_;
-    std::array<std::unique_ptr<ComputePipeline>, 6> streamClusterRasterPipelines_;
+    std::array<std::unique_ptr<ComputePipeline>, 9> streamClusterRasterPipelines_;
     ResourceLease streamHybridQueueHandle_;
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
     std::unique_ptr<Buffer> tessellationBuffer_;

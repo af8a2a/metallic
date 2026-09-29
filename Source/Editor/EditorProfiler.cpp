@@ -14,6 +14,46 @@ namespace metallic {
 namespace {
 
 constexpr size_t kProfilerHistorySize = 500;
+constexpr size_t kProfilerScopeTreeLimit = 8192;
+
+void mergeScopeTree(EditorProfiler::Frame& tree, const EditorProfiler::Frame& sample, bool extend)
+{
+    if (sample.nodes.empty()) { return; }
+    if (tree.nodes.empty()) {
+        if (!extend) { return; }
+        tree.nodes.push_back(sample.nodes.front());
+        tree.nodes.front().children.clear();
+    }
+    std::vector<size_t> indices(sample.nodes.size(), SIZE_MAX);
+    indices[0] = 0;
+    std::map<std::pair<size_t, std::string>, size_t> occurrences;
+    for (size_t i = 0; i < sample.nodes.size(); ++i) {
+        const auto& node = sample.nodes[i];
+        const size_t parent = i ? indices[node.parent] : 0;
+        if (parent == SIZE_MAX) { continue; }
+        size_t target = 0;
+        if (i) {
+            const size_t occurrence = occurrences[{parent, node.name}]++;
+            size_t matched = 0;
+            target = SIZE_MAX;
+            for (size_t child : tree.nodes[parent].children) {
+                if (tree.nodes[child].name == node.name && matched++ == occurrence) { target = child; break; }
+            }
+            if (target == SIZE_MAX) {
+                if (!extend) { continue; }
+                if (tree.nodes.size() >= kProfilerScopeTreeLimit) { tree.profilingOverflow = true; continue; }
+                target = tree.nodes.size();
+                tree.nodes.emplace_back();
+                tree.nodes[parent].children.push_back(target);
+            }
+        }
+        indices[i] = target;
+        auto children = std::move(tree.nodes[target].children);
+        tree.nodes[target] = node;
+        tree.nodes[target].parent = parent;
+        tree.nodes[target].children = std::move(children);
+    }
+}
 constexpr float kPi = 3.14159265358979323846f;
 
 ImU32 imguiColor(uint32_t rgba)
@@ -135,14 +175,15 @@ void drawProfilerTableNode(const EditorProfiler::Frame& frame, const std::vector
     else if (depth < 4) { flags |= ImGuiTreeNodeFlags_DefaultOpen; }
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    ImGui::PushStyleColor(ImGuiCol_Text, imguiColor(node.color));
+    const bool present = std::isfinite(node.cpuMilliseconds);
+    ImGui::PushStyleColor(ImGuiCol_Text, present ? imguiColor(node.color) : ImGui::GetColorU32(ImGuiCol_TextDisabled));
     const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(index + 1), flags, "%s", node.name.c_str());
     ImGui::PopStyleColor();
     const auto& row = tableRow(frame, history, index, rows);
     const auto& gpu = row.gpu;
     const auto& cpu = row.cpu;
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("CPU samples: %zu | GPU samples: %zu\nGPU results arrive after completion; missing queries are excluded.\nNested / concurrent intervals must not be added together.", cpu.count, gpu.count);
+        ImGui::SetTooltip("%s\nCPU samples: %zu | GPU samples: %zu\nAbsent scopes and missing GPU queries are excluded from averages.\nNested / concurrent intervals must not be added together.", present ? "Recorded in displayed frame" : "Not recorded in displayed frame; historical row retained", cpu.count, gpu.count);
     }
     ImGui::TableNextColumn(); drawDuration(gpu.average, gpu.count != 0);
     ImGui::TableNextColumn(); drawDuration(cpu.average, cpu.count != 0);
@@ -758,7 +799,7 @@ void EditorProfiler::addRenderGraphStats(const render::RenderGraphExecutionStats
     }
 
     if (graphGeneration_ != stats.graphGeneration) {
-        history_.clear();
+        clearHistory();
         latestFrame_ = {};
         graphGeneration_ = stats.graphGeneration;
     }
@@ -839,6 +880,35 @@ const EditorProfiler::Frame& EditorProfiler::displayFrame() const
     return latestFrame_;
 }
 
+void EditorProfiler::clearHistory()
+{
+    history_.clear();
+    scopeTree_ = {};
+    scopeTreeNextFrame_ = frameIndex_;
+    for (auto& source : streamingHistory_) { source.samples.clear(); }
+}
+
+EditorProfiler::Frame EditorProfiler::presentationFrame()
+{
+    // Only merge newly recorded frames, and only when the UI requests a view.
+    for (const auto& sample : history_) {
+        if (sample.index >= scopeTreeNextFrame_) { mergeScopeTree(scopeTree_, sample, true); }
+    }
+    const auto& displayed = displayFrame();
+    if (scopeTree_.nodes.empty()) { mergeScopeTree(scopeTree_, displayed, true); }
+    scopeTreeNextFrame_ = frameIndex_;
+    Frame result = scopeTree_;
+    result.index = displayed.index;
+    result.profilingOverflow |= displayed.profilingOverflow;
+    for (auto& node : result.nodes) {
+        node.cpuMilliseconds = std::numeric_limits<double>::quiet_NaN();
+        node.gpuMilliseconds = 0;
+        node.gpuTimingAvailable = false;
+    }
+    mergeScopeTree(result, displayed, false);
+    return result;
+}
+
 bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graphicsCapture)
 {
     if (open != nullptr && !*open) {
@@ -896,8 +966,8 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
 
     ImGui::Checkbox("Detailed", &detailed_);
     ImGui::SameLine();
-    if (ImGui::SmallButton("Clear history")) { history_.clear(); for (auto& source : streamingHistory_) { source.samples.clear(); } }
-    const auto& frame = displayFrame();
+    if (ImGui::SmallButton("Clear history")) { clearHistory(); }
+    const auto frame = presentationFrame();
     ImGui::SameLine();
     ImGui::TextDisabled("%zu / %zu frames", history_.size(), kProfilerHistorySize);
     const bool hasGpu = std::any_of(frame.nodes.begin(), frame.nodes.end(), [](const auto& node) { return node.gpuTimingAvailable; });
@@ -905,7 +975,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
         static_cast<unsigned long long>(frame.index), static_cast<unsigned long long>(latestFrame_.index - frame.index)); }
     else { ImGui::TextDisabled("GPU queries pending / unavailable"); }
     ImGui::TextDisabled("GPU envelope covers RenderGraph; editor UI and presentation are outside this interval.");
-    if (frame.profilingOverflow) { ImGui::TextColored(ImVec4(1, .65f, .2f, 1), "Profiler scope budget exceeded; some GPU intervals unavailable."); }
+    if (frame.profilingOverflow) { ImGui::TextColored(ImVec4(1, .65f, .2f, 1), "Profiler scope/display budget exceeded; some entries may be unavailable."); }
     if (ImGui::BeginTabBar("ProfilerTabs")) {
         if (ImGui::BeginTabItem("Table")) {
             drawProfilerTable(frame, history_, detailed_);
@@ -921,7 +991,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
         }
         if (ImGui::BeginTabItem("PieChart")) {
             ImGui::TextDisabled("CPU frame sections only; GPU intervals can overlap.");
-            drawPieChart(frame);
+            drawPieChart(displayFrame());
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Streaming")) {
@@ -1010,6 +1080,10 @@ void EditorProfiler::endFrame()
             }
         }
     }
+    const auto hasGraph = [](const auto& nodes) {
+        return std::any_of(nodes.begin(), nodes.end(), [](const auto& node) { return node.renderGraphExecutionId != UINT64_MAX; });
+    };
+    if (hasGraph(latestFrame_.nodes) && !hasGraph(currentNodes_)) { clearHistory(); }
     latestFrame_.index = frameIndex_++;
     latestFrame_.profilingOverflow = currentOverflow_;
     // Remove sources no longer present, including a switch to a non-streaming scene.
