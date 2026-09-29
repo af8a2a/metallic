@@ -7,6 +7,7 @@
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
+#include <algorithm>
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
@@ -370,6 +371,33 @@ class CompactClasLifecycleTest final : public RhiTest {
             require(stats.encodedStorageBytes > 0 && stats.usedStorageBytes < stats.worstCaseStorageBytes &&
                         stats.usedStorageBytes >= stats.encodedStorageBytes,
                     "Pool did not allocate actual sizes");
+            {
+                // Nsight can consume all device-local headroom after the pool
+                // was initialized. Reviving a resident CLAS must still publish
+                // its address/table entry using pure host staging.
+                const auto budget = device->memoryBudget();
+                const bool separateHostHeap = std::any_of(budget.heaps.begin(), budget.heaps.end(),
+                    [](const auto& heap) { return !heap.deviceLocal; });
+                if (separateHostHeap) {
+                    struct RestoreBudget {
+                        Device& device;
+                        MemoryBudgetPolicy policy;
+                        ~RestoreBudget() { device.setMemoryBudgetPolicy(policy); }
+                    } restore{*device, budget.policy};
+                    auto pressure = budget.policy;
+                    pressure.enabled = true;
+                    pressure.deviceLocalHeapLimitBytes = 1;
+                    device->setMemoryBudgetPolicy(pressure);
+                    pool.retirePages(std::span(&pageIndex, 1));
+                    pool.beginFrame();
+                    record(true);
+                    require(pool.pageHasClas(pageIndex) &&
+                        (gpuPageEntry >> kMeshletStreamClasPageStateShift) ==
+                            uint32_t(MeshletStreamClasPageState::Active) &&
+                        device->memoryBudget().deniedAllocations == budget.deniedAllocations,
+                        "CLAS publication must progress without device-local allocation headroom");
+                }
+            }
             require(stats.storageBytes >= stats.usedStorageBytes && stats.storageBytes < stats.storageBudgetBytes &&
                         stats.storageChunkCount == 1, "Physical backing did not grow on demand");
             const uint64_t address = pool.clusterAddress(pageIndex, 0);

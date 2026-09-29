@@ -34,14 +34,34 @@ bool EditorApplication::runNsightCaptureSmokeTest()
         return renderFrame() && viewportPreviewValid_;
     };
     // Settle streaming, the editor layout and DLSS before using the same request
-    // and Present boundaries as the capture button.
-    for (uint32_t frame = 0; frame < 90; ++frame) {
+    // and Present boundaries as the capture button. ZorahFull needs more than
+    // 90 frames to publish all root CLAS; a valid preview can still be loading.
+    bool sceneReady = false;
+    for (uint32_t frame = 1; frame <= 1200; ++frame) {
         if (!renderCaptureFrame()) { return false; }
+        const auto* streamer = subsystemHost_.get<render::StreamerSubsystem>();
+        const auto readiness = streamer ? streamer->sceneReadiness() : render::StreamSceneReadiness{};
+        if (frame >= 90 && readiness.ready) {
+            sceneReady = true;
+            spdlog::info("[Smoke Nsight] Scene ready at frame {} pages={}/{}",
+                frame, readiness.completedPages, readiness.requiredPages);
+            break;
+        }
     }
+    if (!sceneReady) {
+        spdlog::error("[Smoke Nsight] Streamed scene did not become ready before capture");
+        return false;
+    }
+    int initialWidth = 0, initialHeight = 0;
+    if (!SDL_GetWindowSize(window_, &initialWidth, &initialHeight)) { return false; }
     for (uint32_t capture = 0; capture < 3; ++capture) {
         if (capture > 0) {
             // Exercise DLSS/resource recreation as well as steady-state capture.
-            if (!SDL_SetWindowSize(window_, capture == 1 ? 1280 : 1600, capture == 1 ? 720 : 900)) {
+            // Grow then restore the settled layout. Shrinking to a fixed window
+            // size can leave a 30-pixel viewport with the user's saved dock sizes,
+            // which tests unsupported DLSS dimensions instead of capture resize.
+            if (!SDL_SetWindowSize(window_, initialWidth + (capture == 1 ? 160 : 0),
+                    initialHeight + (capture == 1 ? 90 : 0))) {
                 return false;
             }
             for (uint32_t frame = 0; frame < 48; ++frame) {

@@ -238,15 +238,23 @@ struct MeshletStreamCompactClasPool::Impl {
         }
         (*publications)[id] = std::move(update);
     }
-    Result<> flushPublications(CommandBuffer& cmd)
+    Result<> flushPublications(CommandBuffer& cmd, std::string& log)
     {
         if (publications->empty()) { return {}; }
         auto updates = std::make_shared<Publications>(*publications);
         uint64_t bytes = 0;
         for (const auto& [id, update] : *updates) { bytes += update.addresses.size() * 8u + 8u; }
         std::unique_ptr<Buffer> staging;
-        auto result = buffer(bytes, MemoryLocation::HostUpload, staging);
-        if (!result) { return result; }
+        // This is only a copy source, not AS storage or shader input. Inheriting
+        // kCompactBufferUsage places it in device-local BAR memory and makes
+        // even retirement/publication fail when capture consumes VRAM headroom.
+        auto result = device->createBuffer({.size = bytes, .usage = BufferUsageBits::TransferSource,
+            .memoryLocation = MemoryLocation::HostUpload, .memoryDomain = MemoryBudgetDomain::Upload})
+            .transform([&](auto rhiValue) { staging = std::move(rhiValue); });
+        if (!result) {
+            log = "Compact CLAS publication upload allocation failed: " + std::string(resultToString(result));
+            return result;
+        }
         auto upload = std::shared_ptr<Buffer>(std::move(staging));
         auto* mapped = static_cast<uint8_t*>(upload->map());
         if (!mapped) { return makeError(Error::Failure); }
@@ -728,7 +736,7 @@ Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
     auto freeBatch =
         std::find_if(p.batches.begin(), p.batches.end(), [](const auto& b) { return b.phase == Impl::Phase::Free; });
     if (freeBatch == p.batches.end()) {
-        return p.flushPublications(cmd);
+        return p.flushPublications(cmd, log);
     }
     auto& batch = *freeBatch;
     std::vector<MeshletStreamClasPageBuild> builds;
@@ -752,7 +760,7 @@ Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
         count += clusters;
     }
     if (builds.empty()) {
-        return p.flushPublications(cmd);
+        return p.flushPublications(cmd, log);
     }
     batch.builder->beginFrame();
     auto result = batch.builder->cmdBuildPages(cmd, geometry, builds, log, batch.sizes.get());
@@ -775,7 +783,7 @@ Result<> MeshletStreamCompactClasPool::cmdBuildPages(CommandBuffer& cmd, Buffer&
     p.stats.frameBuiltClusterCount += count;
     p.stats.totalBuiltPageCount += builds.size();
     p.stats.totalBuiltClusterCount += count;
-    return p.flushPublications(cmd);
+    return p.flushPublications(cmd, log);
 }
 
 void MeshletStreamCompactClasPool::retirePages(std::span<const uint32_t> ids)

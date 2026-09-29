@@ -89,6 +89,8 @@ new capture; existing captures cannot acquire the missing information retroactiv
 See NVIDIA's [shader compilation requirements](https://docs.nvidia.com/nsight-graphics/UserGuide/configure-application.html#shader-compilation).
 Capture export requires an installed
 Nsight Graphics SDK and runtime.
+For the ZorahFull export memory-pressure fix and full-scene capture/replay
+regression, see [the investigation](ZorahFullNsightCaptureMemory.md).
 
 When Nsight Graphics capture injection is active, opacity micromaps use the
 `VK_EXT_opacity_micromap` backend, including native EXT builds and shader support.

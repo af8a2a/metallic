@@ -140,7 +140,7 @@ struct DlssDebugCapture {
         timestamp = std::chrono::steady_clock::now();
         status.cpuMs = std::chrono::duration<double, std::milli>(timestamp - start).count();
         status.frameIndex = streamlineState().frameIndex - 1;
-        status.message = status.succeeded ? "Success" : log.substr(logStart);
+        status.message = status.succeeded && log.size() == logStart ? "Success" : log.substr(logStart);
         if (status.succeeded) { ++status.successes; }
     }
 };
@@ -277,6 +277,20 @@ Result<> resultFromSl(sl::Result result, const char* label, std::string& log)
     log += " returned ";
     log += slResultName(result);
     return makeError(errorFromSl(result));
+}
+
+Result<> evaluationResultFromSl(sl::Result result, const char* label, std::string& log)
+{
+    if (result != sl::Result::eWarnOutOfVRAM) { return resultFromSl(result, label, log); }
+
+    // sl.common's slEvaluateFeatureInternal checks the budget only AFTER a
+    // successful evaluation, and never replaces an evaluation error with this
+    // warning. Keep its valid output and diagnostics instead of aborting the
+    // frame when Nsight temporarily consumes the remaining VRAM headroom.
+    if (!log.empty() && log.back() != '\n') { log += '\n'; }
+    log += label;
+    log += " completed with eWarnOutOfVRAM (output valid; VRAM budget exceeded)";
+    return {};
 }
 
 Result<> getEvaluationFrameToken(StreamlineState& state, sl::FrameToken*& token, std::string& log)
@@ -1657,7 +1671,7 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
 
     prepareDescriptorStateForStreamline(state, commandBuffer);
     const sl::BaseStructure* inputs[] = {&state.viewport};
-    result = resultFromSl(
+    result = evaluationResultFromSl(
         slEvaluateFeature(
             sl::kFeatureDLSS,
             *frameToken,
@@ -1816,7 +1830,7 @@ Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const Streamline
 
     prepareDescriptorStateForStreamline(state, commandBuffer);
     const sl::BaseStructure* inputs[] = {&state.viewport};
-    result = resultFromSl(
+    result = evaluationResultFromSl(
         slEvaluateFeature(
             sl::kFeatureDLSS_RR,
             *frameToken,
