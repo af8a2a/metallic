@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 
 namespace metallic::tests {
@@ -110,6 +111,91 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(MeshletLodReferenceTest);
 
+class MeshletLodDisplayPixelThresholdTest final : public RhiTest {
+public:
+    MeshletLodDisplayPixelThresholdTest()
+    {
+        type = RhiTestType::Validation;
+        name = "meshlet_lod_display_pixel_threshold";
+    }
+
+    RhiTestResult run(RhiTestContext&) override
+    {
+        auto fixture = makeLodFixture();
+        std::string reason;
+        if (!buildMeshletLodMetadata(fixture.primitive, fixture.groups, reason)) {
+            return RhiTestResult::fail(reason);
+        }
+        std::vector<MeshletLodGroupRange> ranges;
+        std::vector<uint32_t> refined;
+        for (const auto& group : fixture.primitive.meshletLodGroups) {
+            ranges.push_back({group.clusterOffset, group.clusterCount});
+        }
+        for (const auto& cluster : fixture.clusters) { refined.push_back(cluster.lod[2]); }
+        const std::vector<uint8_t> drawable(fixture.groups.size(), 1);
+        constexpr uint32_t kDisplayHeight = 1080;
+        constexpr float kDisplayPixelError = 1.5f;
+        const auto residentCut = [&](const MeshletLodView& view) {
+            return selectMeshletLodReference(fixture.groups, fixture.clusters, fixture.instances,
+                fixture.candidates, view);
+        };
+        const auto streamCut = [&](const MeshletLodView& view) {
+            return selectStreamMeshletLodReference(fixture.groups, ranges, refined, drawable,
+                fixture.instances.front(), view);
+        };
+        for (bool orthographic : {false, true}) {
+            MeshletLodView native;
+            native.eye = {0, 0, 50, .1f};
+            native.forward[3] = orthographic ? 1.f : 0.f;
+            native.projection = {float(kDisplayHeight), .577350269f, 60.f, kDisplayPixelError};
+            const auto expectedResident = residentCut(native);
+            const auto expectedStream = streamCut(native);
+            std::vector<uint32_t> expectedClusters;
+            for (const auto& selected : expectedResident) { expectedClusters.push_back(selected.clusterIndex); }
+            if (expectedResident.empty() || !expectedStream.valid || expectedStream.selectedClusters != expectedClusters) {
+                return RhiTestResult::fail("Resident and fully drawable streaming fixture disagree");
+            }
+            bool legacyCutChanged = false;
+            for (uint32_t renderHeight : {1080u, 720u, 540u, 2160u}) {
+                auto scaled = native;
+                scaled.projection[0] = float(renderHeight);
+                scaled.projection[3] = meshletLodRenderPixelThreshold(kDisplayPixelError, renderHeight, kDisplayHeight);
+                const auto actualStream = streamCut(scaled);
+                if (residentCut(scaled) != expectedResident || !actualStream.valid ||
+                    actualStream.selectedClusters != expectedStream.selectedClusters ||
+                    actualStream.activeGroups != expectedStream.activeGroups ||
+                    actualStream.requestedGroups != expectedStream.requestedGroups) {
+                    return RhiTestResult::fail("Display-pixel cut changed with render height " + std::to_string(renderHeight));
+                }
+                // Ensure this fixture detects the old internal-pixel policy.
+                scaled.projection[3] = kDisplayPixelError;
+                legacyCutChanged |= residentCut(scaled) != expectedResident &&
+                    streamCut(scaled).selectedClusters != expectedStream.selectedClusters;
+            }
+            if (!legacyCutChanged) { return RhiTestResult::fail("Resolution regression fixture never crosses a LOD boundary"); }
+        }
+        struct ThresholdCase {
+            uint32_t renderHeight, displayHeight;
+            float expected;
+        };
+        const ThresholdCase thresholds[] = {{720, 1080, 1.f}, {540, 1080, .75f},
+            {2160, 1080, 3.f}, {720, 0, 1.5f}, {0, 0, 1.5f}, {0, 1080, 1.5f / 1080.f}};
+        for (const auto& test : thresholds) {
+            const float actual = meshletLodRenderPixelThreshold(1.5f, test.renderHeight, test.displayHeight);
+            // Multiplying a rounded ratio can differ by one ULP from dividing
+            // the pixel error directly, notably for a zero render extent.
+            const float tolerance = 4.f * std::numeric_limits<float>::epsilon() * test.expected;
+            if (!std::isfinite(actual) || std::abs(actual - test.expected) > tolerance) {
+                return RhiTestResult::fail("Threshold conversion failed for render/display height " +
+                    std::to_string(test.renderHeight) + "/" + std::to_string(test.displayHeight) +
+                    ": expected " + std::to_string(test.expected) + ", actual " + std::to_string(actual));
+            }
+        }
+        return RhiTestResult::pass("Perspective/orthographic resident and streaming cuts remain stable across native, Quality, Performance and supersampling; missing sizes are safe");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MeshletLodDisplayPixelThresholdTest);
+
 #define LOD_REQUIRE(expr) do { auto checked = (expr); if (!checked) { return RhiTestResult::fail(std::string(#expr) + ": " + toString(checked) + " " + log); } } while (false)
 
 class MeshletLodGpuTest final : public RhiTest {
@@ -171,12 +257,20 @@ public:
         std::unique_ptr<Fence> fence;
         LOD_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
         LOD_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })); LOD_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
-        for (uint32_t test = 0; test < 24; ++test) {
+        std::array<std::vector<MeshletLodSelection>, 2> displayPixelCuts;
+        for (uint32_t test = 0; test < 32; ++test) {
             MeshletLodView view;
             view.eye = {float(test % 3) * 20, 1, float(test % 5) * 25, .1f};
             view.forward[3] = test % 2 ? 1.f : 0.f;
             view.projection = {test % 3 ? 1080.f : 540.f, .577350269f, 100.f, .2f + float(test % 7)};
-            uint32_t manual = test >= 20 ? test - 20 : UINT32_MAX;
+            const uint32_t manual = test >= 20 && test < 24 ? test - 20 : UINT32_MAX;
+            if (test >= 24) {
+                const uint32_t renderHeight = std::array{1080u, 720u, 540u, 2160u}[(test - 24) % 4];
+                view.eye = {0, 0, 50, .1f};
+                view.forward[3] = test >= 28 ? 1.f : 0.f;
+                view.projection = {float(renderHeight), .577350269f, 60.f,
+                    meshletLodRenderPixelThreshold(1.5f, renderHeight, 1080)};
+            }
             const uint32_t count = test == 19 ? 0u : capacity;
             auto expected = selectMeshletLodReference(f.groups, f.clusters, f.instances,
                 std::span(f.candidates).first(count), view, 0, manual);
@@ -237,8 +331,15 @@ public:
                 return RhiTestResult::fail("CPU/GPU LOD mismatch in case " + std::to_string(test) +
                     ": expected " + std::to_string(expected.size()) + ", actual " + std::to_string(actual.size()));
             }
+            if (test >= 24) {
+                auto& nativeCut = displayPixelCuts[(test - 24) / 4];
+                if ((test - 24) % 4 == 0) { nativeCut = actual; }
+                else if (actual != nativeCut) {
+                    return RhiTestResult::fail("GPU display-pixel cut changed with render resolution in case " + std::to_string(test));
+                }
+            }
         }
-        return RhiTestResult::pass("24 GPU/reference comparisons: perspective/ortho, near plane, render resolution, shear/reflection, hidden instances, empty cut, manual LOD and indirect arguments");
+        return RhiTestResult::pass("32 GPU/reference comparisons: perspective/ortho, near plane, shear/reflection, hidden instances, empty cut, manual LOD, indirect arguments and invariant display-pixel cuts across native/Quality/Performance/supersampling");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MeshletLodGpuTest);

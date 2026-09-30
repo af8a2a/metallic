@@ -524,7 +524,9 @@ private:
         const uint32_t strides[] = {sizeof(MeshletStreamGpuInstance), sizeof(primitive), sizeof(MeshletStreamGpuGroup),
             sizeof(MeshletStreamGpuParams), 4, 4, sizeof(StreamPageTableEntry), 4,
             sizeof(MeshletStreamGpuActiveGroup), sizeof(MeshletStreamGpuActiveHeader), sizeof(MeshletStreamGpuDrawIndirect), 4, 4, sizeof(MeshletStreamGpuTraversalWorkItem)};
-        const uint64_t logicalStateBytes = (4 + kGroupCount * 3 + 4) * sizeof(uint32_t);
+        // Retain the ordinary pair/sparse layout; diagnostic history is an
+        // optional two words per instance-group and one visible-frame stamp.
+        const uint64_t logicalStateBytes = (4 + kGroupCount * 5 + 5) * sizeof(uint32_t);
         // Cross the maximum X dispatch dimension and leave a partial last row.
         const uint64_t allocatedStateBytes = large ? (65535ull * 64 + 67) * sizeof(uint32_t) : logicalStateBytes;
         const uint64_t sizes[] = {strides[Instance], sizeof(primitive), groups.size() * sizeof(groups[0]), strides[Params],
@@ -618,6 +620,7 @@ private:
         uint32_t positivePriorities = 0;
         uint32_t viewDemandReductions = 0;
         uint32_t speculativeRequests = 0;
+        uint32_t predictedRequests = 0;
         MeshletStreamUserPush push;
         push.instanceBuffer = handles[Instance].shaderIndex;
         push.primitiveBuffer = handles[Primitive].shaderIndex;
@@ -651,15 +654,20 @@ private:
         STREAM_LOD_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
         STREAM_LOD_REQUIRE(device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }));
         const uint32_t caseCount = large ? 36u : 37u;
-        for (uint32_t frame = 0; frame < caseCount * 8; ++frame) {
-            const uint32_t test = frame % caseCount;
-            const bool useBvh = frame >= caseCount;
-            const bool cooperative = frame >= caseCount * 2;
-            const bool viewDriven = frame >= caseCount * 3;
-            const bool prefetch = frame >= caseCount * 4;
-            const bool switching = frame >= caseCount * 7;
-            const bool distributed = frame >= caseCount * 6 && (!switching || test % 2 == 0);
-            const bool split = switching ? distributed : frame >= caseCount * 5;
+        const uint32_t ordinaryFrames = caseCount * 8;
+        MeshletStreamGpuParams priorParams;
+        for (uint32_t frame = 0; frame < ordinaryFrames + (large ? 0u : 80u); ++frame) {
+            const bool telemetrySequence = frame >= ordinaryFrames;
+            const uint32_t telemetryStep = telemetrySequence ? (frame - ordinaryFrames) % 20u : 0u;
+            const uint32_t telemetryPath = telemetrySequence ? (frame - ordinaryFrames) / 20u : 0u;
+            const uint32_t test = telemetrySequence ? 0u : frame % caseCount;
+            const bool useBvh = telemetrySequence ? telemetryPath != 0 : frame >= caseCount;
+            const bool cooperative = telemetrySequence ? telemetryPath >= 2 : frame >= caseCount * 2;
+            const bool viewDriven = telemetrySequence || frame >= caseCount * 3;
+            const bool prefetch = !telemetrySequence && frame >= caseCount * 4;
+            const bool switching = !telemetrySequence && frame >= caseCount * 7;
+            const bool distributed = telemetrySequence ? telemetryPath == 3 : frame >= caseCount * 6 && (!switching || test % 2 == 0);
+            const bool split = telemetrySequence ? distributed : switching ? distributed : frame >= caseCount * 5;
             const float viewAspect = viewDriven && test % 7 == 1 ? .25f : 1.f;
             primitive.lodBvhNodeCount = useBvh ? static_cast<uint32_t>(nodes.size()) : 0;
             uint32_t manual, capacity;
@@ -672,11 +680,37 @@ private:
                 fixture.view.projection[3] = .021f;
                 fixture.drawable[128] = 0; available[128] = 0;
             }
-            if (viewDriven) {
+            if (viewDriven && !telemetrySequence) {
                 if (prefetch && large && test == 7) { fixture.drawable[128] = 0; available[128] = 0; }
                 if (test % 6 == 0) { fixture.instance.worldMatrix[12] = 500.f; }
                 if (test % 6 == 2) { fixture.instance.worldMatrix[14] = 1000.f; }
                 if (test % 6 == 4) { fixture.instance.worldMatrix[14] = -2000000.f; }
+            }
+            if (telemetrySequence) {
+                fixture = StreamLodFixture{};
+                available.assign(kGroupCount, 1);
+                manual = UINT32_MAX;
+                capacity = kGroupCount;
+                if (telemetryStep == 0 || telemetryStep == 10) { fixture.view.projection[3] = 100.f; }
+                if (telemetryStep == 3 || telemetryStep == 7 || telemetryStep == 12) {
+                    fixture.drawable[0] = 0; available[0] = 0;
+                }
+                if (telemetryStep == 5) { fixture.drawable[3] = 0; available[3] = 1; } // PendingUpload parent.
+                if (telemetryStep == 8) { fixture.instance.identity[3] = 0; }
+                // Instance remains visible, but its refinement bounds enter the
+                // frustum on step 11. This must not be called an SSE crossing.
+                if (telemetryStep == 10) { fixture.view.eye[0] = 1000.f; }
+                if (telemetryStep == 13) { capacity = 2; }
+                if (telemetryStep == 14) { manual = 0; }
+            }
+            const bool forecastExclusive = switching && !large && test == 9;
+            if (forecastExclusive) {
+                fixture.view.eye[2] = 30.f;
+                fixture.view.forward[3] = 0.f;
+                fixture.view.projection[3] = 18.f;
+                std::fill(fixture.drawable.begin(), fixture.drawable.end(), uint8_t{1});
+                fixture.drawable[1] = 0;
+                available = fixture.drawable;
             }
             auto demandMetrics = fixture.groups;
             for (uint32_t group = 0; group < kGroupCount; ++group) {
@@ -724,7 +758,7 @@ private:
             params.lodInstanceOffsetsOffset = instanceOffsetsOffset;
             params.sceneInstanceCount = 1;
             params.demandBuffer = distributed ? handles[Demand].shaderIndex : UINT32_MAX;
-            params.demandStatsBuffer = distributed || switching ? handles[Demand].shaderIndex : UINT32_MAX;
+            params.demandStatsBuffer = distributed || switching || telemetrySequence ? handles[Demand].shaderIndex : UINT32_MAX;
             params.demandTaskOffset = demandTaskOffset;
             params.demandInstanceOffsetsOffset = demandInstanceOffsets;
             params.demandTaskCount = static_cast<uint32_t>(demandRoots.size());
@@ -736,12 +770,35 @@ private:
             params.activeGroupCount = capacity;
             params.drawTaskCount = capacity * 4;
             params.frameIndex = frame + 1;
+            if (telemetrySequence && telemetryStep >= 18) { params.frameIndex = 0x04000000u + telemetryStep - 18u; }
             params.selectedLodLevel = manual;
             params.enableGpuLodSelection = manual == UINT32_MAX;
+            params.enableLodTransitionTelemetry = telemetrySequence && telemetryStep != 16;
+            std::copy_n(priorParams.eye, 4, params.previousEye);
+            std::copy_n(priorParams.center, 4, params.previousCenter);
+            std::copy_n(priorParams.upProjection, 4, params.previousUpProjection);
+            std::copy_n(priorParams.viewport, 4, params.previousViewport);
+            std::copy_n(priorParams.clipOrtho, 4, params.previousClipOrtho);
+            params.previousLodPixelError = priorParams.lodPixelError;
+            priorParams = params;
             params.maxGpuPageRequests = kRequestCapacity;
             params.prefetchParams[0] = 1.125f;
             params.prefetchParams[1] = .85f;
             params.prefetchParams[2] = prefetch ? 1.f : 0.f;
+            // Exercise a translated/turned forecast independently of the real
+            // selection view. The cut oracle below must still match that view.
+            if (switching && test % 2 != 0 && test != 1) {
+                params.prefetchParams[3] = 1.f;
+                for (uint32_t axis = 0; axis < 3; ++axis) {
+                    params.prefetchEye[axis] = params.eye[axis] + fixture.view.forward[axis] * (forecastExclusive ? 3.f : 2.f);
+                }
+                const float yaw = forecastExclusive ? 0.f : .15f;
+                const float x = fixture.view.forward[0], z = fixture.view.forward[2];
+                params.prefetchCenter[0] = params.prefetchEye[0] + x * std::cos(yaw) + z * std::sin(yaw);
+                params.prefetchCenter[1] = params.prefetchEye[1] + fixture.view.forward[1];
+                params.prefetchCenter[2] = params.prefetchEye[2] - x * std::sin(yaw) + z * std::cos(yaw);
+                params.prefetchUp[1] = 1.f;
+            }
             std::vector<StreamPageTableEntry> pages(kGroupCount);
             for (uint32_t group = 0; group < kGroupCount; ++group) {
                 pages[group].deviceOffsetAndState = packStreamPageTableEntry(
@@ -791,7 +848,7 @@ private:
                 if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), BufferCount}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-            if (frame == caseCount) {
+            if (frame == caseCount || (telemetrySequence && (telemetryStep == 0 || telemetryStep == 18))) {
                 // The compatibility linear path predates sparse state. Run
                 // the production initializer once when changing algorithms.
                 push.activeBuildPhase = 8;
@@ -865,6 +922,31 @@ private:
             std::memcpy(state.data(), mapped + offsets[4], logicalStateBytes);
             std::array<uint32_t, kMeshletStreamDemandStatsWords> demandStats{};
             std::memcpy(demandStats.data(), mapped + offsets[5], sizeof(demandStats));
+            if (telemetrySequence) {
+                const uint32_t expectedCatchup = telemetryStep == 4 ? 1u : telemetryStep == 6 ? 2u : 0u;
+                const uint32_t expectedThreshold = telemetryStep == 1 ? 2u : 0u;
+                const uint32_t expectedOwnBlocked = telemetryStep == 3 || telemetryStep == 5 ||
+                    telemetryStep == 7 || telemetryStep == 12 ? 1u : 0u;
+                const uint32_t expectedDependencyBlocked = telemetryStep == 5 ? 2u : 0u;
+                if (demandStats[20] != expectedOwnBlocked || demandStats[21] != expectedDependencyBlocked ||
+                    demandStats[23] != expectedCatchup || demandStats[24] != expectedCatchup * 2u ||
+                    demandStats[25] != expectedThreshold || demandStats[26] != expectedThreshold * 2u) {
+                    return RhiTestResult::fail("LOD transition telemetry mismatch: path " + std::to_string(telemetryPath) +
+                        ", step " + std::to_string(telemetryStep) + ", own/dependency/catchup/threshold " +
+                        std::to_string(demandStats[20]) + "/" + std::to_string(demandStats[21]) + "/" +
+                        std::to_string(demandStats[23]) + "/" + std::to_string(demandStats[25]));
+                }
+                if ((telemetryStep == 9 || telemetryStep == 11 || telemetryStep == 15 ||
+                        telemetryStep == 17 || telemetryStep == 19) && demandStats[27] != 2u) {
+                    return RhiTestResult::fail("First/reentry/manual/frozen/wrap selection was not left unclassified");
+                }
+                if (telemetryStep == 6 && demandStats[22] != 3u) {
+                    return RhiTestResult::fail("Missing parent did not preserve descendant catch-up history");
+                }
+                if (telemetryStep == 13 && (demandStats[22] != 1u || demandStats[23] != 0u)) {
+                    return RhiTestResult::fail("Capacity fallback was misreported as selected catch-up");
+                }
+            }
             if ((distributed || switching) && (demandStats[17] != uint32_t(distributed) ||
                     demandStats[18] != (distributed ? demandStats[3] : state[4 + kGroupCount * 2 + 2]))) {
                 return RhiTestResult::fail("Demand policy feedback did not match the current traversal");
@@ -904,6 +986,9 @@ private:
                 return RhiTestResult::fail("stream frontier request overflow or invalid page");
             }
             std::vector<uint32_t> requested(requests.begin() + 16, requests.begin() + 16 + requests[2]);
+            if (forecastExclusive && std::find(requested.begin(), requested.end(), 1u | kStreamPrefetchPageTag) == requested.end()) {
+                return RhiTestResult::fail("Predicted approach did not request the forecast-exclusive page");
+            }
             uint32_t forecastCount = 0;
             std::vector<uint8_t> requestedOnce(kGroupCount);
             for (uint32_t encoded : requested) {
@@ -914,6 +999,17 @@ private:
                 if (!tagged) { continue; }
                 ++forecastCount;
                 auto forecastView = fixture.view;
+                if (params.prefetchParams[3] != 0.f) {
+                    for (uint32_t axis = 0; axis < 3; ++axis) {
+                        forecastView.eye[axis] = params.prefetchEye[axis];
+                        forecastView.forward[axis] = params.prefetchCenter[axis] - params.prefetchEye[axis];
+                    }
+                }
+                auto forecastMetric = forecastView;
+                forecastMetric.projection[3] *= .85f;
+                if (!meshletLodNeedsFine(fixture.groups[page], fixture.instance, forecastMetric, UINT32_MAX)) {
+                    return RhiTestResult::fail("Forecast ignored predicted-camera screen error: " + caseLabel);
+                }
                 forecastView.projection[1] *= 1.125f;
                 forecastView.projection[2] *= 1.125f;
                 if (!prefetch || manual != UINT32_MAX || available[page] ||
@@ -928,6 +1024,7 @@ private:
                 return RhiTestResult::fail("Saturated demand buffer did not drop speculative requests");
             }
             speculativeRequests += forecastCount;
+            if (params.prefetchParams[3] != 0.f) { predictedRequests += forecastCount; }
             if (cooperative) {
                 for (uint32_t index = 0; index < requests[2]; ++index) {
                     const uint32_t bits = requests[kPriorityOffset + index];
@@ -996,6 +1093,7 @@ private:
         }
         if (positivePriorities == 0) { return RhiTestResult::fail("Visible requests never generated screen benefit"); }
         if (speculativeRequests == 0) { return RhiTestResult::fail("Lookahead never requested a missing descendant"); }
+        if (predictedRequests == 0) { return RhiTestResult::fail("Predicted camera never requested a missing descendant"); }
         if (viewDemandReductions == 0) { return RhiTestResult::fail("View demand never pruned an offscreen refinement"); }
         return RhiTestResult::pass("GPU-reference cuts, requests, sparse state and fallback agree");
     }

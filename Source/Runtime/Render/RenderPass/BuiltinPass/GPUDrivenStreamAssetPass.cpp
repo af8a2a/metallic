@@ -322,9 +322,18 @@ public:
 
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
+        auto prefetch = runtimeBoolSetting("predictivePrefetch", "Predictive Geometry Prefetch", true);
+        prefetch.rebuildGraph = true;
+        auto retention = runtimeBoolSetting("adaptivePageRetention", "Adaptive Page Retention", true);
+        retention.rebuildGraph = true;
+        auto telemetry = runtimeBoolSetting("enableLodTransitionTelemetry", "LOD Transition Diagnostics (Extra GPU Memory)", false);
+        telemetry.rebuildGraph = true;
         return {
+            prefetch,
+            retention,
+            telemetry,
             runtimeBoolSetting("autoLod", "Auto Meshlet LOD", autoLodProperty(properties())),
-            runtimeFloatSetting("lodPixelError", "LOD Error (render px)", 1.5f, 0.05f, 16.0f),
+            runtimeFloatSetting("lodPixelError", "LOD Error (display px)", 1.5f, 0.05f, 16.0f),
             runtimeFloatSetting("lodBias", "LOD Bias", 0.0f, -4.0f, 4.0f),
             runtimeIntSetting("lodLevel", "Manual LOD (Auto Off)", static_cast<int32_t>(selectedLodProperty(properties())), 0, 31),
             runtimeBoolSetting("instanceFrustumCull", "Instance Frustum Cull", true),
@@ -1310,6 +1319,7 @@ private:
         MeshletStreamFrameDesc frame{
             .width = context.width(),
             .height = context.height(),
+            .displayHeight = context.displayHeight(),
             .selectedLodLevel = enableGpuLodSelection
                 ? kMeshletStreamNoDebugLodOverride
                 : selectedLodProperty(context.properties()),

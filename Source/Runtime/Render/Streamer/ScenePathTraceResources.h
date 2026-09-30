@@ -92,7 +92,12 @@ public:
     bool preparing() const;
     Result<> syncRuntimeScene(const scene::Scene* runtimeScene, std::string& log);
     Result<> uploadMaterialTextures(CommandBuffer& commandBuffer);
-    // Called once by the deferred consumer; never waits for feedback or decode.
+    // Called once by the deferred consumer with a frame context; never waits for
+    // feedback or decode. Each texture slot has eight uint words: source width,
+    // height, mip count, resident first mip, wanted mip, hit count, float bits of
+    // the tail-relative sampling LOD floor, reserved. Sampling metadata remains
+    // valid when demand is disabled (source width is zero), including freezes.
+    // freezePublication also pauses the 150 ms texture mip reveal transition.
     Result<> beginTextureStreaming(
         CommandBuffer& commands,
         uint64_t frameIndex,

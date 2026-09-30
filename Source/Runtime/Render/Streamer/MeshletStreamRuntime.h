@@ -11,6 +11,7 @@
 #include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/Streamer/MeshletStreamClas.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
+#include "Runtime/Render/Streamer/MeshletStreamPrefetch.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include "Runtime/Scene/Scene.h"
 
@@ -333,7 +334,7 @@ struct MeshletStreamGpuParams {
     float previousUpProjection[4] = {};
     float previousViewport[4] = {};
     float previousClipOrtho[4] = {};
-    float lodPixelError = 1.5f;
+    float lodPixelError = 1.5f; // Resolved internal render-pixel threshold (GPU ABI).
     uint32_t lodTopologyBuffer = UINT32_MAX;
     uint32_t lodStateBuffer = UINT32_MAX;
     uint32_t lodInstanceOffsetsOffset = 0;
@@ -342,7 +343,7 @@ struct MeshletStreamGpuParams {
     float renderUpProjection[4] = {};
     float renderViewport[4] = {};
     float renderClipOrtho[4] = {};
-    float prefetchParams[4] = {}; // Frustum expansion, LOD error scale, enabled, reserved.
+    float prefetchParams[4] = {}; // Frustum expansion, LOD error scale, enabled, forecast pose valid.
     uint32_t demandBuffer = UINT32_MAX;
     uint32_t demandTaskOffset = 0; // Tile root indices in LOD topology, grouped by instance.
     uint32_t demandTaskCount = 0;
@@ -356,6 +357,12 @@ struct MeshletStreamGpuParams {
     uint32_t enableBlasInstanceReuse = 1;
     uint32_t blasStoragePadding = 0;
     uint32_t blasSizeClasses[32] = {};
+    float prefetchEye[4] = {};
+    float prefetchCenter[4] = {};
+    float prefetchUp[4] = {};
+    uint32_t enableLodTransitionTelemetry = 0;
+    float previousLodPixelError = 1.5f;
+    uint32_t lodTelemetryPadding[2] = {};
 };
 
 struct MeshletStreamGpuRasterBindings {
@@ -465,7 +472,7 @@ static_assert(sizeof(MeshletStreamGpuBlasHeader) == 96);
 static_assert(sizeof(MeshletStreamGpuInstanceBlas) == 64);
 static_assert(sizeof(MeshletStreamGpuBlasBuildInfo) == 16);
 static_assert(sizeof(StreamPageTableEntry) == 8);
-static_assert(sizeof(MeshletStreamGpuParams) == 560);
+static_assert(sizeof(MeshletStreamGpuParams) == 624);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
 static_assert(offsetof(MeshletStreamGpuParams, pageBufferBytes) == 100);
 static_assert(sizeof(MeshletStreamGpuRasterBindings) == 96);
@@ -495,6 +502,7 @@ struct MeshletStreamRuntimeDesc {
     bool enableClas = false; // Build resident CLAS independently of per-frame BLAS/TLAS.
     bool compactClas = false;
     uint32_t coldPageRetentionFrames = 0; // Zero preserves budget-only eviction.
+    bool adaptivePageRetention = true; // Bounded headroom/cache retention when cold reclaim is enabled.
     uint64_t maxClasBytes = 512ull * 1024ull * 1024ull;
     uint64_t startClasBytes = 0;
     uint64_t growClasBytes = 64ull * 1024ull * 1024ull;
@@ -515,6 +523,8 @@ struct MeshletStreamRuntimeDesc {
     bool enableGpuDecompression = false; // Opt-in GPU-ready assets; unsupported devices decode on CPU.
     uint64_t gpuDecompressionMinBatchBytes = 1024 * 1024;
     bool prefetchPages = true;
+    bool predictivePrefetch = true;
+    bool enableLodTransitionTelemetry = false; // Optional per-instance/group history allocation.
     uint32_t rasterMaterialTextureCapacity = 0;
     bool compactShadingAttributes = false;
     // The subsystem drains a dedicated root-loading queue after scene/pass
@@ -539,9 +549,10 @@ struct MeshletStreamCameraDesc {
 struct MeshletStreamFrameDesc {
     uint32_t width = 1;
     uint32_t height = 1;
+    uint32_t displayHeight = 0; // Final viewport height; zero uses the render height.
     uint32_t selectedLodLevel = kMeshletStreamNoDebugLodOverride;
     bool enableGpuLodSelection = true;
-    float lodPixelError = 1.5f;
+    float lodPixelError = 1.5f; // Display viewport pixels, before lodBias.
     float lodBias = 0.0f;
     uint32_t debugColorMode = kMeshletStreamDebugPage;
     MeshletStreamCameraDesc camera;
@@ -754,6 +765,10 @@ private:
     std::unordered_set<uint32_t> queuedClasPages_;
     uint32_t maxClasBuildClusters_ = 0;
     uint32_t coldPageRetentionFrames_ = 0;
+    bool adaptivePageRetention_ = false;
+    uint64_t geometryReclaimReserveBytes_ = 0;
+    uint64_t geometryDemandReserveBytes_ = 0;
+    uint64_t maxDevicePageBytes_ = 0;
     bool clusterRtxEnabled_ = false;
     MeshletStreamGpuBlasHeader recentBlasHeader_;
     ResourceLease pageHandle_;
@@ -822,7 +837,15 @@ private:
     bool currentFrameDistributedDemand_ = true;
     uint32_t distributedDemandMinGroups_ = 65536;
     uint32_t recentDemandGroupTests_ = UINT32_MAX;
+    std::array<uint32_t, kMeshletStreamDemandStatsWords> recentDemandStats_{};
+    uint64_t lodTransitionHistoryBytes_ = 0;
+    uint32_t recentPrefetchGpuRequests_ = 0, recentPrefetchGpuDropped_ = 0;
     bool prefetchPages_ = false;
+    bool predictivePrefetch_ = true;
+    bool lodTransitionTelemetry_ = false;
+    MeshletStreamPrefetchPredictor prefetchPredictor_;
+    MeshletStreamPrefetchResult prefetchForecast_;
+    uint64_t previousPrefetchTime_ = 0;
     bool currentFramePrefetch_ = false;
     uint32_t recentGpuRequestCount_ = 0;
     uint32_t maxGpuPageUnloadRequests_ = 0;

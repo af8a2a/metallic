@@ -212,6 +212,9 @@ struct MeshletStreamResidencyDesc {
     bool completionDrivenUploads = true;
     bool gpuDecompression = false;
     uint64_t gpuDecompressionMinBatchBytes = 1024 * 1024; // Zero forces GPU for every eligible page.
+    uint64_t prefetchReserveBytes = 0; // Zero preserves the legacy 75% admission watermark.
+    uint32_t maxPageEvictionsPerFrame = 256;
+    uint64_t maxEvictionBytesPerFrame = 0; // Zero leaves only the page-count limit.
 };
 
 struct MeshletStreamResidencyStats {
@@ -275,6 +278,10 @@ struct MeshletStreamResidencyStats {
     uint32_t frameResidentBudgetFailureCount = 0;
     uint32_t frameTransferBudgetFailureCount = 0;
     uint32_t frameEvictedPageCount = 0;
+    uint64_t frameColdResidentBytes = 0;
+    uint64_t framePendingFreeBytes = 0;
+    uint64_t frameEvictedGeometryBytes = 0;
+    uint32_t frameEvictedPrefetchPages = 0;
     uint32_t frameAllocationFailureCount = 0;
     uint32_t frameEvictionScanCount = 0;
     uint32_t frameEvictionCandidateTests = 0;
@@ -343,6 +350,9 @@ struct MeshletStreamColdPageReclaimDesc {
     uint32_t retentionFrames = 120;
     uint32_t pressureAgeFrames = 16;
     uint32_t maxPages = 256;
+    uint64_t geometryReserveBytes = 0;
+    uint64_t geometryPressureReserveBytes = 0; // Zero preserves the legacy 85% / 70% watermarks.
+    bool retainDemandCache = false;
     std::function<uint64_t(uint32_t)> clasPageBytes;
 };
 
@@ -401,8 +411,14 @@ public:
     // Detailed mode scans page ages and allocator free blocks.
     MeshletStreamResidencyStats stats(bool detailed = true) const;
     MeshletStreamLatencySnapshot latencySnapshot() const { return latency_ ? latency_->snapshot() : MeshletStreamLatencySnapshot{}; }
+    MeshletStreamLatencySummary recentDemandLatency(uint64_t now = meshletStreamTimeMicroseconds()) const
+    {
+        return latency_ ? latency_->recentDemandLatency(now) : MeshletStreamLatencySummary{};
+    }
     MeshletStreamThroughput throughputSnapshot() const { return throughput_.snapshot(meshletStreamTimeMicroseconds(), traffic_); }
     uint64_t gpuDecompressionMinBatchBytes() const { return gpuDecompressionMinBatchBytes_; }
+    // Admission uses real allocator space; scheduled frees are not available yet.
+    bool canPrefetchPage(uint64_t devicePayloadBytes) const;
     uint32_t availablePrefetchRequests() const
     {
         const uint32_t limit = pageLoader_.ready() ? std::max(maxPageLoadsInFlight_ / 4u, 1u) : 32u;
@@ -448,6 +464,7 @@ private:
 
     size_t prepareEvictionCandidates(CpuProfileRecorder* profiler = nullptr, uint32_t minimumAge = 0);
     bool allocatePageStorage(uint32_t pageIndex);
+    bool evictionBudgetAvailable(uint64_t allocationBytes) const;
     bool scheduleUnload(uint32_t pageIndex, bool eviction);
     void completeUnloadTask(uint32_t taskIndex);
     void completeUploadPages(std::span<const uint32_t> pageIndices, uint32_t taskIndex);
@@ -499,6 +516,7 @@ private:
     struct EvictionCandidate {
         uint64_t lastUsedFrame;
         uint32_t pageIndex;
+        bool prefetch;
     };
     std::vector<EvictionCandidate> evictionCandidates_;
     size_t evictionCandidateCursor_ = 0;
@@ -549,6 +567,9 @@ private:
     uint32_t unloadDelayFrames_ = 1;
     uint32_t evictionAgeThresholdFrames_ = 1;
     uint32_t maxPageLoadsInFlight_ = 0;
+    uint64_t prefetchReserveBytes_ = 0;
+    uint32_t maxPageEvictionsPerFrame_ = 256;
+    uint64_t maxEvictionBytesPerFrame_ = 0;
     bool immediateGpuRequests_ = false;
     bool completionDrivenUploads_ = true;
     bool gpuDecompression_ = false;

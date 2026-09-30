@@ -1,5 +1,12 @@
 # Performance evidence and shader debugging tools
 
+The production ZorahFull live baseline uses
+[ZorahFullBaseline.Live.json](ZorahFullBaseline.Live.json), with a fixed
+2560x1440 output, DLSS Quality and the default wave32 raster path. See the
+[2026-09-30 baseline](../../Documentation/ZorahFullPerformanceBaseline20260930.md)
+for the repeatable command, actual internal extent, process-level results and
+evidence limits. The historical frozen WorkControl case remains a separate workload.
+
 P2 production Shader Printf observations use [ShaderTrace.py](ShaderTrace.py). See
 [commands and the evidence contract](ShaderTrace.md). This is a separate diagnostic
 process with exact WorkControl input/output checks; it is not eligible for timing acceptance.

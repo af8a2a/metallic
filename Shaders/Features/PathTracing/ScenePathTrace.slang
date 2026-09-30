@@ -389,21 +389,11 @@ float3 rayOriginFromPixel(float2 pixel, ScenePathTracePush push)
 
 RayCone primaryRayConeFromPixel(float2 pixel, ScenePathTracePush push)
 {
-    if (push.upProjection.w > 0.5) {
-        float aspect = max(push.viewport.x, 0.001);
-        float halfHeight = max(push.clipOrtho.z * 0.5, 0.0001);
-        float pixelWidth = halfHeight * 2.0 * aspect / float(max(push.width, 1u));
-        float pixelHeight = halfHeight * 2.0 / float(max(push.height, 1u));
-        return makeRayCone(max(pixelWidth, pixelHeight), 0.0);
-    }
-
-    float3 centerDirection = rayDirectionFromPixel(pixel, push);
-    float3 xDirection = rayDirectionFromPixel(pixel + float2(1.0, 0.0), push);
-    float3 yDirection = rayDirectionFromPixel(pixel + float2(0.0, 1.0), push);
-    float spreadAngle = max(
-        acos(clamp(dot(centerDirection, xDirection), -1.0, 1.0)),
-        acos(clamp(dot(centerDirection, yDirection), -1.0, 1.0))) * 2.0;
-    return makeRayCone(0.0, spreadAngle);
+    // One internal-render pixel, matching the reference ray-cone diameter.
+    // Analytic projection avoids acos precision steps at small pixel angles.
+    float2 cone = primaryTextureRayCone(uint2(push.width, push.height), push.viewport.x,
+        push.viewport.w, push.clipOrtho.z, push.upProjection.w > 0.5);
+    return makeRayCone(cone.x, cone.y);
 }
 
 float3 offsetRay(float3 position, float3 normal)
@@ -871,6 +861,20 @@ STF_SamplerState makeMaterialStfSampler(ScenePathTracePush push, inout uint seed
     return samplerState;
 }
 
+float materialTextureSamplingFloor(uint textureIndex)
+{
+#if METALLIC_DEFERRED_LIGHT_GRID
+    RWStructuredBuffer<uint> metadata = getResource<RWStructuredBuffer<uint>>(95);
+    uint count, stride;
+    metadata.GetDimensions(count, stride);
+    uint offset = textureIndex * 8u;
+    // A frozen/full feedback queue disables source-dimension demand, but still
+    // supplies the sampling floor associated with this frame's resident tail.
+    if (offset + 6u < count) { return max(asfloat(metadata[offset + 6u]), 0.0); }
+#endif
+    return 0.0;
+}
+
 float4 loadMaterialTextureMip0(
     PathTraceTextureInfo textureInfo,
     float2 uv,
@@ -913,8 +917,16 @@ float4 loadMaterialTextureMip0(
     }
 
     float2 wrappedUv = frac(transformMaterialUv(textureInfo, uv));
+#if METALLIC_REALTIME_DEFERRED
+    // Glass explicitly requests deterministic finest-available sampling in
+    // both comparison modes, including the streaming publication floor.
+    return decodeMaterialTextureSample(sampleResidentMaterialTexture(gMaterialTextures(textureIndex),
+        getResource<SamplerState>(96), wrappedUv, 0.0, materialTextureSamplingFloor(textureIndex)),
+        textureInfo.transform0.w);
+#else
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
     return decodeMaterialTextureSample(gMaterialTextures(textureIndex).Load(int3(texel, 0)), textureInfo.transform0.w);
+#endif
 }
 
 float loadMaterialAlphaCoverage(PathTraceTextureInfo textureInfo, float2 uv, ScenePathTracePush push)
@@ -1001,11 +1013,22 @@ float4 loadMaterialTexture(
     }
 
     float mipLevel = rayConeTextureLod(textureInfo, rayCone, hit, rayDirection, width, height, mipCount);
+    float mipFloor = materialTextureSamplingFloor(textureIndex);
+#if METALLIC_REALTIME_DEFERRED
+    if ((push.debugFlags & 256u) == 0u) {
+        // Preserve the subsequent lighting/feedback random dimensions when
+        // comparing filtering modes; only the texture estimator changes.
+        rand4(seed);
+        return decodeMaterialTextureSample(sampleResidentMaterialTexture(gMaterialTextures(textureIndex),
+            getResource<SamplerState>(96), transformMaterialUv(textureInfo, uv), mipLevel, mipFloor),
+            textureInfo.transform0.w);
+    }
+#endif
     STF_SamplerState samplerState = makeMaterialStfSampler(push, seed);
     return decodeMaterialTextureSample(samplerState.Texture2DLoadLevel(
         gMaterialTextures(textureIndex),
         transformMaterialUv(textureInfo, uv),
-        mipLevel), textureInfo.transform0.w);
+        max(mipLevel, mipFloor)), textureInfo.transform0.w);
 }
 
 float4 loadMaterialTextureForMaterial(

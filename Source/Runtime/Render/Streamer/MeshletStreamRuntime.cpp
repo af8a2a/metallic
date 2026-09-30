@@ -837,6 +837,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     distributedDemandMinGroups_ = desc.distributedDemandMinGroups;
     prefetchPages_ = desc.prefetchPages && desc.viewDrivenPageDemand && desc.screenSpacePagePriority &&
         asset_.pageCount() < kStreamPrefetchPageTag;
+    predictivePrefetch_ = desc.predictivePrefetch;
+    lodTransitionTelemetry_ = desc.enableLodTransitionTelemetry;
     maxGpuPageUnloadRequests_ = std::max(desc.maxGpuPageUnloadRequests, 1u);
     const uint64_t pageStride = alignUp(asset_.maxPagePayloadBytes(), 256);
     maxResidentBytes_ = desc.maxResidentBytes;
@@ -897,6 +899,21 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     pageBufferState_ = ResourceState::Undefined;
 
     phase.next("streamInit.residency");
+    for (const auto& page : asset_.pages()) {
+        maxDevicePageBytes_ = std::max(maxDevicePageBytes_, uint64_t(scene::meshletStreamDevicePayloadSize(page)));
+    }
+    adaptivePageRetention_ = desc.adaptivePageRetention && coldPageRetentionFrames_ != 0;
+    if (adaptivePageRetention_) {
+        // Eight upload batches provide bounded turnover space, instead of
+        // discarding 30% of a useful cache. Half remains reserved for demand;
+        // speculative pages may use only the surplus after that reserve.
+        const uint64_t uploadBudget = std::min(maxResidentBytes_,
+            maxUploadBytesPerFrame_ != 0 ? maxUploadBytesPerFrame_ : 8ull * 1024ull * 1024ull);
+        geometryReclaimReserveBytes_ = std::min(maxResidentBytes_ / 8u,
+            std::max(uploadBudget * 8u, maxDevicePageBytes_ * 2u));
+        geometryReclaimReserveBytes_ -= geometryReclaimReserveBytes_ % kMeshletStreamStorageAlignment;
+        geometryDemandReserveBytes_ = geometryReclaimReserveBytes_ / 2u;
+    }
     if (!residency_.initialize(
             MeshletStreamResidencyDesc{
                 .asset = &asset_,
@@ -911,6 +928,10 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                 .completionDrivenUploads = desc.completionDrivenUploads,
                 .gpuDecompression = gpuDecompression,
                 .gpuDecompressionMinBatchBytes = desc.gpuDecompressionMinBatchBytes,
+                .prefetchReserveBytes = geometryDemandReserveBytes_,
+                .maxPageEvictionsPerFrame = adaptivePageRetention_ ? 1024u : 256u,
+                .maxEvictionBytesPerFrame = adaptivePageRetention_
+                    ? std::max(geometryReclaimReserveBytes_, alignUp(maxDevicePageBytes_, kMeshletStreamStorageAlignment)) : 0u,
             },
             reason)) {
         log = "MeshletStreamRuntime residency initialization failed: " + reason;
@@ -1735,7 +1756,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = requestReadbackByteSize + sizeof(uint32_t) + sizeof(MeshletStreamGpuBlasHeader),
+            .size = requestReadbackByteSize + kMeshletStreamDemandStatsWords * sizeof(uint32_t) + sizeof(MeshletStreamGpuBlasHeader),
             .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback,
         },
@@ -2122,6 +2143,10 @@ void MeshletStreamRuntime::reset()
     currentFrameDistributedDemand_ = true;
     distributedDemandMinGroups_ = 65536;
     recentDemandGroupTests_ = UINT32_MAX;
+    recentDemandStats_ = {};
+    lodTransitionHistoryBytes_ = 0;
+    recentPrefetchGpuRequests_ = 0;
+    recentPrefetchGpuDropped_ = 0;
     lodInstanceOffsetsOffset_ = 0;
     lodStateBufferState_ = ResourceState::Undefined;
     nodeBuffer_.reset();
@@ -2158,6 +2183,10 @@ void MeshletStreamRuntime::reset()
     queuedClasPages_.clear();
     maxClasBuildClusters_ = 0;
     coldPageRetentionFrames_ = 0;
+    adaptivePageRetention_ = false;
+    geometryReclaimReserveBytes_ = 0;
+    geometryDemandReserveBytes_ = 0;
+    maxDevicePageBytes_ = 0;
     clusterRtxEnabled_ = false;
     pageHandle_ = {};
     activeGroupHandle_ = {};
@@ -2212,6 +2241,11 @@ void MeshletStreamRuntime::reset()
     screenSpacePagePriority_ = false;
     viewDrivenPageDemand_ = false;
     prefetchPages_ = false;
+    predictivePrefetch_ = true;
+    lodTransitionTelemetry_ = false;
+    prefetchPredictor_.reset();
+    prefetchForecast_ = {};
+    previousPrefetchTime_ = 0;
     currentFramePrefetch_ = false;
     recentGpuRequestCount_ = 0;
     maxGpuPageUnloadRequests_ = 0;
@@ -2335,6 +2369,10 @@ void MeshletStreamRuntime::prepareMaintenance(CpuProfileRecorder* profiler, bool
         const auto clas = clasPool_ ? clasPool_->stats() : MeshletStreamClasPoolStats{};
         residency_.reclaimColdPages({.clasUsedBytes = clas.usedStorageBytes, .clasCapacityBytes = clas.storageBudgetBytes,
             .clasRetiringBytes = clas.retiringStorageBytes, .retentionFrames = coldPageRetentionFrames_,
+            .maxPages = adaptivePageRetention_ ? 1024u : 256u,
+            .geometryReserveBytes = geometryReclaimReserveBytes_,
+            .geometryPressureReserveBytes = geometryDemandReserveBytes_,
+            .retainDemandCache = adaptivePageRetention_,
             .clasPageBytes = [this](uint32_t page) { return clasPool_ ? clasPool_->pageStorageBytes(page) : 0; }}, profiler);
     }
     profile.next("Discard obsolete CLAS plans");
@@ -3134,12 +3172,19 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
 
     lodInstanceOffsetsOffset_ = static_cast<uint32_t>(topology.size());
     uint64_t stateWords = instances.size() * 4ull;
+    lodTransitionHistoryBytes_ = 0;
     for (const auto& instance : instances) {
         topology.push_back(static_cast<uint32_t>(stateWords));
         if (instance.primitiveIndex < primitives.size()) {
             // Active/mask pairs, sparse header and the previous/current active
             // IDs. Only previous active entries need clearing each frame.
-            stateWords += 4ull + primitives[instance.primitiveIndex].groupCount * 3ull;
+            const uint64_t groupCount = primitives[instance.primitiveIndex].groupCount;
+            stateWords += 4ull + groupCount * 3ull;
+            if (lodTransitionTelemetry_) {
+                const uint64_t historyWords = 1ull + groupCount * 2ull;
+                stateWords += historyWords;
+                lodTransitionHistoryBytes_ += historyWords * sizeof(uint32_t);
+            }
         }
         if (stateWords > UINT32_MAX || topology.size() > UINT32_MAX) {
             log = "MeshletStreamRuntime LOD frontier exceeds 32-bit addressing";
@@ -3383,20 +3428,20 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
     }
     if (auto commandResult = transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
     {
-        auto sourceSlice = requestBuffer_.get()->slice({0, readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader)});
+        auto sourceSlice = requestBuffer_.get()->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader)});
         if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-        auto destinationSlice = readback->slice({0, readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader)});
+        auto destinationSlice = readback->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader)});
         if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
         if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
     }
-    if (distributedPageDemand_) {
-        // Piggyback one work counter on the existing completed request feedback;
+    if (distributedPageDemand_ || lodTransitionTelemetry_) {
+        // Piggyback the compact statistics header on completed request feedback;
         // no additional CPU wait or GPU-to-CPU submission is introduced.
         if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
         {
-            auto sourceSlice = demandBuffer_.get()->slice({18u * sizeof(uint32_t), sizeof(uint32_t)});
+            auto sourceSlice = demandBuffer_.get()->slice({0, kMeshletStreamDemandStatsWords * sizeof(uint32_t)});
             if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = readback->slice({readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader), sizeof(uint32_t)});
+            auto destinationSlice = readback->slice({readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader), kMeshletStreamDemandStatsWords * sizeof(uint32_t)});
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
@@ -3462,8 +3507,10 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
         ? kMeshletStreamNoDebugLodOverride
         : frame.selectedLodLevel;
     params.enableGpuLodSelection = frame.enableGpuLodSelection ? 1u : 0u;
-    params.lodPixelError = std::clamp(finiteOr(frame.lodPixelError, 1.5f), 0.05f, 16.0f) *
-        std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f));
+    params.lodPixelError = meshletLodRenderPixelThreshold(
+        std::clamp(finiteOr(frame.lodPixelError, 1.5f), 0.05f, 16.0f) *
+            std::exp2(std::clamp(finiteOr(frame.lodBias, 0.0f), -4.0f, 4.0f)),
+        height, frame.displayHeight);
     params.lodTopologyBuffer = lodTopologyHandle_.shaderIndex();
     params.lodStateBuffer = lodStateHandle_.shaderIndex();
     const uint64_t threshold = uint64_t(distributedDemandMinGroups_) +
@@ -3471,7 +3518,7 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     currentFrameDistributedDemand_ = distributedPageDemand_ &&
         (distributedDemandMinGroups_ == 0 || recentDemandGroupTests_ == UINT32_MAX || recentDemandGroupTests_ >= threshold);
     params.demandBuffer = currentFrameDistributedDemand_ ? demandHandle_.shaderIndex() : UINT32_MAX;
-    params.demandStatsBuffer = distributedPageDemand_ ? demandHandle_.shaderIndex() : UINT32_MAX;
+    params.demandStatsBuffer = distributedPageDemand_ || lodTransitionTelemetry_ ? demandHandle_.shaderIndex() : UINT32_MAX;
     params.demandTaskOffset = demandTaskOffset_;
     params.demandTaskCount = demandTaskCount_;
     params.demandInstanceOffsetsOffset = demandInstanceOffsetsOffset_;
@@ -3521,17 +3568,39 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     std::copy_n(previous.upProjection, 4u, params.previousUpProjection);
     std::copy_n(previous.viewport, 4u, params.previousViewport);
     std::copy_n(previous.clipOrtho, 4u, params.previousClipOrtho);
+    params.previousLodPixelError = previous.lodPixelError;
     const bool moved = !previousFrameParamsValid_ || std::memcmp(params.eye, previous.eye, sizeof(params.eye)) != 0 ||
         std::memcmp(params.center, previous.center, sizeof(params.center)) != 0 ||
         std::memcmp(params.upProjection, previous.upProjection, sizeof(params.upProjection)) != 0 ||
         std::memcmp(params.viewport, previous.viewport, sizeof(params.viewport)) != 0 ||
         std::memcmp(params.clipOrtho, previous.clipOrtho, sizeof(params.clipOrtho)) != 0;
+    const uint64_t now = meshletStreamTimeMicroseconds();
+    const double deltaSeconds = previousPrefetchTime_ != 0 && now >= previousPrefetchTime_
+        ? double(now - previousPrefetchTime_) * 1e-6 : 0;
+    previousPrefetchTime_ = now;
+    MeshletStreamPrefetchConfig forecastConfig;
+    const double sceneRadius = std::max(double(finiteOr(drawBounds_.radius(), 1.f)), 0.001);
+    forecastConfig.maxTranslationDistance = sceneRadius * 0.02;
+    forecastConfig.teleportDistance = sceneRadius * 0.1;
+    const MeshletStreamPrefetchCamera forecastCamera{
+        .eye = {params.eye[0], params.eye[1], params.eye[2]},
+        .center = {params.center[0], params.center[1], params.center[2]},
+        .up = {params.upProjection[0], params.upProjection[1], params.upProjection[2]},
+        .fovDegrees = finiteOr(frame.camera.fovDegrees, 60.f),
+        .orthoHeight = params.clipOrtho[2], .orthographic = frame.camera.orthographic};
+    prefetchForecast_ = prefetchPredictor_.update(forecastCamera, deltaSeconds,
+        residency_.recentDemandLatency(now), !frame.enableGpuLodSelection, forecastConfig);
     currentFramePrefetch_ = prefetchPages_ && frame.enableGpuLodSelection && residency_.availablePrefetchRequests() != 0 &&
         (moved || recentGpuRequestCount_ != 0) &&
-        residency_.storage().usedBytes() + asset_.maxPagePayloadBytes() < maxResidentBytes_ * 3u / 4u;
+        residency_.canPrefetchPage(maxDevicePageBytes_);
     params.prefetchParams[0] = 1.0625f;
     params.prefetchParams[1] = .95f;
     params.prefetchParams[2] = currentFramePrefetch_ ? 1.f : 0.f;
+    params.prefetchParams[3] = predictivePrefetch_ && prefetchForecast_.active ? 1.f : 0.f;
+    std::copy_n(prefetchForecast_.camera.eye.data(), 3u, params.prefetchEye);
+    std::copy_n(prefetchForecast_.camera.center.data(), 3u, params.prefetchCenter);
+    std::copy_n(prefetchForecast_.camera.up.data(), 3u, params.prefetchUp);
+    params.enableLodTransitionTelemetry = lodTransitionTelemetry_ && !frame.freezeRasterSnapshot ? 1u : 0u;
     Result<> result = updateHostBuffer(*paramsBuffer_, &params, sizeof(params));
     if (result) {
         previousFrameParams_ = params;
@@ -3569,9 +3638,12 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
     }
 
     MeshletStreamUserPush push = userPush();
-    const bool initializeState = lodStateBufferState_ == ResourceState::Undefined;
+    // The diagnostic observation packs a 26-bit frame tag. Reset at its wrap,
+    // once per 67 million frames, so an old unvisited group cannot alias history.
+    const bool initializeState = lodStateBufferState_ == ResourceState::Undefined ||
+        (lodTransitionTelemetry_ && (frameIndex_ & 0x03ffffffu) == 0u);
     if (auto commandResult = transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true); !commandResult) { return commandResult; }
-    if (distributedPageDemand_) { if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); !commandResult) { return commandResult; } }
+    if (distributedPageDemand_ || lodTransitionTelemetry_) { if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); !commandResult) { return commandResult; } }
     const auto dispatchPhase = [&](uint32_t phase, uint32_t threadCount) {
         push.activeBuildPhase = phase;
         Result<> result = activeBuildPass_->dispatch(
@@ -3584,7 +3656,7 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
             *traversalWorkBuffer_, traversalWorkBufferState_);
         if (result) {
             if (auto commandResult = transitionBuffer(commandBuffer, *lodStateBuffer_, lodStateBufferState_, ResourceState::General, true); !commandResult) { return commandResult; }
-            if (distributedPageDemand_) { if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); !commandResult) { return commandResult; } }
+            if (distributedPageDemand_ || lodTransitionTelemetry_) { if (auto commandResult = transitionBuffer(commandBuffer, *demandBuffer_, demandBufferState_, ResourceState::General, true); !commandResult) { return commandResult; } }
         }
         return result;
     };
@@ -3966,15 +4038,18 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profile
     if (latest) { consumedRequestFrame_ = latest->frame; }
 
     const auto* header = static_cast<const StreamRequestBufferHeader*>(mapped);
-    if (distributedPageDemand_) {
-        std::memcpy(&recentDemandGroupTests_, static_cast<const uint8_t*>(mapped) +
-            readback->desc().size - sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader), sizeof(uint32_t));
+    if (distributedPageDemand_ || lodTransitionTelemetry_) {
+        std::memcpy(recentDemandStats_.data(), static_cast<const uint8_t*>(mapped) +
+            readback->desc().size - sizeof(recentDemandStats_) - sizeof(MeshletStreamGpuBlasHeader), sizeof(recentDemandStats_));
+        recentDemandGroupTests_ = recentDemandStats_[18];
     }
     if (clusterRtxEnabled_) {
         std::memcpy(&recentBlasHeader_, static_cast<const uint8_t*>(mapped) +
             readback->desc().size - sizeof(MeshletStreamGpuBlasHeader), sizeof(recentBlasHeader_));
     }
     recentGpuRequestCount_ = header->loadCounter;
+    recentPrefetchGpuRequests_ = header->prefetchRequestCounter;
+    recentPrefetchGpuDropped_ = header->prefetchDroppedCounter;
     // This header is already consumed for residency even when debug capture is off.
     debugRequestSourceFrame_ = header->frameIndex;
     debugRequestSourceKnown_ = true;
@@ -4054,7 +4129,7 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
         sizeof(MeshletStreamGpuBlasHeader));
     add("activeGroups", activeGroupBuffer_.get(), activeGroupBufferState_, "MeshletStreamGpuActiveGroup");
     add("lodState", lodStateBuffer_.get(), lodStateBufferState_, "u32");
-    if (distributedPageDemand_) { add("demandStats", demandBuffer_.get(), demandBufferState_, "u32", 0, kMeshletStreamDemandStatsWords * sizeof(uint32_t)); }
+    if (distributedPageDemand_ || lodTransitionTelemetry_) { add("demandStats", demandBuffer_.get(), demandBufferState_, "u32", 0, kMeshletStreamDemandStatsWords * sizeof(uint32_t)); }
     add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "CompactStreamVisibleRecord");
 }
 
@@ -4066,6 +4141,42 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.generation = debugGeneration_;
     result.frameIndex = frameIndex_;
     result.feedbackFrame = debugRequestSourceKnown_ ? debugRequestSourceFrame_ : UINT64_MAX;
+    result.lodTransitionTelemetryEnabled = lodTransitionTelemetry_;
+    result.lodTransitionHistoryBytes = lodTransitionHistoryBytes_;
+    result.lodDemandedGroups = recentDemandStats_[19];
+    result.lodOwnPageBlockedGroups = recentDemandStats_[20];
+    result.lodDependencyBlockedGroups = recentDemandStats_[21];
+    result.lodCatchupActivatedGroups = recentDemandStats_[22];
+    result.lodCatchupSelectedGroups = recentDemandStats_[23];
+    result.lodCatchupSelectedClusters = recentDemandStats_[24];
+    result.lodThresholdSelectedGroups = recentDemandStats_[25];
+    result.lodThresholdSelectedClusters = recentDemandStats_[26];
+    result.lodUnclassifiedSelectedGroups = recentDemandStats_[27];
+    result.lodUnclassifiedSelectedClusters = recentDemandStats_[28];
+    result.predictivePrefetchEnabled = predictivePrefetch_;
+    result.prefetchEnabled = prefetchPages_;
+    result.prefetchMemoryWatermarkBlocked = !residency_.canPrefetchPage(maxDevicePageBytes_);
+    result.prefetchQueueBlocked = residency_.availablePrefetchRequests() == 0;
+    result.prefetchForecastActive = currentFramePrefetch_ && predictivePrefetch_ && prefetchForecast_.active;
+    result.prefetchMeasuredLatency = prefetchForecast_.measuredLatency;
+    result.prefetchHorizonMilliseconds = prefetchForecast_.horizonSeconds * 1000.0;
+    result.prefetchTranslationDistance = prefetchForecast_.translationDistance;
+    result.prefetchRotationDegrees = prefetchForecast_.rotationDegrees;
+    const auto demandLatency = residency_.recentDemandLatency();
+    result.prefetchLatencySamples = demandLatency.count;
+    result.prefetchDemandLatencyP95Milliseconds = demandLatency.p95;
+    result.totalPrefetchAdmitted = stats.totalPrefetchAdmitted;
+    result.totalPrefetchUsed = stats.totalPrefetchUsed;
+    result.totalPrefetchDeferred = stats.totalPrefetchDeferred;
+    result.prefetchGpuRequests = recentPrefetchGpuRequests_;
+    result.prefetchGpuDropped = recentPrefetchGpuDropped_;
+    result.adaptivePageRetentionEnabled = adaptivePageRetention_;
+    result.geometryReclaimReserveBytes = geometryReclaimReserveBytes_;
+    result.geometryDemandReserveBytes = geometryDemandReserveBytes_;
+    result.coldResidentBytes = stats.frameColdResidentBytes;
+    result.pendingFreeBytes = stats.framePendingFreeBytes;
+    result.evictedGeometryBytes = stats.frameEvictedGeometryBytes;
+    result.evictedPrefetchPages = stats.frameEvictedPrefetchPages;
     result.blasFeedbackAvailable = clusterRtxEnabled_ && debugRequestSourceKnown_;
     result.blasFeedbackFrame = recentBlasHeader_.frameIndex;
     result.blasBuildCount = recentBlasHeader_.blasBuildCount;
@@ -4148,6 +4259,7 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
 
 nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
 {
+    const auto recentDemandLatency = residency_.recentDemandLatency();
     using debug::DebugValue;
     const auto stats = residency_.stats();
     const auto latency = residency_.latencySnapshot();
@@ -4213,6 +4325,27 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"demandTaskCapacity", traversalWorkCapacity_}, {"demandWorkers", traversalWorkerCount_},
         {"demandBufferBytes", demandBuffer_ ? demandBuffer_->desc().size : 0},
         {"prefetchPages", prefetchPages_}, {"prefetchActive", currentFramePrefetch_},
+        {"retention", {{"adaptive", adaptivePageRetention_},
+            {"reclaimReserveBytes", geometryReclaimReserveBytes_}, {"demandReserveBytes", geometryDemandReserveBytes_},
+            {"coldResidentBytes", stats.frameColdResidentBytes}, {"pendingFreeBytes", stats.framePendingFreeBytes},
+            {"evictedGeometryBytes", stats.frameEvictedGeometryBytes}, {"evictedPrefetchPages", stats.frameEvictedPrefetchPages},
+            {"pressureEvictions", stats.cpuWork.coldPressureScheduled}, {"retentionEvictions", stats.cpuWork.coldRetentionScheduled}}},
+        {"prefetchMemoryWatermarkBlocked", !residency_.canPrefetchPage(maxDevicePageBytes_)},
+        {"prefetchQueueBlocked", residency_.availablePrefetchRequests() == 0},
+        {"predictivePrefetch", predictivePrefetch_},
+        {"prefetchForecast", {{"active", currentFramePrefetch_ && predictivePrefetch_ && prefetchForecast_.active},
+            {"horizonMilliseconds", prefetchForecast_.horizonSeconds * 1000.0},
+            {"translationDistance", prefetchForecast_.translationDistance}, {"rotationDegrees", prefetchForecast_.rotationDegrees},
+            {"measuredLatency", prefetchForecast_.measuredLatency},
+            {"latencySamples", recentDemandLatency.count}, {"demandLatencyP95Milliseconds", recentDemandLatency.p95},
+            {"gpuRequests", recentPrefetchGpuRequests_}, {"gpuDropped", recentPrefetchGpuDropped_}}},
+        {"lodTransitions", {{"enabled", lodTransitionTelemetry_}, {"historyBytes", lodTransitionHistoryBytes_},
+            {"feedbackFrame", debugRequestSourceKnown_ ? DebugValue(debugRequestSourceFrame_) : DebugValue(nullptr)},
+            {"demandedGroups", recentDemandStats_[19]}, {"ownPageBlockedGroups", recentDemandStats_[20]},
+            {"dependencyBlockedGroups", recentDemandStats_[21]}, {"catchupActivatedGroups", recentDemandStats_[22]},
+            {"catchupSelectedGroups", recentDemandStats_[23]}, {"catchupSelectedClusters", recentDemandStats_[24]},
+            {"thresholdSelectedGroups", recentDemandStats_[25]}, {"thresholdSelectedClusters", recentDemandStats_[26]},
+            {"unclassifiedSelectedGroups", recentDemandStats_[27]}, {"unclassifiedSelectedClusters", recentDemandStats_[28]}}},
         {"latency", std::move(latencyJson)},
         {"requestBufferBytes", requestBuffer_ ? requestBuffer_->desc().size : 0},
         {"requestReadbackBytes", requestReadbackBuffer_ ? requestReadbackBuffer_->desc().size * (requestReadbacks_.size() + 1u) : 0},

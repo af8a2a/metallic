@@ -282,7 +282,7 @@ public:
             runtimeBoolSetting("softwareRasterSharedScreenVertices", "Shared SW Screen Vertices", true),
             runtimeBoolSetting("softwareRasterWorkBins", "Local SW Work Bins", false),
             runtimeBoolSetting("autoLod", "Auto Meshlet LOD", autoLodFromProperties(properties())),
-            runtimeFloatSetting("lodPixelError", "LOD Error (render px)", 1.5f, 0.05f, 16.0f),
+            runtimeFloatSetting("lodPixelError", "LOD Error (display px)", 1.5f, 0.05f, 16.0f),
             runtimeFloatSetting("lodBias", "LOD Bias", 0.0f, -4.0f, 4.0f),
             runtimeIntSetting("lodLevel", "Manual LOD (Auto Off)", static_cast<int32_t>(lodLevelFromProperties(properties())), 0, 31),
             runtimeBoolSetting("instanceFrustumCull", "Instance Frustum Cull", true),
@@ -301,6 +301,13 @@ public:
         auto splitDepth = runtimeIntSetting("tessellationMaxSplitDepth", "Tessellation Split Depth", 2, 0, 3, true);
         tessellation.rebuildGraph = true;
         for (const auto* setting : {&tessellation, &edgePixels, &factor, &splitDepth}) { settings.push_back(*setting); }
+        for (auto setting : {
+                 runtimeBoolSetting("predictivePrefetch", "Predictive Geometry Prefetch", true),
+                 runtimeBoolSetting("adaptivePageRetention", "Adaptive Page Retention", true),
+                 runtimeBoolSetting("enableLodTransitionTelemetry", "LOD Transition Diagnostics (Extra GPU Memory)", false)}) {
+            setting.rebuildGraph = true;
+            settings.push_back(std::move(setting));
+        }
         appendCameraRuntimeSettings(
             settings,
             std::array<float, 3>{0.0f, 2.0f, 8.0f},
@@ -953,8 +960,10 @@ public:
         lodView.forward = {lodForward.x, lodForward.y, lodForward.z, previousParams_.upProjection[3]};
         const float error = std::clamp(finiteOr(cameraFloat(&properties(), "lodPixelError", 1.5f), 1.5f), 0.05f, 16.0f);
         const float bias = std::clamp(finiteOr(cameraFloat(&properties(), "lodBias", 0.0f), 0.0f), -4.0f, 4.0f);
+        const float displayPixelError = error * std::exp2(bias);
         lodView.projection = {previousParams_.viewport[2], std::tan(previousParams_.viewport[3] * 0.5f),
-            previousParams_.clipOrtho[2], error * std::exp2(bias)};
+            previousParams_.clipOrtho[2], meshletLodRenderPixelThreshold(displayPixelError,
+                static_cast<uint32_t>(previousParams_.viewport[2]), context.displayHeight())};
         const auto& slot = activeFrameResources();
         using Access = RenderGraphResourceAccess;
         std::vector<RenderGraphStageUse> rasterUses{
@@ -993,7 +1002,9 @@ public:
                     {.id = prefix + "arguments", .buffer = &selection.arguments(), .state = ResourceState::IndirectArgument,
                         .size = selection.arguments().desc().size}};
                 context.debugCheckpoint("AfterResidentLod", resources, {{"lod", {{"frameSlot", activeFrameSlot_},
-                    {"targetPixels", lodView.projection[3]}, {"candidateCount", adaptiveMeshletRange_.count}}}});
+                    {"targetPixels", displayPixelError}, {"pixelSpace", "display"},
+                    {"renderTargetPixels", lodView.projection[3]}, {"displayHeight", context.displayHeight()},
+                    {"renderHeight", lodView.projection[0]}, {"candidateCount", adaptiveMeshletRange_.count}}}});
             }
             return {};
         }});
@@ -2694,6 +2705,7 @@ private:
         MeshletStreamFrameDesc frame{
             .width = frameWidth_,
             .height = frameHeight_,
+            .displayHeight = context.displayHeight(),
             .selectedLodLevel = gpuLod
                 ? kMeshletStreamNoDebugLodOverride
                 : lodLevelFromProperties(context.properties()),

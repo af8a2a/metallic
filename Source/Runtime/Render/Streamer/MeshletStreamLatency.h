@@ -184,10 +184,43 @@ public:
         if (request.demandTime != 0) {
             observe(MeshletStreamLatencyStage::DemandToDrawable, request.demandTime, now);
             demandFrames.observe((frame - request.demandFrame) * 1000);
+            if (now >= request.demandTime) {
+                recentDemand_[recentDemandCursor_] = {now, now - request.demandTime};
+                recentDemandCursor_ = (recentDemandCursor_ + 1) % recentDemand_.size();
+            }
         } else {
             observe(MeshletStreamLatencyStage::PrefetchToDrawable, request.firstTime, now);
         }
         retire(slot);
+    }
+
+    // Exact millisecond percentiles over the last 64 completed demand requests,
+    // expiring after five seconds. Pure prefetch completion never trains demand
+    // prediction; a prefetch promoted to demand starts at its first real demand.
+    // Unlike snapshot(), this reads fixed storage and never scans tracked pages.
+    MeshletStreamLatencySummary recentDemandLatency(uint64_t now = meshletStreamTimeMicroseconds()) const
+    {
+        std::array<uint64_t, 64> values{};
+        size_t count = 0;
+        double total = 0;
+        for (const auto& sample : recentDemand_) {
+            if (sample.completedTime == 0 || now < sample.completedTime ||
+                now - sample.completedTime > 5'000'000) { continue; }
+            values[count++] = sample.microseconds;
+            total += double(sample.microseconds);
+        }
+        MeshletStreamLatencySummary result{.count = count};
+        if (count == 0) { return result; }
+        std::sort(values.begin(), values.begin() + count);
+        const auto percentile = [&](size_t percent) {
+            return double(values[(count * percent + 99) / 100 - 1]) / 1000.0;
+        };
+        result.p50 = percentile(50);
+        result.p95 = percentile(95);
+        result.p99 = percentile(99);
+        result.maximum = double(values[count - 1]) / 1000.0;
+        result.mean = total / double(count) / 1000.0;
+        return result;
     }
 
     MeshletStreamLatencySnapshot snapshot(uint64_t now = meshletStreamTimeMicroseconds()) const
@@ -224,6 +257,9 @@ private:
     std::vector<uint32_t> freeSlots_;
     std::array<uint32_t, kExpiryBuckets> expiryHeads_, expiryTails_, expiryCounts_{};
     uint64_t expiryFrame_ = 0, maxAgeFrames_ = 8;
+    struct RecentDemandSample { uint64_t completedTime = 0, microseconds = 0; };
+    std::array<RecentDemandSample, 64> recentDemand_{};
+    size_t recentDemandCursor_ = 0;
 
     uint32_t findSlot(uint32_t page) const
     {

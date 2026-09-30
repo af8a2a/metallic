@@ -4,6 +4,8 @@
 
 #include <chrono>
 #include <map>
+#include <set>
+#include <unordered_map>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -37,6 +39,7 @@ public:
         uint32_t renderGraphSectionIndex = UINT32_MAX;
         render::QueueType queue = render::QueueType::Graphics;
         size_t parent = 0;
+        size_t scopeId = SIZE_MAX;
         std::vector<size_t> children;
         Clock::time_point beginTime;
     };
@@ -54,6 +57,20 @@ public:
         uint64_t generation = 0;
         std::vector<render::SceneStreamingProfile> samples;
     };
+
+    struct Aggregate {
+        double average = 0.0;
+        double minimum = 0.0;
+        double maximum = 0.0;
+        size_t count = 0;
+    };
+
+    struct HistoryStatistics {
+        Aggregate cpu;
+        Aggregate gpu;
+    };
+
+    HistoryStatistics historyStatistics(size_t scopeId) const;
 
     // Latest completed GPU sample keeps CPU/GPU rows on the same execution.
     const Frame& displayFrame() const;
@@ -116,6 +133,27 @@ private:
     size_t addFinishedSection(size_t parent, std::string name, uint32_t color, double cpuMilliseconds);
     void endFrame();
 
+    struct SampleAggregate {
+        double sum = 0.0;
+        std::multiset<double> values;
+
+        void add(double value);
+        void remove(double value);
+        Aggregate statistics() const;
+    };
+
+    struct ScopeEntry {
+        std::unordered_map<std::string, std::vector<size_t>> children;
+        uint64_t occurrenceRevision = 0;
+        size_t occurrences = 0;
+        SampleAggregate cpu;
+        SampleAggregate gpu;
+    };
+
+    void registerFrameScopes(std::vector<Node>& nodes);
+    void addHistoryFrame(const Frame& frame);
+    void removeHistoryFrame(const Frame& frame);
+
     static uint32_t colorFromName(std::string_view name);
 
     bool capturing_ = false, captureOverflow_ = false;
@@ -126,7 +164,9 @@ private:
     std::vector<size_t> stack_;
     Frame latestFrame_;
     Frame scopeTree_;
-    uint64_t scopeTreeNextFrame_ = 0;
+    std::vector<ScopeEntry> scopes_;
+    uint64_t scopeRevision_ = 0;
+    std::multimap<uint64_t, uint64_t> historyExecutions_;
     std::vector<Frame> history_;
     uint64_t frameIndex_ = 0;
     uint64_t graphGeneration_ = UINT64_MAX;

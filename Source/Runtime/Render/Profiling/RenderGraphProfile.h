@@ -69,6 +69,26 @@ struct SceneStreamingProfile {
     uint64_t generation = 0;
     uint64_t frameIndex = 0;
     uint64_t feedbackFrame = UINT64_MAX;
+    // Geometry LOD diagnostics, from the same completed feedback frame.
+    // Counts are instance-groups, not unique pages. Selected means emitted cut,
+    // before raster visibility/occlusion and independent of CLAS readiness.
+    bool lodTransitionTelemetryEnabled = false;
+    uint64_t lodTransitionHistoryBytes = 0;
+    uint32_t lodDemandedGroups = 0, lodOwnPageBlockedGroups = 0, lodDependencyBlockedGroups = 0;
+    uint32_t lodCatchupActivatedGroups = 0, lodCatchupSelectedGroups = 0, lodCatchupSelectedClusters = 0;
+    uint32_t lodThresholdSelectedGroups = 0, lodThresholdSelectedClusters = 0;
+    uint32_t lodUnclassifiedSelectedGroups = 0, lodUnclassifiedSelectedClusters = 0;
+    bool predictivePrefetchEnabled = false, prefetchForecastActive = false, prefetchMeasuredLatency = false;
+    bool prefetchEnabled = false, prefetchMemoryWatermarkBlocked = false, prefetchQueueBlocked = false;
+    double prefetchHorizonMilliseconds = 0, prefetchTranslationDistance = 0, prefetchRotationDegrees = 0;
+    uint64_t prefetchLatencySamples = 0;
+    double prefetchDemandLatencyP95Milliseconds = 0;
+    uint64_t totalPrefetchAdmitted = 0, totalPrefetchUsed = 0, totalPrefetchDeferred = 0;
+    uint32_t prefetchGpuRequests = 0, prefetchGpuDropped = 0;
+    bool adaptivePageRetentionEnabled = false;
+    uint64_t geometryReclaimReserveBytes = 0, geometryDemandReserveBytes = 0;
+    uint64_t coldResidentBytes = 0, pendingFreeBytes = 0, evictedGeometryBytes = 0;
+    uint32_t evictedPrefetchPages = 0;
     bool blasFeedbackAvailable = false;
     uint64_t blasFeedbackFrame = 0;
     uint32_t blasBuildCount = 0, blasClusterReferences = 0, blasOverflowCount = 0;

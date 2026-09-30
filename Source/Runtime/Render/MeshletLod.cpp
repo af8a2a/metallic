@@ -6,6 +6,14 @@
 
 namespace metallic::render {
 
+float meshletLodRenderPixelThreshold(float displayPixelError, uint32_t renderHeight,
+    uint32_t displayHeight)
+{
+    renderHeight = std::max(renderHeight, 1u);
+    displayHeight = displayHeight != 0 ? displayHeight : renderHeight;
+    return displayPixelError * (static_cast<float>(renderHeight) / static_cast<float>(displayHeight));
+}
+
 namespace {
 
 bool validLodSphere(const std::array<float, 4>& sphere, bool allowInfiniteRadius)

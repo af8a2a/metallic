@@ -4,6 +4,7 @@
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
+#include "Runtime/Render/Streamer/TextureMipTransition.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include <optional>
 
@@ -1387,6 +1388,7 @@ struct ScenePathTraceResources::Impl {
         std::shared_ptr<Buffer> buffer;
         GpuCompletionPoint completion;
         uint64_t frame = 0;
+        bool captureDemand = true;
     };
     struct RetiredTexture { std::weak_ptr<Texture> texture; uint64_t bytes = 0; };
     struct TextureRequest { uint32_t image = 0, slot = 0, mip = 0; uint64_t bytes = 0; };
@@ -1420,6 +1422,10 @@ struct ScenePathTraceResources::Impl {
     std::vector<bool> pinnedImages;
     std::vector<uint32_t> baseTextureMips, desiredTextureMips, textureHits;
     std::vector<uint64_t> textureLastSeen, textureLastChanged;
+    std::vector<TextureMipTransition> textureMipTransitions;
+    SceneResourceLogClock::time_point textureTransitionLastTime{};
+    double textureTransitionSeconds = 0.0;
+    bool textureTransitionsFrozen = false;
     uint64_t streamingFrame = 0, lastFeedbackFrame = 0, nextTextureRetry = 0;
 
     void refreshTextureGeneration()
@@ -1444,6 +1450,13 @@ struct ScenePathTraceResources::Impl {
         textureHits.assign(ktxImages.size(), 0);
         textureLastSeen.assign(ktxImages.size(), 0);
         textureLastChanged.assign(ktxImages.size(), 0);
+        textureMipTransitions.resize(ktxFirstMips.size());
+        for (size_t image = 0; image < ktxFirstMips.size(); ++image) {
+            textureMipTransitions[image].reset(ktxFirstMips[image]);
+        }
+        textureTransitionLastTime = {};
+        textureTransitionSeconds = 0.0;
+        textureTransitionsFrozen = false;
         textureStats.streamingEnabled = textureStreaming;
         textureStats.peakLiveAllocationBytes = textureStats.residentAllocationBytes;
         refreshTextureGeneration();
@@ -1460,15 +1473,20 @@ struct ScenePathTraceResources::Impl {
         texturePublication = {};
         baseTextureMips.clear(); desiredTextureMips.clear(); textureHits.clear();
         textureLastSeen.clear(); textureLastChanged.clear(); pinnedImages.clear();
+        textureMipTransitions.clear();
+        textureTransitionLastTime = {};
+        textureTransitionSeconds = 0.0;
+        textureTransitionsFrozen = false;
         streamingFrame = lastFeedbackFrame = nextTextureRetry = 0;
     }
 
-    void consumeTextureFeedback()
+    void consumeTextureFeedback(bool consumeDemand = true)
     {
         for (auto it = textureFeedback.begin(); it != textureFeedback.end();) {
             if (it->completion.isCancelled()) { it = textureFeedback.erase(it); continue; }
             if (!it->completion.isComplete()) { ++it; continue; }
-            if (it->frame >= lastFeedbackFrame) {
+            if (it->captureDemand && !consumeDemand) { ++it; continue; }
+            if (it->captureDemand && it->frame >= lastFeedbackFrame) {
                 it->buffer->invalidate();
                 auto* words = static_cast<const uint32_t*>(it->buffer->map());
                 if (words) {
@@ -1533,6 +1551,7 @@ struct ScenePathTraceResources::Impl {
                 textureStats.residentPayloadBytes += migration.textures[i].byteSize;
                 if (request.mip < ktxFirstMips[request.image]) { ++textureStats.upgrades; }
                 else { ++textureStats.downgrades; }
+                textureMipTransitions[request.image].publish(request.mip, textureTransitionSeconds);
                 old = std::move(migration.textures[i]);
                 old.uploadBuffer.reset(); old.uploadAllocationSize = 0;
                 ktxFirstMips[request.image] = request.mip;
@@ -1700,27 +1719,40 @@ struct ScenePathTraceResources::Impl {
         auto* frame = commands.frameContext();
         if (!frame) { return {}; }
         frame->retain(emptyTextureFeedback);
-        if (freezePublication || !textureStreaming || baseTextureMips.empty()) { return {}; }
-        CpuProfileScope phase(profiler, "Consume texture feedback");
-        streamingFrame = frameIndex;
-        consumeTextureFeedback();
-        phase.next("Texture migration");
-        auto result = pumpTextureMigration(profiler);
-        if (!result) {
-            spdlog::warn("[TextureStreaming] Migration deferred: {}", resultToString(result));
-            textureMigration.reset();
-            textureStats.pendingImages = 0; textureStats.pendingAllocationBytes = 0;
-            nextTextureRetry = streamingFrame + 60;
-            ++textureStats.budgetDeferrals;
-            if (hasError(result,Error::DeviceLost)) { return result; }
+        if (!textureStreaming || baseTextureMips.empty()) { return {}; }
+        const auto now = SceneResourceLogClock::now();
+        if (textureTransitionLastTime != SceneResourceLogClock::time_point{} &&
+            !freezePublication && !textureTransitionsFrozen) {
+            textureTransitionSeconds += std::max(
+                std::chrono::duration<double>(now - textureTransitionLastTime).count(), 0.0);
         }
-        // Publication can release the previous generation immediately if no frame uses it.
-        phase.next("Retire texture generations");
-        consumeTextureFeedback();
-        phase.next("Schedule texture migration");
-        scheduleTextureMigration(profiler);
+        textureTransitionLastTime = now;
+        textureTransitionsFrozen = freezePublication;
+        CpuProfileScope phase(profiler, "Consume texture feedback");
+        Result<> result;
+        consumeTextureFeedback(!freezePublication);
+        if (!freezePublication) {
+            streamingFrame = frameIndex;
+            phase.next("Texture migration");
+            result = pumpTextureMigration(profiler);
+            if (!result) {
+                spdlog::warn("[TextureStreaming] Migration deferred: {}", resultToString(result));
+                textureMigration.reset();
+                textureStats.pendingImages = 0; textureStats.pendingAllocationBytes = 0;
+                nextTextureRetry = streamingFrame + 60;
+                ++textureStats.budgetDeferrals;
+                if (hasError(result,Error::DeviceLost)) { return result; }
+            }
+            // Publication can release the previous generation immediately if no frame uses it.
+            phase.next("Retire texture generations");
+            consumeTextureFeedback();
+            phase.next("Schedule texture migration");
+            scheduleTextureMigration(profiler);
+        }
         phase.next("Prepare texture feedback");
-        if (textureFeedback.size() >= 4) { return {}; }
+        const bool captureDemand = !freezePublication &&
+            std::count_if(textureFeedback.begin(), textureFeedback.end(),
+                [](const TextureFeedback& entry) { return entry.captureDemand; }) < 4;
         std::shared_ptr<Buffer> buffer;
         if (!freeTextureFeedback.empty()) {
             buffer = std::move(freeTextureFeedback.back()); freeTextureFeedback.pop_back();
@@ -1737,15 +1769,22 @@ struct ScenePathTraceResources::Impl {
         for (uint32_t image = 0; image < ktxImages.size(); ++image) {
             const uint32_t slot = asyncImageTextureIndexMap[image];
             if (!ktxImages[image] || pinnedImages[image] || slot == kInvalidMaterialTextureIndex) { continue; }
-            words[slot*8] = ktxImages[image]->width;
-            words[slot*8+1] = ktxImages[image]->height;
-            words[slot*8+2] = uint32_t(ktxImages[image]->levels.size());
+            if (captureDemand) {
+                words[slot*8] = ktxImages[image]->width;
+                words[slot*8+1] = ktxImages[image]->height;
+                words[slot*8+2] = uint32_t(ktxImages[image]->levels.size());
+            }
             words[slot*8+3] = ktxFirstMips[image];
             words[slot*8+4] = UINT32_MAX;
+            words[slot*8+6] = std::bit_cast<uint32_t>(textureMipTransitions[image].samplingLodFloor(textureTransitionSeconds));
         }
         buffer->flush(); buffer->unmap();
-        TextureFeedback entry{std::move(buffer),frame->completion(),frameIndex};
+        // Sampling metadata must remain available when demand readback is full
+        // or publication is frozen. Zero source dimensions disable GPU demand
+        // writes on these frames; word 6 still describes this immutable tail.
+        TextureFeedback entry{std::move(buffer),frame->completion(),frameIndex,captureDemand};
         feedback = entry.buffer.get(); frame->retain(entry.buffer);
+        frame->retain(textureGeneration);
         BufferBarrierDesc ready{.buffer = feedback, .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
         if (auto commandResult = commands.synchronize({.buffers = {&ready, 1}}); !commandResult) { return commandResult; }
         textureFeedback.push_back(std::move(entry));

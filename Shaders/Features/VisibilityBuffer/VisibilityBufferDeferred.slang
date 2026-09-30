@@ -9,6 +9,10 @@ using Metallic.Material;
 #define MATERIAL_CLASS -1
 #endif
 
+#ifndef METALLIC_DEFERRED_PATH_TRACING
+#define METALLIC_DEFERRED_PATH_TRACING 0
+#endif
+
 #include "../Lighting/OpenPBRDirectLighting.slang"
 
 ScenePathTracePush deferredViewPush()
@@ -292,7 +296,7 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
     if (!hasSurface) {
         radiance = environmentRadiance(ray.direction, push, true);
     }
-#if (!METALLIC_REALTIME_DEFERRED || METALLIC_STREAM_RAY_QUERIES) && (MATERIAL_CLASS < 0 || MATERIAL_CLASS == 4)
+#if METALLIC_DEFERRED_PATH_TRACING && (!METALLIC_STREAM_MATERIALS || METALLIC_STREAM_RAY_QUERIES) && (MATERIAL_CLASS < 0 || MATERIAL_CLASS == 4)
     else if ((gMaterials[hit.materialIndex].glassParams.x > 0.0 || gMaterials[hit.materialIndex].textureParams.w > 1.5) &&
         !openPbrDebugFlag(push, kOpenPBRDebugDisableTransmission) &&
         push.debugView == kOpenPBRDebugViewFinal) {

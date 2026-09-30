@@ -61,6 +61,9 @@ public:
         graph.addNode("VisibilityBufferPass", "VBuffer", {
             {"path", sourcePath.generic_string()}, {"streamAssetPath", assetPath.generic_string()},
             {"streamAssetOnly", true},
+            // Exercise ordered in-frame publication below instead of the synchronous
+            // startup loader, which now completes root uploads before the first frame.
+            {"initialLoad", false},
             {"enableMeshletStreaming", true}, {"maxResidentPages", 64}, {"maxLockedFallbackPages", 64},
             {"maxPageUploadsPerFrame", 64}, {"maxActiveGroups", capacity},
             {"pageLoadConcurrency", 0},

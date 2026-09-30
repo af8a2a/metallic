@@ -67,6 +67,80 @@ public:
             if (!preview.render(sample.graph, width, height)) { log = preview.lastLog(); return false; }
             return true;
         };
+        sample.graph.setNodeRuntimeProperty(deferred, "debugView", "final");
+        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
+        if (!renderFrame()) { return RhiTestResult::fail(log); }
+        const auto defaultFlat = preview.pixels();
+        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", true);
+        if (!renderFrame()) { return RhiTestResult::fail(log); }
+        const auto defaultBinned = preview.pixels();
+        if (changedPixels(defaultFlat, defaultBinned, 2) > defaultFlat.size() / 1000) {
+            save("ABeautifulGameDefaultBinningMismatch.png");
+            return RhiTestResult::fail("Default deferred flat/binned output differs");
+        }
+        if (!save("ABeautifulGameDeferredDefault.png")) { return RhiTestResult::fail(log); }
+        // The omitted property must select the same compiled variant as false.
+        // Continuation settings must have no effect while that variant is off.
+        sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", false);
+        for (bool binned : {false, true}) {
+            sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", binned);
+            const auto& expected = binned ? defaultBinned : defaultFlat;
+            if (!renderFrame() || preview.pixels() != expected) {
+                return RhiTestResult::fail("Default supplementary tracing differs from explicit false: " + log);
+            }
+            for (const auto settings : {std::array<int, 2>{1, 2}, {16, 16}}) {
+                sample.graph.setNodeRuntimeProperty(deferred, "transmissionSamples", settings[0]);
+                sample.graph.setNodeRuntimeProperty(deferred, "transmissionDepth", settings[1]);
+                if (!renderFrame() || preview.pixels() != expected) {
+                    return RhiTestResult::fail("Disabled supplementary tracing used continuation settings: " + log);
+                }
+            }
+        }
+        sample.graph.setNodeRuntimeProperty(deferred, "transmissionSamples", 4);
+        sample.graph.setNodeRuntimeProperty(deferred, "transmissionDepth", 8);
+        // Resident realtime lighting must support the same optional continuation.
+        sample.graph.setNodeRuntimeProperty(deferred, "lightingMode", "realtime");
+        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
+        if (!renderFrame(193, 157)) { return RhiTestResult::fail(log); }
+        const auto realtimeOffFlat = preview.pixels();
+        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", true);
+        if (!renderFrame(193, 157)) { return RhiTestResult::fail(log); }
+        const auto realtimeOffBinned = preview.pixels();
+        if (changedPixels(realtimeOffFlat, realtimeOffBinned, 2) > realtimeOffFlat.size() / 1000) {
+            return RhiTestResult::fail("Realtime default deferred flat/binned output differs");
+        }
+        if (!save("ABeautifulGameRealtimeDefault.png")) { return RhiTestResult::fail(log); }
+        sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", true);
+        if (!renderFrame(193, 157)) { return RhiTestResult::fail(log); }
+        const auto realtimeOnBinned = preview.pixels();
+        if (changedPixels(realtimeOffBinned, realtimeOnBinned, 4) < 20) {
+            return RhiTestResult::fail("Realtime supplementary tracing had no visible effect on glass");
+        }
+        if (!save("ABeautifulGameRealtimeSupplementary.png")) { return RhiTestResult::fail(log); }
+        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
+        if (!renderFrame(193, 157)) { return RhiTestResult::fail(log); }
+        const auto realtimeOnFlat = preview.pixels();
+        if (changedPixels(realtimeOnFlat, realtimeOnBinned, 2) > realtimeOnFlat.size() / 1000) {
+            return RhiTestResult::fail("Realtime supplementary deferred flat/binned output differs");
+        }
+        sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", false);
+        if (!renderFrame(193, 157) || preview.pixels() != realtimeOffFlat) {
+            return RhiTestResult::fail("Realtime supplementary disable did not restore direct shading: " + log);
+        }
+        sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", true);
+        if (!renderFrame(193, 157) || preview.pixels() != realtimeOnFlat) {
+            return RhiTestResult::fail("Realtime supplementary enable did not restore glass continuation: " + log);
+        }
+        sample.graph.setNodeRuntimeProperty(deferred, "exportUpscalerGuides", true);
+        // Guide exports use FP16 color; allow display quantization while enabled.
+        if (!renderFrame(193, 157) || changedPixels(preview.pixels(), realtimeOnFlat, 2) > realtimeOnFlat.size() / 1000) {
+            return RhiTestResult::fail("Enabling realtime upscaler guides changed supplementary shading: " + log);
+        }
+        sample.graph.setNodeRuntimeProperty(deferred, "exportUpscalerGuides", false);
+        if (!renderFrame(193, 157) || preview.pixels() != realtimeOnFlat) {
+            return RhiTestResult::fail("Disabling realtime upscaler guides did not restore supplementary shading: " + log);
+        }
+        sample.graph.setNodeRuntimeProperty(deferred, "lightingMode", "reference");
         for (const char* debug : {"baseColor", "shadingNormal", "material", "final"}) {
             sample.graph.setNodeRuntimeProperty(deferred, "debugView", debug);
             sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
@@ -81,6 +155,17 @@ public:
         }
         const auto glassImage = preview.pixels();
         if (!save("ABeautifulGameDeferred.png")) { return RhiTestResult::fail(log); }
+        sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", false);
+        if (!renderFrame() || preview.pixels() != defaultBinned) {
+            return RhiTestResult::fail("Disabling supplementary tracing did not restore the default variant: " + log);
+        }
+        sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", true);
+        if (!renderFrame() || preview.pixels() != glassImage) {
+            return RhiTestResult::fail("Re-enabling supplementary tracing did not restore glass continuation: " + log);
+        }
+        if (changedPixels(defaultBinned, glassImage, 4) < 50) {
+            return RhiTestResult::fail("Supplementary tracing had no visible effect on glass");
+        }
         sample.graph.setNodeRuntimeProperty(deferred, "debugDisableTransmission", true);
         if (!renderFrame()) { return RhiTestResult::fail(log); }
         const size_t transmissionPixels = changedPixels(glassImage, preview.pixels(), 4);
@@ -158,8 +243,9 @@ public:
                 }
             }
         }
-        // Use the production slider graph to retain a reviewable path-traced reference.
+        // Explicitly opt in when retaining a reviewable glass continuation/reference comparison.
         if (!render::loadBuiltInRenderSample("lookdev-abeautiful-game", sample, log)) { return RhiTestResult::fail(log); }
+        sample.graph.setNodeRuntimeProperty(sample.graph.findNode("Deferred")->id, "supplementaryPathTracing", true);
         for (int frame = 0; frame < 32; ++frame) {
             if (!preview.render(sample.graph, 512, 384)) { return RhiTestResult::fail(preview.lastLog()); }
         }
@@ -171,7 +257,8 @@ public:
                 return RhiTestResult::fail(preview.lastLog() + log);
             }
         }
-        return RhiTestResult::pass("15 materials: flat/binned shading, glass continuation (" + std::to_string(transmissionPixels) +
+        return RhiTestResult::pass("15 materials: default-off/explicit false, inactive continuation settings, "
+            "reference/realtime variant restoration, flat/binned shading, glass continuation (" + std::to_string(transmissionPixels) +
             " pixels), volume absorption (" + std::to_string(absorptionPixels) + " pixels), edits, resize and HDRI comparison");
     }
 };

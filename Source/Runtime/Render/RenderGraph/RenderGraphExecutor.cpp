@@ -2010,6 +2010,8 @@ struct RenderGraphExecutor::Impl {
             world,
             subsystemHost));
         auto& context = *prepared;
+        context.displayWidth_ = width;
+        context.displayHeight_ = height;
         if (activeExecutionCapture) {
             context.executionCapture_ = &activeExecutionCapture->passes[passIndex];
             context.capturedImports_ = &capturedImports[passIndex];

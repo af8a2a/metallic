@@ -318,6 +318,9 @@ public:
     uint64_t frameIndex() const { return frameIndex_; }
     uint32_t width() const { return width_; }
     uint32_t height() const { return height_; }
+    // Final display viewport, independent of this pass's internal render extent.
+    uint32_t displayWidth() const { return displayWidth_; }
+    uint32_t displayHeight() const { return displayHeight_; }
     const std::string& passName() const { return passName_; }
     const RenderGraphProperties& properties() const { return properties_; }
     HistoryResourceManager* historyResources() const { return historyResources_; }
@@ -447,6 +450,8 @@ private:
     uint64_t frameIndex_ = 0;
     uint32_t width_ = 1;
     uint32_t height_ = 1;
+    uint32_t displayWidth_ = 1;
+    uint32_t displayHeight_ = 1;
     std::string passName_;
     const RenderGraphProperties& properties_;
     std::vector<Binding> bindings_;

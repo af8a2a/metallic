@@ -541,16 +541,22 @@ private:
 struct TestTextureExtentExecutionState {
     uint32_t producerContextWidth = 0;
     uint32_t producerContextHeight = 0;
+    uint32_t producerDisplayWidth = 0;
+    uint32_t producerDisplayHeight = 0;
     uint32_t producerOutputWidth = 0;
     uint32_t producerOutputHeight = 0;
     uint32_t relayContextWidth = 0;
     uint32_t relayContextHeight = 0;
+    uint32_t relayDisplayWidth = 0;
+    uint32_t relayDisplayHeight = 0;
     uint32_t relayInputWidth = 0;
     uint32_t relayInputHeight = 0;
     uint32_t relayOutputWidth = 0;
     uint32_t relayOutputHeight = 0;
     uint32_t consumerContextWidth = 0;
     uint32_t consumerContextHeight = 0;
+    uint32_t consumerDisplayWidth = 0;
+    uint32_t consumerDisplayHeight = 0;
     uint32_t consumerInputWidth = 0;
     uint32_t consumerInputHeight = 0;
     uint32_t consumerOutputWidth = 0;
@@ -598,6 +604,8 @@ public:
         TestTextureExtentExecutionState& state = testTextureExtentExecutionState();
         state.producerContextWidth = context.width();
         state.producerContextHeight = context.height();
+        state.producerDisplayWidth = context.displayWidth();
+        state.producerDisplayHeight = context.displayHeight();
         state.producerOutputWidth = color.desc().width;
         state.producerOutputHeight = color.desc().height;
         return {};
@@ -638,6 +646,8 @@ public:
         TestTextureExtentExecutionState& state = testTextureExtentExecutionState();
         state.relayContextWidth = context.width();
         state.relayContextHeight = context.height();
+        state.relayDisplayWidth = context.displayWidth();
+        state.relayDisplayHeight = context.displayHeight();
         state.relayInputWidth = input.desc().width;
         state.relayInputHeight = input.desc().height;
         state.relayOutputWidth = color.desc().width;
@@ -680,6 +690,8 @@ public:
         TestTextureExtentExecutionState& state = testTextureExtentExecutionState();
         state.consumerContextWidth = context.width();
         state.consumerContextHeight = context.height();
+        state.consumerDisplayWidth = context.displayWidth();
+        state.consumerDisplayHeight = context.displayHeight();
         state.consumerInputWidth = input.desc().width;
         state.consumerInputHeight = input.desc().height;
         state.consumerOutputWidth = color.desc().width;
@@ -6704,7 +6716,7 @@ public:
 
         render::RenderGraph graph;
         graph.setName("TextureExtentConstraintMultihopPropagation");
-        if (graph.addNode("TestTextureExtentProducerPass", "Producer") == nullptr ||
+        if (graph.addNode("TestTextureExtentProducerPass", "Producer", {{"viewBinding", "local"}}) == nullptr ||
             graph.addNode("TestTextureExtentRelayPass", "Relay") == nullptr ||
             graph.addNode(
                 "TestTextureExtentConsumerPass",
@@ -6792,9 +6804,15 @@ public:
             return RhiTestResult::fail(
                 "multihop consumer did not preserve split input/output execution extents");
         }
+        if (state.producerDisplayWidth != kGraphWidth || state.producerDisplayHeight != kGraphHeight ||
+            state.relayDisplayWidth != kGraphWidth || state.relayDisplayHeight != kGraphHeight ||
+            state.consumerDisplayWidth != kGraphWidth || state.consumerDisplayHeight != kGraphHeight) {
+            return RhiTestResult::fail(
+                "Local and shared-view passes did not retain the graph display extent independently of internal texture sizes");
+        }
 
         return RhiTestResult::pass(
-            "propagated 80x45 through an implicit relay while preserving 320x180 output");
+            "propagated 80x45 through an implicit relay while preserving 320x180 output and display extent across local/shared views");
     }
 };
 
@@ -9483,6 +9501,7 @@ public:
             "GPUDriven",
             render::RenderGraphProperties{
                 {"path", "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf"},
+                {"materialTextureBudgetMiB", 8192},
                 {"visualization", "meshlet"},
                 {"instanceFrustumCull", true},
                 {"instanceHzbCull", true},
@@ -9519,6 +9538,19 @@ public:
         if (countVisiblePixels(meshletPixels) < 2048) {
             return RhiTestResult::fail("Sponza visibility contains too few covered pixels");
         }
+        const auto memory = preview.subsystemHost()->device()->memoryBudget();
+        const auto& textures = memory.domains[size_t(render::MemoryBudgetDomain::MaterialTextures)];
+        const auto& heap = memory.heaps[memory.primaryDeviceLocalHeap];
+        std::ofstream(context.outputDirectory / "SuperSponzaResidentAllocation.json") <<
+            nlohmann::json{{"materialAllocationBytes", textures.allocationBytes},
+                {"materialPeakAllocationBytes", textures.peakAllocationBytes}, {"materialImages", textures.allocationCount},
+                {"localHeapUsageBytes", heap.usageBytes}, {"localHeapBlockBytes", heap.blockBytes},
+                {"localHeapAllocationBytes", heap.allocationBytes}, {"coveredPixels", countVisiblePixels(meshletPixels)}}.dump(2) << '\n';
+        std::string imageLog;
+        if (!saveRgba8Png(context.outputDirectory / "SuperSponzaResident-meshlet.png",
+                reinterpret_cast<const uint8_t*>(meshletPixels.data()), 256, 256, imageLog)) {
+            return RhiTestResult::fail(imageLog);
+        }
         result = preview.render(graph, 256, 256);
         if (!result || preview.pixels() != meshletPixels) {
             return RhiTestResult::fail("stationary HZB changed meshlet-ID visualization");
@@ -9534,6 +9566,30 @@ public:
             preview.subsystemHost()->get<render::EnvironmentLightingSubsystem>() != nullptr) {
             return RhiTestResult::fail("visibility rasterization still depends on environment shading");
         }
+        result = preview.render(graph, 256, 256, "GPUDriven.visibility");
+        if (!result || preview.pixels().size() != meshletPixels.size()) {
+            return RhiTestResult::fail("Sponza visibility-ID readback failed");
+        }
+        const std::vector<uint32_t> visibilityPixels = preview.pixels();
+        std::ofstream visibilityFile(context.outputDirectory / "SuperSponzaResident-visibility.bin", std::ios::binary);
+        visibilityFile.write(reinterpret_cast<const char*>(visibilityPixels.data()),
+            visibilityPixels.size() * sizeof(uint32_t));
+        if (!visibilityFile) {
+            return RhiTestResult::fail("failed to save Sponza visibility-ID readback");
+        }
+        size_t legacyCoverageMismatch = 0;
+        size_t lowRedCoveredPixels = 0;
+        for (size_t i = 0; i < visibilityPixels.size(); ++i) {
+            // Match GPUDrivenRasterCommon::unpackVisibilityId. Shaded ID colors
+            // can have a red channel below 32 even when the visibility is valid.
+            const bool covered = (visibilityPixels[i] >> render::kVisibilityTriangleBits) != 0u;
+            const bool legacyCovered = (meshletPixels[i] & 0xffu) >= 32u;
+            legacyCoverageMismatch += covered != legacyCovered ? 1u : 0u;
+            lowRedCoveredPixels += covered && !legacyCovered ? 1u : 0u;
+        }
+        nlohmann::json comparison{{"pixels", visibilityPixels.size()},
+            {"legacyRedCoverageMismatch", legacyCoverageMismatch}, {"lowRedCoveredPixels", lowRedCoveredPixels},
+            {"minimumCoveredPixels", 2048}, {"minimumTriangleDifferences", 1024}, {"modes", nlohmann::json::array()}};
         render::RenderGraphNode* node = graph.findNode("GPUDriven");
         if (node == nullptr) {
             return RhiTestResult::fail("Sponza visibility node is missing");
@@ -9551,14 +9607,15 @@ public:
             const auto& pixels = preview.pixels();
             size_t different = 0;
             size_t covered = 0;
+            size_t coverageMismatch = 0;
             for (size_t i = 0; i < pixels.size(); ++i) {
-                const bool wasCovered = (meshletPixels[i] & 0xffu) >= 32u;
+                const bool wasCovered = (visibilityPixels[i] >> render::kVisibilityTriangleBits) != 0u;
                 const uint32_t rgb = pixels[i] & 0x00ffffffu;
                 covered += wasCovered ? 1u : 0u;
                 different += pixels[i] != meshletPixels[i] ? 1u : 0u;
                 if (std::string_view(mode) == "coverage" &&
                     ((rgb == 0x00ffffffu) != wasCovered)) {
-                    return RhiTestResult::fail("coverage display differs from visibility coverage");
+                    ++coverageMismatch;
                 }
                 if (std::string_view(mode) == "depth" && wasCovered &&
                     (((rgb >> 8u) & 0xffu) != (rgb & 0xffu) ||
@@ -9576,6 +9633,12 @@ public:
                     context.outputDirectory / (std::string("visibility_buffer_sponza_") + mode + ".png"),
                     reinterpret_cast<const uint8_t*>(pixels.data()), 256, 256, message)) {
                 return RhiTestResult::fail(message);
+            }
+            comparison["modes"].push_back({{"mode", mode}, {"coveredPixels", covered},
+                {"differentPixels", different}, {"coverageMismatch", coverageMismatch}});
+            std::ofstream(context.outputDirectory / "SuperSponzaResidentVisibilityComparison.json") << comparison.dump(2) << '\n';
+            if (coverageMismatch != 0) {
+                return RhiTestResult::fail("coverage display differs from visibility coverage");
             }
         }
         graph.setNodeRuntimeProperty(node->id, "visualization", "meshlet");

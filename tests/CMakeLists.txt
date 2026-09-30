@@ -178,6 +178,7 @@ add_executable(MetallicSceneTests
     scene/GltfInstancingTests.cpp
     scene/GeometryAttributesTests.cpp
     scene/MeshletStreamReferenceCodecTests.cpp
+    scene/MeshletStreamPrefetchTests.cpp
     scene/MeshletBuildParallelTests.cpp
     scene/MeshletReferenceSceneBuildTests.cpp
     scene/Main.cpp
@@ -257,6 +258,7 @@ add_executable(MetallicRhiTests
     rhi/BindlessBufferTests.cpp
     rhi/DescriptorHeapCodePatternTests.cpp
     rhi/DlssMotionVectorTests.cpp
+    rhi/TextureFootprintTests.cpp
     rhi/DlssNrTests.cpp
     rhi/AutoExposureTests.cpp
     rhi/OpenPbrLookDevTests.cpp

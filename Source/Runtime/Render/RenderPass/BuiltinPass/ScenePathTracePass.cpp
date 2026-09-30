@@ -693,10 +693,16 @@ public:
                 auto binning = runtimeBoolSetting("materialBinning", "Wave32 Material Tile Classification", true, true);
                 binning.rebuildGraph = true;
                 settings.push_back(binning);
-                settings.push_back(runtimeIntSetting("transmissionSamples", "Transmission Samples", 2, 1, 16, true));
-                settings.push_back(runtimeIntSetting("transmissionDepth", "Transmission Max Depth", 8, 2, 16, true));
+                auto pathTracing = runtimeBoolSetting("supplementaryPathTracing", "Supplementary Path Tracing", false, true);
+                pathTracing.rebuildGraph = true;
+                settings.push_back(pathTracing);
+                if (boolProperty(properties(), "supplementaryPathTracing", false)) {
+                    settings.push_back(runtimeIntSetting("transmissionSamples", "Transmission Samples", 2, 1, 16, true));
+                    settings.push_back(runtimeIntSetting("transmissionDepth", "Transmission Max Depth", 8, 2, 16, true));
+                }
                 settings.push_back(runtimeBoolSetting("debugDisableTransmission", "Disable Transmission", false, true));
                 settings.push_back(runtimeBoolSetting("debugDisableVolumeAttenuation", "Disable Volume Absorption", false, true));
+                settings.push_back(runtimeBoolSetting("stochasticTextureFiltering", "Stochastic Texture Filtering", false, true));
                 settings.push_back(runtimeBoolSetting("debugUseOpaqueShadows", "Use Opaque Shadows", false, true));
                 settings.push_back(runtimeBoolSetting("accumulate", "Accumulate Lighting", true, true));
                 settings.push_back(runtimeEnumSetting("debugView", "Surface Debug", "final",
@@ -821,10 +827,13 @@ public:
     }
     Result<> prepare(const RenderGraphCompileContext& context, std::string& log) override
     {
-        // Resource-only graph rebuilds reuse compiled passes. A scheduling toggle
-        // also changes the entry point, thread-group size and descriptor layout.
+        // Resource-only graph rebuilds reuse compiled passes. Deferred compile-time
+        // settings must rebuild their matching shader and descriptor variants.
         if (visibilityDeferred_ && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
-            compiledMaterialBinning_ != boolProperty(properties(), "materialBinning", true)) {
+            (compiledMaterialBinning_ != boolProperty(properties(), "materialBinning", true) ||
+                compiledSupplementaryPathTracing_ != boolProperty(properties(), "supplementaryPathTracing", false) ||
+                compiledRealtimeDeferred_ != (properties().value("lightingMode", "reference") == "realtime") ||
+                compiledExportUpscalerGuides_ != boolProperty(properties(), "exportUpscalerGuides", false))) {
             return compile(context, log);
         }
         return {};
@@ -837,7 +846,9 @@ public:
             log = "StreamAsset scenes require realtime visibility-buffer deferred lighting";
             return makeError(Error::Unsupported);
         }
-        streamRayQueries_ = streamMaterials_ && std::any_of(context.runtimeScene->materials().begin(),
+        const bool supplementaryPathTracing = visibilityDeferred_ &&
+            boolProperty(properties(), "supplementaryPathTracing", false);
+        streamRayQueries_ = streamMaterials_ && supplementaryPathTracing && std::any_of(context.runtimeScene->materials().begin(),
             context.runtimeScene->materials().end(), [](const auto& material) {
                 return material.transmissionFactor > 0.0f || material.alphaMode == "BLEND";
             });
@@ -925,6 +936,8 @@ public:
             properties().value("sceneBinding", "world") != "asset" && properties().value("viewBinding", "global") != "local";
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
             "|streamMaterials=" + (streamMaterials_ ? "1" : "0") +
+            "|streamRayQueries=" + (streamRayQueries_ ? "1" : "0") +
+            "|supplementaryPathTracing=" + (supplementaryPathTracing ? "1" : "0") +
             "|textureCount=" + std::to_string(sceneResources_.materialTextureCount()) +
             "|view=" + (globalView ? "1" : "0") +
             "|cache=" + std::to_string(cacheMode_) +
@@ -1050,7 +1063,7 @@ public:
                 .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
             });
         }
-        if (streamRayQueries_ || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
+        if (supplementaryPathTracing || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
             baseBindings.push_back({.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = 53, .kind = ComputeResourceBindingKind::SampledImage});
         }
@@ -1076,6 +1089,7 @@ public:
             }
             baseBindings.push_back({.binding = 94, .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = 95, .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = 96, .kind = ComputeResourceBindingKind::Sampler});
             for (uint32_t binding = 83; binding <= 87; ++binding) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
@@ -1187,6 +1201,9 @@ public:
             defines.push_back({.name = "METALLIC_DEFERRED_LIGHT_GRID", .value = visibilityDeferred_ ? "1" : "0"});
             defines.push_back({.name = "METALLIC_REALTIME_DEFERRED", .value = visibilityDeferred_ &&
                 properties().value("lightingMode", "reference") == "realtime" ? "1" : "0"});
+            if (visibilityDeferred_) {
+                defines.push_back({.name = "METALLIC_DEFERRED_PATH_TRACING", .value = supplementaryPathTracing ? "1" : "0"});
+            }
             defines.push_back({.name = "METALLIC_DEFERRED_UPSCALER_GUIDES", .value = visibilityDeferred_ &&
                 boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0"});
             defines.insert(defines.end(), extraDefines.begin(), extraDefines.end());
@@ -1553,6 +1570,9 @@ public:
         }
         compiledShaderKey_ = shaderKey;
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
+        compiledSupplementaryPathTracing_ = supplementaryPathTracing;
+        compiledRealtimeDeferred_ = visibilityDeferred_ && properties().value("lightingMode", "reference") == "realtime";
+        compiledExportUpscalerGuides_ = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false);
         return {};
     }
 
@@ -1607,7 +1627,7 @@ public:
             nrcSceneRevision_ = 0;
 #endif
         }
-        if (streamRayQueries_ || !realtime_ || (visibilityDeferred_ && context.properties().value("lightingMode", "reference") != "realtime")) {
+        if (compiledSupplementaryPathTracing_ || !realtime_ || (visibilityDeferred_ && context.properties().value("lightingMode", "reference") != "realtime")) {
             const auto& bounds = sceneResources_.bounds();
             const float3 center = bounds.valid ? bounds.center() : float3(0.0f);
             ReGIRBuildParameters sampling;
@@ -1931,7 +1951,7 @@ public:
                 .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,
             });
         }
-        if (streamRayQueries_ || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
+        if (compiledSupplementaryPathTracing_ || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
             bindings.push_back({.binding = 52, .buffer = lights_.reGIRBuffer()});
             bindings.push_back({.binding = 53, .textureViews = {punctualPdfViews, 1}});
         }
@@ -2023,6 +2043,7 @@ public:
             Buffer* fallback = deferredViews->geometries.buffer;
             bindings.push_back({.binding = 94, .buffer = deferredStream ? deferredStream->paramsBuffer : fallback});
             bindings.push_back({.binding = 95, .buffer = textureFeedback});
+            bindings.push_back({.binding = 96, .sampler = &materialSampler_});
             const std::array streamBuffers{
                 deferredStream ? deferredStream->visibleClusterBuffer : fallback,
                 deferredStream ? deferredStream->activeGroupBuffer : fallback,
@@ -2160,7 +2181,7 @@ public:
                         : RenderGraphResourceAccess::BufferShaderRead});
                 }
             }
-            const std::array stages{RenderGraphStage{"Path trace shading", resources.uses,
+            const std::array stages{RenderGraphStage{visibilityDeferred_ ? "Deferred shading" : "Path trace shading", resources.uses,
                 [&](CommandBuffer& commands) -> Result<> {
                     if (materialBins.arguments != nullptr) {
                         // Mixed tiles carry disjoint masks. Permutations share one immutable
@@ -3227,6 +3248,9 @@ private:
         if (boolProperty(properties, "debugDisableTransmission", false)) {
             outPush.debugFlags |= kScenePathTraceDebugDisableTransmission;
         }
+        if (boolProperty(properties, "stochasticTextureFiltering", false)) {
+            outPush.debugFlags |= kScenePathTraceDebugStochasticTextureFiltering;
+        }
 
         outPush.environmentIntensity = std::max(environment.intensity, 0.0f);
         outPush.environmentRotationRadians = environment.rotationDegrees * (kPi / 180.0f);
@@ -3247,11 +3271,22 @@ private:
     std::array<float, 2> previousShadowJitter_{};
     std::array<ComputeProgram, kMaterialClassCount - 1> classifiedPrograms_;
     bool compiledMaterialBinning_ = true;
+    bool compiledSupplementaryPathTracing_ = false;
+    bool compiledRealtimeDeferred_ = false;
+    bool compiledExportUpscalerGuides_ = false;
     RenderGraphProperties deferredHistoryProperties_;
     GPUSceneViewId deferredHistoryView_;
     uint64_t deferredRasterSettingsRevision_ = 0;
     SceneLightResources lights_;
     ScenePathTraceResources sceneResources_;
+    SamplerDesc materialSampler_{
+        .minFilter = SamplerFilter::Linear,
+        .magFilter = SamplerFilter::Linear,
+        .mipFilter = SamplerFilter::Linear,
+        .addressU = SamplerAddressMode::Repeat,
+        .addressV = SamplerAddressMode::Repeat,
+        .addressW = SamplerAddressMode::Repeat,
+    };
     bool streamMaterials_ = false;
     bool streamRayQueries_ = false;
     Device* device_ = nullptr;

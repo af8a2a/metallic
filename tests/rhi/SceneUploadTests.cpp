@@ -261,7 +261,7 @@ public:
         render::ScenePathTraceResources resources;
         const auto begin = std::chrono::steady_clock::now();
         UPLOAD_REQUIRE(resources.beginPrepareAsync(*device, *device->getQueue(render::QueueType::Graphics),
-            {{"path", path.string()}}, *loaded, log));
+            {{"path", path.string()}, {"materialTextureBudgetMiB", 8192}}, *loaded, log));
         scene::SceneLoadProgress progress;
         bool complete = false;
         while (!complete && std::chrono::steady_clock::now() < deadline) {
@@ -270,6 +270,12 @@ public:
         }
         if (!complete || !resources.valid() || !resources.gpuWorkComplete()) { return RhiTestResult::fail("GPU preparation timed out: " + log); }
         const auto stats = resources.uploadStats();
+        const auto textures = resources.textureStats();
+        std::ofstream(context.outputDirectory / "SuperSponzaUploadAllocation.json") <<
+            nlohmann::json{{"logicalTextures", textures.logicalTextureCount}, {"residentIncludingFallback", textures.residentImageCount},
+                {"payloadBytes", textures.residentPayloadBytes}, {"allocationBytes", textures.residentAllocationBytes},
+                {"peakLiveBytes", textures.peakLiveAllocationBytes}, {"budgetBytes", textures.budgetBytes},
+                {"peakStagingBytes", textures.peakStagingBytes}, {"submittedUploadBytes", stats.submittedBytes}}.dump(2) << '\n';
         spdlog::info("[SceneUploadSmoke] GPU preparation including AS: {:.2f} ms, batches={}, peakInFlight={}, bytes={}",
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count(),
             stats.completedBatches, stats.peakInFlightBatches, stats.submittedBytes);

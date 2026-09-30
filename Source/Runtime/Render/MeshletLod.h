@@ -40,9 +40,16 @@ struct MeshletLodView {
     // World-space eye / near plane, normalized forward / orthographic flag.
     std::array<float, 4> eye{0, 0, 0, 0.1f};
     std::array<float, 4> forward{0, 0, -1, 0};
-    // Internal render height, tan(vertical FOV / 2), ortho height, pixel error.
+    // Internal render height, tan(vertical FOV / 2), ortho height, render-pixel
+    // threshold. Convert the user-facing display-pixel error at the CPU boundary.
     std::array<float, 4> projection{1080, 0.577350269f, 10, 1.5f};
 };
+
+// Raster, jitter guards and HZB keep using render pixels. Scale the LOD threshold
+// instead so the same display-pixel budget selects the same geometry across
+// internal resolutions. A zero display height means native resolution.
+float meshletLodRenderPixelThreshold(float displayPixelError, uint32_t renderHeight,
+    uint32_t displayHeight = 0);
 
 struct MeshletLodGroupRange;
 struct GPUSceneGpuInstanceRecord;

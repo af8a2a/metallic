@@ -1,0 +1,2036 @@
+{
+  "protocol": "zorah-full-production-live-baseline-v1",
+  "date": "2026-09-30",
+  "gitHead": "f91330ef567f310bdb9682f7c842c24307bcb076",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti, 616.92, 16303 MiB",
+  "asset": {
+    "hashScope": "Published Full meshstream only; not all raw glTF/image/buffer dependencies",
+    "hashTiming": "After GPU measurements, no I/O perturbation of measured batch",
+    "bytes": 54921584816,
+    "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+    "metadataEvidence": ".cache/reference-cook-20260930/full/Full.cook.json",
+    "mtimeUtc": "2026-09-30T01:29:26.1897670Z",
+    "hashingSeconds": 70.131797,
+    "sha256": "DDFFAF7FEE0364CB34215FBA31D24A83DA55206E95E776CBBB3A5B3A7F52AB3F",
+    "cookRevision": 4
+  },
+  "binarySha256": "C31087B281DD8C3AA37C4F76ACA250D41BDC6D6EB2E770EDD684A35F4F3464F9",
+  "fixedRouteConfig": "Tools/Perf/ZorahFullBaseline.Live.json",
+  "evidenceDirectory": "E:\\metallic\\build-release\\zorah-full-baseline-20260930-1440p-01",
+  "conditions": {
+    "outputExtent": [
+      2560,
+      1440
+    ],
+    "renderExtent": [
+      1707,
+      960
+    ],
+    "validationRequested": false,
+    "config": {
+      "cullHardwareClassification": false,
+      "distance": 6.0,
+      "durationSeconds": 30.0,
+      "initialLoad": true,
+      "keyframes": [
+        {
+          "forward": 0.0,
+          "stage": "static",
+          "t": 0.0,
+          "yaw": 0.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "first-visit",
+          "t": 0.08333333333333333,
+          "yaw": 0.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "near-wall",
+          "t": 0.3333333333333333,
+          "yaw": 0.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "turn",
+          "t": 0.4444444444444444,
+          "yaw": 65.0
+        },
+        {
+          "forward": 1.0,
+          "stage": "return",
+          "t": 0.6666666666666666,
+          "yaw": -65.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "settle",
+          "t": 0.8888888888888888,
+          "yaw": 0.0
+        },
+        {
+          "forward": 0.0,
+          "stage": "end",
+          "t": 1.0,
+          "yaw": 0.0
+        }
+      ],
+      "metadataFastClassification": true,
+      "routeFrames": 0,
+      "sample": "gpu-driven-zorah-full",
+      "softwareGroupSize": 0,
+      "temporalJitter": true,
+      "warmupSeconds": 10.0
+    },
+    "absoluteKeyframes": [
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 0.0,
+        "stage": "static"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 2.5,
+        "stage": "first-visit"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -6.0921256404618,
+              4.163491249084473,
+              -5.886143707625141
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 10.0,
+        "stage": "near-wall"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              1.4835184214141535,
+              4.163491249084473,
+              -0.24667183495550882
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 13.333333333333332,
+        "stage": "turn"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -4.1826338924834205,
+              4.163491249084473,
+              -15.135352712684481
+            ],
+            "eye": [
+              2.12179522102082,
+              2.27831768989563,
+              -9.012097381941548
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 20.0,
+        "stage": "return"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 26.666666666666664,
+        "stage": "settle"
+      },
+      {
+        "camera": {
+          "camera": {
+            "center": [
+              -0.484482079744339,
+              4.163491249084473,
+              -8.020232200622559
+            ],
+            "eye": [
+              7.729438781738281,
+              2.27831768989563,
+              -11.146185874938965
+            ],
+            "fovDegrees": 60.00000762939453,
+            "orthoHeight": 2.0,
+            "projection": "perspective",
+            "reversedZ": true,
+            "up": [
+              0.0,
+              1.0,
+              0.0
+            ],
+            "zfar": 29999.998046875,
+            "znear": 0.020000003278255463
+          }
+        },
+        "seconds": 30.0,
+        "stage": "end"
+      }
+    ],
+    "graph": [
+      {
+        "name": "VBuffer",
+        "properties": {
+          "asyncSoftwareRaster": false,
+          "autoBuildStreamAsset": false,
+          "autoLod": true,
+          "clasEmptyChunkRetentionFrames": 30,
+          "coldPageRetentionFrames": 120,
+          "compactClas": true,
+          "compactShadingAttributes": true,
+          "cullHardwareClassification": false,
+          "distributedDemandMinGroups": 65536,
+          "distributedPageDemand": true,
+          "enableClas": true,
+          "enableClusterRtx": true,
+          "enableMeshletStreaming": true,
+          "growClasBytes": 67108864,
+          "hybridRaster": true,
+          "initialLoad": true,
+          "instanceFrustumCull": true,
+          "instanceHzbCull": true,
+          "lodPixelError": 1.5,
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "maxActiveGroups": 1048575,
+          "maxBlasBytes": 536870912,
+          "maxClasBuildClusters": 8192,
+          "maxClasBytes": 2147483648,
+          "maxGpuPageRequests": 65536,
+          "maxGpuPageUnloadRequests": 65536,
+          "maxLockedFallbackPages": 65536,
+          "maxPageLoadsInFlight": 1024,
+          "maxPageUploadsPerFrame": 256,
+          "maxRasterCandidates": 8388608,
+          "maxResidentBytes": 3758096384,
+          "maxResidentPages": 0,
+          "maxTraversalWorkItems": 1048576,
+          "maxTraversalWorkers": 4096,
+          "maxUploadBytesPerFrame": 8388608,
+          "meshletFrustumCull": true,
+          "meshletNormalConeCull": false,
+          "metadataFastClassification": true,
+          "pageLoadConcurrency": 4,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+          "persistentClasGrowBytes": 33554432,
+          "sceneBinding": "asset",
+          "startClasBytes": 0,
+          "streamAssetOnly": true,
+          "streamAssetPath": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+          "temporalJitter": true,
+          "viewBinding": "global",
+          "visualization": "none"
+        },
+        "type": "VisibilityBufferPass"
+      },
+      {
+        "name": "Shadows",
+        "properties": {
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf",
+          "rayTracedShadows": true,
+          "shadowAngularRadius": 0.266,
+          "shadowBias": 0.01,
+          "shadowLightIndex": -1,
+          "shadowLightRadius": 0.05,
+          "shadowRayLength": 100000.0,
+          "sigmaDenoise": true,
+          "sigmaHistoryLength": 5
+        },
+        "type": "RayTracedShadowPass"
+      },
+      {
+        "name": "Deferred",
+        "properties": {
+          "accumulate": false,
+          "exportUpscalerGuides": true,
+          "lightingMode": "realtime",
+          "materialBinning": true,
+          "materialTextureBudgetMiB": 512,
+          "materialTextureColdFrames": 180,
+          "materialTextureMaskMaxDimension": 512,
+          "materialTextureMaxDimension": 128,
+          "materialTextureRefineDimension": 512,
+          "materialTextureStreaming": true,
+          "outputLinear": true,
+          "path": "Asset/ZorahFull/zorah_textured_public.v1.gltf"
+        },
+        "type": "VisibilityBufferDeferredPass"
+      },
+      {
+        "name": "DlssSr",
+        "properties": {
+          "exportOutputGuides": true,
+          "mode": "Quality"
+        },
+        "type": "StreamlineDlssSrPass"
+      },
+      {
+        "name": "AutoExposure",
+        "properties": {},
+        "type": "AutoExposurePass"
+      },
+      {
+        "name": "DlssNr",
+        "properties": {
+          "depthInverted": false,
+          "enabled": false,
+          "fallbackToInput": true,
+          "intensity": 1.0,
+          "preset": 0,
+          "style": 0
+        },
+        "type": "DlssNrPass"
+      },
+      {
+        "name": "FinalBlit",
+        "properties": {},
+        "type": "FinalBlitPass"
+      }
+    ],
+    "hidden": true,
+    "vsync": false,
+    "frameSlots": 2,
+    "trajectoryClock": "wall time",
+    "protocol": "zorah-full-editor-roam-v1",
+    "sample": "gpu-driven-zorah-full",
+    "workloadEvery": 0,
+    "diagnosticRun": false
+  },
+  "aggregate": {
+    "independentProcessCount": 3,
+    "processMeanFrameMs": {
+      "median": 25.31314620573356,
+      "min": 24.446650814332248,
+      "max": 26.91569937219731
+    },
+    "processP50FrameMs": {
+      "median": 25.2049,
+      "min": 24.3276,
+      "max": 26.8541
+    },
+    "processP95FrameMs": {
+      "median": 31.7538,
+      "min": 31.4889,
+      "max": 33.9896
+    },
+    "processP99FrameMs": {
+      "median": 36.0221,
+      "min": 34.2989,
+      "max": 38.1129
+    },
+    "processLoadingSeconds": {
+      "median": 5.422019,
+      "min": 5.147338,
+      "max": 6.0024036
+    },
+    "gpuScopeProcessMeansMs": {
+      "RenderGraph envelope": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope",
+        "median": 24.658714846543003,
+        "min": 23.809977954397393,
+        "max": 24.867577198206277
+      },
+      "VBuffer": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)",
+        "median": 8.827073205381167,
+        "min": 8.54596190228013,
+        "max": 8.836331062394603
+      },
+      "Stream traversal": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal",
+        "median": 3.291633726812816,
+        "min": 3.2241383973941367,
+        "max": 3.305813840358744
+      },
+      "Visibility raster": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster",
+        "median": 5.357751304035874,
+        "min": 5.167909368078176,
+        "max": 5.387979817875211
+      },
+      "Early software raster": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream early/Stream early/Software raster",
+        "median": 1.7545315874439462,
+        "min": 1.69482603257329,
+        "max": 1.7558611264755482
+      },
+      "Late software raster": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream late/Stream late/Software raster",
+        "median": 0.12113108937605396,
+        "min": 0.11476182410423452,
+        "max": 0.12343123228699551
+      },
+      "Early hardware raster": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream early/Stream early/Hardware raster",
+        "median": 1.0476530798206278,
+        "min": 1.0270388013029315,
+        "max": 1.0736289241146713
+      },
+      "Late hardware raster": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Visibility raster/Stream late/Stream late/Hardware raster",
+        "median": 0.06920569686098654,
+        "min": 0.06424518566775245,
+        "max": 0.07120795952782462
+      },
+      "CLAS build": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/CLAS build",
+        "median": 0.581859102866779,
+        "min": 0.5383986710097719,
+        "max": 0.5903567784753363
+      },
+      "BLAS build": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/BLAS build",
+        "median": 0.373933003257329,
+        "min": 0.3736530185497471,
+        "max": 0.38684306367713006
+      },
+      "TLAS build": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/VBuffer (VisibilityBufferPass)/Stream traversal/TLAS build",
+        "median": 0.29961980438448566,
+        "min": 0.2951658371335505,
+        "max": 0.3113485201793722
+      },
+      "Deferred": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)",
+        "median": 13.847204640809444,
+        "min": 13.361665511400652,
+        "max": 14.052515386547086
+      },
+      "Path trace shading": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Path trace shading",
+        "median": 13.726268654300169,
+        "min": 13.238724013029316,
+        "max": 13.929433772197308
+      },
+      "DLSS pass": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/DlssSr (StreamlineDlssSrPass)",
+        "median": 1.0282782995515694,
+        "min": 1.0123466058631923,
+        "max": 1.0286589139966273
+      },
+      "DLSS super resolution": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/DlssSr (StreamlineDlssSrPass)/DLSS super resolution",
+        "median": 0.8961044182124789,
+        "min": 0.8821047296416938,
+        "max": 0.8963025793721974
+      },
+      "AutoExposure": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/AutoExposure (AutoExposurePass)",
+        "median": 0.5157862170403588,
+        "min": 0.5106306449511401,
+        "max": 0.5167184620573355
+      }
+    },
+    "cpuScopeProcessMeansMs": {
+      "Streamer maintenance before pacing": {
+        "path": "Frame/Streamer maintenance before pacing",
+        "median": 1.5660991568296796,
+        "min": 1.502276058631922,
+        "max": 1.5932980269058297
+      },
+      "Residency completion": {
+        "path": "Frame/Streamer maintenance before pacing/Residency completion",
+        "median": 0.2324962900505902,
+        "min": 0.22375700325732897,
+        "max": 0.23271802690582957
+      },
+      "GPU request feedback": {
+        "path": "Frame/Streamer maintenance before pacing/GPU request feedback",
+        "median": 1.201566779089376,
+        "min": 1.149349674267101,
+        "max": 1.223605201793722
+      },
+      "Admit request batch": {
+        "path": "Frame/Streamer maintenance before pacing/GPU request feedback/Consume requests/Admit request batch",
+        "median": 0.9788288364249579,
+        "min": 0.9409188110749186,
+        "max": 0.9872478026905831
+      },
+      "Joint cold page reclaim": {
+        "path": "Frame/Streamer maintenance before pacing/Joint cold page reclaim",
+        "median": 0.09937731871838112,
+        "min": 0.09714462540716612,
+        "max": 0.10265748878923767
+      },
+      "Discard obsolete CLAS plans": {
+        "path": "Frame/Streamer maintenance before pacing/Discard obsolete CLAS plans",
+        "median": 0.021611467116357502,
+        "min": 0.02096270358306189,
+        "max": 0.024421255605381168
+      },
+      "Texture streaming": {
+        "path": "Frame/Render Frame/Record RenderGraph/RenderGraph Preview/RenderGraph GPU envelope/Deferred (VisibilityBufferDeferredPass)/Streamer prepare/Texture streaming",
+        "median": 1.9804705733558179,
+        "min": 1.8644284304932737,
+        "max": 2.1914810260586317
+      },
+      "Reflex pacing": {
+        "path": "Frame/Streamline frame begin / Reflex pacing",
+        "median": 5.231461720067454,
+        "min": 4.393203827361564,
+        "max": 7.677965650224214
+      }
+    },
+    "errorMaxima": {
+      "loadFailures": 0,
+      "requestOverflows": 0,
+      "blasOverflowCount": 0,
+      "blasInvalidGroups": 0,
+      "blasReferenceBudgetRejected": 0,
+      "blasBuildBudgetRejected": 0,
+      "blasStorageRejected": 0,
+      "blasOversizedInstances": 0
+    },
+    "rtasFeedbackMaxima": {
+      "blasMissingClasInstances": 587,
+      "blasPublicationInvalidated": 30851
+    },
+    "allocationFailuresSum": 30,
+    "allSampledRoutesMeetEveryFrame30Fps": false,
+    "pooling": "No pooled-frame mean, percentile, significance test, or confidence interval. Statistics are retained per process; cross-process medians/ranges describe only three repetitions.",
+    "processMeanRelativeRangePercent": 9.754016896192104
+  },
+  "runs": [
+    {
+      "run": "run1",
+      "frameMs": {
+        "count": 1186,
+        "mean": 25.31314620573356,
+        "p50": 25.2049,
+        "p95": 31.7538,
+        "p99": 36.0221,
+        "min": 9.5619,
+        "max": 46.4889
+      },
+      "overBudgetFrames": 32,
+      "overBudgetPercent": 2.69814502529511,
+      "longestOverBudgetSequenceFrames": 1,
+      "loadingSeconds": 6.0024036,
+      "missingGpuFrames": 0,
+      "errorMaxima": {
+        "loadFailures": 0,
+        "requestOverflows": 0,
+        "blasOverflowCount": 0,
+        "blasInvalidGroups": 0,
+        "blasReferenceBudgetRejected": 0,
+        "blasBuildBudgetRejected": 0,
+        "blasStorageRejected": 0,
+        "blasOversizedInstances": 0
+      },
+      "rtasFeedbackMaxima": {
+        "blasMissingClasInstances": 515,
+        "blasPublicationInvalidated": 28097
+      },
+      "frameCounterSums": {
+        "uploads": 92063,
+        "evictions": 92063,
+        "uploadBytes": 5976757744,
+        "allocationFailures": 10
+      },
+      "residentRanges": {
+        "geometryBytes": {
+          "min": 3263764224,
+          "max": 3719724288,
+          "first": 3474972160,
+          "last": 3474972160
+        },
+        "geometryCapacity": {
+          "min": 3758096384,
+          "max": 3758096384,
+          "first": 3758096384,
+          "last": 3758096384
+        },
+        "residentPages": {
+          "min": 52734,
+          "max": 59710,
+          "first": 57176,
+          "last": 57176
+        },
+        "clasBytes": {
+          "min": 1271301120,
+          "max": 1459797888,
+          "first": 1387300480,
+          "last": 1387300480
+        },
+        "clasAllocatedBytes": {
+          "min": 1409286144,
+          "max": 1543503872,
+          "first": 1409286144,
+          "last": 1476395008
+        },
+        "clasCapacity": {
+          "min": 2147483648,
+          "max": 2147483648,
+          "first": 2147483648,
+          "last": 2147483648
+        },
+        "clasScratchBytes": {
+          "min": 182682525,
+          "max": 182682525,
+          "first": 182682525,
+          "last": 182682525
+        },
+        "clasStorageChunks": {
+          "min": 32,
+          "max": 34,
+          "first": 32,
+          "last": 33
+        },
+        "clasPersistentUsedBytes": {
+          "min": 718664960,
+          "max": 718664960,
+          "first": 718664960,
+          "last": 718664960
+        },
+        "clasPersistentAllocatedBytes": {
+          "min": 738197504,
+          "max": 738197504,
+          "first": 738197504,
+          "last": 738197504
+        },
+        "clasTransientUsedBytes": {
+          "min": 552636160,
+          "max": 741132928,
+          "first": 668635520,
+          "last": 668635520
+        },
+        "clasTransientAllocatedBytes": {
+          "min": 671088640,
+          "max": 805306368,
+          "first": 671088640,
+          "last": 738197504
+        },
+        "clasFragmentedFreeBytes": {
+          "min": 0,
+          "max": 200970112,
+          "first": 0,
+          "last": 62378368
+        },
+        "clasEmptyBytes": {
+          "min": 0,
+          "max": 67108864,
+          "first": 0,
+          "last": 0
+        },
+        "textureResidentBytes": {
+          "min": 219394560,
+          "max": 381440512,
+          "first": 219394560,
+          "last": 380916224
+        },
+        "textureBudgetBytes": {
+          "min": 536870912,
+          "max": 536870912,
+          "first": 536870912,
+          "last": 536870912
+        },
+        "texturePendingBytes": {
+          "min": 0,
+          "max": 2291712,
+          "first": 1055232,
+          "last": 0
+        },
+        "textureRetiredBytes": {
+          "min": 0,
+          "max": 1765376,
+          "first": 48128,
+          "last": 351744
+        },
+        "blasArenaUsedBytes": {
+          "min": 119750400,
+          "max": 415247872,
+          "first": 210311424,
+          "last": 273822464
+        },
+        "blasLiveClusterReferences": {
+          "min": 1325181,
+          "max": 2624255,
+          "first": 2624255,
+          "last": 2624255
+        },
+        "blasAdmittedInstances": {
+          "min": 5010,
+          "max": 11020,
+          "first": 11020,
+          "last": 11020
+        },
+        "blasDirtyInstances": {
+          "min": 0,
+          "max": 8068,
+          "first": 0,
+          "last": 0
+        },
+        "blasReusedInstances": {
+          "min": 0,
+          "max": 11020,
+          "first": 11020,
+          "last": 11020
+        }
+      },
+      "softwareRaster": {
+        "mode": 6,
+        "groupSize": 32,
+        "subgroupSize": 32,
+        "entryPoint": "streamClusterRasterGroup32Main",
+        "module": "Features/GPUDriven/GPUDrivenStreamGroupRaster",
+        "spirvFnv1a64": "1407237746718151905",
+        "snapshotFrozen": false,
+        "thresholdPixels": 8.0,
+        "prebin": true,
+        "forceHardware": false,
+        "asyncRequested": false,
+        "workloadEnabled": false,
+        "candidateCapacity": 8388608,
+        "candidateBufferBytes": 303300672
+      },
+      "reflexEffectiveModes": [
+        1
+      ],
+      "gpuScopes": {
+        "RenderGraph envelope": {
+          "count": 1186,
+          "mean": 24.658714846543003,
+          "p95": 27.008096
+        },
+        "VBuffer": {
+          "count": 1186,
+          "mean": 8.836331062394603,
+          "p95": 11.099392
+        },
+        "Stream traversal": {
+          "count": 1186,
+          "mean": 3.291633726812816,
+          "p95": 4.39872
+        },
+        "Visibility raster": {
+          "count": 1186,
+          "mean": 5.387979817875211,
+          "p95": 6.631424
+        },
+        "Early software raster": {
+          "count": 1186,
+          "mean": 1.7558611264755482,
+          "p95": 2.476032
+        },
+        "Late software raster": {
+          "count": 1186,
+          "mean": 0.12113108937605396,
+          "p95": 0.25568
+        },
+        "Early hardware raster": {
+          "count": 1186,
+          "mean": 1.0736289241146713,
+          "p95": 1.359072
+        },
+        "Late hardware raster": {
+          "count": 1186,
+          "mean": 0.07120795952782462,
+          "p95": 0.112928
+        },
+        "CLAS build": {
+          "count": 1186,
+          "mean": 0.581859102866779,
+          "p95": 1.387072
+        },
+        "BLAS build": {
+          "count": 1186,
+          "mean": 0.3736530185497471,
+          "p95": 0.865376
+        },
+        "TLAS build": {
+          "count": 1186,
+          "mean": 0.29961980438448566,
+          "p95": 0.447488
+        },
+        "Deferred": {
+          "count": 1186,
+          "mean": 13.847204640809444,
+          "p95": 16.257568
+        },
+        "Path trace shading": {
+          "count": 1186,
+          "mean": 13.726268654300169,
+          "p95": 16.131584
+        },
+        "DLSS pass": {
+          "count": 1186,
+          "mean": 1.0286589139966273,
+          "p95": 1.292288
+        },
+        "DLSS super resolution": {
+          "count": 1186,
+          "mean": 0.8961044182124789,
+          "p95": 1.15056
+        },
+        "AutoExposure": {
+          "count": 1186,
+          "mean": 0.5167184620573355,
+          "p95": 0.767232
+        }
+      },
+      "cpuScopes": {
+        "Streamer maintenance before pacing": {
+          "count": 1186,
+          "mean": 1.5660991568296796,
+          "p95": 3.7255
+        },
+        "Residency completion": {
+          "count": 1186,
+          "mean": 0.2324962900505902,
+          "p95": 0.6445
+        },
+        "GPU request feedback": {
+          "count": 1186,
+          "mean": 1.201566779089376,
+          "p95": 3.1202
+        },
+        "Admit request batch": {
+          "count": 1186,
+          "mean": 0.9788288364249579,
+          "p95": 2.6359
+        },
+        "Joint cold page reclaim": {
+          "count": 1186,
+          "mean": 0.09937731871838112,
+          "p95": 0.2745
+        },
+        "Discard obsolete CLAS plans": {
+          "count": 1186,
+          "mean": 0.021611467116357502,
+          "p95": 0.0512
+        },
+        "Texture streaming": {
+          "count": 1186,
+          "mean": 1.9804705733558179,
+          "p95": 5.1354
+        },
+        "Reflex pacing": {
+          "count": 1186,
+          "mean": 5.231461720067454,
+          "p95": 12.6481
+        }
+      },
+      "telemetry": {
+        "scope": "Whole process lifetime, including startup/loading/warmup/capture/teardown; capture window is not explicitly delimited in these CSVs.",
+        "sampledFrom": "2026/09/30 11:10:59.342",
+        "sampledThrough": "2026/09/30 11:11:49.888",
+        "sampleSpanSeconds": 50.546,
+        "sampleCount": 51,
+        "metrics": {
+          "utilizationPercent": {
+            "count": 51,
+            "mean": 76.74509803921569,
+            "p50": 96.0,
+            "p95": 98.0,
+            "p99": 98.0,
+            "min": 1.0,
+            "max": 98.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:11:13.602"
+          },
+          "usedMemoryMiB": {
+            "count": 51,
+            "mean": 11133.137254901962,
+            "p50": 12377.0,
+            "p95": 12496.0,
+            "p99": 12515.0,
+            "min": 3409.0,
+            "max": 12515.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:11:42.809"
+          },
+          "graphicsClockMHz": {
+            "count": 51,
+            "mean": 2742.294117647059,
+            "p50": 2902.0,
+            "p95": 2910.0,
+            "p99": 2917.0,
+            "min": 1327.0,
+            "max": 2917.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:11:48.867"
+          },
+          "temperatureC": {
+            "count": 51,
+            "mean": 59.64705882352941,
+            "p50": 61.0,
+            "p95": 64.0,
+            "p99": 65.0,
+            "min": 49.0,
+            "max": 65.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:11:31.733"
+          },
+          "powerW": {
+            "count": 51,
+            "mean": 124.56254901960783,
+            "p50": 141.08,
+            "p95": 152.93,
+            "p99": 156.66,
+            "min": 48.81,
+            "max": 156.66,
+            "firstPeakSampleTimestamp": "2026/09/30 11:11:31.733"
+          }
+        },
+        "competition": {
+          "ChatGPT": {
+            "recordedEngineSamples": 51,
+            "pids": [
+              5832
+            ],
+            "maxSingleEngineUtilizationPercent": 0.617706761066761,
+            "peakTimestamp": "2026-09-30T11:11:20.2335955+08:00",
+            "peakEngine": "pid_5832_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "NVIDIA Overlay": {
+            "recordedEngineSamples": 6,
+            "pids": [
+              15696,
+              16876
+            ],
+            "maxSingleEngineUtilizationPercent": 0.629323979274475,
+            "peakTimestamp": "2026-09-30T11:11:08.4824673+08:00",
+            "peakEngine": "pid_15696_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "QQ": {
+            "recordedEngineSamples": 28,
+            "pids": [
+              20788
+            ],
+            "maxSingleEngineUtilizationPercent": 1.19965787610159,
+            "peakTimestamp": "2026-09-30T11:11:37.2544052+08:00",
+            "peakEngine": "pid_20788_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "System": {
+            "recordedEngineSamples": 44,
+            "pids": [
+              4
+            ],
+            "maxSingleEngineUtilizationPercent": 13.9469657486849,
+            "peakTimestamp": "2026-09-30T11:11:12.7399787+08:00",
+            "peakEngine": "pid_4_luid_0x00000000_0x0000da21_phys_0_eng_10_engtype_copy"
+          },
+          "csrss": {
+            "recordedEngineSamples": 5,
+            "pids": [
+              1280
+            ],
+            "maxSingleEngineUtilizationPercent": 0.241715789030718,
+            "peakTimestamp": "2026-09-30T11:11:21.3148240+08:00",
+            "peakEngine": "pid_1280_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "dwm": {
+            "recordedEngineSamples": 70,
+            "pids": [
+              1852
+            ],
+            "maxSingleEngineUtilizationPercent": 4.52226186850504,
+            "peakTimestamp": "2026-09-30T11:11:19.1688508+08:00",
+            "peakEngine": "pid_1852_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "msedge": {
+            "recordedEngineSamples": 67,
+            "pids": [
+              20592
+            ],
+            "maxSingleEngineUtilizationPercent": 2.85123043966479,
+            "peakTimestamp": "2026-09-30T11:11:12.7399787+08:00",
+            "peakEngine": "pid_20592_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "msedgewebview2": {
+            "recordedEngineSamples": 44,
+            "pids": [
+              2824
+            ],
+            "maxSingleEngineUtilizationPercent": 0.297926561987529,
+            "peakTimestamp": "2026-09-30T11:11:37.2544052+08:00",
+            "peakEngine": "pid_2824_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          }
+        },
+        "competitionTimestampCount": 44,
+        "benchmarkProcessPresent": false,
+        "competitionDefinition": "Windows GPU Engine counters: only valid individual engine samples >= 0.1 percent are exported. Peaks are per engine; values are not summed or treated as whole-card utilization. Benchmark process was absent, so attribution is partial.",
+        "stderrBytes": {
+          "Gpu.stderr.txt": 0,
+          "GpuProcesses.stderr.txt": 0
+        }
+      }
+    },
+    {
+      "run": "run2",
+      "frameMs": {
+        "count": 1228,
+        "mean": 24.446650814332248,
+        "p50": 24.3276,
+        "p95": 31.4889,
+        "p99": 34.2989,
+        "min": 10.1157,
+        "max": 38.316
+      },
+      "overBudgetFrames": 22,
+      "overBudgetPercent": 1.791530944625407,
+      "longestOverBudgetSequenceFrames": 1,
+      "loadingSeconds": 5.147338,
+      "missingGpuFrames": 0,
+      "errorMaxima": {
+        "loadFailures": 0,
+        "requestOverflows": 0,
+        "blasOverflowCount": 0,
+        "blasInvalidGroups": 0,
+        "blasReferenceBudgetRejected": 0,
+        "blasBuildBudgetRejected": 0,
+        "blasStorageRejected": 0,
+        "blasOversizedInstances": 0
+      },
+      "rtasFeedbackMaxima": {
+        "blasMissingClasInstances": 501,
+        "blasPublicationInvalidated": 29512
+      },
+      "frameCounterSums": {
+        "uploads": 93481,
+        "evictions": 93481,
+        "uploadBytes": 6075561408,
+        "allocationFailures": 10
+      },
+      "residentRanges": {
+        "geometryBytes": {
+          "min": 3262297344,
+          "max": 3720527360,
+          "first": 3474972160,
+          "last": 3474972160
+        },
+        "geometryCapacity": {
+          "min": 3758096384,
+          "max": 3758096384,
+          "first": 3758096384,
+          "last": 3758096384
+        },
+        "residentPages": {
+          "min": 52753,
+          "max": 59729,
+          "first": 57176,
+          "last": 57176
+        },
+        "clasBytes": {
+          "min": 1274297344,
+          "max": 1460379776,
+          "first": 1387300480,
+          "last": 1387300480
+        },
+        "clasAllocatedBytes": {
+          "min": 1409286144,
+          "max": 1543503872,
+          "first": 1409286144,
+          "last": 1476395008
+        },
+        "clasCapacity": {
+          "min": 2147483648,
+          "max": 2147483648,
+          "first": 2147483648,
+          "last": 2147483648
+        },
+        "clasScratchBytes": {
+          "min": 182682525,
+          "max": 182682525,
+          "first": 182682525,
+          "last": 182682525
+        },
+        "clasStorageChunks": {
+          "min": 32,
+          "max": 34,
+          "first": 32,
+          "last": 33
+        },
+        "clasPersistentUsedBytes": {
+          "min": 718664960,
+          "max": 718664960,
+          "first": 718664960,
+          "last": 718664960
+        },
+        "clasPersistentAllocatedBytes": {
+          "min": 738197504,
+          "max": 738197504,
+          "first": 738197504,
+          "last": 738197504
+        },
+        "clasTransientUsedBytes": {
+          "min": 555632384,
+          "max": 741714816,
+          "first": 668635520,
+          "last": 668635520
+        },
+        "clasTransientAllocatedBytes": {
+          "min": 671088640,
+          "max": 805306368,
+          "first": 671088640,
+          "last": 738197504
+        },
+        "clasFragmentedFreeBytes": {
+          "min": 0,
+          "max": 196827008,
+          "first": 0,
+          "last": 58184832
+        },
+        "clasEmptyBytes": {
+          "min": 0,
+          "max": 67108864,
+          "first": 0,
+          "last": 0
+        },
+        "textureResidentBytes": {
+          "min": 221131264,
+          "max": 384451072,
+          "first": 221131264,
+          "last": 383861248
+        },
+        "textureBudgetBytes": {
+          "min": 536870912,
+          "max": 536870912,
+          "first": 536870912,
+          "last": 536870912
+        },
+        "texturePendingBytes": {
+          "min": 0,
+          "max": 2289664,
+          "first": 0,
+          "last": 0
+        },
+        "textureRetiredBytes": {
+          "min": 0,
+          "max": 2289664,
+          "first": 89600,
+          "last": 0
+        },
+        "blasArenaUsedBytes": {
+          "min": 110210560,
+          "max": 415623424,
+          "first": 210311424,
+          "last": 273603328
+        },
+        "blasLiveClusterReferences": {
+          "min": 1326375,
+          "max": 2624255,
+          "first": 2624255,
+          "last": 2624255
+        },
+        "blasAdmittedInstances": {
+          "min": 4991,
+          "max": 11020,
+          "first": 11020,
+          "last": 11020
+        },
+        "blasDirtyInstances": {
+          "min": 0,
+          "max": 7951,
+          "first": 0,
+          "last": 0
+        },
+        "blasReusedInstances": {
+          "min": 0,
+          "max": 11020,
+          "first": 11020,
+          "last": 11020
+        }
+      },
+      "softwareRaster": {
+        "mode": 6,
+        "groupSize": 32,
+        "subgroupSize": 32,
+        "entryPoint": "streamClusterRasterGroup32Main",
+        "module": "Features/GPUDriven/GPUDrivenStreamGroupRaster",
+        "spirvFnv1a64": "1407237746718151905",
+        "snapshotFrozen": false,
+        "thresholdPixels": 8.0,
+        "prebin": true,
+        "forceHardware": false,
+        "asyncRequested": false,
+        "workloadEnabled": false,
+        "candidateCapacity": 8388608,
+        "candidateBufferBytes": 303300672
+      },
+      "reflexEffectiveModes": [
+        1
+      ],
+      "gpuScopes": {
+        "RenderGraph envelope": {
+          "count": 1228,
+          "mean": 23.809977954397393,
+          "p95": 26.93472
+        },
+        "VBuffer": {
+          "count": 1228,
+          "mean": 8.54596190228013,
+          "p95": 10.489216
+        },
+        "Stream traversal": {
+          "count": 1228,
+          "mean": 3.2241383973941367,
+          "p95": 4.255808
+        },
+        "Visibility raster": {
+          "count": 1228,
+          "mean": 5.167909368078176,
+          "p95": 6.25472
+        },
+        "Early software raster": {
+          "count": 1228,
+          "mean": 1.69482603257329,
+          "p95": 2.312224
+        },
+        "Late software raster": {
+          "count": 1228,
+          "mean": 0.11476182410423452,
+          "p95": 0.235616
+        },
+        "Early hardware raster": {
+          "count": 1228,
+          "mean": 1.0270388013029315,
+          "p95": 1.351392
+        },
+        "Late hardware raster": {
+          "count": 1228,
+          "mean": 0.06424518566775245,
+          "p95": 0.099072
+        },
+        "CLAS build": {
+          "count": 1228,
+          "mean": 0.5383986710097719,
+          "p95": 1.32912
+        },
+        "BLAS build": {
+          "count": 1228,
+          "mean": 0.373933003257329,
+          "p95": 0.888
+        },
+        "TLAS build": {
+          "count": 1228,
+          "mean": 0.2951658371335505,
+          "p95": 0.467936
+        },
+        "Deferred": {
+          "count": 1228,
+          "mean": 13.361665511400652,
+          "p95": 16.105216
+        },
+        "Path trace shading": {
+          "count": 1228,
+          "mean": 13.238724013029316,
+          "p95": 15.974048
+        },
+        "DLSS pass": {
+          "count": 1228,
+          "mean": 1.0123466058631923,
+          "p95": 1.281376
+        },
+        "DLSS super resolution": {
+          "count": 1228,
+          "mean": 0.8821047296416938,
+          "p95": 1.15024
+        },
+        "AutoExposure": {
+          "count": 1228,
+          "mean": 0.5106306449511401,
+          "p95": 0.746816
+        }
+      },
+      "cpuScopes": {
+        "Streamer maintenance before pacing": {
+          "count": 1228,
+          "mean": 1.502276058631922,
+          "p95": 3.779
+        },
+        "Residency completion": {
+          "count": 1228,
+          "mean": 0.22375700325732897,
+          "p95": 0.6504
+        },
+        "GPU request feedback": {
+          "count": 1228,
+          "mean": 1.149349674267101,
+          "p95": 3.0918
+        },
+        "Admit request batch": {
+          "count": 1228,
+          "mean": 0.9409188110749186,
+          "p95": 2.6035
+        },
+        "Joint cold page reclaim": {
+          "count": 1228,
+          "mean": 0.09714462540716612,
+          "p95": 0.2911
+        },
+        "Discard obsolete CLAS plans": {
+          "count": 1228,
+          "mean": 0.02096270358306189,
+          "p95": 0.0503
+        },
+        "Texture streaming": {
+          "count": 1228,
+          "mean": 2.1914810260586317,
+          "p95": 6.4641
+        },
+        "Reflex pacing": {
+          "count": 1228,
+          "mean": 4.393203827361564,
+          "p95": 11.3587
+        }
+      },
+      "telemetry": {
+        "scope": "Whole process lifetime, including startup/loading/warmup/capture/teardown; capture window is not explicitly delimited in these CSVs.",
+        "sampledFrom": "2026/09/30 11:11:50.010",
+        "sampledThrough": "2026/09/30 11:12:38.674",
+        "sampleSpanSeconds": 48.664,
+        "sampleCount": 49,
+        "metrics": {
+          "utilizationPercent": {
+            "count": 49,
+            "mean": 77.83673469387755,
+            "p50": 97.0,
+            "p95": 98.0,
+            "p99": 98.0,
+            "min": 1.0,
+            "max": 98.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:12:00.265"
+          },
+          "usedMemoryMiB": {
+            "count": 49,
+            "mean": 11473.551020408164,
+            "p50": 12391.0,
+            "p95": 12602.0,
+            "p99": 12610.0,
+            "min": 3441.0,
+            "max": 12610.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:12:34.614"
+          },
+          "graphicsClockMHz": {
+            "count": 49,
+            "mean": 2750.877551020408,
+            "p50": 2895.0,
+            "p95": 2910.0,
+            "p99": 2917.0,
+            "min": 945.0,
+            "max": 2917.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:11:50.010"
+          },
+          "temperatureC": {
+            "count": 49,
+            "mean": 60.87755102040816,
+            "p50": 62.0,
+            "p95": 65.0,
+            "p99": 65.0,
+            "min": 51.0,
+            "max": 65.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:12:20.517"
+          },
+          "powerW": {
+            "count": 49,
+            "mean": 127.72591836734694,
+            "p50": 143.26,
+            "p95": 155.17,
+            "p99": 160.04,
+            "min": 46.82,
+            "max": 160.04,
+            "firstPeakSampleTimestamp": "2026/09/30 11:12:21.533"
+          }
+        },
+        "competition": {
+          "ChatGPT": {
+            "recordedEngineSamples": 48,
+            "pids": [
+              5832
+            ],
+            "maxSingleEngineUtilizationPercent": 1.50965888181388,
+            "peakTimestamp": "2026-09-30T11:12:34.8602921+08:00",
+            "peakEngine": "pid_5832_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "NVIDIA Overlay": {
+            "recordedEngineSamples": 6,
+            "pids": [
+              15696,
+              16876
+            ],
+            "maxSingleEngineUtilizationPercent": 0.585641936574115,
+            "peakTimestamp": "2026-09-30T11:11:58.9569585+08:00",
+            "peakEngine": "pid_15696_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "QQ": {
+            "recordedEngineSamples": 6,
+            "pids": [
+              20788
+            ],
+            "maxSingleEngineUtilizationPercent": 1.12905347439636,
+            "peakTimestamp": "2026-09-30T11:12:35.9732509+08:00",
+            "peakEngine": "pid_20788_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "System": {
+            "recordedEngineSamples": 44,
+            "pids": [
+              4
+            ],
+            "maxSingleEngineUtilizationPercent": 18.5890157638509,
+            "peakTimestamp": "2026-09-30T11:12:31.6808142+08:00",
+            "peakEngine": "pid_4_luid_0x00000000_0x0000da21_phys_0_eng_10_engtype_copy"
+          },
+          "csrss": {
+            "recordedEngineSamples": 1,
+            "pids": [
+              1280
+            ],
+            "maxSingleEngineUtilizationPercent": 0.299724964876725,
+            "peakTimestamp": "2026-09-30T11:12:02.1641224+08:00",
+            "peakEngine": "pid_1280_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "dwm": {
+            "recordedEngineSamples": 17,
+            "pids": [
+              1852
+            ],
+            "maxSingleEngineUtilizationPercent": 3.19333116090962,
+            "peakTimestamp": "2026-09-30T11:12:34.8602921+08:00",
+            "peakEngine": "pid_1852_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "msedge": {
+            "recordedEngineSamples": 62,
+            "pids": [
+              20592
+            ],
+            "maxSingleEngineUtilizationPercent": 6.22260804051714,
+            "peakTimestamp": "2026-09-30T11:12:26.3920887+08:00",
+            "peakEngine": "pid_20592_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "msedgewebview2": {
+            "recordedEngineSamples": 44,
+            "pids": [
+              2824
+            ],
+            "maxSingleEngineUtilizationPercent": 0.303788245442235,
+            "peakTimestamp": "2026-09-30T11:12:03.2269680+08:00",
+            "peakEngine": "pid_2824_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          }
+        },
+        "competitionTimestampCount": 44,
+        "benchmarkProcessPresent": false,
+        "competitionDefinition": "Windows GPU Engine counters: only valid individual engine samples >= 0.1 percent are exported. Peaks are per engine; values are not summed or treated as whole-card utilization. Benchmark process was absent, so attribution is partial.",
+        "stderrBytes": {
+          "Gpu.stderr.txt": 0,
+          "GpuProcesses.stderr.txt": 0
+        }
+      }
+    },
+    {
+      "run": "run3",
+      "frameMs": {
+        "count": 1115,
+        "mean": 26.91569937219731,
+        "p50": 26.8541,
+        "p95": 33.9896,
+        "p99": 38.1129,
+        "min": 12.1116,
+        "max": 69.7615
+      },
+      "overBudgetFrames": 73,
+      "overBudgetPercent": 6.547085201793722,
+      "longestOverBudgetSequenceFrames": 2,
+      "loadingSeconds": 5.422019,
+      "missingGpuFrames": 0,
+      "errorMaxima": {
+        "loadFailures": 0,
+        "requestOverflows": 0,
+        "blasOverflowCount": 0,
+        "blasInvalidGroups": 0,
+        "blasReferenceBudgetRejected": 0,
+        "blasBuildBudgetRejected": 0,
+        "blasStorageRejected": 0,
+        "blasOversizedInstances": 0
+      },
+      "rtasFeedbackMaxima": {
+        "blasMissingClasInstances": 587,
+        "blasPublicationInvalidated": 30851
+      },
+      "frameCounterSums": {
+        "uploads": 90597,
+        "evictions": 90597,
+        "uploadBytes": 5873403088,
+        "allocationFailures": 10
+      },
+      "residentRanges": {
+        "geometryBytes": {
+          "min": 3261578240,
+          "max": 3723351552,
+          "first": 3474972160,
+          "last": 3474972160
+        },
+        "geometryCapacity": {
+          "min": 3758096384,
+          "max": 3758096384,
+          "first": 3758096384,
+          "last": 3758096384
+        },
+        "residentPages": {
+          "min": 52830,
+          "max": 59756,
+          "first": 57176,
+          "last": 57176
+        },
+        "clasBytes": {
+          "min": 1265723136,
+          "max": 1460187008,
+          "first": 1387300480,
+          "last": 1387300480
+        },
+        "clasAllocatedBytes": {
+          "min": 1409286144,
+          "max": 1543503872,
+          "first": 1409286144,
+          "last": 1476395008
+        },
+        "clasCapacity": {
+          "min": 2147483648,
+          "max": 2147483648,
+          "first": 2147483648,
+          "last": 2147483648
+        },
+        "clasScratchBytes": {
+          "min": 182682525,
+          "max": 182682525,
+          "first": 182682525,
+          "last": 182682525
+        },
+        "clasStorageChunks": {
+          "min": 32,
+          "max": 34,
+          "first": 32,
+          "last": 33
+        },
+        "clasPersistentUsedBytes": {
+          "min": 718664960,
+          "max": 718664960,
+          "first": 718664960,
+          "last": 718664960
+        },
+        "clasPersistentAllocatedBytes": {
+          "min": 738197504,
+          "max": 738197504,
+          "first": 738197504,
+          "last": 738197504
+        },
+        "clasTransientUsedBytes": {
+          "min": 547058176,
+          "max": 741522048,
+          "first": 668635520,
+          "last": 668635520
+        },
+        "clasTransientAllocatedBytes": {
+          "min": 671088640,
+          "max": 805306368,
+          "first": 671088640,
+          "last": 738197504
+        },
+        "clasFragmentedFreeBytes": {
+          "min": 0,
+          "max": 206514816,
+          "first": 0,
+          "last": 60062592
+        },
+        "clasEmptyBytes": {
+          "min": 0,
+          "max": 67108864,
+          "first": 0,
+          "last": 0
+        },
+        "textureResidentBytes": {
+          "min": 197669376,
+          "max": 380846592,
+          "first": 197669376,
+          "last": 380781056
+        },
+        "textureBudgetBytes": {
+          "min": 536870912,
+          "max": 536870912,
+          "first": 536870912,
+          "last": 536870912
+        },
+        "texturePendingBytes": {
+          "min": 0,
+          "max": 2551808,
+          "first": 2289664,
+          "last": 351744
+        },
+        "textureRetiredBytes": {
+          "min": 0,
+          "max": 1765376,
+          "first": 389120,
+          "last": 0
+        },
+        "blasArenaUsedBytes": {
+          "min": 115509760,
+          "max": 415310080,
+          "first": 210359552,
+          "last": 274499584
+        },
+        "blasLiveClusterReferences": {
+          "min": 1325638,
+          "max": 2624255,
+          "first": 2624255,
+          "last": 2624255
+        },
+        "blasAdmittedInstances": {
+          "min": 5003,
+          "max": 11020,
+          "first": 11020,
+          "last": 11020
+        },
+        "blasDirtyInstances": {
+          "min": 0,
+          "max": 8073,
+          "first": 0,
+          "last": 0
+        },
+        "blasReusedInstances": {
+          "min": 0,
+          "max": 11020,
+          "first": 11020,
+          "last": 11020
+        }
+      },
+      "softwareRaster": {
+        "mode": 6,
+        "groupSize": 32,
+        "subgroupSize": 32,
+        "entryPoint": "streamClusterRasterGroup32Main",
+        "module": "Features/GPUDriven/GPUDrivenStreamGroupRaster",
+        "spirvFnv1a64": "1407237746718151905",
+        "snapshotFrozen": false,
+        "thresholdPixels": 8.0,
+        "prebin": true,
+        "forceHardware": false,
+        "asyncRequested": false,
+        "workloadEnabled": false,
+        "candidateCapacity": 8388608,
+        "candidateBufferBytes": 303300672
+      },
+      "reflexEffectiveModes": [
+        1
+      ],
+      "gpuScopes": {
+        "RenderGraph envelope": {
+          "count": 1115,
+          "mean": 24.867577198206277,
+          "p95": 28.174144
+        },
+        "VBuffer": {
+          "count": 1115,
+          "mean": 8.827073205381167,
+          "p95": 11.427968
+        },
+        "Stream traversal": {
+          "count": 1115,
+          "mean": 3.305813840358744,
+          "p95": 4.598496
+        },
+        "Visibility raster": {
+          "count": 1115,
+          "mean": 5.357751304035874,
+          "p95": 6.802208
+        },
+        "Early software raster": {
+          "count": 1115,
+          "mean": 1.7545315874439462,
+          "p95": 2.56048
+        },
+        "Late software raster": {
+          "count": 1115,
+          "mean": 0.12343123228699551,
+          "p95": 0.266208
+        },
+        "Early hardware raster": {
+          "count": 1115,
+          "mean": 1.0476530798206278,
+          "p95": 1.380256
+        },
+        "Late hardware raster": {
+          "count": 1115,
+          "mean": 0.06920569686098654,
+          "p95": 0.1056
+        },
+        "CLAS build": {
+          "count": 1115,
+          "mean": 0.5903567784753363,
+          "p95": 1.357888
+        },
+        "BLAS build": {
+          "count": 1115,
+          "mean": 0.38684306367713006,
+          "p95": 0.893216
+        },
+        "TLAS build": {
+          "count": 1115,
+          "mean": 0.3113485201793722,
+          "p95": 0.556576
+        },
+        "Deferred": {
+          "count": 1115,
+          "mean": 14.052515386547086,
+          "p95": 16.78384
+        },
+        "Path trace shading": {
+          "count": 1115,
+          "mean": 13.929433772197308,
+          "p95": 16.6176
+        },
+        "DLSS pass": {
+          "count": 1115,
+          "mean": 1.0282782995515694,
+          "p95": 1.306752
+        },
+        "DLSS super resolution": {
+          "count": 1115,
+          "mean": 0.8963025793721974,
+          "p95": 1.166368
+        },
+        "AutoExposure": {
+          "count": 1115,
+          "mean": 0.5157862170403588,
+          "p95": 0.765984
+        }
+      },
+      "cpuScopes": {
+        "Streamer maintenance before pacing": {
+          "count": 1115,
+          "mean": 1.5932980269058297,
+          "p95": 3.7166
+        },
+        "Residency completion": {
+          "count": 1115,
+          "mean": 0.23271802690582957,
+          "p95": 0.6333
+        },
+        "GPU request feedback": {
+          "count": 1115,
+          "mean": 1.223605201793722,
+          "p95": 3.0431
+        },
+        "Admit request batch": {
+          "count": 1115,
+          "mean": 0.9872478026905831,
+          "p95": 2.5671
+        },
+        "Joint cold page reclaim": {
+          "count": 1115,
+          "mean": 0.10265748878923767,
+          "p95": 0.2919
+        },
+        "Discard obsolete CLAS plans": {
+          "count": 1115,
+          "mean": 0.024421255605381168,
+          "p95": 0.0559
+        },
+        "Texture streaming": {
+          "count": 1115,
+          "mean": 1.8644284304932737,
+          "p95": 5.2675
+        },
+        "Reflex pacing": {
+          "count": 1115,
+          "mean": 7.677965650224214,
+          "p95": 21.7382
+        }
+      },
+      "telemetry": {
+        "scope": "Whole process lifetime, including startup/loading/warmup/capture/teardown; capture window is not explicitly delimited in these CSVs.",
+        "sampledFrom": "2026/09/30 11:12:39.712",
+        "sampledThrough": "2026/09/30 11:13:28.462",
+        "sampleSpanSeconds": 48.75,
+        "sampleCount": 49,
+        "metrics": {
+          "utilizationPercent": {
+            "count": 49,
+            "mean": 72.71428571428571,
+            "p50": 89.0,
+            "p95": 97.0,
+            "p99": 98.0,
+            "min": 1.0,
+            "max": 98.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:13:08.239"
+          },
+          "usedMemoryMiB": {
+            "count": 49,
+            "mean": 11410.30612244898,
+            "p50": 12329.0,
+            "p95": 12585.0,
+            "p99": 12646.0,
+            "min": 3521.0,
+            "max": 12646.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:13:25.426"
+          },
+          "graphicsClockMHz": {
+            "count": 49,
+            "mean": 2761.265306122449,
+            "p50": 2895.0,
+            "p95": 2910.0,
+            "p99": 2917.0,
+            "min": 1342.0,
+            "max": 2917.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:13:28.462"
+          },
+          "temperatureC": {
+            "count": 49,
+            "mean": 60.12244897959184,
+            "p50": 61.0,
+            "p95": 64.0,
+            "p99": 64.0,
+            "min": 52.0,
+            "max": 64.0,
+            "firstPeakSampleTimestamp": "2026/09/30 11:13:11.247"
+          },
+          "powerW": {
+            "count": 49,
+            "mean": 122.41877551020409,
+            "p50": 134.2,
+            "p95": 152.68,
+            "p99": 155.89,
+            "min": 45.53,
+            "max": 155.89,
+            "firstPeakSampleTimestamp": "2026/09/30 11:13:12.262"
+          }
+        },
+        "competition": {
+          "ChatGPT": {
+            "recordedEngineSamples": 34,
+            "pids": [
+              5832
+            ],
+            "maxSingleEngineUtilizationPercent": 1.15166855661372,
+            "peakTimestamp": "2026-09-30T11:13:11.2161443+08:00",
+            "peakEngine": "pid_5832_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "NVIDIA Overlay": {
+            "recordedEngineSamples": 5,
+            "pids": [
+              15696,
+              16876
+            ],
+            "maxSingleEngineUtilizationPercent": 0.889898684465947,
+            "peakTimestamp": "2026-09-30T11:12:48.8297163+08:00",
+            "peakEngine": "pid_15696_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "QQ": {
+            "recordedEngineSamples": 46,
+            "pids": [
+              20788
+            ],
+            "maxSingleEngineUtilizationPercent": 0.666844037500953,
+            "peakTimestamp": "2026-09-30T11:12:44.5569866+08:00",
+            "peakEngine": "pid_20788_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "System": {
+            "recordedEngineSamples": 44,
+            "pids": [
+              4
+            ],
+            "maxSingleEngineUtilizationPercent": 11.9486155485774,
+            "peakTimestamp": "2026-09-30T11:13:20.8729100+08:00",
+            "peakEngine": "pid_4_luid_0x00000000_0x0000da21_phys_0_eng_10_engtype_copy"
+          },
+          "WindowsTerminal": {
+            "recordedEngineSamples": 1,
+            "pids": [
+              35364
+            ],
+            "maxSingleEngineUtilizationPercent": 0.107014147899847,
+            "peakTimestamp": "2026-09-30T11:13:18.6844458+08:00",
+            "peakEngine": "pid_35364_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "csrss": {
+            "recordedEngineSamples": 13,
+            "pids": [
+              1280
+            ],
+            "maxSingleEngineUtilizationPercent": 0.608767042191379,
+            "peakTimestamp": "2026-09-30T11:12:47.7582123+08:00",
+            "peakEngine": "pid_1280_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "dwm": {
+            "recordedEngineSamples": 75,
+            "pids": [
+              1852
+            ],
+            "maxSingleEngineUtilizationPercent": 5.48537207939798,
+            "peakTimestamp": "2026-09-30T11:13:03.7533804+08:00",
+            "peakEngine": "pid_1852_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "msedge": {
+            "recordedEngineSamples": 51,
+            "pids": [
+              20592
+            ],
+            "maxSingleEngineUtilizationPercent": 3.20213433028748,
+            "peakTimestamp": "2026-09-30T11:13:26.1822529+08:00",
+            "peakEngine": "pid_20592_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          },
+          "msedgewebview2": {
+            "recordedEngineSamples": 45,
+            "pids": [
+              2824,
+              27072
+            ],
+            "maxSingleEngineUtilizationPercent": 0.310253896443827,
+            "peakTimestamp": "2026-09-30T11:13:09.0888030+08:00",
+            "peakEngine": "pid_2824_luid_0x00000000_0x0000da21_phys_0_eng_0_engtype_3d"
+          }
+        },
+        "competitionTimestampCount": 44,
+        "benchmarkProcessPresent": false,
+        "competitionDefinition": "Windows GPU Engine counters: only valid individual engine samples >= 0.1 percent are exported. Peaks are per engine; values are not summed or treated as whole-card utilization. Benchmark process was absent, so attribution is partial.",
+        "stderrBytes": {
+          "Gpu.stderr.txt": 0,
+          "GpuProcesses.stderr.txt": 0
+        }
+      }
+    }
+  ],
+  "timingDefinitions": {
+    "frameTime": "Start-to-start editor loop, includes waits, events, recording, submit, present and capture bookkeeping.",
+    "gpuTime": "Inclusive named scopes; RenderGraph envelope excludes editor composite/present and independent texture submissions.",
+    "loadingSeconds": "First scene-ready observation minus loading draw-loop start, after loadBuiltInSample; excludes subsequent 10 s warmup and earlier app/setup work.",
+    "percentile": "Nearest rank, ceil(N*p)-1, matching Tools/AnalyzeZorahFullRoam.py.",
+    "telemetry": "Whole-runtime approximately 1 Hz sampled card and background-engine data, not capture-window-isolated."
+  },
+  "limitations": [
+    "Standalone baseline, not bake A/B; old baseline resolution differs, so no bake speedup claim.",
+    "Only three fresh processes; frame counts are not independent repeated experiments.",
+    "Cache state was neither reset nor measured; shader/OS caches may be warm.",
+    "Hidden-window route; validation disabled, no screenshot-based visual verification.",
+    "Telemetry CSV has no explicit capture-window marker; benchmark process absent from GPU Engine records, attribution partial.",
+    "Asset launch-time size/timestamp recorded without a content hash; measured raster SPIR-V fingerprint is stable.",
+    "Named pool memory does not represent all renderer allocations, and whole-card memory includes background processes."
+  ],
+  "comparisonScope": "Current revision4 production live path at 2560x1440 output; no bake-only A/B or previous-resolution speedup claim"
+}

@@ -37,9 +37,18 @@ VisibilityBufferPass 保持可见性职责：GPUScene 实例／meshlet 剔除、
 阴影逻辑复用现有参考渲染资源。直接光调用 `openpbr_eval`，环境照明调用
 `openpbr_sample`，包含漫反射与镜面／金属反射。此路径不发射主可见性光线，
 光线查询用于灯光和环境遮挡。不透明表面默认每像素每帧 64 次环境采样，并渐进累积线性 HDR，
-仍只计算直接光与环境照明。透射表面从重建的主命中继续执行同一 OpenPBR 路径积分器，
+仍只计算直接光与环境照明。补充路径追踪默认关闭；透射／BLEND 表面也沿用直接光、环境照明
+和阴影路径。按需在 Inspector 开启 **Supplementary Path Tracing**，或在图节点设置
+`"supplementaryPathTracing": true`，才从重建的主命中继续执行同一 OpenPBR 路径积分器，
 默认 2 个样本、最多 8 层，支持折射、出射界面、内部全反射和 Beer–Lambert 体积吸收。
 阴影连接复用参考路径的直线透射近似，玻璃不再一律作为不透明遮挡物。
+
+此属性选择 `METALLIC_DEFERRED_PATH_TRACING=0/1` 的编译变体，宏只传给
+`VisibilityBufferDeferred` 模块；关闭变体不包含补充主命中续追调用。
+整屏路径和 5 种材质分箱着色均采用所选变体。宏值进入 shader cache 和 pipeline cache
+身份，首次开启可能触发编译；热切换会重新准备变体并重置累积／时域历史。
+StreamAsset 仅在开关开启且场景包含 transmission／BLEND 材质时启用补充追踪的光线查询。
+关闭开关仍保留基础直接光、IBL 和阴影。
 
 ## 场景绑定与帧前准备
 
@@ -97,7 +106,7 @@ Substrate 的复杂度分类说明见
 | Dielectric / 1 | 无透射，metalness 因子 ≤ 0 | 固定 metalness=0 的不透明 OpenPBR |
 | Conductor / 2 | 无透射，metalness 因子 ≥ 1，且没有 metallic-roughness 贴图或 NTC 集 | 固定 metalness=1 的不透明 OpenPBR |
 | Opaque / 3 | 其余无透射表面，包括混合金属度和金属度贴图 | 一般不透明 OpenPBR |
-| Transmission / 4 | transmission 因子 > 0，优先于上述材质分类 | 完整 OpenPBR 主命中续追 |
+| Transmission / 4 | transmission 因子 > 0 或 BLEND，优先于上述材质分类 | 默认直接光／IBL／阴影；开启 `supplementaryPathTracing` 后执行完整 OpenPBR 主命中续追 |
 
 - 每个 8×4 tile 对应一个 32-thread workgroup。所有 lane（包括越界边缘）先参与 ballot；
   每类最多由 leader 做一次原子追加，记录 `{tileIndex, laneMask}` 两个 uint。
@@ -116,7 +125,8 @@ Substrate 的复杂度分类说明见
   空队列 X/Y 为 0，无 CPU count readback。Scratch 按 GPU 完成点复用，参数明确转为
   `IndirectArgument`；不同类别只写各自 mask 覆盖的像素，无需类别间内存屏障。
 - 独立编译 5 个 shader permutation。不透明变体不包含主命中续追调用，背景变体不包含
-  几何重建。二次射线和透射阴影仍使用完整 OpenPBR 材质求值，保留跨材质命中语义。
+  几何重建。补充路径追踪开启后，二次射线使用完整 OpenPBR 材质求值；透射阴影仍保留
+  跨材质命中语义。关闭变体的 Transmission / 4 也不包含主命中续追调用。
   RNG 仍以屏幕像素为种子，输出和历史不依赖任务追加顺序。
 - 5 个变体通过 `ComputeProgram::dispatchIndirectBatch` 共用一次描述符更新，批内仅切换 pipeline 和 push data。
   共享前校验 device、绑定顺序／类型／数量、实际 heap shader index 及完整 push-data 布局；
@@ -138,8 +148,9 @@ mask 的构造和消费均使用 `WaveGetLaneIndex()`，不依赖它与 `SV_Grou
 | `color` | 始终为未曝光的线性 RGBA32F，接到公共曝光链路 |
 | `environmentSamples` | 每帧 1–256 次 OpenPBR 环境采样，默认 64 |
 | `materialBinning` | 默认 true，wave32 tile 特征分类与 5 种着色变体；false 为整屏对照路径 |
-| `transmissionSamples` | 透射表面每帧 1–16 个继续追踪样本，默认 2 |
-| `transmissionDepth` | 透射继续追踪深度 2–16，默认 8，包含光栅主命中 |
+| `supplementaryPathTracing` | 默认 false；true 选择 `METALLIC_DEFERRED_PATH_TRACING=1`，为透射／BLEND 主表面开启补充路径追踪 |
+| `transmissionSamples` | 仅补充路径追踪开启时在 Inspector 显示并生效，每帧 1–16 个继续追踪样本，默认 2 |
+| `transmissionDepth` | 仅补充路径追踪开启时在 Inspector 显示并生效，继续追踪深度 2–16，默认 8，包含光栅主命中 |
 | `accumulate` | 默认 true，可关闭以查看单帧延迟渲染结果 |
 | `debugDisableShadows` | 关闭直接光和环境遮挡，用于隔离 BSDF 差异 |
 | `debugDisableTransmission` | 关闭透射，用于对照玻璃和阴影效果 |
@@ -159,17 +170,19 @@ Reference 和 VBuffer 通过 `cameraSyncGroup: "LookDevComparison"` 联动。
 ## 当前范围与可解释差异
 
 - 支持 resident GPUScene 的 opaque 和 alpha-mask 材质；沿用 VBuffer 的单／双面及 LOD 路径。
-  Stream page geometry 暂返回 Unsupported，避免将 stream record 当作 resident record 解释。
+  StreamAsset 已支持 `lightingMode: "realtime"` 的 Deferred 路径，按 producer 的 resident／stream
+  record 范围重建主表面；StreamAsset 的 sampled reference 模式仍返回 Unsupported。
+  为 Stream transmission／BLEND 开启补充路径追踪时，还需要 `enableClusterRtx: true` 和已就绪的 stream TLAS。
 - 两路使用同一 OpenPBR BSDF。延迟路径的不透明主表面只计算直接光与环境照明，
   参考路径默认每帧 4 spp、12 层反弹，因此凹槽、接触区和反射内的间接照明仍会不同。
 - 环境采样累积只增加着色样本，不对 VBuffer 的主表面做像素抖动／抗锯齿；
   轮廓可能与路径追踪参考的像素积分存在差异。
-- 支持 ABeautifulGame 的 `KHR_materials_transmission` 和 `KHR_materials_volume`，
-  以及已有的金属／粗糙度、法线、遮蔽、发光与颜色贴图。两种棋子顶部使用 OPAQUE alpha mode，
+- 基础路径支持已有的金属／粗糙度、法线、遮蔽、发光与颜色贴图；开启 `supplementaryPathTracing`
+  后执行 ABeautifulGame 的 `KHR_materials_transmission` 和 `KHR_materials_volume` 透射积分。两种棋子顶部使用 OPAQUE alpha mode，
   透射由 OpenPBR BSDF 处理；透明 BLEND 排序合成仍不支持。此次未增加 clearcoat / sheen 等资产未使用的扩展。
 - 该资产没有设置 attenuationDistance，按无限距离处理，不能仅根据 attenuationColor 期待体积吸收。
   测试通过 Inspector 同一材质更新接口设定有限距离后验证吸收。
-- 透射路径是有限深度的混合渲染：不透明主表面的镜面反射仍只采样环境，
+- 可选透射路径是有限深度的混合渲染：不透明主表面的镜面反射仍只采样环境，
   与完整路径追踪的间接照明、反射中的场景和焦散有差异。直线阴影透射不求解精确折射光源连接。
 - 纹理重建使用现有材质采样器和每三角形的 ray-cone LOD 尺度；
   参考路径使用每 primitive 的平均尺度，纹理缩小过滤可有差异。
@@ -178,8 +191,29 @@ Reference 和 VBuffer 通过 `cameraSyncGroup: "LookDevComparison"` 联动。
 默认 shader ball 渲染图由 `Tools/BuildOpenPbrLookDev.py` 随参考场景一起生成。
 ABeautifulGame 图为 `Pipelines/Samples/lookdev_abeautiful_game.metallic_graph.json`，使用资产配套 HDRI，
 默认 8 次环境采样、2 次透射采样，以便交互比较。
+图中保存的透射采样数不自动开启补充路径追踪；需要显式设置 `supplementaryPathTracing: true`。
 
 ## 验证
+
+2026-09-30，MSVC Release、RTX 5070 Ti / NVIDIA 616.92：
+
+- `MetallicGPUDrivenSample` 和 `MetallicRhiTests` 构建通过；独立预热工具编译 66 个 Deferred
+  宏变体，0 个缓存命中、0 个失败，覆盖整屏／5 类分箱、resident reference／realtime 和 Stream realtime。
+- Vulkan validation 开启时，`visibility_buffer_deferred_openpbr`、`visibility_buffer_deferred_shadow_history`、
+  `visibility_buffer_abeautiful_game_transmission`、`stream_material_transmission` 和
+  `regir_virtual_lights_openpbr_path_trace_render` 均通过。
+  新增检查覆盖默认值与显式 false 相等、关闭时续追参数不生效、开启后的透射效果、
+  resident／Stream 的整屏与分箱一致性、开关恢复，以及照明模式和 upscaler guides 的热切换。
+  开启 guides 的 FP16 颜色允许显示量化差异，关闭后要求精确恢复。
+- 完整 ZorahFull 使用默认关闭变体，以 2560×1440 输出、DLSS Quality 1707×960 内部分辨率运行。
+  就绪后预热 10 秒，记录 30 秒／1292 帧，帧时间均值 23.233 ms、P95 30.290 ms、P99 33.437 ms，
+  13 帧超过 33.333 ms。Deferred 节点 GPU 均值 12.006 ms，着色子范围 11.899 ms；
+  loadFailures、requestOverflows、blasOverflowCount 均为 0。此次 production 运行关闭 validation。
+  这是单次功能验证，与[改动前的隐式续追基线](ZorahFullPerformanceBaseline20260930.md)工作负载不同。
+
+编译日志位于 `build/DeferredPathTracingShaderVariants20260930.log`；
+GPU 图像和报告位于 `build/DeferredPathTracingGpu20260930/` 与 `build/DeferredPathTracingGpu20260930-final/`；
+完整场景的配置、manifest 和原始数据位于 `build-release/zorah-full-deferred-default-off-20260930-1440p/`。
 
 ```powershell
 $env:METALLIC_VK_INTERNAL_PIPELINE_CACHE = "disabled"

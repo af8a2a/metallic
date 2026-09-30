@@ -7,12 +7,14 @@
 | 属性 | 默认值 | 含义 |
 | --- | --- | --- |
 | `autoLod` | `true` | 按当前裁剪相机选择自适应 cut |
-| `lodPixelError` | `1.5` | 内部渲染分辨率的像素误差；减小会细化 |
+| `lodPixelError` | `1.5` | 显示视口分辨率的像素误差；减小会细化 |
 | `lodBias` | `0` | 有效阈值为 `lodPixelError * exp2(lodBias)`；正值变粗 |
 | `lodLevel` | `0` | 关闭 Auto 后的手动 cut；0 为最细，超出深度时保留完整终止分支 |
 | `visualization` | 继承管线设置 | `lod` 为 LOD 层级着色；观察模式不参与几何选择 |
 
-冻结裁剪相机也会冻结 LOD 所用相机。误差基于内部 render height，DLSS 改变内部渲染尺寸时会相应改变选择。视锥和 HZB 裁剪仍在选择之后执行；早、晚 HZB 和软硬光栅消费同一帧的同一份 cut。
+冻结裁剪相机也会冻结 LOD 所用相机。`lodPixelError` 按显示视口像素定义，显示尺寸和相机固定时，切换 DLSS 内部渲染尺寸不会改变 LOD 误差预算。CPU 将带 bias 的阈值乘以 `renderHeight / displayHeight`，传入原有内部像素投影公式；光栅、抖动保护范围和 HZB 仍使用内部渲染尺寸。视锥和 HZB 裁剪仍在选择之后执行；早、晚 HZB 和软硬光栅消费同一帧的同一份 cut。
+
+这是参数单位变更：原生分辨率行为不变，已有图中的数值保持不变。以内部高度为显示高度的 2/3 为例，默认 1.5 显示像素会换算为 1.0 内部像素，比旧的 1.5 内部像素要求更细的几何，可能增加流送与光栅负载。无需重新 cook 资产。
 
 ## 数据契约
 
@@ -43,12 +45,19 @@ GPU 按“重置 → 选择并计算块内前缀 → 块间前缀及间接参数
 
 ## 调试与验证
 
+2026-09-30 显示像素口径验证：Release 编辑器、GPUDrivenSample 与 RHI 测试构建通过。18 项相关回归全部通过（首轮 16 项，修正测试预期后复测失败项和扩展 GPU 项）；resident GPU 对照共 32 组，其中 8 组验证固定显示高度下透视/正交在 1080、720、540、2160 内部高度选择一致。流送参数测试覆盖 clamp、bias、零尺寸回退和独立渲染相机；真实 Bunny 检查 CPU/GPU cut、软硬光栅和冻结相机，透视/正交输出图已检查。
+
+首轮新测试有一处零尺寸转换的 1 ULP 比较差，已使用浮点相对容差；旧 Bunny 测试显式关闭同步 initialLoad，以继续验证同帧有序上传发布，保留原断言。原始失败和复测日志保存在 `build-scheduling-release/lod-display-pixels/`。
+
+ZorahFull 在 2560×1440 输出、1707×960 内部尺寸、DLSS Quality 下完成 validation 短程运行，以及预热 10 秒后的 10 秒普通漫游（417 帧），无 VUID 或 DeviceLost。普通漫游的 loadFailures、requestOverflows、blasOverflowCount 均为零，逐帧 allocationFailures 峰值为 1，blasMissingClasInstances 峰值为 588，仍有分配压力与 CLAS 未就绪回退。证据分别在 `build-release/lod-display-zorah-20260930/` 与 `build-release/lod-display-zorah-live-20260930/`。Full 漫游未做图像读回；该运行检查不能证明近景 popping 已全部消失，也不是更改前后的性能 A/B。
+
 `AfterResidentLod` 提供以下资源供 Debug Control 抓取：
 
 - `lod.<pass>.header`：计数、容量和溢出。
 - `lod.<pass>.selections`：实际 `(instance, cluster)` 和原始 record 映射。
 - `lod.<pass>.arguments`：GPU 间接调度参数。
 - 常规 GPUScene 抓取点另提供 `gpuScene.<pass>.lodGroups`，与 meshlets、instances、meshletDraws 联合检查。
+- `lod.targetPixels` 为带 bias 的显示像素阈值，`pixelSpace` 为 `display`；`renderTargetPixels` 为实际传入 GPU 的内部像素阈值，同时记录 `displayHeight` 和 `renderHeight`。
 
 对应回归：
 

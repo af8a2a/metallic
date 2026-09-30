@@ -7,6 +7,7 @@
 #include "json.hpp"
 #include <zstd.h>
 #include <fstream>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -62,7 +63,7 @@ std::vector<uint8_t> constantBlock(uint32_t format)
 }
 std::filesystem::path makeKtx(const std::filesystem::path& directory, const std::string& name,
                               uint32_t format, const std::string& swizzle, uint32_t width = 7,
-                              uint32_t height = 5)
+                              uint32_t height = 5, bool distinctMips = false)
 {
     const std::array<uint8_t, 12> magic{0xab, 0x4b, 0x54, 0x58, 0x20, 0x32,
                                         0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a};
@@ -90,8 +91,12 @@ std::filesystem::path makeKtx(const std::filesystem::path& directory, const std:
     put(data, 60, kvSize);
     put(data, kvOffset, uint32_t(pair.size()));
     std::memcpy(data.data() + kvOffset + 4, pair.data(), pair.size());
-    const auto block = constantBlock(format);
+    auto block = constantBlock(format);
     for (uint32_t mip = 0; mip < mipCount; ++mip) {
+        if (distinctMips) {
+            require(format == 139, "Distinct mip fixture requires BC4");
+            block[0] = block[1] = uint8_t(32 + 16 * mip);
+        }
         const auto blocks = ((std::max(width >> mip, 1u) + 3) / 4) * ((std::max(height >> mip, 1u) + 3) / 4);
         std::vector<uint8_t> raw;
         for (uint32_t i = 0; i < blocks; ++i) {
@@ -671,6 +676,153 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(KtxTextureStreamingTest);
+
+class KtxTextureStreamingSamplingStabilityTest final : public RhiTest {
+public:
+    KtxTextureStreamingSamplingStabilityTest() { type = RhiTestType::Rendering; name = "ktx2_texture_streaming_sampling_stability"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        if (!context.device.capabilities().bindlessDescriptorHeap) {
+            return RhiTestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
+        }
+        const auto directory = context.outputDirectory / "texture-sampling-stability";
+        std::filesystem::create_directories(directory);
+        makeKtx(directory, "mips.ktx2", 139, "rgba", 1024, 1024, true);
+        const auto document = Json::parse(R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],
+            "nodes":[{"mesh":0}],"buffers":[{"uri":"unused.bin","byteLength":36}],
+            "bufferViews":[{"buffer":0,"byteLength":36}],
+            "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],
+            "meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]}],
+            "materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}],
+            "images":[{"uri":"mips.ktx2","mimeType":"image/ktx2"}],"textures":[{"source":0}]})");
+        const auto path = directory / "scene.gltf";
+        { std::ofstream output(path); output << document; }
+        scene::Scene scene;
+        require(scene.loadStreamMetadata(path), scene.lastLoadResult().error);
+        ScenePathTraceResources resources;
+        std::string log;
+        require(resources.prepare(context.device, context.graphicsQueue,
+            {{"path",path.string()}, {"materialTextureMaxDimension",128}, {"materialTextureBudgetMiB",4},
+             {"materialTextureStreaming",true}, {"materialTextureRefineDimension",512},
+             {"materialTextureColdFrames",16}}, &scene, log), log);
+        const auto baseline = resources.textureStats().residentAllocationBytes;
+        const uint32_t imageSlot = resources.logicalTextureIndices()[0];
+        require(resources.materialTextureFirstMips()[0] == 3, "Unexpected initial mip tail");
+        ShaderCompileResult shader;
+        require(compileSlangShaderToSpirv({.moduleName = "TextureStreamingProbe", .entryPointName = "main",
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
+                .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
+        const ComputeProgramBindingDesc layout[] = {
+            {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = resources.materialTextureCount()},
+            {.binding = 1}, {.binding = 2}, {.binding = 3, .kind = ComputeResourceBindingKind::Sampler}};
+        ComputeProgram program;
+        require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
+            .bindings = layout, .requiresRayQuery = false}, log), log);
+        const SamplerDesc sampler{.mipFilter = SamplerFilter::Linear,
+            .addressU = SamplerAddressMode::Repeat, .addressV = SamplerAddressMode::Repeat};
+        std::unique_ptr<Buffer> output;
+        require(context.device.createBuffer({.size = 32, .structureStride = 16,
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
+                .transform([&](auto value) { output = std::move(value); }), "stability readback");
+        std::unique_ptr<CommandPool> pool;
+        std::unique_ptr<CommandBuffer> commands;
+        QueueSubmissionTracker tracker;
+        RenderFrameContext frame;
+        require(context.device.createCommandPool(context.graphicsQueue).transform([&](auto value) { pool = std::move(value); }), "stability pool");
+        require(pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }), "stability commands");
+        require(tracker.initialize(context.device, context.graphicsQueue), "stability tracker");
+        uint64_t frameIndex = 0;
+        Json samples = Json::array();
+        struct SampleReport {
+            const std::filesystem::path& directory;
+            const Json& samples;
+            ~SampleReport() { std::ofstream(directory / "samples.json") << samples.dump(2); }
+        } report{directory, samples};
+        const auto tick = [&](bool visible, bool frozen = false) {
+            require(frame.wait(), "stability feedback wait");
+            require(pool->reset(), "stability pool reset");
+            require(frame.begin(frameIndex++), "stability frame");
+            require(commands->begin(&frame), "stability begin");
+            Buffer* feedback = nullptr;
+            require(resources.beginTextureStreaming(*commands, frameIndex, feedback, nullptr, frozen), "stability stream tick");
+            require(resources.uploadMaterialTextures(*commands), "retain stability texture generation");
+            const BufferBarrierDesc ready{.buffer = output.get(), .before = {},
+                .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
+            require(commands->synchronize({.buffers = {&ready, 1}}), "stability output ready");
+            const ComputeDispatchBinding bindings[] = {
+                {.binding = 0, .sampledImages = resources.materialTextureSnapshot()},
+                {.binding = 1, .buffer = feedback}, {.binding = 2, .buffer = output.get()},
+                {.binding = 3, .sampler = &sampler}};
+            struct Push { uint32_t slot, visible; float nearSourceLod, farSourceLod; };
+            const Push push{imageSlot, visible ? 1u : 0u, .25f, 5.25f};
+            require(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings,
+                .pushData = &push, .pushDataSize = sizeof(push)}), "stability probe dispatch");
+            require(commands->end(), "stability end");
+            auto* command = commands.get();
+            require(tracker.submit({.commandBuffers = {&command, 1}}, frame), "stability submit");
+            require(frame.wait(), "stability GPU completion");
+            output->invalidate();
+            auto* mapped = output->map(); require(mapped != nullptr, "stability map");
+            std::array<float, 8> value;
+            std::memcpy(value.data(), mapped, sizeof(value)); output->unmap();
+            for (float component : value) { require(std::isfinite(component), "Non-finite texture transition sample"); }
+            require(std::abs(value[1] - 116.f / 255) < .003f,
+                "Fixed coarse source footprint changed across a rebased resident tail: " + Json(value).dump());
+            const auto stats = resources.textureStats();
+            require(stats.peakLiveAllocationBytes <= stats.budgetBytes, "Transition exceeded the combined old/new budget");
+            samples.push_back({{"frame",frameIndex}, {"frozen",frozen}, {"visible",visible}, {"gpu",value},
+                {"firstMip",resources.materialTextureFirstMips()[0]}, {"upgrades",stats.upgrades}});
+            return value;
+        };
+        auto previous = tick(false);
+        require(std::abs(previous[0] - 80.f / 255) < .003f, "Initial fixed footprint did not sample the coarse tail");
+        bool published = false;
+        for (uint32_t attempt = 0; attempt < 300; ++attempt) {
+            auto current = tick(true);
+            if (resources.materialTextureFirstMips()[0] < 3) {
+                require(std::abs(current[0] - previous[0]) < .003f,
+                    "First texture publication visibly jumped to the new top mip");
+                require(current[2] > .5f && current[4] == 0.f && current[5] > 0.f,
+                    "Sampling transition suppressed finer source-mip demand");
+                previous = current; published = true; break;
+            }
+            previous = current;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        require(published, "Texture never published an upgraded mip tail");
+        const auto beforeFreeze = tick(false, true);
+        const auto frozenMip = resources.materialTextureFirstMips()[0];
+        for (uint32_t step = 0; step < 3; ++step) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            const auto frozen = tick(false, true);
+            require(std::abs(frozen[0] - beforeFreeze[0]) < .0001f &&
+                resources.materialTextureFirstMips()[0] == frozenMip,
+                "Frozen publication advanced the GPU sampling transition");
+        }
+        previous = tick(true);
+        require(std::abs(previous[0] - beforeFreeze[0]) < .003f, "Resume applied frozen wall time to mip refinement");
+        uint32_t intermediateSamples = 0;
+        for (uint32_t step = 0; step < 24; ++step) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            const auto current = tick(true);
+            require(current[0] <= previous[0] + .003f, "Stationary refinement moved back toward a coarser source mip");
+            if (current[0] > 49.f / 255 && current[0] < 79.f / 255) { ++intermediateSamples; }
+            require(current[4] == 0.f && current[5] > 0.f, "Transition reduced source-footprint residency demand");
+            previous = current;
+        }
+        require(resources.materialTextureFirstMips()[0] == 1 && resources.textureStats().upgrades == 2 &&
+            std::abs(previous[0] - 48.f / 255) < .003f && intermediateSamples >= 2,
+            "Refinement did not converge through intermediate GPU samples to the 512 tail");
+        for (uint32_t step = 0; step < 120; ++step) { (void)tick(false); }
+        require(resources.materialTextureFirstMips()[0] == 3 && resources.textureStats().downgrades == 1 &&
+            resources.textureStats().residentAllocationBytes == baseline && resources.textureStats().retiredAllocationBytes == 0,
+            "Sampling transition prevented cold physical retirement");
+        commands.reset(); require(frame.reset(), "stability final frame reset");
+        resources.clear();
+        return RhiTestResult::pass("Distinct BC4 mips: fixed-footprint continuity, gradual GPU refinement, uncapped demand, freeze/resume and cold retirement");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(KtxTextureStreamingSamplingStabilityTest);
 
 class ZorahTextureResourcesTest final : public RhiTest {
   public:

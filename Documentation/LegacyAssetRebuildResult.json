@@ -1,0 +1,810 @@
+{
+  "status": "complete",
+  "date": "2026-09-30T10:54:50.852976+08:00",
+  "scope": "Rebuild every active legacy Metallic meshlet cache under Asset; retain resident/stream consumer formats.",
+  "summary": {
+    "replacedLegacyCaches": 11,
+    "residentRebuiltToVersion4": 9,
+    "streamRebuiltToVersion9CookRevision4Reference": 2,
+    "missingConfiguredStreamCachesCreated": 2,
+    "unusedLegacySuffixCachesArchived": 2,
+    "alreadyCurrentZorahFullRetained": 1,
+    "activeCachesAfter": 14,
+    "activeLegacyCachesAfter": 0,
+    "activeBytesBefore": 116358448352,
+    "activeBytesAfter": 84804624477,
+    "replacedBytesBefore": 61436863536,
+    "replacedBytesAfter": 29878091795,
+    "replacedBytesReductionPercent": 51.36781066713731
+  },
+  "replacedCaches": [
+    {
+      "asset": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf.meshstream.bin",
+      "kind": "stream",
+      "previousFormatVersion": 7,
+      "formatVersion": 9,
+      "cookRevision": 4,
+      "oldBytes": 244428908,
+      "newBytes": 110435932,
+      "reductionPercent": 54.818792546420084,
+      "manifest": ".cache/asset-legacy-rebuild-20260930/SuperSponza/Stream.manifest.json",
+      "backup": ".cache/asset-legacy-rebuild-20260930/Backups/SuperSponza/NewSponza_Main_glTF_003.gltf.meshstream.bin",
+      "validation": {
+        "decodedPayloads": "all-pages",
+        "compression": "Reference"
+      }
+    },
+    {
+      "asset": "Asset/meet_mat.glb.meshlets.bin",
+      "kind": "resident",
+      "previousFormatVersion": 2,
+      "formatVersion": 4,
+      "cookRevision": null,
+      "oldBytes": 1637586,
+      "newBytes": 1637586,
+      "reductionPercent": 0.0,
+      "manifest": ".cache/asset-legacy-rebuild-20260930/Resident/meet_mat.glb.meshlets.bin/Cook.json",
+      "backup": ".cache/asset-legacy-rebuild-20260930/Backups/meet_mat.glb.meshlets.bin",
+      "validation": {
+        "cacheReload": true,
+        "directedTriangleMatch": true,
+        "sourceGeometryHashMatches": true,
+        "sourceTopologyMatches": true
+      }
+    },
+    {
+      "asset": "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf.meshlets.bin",
+      "kind": "resident",
+      "previousFormatVersion": 1,
+      "formatVersion": 4,
+      "cookRevision": null,
+      "oldBytes": 3590988,
+      "newBytes": 3589094,
+      "reductionPercent": 0.052743144783551354,
+      "manifest": ".cache/asset-legacy-rebuild-20260930/Resident/MeshletCache/TerrainP0/simple_terrain_height.gltf.meshlets.bin/Cook.json",
+      "backup": ".cache/asset-legacy-rebuild-20260930/Backups/MeshletCache/TerrainP0/simple_terrain_height.gltf.meshlets.bin",
+      "validation": {
+        "cacheReload": true,
+        "directedTriangleMatch": true,
+        "sourceGeometryHashMatches": true,
+        "sourceTopologyMatches": true
+      }
+    },
+    {
+      "asset": "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf.meshlets.bin",
+      "kind": "resident",
+      "previousFormatVersion": 3,
+      "formatVersion": 4,
+      "cookRevision": null,
+      "oldBytes": 1792124,
+      "newBytes": 1792124,
+      "reductionPercent": 0.0,
+      "manifest": ".cache/asset-legacy-rebuild-20260930/Resident/LookDev/OpenPbrDefault/OpenPbrDefault.gltf.meshlets.bin/Cook.json",
+      "backup": ".cache/asset-legacy-rebuild-20260930/Backups/LookDev/OpenPbrDefault/OpenPbrDefault.gltf.meshlets.bin",
+      "validation": {
+        "cacheReload": true,
+        "directedTriangleMatch": true,
+        "sourceGeometryHashMatches": true,
+        "sourceTopologyMatches": true
+      }
+    },
+    {
+      "asset": "Asset/StandfordBunny/scene.gltf.meshlets.bin",
+      "kind": "resident",
+      "previousFormatVersion": 3,
+      "formatVersion": 4,
+      "cookRevision": null,
+      "oldBytes": 1375073,
+      "newBytes": 1375073,
+      "reductionPercent": 0.0,
+      "manifest": ".cache/asset-legacy-rebuild-20260930/Resident/StandfordBunny/scene.gltf.meshlets.bin/Cook.json",
+      "backup": ".cache/asset-legacy-rebuild-20260930/Backups/StandfordBunny/scene.gltf.meshlets.bin",
+      "validation": {
+        "cacheReload": true,
+        "directedTriangleMatch": true,
+        "sourceGeometryHashMatches": true,
+        "sourceTopologyMatches": true
+      }
+    },
+    {
+      "asset": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf.meshlets.bin",
+      "kind": "resident",
+      "previousFormatVersion": 3,
+      "formatVersion": 4,
+      "cookRevision": null,
+      "oldBytes": 34930023,
+      "newBytes": 33204824,
+      "reductionPercent": 4.939014783929574,
+      "manifest": ".cache/asset-legacy-rebuild-20260930/Resident/ABeautifulGame/glTF/ABeautifulGame.gltf.meshlets.bin/Cook.json",
+      "backup": ".cache/asset-legacy-rebuild-20260930/Backups/ABeautifulGame/glTF/ABeautifulGame.gltf.meshlets.bin",
+      "validation": {
+        "cacheReload": true,
+        "directedTriangleMatch": true,
+        "sourceGeometryHashMatches": true,
+        "sourceTopologyMatches": true
+      }
+    },
+    {
+      "asset": "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf.meshlets.bin",
+      "kind": "resident",
+      "previousFormatVersion": 3,
+      "formatVersion": 4,
+      "cookRevision": null,
+      "oldBytes": 77372577,
+      "newBytes": 77355270,
+      "reductionPercent": 0.02236839028897375,
+      "manifest": ".cache/asset-legacy-rebuild-20260930/Resident/SuperSponza/NewSponza_Main_glTF_003.gltf.meshlets.bin/Cook.json",
+      "backup": ".cache/asset-legacy-rebuild-20260930/Backups/SuperSponza/NewSponza_Main_glTF_003.gltf.meshlets.bin",
+      "validation": {
+        "cacheReload": true,
+        "directedTriangleMatch": true,
+        "sourceGeometryHashMatches": true,
+        "sourceTopologyMatches": true
+      }
+    },
+    {
+      "asset": "Asset/SuperSponza/NewSponza_Main_USD_Yup_003.usda.meshlets.bin",
+      "kind": "resident",
+      "previousFormatVersion": 1,
+      "formatVersion": 4,
+      "cookRevision": null,
+      "oldBytes": 148677593,
+      "newBytes": 102995851,
+      "reductionPercent": 30.725370970997623,
+      "manifest": ".cache/asset-legacy-rebuild-20260930/Resident/SuperSponza/NewSponza_Main_USD_Yup_003.usda.meshlets.bin/Cook.json",
+      "backup": ".cache/asset-legacy-rebuild-20260930/Backups/SuperSponza/NewSponza_Main_USD_Yup_003.usda.meshlets.bin",
+      "validation": {
+        "cacheReload": true,
+        "directedTriangleMatch": true,
+        "sourceGeometryHashMatches": true,
+        "sourceTopologyMatches": true
+      }
+    },
+    {
+      "asset": "Asset/Tessellation/DisplacedPlane.gltf.meshlets.bin",
+      "kind": "resident",
+      "previousFormatVersion": 1,
+      "formatVersion": 4,
+      "cookRevision": null,
+      "oldBytes": 1908,
+      "newBytes": 1908,
+      "reductionPercent": 0.0,
+      "manifest": ".cache/asset-legacy-rebuild-20260930/Resident/Tessellation/DisplacedPlane.gltf.meshlets.bin/Cook.json",
+      "backup": ".cache/asset-legacy-rebuild-20260930/Backups/Tessellation/DisplacedPlane.gltf.meshlets.bin",
+      "validation": {
+        "cacheReload": true,
+        "directedTriangleMatch": true,
+        "sourceGeometryHashMatches": true,
+        "sourceTopologyMatches": true
+      }
+    },
+    {
+      "asset": "Asset/Sponza/glTF/Sponza.gltf.meshlets.bin",
+      "kind": "resident",
+      "previousFormatVersion": 1,
+      "formatVersion": 4,
+      "cookRevision": null,
+      "oldBytes": 6264955,
+      "newBytes": 6171308,
+      "reductionPercent": 1.494775301658191,
+      "manifest": ".cache/asset-legacy-rebuild-20260930/Resident/Sponza/glTF/Sponza.gltf.meshlets.bin/Cook.json",
+      "backup": ".cache/asset-legacy-rebuild-20260930/Backups/Sponza/glTF/Sponza.gltf.meshlets.bin",
+      "validation": {
+        "cacheReload": true,
+        "directedTriangleMatch": true,
+        "sourceGeometryHashMatches": true,
+        "sourceTopologyMatches": true
+      }
+    },
+    {
+      "asset": "Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin",
+      "kind": "stream",
+      "previousFormatVersion": 9,
+      "formatVersion": 9,
+      "cookRevision": 4,
+      "oldBytes": 60916791801,
+      "newBytes": 29539532825,
+      "reductionPercent": 51.50839045907358,
+      "manifest": ".cache/asset-legacy-rebuild-20260930/MiniZorah/MiniZorah.manifest.json",
+      "backup": ".cache/asset-legacy-rebuild-20260930/Backups/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin",
+      "validation": {
+        "decodedPayloads": "all-pages",
+        "compression": "Reference"
+      }
+    }
+  ],
+  "additionalCaches": [
+    {
+      "asset": "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf.meshstream.bin",
+      "fileBytes": 4945562,
+      "source": "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf",
+      "formatVersion": 9,
+      "cookRevision": 4,
+      "compression": "Reference",
+      "manifest": ".cache/asset-legacy-rebuild-20260930/AdditionalStreams/Terrain.manifest.json",
+      "sourceCoverage": ".cache/asset-legacy-rebuild-20260930/AdditionalStreams/Terrain.published.coverage.json",
+      "validation": {
+        "decodedPayloads": "all-pages",
+        "sourceAttributesAndLod0DirectedTriangles": "reference-quantized-source-match"
+      }
+    },
+    {
+      "asset": "Asset/Tessellation/DisplacedPlane.gltf.meshstream.bin",
+      "fileBytes": 2304,
+      "source": "Asset/Tessellation/DisplacedPlane.gltf",
+      "formatVersion": 9,
+      "cookRevision": 4,
+      "compression": "Reference",
+      "manifest": ".cache/asset-legacy-rebuild-20260930/AdditionalStreams/Tessellation.manifest.json",
+      "sourceCoverage": ".cache/asset-legacy-rebuild-20260930/AdditionalStreams/Tessellation.published.coverage.json",
+      "validation": {
+        "decodedPayloads": "all-pages",
+        "sourceAttributesAndLod0DirectedTriangles": "reference-quantized-source-match"
+      }
+    }
+  ],
+  "retiredCaches": [
+    {
+      "oldAsset": "E:\\metallic\\Asset\\MeshletCache\\Sponza_bf9cd804c713ee5a.meshletcache",
+      "backup": "E:\\metallic\\.cache\\asset-legacy-rebuild-20260930\\Backups\\MeshletCache\\Sponza_bf9cd804c713ee5a.meshletcache",
+      "bytes": 2374253,
+      "status": "retired and archived",
+      "replacement": "E:\\metallic\\Asset\\Sponza\\glTF\\Sponza.gltf.meshlets.bin",
+      "reason": "No current source, pipeline, test or tool consumes these cache suffixes; active Sponza resident cache was rebuilt to v4."
+    },
+    {
+      "oldAsset": "E:\\metallic\\Asset\\MeshletCache\\Sponza_bf9cd804c713ee5a.meshletlodcache",
+      "backup": "E:\\metallic\\.cache\\asset-legacy-rebuild-20260930\\Backups\\MeshletCache\\Sponza_bf9cd804c713ee5a.meshletlodcache",
+      "bytes": 5599452,
+      "status": "retired and archived",
+      "replacement": "E:\\metallic\\Asset\\Sponza\\glTF\\Sponza.gltf.meshlets.bin",
+      "reason": "No current source, pipeline, test or tool consumes these cache suffixes; active Sponza resident cache was rebuilt to v4."
+    }
+  ],
+  "retainedCache": {
+    "asset": "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin",
+    "formatVersion": 9,
+    "cookRevision": 4,
+    "fileBytes": 54921584816,
+    "reason": "Already Reference/current before this migration; header rechecked, no redundant recook.",
+    "previousValidation": "Documentation/ZorahFullReferenceAlignmentResult.json",
+    "historicalRevision2Backup": "Asset/ZorahFull/zorah_textured_public.v1.gltf.revision2.backup.meshstream.bin"
+  },
+  "sourceRecovery": {
+    "generatedTerrainSource": "Asset/MeshletCache/TerrainP0/simple_terrain_height.gltf",
+    "inputHeightmap": "Asset/simple_terrain_height.exr",
+    "tool": "Tools/BuildTerrainMesh.py",
+    "horizontalSize": 256,
+    "heightScale": 16,
+    "skirtDepth": 8,
+    "vertices": 92400,
+    "triangles": 181194,
+    "reason": "Recover the missing generated source using the existing repository tool and target parameters."
+  },
+  "tooling": {
+    "residentCook": "Source/Tools/MeshletResidentCookMain.cpp",
+    "target": "MetallicResidentMeshletCook",
+    "command": "MetallicResidentMeshletCook --source ORIGINAL --output STAGED --report JSON",
+    "normalBuild": "build-scheduling-release, MSVC/Ninja/Release, OpenUSD disabled",
+    "usdBuild": "build-asset-rebuild-usd, isolated MSVC/Ninja/Release, OpenUSD SOURCE enabled",
+    "validation": "Fresh same-directory source copy retaining size/mtime, no cache reuse, actual cache reload, exact source P/N/UV/T geometry hash, exact LOD0 directed triangle multiset after full-attribute welding."
+  },
+  "gpuValidation": {
+    "device": "NVIDIA GeForce RTX 5070 Ti, 16303 MiB",
+    "validationEnabled": true,
+    "miniZorah": [
+      {
+        "test": "minizorah_stream_first_frame",
+        "status": "passed",
+        "report": ".cache/asset-legacy-rebuild-20260930/MiniZorah/Gpu/MiniZorahFirstFrameReport.json",
+        "instances": 19144,
+        "gpuRootCoverage": {
+          "header": {
+            "activeGroupCapacity": 131072,
+            "activeGroupCount": 19144,
+            "frameIndex": 380,
+            "invalidCapacity": 0,
+            "maxActiveGroupClusters": 32,
+            "overflowCount": 0,
+            "terminalFallback": 0
+          },
+          "verifiedGroups": 19144,
+          "verifiedInstances": 19144
+        },
+        "sourceCoverage": {
+          "canonicalGeometries": 3163,
+          "sourcePrimitives": 3163,
+          "verifiedInstances": 19144
+        },
+        "baseColorValidation": null,
+        "hardwareHybridComparison": null,
+        "p1ClassificationEquivalence": null,
+        "resizeReleaseReopen": null,
+        "images": [
+          ".cache/asset-legacy-rebuild-20260930/MiniZorah/Gpu/MiniZorah-original.png",
+          ".cache/asset-legacy-rebuild-20260930/MiniZorah/Gpu/MiniZorah-far.png",
+          ".cache/asset-legacy-rebuild-20260930/MiniZorah/Gpu/MiniZorah-near.png"
+        ]
+      },
+      {
+        "test": "minizorah_vbuffer",
+        "status": "passed",
+        "report": ".cache/asset-legacy-rebuild-20260930/MiniZorah/Gpu/MiniZorahVBufferFirstFrameReport.json",
+        "instances": 19144,
+        "gpuRootCoverage": {
+          "header": {
+            "activeGroupCapacity": 131072,
+            "activeGroupCount": 19144,
+            "frameIndex": 10,
+            "invalidCapacity": 0,
+            "maxActiveGroupClusters": 32,
+            "overflowCount": 0,
+            "terminalFallback": 0
+          },
+          "verifiedGroups": 19144,
+          "verifiedInstances": 19144
+        },
+        "sourceCoverage": {
+          "canonicalGeometries": 3163,
+          "sourcePrimitives": 3163,
+          "verifiedInstances": 19144
+        },
+        "baseColorValidation": {
+          "checkedPixels": 2026996,
+          "maxByteError": 0
+        },
+        "hardwareHybridComparison": {
+          "asyncComputeBranches": 1,
+          "coverageMismatch": 0,
+          "idMismatch": 34,
+          "interiorIdMismatch": 0,
+          "pixels": 2073600
+        },
+        "p1ClassificationEquivalence": [
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": false,
+            "pixels": 2073600,
+            "pose": "terminal roots",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": true,
+            "pixels": 2073600,
+            "pose": "terminal roots",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": false,
+            "pixels": 2073600,
+            "pose": "original",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": true,
+            "pixels": 2073600,
+            "pose": "original",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": false,
+            "pixels": 2073600,
+            "pose": "far",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": true,
+            "pixels": 2073600,
+            "pose": "far",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": false,
+            "pixels": 2073600,
+            "pose": "near",
+            "visibilityMismatch": 0
+          },
+          {
+            "depthMismatch": 0,
+            "metadataFastClassification": true,
+            "pixels": 2073600,
+            "pose": "near",
+            "visibilityMismatch": 0
+          }
+        ],
+        "resizeReleaseReopen": "passed",
+        "images": [
+          ".cache/asset-legacy-rebuild-20260930/MiniZorah/Gpu/MiniZorahVBuffer-original.png",
+          ".cache/asset-legacy-rebuild-20260930/MiniZorah/Gpu/MiniZorahVBuffer-far.png",
+          ".cache/asset-legacy-rebuild-20260930/MiniZorah/Gpu/MiniZorahVBuffer-near.png"
+        ]
+      }
+    ],
+    "superSponza": {
+      "Status": "passed",
+      "Passed": 3,
+      "Failed": 0,
+      "Skipped": 0,
+      "Counts": {
+        "skipped": 0,
+        "failed": 0,
+        "passed": 3
+      },
+      "CountingScope": "Three unique required SuperSponza tests, using successful evidence from separately preserved attempts",
+      "ValidationEnabled": true,
+      "Tests": [
+        {
+          "Status": "passed",
+          "EvidenceDirectory": "E:\\metallic\\.cache\\asset-legacy-rebuild-20260930\\SuperSponza\\Gpu\\FullTextures8GiB",
+          "DurationMs": 33446,
+          "Report": "SuperSponzaFirstFrameReport.json",
+          "Name": "RhiRendering.super_sponza_stream_first_frame"
+        },
+        {
+          "Status": "passed",
+          "EvidenceDirectory": "E:\\metallic\\.cache\\asset-legacy-rebuild-20260930\\SuperSponza\\Gpu\\ResidentVisibilityIds",
+          "DurationMs": 29083,
+          "Report": "VerificationSummary.json",
+          "Name": "RhiRendering.render_graph_gpu_driven_sponza_visibility_render"
+        },
+        {
+          "Status": "passed",
+          "EvidenceDirectory": "E:\\metallic\\.cache\\asset-legacy-rebuild-20260930\\SuperSponza\\Gpu\\FullTextures8GiB",
+          "DurationMs": 8108,
+          "Report": "SuperSponzaUploadAllocation.json",
+          "Name": "RhiResource.super_sponza_upload_smoke"
+        }
+      ],
+      "Attempts": [
+        {
+          "Name": "Default2GiB",
+          "Evidence": "VerificationSummary.json",
+          "Failed": 3,
+          "Skipped": 0,
+          "FirstActualError": "Material texture allocation exceeds budget",
+          "Passed": 0
+        },
+        {
+          "Name": "IneffectivePngStreaming2GiB",
+          "Evidence": "BoundedTextures/VerificationSummary.json",
+          "Failed": 3,
+          "Skipped": 0,
+          "FirstActualError": "Material texture allocation exceeds budget",
+          "Passed": 0
+        },
+        {
+          "Name": "FullTextures8GiB",
+          "Evidence": "FullTextures8GiB/VerificationSummary.json",
+          "Failed": 1,
+          "Skipped": 0,
+          "FirstActualError": "coverage display differs from visibility coverage",
+          "Passed": 2
+        },
+        {
+          "Name": "ResidentVisibilityIds",
+          "Evidence": "ResidentVisibilityIds/VerificationSummary.json",
+          "Failed": 0,
+          "Skipped": 0,
+          "FirstActualError": null,
+          "Passed": 1
+        }
+      ],
+      "RawAttemptsUnmodified": true,
+      "TextureCount": 72,
+      "TextureCountIncludingFallback": 73,
+      "TextureAllocationBytes": 6442574336,
+      "TexturePeakAllocationBytes": 6442574336,
+      "TextureBudgetBytes": 8589934592,
+      "TexturePayloadBytes": 6442450852,
+      "AllSourcePngsAndMipsPreserved": true,
+      "StreamAllocation": {
+        "allocationBytes": 6442574336,
+        "images": 73,
+        "peakAllocationBytes": 6442574336
+      },
+      "StreamLocalHeap": {
+        "allocationBytes": 7233786368,
+        "blockBytes": 7265251728,
+        "usageBytes": 7377752064
+      },
+      "ResidentAllocation": {
+        "coveredPixels": 65536,
+        "localHeapAllocationBytes": 6997935072,
+        "localHeapBlockBytes": 7071611872,
+        "localHeapUsageBytes": 7134498816,
+        "materialAllocationBytes": 6442574336,
+        "materialImages": 73,
+        "materialPeakAllocationBytes": 6442574336
+      },
+      "UploadAllocation": {
+        "allocationBytes": 6442574336,
+        "budgetBytes": 8589934592,
+        "logicalTextures": 72,
+        "payloadBytes": 6442450852,
+        "peakLiveBytes": 6442574336,
+        "peakStagingBytes": 246065832,
+        "residentIncludingFallback": 73,
+        "submittedUploadBytes": 6520240860
+      },
+      "SourceCoverage": {
+        "canonicalGeometries": 405,
+        "sourcePrimitives": 405,
+        "verifiedInstances": 405
+      },
+      "GpuRootCoverage": {
+        "header": {
+          "activeGroupCapacity": 3781,
+          "activeGroupCount": 406,
+          "frameIndex": 106,
+          "invalidCapacity": 0,
+          "maxActiveGroupClusters": 32,
+          "overflowCount": 0,
+          "terminalFallback": 0
+        },
+        "verifiedGroups": 406,
+        "verifiedInstances": 405
+      },
+      "TerminalReady": true,
+      "CacheBytes": 110435932,
+      "CookRevision": 4,
+      "HardwareHybridComparison": {
+        "asyncComputeBranches": 1,
+        "coverageMismatch": 0,
+        "idMismatch": 0,
+        "interiorIdMismatch": 0,
+        "pixels": 65536
+      },
+      "P1ClassificationEquivalence": [
+        {
+          "depthMismatch": 0,
+          "metadataFastClassification": false,
+          "pixels": 65536,
+          "pose": "terminal roots",
+          "visibilityMismatch": 0
+        },
+        {
+          "depthMismatch": 0,
+          "metadataFastClassification": true,
+          "pixels": 65536,
+          "pose": "terminal roots",
+          "visibilityMismatch": 0
+        },
+        {
+          "depthMismatch": 0,
+          "metadataFastClassification": false,
+          "pixels": 65536,
+          "pose": "original",
+          "visibilityMismatch": 0
+        },
+        {
+          "depthMismatch": 0,
+          "metadataFastClassification": true,
+          "pixels": 65536,
+          "pose": "original",
+          "visibilityMismatch": 0
+        },
+        {
+          "depthMismatch": 0,
+          "metadataFastClassification": false,
+          "pixels": 65536,
+          "pose": "far",
+          "visibilityMismatch": 0
+        },
+        {
+          "depthMismatch": 0,
+          "metadataFastClassification": true,
+          "pixels": 65536,
+          "pose": "far",
+          "visibilityMismatch": 0
+        },
+        {
+          "depthMismatch": 0,
+          "metadataFastClassification": false,
+          "pixels": 65536,
+          "pose": "near",
+          "visibilityMismatch": 0
+        },
+        {
+          "depthMismatch": 0,
+          "metadataFastClassification": true,
+          "pixels": 65536,
+          "pose": "near",
+          "visibilityMismatch": 0
+        }
+      ],
+      "ResizeReleaseReopen": "passed",
+      "Views": [
+        {
+          "name": "original",
+          "coveredPixels": 65536,
+          "image": "E:/metallic/.cache/asset-legacy-rebuild-20260930/SuperSponza/Gpu/FullTextures8GiB/SuperSponza-original.png"
+        },
+        {
+          "name": "far",
+          "coveredPixels": 8198,
+          "image": "E:/metallic/.cache/asset-legacy-rebuild-20260930/SuperSponza/Gpu/FullTextures8GiB/SuperSponza-far.png"
+        },
+        {
+          "name": "near",
+          "coveredPixels": 65536,
+          "image": "E:/metallic/.cache/asset-legacy-rebuild-20260930/SuperSponza/Gpu/FullTextures8GiB/SuperSponza-near.png"
+        }
+      ],
+      "ResidentVisibilityComparison": {
+        "legacyRedCoverageMismatch": 9,
+        "lowRedCoveredPixels": 9,
+        "minimumCoveredPixels": 2048,
+        "minimumTriangleDifferences": 1024,
+        "modes": [
+          {
+            "coverageMismatch": 0,
+            "coveredPixels": 65536,
+            "differentPixels": 0,
+            "mode": "meshlet"
+          },
+          {
+            "coverageMismatch": 0,
+            "coveredPixels": 65536,
+            "differentPixels": 65536,
+            "mode": "triangle"
+          },
+          {
+            "coverageMismatch": 0,
+            "coveredPixels": 65536,
+            "differentPixels": 65536,
+            "mode": "depth"
+          },
+          {
+            "coverageMismatch": 0,
+            "coveredPixels": 65536,
+            "differentPixels": 65536,
+            "mode": "coverage"
+          },
+          {
+            "coverageMismatch": 0,
+            "coveredPixels": 65536,
+            "differentPixels": 65536,
+            "mode": "none"
+          }
+        ],
+        "pixels": 65536
+      },
+      "IndependentPixelVerification": {
+        "visibilityPixels": 65536,
+        "validVisibilityIds": 65536,
+        "coverageWhitePixels": 65536,
+        "coverageVsVisibilityMismatch": 0,
+        "legacyRedCoverageMismatch": 9,
+        "lowRedSample": {
+          "index": 16308,
+          "visibilityId": 16027141,
+          "encodedRecord": 125212,
+          "rgba": [
+            31,
+            65,
+            54,
+            255
+          ]
+        }
+      },
+      "TestRepair": {
+        "MeshletPngIdenticalAcrossAttempts": true,
+        "SameAsShader": "GPUDrivenRasterCommon::unpackVisibilityId",
+        "Reason": "Shaded meshlet ID red channel is not a coverage contract",
+        "ProductionRendererChanged": false,
+        "MeshletPngSha256": "EF7968821526DA01E3769101FCAE5B79C636E6F502E60599AE2498EBB2E15860",
+        "PixelThresholdsChanged": false,
+        "ShadersChanged": false,
+        "LowRedCoveredPixels": 9,
+        "ActualPredicate": "(visibilityId >> kVisibilityTriangleBits)!=0",
+        "OldPredicate": "(meshletPixel & 0xff)>=32",
+        "CoverageVsIdMismatch": 0,
+        "CacheChanged": false
+      },
+      "TextureBudgetAdapter": "Only three full-source SuperSponza tests declare8192MiB; production default2048MiB unchanged; ineffective PNG streaming override removed",
+      "ShaderCompilationFailures": 0,
+      "VulkanValidationErrors": 0,
+      "Warnings": [
+        "Missing EOSOverlayVkLayer-Win64.json manifest",
+        "Missing E:/Validation.json manifest",
+        "Older validation layer disables KHR OMM in stream/upload attempts, shader alpha traversal remains"
+      ],
+      "ImagesInspected": [
+        "FullTextures8GiB/SuperSponza-original.png",
+        "FullTextures8GiB/SuperSponza-far.png",
+        "FullTextures8GiB/SuperSponza-near.png",
+        "ResidentVisibilityIds/SuperSponzaResident-meshlet.png",
+        "ResidentVisibilityIds/visibility_buffer_sponza_triangle.png",
+        "ResidentVisibilityIds/visibility_buffer_sponza_depth.png",
+        "ResidentVisibilityIds/visibility_buffer_sponza_coverage.png",
+        "ResidentVisibilityIds/visibility_buffer_sponza_none.png"
+      ],
+      "ImageObservations": "Interior arch and exterior silhouette are present; resident meshlet image identical across attempts; triangle colors distinguish geometry; device-depth image grayscale; coverage white matches all valid IDs; off mode exactly uniform clear color",
+      "Scope": "Real full-source streaming/reference-cache and resident visibility correctness plus full texture upload/AS; debug geometry images do not establish final PBR/transmission quality, MASK coverage, or optimization speed",
+      "ConcurrentCookProcesses": [],
+      "TimingScope": "Actual individual test wall times only; no optimization comparison",
+      "BuildExitCode": 0,
+      "DiffCheck": "passed",
+      "GpuReleased": true,
+      "CompletedUtc": "2026-09-30T02:54:12.0232860Z"
+    },
+    "bunnyAdapterRegression": [
+      {
+        "test": "streamasset_only_first_frame",
+        "status": "passed",
+        "report": ".cache/asset-legacy-rebuild-20260930/Bunny/Gpu/StreamOnlyBunnyFirstFrameReport.json",
+        "gpuRootCoverage": {
+          "header": {
+            "activeGroupCapacity": 51,
+            "activeGroupCount": 1,
+            "frameIndex": 5,
+            "invalidCapacity": 0,
+            "maxActiveGroupClusters": 32,
+            "overflowCount": 0,
+            "terminalFallback": 0
+          },
+          "verifiedGroups": 1,
+          "verifiedInstances": 1
+        }
+      },
+      {
+        "test": "stream_metadata_vbuffer",
+        "status": "passed",
+        "report": ".cache/asset-legacy-rebuild-20260930/Bunny/Gpu/StreamOnlyBunnyVBufferFirstFrameReport.json",
+        "gpuRootCoverage": {
+          "header": {
+            "activeGroupCapacity": 51,
+            "activeGroupCount": 1,
+            "frameIndex": 5,
+            "invalidCapacity": 0,
+            "maxActiveGroupClusters": 32,
+            "overflowCount": 0,
+            "terminalFallback": 0
+          },
+          "verifiedGroups": 1,
+          "verifiedInstances": 1
+        }
+      }
+    ],
+    "superSponzaTextureConfiguration": {
+      "fullSourcePngImages": 72,
+      "dimensions": [
+        4096,
+        4096
+      ],
+      "mipPayloadBytes": 6442450848,
+      "testBudgetMiB": 8192,
+      "productionDefaultBudgetMiB": 2048,
+      "reason": "All 72 full 4K PNG mip chains require approximately 6 GiB. The existing mip cap/streaming option only limits KTX textures.",
+      "initialDefaultBudgetFailure": ".cache/asset-legacy-rebuild-20260930/SuperSponza/Gpu/VerificationSummary.json",
+      "ineffectiveStreamingOptionFailure": ".cache/asset-legacy-rebuild-20260930/SuperSponza/Gpu/BoundedTextures/VerificationSummary.json",
+      "oldResidentColorCoverageCriterionFailure": ".cache/asset-legacy-rebuild-20260930/SuperSponza/Gpu/FullTextures8GiB/VerificationSummary.json",
+      "residentVisibilityCriterion": "Use actual GPU visibility IDs rather than a shaded meshlet red-channel threshold; preserve coverage, HZB, environment, resize and distinct-triangle requirements."
+    }
+  },
+  "validationBoundaries": [
+    "Resident and meshstream are distinct consumer formats; resident caches are current v4, not Reference-compressed meshstream files.",
+    "All pages in the four stream caches built here were decoded by the cooker. Source coverage independently checks metadata and counts; it does not independently decode all source attributes.",
+    "SuperSponza, Terrain and Tessellation stream cooks additionally compare all-LOD quantized attributes and LOD0 directed triangles to source. MiniZorah did not run exhaustive source-attribute comparison.",
+    "MiniZorah validates instance/material/world transforms and GPU terminal roots with near/far/original views, scalar base color, hardware/hybrid equivalence and resize/reopen; it does not validate full textured PBR.",
+    "SuperSponza stream images validate visibility geometry and source material bindings; source contains no MASK textures. Full PBR/transparent transmission correctness is outside these tests.",
+    "GPU validation covers MiniZorah and SuperSponza; no GPU scene run was performed for every resident source, including USD.",
+    "No comparable pre/post end-to-end performance benchmark was run; cooks overlapped other CPU builds, and OS file cache was not flushed.",
+    "The named historical ZorahFull revision2 backup is intentionally excluded from active cache inventory."
+  ],
+  "evidence": {
+    "inventoryBefore": ".cache/asset-legacy-rebuild-20260930/Inventory-before.json",
+    "headerAuditAfter": ".cache/asset-legacy-rebuild-20260930/Inventory-header-audit.json",
+    "publicationJournal": ".cache/asset-legacy-rebuild-20260930/Publication.json",
+    "backupRoot": ".cache/asset-legacy-rebuild-20260930/Backups",
+    "miniSourceCoverage": ".cache/asset-legacy-rebuild-20260930/MiniZorah/Coverage.json",
+    "superSourceCoverage": ".cache/asset-legacy-rebuild-20260930/SuperSponza/Stream.published.coverage.json",
+    "miniCookLog": ".cache/asset-legacy-rebuild-20260930/MiniZorah/Cook.log"
+  }
+}

@@ -22,6 +22,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -195,6 +196,18 @@ uint64_t pageStorageBytes(const scene::MeshletStreamAsset& asset, std::span<cons
     for (uint32_t pageIndex : pageIndices) {
         total += pageStorageBytes(asset, pageIndex);
     }
+    return total;
+}
+
+uint64_t pageDeviceStorageBytes(const scene::MeshletStreamAsset& asset, uint32_t pageIndex)
+{
+    return alignStreamStorageBytes(scene::meshletStreamDevicePayloadSize(asset.pages()[pageIndex]));
+}
+
+uint64_t pageDeviceStorageBytes(const scene::MeshletStreamAsset& asset, std::span<const uint32_t> pageIndices)
+{
+    uint64_t total = 0;
+    for (uint32_t id : pageIndices) { total += pageDeviceStorageBytes(asset, id); }
     return total;
 }
 
@@ -578,6 +591,102 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(StreamLodPipelineCacheTest);
+
+class StreamLodDisplayPixelParamsTest final : public RhiTest {
+public:
+    StreamLodDisplayPixelParamsTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "meshlet_lod_stream_display_pixel_params";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        std::unique_ptr<Device> device;
+        const auto created = createDevice({.applicationName = "Stream display-pixel LOD",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { device = std::move(value); });
+        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless compute"); }
+        if (!created) { return RhiTestResult::fail("Cannot create stream display-pixel device"); }
+        const auto assetPath = std::filesystem::absolute(context.outputDirectory / "DisplayPixelLod.meshstream.bin");
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(assetPath, asset);
+        if (!built.passed) { return built; }
+        MeshletStreamRuntime runtime;
+        std::string log;
+        const auto initialized = runtime.initialize(*device, {
+            .sourcePath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf",
+            .streamAssetPath = assetPath, .maxResidentBytes = 16ull << 20, .maxResidentPages = 256,
+            .maxPageUploadsPerFrame = 64, .maxGpuPageRequests = 256, .maxGpuPageUnloadRequests = 256,
+            .maxActiveGroups = 2048, .maxTraversalWorkers = 64, .maxTraversalWorkItems = 4096,
+            .pageLoadConcurrency = 0, .queuedFrameCount = 2, .prefetchPages = false}, log);
+        if (!initialized) { return RhiTestResult::fail("Stream initialize: " + log); }
+        auto* queue = device->getQueue(QueueType::Graphics);
+        std::unique_ptr<CommandPool> pool;
+        std::unique_ptr<CommandBuffer> commands;
+        std::unique_ptr<Fence> fence;
+        const auto setup = createCommandResources(*device, *queue, pool, commands, fence);
+        if (!setup.passed) { return setup; }
+        std::unique_ptr<Streamer> streamer;
+        if (!device->createStreamer(makeTestStreamerDesc()).transform([&](auto value) { streamer = std::move(value); })) {
+            return RhiTestResult::fail("Cannot create display-pixel streamer");
+        }
+        struct Case {
+            uint32_t renderHeight, displayHeight;
+            float pixelError, bias, expected;
+        };
+        const Case cases[] = {
+            {1080, 1080, 1.5f, 0.f, 1.5f}, {720, 1080, 1.5f, 0.f, 1.f},
+            {540, 1080, 1.5f, 0.f, .75f}, {2160, 1080, 1.5f, 0.f, 3.f},
+            {720, 0, 1.5f, 0.f, 1.5f}, {0, 0, 1.5f, 0.f, 1.5f},
+            {0, 1080, 1.5f, 0.f, 1.5f / 1080.f},
+            {540, 1080, .01f, 0.f, .025f}, {540, 1080, 32.f, 0.f, 8.f},
+            {540, 1080, 1.5f, 1.f, 1.5f}};
+        for (bool orthographic : {false, true}) {
+            for (const auto& test : cases) {
+                MeshletStreamFrameDesc frame;
+                frame.width = test.renderHeight * 16u / 9u;
+                frame.height = test.renderHeight;
+                frame.displayHeight = test.displayHeight;
+                frame.lodPixelError = test.pixelError;
+                frame.lodBias = test.bias;
+                frame.camera = {.eye = {-.0168404f, .110154f, .22f},
+                    .center = {-.0168404f, .110154f, -.00153695f},
+                    .znear = .001f, .zfar = 10.f, .orthographic = orthographic, .orthoHeight = .24f};
+                frame.useSeparateRenderCamera = true;
+                frame.renderCamera = frame.camera;
+                frame.renderCamera.fovDegrees = 75.f;
+                if (!pool->reset() || !fence->reset() || !commands->begin()) {
+                    return RhiTestResult::fail("Display-pixel frame setup failed");
+                }
+                auto result = runtime.cmdBeginFrame(*commands, *streamer, frame);
+                if (result) { result = commands->copyStreamedData(*streamer); }
+                if (result) { result = runtime.cmdPreTraversal(*commands, frame); }
+                if (result) { result = runtime.cmdPostTraversal(*commands); }
+                if (result) { result = runtime.cmdEndFrame(*commands); }
+                if (!result || !commands->end()) { return RhiTestResult::fail("Display-pixel frame recording failed"); }
+                const auto submitted = submitAndWait(*queue, *commands, *fence);
+                streamer->endFrame();
+                if (!submitted.passed) { return submitted; }
+                MeshletStreamGpuParams params;
+                auto* buffer = runtime.deferredGpuResources().paramsBuffer;
+                if (!buffer || !readBufferBytes(*buffer, &params, sizeof(params))) {
+                    return RhiTestResult::fail("Cannot read published stream parameters");
+                }
+                if (std::abs(params.lodPixelError - test.expected) > 1e-6f ||
+                    params.viewport[1] != float(std::max(frame.width, 1u)) ||
+                    params.viewport[2] != float(std::max(frame.height, 1u)) ||
+                    params.renderViewport[1] != params.viewport[1] || params.renderViewport[2] != params.viewport[2] ||
+                    params.upProjection[3] != (orthographic ? 1.f : 0.f)) {
+                    return RhiTestResult::fail("Published LOD threshold or raster viewport used the wrong pixel space");
+                }
+            }
+        }
+        return RhiTestResult::pass("Stream frame-to-GPU parameters convert display thresholds after clamp/bias and preserve internal raster dimensions, including separate render cameras and missing extents");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamLodDisplayPixelParamsTest);
 
 class StreamClasRuntimeTest : public RhiTest {
 public:
@@ -3478,6 +3587,260 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerJointColdReclaimTest);
+
+class StreamerMeshletPrefetchByteReserveTest final : public RhiTest {
+public:
+    StreamerMeshletPrefetchByteReserveTest() { type = RhiTestType::Command; name = "streamer_meshlet_prefetch_byte_reserve"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "prefetch_byte_reserve.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        const auto roots = fallbackPagesFor(asset);
+        auto pages = nonFallbackPagesFor(asset, roots);
+        if (pages.size() < 9) { return RhiTestResult::skip("Requires nine streamable pages"); }
+        std::sort(pages.begin(), pages.end(), [&](uint32_t a, uint32_t b) {
+            return pageDeviceStorageBytes(asset, a) > pageDeviceStorageBytes(asset, b);
+        });
+        const uint32_t speculative = pages.back(); pages.pop_back();
+        const uint32_t demanded = pages.back(); pages.pop_back();
+        const uint64_t reserve = pageDeviceStorageBytes(asset, demanded);
+        const uint64_t speculativeBytes = pageDeviceStorageBytes(asset, speculative);
+        uint64_t occupied = pageDeviceStorageBytes(asset, roots);
+        size_t residentCount = 0;
+        while (occupied <= 3 * (reserve + speculativeBytes) && residentCount < pages.size()) {
+            occupied += pageDeviceStorageBytes(asset, pages[residentCount++]);
+        }
+        if (occupied <= 3 * (reserve + speculativeBytes)) { return RhiTestResult::skip("Cannot fill more than three quarters of the test budget"); }
+        pages.resize(residentCount);
+        MeshletStreamResidencyDesc desc{.asset = &asset, .maxResidentBytes = occupied + reserve + speculativeBytes,
+            .immediateGpuRequests = true};
+        desc.prefetchReserveBytes = reserve;
+        MeshletStreamResidencyManager residency;
+        std::string reason;
+        if (!residency.initialize(desc, reason) || !residency.lockFallbackPages(roots, reason)) {
+            return RhiTestResult::fail(reason);
+        }
+        residency.beginFrame();
+        for (uint32_t id : pages) {
+            (void)residency.requestPage(id);
+            if (!residency.pageAllocated(id)) { return RhiTestResult::fail("Cannot allocate the occupied reserve fixture"); }
+        }
+        if (residency.storage().usedBytes() <= residency.maxResidentBytes() * 3 / 4 ||
+            !residency.canPrefetchPage(scene::meshletStreamDevicePayloadSize(asset.pages()[speculative]))) {
+            return RhiTestResult::fail("Byte reserve still applies the legacy 75 percent watermark");
+        }
+        const uint32_t forecast[] = {speculative | kStreamPrefetchPageTag};
+        (void)residency.consumeGpuRequests({.loadPageIds = forecast, .taggedPrefetchRequests = true});
+        if (!residency.pageAllocated(speculative) || residency.stats().totalPrefetchAdmitted != 1 ||
+            residency.canPrefetchPage(scene::meshletStreamDevicePayloadSize(asset.pages()[demanded]))) {
+            return RhiTestResult::fail("Prefetch did not leave exactly the requested byte reserve");
+        }
+        const uint32_t blockedForecast[] = {demanded | kStreamPrefetchPageTag};
+        (void)residency.consumeGpuRequests({.loadPageIds = blockedForecast, .taggedPrefetchRequests = true});
+        if (residency.pageAllocated(demanded) || residency.stats().totalPrefetchDeferred != 1 ||
+            residency.stats().totalEvictedPageCount != 0) {
+            return RhiTestResult::fail("Speculative admission consumed the demand reserve or evicted geometry");
+        }
+        const uint32_t demand[] = {demanded};
+        (void)residency.consumeGpuRequests({.loadPageIds = demand});
+        if (!residency.pageAllocated(demanded) || residency.storage().usedBytes() != residency.maxResidentBytes() ||
+            residency.stats().totalEvictedPageCount != 0) {
+            return RhiTestResult::fail("Current demand could not consume reserved bytes without eviction");
+        }
+        return RhiTestResult::pass("Prefetch above 75 percent, exact demand byte reserve and no speculative eviction");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletPrefetchByteReserveTest);
+
+class StreamerMeshletDemandRetentionHeadroomTest final : public RhiTest {
+public:
+    StreamerMeshletDemandRetentionHeadroomTest() { type = RhiTestType::Command; name = "streamer_meshlet_demand_retention_headroom"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "demand_retention_headroom.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        const auto roots = fallbackPagesFor(asset);
+        auto pages = nonFallbackPagesFor(asset, roots);
+        if (pages.size() < 3) { return RhiTestResult::skip("Requires three streamable pages"); }
+        pages.resize(3);
+        std::sort(pages.begin(), pages.end());
+        const uint64_t bytes = pageDeviceStorageBytes(asset, roots) + pageDeviceStorageBytes(asset, pages);
+        const auto upload = [&](MeshletStreamResidencyManager& residency, uint32_t count) -> RhiTestResult {
+            std::unique_ptr<Streamer> streamer;
+            auto result = context.device.createStreamer(makeTestStreamerDesc(count * asset.maxPagePayloadBytes() + 4096))
+                .transform([&](auto value) { streamer = std::move(value); });
+            if (!result) { return RhiTestResult::fail(toString(result)); }
+            std::unique_ptr<Buffer> destination;
+            result = context.device.createBuffer({.size = residency.pageBufferSize(),
+                .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback})
+                .transform([&](auto value) { destination = std::move(value); });
+            if (!result) { return RhiTestResult::fail(toString(result)); }
+            if (residency.processUploads(*streamer, *destination, count) != count) {
+                return RhiTestResult::fail("Cannot upload the retention fixture");
+            }
+            for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
+            return RhiTestResult::pass();
+        };
+        MeshletStreamResidencyDesc desc{.asset = &asset, .maxResidentBytes = bytes,
+            .queuedFrameCount = 1, .unloadDelayFrames = 1, .evictionAgeThresholdFrames = 1,
+            .immediateGpuRequests = true};
+        desc.prefetchReserveBytes = kMeshletStreamStorageAlignment;
+        MeshletStreamResidencyManager residency;
+        std::string reason;
+        if (!residency.initialize(desc, reason) || !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
+        residency.beginFrame();
+        for (uint32_t id : pages) { (void)residency.requestPage(id); }
+        const uint32_t uploads = static_cast<uint32_t>(roots.size() + pages.size());
+        const auto uploaded = upload(residency, uploads);
+        if (!uploaded.passed) { return uploaded; }
+        MeshletStreamColdPageReclaimDesc reclaim{.retentionFrames = 2, .pressureAgeFrames = 1};
+        reclaim.geometryReserveBytes = pageDeviceStorageBytes(asset, pages[0]);
+        reclaim.geometryPressureReserveBytes = reclaim.geometryReserveBytes / 2;
+        reclaim.retainDemandCache = true;
+        (void)residency.consumeGpuRequests({.residentDemandFeedback = true});
+        if (residency.storage().usedBytes() != residency.maxResidentBytes() || residency.reclaimColdPages(reclaim) != 0) {
+            return RhiTestResult::fail("Headroom policy evicted the fully hot working set");
+        }
+        // Two old demand pages become unused. Only the first is needed to meet
+        // the byte target; the other should survive for a later return.
+        for (uint32_t frame = 0; frame < 3; ++frame) { residency.beginFrame(); }
+        const auto unused = std::span(pages).first(2);
+        (void)residency.consumeGpuRequests({.unloadPageIds = unused, .unloadRequestCounter = 2,
+            .residentDemandFeedback = true});
+        if (residency.reclaimColdPages(reclaim) != 1 ||
+            residency.pageState(pages[0]) != MeshletStreamPageResidencyState::PendingUnload ||
+            !residency.pageResident(pages[1]) || !residency.pageResident(pages[2])) {
+            return RhiTestResult::fail("Headroom did not stop after enough confirmed cold bytes");
+        }
+        if (residency.reclaimColdPages(reclaim) != 0 ||
+            residency.canPrefetchPage(scene::meshletStreamDevicePayloadSize(asset.pages()[pages[0]])) ||
+            residency.stats().frameEvictedPageCount != 1 ||
+            residency.stats().framePendingFreeBytes != reclaim.geometryReserveBytes) {
+            return RhiTestResult::fail("Pending free was double-evicted or counted as allocatable prefetch space");
+        }
+        residency.beginFrame();
+        for (uint32_t frame = 0; frame < 120; ++frame) { residency.beginFrame(); }
+        const uint32_t stillUnused[] = {pages[1]};
+        (void)residency.consumeGpuRequests({.unloadPageIds = stillUnused, .unloadRequestCounter = 1,
+            .residentDemandFeedback = true});
+        if (residency.reclaimColdPages(reclaim) != 0 || !residency.pageResident(pages[1])) {
+            return RhiTestResult::fail("Unpressured demand cache expired instead of retaining a returnable page");
+        }
+        (void)residency.consumeGpuRequests({.residentDemandFeedback = true});
+        if (!residency.requestPage(pages[1]) || residency.queuedUploadCount() != 0 ||
+            residency.stats().totalScheduledUploadCount != uploads) {
+            return RhiTestResult::fail("Returning demand reloaded a retained page");
+        }
+        for (uint32_t root : roots) {
+            if (!residency.pageResident(root)) { return RhiTestResult::fail("Headroom reclaim lost a locked root"); }
+        }
+        // Useful demand cache and unused speculation have different retention:
+        // with ample memory, only the unused speculative payload expires.
+        MeshletStreamResidencyManager speculative;
+        desc.maxResidentBytes = bytes * 4;
+        if (!speculative.initialize(desc, reason)) { return RhiTestResult::fail(reason); }
+        speculative.beginFrame();
+        (void)speculative.requestPage(pages[0]);
+        const uint32_t forecast[] = {pages[1] | kStreamPrefetchPageTag};
+        (void)speculative.consumeGpuRequests({.loadPageIds = forecast, .taggedPrefetchRequests = true});
+        const auto speculativeUploaded = upload(speculative, 2);
+        if (!speculativeUploaded.passed) { return speculativeUploaded; }
+        (void)speculative.consumeGpuRequests({.unloadPageIds = unused, .unloadRequestCounter = 2,
+            .residentDemandFeedback = true});
+        if (speculative.reclaimColdPages(reclaim) != 1 || !speculative.pageResident(pages[0]) ||
+            speculative.pageState(pages[1]) != MeshletStreamPageResidencyState::PendingUnload ||
+            speculative.stats().totalPrefetchUsed != 0) {
+            return RhiTestResult::fail("Unused speculation did not expire independently of useful demand cache");
+        }
+        return RhiTestResult::pass("Hot/root safety, bounded headroom, pending-free credit, return reuse and unused speculation expiry");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletDemandRetentionHeadroomTest);
+
+class StreamerMeshletEvictionByteBudgetTest final : public RhiTest {
+public:
+    StreamerMeshletEvictionByteBudgetTest() { type = RhiTestType::Command; name = "streamer_meshlet_eviction_byte_budget"; }
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        scene::MeshletStreamAsset asset;
+        const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "eviction_byte_budget.meshstream.bin", asset);
+        if (!built.passed) { return built; }
+        const auto roots = fallbackPagesFor(asset);
+        auto pages = nonFallbackPagesFor(asset, roots);
+        if (pages.size() < 4) { return RhiTestResult::skip("Requires four streamable pages"); }
+        std::sort(pages.begin(), pages.end(), [&](uint32_t a, uint32_t b) {
+            return pageDeviceStorageBytes(asset, a) > pageDeviceStorageBytes(asset, b);
+        });
+        const uint32_t demandProbe = pages[3];
+        pages.resize(3);
+        const uint64_t largest = pageDeviceStorageBytes(asset, pages[0]);
+        if (pageDeviceStorageBytes(asset, pages[2]) <= largest / 2) { return RhiTestResult::skip("Requires three similarly sized pages"); }
+        const uint64_t bytes = pageDeviceStorageBytes(asset, roots) + pageDeviceStorageBytes(asset, pages);
+        for (bool constrainBytes : {true, false}) {
+            MeshletStreamResidencyDesc desc{.asset = &asset, .maxResidentBytes = bytes * 4,
+                .queuedFrameCount = 1, .unloadDelayFrames = 1, .evictionAgeThresholdFrames = 1};
+            desc.maxResidentPages = static_cast<uint32_t>(roots.size() + pages.size());
+            desc.maxPageEvictionsPerFrame = constrainBytes ? 3 : 1;
+            desc.maxEvictionBytesPerFrame = constrainBytes ? largest : largest * 3;
+            MeshletStreamResidencyManager residency;
+            std::string reason;
+            if (!residency.initialize(desc, reason) || !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
+            residency.beginFrame();
+            for (uint32_t id : pages) { (void)residency.requestPage(id); }
+            const uint32_t count = static_cast<uint32_t>(roots.size() + pages.size());
+            std::unique_ptr<Streamer> streamer;
+            auto result = context.device.createStreamer(makeTestStreamerDesc(count * asset.maxPagePayloadBytes() + 4096))
+                .transform([&](auto value) { streamer = std::move(value); });
+            if (!result) { return RhiTestResult::fail(toString(result)); }
+            std::unique_ptr<Buffer> destination;
+            result = context.device.createBuffer({.size = residency.pageBufferSize(),
+                .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback})
+                .transform([&](auto value) { destination = std::move(value); });
+            if (!result) { return RhiTestResult::fail(toString(result)); }
+            if (residency.processUploads(*streamer, *destination, count) != count) {
+                return RhiTestResult::fail("Cannot upload the eviction-budget fixture");
+            }
+            for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
+            (void)residency.consumeGpuRequests({.unloadPageIds = pages, .unloadRequestCounter = 3,
+                .residentDemandFeedback = true});
+            MeshletStreamColdPageReclaimDesc reclaim{.retentionFrames = 1, .pressureAgeFrames = 1};
+            for (uint32_t frame = 0; frame < 2; ++frame) {
+                uint32_t evicted = 0;
+                for (uint32_t repeat = 0; repeat < 4; ++repeat) { evicted += residency.reclaimColdPages(reclaim); }
+                if (frame == 0) {
+                    (void)residency.requestPage(demandProbe);
+                    if (residency.pageAllocated(demandProbe)) {
+                        return RhiTestResult::fail("Admission reused a page slot before its delayed free completed");
+                    }
+                }
+                uint64_t pendingBytes = 0;
+                for (uint32_t id : pages) {
+                    if (residency.pageState(id) == MeshletStreamPageResidencyState::PendingUnload) {
+                        pendingBytes += pageDeviceStorageBytes(asset, id);
+                    }
+                }
+                if (evicted != 1 || residency.stats().frameEvictedPageCount != 1 ||
+                    pendingBytes > desc.maxEvictionBytesPerFrame || residency.stats().frameEvictedGeometryBytes != pendingBytes ||
+                    residency.stats().totalEvictedPageCount != frame + 1) {
+                    return RhiTestResult::fail(constrainBytes
+                        ? "Repeated reclaim exceeded or failed to reset the shared byte cap"
+                        : "Repeated reclaim exceeded or failed to reset the shared page cap");
+                }
+                residency.beginFrame();
+            }
+            for (uint32_t root : roots) {
+                if (!residency.pageResident(root)) { return RhiTestResult::fail("Capped reclaim lost a locked root"); }
+            }
+        }
+        return RhiTestResult::pass("Byte/page limits shared by reclaim and admission reset only at beginFrame");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletEvictionByteBudgetTest);
 
 class MeshletStreamFragmentedStorageTest final : public RhiTest {
 public:

@@ -248,6 +248,11 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
         checkRoam(values[1] <= observer.latest.at("demandTaskCount").get<uint32_t>() && values[1] == values[16] && histogramCount == values[1] &&
             values[4] <= 8 && values[3] <= values[7], "Incomplete or unbounded distributed demand tasks");
         demandStats = {{"distributed", values[17] != 0}, {"groupTestsForPolicy", values[18]},
+            {"lodTransitions", {{"demandedGroups", values[19]}, {"ownPageBlockedGroups", values[20]},
+                {"dependencyBlockedGroups", values[21]}, {"catchupActivatedGroups", values[22]},
+                {"catchupSelectedGroups", values[23]}, {"catchupSelectedClusters", values[24]},
+                {"thresholdSelectedGroups", values[25]}, {"thresholdSelectedClusters", values[26]},
+                {"unclassifiedSelectedGroups", values[27]}, {"unclassifiedSelectedClusters", values[28]}}},
             {"tasks", values[1]}, {"seedRootTests", demandSeedRootTests}, {"visitedNodes", values[2]}, {"testedGroups", values[3]},
             {"maxNodesPerTask", values[4]}, {"maxGroupsPerTask", values[5]}, {"nonemptyTasks", values[6]},
             {"waveSlots", values[7]}, {"groupCountHistogram", std::vector<uint32_t>(values.begin() + 8, values.begin() + 16)}};

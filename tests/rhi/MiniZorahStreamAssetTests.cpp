@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <stdexcept>
 
 #ifdef _WIN32
@@ -30,6 +31,67 @@ using Clock = std::chrono::steady_clock;
 void require(bool condition, const std::string& message)
 {
     if (!condition) { throw std::runtime_error(message); }
+}
+
+Json validateSourceCoverage(const scene::MeshletStreamAsset& asset, const std::filesystem::path& source,
+    uint32_t expectedInstances = 0)
+{
+    require(asset.isCurrentForSource(source), "Stream cache is stale");
+    require(std::all_of(asset.pages().begin(), asset.pages().end(), [](const auto& page) {
+        return page.compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::Reference);
+    }), "Migrated scene cache is not fully Reference encoded");
+    std::ifstream input(source);
+    const Json document = Json::parse(input);
+    std::map<std::string, uint32_t> geometries;
+    std::vector<uint32_t> canonicalSourcePrimitives;
+    std::vector<std::vector<uint32_t>> sourceGeometries;
+    uint32_t sourcePrimitiveIndex = 0;
+    for (const auto& mesh : document.at("meshes")) {
+        auto& primitives = sourceGeometries.emplace_back();
+        for (const auto& primitive : mesh.at("primitives")) {
+            const std::string key = Json{{"mode", primitive.value("mode", 4)},
+                {"indices", primitive.value("indices", -1)}, {"attributes", primitive.at("attributes")},
+                {"targets", primitive.value("targets", Json::array())}}.dump();
+            const auto [found, inserted] = geometries.emplace(key, static_cast<uint32_t>(geometries.size()));
+            if (inserted) { canonicalSourcePrimitives.push_back(sourcePrimitiveIndex); }
+            primitives.push_back(found->second);
+            ++sourcePrimitiveIndex;
+        }
+    }
+    require(asset.primitiveCount() == geometries.size() && asset.geometryCount() == geometries.size(),
+        "Stream cache does not cover the source's distinct geometries");
+    for (uint32_t index = 0; index < asset.primitiveCount(); ++index) {
+        require(asset.primitives()[index].renderPrimitiveIndex == canonicalSourcePrimitives[index] &&
+            asset.geometries()[index].primitiveIndex == index &&
+            asset.geometries()[index].renderPrimitiveIndex == canonicalSourcePrimitives[index],
+            "Stream cache canonical geometry differs from the source");
+    }
+
+    scene::Scene metadata;
+    require(metadata.loadStreamMetadata(source), metadata.lastLoadResult().error);
+    require(asset.instanceCount() != 0 && metadata.renderNodes().size() == asset.instanceCount() &&
+        (expectedInstances == 0 || asset.instanceCount() == expectedInstances), "Incomplete stream primitive instances");
+    std::vector<bool> seen(metadata.renderNodes().size());
+    for (const auto& instance : asset.instances()) {
+        require(instance.renderNodeIndex < seen.size() && !seen[instance.renderNodeIndex],
+            "Invalid or duplicate stream source instance");
+        seen[instance.renderNodeIndex] = true;
+        const auto& node = metadata.renderNodes()[instance.renderNodeIndex];
+        require(node.renderPrimitiveIndex >= 0 && size_t(node.renderPrimitiveIndex) < metadata.renderPrimitives().size(),
+            "Invalid stream source primitive");
+        const auto& primitive = metadata.renderPrimitives()[node.renderPrimitiveIndex];
+        require(primitive.meshIndex >= 0 && primitive.primitiveIndex >= 0 &&
+            instance.primitiveIndex == sourceGeometries.at(primitive.meshIndex).at(primitive.primitiveIndex) &&
+            instance.materialIndex == uint32_t(std::max(node.materialIndex, 0)) && instance.visible == uint32_t(node.visible),
+            "Stream geometry or material binding differs from the source");
+        for (uint32_t component = 0; component < 16; ++component) {
+            require(std::abs(instance.worldMatrix[component] - node.worldMatrix.a[component]) < 1e-5f,
+                "Stream source instance transform differs from the cache");
+        }
+    }
+    require(std::all_of(seen.begin(), seen.end(), [](bool value) { return value; }), "Missing stream source instances");
+    return {{"sourcePrimitives", sourcePrimitiveIndex}, {"canonicalGeometries", geometries.size()},
+        {"verifiedInstances", seen.size()}};
 }
 
 class StreamStartupObserver final : public IRenderDebugObserver {
@@ -54,14 +116,19 @@ public:
     void endExecution(bool success) override { debug.endExecution(success); }
 };
 
-RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool unified = false)
+RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool unified = false, bool superSponza = false)
 {
-    const char* enabled = std::getenv("METALLIC_TEST_MINIZORAH");
-    if (miniZorah && (enabled == nullptr || std::string_view(enabled) != "1")) {
-        return RhiTestResult::skip("Set METALLIC_TEST_MINIZORAH=1 to run the full cooked scene milestone");
+    const char* optIn = superSponza ? "METALLIC_TEST_SUPER_SPONZA_STREAM" : "METALLIC_TEST_MINIZORAH";
+    const char* enabled = std::getenv(optIn);
+    if ((miniZorah || superSponza) && (enabled == nullptr || std::string_view(enabled) != "1")) {
+        return RhiTestResult::skip(std::string("Set ") + optIn + "=1 to run the full cooked scene milestone");
     }
-    const std::string label = std::string(miniZorah ? "MiniZorah" : "StreamOnlyBunny") + (unified ? "VBuffer" : "");
+    const std::string label = superSponza ? "SuperSponza" :
+        std::string(miniZorah ? "MiniZorah" : "StreamOnlyBunny") + (unified ? "VBuffer" : "");
     Json report{{"status", "running"}, {"cases", Json::array()}, {"cacheState", "OS file cache not flushed"}};
+    if (superSponza) {
+        report["validationScope"] = "Current Reference cache; source geometry/material/instance coverage; terminal DAG and GPU roots; visibility/alpha rasterization; hardware/hybrid and P0/P1 equivalence. Images are visibility debug output.";
+    }
     StreamStartupObserver observer;
     RenderView viewport;
     RenderGraphPreviewRenderer preview;
@@ -100,6 +167,22 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
             const auto& props = graph.findNode("GPUDriven")->properties;
             source = std::filesystem::path(PROJECT_SOURCE_DIR) / props.at("path").get<std::string>();
             cache = std::filesystem::path(PROJECT_SOURCE_DIR) / props.at("streamAssetPath").get<std::string>();
+        } else if (superSponza) {
+            RenderSampleLoadResult sample;
+            require(loadBuiltInRenderSample("gpu-driven-streamasset", sample, log), log);
+            require(!sample.desc.loadSceneInEditor && !sample.desc.requiresStreamline,
+                "SuperSponza startup must skip resident import and DLSS");
+            graph = std::move(sample.graph);
+            auto& props = graph.findNode("GPUDriven")->properties;
+            source = std::filesystem::path(PROJECT_SOURCE_DIR) / props.at("path").get<std::string>();
+            cache = scene::meshletStreamAssetPathFor(source);
+            props["streamAssetPath"] = cache.generic_string();
+            props["streamAssetOnly"] = true;
+            // Keep all 72 authored 4K PNG mip chains (~6 GiB) in this full-source test.
+            props["materialTextureBudgetMiB"] = 8192;
+            props["camera"] = {{"eye", {5.433790f, 5.599402f, 1.739370f}},
+                {"center", {5.630164f, 5.576646f, 1.765344f}}, {"up", {0.0f, 1.0f, 0.0f}},
+                {"znear", .1f}, {"zfar", 10000.f}, {"fovDegrees", 60.f}, {"reversedZ", true}};
         } else {
             source = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
             cache = std::filesystem::absolute(context.outputDirectory / "StreamOnlyBunny.meshstream.bin");
@@ -123,12 +206,12 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
             properties["sceneBinding"] = "asset";
             properties["meshletNormalConeCull"] = false;
             properties["visualization"] = "triangle";
-            if (!miniZorah) {
+            if (!miniZorah && !superSponza) {
                 graph.addNode("VisibilityBufferMaterialPass", "MaterialResolve", {});
                 graph.addEdge("GPUDriven.visibility", "MaterialResolve.visibility");
                 graph.addEdge("GPUDriven.rasterInfo", "MaterialResolve.rasterInfo");
             }
-            graph.markOutput("MaterialResolve.color");
+            if (!superSponza) { graph.markOutput("MaterialResolve.color"); }
         }
         auto pass = createRenderGraphPass(unified ? "VisibilityBufferPass" : "GPUDrivenStreamAssetPass");
         pass->setProperties(graph.findNode(node)->properties);
@@ -140,6 +223,8 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
 
         std::vector<scene::MeshletStreamInstanceInfo> instances;
         std::vector<uint32_t> rootPages;
+        std::vector<std::vector<scene::MeshletStreamGroupInfo>> rootGroups;
+        uint64_t rootGroupInstanceCount = 0;
         scene::Bounds worldBounds;
         {
             scene::MeshletStreamAsset asset;
@@ -150,16 +235,57 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
             report["cookRevision"] = asset.cookRevision();
             report["currentCookRevision"] = asset.isCurrentForSource(source);
             report["primitives"] = asset.primitiveCount(); report["instances"] = asset.instanceCount();
-            report["pages"] = asset.pageCount(); report["terminalPages"] = asset.terminalGroups().size();
-            if (miniZorah) { require(asset.primitiveCount() == 3163 && asset.instanceCount() == 19144, "Incomplete MiniZorah cache"); }
+            report["pages"] = asset.pageCount(); report["terminalGroups"] = asset.terminalGroups().size();
+            if (miniZorah || superSponza) { report["sourceCoverage"] = validateSourceCoverage(asset, source, miniZorah ? 19144 : 0); }
             instances.assign(asset.instances().begin(), asset.instances().end());
+            std::vector<bool> hasParent(asset.groupCount());
+            for (uint32_t groupIndex = 0; groupIndex < asset.groupCount(); ++groupIndex) {
+                const auto& group = asset.groups()[groupIndex];
+                require(group.primitiveIndex < asset.primitiveCount() && group.pageIndex < asset.pageCount() &&
+                    group.clusterCount > 0 && group.clusterCount <= kMeshletStreamMaxActiveGroupClusters &&
+                    asset.pages()[group.pageIndex].lodGroupIndex == groupIndex &&
+                    asset.pages()[group.pageIndex].primitiveIndex == group.primitiveIndex &&
+                    asset.pages()[group.pageIndex].clusterCount == group.clusterCount,
+                    "Invalid stream group/page ownership");
+                require(uint64_t(group.clusterRefinedOffset) + group.clusterCount <= asset.refinedGroups().size(),
+                    "Incomplete stream cluster refinement directory");
+                for (uint32_t cluster = 0; cluster < group.clusterCount; ++cluster) {
+                    const uint32_t child = asset.refinedGroups()[group.clusterRefinedOffset + cluster];
+                    if (child == scene::kMeshletStreamInvalidGroupIndex) { continue; }
+                    require(child < asset.groupCount() && asset.groups()[child].primitiveIndex == group.primitiveIndex &&
+                        asset.groups()[child].lodLevel < group.lodLevel, "Invalid stream refinement edge");
+                    hasParent[child] = true;
+                }
+            }
+            std::vector<uint32_t> expectedTerminals;
+            for (uint32_t groupIndex = 0; groupIndex < asset.groupCount(); ++groupIndex) {
+                require(((asset.groups()[groupIndex].flags & scene::kMeshletStreamGroupTerminal) != 0) == !hasParent[groupIndex],
+                    "Stream terminal flag differs from refinement ownership");
+                if (!hasParent[groupIndex]) { expectedTerminals.push_back(groupIndex); }
+            }
+            require(std::equal(expectedTerminals.begin(), expectedTerminals.end(),
+                asset.terminalGroups().begin(), asset.terminalGroups().end()), "Incomplete stream terminal group set");
+            rootGroups.resize(asset.primitiveCount());
+            std::vector<uint32_t> ownedTerminals;
             for (uint32_t index = 0; index < asset.primitiveCount(); ++index) {
                 const auto roots = asset.primitiveTerminalGroups(index);
-                require(roots.size() == 1 && asset.groups()[roots[0]].clusterCount == 1,
-                    "This fixture's root coverage check expects one terminal cluster per primitive");
-                rootPages.push_back(asset.groups()[roots[0]].pageIndex);
+                require(!roots.empty(), "Stream primitive has no terminal roots");
+                for (uint32_t root : roots) {
+                    require(root < asset.groupCount() && !hasParent[root] && asset.groups()[root].primitiveIndex == index,
+                        "Stream terminal root belongs to the wrong primitive");
+                    rootGroups[index].push_back(asset.groups()[root]);
+                    rootPages.push_back(asset.groups()[root].pageIndex);
+                    ownedTerminals.push_back(root);
+                }
             }
+            std::sort(ownedTerminals.begin(), ownedTerminals.end());
+            require(ownedTerminals == expectedTerminals, "Primitive roots do not cover the complete terminal group set");
+            std::sort(rootPages.begin(), rootPages.end());
+            rootPages.erase(std::unique(rootPages.begin(), rootPages.end()), rootPages.end());
+            report["terminalPages"] = rootPages.size();
             for (const auto& instance : instances) {
+                require(instance.primitiveIndex < asset.primitiveCount(), "Invalid stream instance primitive");
+                rootGroupInstanceCount += rootGroups[instance.primitiveIndex].size();
                 const auto& bounds = asset.primitives()[instance.primitiveIndex].bounds;
                 for (uint32_t corner = 0; corner < 8; ++corner) {
                     float p[3];
@@ -175,7 +301,7 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
         if (hasError(initialized, Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders and descriptor heaps"); }
         require(bool(initialized), preview.lastLog());
         preview.setDebugObserver(&observer);
-        uint32_t width = miniZorah ? 1920 : 256, height = miniZorah ? 1080 : 192;
+        uint32_t width = miniZorah ? 1920 : 256, height = miniZorah ? 1080 : superSponza ? 256 : 192;
         report["width"] = width; report["height"] = height;
         report["profile"] = graph.findNode(node)->properties;
         uint32_t frames = 0;
@@ -185,6 +311,15 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
             require(bool(result), preview.lastLog());
             ++frames;
             if (frames == 1) { report["firstRenderCompleteSeconds"] = seconds(); }
+            if (superSponza) {
+                const auto memory = preview.subsystemHost()->device()->memoryBudget();
+                const auto& textures = memory.domains[size_t(MemoryBudgetDomain::MaterialTextures)];
+                const auto& heap = memory.heaps[memory.primaryDeviceLocalHeap];
+                report["fullTextureAllocation"] = {{"allocationBytes", textures.allocationBytes},
+                    {"peakAllocationBytes", textures.peakAllocationBytes}, {"images", textures.allocationCount}};
+                report["localHeap"] = {{"usageBytes", heap.usageBytes}, {"blockBytes", heap.blockBytes},
+                    {"allocationBytes", heap.allocationBytes}};
+            }
             auto* gpuScene = preview.subsystemHost()->get<GPUSceneSubsystem>();
             if (unified) {
                 require(gpuScene && gpuScene->instances().size() == instances.size(), "Incomplete global GPUScene instances");
@@ -256,7 +391,7 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
         };
         const auto captureHeader = [&](bool allRoots) {
             Json resources = {{{"id", "streaming.GPUDriven.activeHeader"}, {"count", 1}}};
-            if (allRoots) { resources.push_back({{"id", "streaming.GPUDriven.activeGroups"}, {"count", instances.size()}}); }
+            if (allRoots) { resources.push_back({{"id", "streaming.GPUDriven.activeGroups"}, {"count", rootGroupInstanceCount}}); }
             const std::string job = call("capture.batch", {{"pass", "GPUDriven"}, {"checkpoint", "AfterTraversal"}, {"resources", resources}}).at("job");
             renderFrame();
             return job;
@@ -278,18 +413,34 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
         graph.setNodeRuntimeProperty(node, "lodLevel", 31);
         const auto rootJob = captureHeader(true);
         const auto header = read(rootJob, "streaming.GPUDriven.activeHeader").at(0);
-        require(header.at("activeGroupCount") == instances.size() && header.at("overflowCount") == 0,
+        require(header.at("activeGroupCount") == rootGroupInstanceCount && header.at("overflowCount") == 0,
             "GPU terminal cut is incomplete: " + header.dump());
         const auto rows = read(rootJob, "streaming.GPUDriven.activeGroups");
-        std::vector<bool> seen(instances.size());
+        std::map<uint64_t, size_t> expectedRoots;
+        for (uint32_t index = 0; index < instances.size(); ++index) {
+            for (const auto& group : rootGroups[instances[index].primitiveIndex]) {
+                require(expectedRoots.emplace((uint64_t(index) << 32u) | group.pageIndex, expectedRoots.size()).second,
+                    "Duplicate terminal page for a stream instance");
+            }
+        }
+        require(rows.size() == expectedRoots.size(), "GPU terminal group capture is incomplete");
+        std::vector<bool> seen(expectedRoots.size());
         for (const auto& row : rows) {
             const uint32_t index = row.at("instanceIndex");
-            require(index < instances.size() && !seen[index], "Invalid or duplicate stream instance ID");
-            seen[index] = true;
+            const uint32_t page = row.at("pageIndex");
+            const auto found = expectedRoots.find((uint64_t(index) << 32u) | page);
+            require(index < instances.size() && found != expectedRoots.end() && !seen[found->second],
+                "Invalid or duplicate GPU terminal group ownership");
+            seen[found->second] = true;
             const auto& expected = instances[index];
+            const auto& groups = rootGroups[expected.primitiveIndex];
+            const auto group = std::find_if(groups.begin(), groups.end(), [&](const auto& value) { return value.pageIndex == page; });
+            require(group != groups.end(), "GPU terminal page has no owning root group");
+            const uint32_t mask = group->clusterCount == 32 ? ~0u : (1u << group->clusterCount) - 1u;
             require(row.at("gpuSceneInstanceIndex") == index && row.at("primitiveIndex") == expected.primitiveIndex &&
-                row.at("materialIndex") == expected.materialIndex && row.at("pageIndex") == rootPages[expected.primitiveIndex] &&
-                row.at("clusterSelectionMask") == 1u, "GPU root instance mapping differs from the cache");
+                row.at("materialIndex") == expected.materialIndex && row.at("clusterCount") == group->clusterCount &&
+                row.at("lodLevel") == group->lodLevel && row.at("clusterSelectionMask") == mask,
+                "GPU terminal group or instance mapping differs from the cache");
             for (uint32_t r = 0; r < 4; ++r) {
                 for (uint32_t c = 0; c < 4; ++c) {
                     require(std::abs(row.at("world").at(r*4+c).get<float>() - expected.worldMatrix[r*4+c]) < 1e-5f,
@@ -297,9 +448,9 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
                 }
             }
         }
-        require(std::all_of(seen.begin(), seen.end(), [](bool value) { return value; }), "Missing GPU root instances");
-        report["gpuRootCoverage"] = {{"verifiedInstances", seen.size()}, {"header", header}};
-        if (unified) {
+        require(std::all_of(seen.begin(), seen.end(), [](bool value) { return value; }), "Missing GPU terminal groups");
+        report["gpuRootCoverage"] = {{"verifiedInstances", instances.size()}, {"verifiedGroups", seen.size()}, {"header", header}};
+        if (unified && !superSponza) {
             auto* gpuScene = preview.subsystemHost()->get<GPUSceneSubsystem>();
             uint32_t blendInstances = 0;
             for (const auto& instance : gpuScene->instances()) {
@@ -320,7 +471,9 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
             std::ofstream output(context.outputDirectory / (label + "-root-visibility.bin"), std::ios::binary);
             output.write(reinterpret_cast<const char*>(hardware.data()), hardware.size() * sizeof(uint32_t));
         }
-        if (unified) {
+        // The scalar consumer rejects textured scenes. SuperSponza exercises
+        // real visibility/alpha rasterization and the same producer comparison.
+        if (unified && !superSponza) {
             const auto resolveNode = graph.findNode("MaterialResolve")->id;
             graph.setNodeRuntimeProperty(resolveNode, "visualization", "baseColor");
             renderFrame("MaterialResolve.color");
@@ -346,6 +499,8 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
             require(checkedPixels > 64 && maxColorError <= 1, "Scalar resolve does not preserve source base color");
             report["baseColorValidation"] = {{"checkedPixels", checkedPixels}, {"maxByteError", maxColorError}};
             graph.setNodeRuntimeProperty(resolveNode, "visualization", "shaded");
+        }
+        if (unified) {
             graph.setNodeRuntimeProperty(node, "hybridRaster", true);
             graph.setNodeRuntimeProperty(node, "asyncSoftwareRaster", true);
             graph.setNodeRuntimeProperty(node, "softwareRasterMaxPixels", 64.0f);
@@ -378,7 +533,8 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
         }
         graph.setNodeRuntimeProperty(node, "instanceHzbCull", true);
         graph.setNodeRuntimeProperty(node, "meshletHzbCull", true);
-        std::printf("[%s] verified all %zu GPU root instances at %.2fs\n", label.c_str(), seen.size(), seconds());
+        std::printf("[%s] verified all %zu GPU instances and %zu terminal groups at %.2fs\n",
+            label.c_str(), instances.size(), seen.size(), seconds());
         std::fflush(stdout);
         graph.setNodeRuntimeProperty(node, "autoLod", true);
         graph.setNodeRuntimeProperty(node, "lodPixelError", 1.5f);
@@ -388,7 +544,7 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
         report["worldBounds"] = {{"min", {worldBounds.min.x, worldBounds.min.y, worldBounds.min.z}},
             {"max", {worldBounds.max.x, worldBounds.max.y, worldBounds.max.z}}, {"radius", radius}};
         Json cameras = Json::array({{{"name", "original"}, {"camera", originalCamera}}});
-        if (miniZorah) {
+        if (miniZorah || superSponza) {
             auto farCamera = originalCamera;
             farCamera["eye"] = {center.x + radius * 2, center.y + radius * 1.4f, center.z + radius * 2};
             farCamera["center"] = {center.x, center.y, center.z};
@@ -428,7 +584,7 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
             require(observer.latest.value("terminalReady", false), "Terminal pages lost while changing camera");
             Json result{{"name", camera.at("name")}, {"camera", camera.at("camera")},
                 {"coveredPixels", covered}, {"activeHeader", active}, {"streaming", observer.latest}};
-            renderFrame(unified ? "MaterialResolve.color" : "GPUDriven.color");
+            renderFrame(unified && !superSponza ? "MaterialResolve.color" : "GPUDriven.color");
             const auto imagePath = context.outputDirectory / (label + "-" + camera.at("name").get<std::string>() + ".png");
             require(saveRgba8Png(imagePath, reinterpret_cast<const uint8_t*>(preview.pixels().data()), width, height, log), log);
             result["image"] = imagePath.generic_string();
@@ -443,7 +599,7 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
             observer.latest.at("stats").at("totalGpuInvalidRequestCount") == 0, "Stream page load/request failure");
         if (unified) {
             width = 321; height = 197;
-            renderFrame("MaterialResolve.color");
+            renderFrame(superSponza ? "GPUDriven.color" : "MaterialResolve.color");
             require(preview.pixels().size() == size_t(width) * height, "Resize failed");
             // Remove the producer and its borrowed stream resources, then reopen.
             RenderGraph empty;
@@ -496,6 +652,13 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(StreamMetadataVBufferTest);
 METALLIC_REGISTER_RHI_TEST(MiniZorahVBufferTest);
+
+class SuperSponzaStreamFirstFrameTest final : public RhiTest {
+public:
+    SuperSponzaStreamFirstFrameTest() { type = RhiTestType::Rendering; name = "super_sponza_stream_first_frame"; }
+    RhiTestResult run(RhiTestContext& context) override { return runStreamStartup(context, false, true, true); }
+};
+METALLIC_REGISTER_RHI_TEST(SuperSponzaStreamFirstFrameTest);
 
 class MiniZorahGroundCoverageTest final : public RhiTest {
 public:

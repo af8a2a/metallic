@@ -150,7 +150,7 @@ Metallic 当前每个 group 对应一个 page，简化了组内完整上传问�
 
 统一 cluster、group、node、root 与实例元数据，区分裁剪范围、共享 LOD 范围、自身误差、替换误差、owner/refined group 与驻留句柄。复用现有数据建立 CPU 参考 cut，验证根覆盖、无环、引用正确、误差单调与共享范围。
 
-拆分 Auto LOD、Target Pixel Error、LOD Bias、手动调试 cut 和 Visualization。首版建议按内部渲染像素定义误差，UI 明示单位；若使用输出像素，应换算 DLSS render/output 比例。0.5、1、1.5、2 px 可作为测试档位，不预设为所有资产的最佳值。
+拆分 Auto LOD、Target Pixel Error、LOD Bias、手动调试 cut 和 Visualization。当前按显示视口像素定义误差，UI 明示 display px；CPU 在常驻与流送入口统一换算 DLSS render/display 高度比例，GPU 光栅和 HZB 保留内部尺寸。0.5、1、1.5、2 display px 可作为测试档位，不预设为所有资产的最佳值。
 
 ### P1：常驻场景自适应 LOD
 

@@ -146,8 +146,8 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
             add("Features/PathTracing/OpenPBRRayQueryPathTraceGuides", {"openPbrRayQueryPathTraceGuidesMain"}, pathCapabilities, defines, rtxcrPaths);
         }
     }
-    // Default reference and realtime deferred pipelines, including StreamAsset
-    // opaque/transmission variants and all five material classes.
+    // Reference and realtime deferred pipelines, including the default-off
+    // supplementary path tracing feature and all five material classes.
     for (int mode = 0; mode < 4; ++mode) {
         const bool streamed = mode >= 2;
         const bool positionFetch = mode == 1;
@@ -157,21 +157,27 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
         }
         for (const char* realtime : {"0", "1"}) {
             if (streamed && std::string(realtime) == "0") { continue; }
-            std::vector<std::pair<std::string, std::string>> defines{
-                {"METALLIC_STREAM_MATERIALS", streamed ? "1" : "0"},
-                {"METALLIC_STREAM_RAY_QUERIES", mode == 3 ? "1" : "0"},
-                {"METALLIC_GLOBAL_VIEW", "1"}, {"METALLIC_HAS_RTXCR", hasRtxcr ? "1" : "0"},
-                {"METALLIC_HAS_NTC", "0"}, {"METALLIC_NTC_COOPERATIVE_VECTOR", "0"},
-                {"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", positionFetch ? "1" : "0"},
-                {"METALLIC_DEFERRED_LIGHT_GRID", "1"}, {"METALLIC_REALTIME_DEFERRED", realtime},
-                {"METALLIC_DEFERRED_UPSCALER_GUIDES", realtime}};
-            add("Features/VisibilityBuffer/VisibilityBufferDeferred", {"visibilityBufferDeferredMain"},
-                capabilities, defines, rtxcrPaths);
-            for (int materialClass = 0; materialClass < 5; ++materialClass) {
-                auto classified = defines;
-                classified.emplace_back("MATERIAL_CLASS", std::to_string(materialClass));
-                add("Features/VisibilityBuffer/VisibilityBufferDeferred", {"visibilityBufferDeferredBinnedMain"},
-                    capabilities, classified, rtxcrPaths);
+            for (const char* supplementaryPathTracing : {"0", "1"}) {
+                // Stream ray queries are only reachable with supplementary
+                // tracing enabled in a scene with transmission/BLEND materials.
+                if (mode == 3 && std::string(supplementaryPathTracing) == "0") { continue; }
+                std::vector<std::pair<std::string, std::string>> defines{
+                    {"METALLIC_STREAM_MATERIALS", streamed ? "1" : "0"},
+                    {"METALLIC_STREAM_RAY_QUERIES", mode == 3 ? "1" : "0"},
+                    {"METALLIC_GLOBAL_VIEW", "1"}, {"METALLIC_HAS_RTXCR", hasRtxcr ? "1" : "0"},
+                    {"METALLIC_HAS_NTC", "0"}, {"METALLIC_NTC_COOPERATIVE_VECTOR", "0"},
+                    {"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", positionFetch ? "1" : "0"},
+                    {"METALLIC_DEFERRED_LIGHT_GRID", "1"}, {"METALLIC_REALTIME_DEFERRED", realtime},
+                    {"METALLIC_DEFERRED_PATH_TRACING", supplementaryPathTracing},
+                    {"METALLIC_DEFERRED_UPSCALER_GUIDES", realtime}};
+                add("Features/VisibilityBuffer/VisibilityBufferDeferred", {"visibilityBufferDeferredMain"},
+                    capabilities, defines, rtxcrPaths);
+                for (int materialClass = 0; materialClass < 5; ++materialClass) {
+                    auto classified = defines;
+                    classified.emplace_back("MATERIAL_CLASS", std::to_string(materialClass));
+                    add("Features/VisibilityBuffer/VisibilityBufferDeferred", {"visibilityBufferDeferredBinnedMain"},
+                        capabilities, classified, rtxcrPaths);
+                }
             }
         }
     }

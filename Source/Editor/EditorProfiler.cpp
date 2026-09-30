@@ -15,45 +15,6 @@ namespace {
 
 constexpr size_t kProfilerHistorySize = 500;
 constexpr size_t kProfilerScopeTreeLimit = 8192;
-
-void mergeScopeTree(EditorProfiler::Frame& tree, const EditorProfiler::Frame& sample, bool extend)
-{
-    if (sample.nodes.empty()) { return; }
-    if (tree.nodes.empty()) {
-        if (!extend) { return; }
-        tree.nodes.push_back(sample.nodes.front());
-        tree.nodes.front().children.clear();
-    }
-    std::vector<size_t> indices(sample.nodes.size(), SIZE_MAX);
-    indices[0] = 0;
-    std::map<std::pair<size_t, std::string>, size_t> occurrences;
-    for (size_t i = 0; i < sample.nodes.size(); ++i) {
-        const auto& node = sample.nodes[i];
-        const size_t parent = i ? indices[node.parent] : 0;
-        if (parent == SIZE_MAX) { continue; }
-        size_t target = 0;
-        if (i) {
-            const size_t occurrence = occurrences[{parent, node.name}]++;
-            size_t matched = 0;
-            target = SIZE_MAX;
-            for (size_t child : tree.nodes[parent].children) {
-                if (tree.nodes[child].name == node.name && matched++ == occurrence) { target = child; break; }
-            }
-            if (target == SIZE_MAX) {
-                if (!extend) { continue; }
-                if (tree.nodes.size() >= kProfilerScopeTreeLimit) { tree.profilingOverflow = true; continue; }
-                target = tree.nodes.size();
-                tree.nodes.emplace_back();
-                tree.nodes[parent].children.push_back(target);
-            }
-        }
-        indices[i] = target;
-        auto children = std::move(tree.nodes[target].children);
-        tree.nodes[target] = node;
-        tree.nodes[target].parent = parent;
-        tree.nodes[target].children = std::move(children);
-    }
-}
 constexpr float kPi = 3.14159265358979323846f;
 
 ImU32 imguiColor(uint32_t rgba)
@@ -84,28 +45,6 @@ double sampleValue(const EditorProfiler::Node* node, bool gpu)
         ? (gpu ? node->gpuMilliseconds : node->cpuMilliseconds) : std::numeric_limits<double>::quiet_NaN();
 }
 
-struct Aggregate {
-    double average = 0.0;
-    double minimum = std::numeric_limits<double>::max();
-    double maximum = 0.0;
-    size_t count = 0;
-};
-
-Aggregate aggregateByPath(const std::vector<EditorProfiler::Frame>& history, const std::vector<std::string>& path, bool gpu)
-{
-    Aggregate result;
-    for (const auto& frame : history) {
-        const double value = sampleValue(nodeByPath(frame, path), gpu);
-        if (!std::isfinite(value)) { continue; }
-        result.average += value;
-        result.minimum = std::min(result.minimum, value);
-        result.maximum = std::max(result.maximum, value);
-        ++result.count;
-    }
-    if (result.count) { result.average /= double(result.count); }
-    return result;
-}
-
 void drawDuration(double value, bool available = true)
 {
     if (available && std::isfinite(value)) { ImGui::Text("%.3f", value); }
@@ -121,26 +60,7 @@ enum class ProfilerColumn : ImGuiID {
     Timer = 1, GpuAverage, CpuAverage, Queue, GpuLast, GpuMinimum, GpuMaximum, CpuLast, CpuMinimum, CpuMaximum
 };
 
-struct ProfilerTableRow {
-    Aggregate gpu;
-    Aggregate cpu;
-    bool ready = false;
-};
-
-const ProfilerTableRow& tableRow(const EditorProfiler::Frame& frame, const std::vector<EditorProfiler::Frame>& history,
-    size_t index, std::vector<ProfilerTableRow>& rows)
-{
-    auto& row = rows[index];
-    if (!row.ready) {
-        std::vector<std::string> path;
-        for (size_t current = index; current != 0; current = frame.nodes[current].parent) { path.push_back(frame.nodes[current].name); }
-        std::reverse(path.begin(), path.end());
-        row.gpu = aggregateByPath(history, path, true);
-        row.cpu = aggregateByPath(history, path, false);
-        row.ready = true;
-    }
-    return row;
-}
+using ProfilerTableRow = EditorProfiler::HistoryStatistics;
 
 const char* tableQueueName(const EditorProfiler::Node& node)
 {
@@ -164,8 +84,8 @@ double tableSortValue(const EditorProfiler::Node& node, const ProfilerTableRow& 
     }
 }
 
-void drawProfilerTableNode(const EditorProfiler::Frame& frame, const std::vector<EditorProfiler::Frame>& history,
-    size_t index, uint32_t depth, bool detailed, std::vector<ProfilerTableRow>& rows,
+void drawProfilerTableNode(const EditorProfiler::Frame& frame,
+    size_t index, uint32_t depth, bool detailed, const std::vector<ProfilerTableRow>& rows,
     const ImGuiTableColumnSortSpecs* sort)
 {
     const auto& node = frame.nodes[index];
@@ -179,7 +99,7 @@ void drawProfilerTableNode(const EditorProfiler::Frame& frame, const std::vector
     ImGui::PushStyleColor(ImGuiCol_Text, present ? imguiColor(node.color) : ImGui::GetColorU32(ImGuiCol_TextDisabled));
     const bool open = ImGui::TreeNodeEx(reinterpret_cast<void*>(index + 1), flags, "%s", node.name.c_str());
     ImGui::PopStyleColor();
-    const auto& row = tableRow(frame, history, index, rows);
+    const auto& row = rows[index];
     const auto& gpu = row.gpu;
     const auto& cpu = row.cpu;
     if (ImGui::IsItemHovered()) {
@@ -204,9 +124,6 @@ void drawProfilerTableNode(const EditorProfiler::Frame& frame, const std::vector
         auto children = node.children;
         if (sort && sort->SortDirection != ImGuiSortDirection_None) {
             const auto column = static_cast<ProfilerColumn>(sort->ColumnUserID);
-            if (column != ProfilerColumn::Timer && column != ProfilerColumn::Queue) {
-                for (size_t child : children) { tableRow(frame, history, child, rows); }
-            }
             std::stable_sort(children.begin(), children.end(), [&](size_t a, size_t b) {
                 const auto& left = frame.nodes[a];
                 const auto& right = frame.nodes[b];
@@ -226,13 +143,13 @@ void drawProfilerTableNode(const EditorProfiler::Frame& frame, const std::vector
             });
         }
         for (const size_t child : children) {
-            drawProfilerTableNode(frame, history, child, depth + 1, detailed, rows, sort);
+            drawProfilerTableNode(frame, child, depth + 1, detailed, rows, sort);
         }
         ImGui::TreePop();
     }
 }
 
-void drawProfilerTable(const EditorProfiler::Frame& frame, const std::vector<EditorProfiler::Frame>& history, bool detailed)
+void drawProfilerTable(const EditorProfiler::Frame& frame, const EditorProfiler& profiler, bool detailed)
 {
     if (frame.nodes.empty()) { ImGui::TextDisabled("No profiler samples yet."); return; }
     if (!ImGui::BeginTable("ProfilerTable", detailed ? 10 : 4, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
@@ -258,10 +175,11 @@ void drawProfilerTable(const EditorProfiler::Frame& frame, const std::vector<Edi
     ImGui::TableHeadersRow();
     auto* specs = ImGui::TableGetSortSpecs();
     const auto* sort = specs && specs->SpecsCount > 0 ? &specs->Specs[0] : nullptr;
-    // Recompute on every displayed sample, including delayed GPU backfills, not
-    // just SpecsDirty. Each row's history aggregate is computed once per draw.
+    // Appends, evictions and delayed GPU results already updated the aggregates.
+    // Sorting reads them directly, independently of ImGui's SpecsDirty flag.
     std::vector<ProfilerTableRow> rows(frame.nodes.size());
-    drawProfilerTableNode(frame, history, 0, 0, detailed, rows, sort);
+    for (size_t i = 0; i < frame.nodes.size(); ++i) { rows[i] = profiler.historyStatistics(frame.nodes[i].scopeId); }
+    drawProfilerTableNode(frame, 0, 0, detailed, rows, sort);
     if (specs) { specs->SpecsDirty = false; }
     ImGui::EndTable();
 }
@@ -400,9 +318,10 @@ const EditorProfiler::Node* chooseChartScope(const EditorProfiler::Frame& frame,
     return selected;
 }
 
-void drawTimingCharts(const EditorProfiler::Frame& frame, const std::vector<EditorProfiler::Frame>& history,
+void drawTimingCharts(const EditorProfiler::Frame& frame, const EditorProfiler& profiler,
     int& metric, std::vector<std::string>& path, bool lines)
 {
+    const auto& history = profiler.history();
     const auto* selected = chooseChartScope(frame, metric, path);
     if (!selected) { return; }
     const bool gpu = metric == 1;
@@ -425,9 +344,13 @@ void drawTimingCharts(const EditorProfiler::Frame& frame, const std::vector<Edit
             std::max(160.0f, ImGui::GetContentRegionAvail().y - 95));
     } else {
         double max = 0.001;
-        for (const auto& [p, node] : paths) { max = std::max(max, aggregateByPath(history, p, gpu).average); }
         for (const auto& [p, node] : paths) {
-            const auto avg = aggregateByPath(history, p, gpu);
+            const auto stats = profiler.historyStatistics(node->scopeId);
+            max = std::max(max, (gpu ? stats.gpu : stats.cpu).average);
+        }
+        for (const auto& [p, node] : paths) {
+            const auto stats = profiler.historyStatistics(node->scopeId);
+            const auto& avg = gpu ? stats.gpu : stats.cpu;
             ImGui::TextUnformatted(node->name.c_str());
             char label[64];
             if (avg.count) { std::snprintf(label, sizeof(label), "%.3f ms (%zu samples)", avg.average, avg.count); }
@@ -497,6 +420,37 @@ void drawStreaming(const std::vector<EditorProfiler::StreamingHistory>& sources,
             last.requestOverflows, last.allocationFailures, static_cast<unsigned long long>(last.loadFailures));
     }
     ImGui::TextDisabled("CPU-visible counters; requests refer to completed GPU feedback. Upload pipeline includes I/O.");
+    if (last.lodTransitionTelemetryEnabled && ImGui::CollapsingHeader("LOD Transition Diagnostics", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::Text("Demanded %u | Own page blocked %u | Dependency blocked %u", last.lodDemandedGroups,
+            last.lodOwnPageBlockedGroups, last.lodDependencyBlockedGroups);
+        ImGui::Text("Selected threshold %u groups / %u clusters | Catch-up %u / %u",
+            last.lodThresholdSelectedGroups, last.lodThresholdSelectedClusters,
+            last.lodCatchupSelectedGroups, last.lodCatchupSelectedClusters);
+        ImGui::Text("Unclassified new selections %u / %u | Catch-up active %u",
+            last.lodUnclassifiedSelectedGroups, last.lodUnclassifiedSelectedClusters, last.lodCatchupActivatedGroups);
+        ImGui::TextDisabled("Instance-groups in emitted geometry cut; excludes capacity fallback. History %.1f MiB.",
+            last.lodTransitionHistoryBytes / mib);
+        ImGui::TextDisabled("Threshold/catch-up require consecutive automatic visible frames. First/reentry remains unclassified.");
+    }
+    if (ImGui::CollapsingHeader("Page Prefetch")) {
+        ImGui::Text("Retention %s | Demand reserve %.1f MiB | Reclaim target %.1f MiB",
+            last.adaptivePageRetentionEnabled ? "bounded headroom" : "legacy", last.geometryDemandReserveBytes / mib,
+            last.geometryReclaimReserveBytes / mib);
+        ImGui::Text("Cold cache %.1f MiB | Pending frees %.1f MiB | Evicted %.1f MiB (%u unused prefetch)",
+            last.coldResidentBytes / mib, last.pendingFreeBytes / mib, last.evictedGeometryBytes / mib,
+            last.evictedPrefetchPages);
+        ImGui::Text("Prefetch %s | Memory watermark %s | Queue %s", last.prefetchEnabled ? "enabled" : "disabled",
+            last.prefetchMemoryWatermarkBlocked ? "blocked" : "available", last.prefetchQueueBlocked ? "blocked" : "available");
+        ImGui::Text("Forecast %s | Horizon %.1f ms | Move %.3f | Rotate %.2f deg",
+            last.prefetchForecastActive ? "active" : "inactive", last.prefetchHorizonMilliseconds,
+            last.prefetchTranslationDistance, last.prefetchRotationDegrees);
+        ImGui::Text("Recent demand latency p95 %.1f ms (%llu samples) | GPU requests/dropped %u/%u",
+            last.prefetchDemandLatencyP95Milliseconds, static_cast<unsigned long long>(last.prefetchLatencySamples),
+            last.prefetchGpuRequests, last.prefetchGpuDropped);
+        ImGui::Text("Total admitted/used/deferred %llu/%llu/%llu",
+            static_cast<unsigned long long>(last.totalPrefetchAdmitted), static_cast<unsigned long long>(last.totalPrefetchUsed),
+            static_cast<unsigned long long>(last.totalPrefetchDeferred));
+    }
     if (ImGui::CollapsingHeader("CPU Request / Reclaim Work")) {
         const auto& work = last.cpuWork;
         ImGui::Text("Allocation attempts %u | Budget retries suppressed %u",
@@ -654,17 +608,21 @@ void drawPieChart(const EditorProfiler::Frame& frame)
     }
 }
 
+template <typename Changed>
 void applyRenderGraphGpuStats(
     std::vector<EditorProfiler::Node>& nodes,
-    const render::RenderGraphExecutionStats& stats)
+    const render::RenderGraphExecutionStats& stats,
+    Changed changed)
 {
     for (EditorProfiler::Node& node : nodes) {
         if (node.renderGraphExecutionId != stats.executionId) {
             continue;
         }
+        const double previous = sampleValue(&node, true);
         if (node.renderGraphNodeId == UINT32_MAX) {
             node.gpuMilliseconds = stats.gpuMilliseconds;
             node.gpuTimingAvailable = stats.gpuTimingAvailable;
+            changed(node, previous);
             continue;
         }
 
@@ -683,11 +641,143 @@ void applyRenderGraphGpuStats(
                 node.gpuMilliseconds = section.gpuMilliseconds;
                 node.gpuTimingAvailable = section.gpuTimingAvailable;
             }
+            changed(node, previous);
         }
     }
 }
 
+void applyRenderGraphGpuStats(std::vector<EditorProfiler::Node>& nodes,
+    const render::RenderGraphExecutionStats& stats)
+{
+    applyRenderGraphGpuStats(nodes, stats, [](const auto&, double) {});
+}
+
 } // namespace
+
+void EditorProfiler::SampleAggregate::add(double value)
+{
+    if (!std::isfinite(value)) { return; }
+    values.insert(value);
+    sum += value;
+}
+
+void EditorProfiler::SampleAggregate::remove(double value)
+{
+    if (!std::isfinite(value)) { return; }
+    const auto found = values.find(value);
+    if (found == values.end()) { return; }
+    values.erase(found);
+    sum = values.empty() ? 0.0 : sum - value;
+}
+
+EditorProfiler::Aggregate EditorProfiler::SampleAggregate::statistics() const
+{
+    if (values.empty()) { return {}; }
+    return {sum / double(values.size()), *values.begin(), *values.rbegin(), values.size()};
+}
+
+EditorProfiler::HistoryStatistics EditorProfiler::historyStatistics(size_t scopeId) const
+{
+    if (scopeId >= scopes_.size()) { return {}; }
+    return {scopes_[scopeId].cpu.statistics(), scopes_[scopeId].gpu.statistics()};
+}
+
+void EditorProfiler::registerFrameScopes(std::vector<Node>& nodes)
+{
+    if (nodes.empty()) { return; }
+    const uint64_t revision = ++scopeRevision_;
+    if (scopeTree_.nodes.empty()) {
+        scopeTree_.nodes.emplace_back();
+        scopes_.emplace_back();
+    }
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        auto& node = nodes[i];
+        const size_t parent = i && node.parent < i ? nodes[node.parent].scopeId : 0;
+        node.scopeId = SIZE_MAX;
+        if (parent >= scopes_.size()) { continue; }
+        size_t target = 0;
+        if (i) {
+            if (scopes_[parent].children.find(node.name) == scopes_[parent].children.end() &&
+                scopes_.size() >= kProfilerScopeTreeLimit) {
+                scopeTree_.profilingOverflow = true;
+                continue;
+            }
+            auto& siblings = scopes_[parent].children[node.name];
+            size_t occurrence = 0;
+            if (!siblings.empty()) {
+                auto& first = scopes_[siblings.front()];
+                if (first.occurrenceRevision != revision) {
+                    first.occurrenceRevision = revision;
+                    first.occurrences = 0;
+                }
+                occurrence = first.occurrences++;
+            }
+            if (occurrence >= siblings.size()) {
+                if (scopes_.size() >= kProfilerScopeTreeLimit) {
+                    scopeTree_.profilingOverflow = true;
+                    continue;
+                }
+                target = scopes_.size();
+                const bool first = siblings.empty();
+                siblings.push_back(target);
+                scopes_.emplace_back();
+                scopeTree_.nodes.emplace_back();
+                scopeTree_.nodes[parent].children.push_back(target);
+                if (first) {
+                    scopes_[target].occurrenceRevision = revision;
+                    scopes_[target].occurrences = 1;
+                }
+            } else {
+                target = siblings[occurrence];
+            }
+        }
+        node.scopeId = target;
+        auto children = std::move(scopeTree_.nodes[target].children);
+        scopeTree_.nodes[target] = node;
+        scopeTree_.nodes[target].parent = parent;
+        scopeTree_.nodes[target].children = std::move(children);
+    }
+}
+
+void EditorProfiler::addHistoryFrame(const Frame& frame)
+{
+    std::vector<uint64_t> executions;
+    for (const auto& node : frame.nodes) {
+        if (node.scopeId < scopes_.size()) {
+            auto& scope = scopes_[node.scopeId];
+            scope.cpu.add(node.cpuMilliseconds);
+            scope.gpu.add(sampleValue(&node, true));
+        }
+        if (node.renderGraphExecutionId != UINT64_MAX &&
+            std::find(executions.begin(), executions.end(), node.renderGraphExecutionId) == executions.end()) {
+            executions.push_back(node.renderGraphExecutionId);
+        }
+    }
+    for (uint64_t execution : executions) { historyExecutions_.emplace(execution, frame.index); }
+}
+
+void EditorProfiler::removeHistoryFrame(const Frame& frame)
+{
+    std::vector<uint64_t> executions;
+    for (const auto& node : frame.nodes) {
+        if (node.scopeId < scopes_.size()) {
+            auto& scope = scopes_[node.scopeId];
+            scope.cpu.remove(node.cpuMilliseconds);
+            scope.gpu.remove(sampleValue(&node, true));
+        }
+        if (node.renderGraphExecutionId != UINT64_MAX &&
+            std::find(executions.begin(), executions.end(), node.renderGraphExecutionId) == executions.end()) {
+            executions.push_back(node.renderGraphExecutionId);
+        }
+    }
+    for (uint64_t execution : executions) {
+        const auto [first, last] = historyExecutions_.equal_range(execution);
+        for (auto it = first; it != last;) {
+            if (it->second == frame.index) { it = historyExecutions_.erase(it); }
+            else { ++it; }
+        }
+    }
+}
 
 EditorProfiler::FrameScope::FrameScope(EditorProfiler* profiler)
     : profiler_(profiler)
@@ -864,8 +954,19 @@ void EditorProfiler::updateRenderGraphGpuStats(const render::RenderGraphExecutio
     if (stats.graphGeneration != graphGeneration_) { return; }
     applyRenderGraphGpuStats(currentNodes_, stats);
     applyRenderGraphGpuStats(latestFrame_.nodes, stats);
-    for (Frame& frame : history_) {
-        applyRenderGraphGpuStats(frame.nodes, stats);
+    const auto [first, last] = historyExecutions_.equal_range(stats.executionId);
+    for (auto it = first; it != last; ++it) {
+        if (history_.empty() || it->second < history_.front().index) { continue; }
+        const uint64_t index = it->second - history_.front().index;
+        if (index >= history_.size() || history_[index].index != it->second) { continue; }
+        applyRenderGraphGpuStats(history_[index].nodes, stats, [&](const Node& node, double previous) {
+            if (node.scopeId >= scopes_.size()) { return; }
+            const double value = sampleValue(&node, true);
+            if (value == previous || (!std::isfinite(value) && !std::isfinite(previous))) { return; }
+            auto& aggregate = scopes_[node.scopeId].gpu;
+            aggregate.remove(previous);
+            aggregate.add(value);
+        });
     }
 }
 
@@ -883,20 +984,20 @@ const EditorProfiler::Frame& EditorProfiler::displayFrame() const
 void EditorProfiler::clearHistory()
 {
     history_.clear();
+    historyExecutions_.clear();
     scopeTree_ = {};
-    scopeTreeNextFrame_ = frameIndex_;
+    scopes_.clear();
+    scopeRevision_ = 0;
+    // Clear keeps the latest raw sample for display, but it is not a new
+    // history sample. Remap its identities lazily if that view is requested.
+    for (auto& node : latestFrame_.nodes) { node.scopeId = SIZE_MAX; }
     for (auto& source : streamingHistory_) { source.samples.clear(); }
 }
 
 EditorProfiler::Frame EditorProfiler::presentationFrame()
 {
-    // Only merge newly recorded frames, and only when the UI requests a view.
-    for (const auto& sample : history_) {
-        if (sample.index >= scopeTreeNextFrame_) { mergeScopeTree(scopeTree_, sample, true); }
-    }
+    if (scopeTree_.nodes.empty()) { registerFrameScopes(latestFrame_.nodes); }
     const auto& displayed = displayFrame();
-    if (scopeTree_.nodes.empty()) { mergeScopeTree(scopeTree_, displayed, true); }
-    scopeTreeNextFrame_ = frameIndex_;
     Frame result = scopeTree_;
     result.index = displayed.index;
     result.profilingOverflow |= displayed.profilingOverflow;
@@ -905,7 +1006,18 @@ EditorProfiler::Frame EditorProfiler::presentationFrame()
         node.gpuMilliseconds = 0;
         node.gpuTimingAvailable = false;
     }
-    mergeScopeTree(result, displayed, false);
+    for (const auto& node : displayed.nodes) {
+        if (node.scopeId >= result.nodes.size()) { continue; }
+        auto& target = result.nodes[node.scopeId];
+        target.cpuMilliseconds = node.cpuMilliseconds;
+        target.gpuMilliseconds = node.gpuMilliseconds;
+        target.gpuTimingAvailable = node.gpuTimingAvailable;
+        target.cpuOnly = node.cpuOnly;
+        target.renderGraphExecutionId = node.renderGraphExecutionId;
+        target.renderGraphNodeId = node.renderGraphNodeId;
+        target.renderGraphSectionIndex = node.renderGraphSectionIndex;
+        target.queue = node.queue;
+    }
     return result;
 }
 
@@ -967,7 +1079,10 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
     ImGui::Checkbox("Detailed", &detailed_);
     ImGui::SameLine();
     if (ImGui::SmallButton("Clear history")) { clearHistory(); }
-    const auto frame = presentationFrame();
+    const auto frame = [&] {
+        auto profileScope = scope("Presentation Frame");
+        return presentationFrame();
+    }();
     ImGui::SameLine();
     ImGui::TextDisabled("%zu / %zu frames", history_.size(), kProfilerHistorySize);
     const bool hasGpu = std::any_of(frame.nodes.begin(), frame.nodes.end(), [](const auto& node) { return node.gpuTimingAvailable; });
@@ -978,15 +1093,16 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
     if (frame.profilingOverflow) { ImGui::TextColored(ImVec4(1, .65f, .2f, 1), "Profiler scope/display budget exceeded; some entries may be unavailable."); }
     if (ImGui::BeginTabBar("ProfilerTabs")) {
         if (ImGui::BeginTabItem("Table")) {
-            drawProfilerTable(frame, history_, detailed_);
+            auto profileScope = scope("Profiler Table");
+            drawProfilerTable(frame, *this, detailed_);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("BarChart")) {
-            drawTimingCharts(frame, history_, chartMetric_, chartPath_, false);
+            drawTimingCharts(frame, *this, chartMetric_, chartPath_, false);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("LineChart")) {
-            drawTimingCharts(frame, history_, chartMetric_, chartPath_, true);
+            drawTimingCharts(frame, *this, chartMetric_, chartPath_, true);
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("PieChart")) {
@@ -1107,8 +1223,11 @@ void EditorProfiler::endFrame()
         if (samples.size() > kProfilerHistorySize) { samples.erase(samples.begin()); }
     }
     latestFrame_.nodes = currentNodes_;
+    registerFrameScopes(latestFrame_.nodes);
+    addHistoryFrame(latestFrame_);
     history_.push_back(latestFrame_);
     if (history_.size() > kProfilerHistorySize) {
+        removeHistoryFrame(history_.front());
         history_.erase(history_.begin(), history_.begin() + static_cast<std::ptrdiff_t>(history_.size() - kProfilerHistorySize));
     }
 

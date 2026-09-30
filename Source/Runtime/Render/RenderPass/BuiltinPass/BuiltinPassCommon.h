@@ -215,6 +215,7 @@ inline constexpr uint32_t kScenePathTraceDebugUseOpaqueShadows = 1u << 4u;
 inline constexpr uint32_t kScenePathTraceDebugDisableTransmission = 1u << 5u;
 inline constexpr uint32_t kScenePathTraceDebugDisableShadows = 1u << 6u;
 inline constexpr uint32_t kScenePathTraceDebugDisableVolumeAttenuation = 1u << 7u;
+inline constexpr uint32_t kScenePathTraceDebugStochasticTextureFiltering = 1u << 8u;
 // Radiance cache modes (RTXGI SHaRC / NVIDIA NRC reference integrations).
 inline constexpr uint32_t kScenePathTraceCacheModeOff = 0;
 inline constexpr uint32_t kScenePathTraceCacheModeSharc = 1;

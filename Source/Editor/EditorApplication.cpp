@@ -3306,7 +3306,10 @@ void EditorApplication::drawDockspace()
 
 void EditorApplication::drawPanels()
 {
-    drawStreamlineDebugPanel();
+    {
+        auto profileScope = profiler_.scope("Streamline Debug Panel");
+        drawStreamlineDebugPanel();
+    }
     {
         auto profileScope = profiler_.scope("Scene Panel");
         drawScenePanel();
@@ -3328,46 +3331,58 @@ void EditorApplication::drawPanels()
         drawRenderGraphEditorWindow();
     }
 
-    ImGui::Begin("Assets");
-    ImGui::TextUnformatted(PROJECT_SOURCE_DIR);
-    ImGui::End();
+    {
+        auto profileScope = profiler_.scope("Assets Panel");
+        ImGui::Begin("Assets");
+        ImGui::TextUnformatted(PROJECT_SOURCE_DIR);
+        ImGui::End();
+    }
 
-    ImGui::Begin("Console");
-    ImGui::TextUnformatted("Metallic editor initialized with SDL3.");
-    if (!renderGraphStatus_.empty()) {
-        ImGui::Separator();
-        ImGui::TextWrapped("%s", renderGraphStatus_.c_str());
+    {
+        auto profileScope = profiler_.scope("Console Panel");
+        ImGui::Begin("Console");
+        ImGui::TextUnformatted("Metallic editor initialized with SDL3.");
+        if (!renderGraphStatus_.empty()) {
+            ImGui::Separator();
+            ImGui::TextWrapped("%s", renderGraphStatus_.c_str());
+        }
+        ImGui::End();
     }
-    ImGui::End();
 
-    const auto captureState = nsightGraphicsCapture_.state();
-    const bool captureReady =
-        captureState == render::profiling::NsightGraphicsCaptureState::Ready ||
-        captureState == render::profiling::NsightGraphicsCaptureState::CaptureCompleted;
-    std::string captureStatus = nsightGraphicsCapture_.statusText();
-    if (!render::profiling::NsightGraphicsCapture::compiledAvailable()) {
-        captureStatus = "Nsight Graphics SDK is not available in this build.";
-    } else if (!nsightGraphicsCaptureRequested_) {
-        captureStatus = "Restart with --nsight-capture to enable Graphics Capture.";
-    } else if (captureReady && !viewportPreviewValid_) {
-        captureStatus = "The current View is not ready for capture.";
-    } else if (captureReady) {
-        captureStatus += " Optimized Slang source symbols are enabled.";
+    {
+        auto profileScope = profiler_.scope("Profiler Panel");
+        const auto captureState = nsightGraphicsCapture_.state();
+        const bool captureReady =
+            captureState == render::profiling::NsightGraphicsCaptureState::Ready ||
+            captureState == render::profiling::NsightGraphicsCaptureState::CaptureCompleted;
+        std::string captureStatus = nsightGraphicsCapture_.statusText();
+        if (!render::profiling::NsightGraphicsCapture::compiledAvailable()) {
+            captureStatus = "Nsight Graphics SDK is not available in this build.";
+        } else if (!nsightGraphicsCaptureRequested_) {
+            captureStatus = "Restart with --nsight-capture to enable Graphics Capture.";
+        } else if (captureReady && !viewportPreviewValid_) {
+            captureStatus = "The current View is not ready for capture.";
+        } else if (captureReady) {
+            captureStatus += " Optimized Slang source symbols are enabled.";
+        }
+        const std::string capturePath = nsightGraphicsCapture_.capturePath().string();
+        const EditorProfiler::GraphicsCaptureControls captureControls{
+            .sdkCompiled = render::profiling::NsightGraphicsCapture::compiledAvailable(),
+            .runtimeEnabled = nsightGraphicsCaptureRequested_,
+            .canCapture = captureReady && viewportPreviewValid_ &&
+                !nsightGraphicsCapture_.hasOutstandingCapture(),
+            .capturePending = nsightGraphicsCapture_.hasOutstandingCapture(),
+            .statusText = captureStatus.c_str(),
+            .capturePath = capturePath.c_str(),
+        };
+        if (profiler_.drawWindow(&profilerOpen_, captureControls)) {
+            requestNsightGraphicsCapture();
+        }
     }
-    const std::string capturePath = nsightGraphicsCapture_.capturePath().string();
-    const EditorProfiler::GraphicsCaptureControls captureControls{
-        .sdkCompiled = render::profiling::NsightGraphicsCapture::compiledAvailable(),
-        .runtimeEnabled = nsightGraphicsCaptureRequested_,
-        .canCapture = captureReady && viewportPreviewValid_ &&
-            !nsightGraphicsCapture_.hasOutstandingCapture(),
-        .capturePending = nsightGraphicsCapture_.hasOutstandingCapture(),
-        .statusText = captureStatus.c_str(),
-        .capturePath = capturePath.c_str(),
-    };
-    if (profiler_.drawWindow(&profilerOpen_, captureControls)) {
-        requestNsightGraphicsCapture();
+    {
+        auto profileScope = profiler_.scope("NVML Monitor");
+        nvmlMonitor_.drawWindow(&nvmlMonitorOpen_);
     }
-    nvmlMonitor_.drawWindow(&nvmlMonitorOpen_);
 }
 
 void EditorApplication::drawScenePanel()

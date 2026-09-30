@@ -4,6 +4,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
+#include "Runtime/Render/Streamer/TextureMipTransition.h"
 #include "imgui.h"
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
@@ -25,7 +26,26 @@ Json streamSample(const render::SceneStreamingProfile& s)
 {
     return {{"softwareRaster",s.softwareRasterIdentity.empty() ? Json(nullptr) : Json::parse(s.softwareRasterIdentity)},
         {"frame",s.frameIndex},{"feedbackFrame",s.feedbackFrame},{"generation",s.generation},
+        {"lodTransitions", {{"enabled",s.lodTransitionTelemetryEnabled},{"historyBytes",s.lodTransitionHistoryBytes},
+            {"demandedGroups",s.lodDemandedGroups},{"ownPageBlockedGroups",s.lodOwnPageBlockedGroups},
+            {"dependencyBlockedGroups",s.lodDependencyBlockedGroups},{"catchupActivatedGroups",s.lodCatchupActivatedGroups},
+            {"catchupSelectedGroups",s.lodCatchupSelectedGroups},{"catchupSelectedClusters",s.lodCatchupSelectedClusters},
+            {"thresholdSelectedGroups",s.lodThresholdSelectedGroups},{"thresholdSelectedClusters",s.lodThresholdSelectedClusters},
+            {"unclassifiedSelectedGroups",s.lodUnclassifiedSelectedGroups},{"unclassifiedSelectedClusters",s.lodUnclassifiedSelectedClusters}}},
+        {"prefetch", {{"predictiveEnabled",s.predictivePrefetchEnabled},{"forecastActive",s.prefetchForecastActive},
+            {"enabled",s.prefetchEnabled},{"memoryWatermarkBlocked",s.prefetchMemoryWatermarkBlocked},{"queueBlocked",s.prefetchQueueBlocked},
+            {"horizonMilliseconds",s.prefetchHorizonMilliseconds},{"translationDistance",s.prefetchTranslationDistance},
+            {"rotationDegrees",s.prefetchRotationDegrees},{"measuredLatency",s.prefetchMeasuredLatency},
+            {"latencySamples",s.prefetchLatencySamples},{"demandLatencyP95Milliseconds",s.prefetchDemandLatencyP95Milliseconds},
+            {"totalAdmitted",s.totalPrefetchAdmitted},{"totalUsed",s.totalPrefetchUsed},{"totalDeferred",s.totalPrefetchDeferred},
+            {"gpuRequests",s.prefetchGpuRequests},{"gpuDropped",s.prefetchGpuDropped}}},
         {"geometryBytes",s.geometryUsedBytes},{"geometryCapacity",s.geometryBudgetBytes},
+        {"retention", {{"adaptive",s.adaptivePageRetentionEnabled},
+            {"reclaimReserveBytes",s.geometryReclaimReserveBytes},{"demandReserveBytes",s.geometryDemandReserveBytes},
+            {"coldResidentBytes",s.coldResidentBytes},{"pendingFreeBytes",s.pendingFreeBytes},
+            {"evictedGeometryBytes",s.evictedGeometryBytes},{"evictedPrefetchPages",s.evictedPrefetchPages},
+            {"pressureEvictions",s.cpuWork.coldPressureScheduled},{"retentionEvictions",s.cpuWork.coldRetentionScheduled},
+            {"ageRejected",s.cpuWork.coldAgeRejected},{"scheduleFailed",s.cpuWork.coldScheduleFailed}}},
         {"clasBytes",s.clasUsedBytes},{"clasCapacity",s.clasCapacityBytes},{"clasAllocatedBytes",s.clasAllocatedBytes},{"clasStorageChunks",s.clasStorageChunks},{"clasScratchBytes",s.clasScratchBytes},
         {"clasStartBytes",s.clasStartBytes},{"clasGrowBytes",s.clasGrowBytes},{"clasEmptyBytes",s.clasEmptyBytes},
         {"clasGrowthCount",s.clasGrowthCount},{"clasReleasedBytes",s.clasReleasedBytes},
@@ -109,11 +129,16 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             config = Json::parse(input);
         }
         if (config.value("rasterComparison", false)) { return runZorahFullRasterComparison(config, output); }
+        profilerOpen_ = config.value("profilerOpen", profilerOpen_);
+        const bool focusProfiler = config.value("focusProfiler", false);
+        report["profilerOpen"] = profilerOpen_;
+        report["focusProfiler"] = focusProfiler;
         const uint32_t workloadEvery = config.value("workloadEvery", 0u);
         workloadObserver.captureCull = config.value("classifyCounters", false);
         if (workloadEvery && workloadEvery < 10) { throw std::runtime_error("workloadEvery must be 0 or at least 10"); }
         report["workloadEvery"] = workloadEvery;
-        report["diagnosticRun"] = workloadEvery != 0;
+        report["diagnosticRun"] = workloadEvery != 0 || config.value("enableLodTransitionTelemetry", false);
+        report["lodTransitionDefinition"] = "Instance-groups in the emitted geometry cut, before raster occlusion and independent of CLAS. Threshold requires continuous auto-visible frames and newly demanded SSE; catchup requires prior-frame demand blocked by own geometry page or dependency. First/reentry and other selected changes are unclassified. History adds 8 bytes per instance-group plus 4 per instance; feedback may lag.";
         const double duration = config.value("durationSeconds",180.0);
         const double warmup = config.value("warmupSeconds",5.0);
         const double distance = config.value("distance",6.0);
@@ -166,6 +191,18 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "cullHardwareClassification", config.value("cullHardwareClassification", false));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "metadataFastClassification", config.value("metadataFastClassification", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "initialLoad", config.value("initialLoad", true));
+        renderGraph_.setNodeRuntimeProperty(vbuffer->id, "predictivePrefetch", config.value("predictivePrefetch", true));
+        renderGraph_.setNodeRuntimeProperty(vbuffer->id, "adaptivePageRetention", config.value("adaptivePageRetention", true));
+        renderGraph_.setNodeRuntimeProperty(vbuffer->id, "enableLodTransitionTelemetry", config.value("enableLodTransitionTelemetry", false));
+        const auto* deferred = renderGraph_.findNode("Deferred");
+        const auto* dlss = renderGraph_.findNode("DlssSr");
+        if (!deferred || !dlss) { throw std::runtime_error("Missing Full shading/reconstruction nodes"); }
+        renderGraph_.setNodeRuntimeProperty(deferred->id, "stochasticTextureFiltering", config.value("stochasticTextureFiltering", false));
+        const std::string dlssMode = config.value("dlssMode", std::string("Quality"));
+        if (dlssMode != "Off" && dlssMode != "DLAA" && dlssMode != "Quality" &&
+            dlssMode != "Balanced" && dlssMode != "Performance" && dlssMode != "UltraPerformance" &&
+            dlssMode != "UltraQuality") { throw std::runtime_error("Unsupported Full dlssMode"); }
+        renderGraph_.setNodeRuntimeProperty(dlss->id, "mode", dlssMode);
         if (config.contains("maxRasterCandidates")) {
             renderGraph_.setNodeRuntimeProperty(vbuffer->id, "maxRasterCandidates", config.at("maxRasterCandidates").get<uint32_t>());
         }
@@ -206,6 +243,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         while (true) {
             if (!draw()) { throw std::runtime_error("Full loading or rendering failed/cancelled"); }
             ++loadingFrames;
+            if (loadingFrames == 1 && focusProfiler && profilerOpen_) {
+                ImGui::SetWindowFocus("Profiler");
+            }
             const auto readiness = subsystemHost_.get<render::StreamerSubsystem>()->sceneReadiness();
             const auto now=Clock::now();
             if (readiness.ready && readiness.requiredPages && viewportPreviewValid_) {
@@ -235,6 +275,11 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             {"routeFrames",routeFrames},{"sample",sampleId},{"cullHardwareClassification",config.value("cullHardwareClassification",false)},
             {"metadataFastClassification",config.value("metadataFastClassification",true)},
             {"initialLoad",config.value("initialLoad",true)},
+            {"predictivePrefetch",config.value("predictivePrefetch",true)},
+            {"adaptivePageRetention",config.value("adaptivePageRetention",true)},
+            {"enableLodTransitionTelemetry",config.value("enableLodTransitionTelemetry",false)},
+            {"stochasticTextureFiltering",config.value("stochasticTextureFiltering",false)},
+            {"dlssMode",dlssMode}, {"textureMipTransitionMilliseconds",1000.0 * render::TextureMipTransition::kDurationSeconds},
             {"temporalJitter",viewportView_.temporalJitter()}, {"softwareGroupSize",groupSize}};
         report["absoluteKeyframes"]=Json::array();
         for (const auto& p : points) { report["absoluteKeyframes"].push_back({{"seconds",p.at("t").get<double>()*duration},

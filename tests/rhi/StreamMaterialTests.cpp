@@ -291,8 +291,19 @@ public:
             graph.setNodeRuntimeProperty(deferred,"debugView","final");
             graph.setNodeRuntimeProperty(deferred,"transmissionSamples",16);
             graph.setNodeRuntimeProperty(deferred,"transmissionDepth",8);
+            // Stream deferred must render without continuation/TLAS bindings by default.
+            for(uint32_t frame=0;frame<8;++frame) { require(bool(preview.render(graph,256,128)),preview.lastLog()); }
+            const auto defaultOff=preview.pixels();
+            require(saveRgba8Png(directory/"BlendAndGlassDefault.png",reinterpret_cast<const uint8_t*>(preview.pixels().data()),256,128,log),log);
+            graph.setNodeRuntimeProperty(deferred,"supplementaryPathTracing",false);
+            require(bool(preview.render(graph,256,128)),preview.lastLog());
+            require(preview.pixels()==defaultOff,"Stream default supplementary tracing differs from explicit false");
+            graph.setNodeRuntimeProperty(deferred,"supplementaryPathTracing",true);
             for(uint32_t frame=0;frame<8;++frame) { require(bool(preview.render(graph,256,128)),preview.lastLog()); }
             require(saveRgba8Png(directory/"BlendAndGlass.png",reinterpret_cast<const uint8_t*>(preview.pixels().data()),256,128,log),log);
+            uint32_t supplementaryChanged=0;
+            for(size_t i=0;i<defaultOff.size();++i) { supplementaryChanged+=defaultOff[i]!=preview.pixels()[i]; }
+            require(supplementaryChanged>100,"Stream supplementary tracing had no visible effect on BLEND/glass");
             uint32_t blendRed=0, blendBlue=0, glassBlue=0, samples=0, cutoutRed=0, cutoutBlue=0;
             for(uint32_t y=46;y<82;++y) { for(uint32_t x=100;x<115;++x) {
                 const uint32_t blend=preview.pixels()[y*256+x],glass=preview.pixels()[y*256+(256-x)];
@@ -310,7 +321,12 @@ public:
             uint32_t changed=0;
             for(size_t i=0;i<unbinned.size();++i) { changed+=unbinned[i]!=preview.pixels()[i]; }
             require(changed<16,"Material binning changed BLEND/glass continuation");
-            return RhiTestResult::pass("Shared CLAS geometry preserves instance BLEND, IOR=1 glass, MASK holes and material ID 260");
+            graph.setNodeRuntimeProperty(deferred,"materialBinning",false);
+            graph.setNodeRuntimeProperty(deferred,"supplementaryPathTracing",false);
+            require(bool(preview.render(graph,256,128)),preview.lastLog());
+            require(preview.pixels()==defaultOff,"Disabling stream supplementary tracing did not restore default shading");
+            return RhiTestResult::pass("Default-off/explicit opt-in stream shading and restoration; "
+                "shared CLAS geometry preserves instance BLEND, IOR=1 glass, MASK holes and material ID 260");
         } catch(const std::exception& error) { return RhiTestResult::fail(error.what()); }
     }
 };

@@ -348,6 +348,17 @@ endif()
 metallic_copy_openusd_runtime(MetallicMeshletCook)
 metallic_copy_spdlog_runtime(MetallicMeshletCook)
 
+# Resident cache migration keeps the MTLMSHLT payload separate from meshstream.
+add_executable(MetallicResidentMeshletCook Tools/MeshletResidentCookMain.cpp)
+target_link_libraries(MetallicResidentMeshletCook PRIVATE MetallicRuntimeScene)
+target_compile_definitions(MetallicResidentMeshletCook PRIVATE
+    METALLIC_ASSET_ROOT="${PROJECT_SOURCE_DIR}/Asset")
+if(WIN32)
+    target_compile_definitions(MetallicResidentMeshletCook PRIVATE NOMINMAX)
+endif()
+metallic_copy_openusd_runtime(MetallicResidentMeshletCook)
+metallic_copy_spdlog_runtime(MetallicResidentMeshletCook)
+
 # Apply the launch default to every executable that shares the editor shell.
 set_property(SOURCE Editor/EditorApplication.cpp APPEND PROPERTY COMPILE_DEFINITIONS
     METALLIC_DEFAULT_NSIGHT_CAPTURE=$<BOOL:${METALLIC_DEFAULT_NSIGHT_CAPTURE}>
