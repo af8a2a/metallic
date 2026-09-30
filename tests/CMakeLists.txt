@@ -25,6 +25,12 @@ if(METALLIC_ENABLE_NRD)
     set_tests_properties(MetallicNrdTests PROPERTIES LABELS "rhi;nrd" TIMEOUT 300)
 endif()
 
+add_executable(MetallicNsightLaunchOptionsTests editor/NsightLaunchOptionsTests.cpp)
+target_include_directories(MetallicNsightLaunchOptionsTests PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_link_libraries(MetallicNsightLaunchOptionsTests PRIVATE GTest::gtest_main)
+add_test(NAME MetallicNsightLaunchOptionsTests COMMAND MetallicNsightLaunchOptionsTests)
+set_tests_properties(MetallicNsightLaunchOptionsTests PROPERTIES LABELS "editor;profiling")
+
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)
     foreach(dependency_case IN ITEMS reuse boolean missing compiler configuration crt flags features multiconfig)
         add_test(NAME MetallicDependencyCache.${dependency_case}

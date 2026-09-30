@@ -54,6 +54,7 @@ bool EditorApplication::runNsightCaptureSmokeTest()
     }
     int initialWidth = 0, initialHeight = 0;
     if (!SDL_GetWindowSize(window_, &initialWidth, &initialHeight)) { return false; }
+    std::filesystem::path previousPath;
     for (uint32_t capture = 0; capture < 3; ++capture) {
         if (capture > 0) {
             // Exercise DLSS/resource recreation as well as steady-state capture.
@@ -85,10 +86,13 @@ bool EditorApplication::runNsightCaptureSmokeTest()
         const auto& path = nsightGraphicsCapture_.capturePath();
         const auto bytes = std::filesystem::file_size(path, error);
         if (nsightGraphicsCapture_.state() != NsightGraphicsCaptureState::CaptureCompleted ||
-            error || bytes == 0) {
+            error || bytes == 0 || path == previousPath ||
+            path.extension() != (nsightMode_ == render::profiling::NsightCaptureMode::GPUTrace
+                ? ".ngfx-gputrace" : ".ngfx-capture")) {
             spdlog::error("[Smoke Nsight] Capture did not complete: {}", nsightGraphicsCapture_.statusText());
             return false;
         }
+        previousPath = path;
         spdlog::info("[Smoke Nsight] Capture {} viewport {}x{}: '{}' ({} bytes)",
             capture + 1, viewportTextureWidth_, viewportTextureHeight_, path.string(), bytes);
     }

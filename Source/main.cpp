@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Editor/NsightLaunchOptions.h"
 #include "Runtime/Render/GAPI/Rhi.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
@@ -43,13 +44,13 @@ bool waitForGraphicsDebuggerFromEnv()
 
 void printUsage()
 {
+    std::puts(metallic::NsightLaunchOptions::kUsage);
     std::puts(
         "Metallic options:\n"
         "  --debug-control                               Enable local Agent debug control\n"
         "  --smoke-test                                  Render one frame and exit\n"
         "  --scene <path>                                Override the sample scene (glTF or USD)\n"
         "  --wait-for-graphics-debugger                  Wait before Vulkan initialization\n"
-        "  --nsight-capture                              Enable Profiler Graphics Capture export\n"
         "  --nsight-shader-debug                         Emit unoptimized shader debug information\n"
         "  --rhi-smoke-test                              Run the RHI smoke test\n"
         "  --rhi-triangle-preview-test                   Run the RHI triangle preview test\n"
@@ -164,13 +165,13 @@ int buildMeshletStreamAssetOffline(
 
 int main(int argc, char** argv)
 {
+    metallic::NsightLaunchOptions nsightOptions;
     bool smokeTest = false;
     bool rhiSmokeTest = false;
     bool rhiTrianglePreviewTest = false;
     bool rhiBindlessDescriptorHeapSmokeTest = false;
     bool rhiValidation = true;
     bool waitForGraphicsDebugger = waitForGraphicsDebuggerFromEnv();
-    bool nsightGraphicsCapture = false;
     bool nsightShaderDebug = false;
     bool debugControl = false;
     std::filesystem::path buildMeshstreamSourcePath;
@@ -181,6 +182,9 @@ int main(int argc, char** argv)
     uint32_t buildMeshstreamMaxNewGeometries = 0;
     uint32_t buildMeshstreamCheckpointInterval = 64;
     for (int index = 1; index < argc; ++index) {
+        const int nsightArgument = nsightOptions.consume(argc, argv, index);
+        if (nsightArgument < 0) { return 1; }
+        if (nsightArgument > 0) { continue; }
         const std::string_view argument(argv[index]);
         if (argument == "--help" || argument == "-h") {
             printUsage();
@@ -197,8 +201,6 @@ int main(int argc, char** argv)
             rhiValidation = false;
         } else if (argument == "--wait-for-graphics-debugger") {
             waitForGraphicsDebugger = true;
-        } else if (argument == "--nsight-capture") {
-            nsightGraphicsCapture = true;
         } else if (argument == "--nsight-shader-debug") {
             nsightShaderDebug = true;
         } else if (argument == "--debug-control") {
@@ -284,7 +286,7 @@ int main(int argc, char** argv)
         nullptr,
         scenePathString.empty() ? nullptr : scenePathString.c_str(),
         nullptr,
-        nsightGraphicsCapture,
+        nsightOptions.mode,
         nsightShaderDebug,
         debugControl);
 }

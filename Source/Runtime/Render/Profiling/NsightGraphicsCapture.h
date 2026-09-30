@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -10,6 +11,12 @@ class Texture;
 } // namespace metallic::render
 
 namespace metallic::render::profiling {
+
+enum class NsightCaptureMode : uint8_t {
+    Default,
+    GPUTrace,
+    GraphicsCapture,
+};
 
 // For a process launched by ngfx GPU Trace with SDK start/stop triggers.
 // The caller drains all submitted GPU work before either boundary. These do
@@ -31,6 +38,7 @@ struct NsightGraphicsCaptureConfig {
     std::filesystem::path installationRoot;
     std::filesystem::path outputDirectory;
     bool showHud = true;
+    NsightCaptureMode mode = NsightCaptureMode::GraphicsCapture;
 };
 
 struct NsightGraphicsCaptureRequest {
@@ -52,6 +60,9 @@ struct NsightGraphicsCapturePollResult {
 class NsightGraphicsCapture final {
 public:
     NsightGraphicsCapture();
+    ~NsightGraphicsCapture();
+    NsightGraphicsCapture(const NsightGraphicsCapture&) = delete;
+    NsightGraphicsCapture& operator=(const NsightGraphicsCapture&) = delete;
 
     static bool compiledAvailable();
     // Includes SDK injection and an externally loaded Nsight capture interceptor.
@@ -61,7 +72,10 @@ public:
     bool initializeBeforeGraphics(const NsightGraphicsCaptureConfig& config, std::string& error);
     bool requestCapture(const NsightGraphicsCaptureRequest& request, std::string& error);
     bool frameBoundary(Queue& queue, Texture* output, std::string& error);
+    // Called after the main viewport Present (not secondary ImGui windows).
+    bool afterPresent(Queue& queue, std::string& error);
     NsightGraphicsCapturePollResult poll();
+    NsightCaptureMode mode() const { return mode_; }
 
     NsightGraphicsCaptureState state() const;
     const char* statusText() const;
@@ -79,6 +93,16 @@ private:
     std::string outputDirectoryUtf8_;
     std::string lastError_;
     uint32_t pendingCaptureIndex_ = 0;
+    NsightCaptureMode mode_ = NsightCaptureMode::GraphicsCapture;
+    uint32_t traceFramesBeforeStart_ = 0;
+    uint32_t traceFramesRemaining_ = 0;
+    bool traceStarted_ = false;
+    bool traceStopped_ = false;
+    std::chrono::steady_clock::time_point traceDeadline_;
+    void* traceHostProcess_ = nullptr;
+    void* traceHostJob_ = nullptr;
+    std::filesystem::path traceHostLog_;
+    bool startTraceHost(std::string& error);
 };
 
 } // namespace metallic::render::profiling

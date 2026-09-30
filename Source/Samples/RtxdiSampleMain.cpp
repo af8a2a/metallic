@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Editor/NsightLaunchOptions.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderSample.h"
 
@@ -15,6 +16,7 @@ constexpr const char* kRtxdiSampleId = "rtxdi-sample";
 
 void printUsage()
 {
+    std::puts(metallic::NsightLaunchOptions::kUsage);
     spdlog::info(
         "MetallicRtxdiSample options:\n"
         "  --smoke-test                 Render eight ReSTIR/RELAX history frames and exit\n"
@@ -106,10 +108,14 @@ int runSmokeTest(const std::string& scenePath)
 
 int main(int argc, char** argv)
 {
+    metallic::NsightLaunchOptions nsightOptions;
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
     std::string scenePath;
     for (int index = 1; index < argc; ++index) {
+        const int nsightArgument = nsightOptions.consume(argc, argv, index);
+        if (nsightArgument < 0) { return 1; }
+        if (nsightArgument > 0) { continue; }
         const std::string_view argument(argv[index]);
         if (argument == "--help" || argument == "-h") {
             printUsage();
@@ -141,5 +147,7 @@ int main(int argc, char** argv)
         false,
         waitForGraphicsDebugger,
         kRtxdiSampleId,
-        scenePath.empty() ? nullptr : scenePath.c_str());
+        scenePath.empty() ? nullptr : scenePath.c_str(),
+        nullptr,
+        nsightOptions.mode);
 }

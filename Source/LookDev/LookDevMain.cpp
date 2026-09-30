@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Editor/NsightLaunchOptions.h"
 #include "Runtime/Render/RenderSample.h"
 
 #include <spdlog/spdlog.h>
@@ -13,6 +14,7 @@ constexpr const char* kDefaultLookDevSampleId = "openpbr-lookdev";
 
 void printUsage()
 {
+    std::puts(metallic::NsightLaunchOptions::kUsage);
     spdlog::info(
         "LookDev material playground options:\n"
         "  Default: MaterialX OpenPBR shaderball with fixed exposure and sRGB display\n"
@@ -28,6 +30,7 @@ void printUsage()
 
 int main(int argc, char** argv)
 {
+    metallic::NsightLaunchOptions nsightOptions;
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
     bool debugControl = false;
@@ -35,6 +38,9 @@ int main(int argc, char** argv)
     std::string sampleId = kDefaultLookDevSampleId;
     std::string scenePath;
     for (int index = 1; index < argc; ++index) {
+        const int nsightArgument = nsightOptions.consume(argc, argv, index);
+        if (nsightArgument < 0) { return 1; }
+        if (nsightArgument > 0) { continue; }
         const std::string_view argument(argv[index]);
         if (argument == "--help" || argument == "-h") {
             printUsage();
@@ -89,7 +95,7 @@ int main(int argc, char** argv)
         sampleId.c_str(),
         scenePath.empty() ? nullptr : scenePath.c_str(),
         nullptr,
-        false,
+        nsightOptions.mode,
         false,
         debugControl);
 }

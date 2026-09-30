@@ -1036,7 +1036,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
     }
 
     ImGui::BeginDisabled(!graphicsCapture.canCapture);
-    if (ImGui::Button("Export Current View Capture")) {
+    if (ImGui::Button(graphicsCapture.gpuTrace ? "Export Current View GPU Trace" : "Export Current View Capture")) {
         captureRequested = true;
     }
     ImGui::EndDisabled();
@@ -1045,9 +1045,9 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
         if (!graphicsCapture.sdkCompiled) {
             ImGui::SetTooltip("Nsight Graphics SDK was not available when Metallic was built.");
         } else if (!graphicsCapture.runtimeEnabled) {
-            ImGui::SetTooltip("Restart Metallic with --nsight-capture to enable startup-time injection.");
+            ImGui::SetTooltip("Restart Metallic with --nsight-mode gputrace or --nsight-mode capture.");
         } else if (graphicsCapture.capturePending) {
-            ImGui::SetTooltip("A Graphics Capture is already being written.");
+            ImGui::SetTooltip("An Nsight export is already pending.");
         } else if (!graphicsCapture.canCapture) {
             ImGui::SetTooltip(
                 "%s",

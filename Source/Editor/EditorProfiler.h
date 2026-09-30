@@ -23,6 +23,7 @@ public:
         bool runtimeEnabled = false;
         bool canCapture = false;
         bool capturePending = false;
+        bool gpuTrace = false;
         const char* statusText = "";
         const char* capturePath = "";
     };

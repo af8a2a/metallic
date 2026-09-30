@@ -205,6 +205,80 @@ NsightGraphicsCapture::NsightGraphicsCapture()
 {
 }
 
+NsightGraphicsCapture::~NsightGraphicsCapture()
+{
+#ifdef _WIN32
+    if (traceHostProcess_ != nullptr) {
+        // Only our own hidden host is owned here. Vulkan has already shut down.
+        if (WaitForSingleObject(traceHostProcess_, 1000) == WAIT_TIMEOUT) {
+            TerminateProcess(traceHostProcess_, 0);
+        }
+        CloseHandle(traceHostProcess_);
+    }
+    if (traceHostJob_ != nullptr) { CloseHandle(traceHostJob_); }
+#endif
+}
+
+bool NsightGraphicsCapture::startTraceHost(std::string& error)
+{
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    const auto executable = installationRoot_ / "host/windows-desktop-nomad-x64/ngfx.exe";
+    traceHostLog_ = outputDirectory_ / ("GpuTraceHost-" + std::to_string(GetCurrentProcessId()) + ".log");
+    SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE log = CreateFileW(traceHostLog_.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+        &security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (log == INVALID_HANDLE_VALUE) { return fail("Cannot create GPU Trace host log", &error); }
+    HANDLE input = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (input == INVALID_HANDLE_VALUE) {
+        CloseHandle(log);
+        return fail("Cannot open GPU Trace host input", &error);
+    }
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (job == nullptr || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+        if (job != nullptr) { CloseHandle(job); }
+        CloseHandle(input);
+        CloseHandle(log);
+        return fail("Cannot create GPU Trace host lifetime job", &error);
+    }
+    std::wstring command = L"\"" + executable.wstring() + L"\" --activity \"GPU Trace Profiler\" --attach-pid " +
+        std::to_wstring(GetCurrentProcessId()) + L" --output-dir \"" + outputDirectory_.generic_wstring() +
+        L"\" --start-with-ngfx-sdk --stop-with-ngfx-sdk --keep-going --set-gpu-clocks unaltered --trace-timeout 120";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+    startup.hStdOutput = log;
+    startup.hStdError = log;
+    startup.hStdInput = input;
+    PROCESS_INFORMATION process{};
+    const BOOL launched = CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr,
+        TRUE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, installationRoot_.c_str(), &startup, &process);
+    const DWORD launchError = GetLastError();
+    CloseHandle(log);
+    if (input != INVALID_HANDLE_VALUE) { CloseHandle(input); }
+    if (!launched) {
+        CloseHandle(job);
+        return fail("Cannot start GPU Trace host (Win32 " + std::to_string(launchError) + ")", &error);
+    }
+    if (!AssignProcessToJobObject(job, process.hProcess) || ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
+        TerminateProcess(process.hProcess, 1);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        CloseHandle(job);
+        return fail("Cannot manage GPU Trace host lifetime", &error);
+    }
+    CloseHandle(process.hThread);
+    traceHostProcess_ = process.hProcess;
+    traceHostJob_ = job;
+    return true;
+#else
+    return fail("Nsight GPU Trace SDK support was not compiled", &error);
+#endif
+}
+
 bool NsightGraphicsCapture::compiledAvailable()
 {
 #if METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE
@@ -243,15 +317,26 @@ bool NsightGraphicsCapture::initializeBeforeGraphics(
     error = lastError_;
     return false;
 #else
+    const auto requestedMode = config.mode == NsightCaptureMode::Default ? NsightCaptureMode::GPUTrace : config.mode;
+#if !defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    if (requestedMode == NsightCaptureMode::GPUTrace) {
+        return fail("Nsight GPU Trace SDK support was not compiled", &error);
+    }
+#endif
     if (state_ == NsightGraphicsCaptureState::Ready ||
         state_ == NsightGraphicsCaptureState::CapturePending ||
         state_ == NsightGraphicsCaptureState::CaptureCompleted) {
+        if (mode_ != requestedMode) {
+            error = "Changing Nsight activity requires restarting the process";
+            return false;
+        }
         return true;
     }
     if (state_ == NsightGraphicsCaptureState::Error) {
         error = lastError_;
         return false;
     }
+    mode_ = requestedMode;
 
     installationRoot_ = config.installationRoot.empty()
         ? defaultInstallationRoot()
@@ -273,10 +358,10 @@ bool NsightGraphicsCapture::initializeBeforeGraphics(
         return fail("Nsight Graphics x64 target directory was not found", &error);
     }
 
-    constexpr const wchar_t* requiredLibraries[] = {
+    const wchar_t* requiredLibraries[] = {
         L"ngfx-api-bootstrap.dll",
-        L"ngfx-capture-injection.dll",
-        L"ngfx-capture-interception.dll",
+        mode_ == NsightCaptureMode::GPUTrace ? L"WarpViz.Injection.dll" : L"ngfx-capture-injection.dll",
+        mode_ == NsightCaptureMode::GPUTrace ? L"WarpVizTarget.dll" : L"ngfx-capture-interception.dll",
     };
     for (const wchar_t* libraryName : requiredLibraries) {
         if (!std::filesystem::is_regular_file(allowedLibraryDirectory() / libraryName, filesystemError) ||
@@ -285,7 +370,7 @@ bool NsightGraphicsCapture::initializeBeforeGraphics(
         }
     }
 
-    outputDirectory_ = config.outputDirectory;
+    outputDirectory_ = config.outputDirectory.empty() ? std::filesystem::current_path() : config.outputDirectory;
     outputDirectoryUtf8_.clear();
     if (!outputDirectory_.empty()) {
         std::filesystem::create_directories(outputDirectory_, filesystemError);
@@ -300,6 +385,39 @@ bool NsightGraphicsCapture::initializeBeforeGraphics(
     }
 
     NGFX_SetLibraryLoadFn(loadNsightGraphicsLibrary);
+
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    if (mode_ == NsightCaptureMode::GPUTrace) {
+        NGFX_GPUTrace_InjectionSettings settings{};
+        auto result = NGFX_GPUTrace_InjectionSettings_SetDefaults(&settings);
+        if (result != NGFX_Result_Success) {
+            return fail(ngfxError("NGFX_GPUTrace_InjectionSettings_SetDefaults", result), &error);
+        }
+        settings.startEvent = NGFX_GPUTrace_StartEvent_NGFXSDK;
+        settings.stopEvent = NGFX_GPUTrace_StopEvent_NGFXSDK;
+        settings.gpuClockMode = NGFX_GPUTrace_GPUClockMode_Unaltered;
+        settings.vsyncMode = NGFX_GPUTrace_VSyncMode_ApplicationControlled;
+        settings.hudPosition = config.showHud ? NGFX_GPUTrace_HUDPosition_TopLeft : NGFX_GPUTrace_HUDPosition_Hidden;
+        NGFX_GPUTrace_Inject_Vulkan_Params inject{};
+        inject.version = NGFX_GPUTrace_Inject_Vulkan_Params_VER;
+        inject.installationPath = installationRoot_.c_str();
+        inject.settings = &settings;
+        result = NGFX_GPUTrace_Inject_Vulkan(&inject);
+        if (result != NGFX_Result_Success) {
+            return fail(ngfxError("NGFX_GPUTrace_Inject_Vulkan", result), &error);
+        }
+        NGFX_GPUTrace_InitializeActivity_Vulkan_Params initialize{};
+        initialize.version = NGFX_GPUTrace_InitializeActivity_Vulkan_Params_VER;
+        result = NGFX_GPUTrace_InitializeActivity_Vulkan(&initialize);
+        if (result != NGFX_Result_Success) {
+            return fail(ngfxError("NGFX_GPUTrace_InitializeActivity_Vulkan", result), &error);
+        }
+        if (!startTraceHost(error)) { return false; }
+        state_ = NsightGraphicsCaptureState::Ready;
+        lastError_.clear();
+        return true;
+    }
+#endif
 
     NGFX_GraphicsCapture_InjectionSettings settings{};
     NGFX_Result result = NGFX_GraphicsCapture_InjectionSettings_SetDefaults(&settings);
@@ -365,6 +483,28 @@ bool NsightGraphicsCapture::requestCapture(
 
     NGFX_ArtifactFileCount_Params countParams{};
     countParams.version = NGFX_ArtifactFileCount_Params_VER;
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    if (mode_ == NsightCaptureMode::GPUTrace) {
+        if (request.explicitFrameBoundaries) {
+            error = lastError_ = "GPU Trace export requires main viewport Present boundaries";
+            return false;
+        }
+        const auto result = NGFX_GPUTrace_GetTraceFileCount(&countParams);
+        if (result != NGFX_Result_Success) {
+            return fail(ngfxError("NGFX_GPUTrace_GetTraceFileCount", result), &error);
+        }
+        pendingCaptureIndex_ = countParams.count;
+        traceFramesBeforeStart_ = request.framesBeforeStart;
+        traceFramesRemaining_ = request.framesToCapture;
+        traceStarted_ = false;
+        traceStopped_ = false;
+        traceDeadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(120);
+        capturePath_.clear();
+        lastError_.clear();
+        state_ = NsightGraphicsCaptureState::CapturePending;
+        return true;
+    }
+#endif
     NGFX_Result result = NGFX_GraphicsCapture_GetCaptureFileCount(&countParams);
     if (result != NGFX_Result_Success) {
         lastError_ = ngfxError("NGFX_GraphicsCapture_GetCaptureFileCount", result);
@@ -427,21 +567,72 @@ bool NsightGraphicsCapture::frameBoundary(Queue& queue, Texture* output, std::st
 #endif
 }
 
+bool NsightGraphicsCapture::afterPresent(Queue& queue, std::string& error)
+{
+    error.clear();
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    if (mode_ != NsightCaptureMode::GPUTrace || !hasOutstandingCapture() || traceStopped_) { return true; }
+    if (!traceStarted_) {
+        if (traceFramesBeforeStart_ != 0) { --traceFramesBeforeStart_; return true; }
+        NGFX_GPUTrace_GetStatus_Params status{};
+        status.version = NGFX_GPUTrace_GetStatus_Params_VER;
+        auto result = NGFX_GPUTrace_GetStatus(&status);
+        if (result != NGFX_Result_Success) { return fail(ngfxError("GPU Trace status", result), &error); }
+        if (status.status == NGFX_GPUTrace_Status_Inactive || status.status == NGFX_GPUTrace_Status_Draining) {
+            return true;
+        }
+        if (status.status != NGFX_GPUTrace_Status_Active) {
+            return fail("GPU Trace host is not ready; see " + traceHostLog_.string(), &error);
+        }
+        NGFX_GPUTrace_StartTrace_Vulkan_Params start{};
+        start.version = NGFX_GPUTrace_StartTrace_Vulkan_Params_VER;
+        result = NGFX_GPUTrace_StartTrace_Vulkan(&start);
+        if (result != NGFX_Result_Success) { return fail(ngfxError("GPU Trace start", result), &error); }
+        traceStarted_ = true;
+    } else if (--traceFramesRemaining_ == 0) {
+        NGFX_GPUTrace_StopTrace_Vulkan_Params stop{};
+        stop.version = NGFX_GPUTrace_StopTrace_Vulkan_Params_VER;
+        stop.queue = vulkan::nativeQueue(queue).queue;
+        const auto result = NGFX_GPUTrace_StopTrace_Vulkan(&stop);
+        if (result != NGFX_Result_Success) { return fail(ngfxError("GPU Trace stop", result), &error); }
+        traceStopped_ = true;
+    }
+#else
+    (void)queue;
+#endif
+    return true;
+}
+
 NsightGraphicsCapturePollResult NsightGraphicsCapture::poll()
 {
 #if METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    if (traceHostProcess_ != nullptr && WaitForSingleObject(traceHostProcess_, 0) == WAIT_OBJECT_0) {
+        fail("GPU Trace host exited; see " + traceHostLog_.string());
+        return {state_, capturePath_, lastError_};
+    }
+    if (mode_ == NsightCaptureMode::GPUTrace && hasOutstandingCapture() &&
+        std::chrono::steady_clock::now() >= traceDeadline_) {
+        fail("GPU Trace export timed out; see " + traceHostLog_.string());
+        return {state_, capturePath_, lastError_};
+    }
+#endif
     if (state_ == NsightGraphicsCaptureState::CapturePending) {
+        auto waitForPath = NGFX_GraphicsCapture_WaitForCaptureFilePath;
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+        if (mode_ == NsightCaptureMode::GPUTrace) { waitForPath = NGFX_GPUTrace_WaitForTraceFilePath; }
+#endif
         NGFX_WaitForArtifactFilePath_Params sizeParams{};
         sizeParams.version = NGFX_WaitForArtifactFilePath_Params_VER;
         sizeParams.artifactIndex = pendingCaptureIndex_;
         sizeParams.timeoutMs = 0;
 
-        NGFX_Result result = NGFX_GraphicsCapture_WaitForCaptureFilePath(&sizeParams);
+        NGFX_Result result = waitForPath(&sizeParams);
         if (result == NGFX_Result_Timeout) {
             return {state_, {}, {}};
         }
         if (result != NGFX_Result_InsufficientBuffer && result != NGFX_Result_Success) {
-            fail(ngfxError("NGFX_GraphicsCapture_WaitForCaptureFilePath", result));
+            fail(ngfxError("Wait for Nsight export path", result));
             return {state_, {}, lastError_};
         }
         if (sizeParams.requiredPathCapacity == 0) {
@@ -458,7 +649,7 @@ NsightGraphicsCapturePollResult NsightGraphicsCapture::poll()
             pathParams.filePath = pathBuffer.data();
             pathParams.filePathCapacity = static_cast<uint32_t>(pathBuffer.size());
 
-            result = NGFX_GraphicsCapture_WaitForCaptureFilePath(&pathParams);
+            result = waitForPath(&pathParams);
             if (result == NGFX_Result_Success) {
                 capturePath_ = std::filesystem::path(pathBuffer.data());
                 state_ = NsightGraphicsCaptureState::CaptureCompleted;
@@ -474,7 +665,7 @@ NsightGraphicsCapturePollResult NsightGraphicsCapture::poll()
                 continue;
             }
 
-            fail(ngfxError("NGFX_GraphicsCapture_WaitForCaptureFilePath", result));
+            fail(ngfxError("Wait for Nsight export path", result));
             return {state_, {}, lastError_};
         }
 

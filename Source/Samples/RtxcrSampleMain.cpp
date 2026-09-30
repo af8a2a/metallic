@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Editor/NsightLaunchOptions.h"
 
 #include <spdlog/spdlog.h>
 
@@ -10,6 +11,7 @@ constexpr const char* kRtxcrSampleId = "rtxcr-material-sample";
 
 void printUsage()
 {
+    std::puts(metallic::NsightLaunchOptions::kUsage);
     spdlog::info(
         "MetallicRtxcrSample options:\n"
         "  --smoke-test                 Render one frame and exit\n"
@@ -20,9 +22,13 @@ void printUsage()
 
 int main(int argc, char** argv)
 {
+    metallic::NsightLaunchOptions nsightOptions;
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
     for (int index = 1; index < argc; ++index) {
+        const int nsightArgument = nsightOptions.consume(argc, argv, index);
+        if (nsightArgument < 0) { return 1; }
+        if (nsightArgument > 0) { continue; }
         const std::string_view argument(argv[index]);
         if (argument == "--help" || argument == "-h") {
             printUsage();
@@ -43,5 +49,5 @@ int main(int argc, char** argv)
     }
 
     metallic::EditorApplication app;
-    return app.run(smokeTest, waitForGraphicsDebugger, kRtxcrSampleId);
+    return app.run(smokeTest, waitForGraphicsDebugger, kRtxcrSampleId, nullptr, nullptr, nsightOptions.mode);
 }

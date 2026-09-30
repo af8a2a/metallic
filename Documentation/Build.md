@@ -72,9 +72,9 @@ source dependencies and disabled tests. `RelWithDebInfo` enables optimization
 and native debug symbols. Each configuration has its own CMake cache and output
 directory.
 
-The `metallic-relwithdebinfo` preset also enables Nsight Graphics capture by
+The `metallic-relwithdebinfo` preset also enables Nsight GPU Trace export by
 default in the editor and sample executables, equivalent to launching with
-`--nsight-capture`. Shaders embed source text and NonSemantic source/function/line
+`--nsight-mode gputrace`. Shaders embed source text and NonSemantic source/function/line
 debug information (`-g2`) while retaining optimization (`capture-symbols` mode).
 RelWithDebInfo also defaults to these symbols when internal capture injection is
 disabled (`METALLIC_NSIGHT_GRAPHICS_CAPTURE=0`), for external Nsight launches.
@@ -87,14 +87,37 @@ high-level source and function views. The cache request version has been bumped
 so those old binaries are not reused. Restart the rebuilt executable and make a
 new capture; existing captures cannot acquire the missing information retroactively.
 See NVIDIA's [shader compilation requirements](https://docs.nvidia.com/nsight-graphics/UserGuide/configure-application.html#shader-compilation).
-Capture export requires an installed
-Nsight Graphics SDK and runtime.
+Export requires an installed Nsight Graphics SDK and runtime.
+
+Select the activity before Vulkan initialization in the editor, LookDev or samples:
+
+```powershell
+.\build-relwithdebinfo\Source\MetallicGPUDrivenSample.exe --zorah-full --nsight-mode gputrace
+.\build-relwithdebinfo\Source\MetallicGPUDrivenSample.exe --zorah-full --nsight-mode capture
+```
+
+`--nsight-gputrace` and `--nsight-capture` are aliases; `--nsight-mode=gputrace`
+and `--nsight-mode=capture` also work. Missing/invalid values and conflicting
+modes fail before graphics initialization. The Profiler export button displays
+the selected activity and exports the next full main-viewport frame under
+`Captures/NsightGraphics/`. GPU Trace produces only `.ngfx-gputrace`; Capture
+produces `.ngfx-capture` for replay and frame debugging. Switching activities
+requires restarting the process. RHI test captures keep their existing mode.
+
+GPU Trace requires an attached host for metric preparation and file writing
+([NVIDIA SDK guide](https://docs.nvidia.com/nsight-graphics/UserGuide/sdk.html)).
+Metallic starts the installed `ngfx.exe` hidden, uses SDK start/stop boundaries,
+and keeps the host connected for repeated exports. Host diagnostics are saved
+as `GpuTraceHost-<pid>.log` in the output directory. The host is owned by this
+process and is cleaned up at shutdown. GPU clocks remain unaltered. Neither
+activity's live timings are a production performance baseline.
+
 For the ZorahFull export memory-pressure fix and full-scene capture/replay
 regression, see [the investigation](ZorahFullNsightCaptureMemory.md).
 Graphics Capture injection changes live execution even before F11 is pressed.
 For a production performance baseline, set both
 `METALLIC_NSIGHT_GRAPHICS_CAPTURE=0` and `METALLIC_SHADER_CAPTURE_SYMBOLS=0`, and
-do not pass `--nsight-capture` or `--nsight-shader-debug`.
+do not pass `--nsight-mode`, `--nsight-gputrace`, `--nsight-capture` or `--nsight-shader-debug`.
 Editor and sample executables retain Nsight's SDK-default demotion of
 host-visible video memory to system memory during self-injected Graphics Capture.
 An experimental CPU-hash mode reduced measured live overhead but its tested
@@ -149,8 +172,10 @@ See the investigation document for the before/after evidence and cleanup fix.
 
 To disable this launch default, configure with
 `-DMETALLIC_DEFAULT_NSIGHT_CAPTURE=OFF`, or set the runtime environment variable
-`METALLIC_NSIGHT_GRAPHICS_CAPTURE=0`. An explicit `--nsight-capture` still takes
-precedence over the environment variable. Other presets keep capture opt-in.
+`METALLIC_NSIGHT_GRAPHICS_CAPTURE=0`. An explicit mode option still takes
+precedence over the environment variable. Other presets keep Nsight opt-in.
+The legacy CMake/environment names now control whether the default GPU Trace
+activity is enabled; `--nsight-capture` explicitly retains Graphics Capture.
 
 ```powershell
 cmake --preset metallic-release

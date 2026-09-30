@@ -39,7 +39,7 @@ public:
         const char* startupSampleId = nullptr,
         const char* startupScenePath = nullptr,
         const char* startupStreamAssetPath = nullptr,
-        bool enableNsightGraphicsCapture = false,
+        render::profiling::NsightCaptureMode nsightMode = render::profiling::NsightCaptureMode::Default,
         bool enableNsightShaderDebug = false,
         bool enableDebugControl = false,
         bool gpuDrivenScenesOnly = false);
@@ -311,6 +311,7 @@ private:
     bool smokeTest_ = false;
     bool waitForGraphicsDebugger_ = false;
     bool nsightGraphicsCaptureRequested_ = false;
+    render::profiling::NsightCaptureMode nsightMode_ = render::profiling::NsightCaptureMode::GPUTrace;
     bool nsightShaderDebugRequested_ = false;
     bool imguiContextCreated_ = false;
     bool imnodesContextCreated_ = false;

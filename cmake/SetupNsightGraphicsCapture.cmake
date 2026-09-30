@@ -5,7 +5,7 @@ option(
 )
 option(
     METALLIC_DEFAULT_NSIGHT_CAPTURE
-    "Enable Nsight Graphics capture and optimized shader debug symbols by default in editor executables"
+    "Enable Nsight GPU Trace export and optimized shader debug symbols by default in editor executables"
     OFF
 )
 set(

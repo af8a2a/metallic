@@ -468,6 +468,18 @@ NsightEvents.h 在包含 `<nvtx3/nvToolsExt.h>` 时对 Windows 临时定义 `WIN
 
 ### 12.2 Nsight Graphics 捕获与 Shader 调试
 
+Profiler 支持通过 `--nsight-mode gputrace` 仅导出 `.ngfx-gputrace`，或通过
+`--nsight-mode capture` 导出 `.ngfx-capture`。编辑器、LookDev 和各 sample 使用同一套参数；
+`--nsight-gputrace`、`--nsight-capture` 是对应的兼容入口。启用默认 Nsight 导出的构建
+（例如 `metallic-relwithdebinfo`）现在默认选择 GPU Trace，其他构建仍需显式启用。
+两种 activity 在 Vulkan 初始化前互斥选择，切换时需要重启程序。
+
+GPU Trace 模式自动启动隐藏的 `ngfx.exe` host，使用 SDK 在主 View 的 Present 边界之间
+采集完整帧，通过 host 返回的最终文件路径确认导出完成。Profiler 显示
+**Export Current View GPU Trace**；导出目录仍为 `Captures/NsightGraphics/`，
+不会额外生成 Graphics Capture。host 保持连接以支持连续导出，并随程序退出清理。
+构建选项、禁用默认注入与启动示例见 [Build.md](Build.md)。
+
 Profiler 可以通过 Nsight Graphics SDK 导出当前 View 的 Graphics Capture。使用 `--nsight-capture` 启动时，Metallic 会在 Vulkan 初始化前加载 Nsight Capture runtime，并为 Slang 生成的 SPIR-V 嵌入源码及 NonSemantic 源码、函数和行号信息（`-g2`，保留优化）。`--nsight-shader-debug` 显式关闭 shader 优化（`-g2 -O0`）。完整符号在冷缓存下可能使大型 OpenPBR shader 编译耗时数分钟；捕获模式的 live 帧时还会受 Nsight 注入影响。应用启动后，在 Profiler 中点击 **Export Current View Capture** 捕获下一帧完整 View：
 
 ```powershell
