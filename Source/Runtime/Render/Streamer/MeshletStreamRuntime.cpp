@@ -4,6 +4,7 @@
 #include "Runtime/Render/MeshletLod.h"
 #include "Runtime/Render/Profiling/CpuPhaseTrace.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
+#include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 
 #include "Runtime/Render/Streamer/MeshletStreamClas.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -804,14 +805,10 @@ public:
         if (!ready()) {
             return makeError(Error::Failure);
         }
-        if (auto commandResult = transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, tlasInstanceBuffer, tlasInstanceBufferState, ResourceState::General); !commandResult) { return commandResult; }
         commandBuffer.bindBindlessHeap(bindlessHeap);
         if (auto commandResult = commandBuffer.bindExecution((tlasInputPipeline_)->execution()); !commandResult) { return commandResult; }
         commandBuffer.pushBindlessData(&push, sizeof(push));
         commandBuffer.dispatch((threadCount + 63u) / 64u, 1, 1);
-        if (auto commandResult = transitionBuffer(commandBuffer, instanceBlasBuffer, instanceBlasBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
-        if (auto commandResult = transitionBuffer(commandBuffer, tlasInstanceBuffer, tlasInstanceBufferState, ResourceState::General, true); !commandResult) { return commandResult; }
         return {};
     }
 
@@ -2142,6 +2139,7 @@ void MeshletStreamRuntime::reset()
     ++debugGeneration_;
     debugRequestSourceKnown_ = false;
     tlasBuilt_ = false;
+    topLevelBuildPending_ = false;
     residency_.reset();
     asset_.close();
     drawBounds_.reset();
@@ -2730,8 +2728,9 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
 }
 
 Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame,
-    const TraversalCheckpoint& checkpoint)
+    const TraversalCheckpoint& checkpoint, bool deferTopLevelBuild)
 {
+    topLevelBuildPending_ = false;
     if (!ready()) {
         return makeError(Error::InvalidArgument);
     }
@@ -2794,15 +2793,71 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
     if (!result) {
         return result;
     }
-    if (checkpoint) { checkpoint("BeforeTlasInput"); }
-    result = buildTlasInstances(commandBuffer);
-    if (!result) {
-        return result;
+    topLevelBuildPending_ = true;
+    return deferTopLevelBuild ? Result<>{} : cmdBuildTopLevelAccelerationStructure(commandBuffer, checkpoint);
+}
+
+Result<> MeshletStreamRuntime::cmdBuildTopLevelAccelerationStructure(CommandBuffer& commands,
+    const TraversalCheckpoint& checkpoint)
+{
+    if (!topLevelBuildPending_) { return {}; }
+    if (!instanceBlasBuffer_ || !tlasInstanceBuffer_ || !tlasScratchBuffer_ || !tlas_) {
+        return makeError(Error::InvalidArgument);
     }
+    using namespace detail;
+    using Access = RenderGraphResourceAccess;
+    constexpr auto compute = RenderGraphPassKind::Compute;
+    // Buffer allocations have no layouts. Declaring the producer frontier makes
+    // input generation -> AS build and scratch/AS reuse ordinary graph hazards.
+    const std::array resources{
+        GraphAccessResource{RenderGraphResourceType::Buffer, ResourceState::General,
+            resourceSyncScope(instanceBlasBufferState_, PipelineStageBits::AllCommands)},
+        GraphAccessResource{RenderGraphResourceType::Buffer, ResourceState::General,
+            resourceSyncScope(tlasInstanceBufferState_, PipelineStageBits::AllCommands)},
+        GraphAccessResource{RenderGraphResourceType::Buffer, ResourceState::General,
+            scopeForGraphAccess(Access::BufferAccelerationStructureScratchReadWrite, compute)},
+        GraphAccessResource{RenderGraphResourceType::AccelerationStructure,
+            tlasBuilt_ ? ResourceState::ShaderRead : ResourceState::Undefined,
+            scopeForGraphAccess(Access::AccelerationStructureShaderRead, RenderGraphPassKind::Unsafe)},
+    };
+    const std::array passes{
+        GraphAccessPass{0, {declaredGraphAccess(0, Access::BufferShaderRead, compute),
+            declaredGraphAccess(1, Access::BufferStorageWrite, compute)}},
+        GraphAccessPass{0, {declaredGraphAccess(1, Access::BufferAccelerationStructureBuildRead, compute),
+            declaredGraphAccess(2, Access::BufferAccelerationStructureScratchReadWrite, compute),
+            declaredGraphAccess(3, Access::AccelerationStructureBuildWrite, compute)}},
+        GraphAccessPass{0, {declaredGraphAccess(3, Access::AccelerationStructureShaderRead,
+            RenderGraphPassKind::Unsafe)}},
+    };
+    auto plan = buildGraphAccessPlan(resources, passes);
+    if (!plan) { return makeError(plan.error()); }
+    std::array<RenderGraphResource, 4> allocations;
+    allocations[0].type = allocations[1].type = allocations[2].type = RenderGraphResourceType::Buffer;
+    allocations[0].buffer = instanceBlasBuffer_.get();
+    allocations[1].buffer = tlasInstanceBuffer_.get();
+    allocations[2].buffer = tlasScratchBuffer_.get();
+    for (size_t i = 0; i < 3; ++i) { allocations[i].bufferDesc = allocations[i].buffer->desc(); }
+    allocations[3].type = RenderGraphResourceType::AccelerationStructure;
+    allocations[3].accelerationStructure = tlas_.get();
+    std::array<GraphAccessBinding, 4> bindings;
+    for (size_t i = 0; i < bindings.size(); ++i) {
+        auto binding = bindGraphAccessResource(allocations[i]);
+        if (!binding) { return makeError(binding.error()); }
+        bindings[i] = std::move(*binding);
+    }
+    if (checkpoint) { checkpoint("BeforeTlasInput"); }
+    auto result = recordGraphAccessBarriers(commands, plan->passes[0], bindings);
+    if (result) { result = buildTlasInstances(commands); }
+    if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeTlasBuild"); }
-    result = cmdBuildTlas(commandBuffer);
+    result = recordGraphAccessBarriers(commands, plan->passes[1], bindings);
+    if (result) { result = cmdBuildTlas(commands); }
+    if (result) { result = recordGraphAccessBarriers(commands, plan->passes[2], bindings); }
+    if (!result) { return result; }
+    instanceBlasBufferState_ = tlasInstanceBufferState_ = ResourceState::General;
+    topLevelBuildPending_ = false;
     if (checkpoint) { checkpoint("AfterTlasBuild"); }
-    return result;
+    return {};
 }
 
 Result<> MeshletStreamRuntime::cmdBuildPendingClas(CommandBuffer& commandBuffer,
@@ -4196,6 +4251,7 @@ Result<> MeshletStreamRuntime::cmdBuildTlas(CommandBuffer& commandBuffer)
             .instanceBuffer = tlasInstanceBuffer_.get(),
             .instanceCount = asset_.instanceCount(),
             .scratchBuffer = tlasScratchBuffer_.get(),
+            .graphManagedSynchronization = true,
         });
     if (!result) {
         return result;

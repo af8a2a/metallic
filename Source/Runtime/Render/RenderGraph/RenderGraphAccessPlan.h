@@ -58,6 +58,10 @@ struct GraphAccessBinding {
     uint32_t mipCount = 1;
     uint32_t layerCount = 1;
     BufferSlice buffer;
+    RayTracingAccelerationStructure* accelerationStructure = nullptr;
+    // Reflected AS allocations are selected during pass recording, after the
+    // immutable access plan is built. Their logical slot remains canonical.
+    const RenderGraphResource* accelerationStructureResource = nullptr;
 };
 
 Result<GraphAccessBinding> bindGraphAccessResource(const RenderGraphResource& resource);

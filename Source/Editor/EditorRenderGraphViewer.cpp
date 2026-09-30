@@ -42,6 +42,26 @@ ImU32 queueColor(QueueType type)
     return type == QueueType::Compute ? kCompute : type == QueueType::Copy ? kCopy : kGraphics;
 }
 
+const char* resourceTypeName(RenderGraphResourceType type)
+{
+    switch (type) {
+    case RenderGraphResourceType::Texture2D: return "Texture";
+    case RenderGraphResourceType::Buffer: return "Buffer";
+    case RenderGraphResourceType::AccelerationStructure: return "Acceleration structure";
+    }
+    return "Unknown";
+}
+
+const char* accelerationStructureTypeName(RayTracingAccelerationStructureType type)
+{
+    switch (type) {
+    case RayTracingAccelerationStructureType::BottomLevel: return "BLAS";
+    case RayTracingAccelerationStructureType::TopLevel: return "TLAS";
+    case RayTracingAccelerationStructureType::OpacityMicromap: return "Opacity micromap";
+    }
+    return "Unknown";
+}
+
 const char* stateName(ResourceState state)
 {
     switch (state) {
@@ -236,11 +256,18 @@ std::string captureJson(const Snapshot& snapshot)
         const auto& m = resource.memory;
         value["resources"].push_back({{"id", resource.id}, {"name", resource.name}, {"aliases", resource.aliases},
             {"private", resource.privateResource}, {"buffer", resource.type == RenderGraphResourceType::Buffer},
+            {"type", resourceTypeName(resource.type)},
             {"allocation", m.allocationId}, {"memoryBlock", std::to_string(m.memoryBlockId)}, {"memoryKnown", m.known},
             {"offsetBytes", m.offsetBytes}, {"sizeBytes", m.sizeBytes}, {"memoryType", m.memoryTypeIndex}, {"heap", m.heapIndex}});
         auto& exported = value["resources"].back();
         if (resource.type == RenderGraphResourceType::Buffer) { exported["logicalBytes"] = resource.bufferDesc.size; }
-        else {
+        else if (resource.type == RenderGraphResourceType::AccelerationStructure) {
+            const auto& desc = resource.accelerationStructureDesc;
+            exported["logicalBytes"] = desc.size;
+            exported["accelerationStructure"] = {{"type", accelerationStructureTypeName(desc.type)},
+                {"topLevelBackend", desc.topLevelBackend == RayTracingTopLevelBackend::Partitioned ? "Partitioned" : "Standard"},
+                {"buildFlags", uint32_t(desc.buildFlags)}};
+        } else {
             const auto& desc = resource.textureDesc;
             exported["texture"] = {{"width", desc.width}, {"height", desc.height}, {"depth", desc.depth},
                 {"format", uint32_t(desc.format)}, {"mips", desc.mipCount}, {"layers", desc.layerCount}};
@@ -330,7 +357,7 @@ void RenderGraphExecutionViewer::draw(float scale)
     ImGui::SameLine(); ImGui::SetNextItemWidth(170 * scale);
     ImGui::InputTextWithHint("##PassSearch", "Search pass", passFilter_, sizeof(passFilter_));
     ImGui::SameLine(); ImGui::SetNextItemWidth(135 * scale);
-    ImGui::Combo("##ResourceType", &resourceType_, "All resources\0Textures\0Buffers\0Private imports\0");
+    ImGui::Combo("##ResourceType", &resourceType_, "All resources\0Textures\0Buffers\0Private imports\0Acceleration structures\0");
     ImGui::Separator();
 
     const auto available = ImGui::GetContentRegionAvail();
@@ -413,7 +440,8 @@ void RenderGraphExecutionViewer::drawResources(float scale)
         for (const auto& alias : resource.aliases) { match |= matches(alias, resourceFilter_); }
         if (!match || (resourceType_ == 1 && resource.type != RenderGraphResourceType::Texture2D) ||
             (resourceType_ == 2 && resource.type != RenderGraphResourceType::Buffer) ||
-            (resourceType_ == 3 && !resource.privateResource)) { continue; }
+            (resourceType_ == 3 && !resource.privateResource) ||
+            (resourceType_ == 4 && resource.type != RenderGraphResourceType::AccelerationStructure)) { continue; }
         std::vector<Cell> cells;
         size_t first = passes.size(), last = 0;
         for (size_t i = 0; i < passes.size(); ++i) {
@@ -424,7 +452,8 @@ void RenderGraphExecutionViewer::drawResources(float scale)
         ImGui::PushID(resource.name.c_str());
         ImGui::TableNextRow(ImGuiTableRowFlags_None, 25 * scale);
         ImGui::TableSetColumnIndex(0);
-        const auto label = std::string(resource.type == RenderGraphResourceType::Buffer ? "B  " : "T  ") + resource.name;
+        const auto label = std::string(resource.type == RenderGraphResourceType::Buffer ? "B  " :
+            resource.type == RenderGraphResourceType::AccelerationStructure ? "AS  " : "T  ") + resource.name;
         if (ImGui::Selectable(label.c_str(), selectedResourceId_ == resource.id, ImGuiSelectableFlags_None,
             ImVec2(nameWidth - 10 * scale, 21 * scale))) { selectedResourceId_ = resource.id; }
         if (ImGui::IsItemHovered()) {
@@ -622,7 +651,8 @@ void RenderGraphExecutionViewer::drawMemory(float scale)
             bool match = matches(r->name, resourceFilter_);
             for (const auto& alias : r->aliases) { match |= matches(alias, resourceFilter_); }
             visible |= match && (resourceType_ != 1 || r->type == RenderGraphResourceType::Texture2D) &&
-                (resourceType_ != 2 || r->type == RenderGraphResourceType::Buffer) && (resourceType_ != 3 || r->privateResource);
+                (resourceType_ != 2 || r->type == RenderGraphResourceType::Buffer) && (resourceType_ != 3 || r->privateResource) &&
+                (resourceType_ != 4 || r->type == RenderGraphResourceType::AccelerationStructure);
         }
         if (!visible) { continue; }
         ImGui::PushID(int(blockIndex));
@@ -639,7 +669,9 @@ void RenderGraphExecutionViewer::drawMemory(float scale)
             auto* draw = ImGui::GetWindowDrawList();
             draw->AddRectFilled(p, ImVec2(p.x + width, p.y + 26 * scale), IM_COL32(42, 45, 50, 255), 2);
             draw->AddRectFilled(ImVec2(p.x + x0, p.y), ImVec2(p.x + std::max(x1, x0 + 2), p.y + 26 * scale),
-                alias ? IM_COL32(180, 71, 60, 255) : resource->type == RenderGraphResourceType::Buffer ? IM_COL32(73, 111, 151, 255) : IM_COL32(66, 126, 119, 255), 2);
+                alias ? IM_COL32(180, 71, 60, 255) :
+                resource->type == RenderGraphResourceType::AccelerationStructure ? IM_COL32(129, 91, 162, 255) :
+                resource->type == RenderGraphResourceType::Buffer ? IM_COL32(73, 111, 151, 255) : IM_COL32(66, 126, 119, 255), 2);
             draw->AddText(ImVec2(p.x + 5 * scale, p.y + 5 * scale), IM_COL32(243, 244, 246, 255), resource->name.c_str());
             if (selectedResourceId_ == resource->id) { draw->AddRect(p, ImVec2(p.x + width, p.y + 26 * scale), kBarrier, 2.0f, 2.0f, ImDrawFlags_None); }
             ImGui::PushID(resource->name.c_str());
@@ -667,10 +699,16 @@ void RenderGraphExecutionViewer::drawInspector()
     if (!resource && !pass) { ImGui::TextWrapped("Select a resource, pass, matrix cell or queue segment to inspect its declarations and synchronization."); }
     if (resource) {
         ImGui::TextWrapped("%s", resource->name.c_str());
-        ImGui::TextDisabled("%s / %s", resource->type == RenderGraphResourceType::Buffer ? "Buffer" : "Texture",
+        ImGui::TextDisabled("%s / %s", resourceTypeName(resource->type),
             resource->privateResource ? "Private import" : "Graph resource");
         if (resource->type == RenderGraphResourceType::Buffer) {
             ImGui::Text("Logical size: %s", bytesText(resource->bufferDesc.size).c_str());
+        } else if (resource->type == RenderGraphResourceType::AccelerationStructure) {
+            const auto& desc = resource->accelerationStructureDesc;
+            ImGui::Text("%s | logical size: %s", accelerationStructureTypeName(desc.type), bytesText(desc.size).c_str());
+            if (desc.type == RayTracingAccelerationStructureType::TopLevel) {
+                ImGui::Text("Backend: %s", desc.topLevelBackend == RayTracingTopLevelBackend::Partitioned ? "Partitioned" : "Standard");
+            }
         } else {
             ImGui::Text("%u x %u x %u | format %u", resource->textureDesc.width, resource->textureDesc.height,
                 resource->textureDesc.depth, uint32_t(resource->textureDesc.format));

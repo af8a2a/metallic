@@ -12,6 +12,7 @@ namespace metallic::render {
 struct SceneAccelerationStructureBuildOptions {
     // Explicit choice: an unavailable Partitioned backend returns Unsupported.
     RayTracingTopLevelBackend topLevelBackend = RayTracingTopLevelBackend::Standard;
+    bool asyncComputePreferred = true;
 };
 
 struct SceneAccelerationStructureStats {
@@ -71,6 +72,14 @@ public:
         Queue& queue,
         const scene::Scene& scene,
         std::string& log);
+    // The graph owns AS build/read ordering. Preparation only creates a fresh
+    // immutable upload; recording retains it until its submission completes.
+    Result<> prepareInstanceTransformUpdate(Device& device, const scene::Scene& scene, std::string& log);
+    Result<> recordInstanceTransformUpdate(CommandBuffer& commands, std::string& log,
+        bool graphManagedSynchronization = true);
+    bool hasPendingInstanceTransformUpdate() const;
+    Buffer* instanceTransformUpdateBuffer() const;
+    Buffer* instanceTransformUpdateScratchBuffer() const;
     void clear();
 
     bool valid() const;

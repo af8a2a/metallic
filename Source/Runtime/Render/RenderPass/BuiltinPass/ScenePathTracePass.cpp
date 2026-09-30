@@ -618,6 +618,8 @@ public:
     {
         const bool exportGuides = exportDenoiserGuides(properties());
         RenderPassReflection reflection;
+        reflection.addAccelerationStructureInput("accelerationStructure", "Optional graph-managed scene TLAS/PTLAS")
+            .accelerationStructureRead().setOptional();
         if (visibilityDeferred_) {
             reflection.addTextureInput("visibility", "Resident GPUScene visibility IDs").sampledRead().format = Format::R32Uint;
             reflection.addTextureInput("depth", "Depth from the same visibility raster").sampledRead().format = Format::D32Sfloat;
@@ -1888,7 +1890,9 @@ public:
             ComputeDispatchBinding{
                 .binding = 0,
                 .accelerationStructure =
-                    sceneResources_.accelerationStructure().accelerationStructure(),
+                    context.inputAccelerationStructure("accelerationStructure")
+                        ? context.inputAccelerationStructure("accelerationStructure")
+                        : sceneResources_.accelerationStructure().accelerationStructure(),
             },
             ComputeDispatchBinding{
                 .binding = 1,
@@ -2002,7 +2006,7 @@ public:
                     const auto settings = screenSpaceShadowSettings(context.properties());
                     const auto lightRecords = buildScreenSpaceShadowLightRecords(lightScene, resolvedLighting);
                     std::string shadowLog;
-                    result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(), *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(), lightScene->transformRevision(), settings, shadowLog, &sceneResources_, streamMaterials_ ? deferredStream : nullptr, profiler).transform([&](auto value) { shadow = std::move(value); });
+                    result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(), *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(), lightScene->transformRevision(), settings, shadowLog, &sceneResources_, streamMaterials_ ? deferredStream : nullptr, profiler, context.inputAccelerationStructure("accelerationStructure")).transform([&](auto value) { shadow = std::move(value); });
                     if (!result) { spdlog::error("Ray-traced shadows: {} ({})", shadowLog, resultToString(result)); return result; }
                     previousShadowJitter_ = {shadowView.jitter[0], shadowView.jitter[1]};
                 }
@@ -2032,8 +2036,10 @@ public:
                     spdlog::error("Stream BLEND/transmission requires enableClusterRtx=true and a ready stream TLAS");
                     return makeError(Error::InvalidArgument);
                 }
+                auto* graphAcceleration = context.inputAccelerationStructure("accelerationStructure");
                 for (auto& binding : bindings) {
-                    if (binding.binding == 0) { binding.accelerationStructure = deferredStream->accelerationStructure; }
+                    if (binding.binding == 0) { binding.accelerationStructure = graphAcceleration
+                        ? graphAcceleration : deferredStream->accelerationStructure; }
                 }
                 bindings.push_back({.binding = 90, .buffer = deferredStream->pageBuffer});
                 bindings.push_back({.binding = 91, .buffer = deferredStream->pageTableBuffer});

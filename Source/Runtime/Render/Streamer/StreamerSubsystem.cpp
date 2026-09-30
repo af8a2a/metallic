@@ -104,7 +104,9 @@ Result<> StreamerSubsystem::prepareScene(const SceneStreamingRequirements& requi
         }
     }
     if (requirements.features != SceneResourceFeatureBits::None) {
-        const auto result = resources_.acquire(*device_, *device_->getQueue(QueueType::Graphics), properties, scene, requirements.features, log).transform([&](auto value) { prepared->snapshot = std::move(value); });
+        auto resourceProperties = properties;
+        if (requirements.graphManagedAccelerationStructure) { resourceProperties["graphManagedAccelerationStructure"] = true; }
+        const auto result = resources_.acquire(*device_, *device_->getQueue(QueueType::Graphics), resourceProperties, scene, requirements.features, log).transform([&](auto value) { prepared->snapshot = std::move(value); });
         if (!result) { return result; }
     }
     if ((uint32_t(requirements.features) & uint32_t(SceneResourceFeatureBits::ClusterAccelerationStructure)) != 0) {
@@ -165,6 +167,16 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
     prepared.ready = !prepared.snapshot || !prepared.snapshot->pathTraceResources ||
         prepared.snapshot->pathTraceResources->textureUploadsReady();
     if (!prepared.ready) { return {}; }
+    if (prepared.snapshot && prepared.snapshot->pathTraceResources) {
+        // A TLAS retains addresses into BLAS/OMM owned by the scene snapshot.
+        // External recordings also need that ownership until commands retire.
+        const auto result = context.commandBuffer().retainResource(prepared.snapshot->pathTraceResources);
+        if (!result) { return result; }
+    }
+    if (prepared.geometry) {
+        const auto result = context.commandBuffer().retainResource(prepared.geometry);
+        if (!result) { return result; }
+    }
     if (prepared.image) {
         const auto result = prepared.image->upload(context.commandBuffer());
         if (!result) { return result; }
@@ -278,7 +290,8 @@ Result<> StreamerSubsystem::recordSceneTraversal(PreparedSceneResources& prepare
             else if (point == "BeforeTlasBuild") { phaseProfile.next("TLAS build"); }
             else if (point == "AfterTlasBuild") { phaseProfile.end(); }
             if (checkpoint) { checkpoint(point); }
-        });
+        }, context.output("accelerationStructure") != nullptr &&
+            context.properties().value("AsyncComputePreferred", true) && context.supportsParallelCompute());
     phaseProfile.end();
     if (result && checkpoint) { checkpoint("AfterTraversal"); }
     return result;

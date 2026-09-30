@@ -238,6 +238,16 @@
             "id": 17,
             "src": "VBuffer.domain",
             "dst": "Deferred.domain"
+        },
+        {
+            "id": 18,
+            "src": "VBuffer.accelerationStructure",
+            "dst": "Shadows.accelerationStructure"
+        },
+        {
+            "id": 19,
+            "src": "VBuffer.accelerationStructure",
+            "dst": "Deferred.accelerationStructure"
         }
     ],
     "outputs": [],

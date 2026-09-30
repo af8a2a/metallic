@@ -1265,13 +1265,20 @@ bool buildGpuScene(
 Result<SceneAccelerationStructureBuildOptions> sceneAccelerationStructureOptions(
     const RenderGraphProperties& properties)
 {
+    SceneAccelerationStructureBuildOptions options;
+    const auto preference = properties.find("AsyncComputePreferred");
+    if (preference != properties.end()) {
+        if (!preference->is_boolean()) { return makeError(Error::InvalidArgument); }
+        options.asyncComputePreferred = preference->get<bool>();
+    }
     const auto value = properties.find("topLevelBackend");
-    if (value == properties.end()) { return SceneAccelerationStructureBuildOptions{}; }
+    if (value == properties.end()) { return options; }
     if (!value->is_string()) { return makeError(Error::InvalidArgument); }
     const auto backend = value->get<std::string>();
-    if (backend == "standard") { return SceneAccelerationStructureBuildOptions{}; }
+    if (backend == "standard") { return options; }
     if (backend == "partitioned") {
-        return SceneAccelerationStructureBuildOptions{.topLevelBackend = RayTracingTopLevelBackend::Partitioned};
+        options.topLevelBackend = RayTracingTopLevelBackend::Partitioned;
+        return options;
     }
     return makeError(Error::InvalidArgument);
 }
@@ -2743,6 +2750,7 @@ struct ScenePathTraceResources::Impl {
         textureStats = {};
         rtxBuilder.clear();
         accelerationOptions = {};
+        graphManagedAccelerationStructure = false;
         drawBounds = scene::Bounds{};
         scenePath.clear();
         prepared = false;
@@ -2817,6 +2825,7 @@ struct ScenePathTraceResources::Impl {
 
     SceneAccelerationStructureBuilder rtxBuilder;
     SceneAccelerationStructureBuildOptions accelerationOptions;
+    bool graphManagedAccelerationStructure = false;
     bool materialOnly = false;
     Device* device = nullptr;
     Queue* graphicsQueue = nullptr;
@@ -2917,13 +2926,15 @@ Result<> ScenePathTraceResources::prepare(
     impl_->graphicsQueue = &graphicsQueue;
     const auto accelerationOptions = sceneAccelerationStructureOptions(properties);
     if (!accelerationOptions) {
-        log = "topLevelBackend must be standard or partitioned.";
+        log = "topLevelBackend must be standard or partitioned; AsyncComputePreferred must be a boolean.";
         return std::unexpected(accelerationOptions.error());
     }
     const std::filesystem::path path = scenePathFromProperties(properties);
     const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, path);
     if (impl_->valid() && !impl_->materialOnly && impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
         impl_->accelerationOptions.topLevelBackend == accelerationOptions->topLevelBackend &&
+        impl_->accelerationOptions.asyncComputePreferred == accelerationOptions->asyncComputePreferred &&
+        impl_->graphManagedAccelerationStructure == properties.value("graphManagedAccelerationStructure", false) &&
         boundScene != nullptr && impl_->sourceTopologyMatches(*boundScene) &&
         (impl_->sourceGeometryTransformRevision != boundScene->geometryTransformRevision() ||
          impl_->sourceMaterialRevision != boundScene->materialRevision())) {
@@ -2931,6 +2942,8 @@ Result<> ScenePathTraceResources::prepare(
     }
     if (impl_->valid() && !impl_->materialOnly && impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
         impl_->accelerationOptions.topLevelBackend == accelerationOptions->topLevelBackend &&
+        impl_->accelerationOptions.asyncComputePreferred == accelerationOptions->asyncComputePreferred &&
+        impl_->graphManagedAccelerationStructure == properties.value("graphManagedAccelerationStructure", false) &&
         (boundScene == nullptr ||
          (impl_->sourceTopologyMatches(*boundScene) &&
           impl_->sourceGeometryTransformRevision == boundScene->geometryTransformRevision() &&
@@ -2950,6 +2963,7 @@ Result<> ScenePathTraceResources::prepare(
     impl_->textureColdFrames = uint32_t(std::clamp(properties.value("materialTextureColdFrames",180),2,36000));
     impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
     impl_->accelerationOptions = *accelerationOptions;
+    impl_->graphManagedAccelerationStructure = properties.value("graphManagedAccelerationStructure", false);
     scene::SceneDocument fallbackScene;
     if (boundScene == nullptr) {
         SceneResourceLogScope scope("load scene for render pass resources");
@@ -3011,7 +3025,8 @@ Result<> ScenePathTraceResources::prepare(
     std::string rtxLog;
     {
         SceneResourceLogScope scope("build ray tracing acceleration structures for render pass");
-        Queue* accelerationQueue = device.getQueue(QueueType::Compute);
+        Queue* accelerationQueue = impl_->accelerationOptions.asyncComputePreferred
+            ? device.getQueue(QueueType::Compute) : nullptr;
         if (accelerationQueue == nullptr) {
             accelerationQueue = &graphicsQueue;
         }
@@ -3137,7 +3152,7 @@ Result<> ScenePathTraceResources::beginPrepareAsync(
 {
     const auto accelerationOptions = sceneAccelerationStructureOptions(properties);
     if (!accelerationOptions) {
-        log = "topLevelBackend must be standard or partitioned.";
+        log = "topLevelBackend must be standard or partitioned; AsyncComputePreferred must be a boolean.";
         return std::unexpected(accelerationOptions.error());
     }
     const std::filesystem::path path = scenePathFromProperties(properties);
@@ -3148,7 +3163,9 @@ Result<> ScenePathTraceResources::beginPrepareAsync(
     }
     if (impl_->valid() && impl_->materialOnly == (materialsOnly || boundScene->hasStreamGeometry()) &&
         impl_->scenePath == path && impl_->textureSettingsMatch(properties) &&
-        impl_->accelerationOptions.topLevelBackend == accelerationOptions->topLevelBackend && impl_->sourceTopologyMatches(*boundScene)) {
+        impl_->accelerationOptions.topLevelBackend == accelerationOptions->topLevelBackend &&
+        impl_->accelerationOptions.asyncComputePreferred == accelerationOptions->asyncComputePreferred &&
+        impl_->graphManagedAccelerationStructure == properties.value("graphManagedAccelerationStructure", false) && impl_->sourceTopologyMatches(*boundScene)) {
         return syncRuntimeScene(boundScene, log);
     }
 
@@ -3164,6 +3181,7 @@ Result<> ScenePathTraceResources::beginPrepareAsync(
     impl_->textureColdFrames = uint32_t(std::clamp(properties.value("materialTextureColdFrames",180),2,36000));
     impl_->textureLoadWorkers = uint32_t(std::clamp(properties.value("materialTextureLoadWorkers",4),1,8));
     impl_->accelerationOptions = *accelerationOptions;
+    impl_->graphManagedAccelerationStructure = properties.value("graphManagedAccelerationStructure", false);
     impl_->materialOnly = materialsOnly || boundScene->hasStreamGeometry();
     impl_->asyncScenePath = path;
     impl_->asyncSourceResourceIdentity = boundScene->resourceIdentity();
@@ -3294,7 +3312,8 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Buffers;
                 continue;
             }
-            Queue* accelerationQueue = impl_->device->getQueue(QueueType::Compute);
+            Queue* accelerationQueue = impl_->accelerationOptions.asyncComputePreferred
+                ? impl_->device->getQueue(QueueType::Compute) : nullptr;
             if (accelerationQueue == nullptr) {
                 accelerationQueue = impl_->graphicsQueue;
             }
@@ -3527,6 +3546,8 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
             {"materialTextureBudgetMiB", impl_->textureBudgetBytes / (1024 * 1024)},
             {"topLevelBackend", impl_->accelerationOptions.topLevelBackend == RayTracingTopLevelBackend::Partitioned
                 ? "partitioned" : "standard"},
+            {"AsyncComputePreferred", impl_->accelerationOptions.asyncComputePreferred},
+            {"graphManagedAccelerationStructure", impl_->graphManagedAccelerationStructure},
         };
         Result<> result = prepare(
             device,
@@ -3541,7 +3562,8 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
         // prepare() deliberately submits its acceleration-structure build
         // asynchronously. A direct runtime sync, however, has no async pump
         // to advance that build, so complete it before reporting success.
-        Queue* accelerationQueue = device.getQueue(QueueType::Compute);
+        Queue* accelerationQueue = impl_->accelerationOptions.asyncComputePreferred
+            ? device.getQueue(QueueType::Compute) : nullptr;
         if (accelerationQueue == nullptr) {
             accelerationQueue = &graphicsQueue;
         }
@@ -3622,15 +3644,14 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
         return makeError(Error::Failure);
     }
     std::string rtxLog;
-    Queue* accelerationQueue = impl_->device->getQueue(QueueType::Compute);
+    Queue* accelerationQueue = impl_->accelerationOptions.asyncComputePreferred
+        ? impl_->device->getQueue(QueueType::Compute) : nullptr;
     if (accelerationQueue == nullptr) {
         accelerationQueue = impl_->graphicsQueue;
     }
-    Result<> result = impl_->rtxBuilder.updateInstanceTransforms(
-        *impl_->device,
-        *accelerationQueue,
-        *boundScene,
-        rtxLog);
+    Result<> result = impl_->graphManagedAccelerationStructure
+        ? impl_->rtxBuilder.prepareInstanceTransformUpdate(*impl_->device, *boundScene, rtxLog)
+        : impl_->rtxBuilder.updateInstanceTransforms(*impl_->device, *accelerationQueue, *boundScene, rtxLog);
     appendLogBlock(log, rtxLog);
     if (!result) {
         return result;

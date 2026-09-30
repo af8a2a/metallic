@@ -38,6 +38,11 @@ Tests use GoogleTest through CTest. Main targets include `MetallicSceneTests`, `
 
 The project uses C++23 through CMake. Match the existing style: 4-space indentation, no tabs, Allman braces for function definitions, same-line braces for control statements, and namespace end comments such as `} // namespace metallic::render`. Use `PascalCase` for types, `lowerCamelCase` for functions and locals, `kPascalCase` for constants, and trailing underscores for private members. Use `PascalCase` for C++ source, header, and shader file names, such as `TaskGraph.cpp`, `TaskGraph.h`, and `ScenePathTrace.slang`; existing legacy C++ file names do not need opportunistic renaming.
 
+When applying PascalCase to identifiers and file names, use these exceptions:
+
+- Preserve the established capitalization of technical acronyms with specific meanings, such as `CPU` and `GPU`; use names such as `CPUBuffer` and `GPUPage`, not `CpuBuffer` or `GpuPage`.
+- Preserve the official capitalization of explicitly integrated external components, such as `RTXDI` and `RTXCR`; use names such as `RTXDIIntegration` and `RTXCRPass`, not `RtxdiIntegration` or `RtxcrPass`.
+
 ## Change and Validation Boundaries
 
 - Preserve unrelated working-tree changes. Avoid broad rewrites in `External/` or vendor shader snapshots; retain their licenses. Treat `build/`, `build-*`, `cmake-build-*`, `Testing/`, `.cache/`, and IDE folders as local output, not source.

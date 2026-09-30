@@ -35,6 +35,10 @@ std::string resourceKey(const std::filesystem::path& scenePath, const RenderGrap
 {
     return normalizedScenePath(scenePath).generic_string() + "#top-level:" +
         properties.value("topLevelBackend", RenderGraphProperties("standard")).dump() + "#textures:" +
+        std::to_string(properties.value("AsyncComputePreferred", true)) + ":" +
+        std::to_string(properties.value("graphManagedAccelerationStructure", false)) + ":" +
+        std::to_string(properties.value("graphManagedAccelerationStructure", false)
+            ? properties.value("_renderGraphAccelerationStructureOwner", uint64_t{0}) : uint64_t{0}) + ":" +
         std::to_string(properties.value("materialTextureMaxDimension",512)) + ":" +
         std::to_string(properties.value("materialTextureBudgetMiB",2048)) + ":" +
         std::to_string(properties.value("materialTextureMaskMaxDimension",0)) + ":" +

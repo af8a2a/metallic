@@ -9,10 +9,27 @@
             "id": 2,
             "src": "PathTrace.color",
             "dst": "AutoExposure.source"
+        },
+        {
+            "id": 3,
+            "src": "RTAS.accelerationStructure",
+            "dst": "PathTrace.accelerationStructure"
         }
     ],
     "name": "ScenePathTrace",
     "nodes": [
+        {
+            "id": 4,
+            "name": "RTAS",
+            "type": "SceneAccelerationStructurePass",
+            "position": {
+                "x": 0.0,
+                "y": 281.0
+            },
+            "properties": {
+                "path": "Asset/meet_mat.glb"
+            }
+        },
         {
             "id": 1,
             "name": "PathTrace",

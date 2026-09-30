@@ -58,6 +58,10 @@ void registerBuiltInRenderGraphPasses()
         "Visualize glTF material parameters with RayQuery",
         []() { return builtin_pass::createSceneMaterialVisualizationPass(); });
     registerRenderGraphPassType(
+        "SceneAccelerationStructurePass",
+        "Build/refit scene TLAS or PTLAS on the preferred compute queue with graph-managed synchronization",
+        []() { return builtin_pass::createSceneAccelerationStructurePass(); });
+    registerRenderGraphPassType(
         "SceneRayQueryVisualizationPass",
         "Visualize a glTF acceleration structure with RayQuery",
         []() { return builtin_pass::createSceneRayQueryVisualizationPass(); });

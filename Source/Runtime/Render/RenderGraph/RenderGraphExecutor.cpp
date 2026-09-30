@@ -39,6 +39,8 @@ using namespace detail;
 
 namespace {
 std::atomic<uint64_t> nextDebugGraphId{1};
+std::atomic<uint64_t> nextAccelerationStructureResourceId{1};
+std::atomic<uint64_t> nextSceneAccelerationStructureCacheOwner{1};
 struct DebugExecutionScope {
     IRenderDebugObserver* observer = nullptr;
     bool success = false;
@@ -274,6 +276,8 @@ struct RenderGraphExecutor::Impl {
         RenderGraphProperties staticProperties = RenderGraphProperties::object();
         RenderGraphProperties runtimeProperties = RenderGraphProperties::object();
         RenderGraphProperties effectiveProperties = RenderGraphProperties::object();
+        RenderGraphProperties sceneProperties = RenderGraphProperties::object();
+        uint64_t sceneAccelerationStructureCacheOwner = 0;
         std::unique_ptr<RenderGraphPass> pass;
         RenderPassReflection reflection;
         RenderGraphSceneDependency sceneDependency;
@@ -398,6 +402,9 @@ struct RenderGraphExecutor::Impl {
     std::vector<std::shared_ptr<Buffer>> viewBuffers;
     Buffer* frameViewBuffer = nullptr;
     std::vector<CompiledNode> executionList;
+    // Shared subsystem hosts may serve independent executors. Their completion
+    // trackers cannot protect a shared mutable graph-managed TLAS allocation.
+    std::unordered_map<uint32_t, uint64_t> sceneAccelerationStructureCacheOwners;
     std::unordered_map<std::string, ResourceSlot> resources;
     std::unordered_map<std::string, std::string> inputAliases;
     std::unique_ptr<BindlessHeap> bindlessHeap;
@@ -476,7 +483,8 @@ struct RenderGraphExecutor::Impl {
         for (const auto& [name, slot] : resources) {
             const auto& resource = slot.resource;
             debugGraph["resources"].push_back({{"id", name}, {"allocation", debugGeneration},
-                {"kind", resource.buffer ? "buffer" : "texture"}, {"size", resource.bufferDesc.size}, {"stride", resource.bufferDesc.structureStride},
+                {"kind", resource.type == RenderGraphResourceType::AccelerationStructure ? "accelerationStructure" :
+                    resource.buffer ? "buffer" : "texture"}, {"size", resource.bufferDesc.size}, {"stride", resource.bufferDesc.structureStride},
                 {"width", resource.desc.width}, {"height", resource.desc.height}, {"format", static_cast<uint32_t>(resource.desc.format)}});
         }
         debugSceneIdentity = runtimeScene ? std::array<uint64_t, 2>{runtimeScene->resourceIdentity(), runtimeScene->contentRevision()} : std::array<uint64_t, 2>{};
@@ -674,10 +682,52 @@ struct RenderGraphExecutor::Impl {
         return result;
     }
 
+    uint64_t sceneAccelerationStructureOwnerForNode(uint32_t id)
+    {
+        const auto [entry, inserted] = sceneAccelerationStructureCacheOwners.try_emplace(id, 0);
+        if (inserted) { entry->second = nextSceneAccelerationStructureCacheOwner.fetch_add(1); }
+        return entry->second;
+    }
+
     Result<> prepareNodeScene(CompiledNode& node, RenderGraphCompileContext& context, std::string& log)
     {
         node.sceneRequirements = node.pass->sceneResourcesRequired(context);
-        auto result = streamerSubsystem()->prepareScene(node.sceneRequirements, node.effectiveProperties,
+        auto sceneProperties = node.effectiveProperties;
+        uint64_t accelerationStructureCacheOwner = sceneAccelerationStructureOwnerForNode(node.id);
+        bool graphManagedAccelerationStructure = node.sceneRequirements.graphManagedAccelerationStructure ||
+            sceneProperties.value("graphManagedAccelerationStructure", false);
+        // Reflection is valid before scene acquisition, as in graph validation.
+        // Resolve AS edges before resources are allocated on an initial compile.
+        const auto reflection = node.pass->reflect(context);
+        for (const auto& field : reflection.fields()) {
+            if (field.visibility != RenderGraphFieldVisibility::Input ||
+                field.resourceType != RenderGraphResourceType::AccelerationStructure) { continue; }
+            const auto alias = inputAliases.find(makeRenderGraphFieldName(node.name, field.name));
+            if (alias == inputAliases.end()) { continue; }
+            graphManagedAccelerationStructure = true;
+            std::string producerName, producerField;
+            if (!splitRenderGraphFieldName(alias->second, producerName, producerField)) {
+                return makeError(Error::InvalidArgument);
+            }
+            const auto producer = std::find_if(executionList.begin(), executionList.end(),
+                [&](const auto& candidate) { return candidate.name == producerName; });
+            if (producer == executionList.end()) { return makeError(Error::InvalidArgument); }
+            const auto& producerProperties = producer->sceneProperties.empty()
+                ? producer->effectiveProperties : producer->sceneProperties;
+            accelerationStructureCacheOwner = producer->sceneAccelerationStructureCacheOwner
+                ? producer->sceneAccelerationStructureCacheOwner : sceneAccelerationStructureOwnerForNode(producer->id);
+            // The graph AS owner controls its backend and build queue. Consumer
+            // shading options remain local while acquisition uses that policy.
+            sceneProperties["topLevelBackend"] = producerProperties.value("topLevelBackend", RenderGraphProperties("standard"));
+            sceneProperties["AsyncComputePreferred"] = producerProperties.value("AsyncComputePreferred", true);
+        }
+        if (graphManagedAccelerationStructure) {
+            sceneProperties["graphManagedAccelerationStructure"] = true;
+            sceneProperties["_renderGraphAccelerationStructureOwner"] = accelerationStructureCacheOwner;
+        }
+        node.sceneAccelerationStructureCacheOwner = graphManagedAccelerationStructure ? accelerationStructureCacheOwner : 0;
+        node.sceneProperties = std::move(sceneProperties);
+        auto result = streamerSubsystem()->prepareScene(node.sceneRequirements, node.sceneProperties,
             context.runtimeScene, node.preparedScene, log, context.debugReadback);
         context.preparedScene = node.preparedScene;
         return result;
@@ -1277,6 +1327,11 @@ struct RenderGraphExecutor::Impl {
                         .colorEncoding = field.colorEncoding,
                         .state = ResourceState::Undefined,
                     };
+                } else if (field.resourceType == RenderGraphResourceType::AccelerationStructure) {
+                    slot.resource = RenderGraphResource{
+                        .type = RenderGraphResourceType::AccelerationStructure,
+                        .logicalResourceId = (uint64_t{1} << 63) | nextAccelerationStructureResourceId.fetch_add(1),
+                    };
                 } else {
                     BufferUsageBits usage = bufferUsageForField(field);
                     if (usage == BufferUsageBits::None) {
@@ -1763,9 +1818,17 @@ struct RenderGraphExecutor::Impl {
             resource.type = source->type;
             resource.textureDesc = source->desc;
             resource.bufferDesc = source->bufferDesc;
-            resource.memory = source->type == RenderGraphResourceType::Buffer
-                ? source->buffer->memoryInfo() : source->texture->memoryInfo();
-            resource.id = resource.memory.allocationId;
+            if (source->type == RenderGraphResourceType::AccelerationStructure) {
+                if (source->accelerationStructure) {
+                    resource.memory = source->accelerationStructure->memoryInfo();
+                    resource.accelerationStructureDesc = source->accelerationStructure->desc();
+                }
+                resource.id = source->logicalResourceId;
+            } else {
+                resource.memory = source->type == RenderGraphResourceType::Buffer
+                    ? source->buffer->memoryInfo() : source->texture->memoryInfo();
+                resource.id = resource.memory.allocationId;
+            }
             ids.push_back(resource.id);
             for (const auto& node : executionList) {
                 for (const auto& field : node.reflection.fields()) {
@@ -1813,6 +1876,15 @@ struct RenderGraphExecutor::Impl {
     {
         if (!activeExecutionCapture) { return; }
         auto& capture = *activeExecutionCapture;
+        for (const auto* source : accessResources) {
+            if (source->type != RenderGraphResourceType::AccelerationStructure || !source->accelerationStructure) { continue; }
+            for (auto& resource : capture.resources) {
+                if (resource.id == source->logicalResourceId) {
+                    resource.memory = source->accelerationStructure->memoryInfo();
+                    resource.accelerationStructureDesc = source->accelerationStructure->desc();
+                }
+            }
+        }
         for (auto& imports : capturedImports) {
             for (auto& resource : imports) {
                 const auto found = std::find_if(capture.resources.begin(), capture.resources.end(),
@@ -1848,6 +1920,13 @@ struct RenderGraphExecutor::Impl {
     Result<> buildAccessPlan(std::span<const uint32_t> queues)
     {
         if (queues.size() != executionList.size()) { return makeError(Error::InvalidArgument); }
+        // Builders may replace their public AS wrapper between frames. Logical
+        // slots preserve GPU hazard state while publishing this frame's result.
+        for (auto& [name, slot] : resources) {
+            if (slot.resource.type == RenderGraphResourceType::AccelerationStructure) {
+                slot.resource.accelerationStructure = nullptr;
+            }
+        }
         std::vector<GraphAccessResource> initial;
         std::vector<RenderGraphResource*> resolved;
         std::vector<GraphAccessBinding> bindings;
@@ -1988,6 +2067,7 @@ struct RenderGraphExecutor::Impl {
             std::unordered_map<RenderGraphResource*, RenderGraphResource*> copies;
             for (auto& binding : bindings) {
                 if (!binding.resource) { continue; }
+                if (binding.resource->type == RenderGraphResourceType::AccelerationStructure) { continue; }
                 auto [entry, inserted] = copies.try_emplace(binding.resource);
                 if (inserted) {
                     snapshots->push_back(*binding.resource);
@@ -2997,7 +3077,8 @@ Result<> RenderGraphExecutor::beginSceneResourcePreparation(
     Device& device,
     const RenderGraphProperties& properties,
     const scene::Scene& scene,
-    std::string& log)
+    std::string& log,
+    const RenderGraph* graph)
 {
     Queue* graphicsQueue = device.getQueue(QueueType::Graphics);
     if (graphicsQueue == nullptr) {
@@ -3019,8 +3100,30 @@ Result<> RenderGraphExecutor::beginSceneResourcePreparation(
     if (sceneResources == nullptr) {
         return makeError(Error::Failure);
     }
+    auto sceneProperties = properties;
+    if (graph != nullptr) {
+        ActiveGraph activeGraph;
+        std::string graphLog;
+        if (!buildActiveGraph(*graph, activeGraph, graphLog)) {
+            log = std::move(graphLog);
+            return makeError(Error::InvalidArgument);
+        }
+        const auto producer = std::find_if(graph->nodes().begin(), graph->nodes().end(), [&](const auto& node) {
+            return node.type == "SceneAccelerationStructurePass" &&
+                (activeGraph.activePasses.empty() || activeGraph.activePasses.contains(node.name));
+        });
+        if (producer != graph->nodes().end()) {
+            // Reuse the same scene bundle the AS producer acquires on compile.
+            // The incoming path names the scene currently being opened.
+            sceneProperties = mergeRenderGraphProperties(
+                mergeRenderGraphProperties(producer->properties, producer->runtimeProperties), properties);
+            sceneProperties["graphManagedAccelerationStructure"] = true;
+            sceneProperties["_renderGraphAccelerationStructureOwner"] =
+                impl_->sceneAccelerationStructureOwnerForNode(producer->id);
+        }
+    }
     cancelSceneResourcePreparation();
-    return sceneResources->manager().beginAcquireAsync(device, *graphicsQueue, properties, scene, SceneResourceFeatureBits::Geometry |
+    return sceneResources->manager().beginAcquireAsync(device, *graphicsQueue, sceneProperties, scene, SceneResourceFeatureBits::Geometry |
             SceneResourceFeatureBits::Materials |
             SceneResourceFeatureBits::MaterialTextures |
             SceneResourceFeatureBits::Meshlets |
@@ -3457,7 +3560,17 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             const size_t hardware = segments.size() - 1;
             segments[hardware].passWork = true;
             addDependency(hardware, producer); // Deliberately independent of software.
-            result = graphics(*segments[hardware].commandBuffer);
+            // Context-based stage recording must follow the graphics branch's
+            // live commands. Disable another fork until this branch has joined.
+            {
+                struct RestoreParallelRecorder {
+                    RenderGraphExecutionContext::ParallelRecorder& target;
+                    RenderGraphExecutionContext::ParallelRecorder saved;
+                    ~RestoreParallelRecorder() { target = std::move(saved); }
+                } restore{context.parallelRecorder_, std::move(context.parallelRecorder_)};
+                context.commandBuffer_ = segments[hardware].commandBuffer;
+                result = graphics(*segments[hardware].commandBuffer);
+            }
             if (result) { result = segments[hardware].commandBuffer->end(); }
             if (!result) { return result; }
             result = beginSegment(QueueType::Graphics, nullptr, RenderGraphSegmentRole::Join);
@@ -3525,6 +3638,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         profiling::SchedulingMetrics scheduling;
     };
     std::vector<std::unique_ptr<RecordingBatch>> batches;
+    std::unordered_set<RenderGraphResource*> pendingAccelerationStructurePublications;
     const auto flushRecordings = [&]() -> Result<> {
         if (batches.empty()) { return {}; }
         phase.next("graph.recordBatches", batches.size());
@@ -3624,6 +3738,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             for (auto& node : batch->nodes) { impl_->mergeRecording(*node); }
         }
         batches.clear();
+        pendingAccelerationStructurePublications.clear();
         return result;
     };
     const auto invokePass = [](auto&& callback) -> Result<> {
@@ -3636,6 +3751,19 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         const size_t passIndex = size_t(&node - impl_->executionList.data());
         capturePassId = node.id;
         const QueueType type = selectedType(node);
+        // A native AS is selected during producer recording. GPU submission
+        // dependencies cannot make that CPU publication ready for a consumer's
+        // preparation/recording. Join only waves that still own a needed slot.
+        const bool needsAccelerationStructurePublication = std::any_of(node.reflection.fields().begin(),
+            node.reflection.fields().end(), [&](const RenderGraphField& field) {
+                return field.visibility == RenderGraphFieldVisibility::Input &&
+                    field.resourceType == RenderGraphResourceType::AccelerationStructure &&
+                    pendingAccelerationStructurePublications.contains(impl_->fieldResource(node, field));
+            });
+        if (needsAccelerationStructurePublication) {
+            result = flushRecordings();
+            if (!result) { return abort(result); }
+        }
         const bool recordOnWorker = workerLimit > 1 &&
             node.pass->cpuRecordingPolicy() == CpuRecordingPolicy::ParallelJoined &&
             !node.preparedScene && node.sceneDependency.source == RenderGraphSceneSource::None &&
@@ -3691,6 +3819,14 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             result = invokePass([&] { return impl_->prepareRecording(*recording, *segments[index].commandBuffer, node, frameIndex); });
             if (!result) { return abort(result); }
             batch->nodes.push_back(std::move(recording));
+            for (const auto& field : node.reflection.fields()) {
+                if (field.visibility == RenderGraphFieldVisibility::Output &&
+                    field.resourceType == RenderGraphResourceType::AccelerationStructure) {
+                    if (auto* resource = impl_->fieldResource(node, field)) {
+                        pendingAccelerationStructurePublications.insert(resource);
+                    }
+                }
+            }
             continue;
         }
         result = invokePass([&] { return impl_->executeNode(*segments[index].commandBuffer, node, frameIndex,

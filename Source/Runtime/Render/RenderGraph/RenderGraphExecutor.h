@@ -114,7 +114,8 @@ public:
         Device& device,
         const RenderGraphProperties& properties,
         const scene::Scene& scene,
-        std::string& log);
+        std::string& log,
+        const RenderGraph* graph = nullptr);
     [[nodiscard]] Result<bool> pumpSceneResourcePreparation(
         const scene::Scene& scene,
         double budgetMilliseconds,

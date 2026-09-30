@@ -97,6 +97,18 @@ SyncScope scopeForGraphAccess(RenderGraphResourceAccess access, RenderGraphPassK
             ? PipelineStageBits::PreRasterization | PipelineStageBits::FragmentShader
             : PipelineStageBits::AllCommands;
     switch (access) {
+    case RenderGraphResourceAccess::AccelerationStructureBuildRead:
+        return {PipelineStageBits::AccelerationStructureBuild, AccessBits::AccelerationStructureRead};
+    case RenderGraphResourceAccess::BufferAccelerationStructureBuildRead:
+        return {PipelineStageBits::AccelerationStructureBuild, AccessBits::ShaderRead};
+    case RenderGraphResourceAccess::AccelerationStructureBuildWrite:
+        return {PipelineStageBits::AccelerationStructureBuild, AccessBits::AccelerationStructureWrite};
+    case RenderGraphResourceAccess::AccelerationStructureBuildReadWrite:
+    case RenderGraphResourceAccess::BufferAccelerationStructureScratchReadWrite:
+        return {PipelineStageBits::AccelerationStructureBuild,
+            AccessBits::AccelerationStructureRead | AccessBits::AccelerationStructureWrite};
+    case RenderGraphResourceAccess::AccelerationStructureShaderRead:
+        return {shaderStages, AccessBits::AccelerationStructureRead};
     case RenderGraphResourceAccess::TextureSampleRead:
     case RenderGraphResourceAccess::TextureSampleReadGeneral:
     case RenderGraphResourceAccess::BufferShaderRead:
@@ -162,9 +174,9 @@ void captureGraphDeclaredAccess(RenderGraphExecutionUseSnapshot& use, RenderGrap
     // layout writes and conservative restore boundaries; those are not data RW.
     const auto scope = scopeForGraphAccess(access, RenderGraphPassKind::Compute);
     constexpr auto reads = AccessBits::ShaderRead | AccessBits::UniformRead | AccessBits::TransferRead |
-        AccessBits::ColorRead | AccessBits::DepthStencilRead | AccessBits::IndirectRead;
+        AccessBits::ColorRead | AccessBits::DepthStencilRead | AccessBits::IndirectRead | AccessBits::AccelerationStructureRead;
     constexpr auto writes = AccessBits::ShaderWrite | AccessBits::TransferWrite | AccessBits::ColorWrite |
-        AccessBits::DepthStencilWrite;
+        AccessBits::DepthStencilWrite | AccessBits::AccelerationStructureWrite;
     use.reads |= (uint64_t(scope.access) & uint64_t(reads)) != 0;
     use.writes |= (uint64_t(scope.access) & uint64_t(writes)) != 0;
 }
@@ -177,14 +189,21 @@ SynchronizationStats synchronizationDelta(SynchronizationStats before, Synchroni
 
 Result<GraphAccessBinding> bindGraphAccessResource(const RenderGraphResource& resource)
 {
+    if (resource.type == RenderGraphResourceType::AccelerationStructure) {
+        if (resource.texture || resource.buffer ||
+            (resource.accelerationStructure && !resource.accelerationStructure->valid())) {
+            return makeError(Error::InvalidArgument);
+        }
+        return GraphAccessBinding{.accelerationStructureResource = &resource};
+    }
     if (resource.type == RenderGraphResourceType::Texture2D) {
-        if (!resource.texture || resource.buffer || !resource.desc.mipCount || !resource.desc.layerCount) {
+        if (!resource.texture || resource.buffer || resource.accelerationStructure || !resource.desc.mipCount || !resource.desc.layerCount) {
             return makeError(Error::InvalidArgument);
         }
         return GraphAccessBinding{.texture = resource.texture,
             .mipCount = resource.desc.mipCount, .layerCount = resource.desc.layerCount};
     }
-    if (resource.type != RenderGraphResourceType::Buffer || !resource.buffer || resource.texture ||
+    if (resource.type != RenderGraphResourceType::Buffer || !resource.buffer || resource.texture || resource.accelerationStructure ||
         !resource.bufferDesc.size) {
         return makeError(Error::InvalidArgument);
     }
@@ -201,6 +220,17 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
     const auto validBinding = [&](size_t resource) {
         if (resource >= bindings.size()) { return false; }
         const auto& binding = bindings[resource];
+        if (binding.accelerationStructure || binding.accelerationStructureResource) {
+            if (binding.texture || binding.buffer.valid() ||
+                (binding.accelerationStructure && binding.accelerationStructureResource) ||
+                (binding.accelerationStructureResource &&
+                    binding.accelerationStructureResource->type != RenderGraphResourceType::AccelerationStructure)) { return false; }
+            const auto* accelerationStructure = binding.accelerationStructureResource
+                ? binding.accelerationStructureResource->accelerationStructure : binding.accelerationStructure;
+            // A graph producer may publish an empty scene after this boundary.
+            return !accelerationStructure || (accelerationStructure->valid() &&
+                accelerationStructure->deviceIdentity() == commands.deviceIdentity() && accelerationStructure->retainAllocation());
+        }
         if (binding.texture) {
             return !binding.buffer.valid() && binding.mipCount != 0 && binding.layerCount != 0 &&
                 binding.texture->deviceIdentity() == commands.deviceIdentity() &&
@@ -220,9 +250,15 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
 
     std::vector<TextureBarrierDesc> textures;
     std::vector<MemoryBarrierDesc> memory;
+    std::vector<AccelerationStructureBarrierDesc> accelerationStructures;
     for (const auto& barrier : pass.barriers) {
         const auto& binding = bindings[barrier.resource];
-        if (binding.texture && !barrier.executionOnly) {
+        const auto* accelerationStructure = binding.accelerationStructureResource
+            ? binding.accelerationStructureResource->accelerationStructure : binding.accelerationStructure;
+        if (accelerationStructure && !barrier.executionOnly) {
+            accelerationStructures.push_back({const_cast<RayTracingAccelerationStructure*>(accelerationStructure),
+                barrier.beforeScope, barrier.afterScope});
+        } else if (binding.texture && !barrier.executionOnly) {
             textures.push_back({
                 .texture = binding.texture,
                 .oldLayout = textureLayoutForResourceState(barrier.before),
@@ -238,7 +274,13 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
     }
     for (const auto& use : pass.uses) {
         const auto& binding = bindings[use.resource];
-        if (binding.buffer.valid()) {
+        const auto* accelerationStructure = binding.accelerationStructureResource
+            ? binding.accelerationStructureResource->accelerationStructure : binding.accelerationStructure;
+        if (binding.accelerationStructure || binding.accelerationStructureResource) {
+            if (!accelerationStructure) { continue; }
+            auto retained = commands.retainResource(accelerationStructure->retainAllocation());
+            if (!retained) { return retained; }
+        } else if (binding.buffer.valid()) {
             auto retained = commands.retainResource(binding.buffer.retainAllocation());
             if (!retained) { return retained; }
         } else {
@@ -249,6 +291,7 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
     return commands.synchronize({
         .textures = textures,
         .memory = memory,
+        .accelerationStructures = accelerationStructures,
     });
 }
 

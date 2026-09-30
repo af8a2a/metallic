@@ -26,6 +26,8 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
+        reflection.addAccelerationStructureInput("accelerationStructure", "Optional graph-managed scene TLAS/PTLAS")
+            .accelerationStructureRead().setOptional();
         reflection.addTextureOutput("color", "RayQuery acceleration-structure visualization")
             .storageWrite()
             .format = Format::Rgba8Unorm;
@@ -203,7 +205,9 @@ public:
                 .binding = 0,
                 .accelerationStructure = useClusterId
                     ? clusterAccelerationStructure_->accelerationStructure()
-                    : sceneResources_.accelerationStructure().accelerationStructure(),
+                    : context.inputAccelerationStructure("accelerationStructure")
+                        ? context.inputAccelerationStructure("accelerationStructure")
+                        : sceneResources_.accelerationStructure().accelerationStructure(),
             },
             ComputeDispatchBinding{
                 .binding = 1,

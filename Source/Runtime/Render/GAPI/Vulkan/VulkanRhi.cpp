@@ -3135,8 +3135,6 @@ struct MicromapIdentityIndexBuffer {
 
 struct PartitionedTopLevelState {
     PartitionedAccelerationStructureDesc desc;
-    std::unique_ptr<Buffer> operationBuffer;
-    std::unique_ptr<Buffer> operationCountBuffer;
 };
 
 struct RayTracingAccelerationStructureImpl {
@@ -4952,6 +4950,18 @@ const RayTracingAccelerationStructureDesc& RayTracingAccelerationStructure::desc
     return impl_ != nullptr ? impl_->desc : emptyDesc;
 }
 
+ResourceMemoryInfo RayTracingAccelerationStructure::memoryInfo() const
+{
+    return impl_ && impl_->storage ? impl_->storage->memoryInfo() : ResourceMemoryInfo{};
+}
+
+bool RayTracingAccelerationStructure::supportsQueueAccess(QueueAccessBits access) const
+{
+    return impl_ && impl_->storage && access != QueueAccessBits::None &&
+        (static_cast<uint8_t>(impl_->storage->desc().queueAccess) & static_cast<uint8_t>(access)) ==
+            static_cast<uint8_t>(access);
+}
+
 bool RayTracingAccelerationStructure::valid() const
 {
     if (impl_ && impl_->desc.topLevelBackend == RayTracingTopLevelBackend::Partitioned) {
@@ -5866,7 +5876,8 @@ SynchronizationStats CommandBuffer::synchronizationStats() const
 Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
 {
     if (!impl_ || !recording_ || (desc.textures.size() > UINT32_MAX) ||
-        (desc.buffers.size() > UINT32_MAX) || (desc.memory.size() > UINT32_MAX)) {
+        (desc.buffers.size() > UINT32_MAX) || (desc.memory.size() > UINT32_MAX) ||
+        (desc.accelerationStructures.size() > UINT32_MAX)) {
         return makeError(Error::InvalidArgument);
     }
     const vulkan::SyncSupport support{impl_->queueFlags, impl_->device->capabilities.rayTracingAccelerationStructure,
@@ -5933,10 +5944,28 @@ Result<> CommandBuffer::synchronize(const BarrierDesc& desc)
         const auto after = scopeInfo(barrier.after);
         resourceMemory(before, after);
     }
+    for (const auto& barrier : desc.accelerationStructures) {
+        auto* accelerationStructure = barrier.accelerationStructure;
+        if (!accelerationStructure || !accelerationStructure->valid() ||
+            accelerationStructure->deviceIdentity() != deviceIdentity() ||
+            !validScope(barrier.before) || !validScope(barrier.after)) {
+            return makeError(Error::InvalidArgument);
+        }
+        const auto families = detail::queueFamiliesForAccess(*impl_->device,
+            accelerationStructure->impl_->storage->desc().queueAccess);
+        if (std::find(families.begin(), families.end(), impl_->queueFamilyIndex) == families.end()) {
+            return makeError(Error::InvalidArgument);
+        }
+        resourceMemory(scopeInfo(barrier.before), scopeInfo(barrier.after));
+    }
     if (images.empty() && memory.empty()) { return {}; }
     // Everything was validated before retaining resources or recording Vulkan commands.
     for (uint32_t i = 0; i < desc.textures.size(); ++i) {
         auto result = retainResource(desc.textures[i].texture->impl_);
+        if (!result) { return result; }
+    }
+    for (const auto& barrier : desc.accelerationStructures) {
+        auto result = retainResource(barrier.accelerationStructure->retainAllocation());
         if (!result) { return result; }
     }
     const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -6801,7 +6830,7 @@ Result<> CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
 Result<> CommandBuffer::buildRayTracingAccelerationStructure(
     const RayTracingAccelerationStructureBuildDesc& desc)
 {
-    if (impl_ == nullptr ||
+    if (impl_ == nullptr || !recording_ ||
         (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
         desc.destination == nullptr ||
         desc.destination->impl_ == nullptr || !desc.destination->valid() ||
@@ -6816,6 +6845,13 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         !impl_->device->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
+    const auto queueCanAccess = [&](const Buffer& buffer) {
+        const auto families = detail::queueFamiliesForAccess(*impl_->device, buffer.desc().queueAccess);
+        return std::find(families.begin(), families.end(), impl_->queueFamilyIndex) != families.end();
+    };
+    if (!queueCanAccess(*desc.destination->impl_->storage) || !queueCanAccess(*desc.scratchBuffer)) {
+        return makeError(Error::InvalidArgument);
+    }
 
     const RayTracingAccelerationStructureDesc& destinationDesc =
         desc.destination->impl_->desc;
@@ -6826,7 +6862,8 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
             desc.source == nullptr || desc.source->impl_ == nullptr ||
             !desc.source->valid() || desc.source->impl_->device != impl_->device ||
             desc.source->desc().topLevelBackend != RayTracingTopLevelBackend::Standard ||
-            desc.source->impl_->desc.type != destinationDesc.type) {
+            desc.source->impl_->desc.type != destinationDesc.type ||
+            !queueCanAccess(*desc.source->impl_->storage)) {
             return makeError(Error::InvalidArgument);
         }
     } else if (desc.source != nullptr) {
@@ -6859,6 +6896,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
                 source.vertexCount == 0 || source.vertexStride == 0 ||
                 source.primitiveCount == 0 || source.vertexFormat == Format::Unknown ||
                 source.vertexOffset >= source.vertexBuffer->desc().size ||
+                !queueCanAccess(*source.vertexBuffer) ||
                 !hasFlag(
                     source.vertexBuffer->desc().usage,
                     BufferUsageBits::AccelerationStructureBuildInput)) {
@@ -6875,6 +6913,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
                 if (source.indexBuffer == nullptr || source.indexBuffer->impl_ == nullptr ||
                     source.indexBuffer->impl_->device != impl_->device ||
                     source.indexOffset >= source.indexBuffer->desc().size ||
+                    !queueCanAccess(*source.indexBuffer) ||
                     !hasFlag(
                         source.indexBuffer->desc().usage,
                         BufferUsageBits::AccelerationStructureBuildInput)) {
@@ -6948,7 +6987,8 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
             desc.micromap->triangleBuffer == nullptr || desc.micromap->dataBuffer->impl_ == nullptr ||
             desc.micromap->triangleBuffer->impl_ == nullptr ||
             desc.micromap->dataBuffer->impl_->device != impl_->device ||
-            desc.micromap->triangleBuffer->impl_->device != impl_->device) {
+            desc.micromap->triangleBuffer->impl_->device != impl_->device ||
+            !queueCanAccess(*desc.micromap->dataBuffer) || !queueCanAccess(*desc.micromap->triangleBuffer)) {
             return makeError(Error::InvalidArgument);
         }
         VkAccelerationStructureGeometryKHR geometry{};
@@ -6964,6 +7004,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         if (destinationDesc.type != RayTracingAccelerationStructureType::TopLevel || !desc.geometries.empty() ||
             desc.instanceBuffer == nullptr || desc.instanceBuffer->impl_ == nullptr ||
             desc.instanceBuffer->impl_->device != impl_->device || desc.instanceCount == 0 ||
+            !queueCanAccess(*desc.instanceBuffer) ||
             !hasFlag(
                 desc.instanceBuffer->desc().usage,
                 BufferUsageBits::AccelerationStructureBuildInput)) {
@@ -7009,6 +7050,25 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         (unalignedScratchAddress + scratchAlignment - 1u) & ~(scratchAlignment - 1u);
     const uint64_t alignedScratchOffset = scratchAddress - scratchBase;
 
+    const auto retainBuildResources = [&]() -> Result<> {
+        auto result = retainResource(desc.destination->retainAllocation());
+        if (result) { result = retainResource(desc.scratchBuffer->retainAllocation()); }
+        if (result && desc.source) { result = retainResource(desc.source->retainAllocation()); }
+        if (result && desc.instanceBuffer) { result = retainResource(desc.instanceBuffer->retainAllocation()); }
+        if (result && desc.micromap) {
+            result = retainResource(desc.micromap->dataBuffer->retainAllocation());
+            if (result) { result = retainResource(desc.micromap->triangleBuffer->retainAllocation()); }
+        }
+        for (const auto& geometry : desc.geometries) {
+            if (result) { result = retainResource(geometry.vertexBuffer->retainAllocation()); }
+            if (result && geometry.indexType != RayTracingIndexType::None) {
+                result = retainResource(geometry.indexBuffer->retainAllocation());
+            }
+            if (result && geometry.opacityMicromap) { result = retainResource(geometry.opacityMicromap->retainAllocation()); }
+        }
+        return result;
+    };
+
     if (isMicromap && impl_->device->opacityMicromapExt) {
         std::vector<VkMicromapUsageEXT> extUsages;
         auto buildInfo = makeExtMicromapBuildInfo(micromapData, destinationDesc.buildFlags, extUsages);
@@ -7021,6 +7081,8 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
             sizes.micromapSize > destinationDesc.size) {
             return makeError(Error::InvalidArgument);
         }
+        const auto retained = retainBuildResources();
+        if (!retained) { return retained; }
         // EXT has its own build stage/access bits, including scratch reuse between OMMs.
         VkMemoryBarrier2 barrier{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -7091,11 +7153,15 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         rangePointers.push_back(&range);
     }
     const VkAccelerationStructureBuildRangeInfoKHR* noRanges = nullptr;
+    const auto retained = retainBuildResources();
+    if (!retained) { return retained; }
     vkCmdBuildAccelerationStructuresKHR(
         impl_->commandBuffer,
         1,
         &buildInfo,
         isMicromap ? &noRanges : rangePointers.data());
+
+    if (desc.graphManagedSynchronization && !isMicromap) { return {}; }
 
     const VkMemoryBarrier2 barrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -7820,7 +7886,7 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         vkCmdBuildPartitionedAccelerationStructuresNV == nullptr) {
         return makeError(Error::Unsupported);
     }
-    if ((impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
+    if (!recording_ || (impl_->queueFlags & VK_QUEUE_COMPUTE_BIT) == 0 ||
         desc.destination == nullptr || desc.destination->impl_ == nullptr ||
         !desc.destination->valid() ||
         desc.destination->desc().topLevelBackend != RayTracingTopLevelBackend::Partitioned ||
@@ -7838,15 +7904,18 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         !hasFlag(desc.scratchBuffer->desc().usage, BufferUsageBits::Storage)) {
         return makeError(Error::InvalidArgument);
     }
+    const auto queueCanAccess = [&](const Buffer& buffer) {
+        const auto families = detail::queueFamiliesForAccess(*impl_->device, buffer.desc().queueAccess);
+        return std::find(families.begin(), families.end(), impl_->queueFamilyIndex) != families.end();
+    };
+    if (!queueCanAccess(*desc.destination->impl_->storage) || !queueCanAccess(*desc.instanceBuffer) ||
+        !queueCanAccess(*desc.scratchBuffer)) {
+        return makeError(Error::InvalidArgument);
+    }
 
     const uint64_t instanceAddress = desc.instanceBuffer->deviceAddress();
     const uint64_t scratchBase = desc.scratchBuffer->deviceAddress();
-    const uint64_t operationAddress =
-        desc.destination->impl_->partitioned->operationBuffer->deviceAddress();
-    const uint64_t operationCountAddress =
-        desc.destination->impl_->partitioned->operationCountBuffer->deviceAddress();
-    if (instanceAddress == 0 || scratchBase == 0 || operationAddress == 0 ||
-        operationCountAddress == 0) {
+    if (instanceAddress == 0 || scratchBase == 0) {
         return makeError(Error::Failure);
     }
 
@@ -7873,24 +7942,27 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
             .strideInBytes = sizeof(VkPartitionedAccelerationStructureWriteInstanceDataNV),
         },
     };
-    void* mappedOperation = desc.destination->impl_->partitioned->operationBuffer->map();
-    void* mappedOperationCount = desc.destination->impl_->partitioned->operationCountBuffer->map();
-    if (mappedOperation == nullptr || mappedOperationCount == nullptr) {
-        if (mappedOperation != nullptr) {
-            desc.destination->impl_->partitioned->operationBuffer->unmap();
-        }
-        if (mappedOperationCount != nullptr) {
-            desc.destination->impl_->partitioned->operationCountBuffer->unmap();
-        }
-        return makeError(Error::Failure);
-    }
+    // The instance upload can rotate while an earlier build is still in flight.
+    // Keep its indirect operation immutable through this recording's completion.
+    auto operationUploadResult = Device::createBuffer(impl_->device, BufferDesc{
+        .size = sizeof(operation) + sizeof(uint32_t),
+        .usage = BufferUsageBits::Storage | BufferUsageBits::AccelerationStructureBuildInput |
+            BufferUsageBits::ShaderDeviceAddress,
+        .memoryLocation = MemoryLocation::HostUpload,
+        .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
+    });
+    if (!operationUploadResult) { return makeError(operationUploadResult.error()); }
+    auto operationUpload = std::move(*operationUploadResult);
+    const uint64_t operationAddress = operationUpload->deviceAddress();
+    const uint64_t operationCountAddress = operationAddress + sizeof(operation);
+    if (!operationAddress) { return makeError(Error::Failure); }
+    auto* mappedOperation = static_cast<uint8_t*>(operationUpload->map());
+    if (!mappedOperation) { return makeError(Error::Failure); }
     std::memcpy(mappedOperation, &operation, sizeof(operation));
     const uint32_t operationCount = 1;
-    std::memcpy(mappedOperationCount, &operationCount, sizeof(operationCount));
-    desc.destination->impl_->partitioned->operationBuffer->flush({0, sizeof(operation)});
-    desc.destination->impl_->partitioned->operationCountBuffer->flush({0, sizeof(operationCount)});
-    desc.destination->impl_->partitioned->operationBuffer->unmap();
-    desc.destination->impl_->partitioned->operationCountBuffer->unmap();
+    std::memcpy(mappedOperation + sizeof(operation), &operationCount, sizeof(operationCount));
+    operationUpload->flush();
+    operationUpload->unmap();
 
     const PartitionedAccelerationStructureBuildInputs& inputs =
         desc.destination->impl_->partitioned->desc.inputs;
@@ -7916,12 +7988,17 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         .srcInfos = operationAddress,
         .srcInfosCount = operationCountAddress,
     };
+    auto retained = retainResource(desc.destination->retainAllocation());
+    if (retained) { retained = retainResource(desc.instanceBuffer->retainAllocation()); }
+    if (retained) { retained = retainResource(desc.scratchBuffer->retainAllocation()); }
+    if (retained) { retained = retainResource(operationUpload->retainAllocation()); }
+    if (!retained) { return retained; }
     const VkMemoryBarrier2 inputBarrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
         .srcStageMask = VK_PIPELINE_STAGE_2_HOST_BIT |
-            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+            (desc.graphManagedSynchronization ? 0 : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT),
         .srcAccessMask = VK_ACCESS_2_HOST_WRITE_BIT |
-            VK_ACCESS_2_MEMORY_WRITE_BIT,
+            (desc.graphManagedSynchronization ? 0 : VK_ACCESS_2_MEMORY_WRITE_BIT),
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT |
             VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
@@ -7933,6 +8010,8 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
     };
     vulkan::recordBarrier(impl_->device->device, impl_->commandBuffer, inputDependency);
     vkCmdBuildPartitionedAccelerationStructuresNV(impl_->commandBuffer, &buildInfo);
+
+    if (desc.graphManagedSynchronization) { return {}; }
 
     const VkMemoryBarrier2 outputBarrier{
         .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
@@ -8881,28 +8960,6 @@ Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracin
     if (!result) {
         return std::unexpected(result.error());
     }
-    result = createBuffer(BufferDesc{
-            .size = desc.sizes.operationInfoSize,
-            .usage = BufferUsageBits::Storage |
-                BufferUsageBits::AccelerationStructureBuildInput |
-                BufferUsageBits::ShaderDeviceAddress,
-            .memoryLocation = MemoryLocation::HostUpload,
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
-        }).transform([&](auto rhiValue) { implementation->partitioned->operationBuffer = std::move(rhiValue); });
-    if (!result) {
-        return std::unexpected(result.error());
-    }
-    result = createBuffer(BufferDesc{
-            .size = desc.sizes.operationCountSize,
-            .usage = BufferUsageBits::Storage |
-                BufferUsageBits::AccelerationStructureBuildInput |
-                BufferUsageBits::ShaderDeviceAddress,
-            .memoryLocation = MemoryLocation::HostUpload,
-            .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute,
-        }).transform([&](auto rhiValue) { implementation->partitioned->operationCountBuffer = std::move(rhiValue); });
-    if (!result) {
-        return std::unexpected(result.error());
-    }
     implementation->address = implementation->storage->deviceAddress();
     if (implementation->address == 0) {
         return makeError(Error::Failure);
@@ -9207,6 +9264,11 @@ Result<std::unique_ptr<SwapchainSemaphore>> Device::createSwapchainSemaphore()
 
 Result<std::unique_ptr<Buffer>> Device::createBuffer(const BufferDesc& requestedDesc)
 {
+    return createBuffer(impl_.get(), requestedDesc);
+}
+
+Result<std::unique_ptr<Buffer>> Device::createBuffer(detail::DeviceImpl* impl_, const BufferDesc& requestedDesc)
+{
     auto desc = requestedDesc;
     // Opt-in diagnostic snapshots need to copy the actual bound allocations,
     // including host-upload frame slots. Ordinary buffer usage is unchanged.
@@ -9306,7 +9368,7 @@ Result<std::unique_ptr<Buffer>> Device::createBuffer(const BufferDesc& requested
     }
 
     auto bufferImpl = std::make_unique<detail::BufferImpl>();
-    bufferImpl->device = impl_.get();
+    bufferImpl->device = impl_;
     bufferImpl->desc = desc;
     bufferImpl->desc.memoryDomain = domain;
     bufferImpl->buffer = buffer;

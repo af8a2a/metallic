@@ -17,12 +17,13 @@ struct RenderGraphExecutionQueueSnapshot {
 };
 
 struct RenderGraphExecutionResourceSnapshot {
-    uint64_t id = 0; // Allocation generation, not a pointer or physical memory block.
+    uint64_t id = 0; // Allocation generation, or a dynamic AS slot generation.
     std::string name;
     std::vector<std::string> aliases;
     RenderGraphResourceType type = RenderGraphResourceType::Texture2D;
     TextureDesc textureDesc;
     BufferDesc bufferDesc;
+    RayTracingAccelerationStructureDesc accelerationStructureDesc;
     ResourceMemoryInfo memory;
     bool privateResource = false;
 };

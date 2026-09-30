@@ -297,6 +297,8 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
+        reflection.addAccelerationStructureOutput("accelerationStructure", "Stream TLAS for ray-query consumers")
+            .buildWrite().stageAccess(RenderGraphResourceAccess::AccelerationStructureShaderRead).setOptional();
         RenderGraphField& color = reflection.addTextureOutput(
             "color",
             "Meshlet streamasset deferred color");
@@ -330,6 +332,8 @@ public:
         telemetry.rebuildGraph = true;
         return {
             prefetch,
+            {.key = "AsyncComputePreferred", .label = "Async RTAS Build",
+                .type = RenderGraphRuntimeSettingType::Bool, .defaultValue = true, .rebuildGraph = true},
             retention,
             telemetry,
             runtimeBoolSetting("autoLod", "Auto Meshlet LOD", autoLodProperty(properties())),
@@ -839,7 +843,17 @@ public:
 
         using Access = RenderGraphResourceAccess;
         if (rtasVisualization_) {
-            const RenderGraphStageUse rayQueryUses[] = {{"color", Access::TextureStorageWrite}};
+            if (streamRuntime_->topLevelBuildPending()) {
+                result = context.parallelCompute([&](CommandBuffer& commands) {
+                    auto profile = context.profileScope(commands, "Async TLAS build");
+                    return streamRuntime_->cmdBuildTopLevelAccelerationStructure(commands);
+                }, [](CommandBuffer&) -> Result<> { return {}; });
+                if (!result) { return result; }
+            }
+            result = context.publishAccelerationStructure("accelerationStructure", streamRuntime_->accelerationStructure());
+            if (!result) { return result; }
+            const RenderGraphStageUse rayQueryUses[] = {{"color", Access::TextureStorageWrite},
+                {"accelerationStructure", Access::AccelerationStructureShaderRead}};
             const RenderGraphStage stages[] = {{"Ray query", rayQueryUses,
                 [&](CommandBuffer&) { return drawRayQuery(context, color, frame); }}};
             result = context.executeStages(stages);
@@ -871,8 +885,13 @@ public:
             };
             const RenderGraphStage stages[] = {
                 {"Early Instance cull", {}, [&](CommandBuffer& commands) {
-                    return cull(commands, GPUSceneCullPhase::Early);
-                }},
+                    return streamRuntime_->topLevelBuildPending()
+                        ? context.parallelCompute([&](CommandBuffer& buildCommands) {
+                            auto profile = context.profileScope(buildCommands, "Async TLAS build");
+                            return streamRuntime_->cmdBuildTopLevelAccelerationStructure(buildCommands);
+                        }, [&](CommandBuffer& cullCommands) { return cull(cullCommands, GPUSceneCullPhase::Early); })
+                        : cull(commands, GPUSceneCullPhase::Early);
+                }, RenderGraphPassKind::Unsafe, true},
                 {"Early Hardware raster", rasterUses, [&](CommandBuffer&) {
                     return draw(context, *visibility.view(), depth, GPUSceneCullPhase::Early,
                         LoadOp::Clear, frame.camera.reversedZ);
@@ -911,7 +930,8 @@ public:
             return result;
         }
         if (result) { gpuDrivenDebugCheckpoint(context, "AfterPass", gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_, streamRuntime_.get(), rtasVisualization_ ? UINT32_MAX : 1); }
-        return result;
+        return context.publishAccelerationStructure("accelerationStructure",
+            streamRuntime_->tlasReady() ? streamRuntime_->accelerationStructure() : nullptr);
     }
 
 private:

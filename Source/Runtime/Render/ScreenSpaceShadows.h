@@ -61,7 +61,8 @@ public:
         std::string& log,
         ScenePathTraceResources* geometry,
         const MeshletStreamDeferredGpuResourcesView* streamGeometry = nullptr,
-        CpuProfileRecorder* profiler = nullptr);
+        CpuProfileRecorder* profiler = nullptr,
+        RayTracingAccelerationStructure* accelerationStructure = nullptr);
     void clear();
 
 private:

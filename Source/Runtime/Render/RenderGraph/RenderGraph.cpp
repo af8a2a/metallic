@@ -169,6 +169,48 @@ RenderGraphField& RenderGraphField::setOptional(bool value)
     return *this;
 }
 
+RenderGraphField& RenderGraphField::accelerationStructure()
+{
+    resourceType = RenderGraphResourceType::AccelerationStructure;
+    bindlessAccess = RenderGraphBindlessAccess::None;
+    format = Format::Unknown;
+    if (!accessMatchesResourceType(access, resourceType) || access == RenderGraphResourceAccess::None) {
+        access = visibility == RenderGraphFieldVisibility::Input
+            ? RenderGraphResourceAccess::AccelerationStructureShaderRead
+            : RenderGraphResourceAccess::AccelerationStructureBuildWrite;
+    }
+    applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::accelerationStructureRead()
+{
+    resourceType = RenderGraphResourceType::AccelerationStructure;
+    access = RenderGraphResourceAccess::AccelerationStructureShaderRead;
+    return accelerationStructure();
+}
+
+RenderGraphField& RenderGraphField::buildRead()
+{
+    resourceType = RenderGraphResourceType::AccelerationStructure;
+    access = RenderGraphResourceAccess::AccelerationStructureBuildRead;
+    return accelerationStructure();
+}
+
+RenderGraphField& RenderGraphField::buildWrite()
+{
+    resourceType = RenderGraphResourceType::AccelerationStructure;
+    access = RenderGraphResourceAccess::AccelerationStructureBuildWrite;
+    return accelerationStructure();
+}
+
+RenderGraphField& RenderGraphField::buildReadWrite()
+{
+    resourceType = RenderGraphResourceType::AccelerationStructure;
+    access = RenderGraphResourceAccess::AccelerationStructureBuildReadWrite;
+    return accelerationStructure();
+}
+
 RenderGraphField& RenderGraphField::sampledRead()
 {
     resourceType = RenderGraphResourceType::Texture2D;
@@ -378,6 +420,16 @@ RenderGraphField& RenderPassReflection::addBufferOutput(std::string name, std::s
         .state = ResourceState::General,
     });
     return fields_.back();
+}
+
+RenderGraphField& RenderPassReflection::addAccelerationStructureInput(std::string name, std::string description)
+{
+    return addTextureInput(std::move(name), std::move(description)).accelerationStructure();
+}
+
+RenderGraphField& RenderPassReflection::addAccelerationStructureOutput(std::string name, std::string description)
+{
+    return addTextureOutput(std::move(name), std::move(description)).accelerationStructure();
 }
 
 const RenderGraphField* RenderPassReflection::findField(
@@ -783,6 +835,36 @@ BufferHandle RenderGraphExecutionContext::outputBuffer(std::string_view fieldNam
     return found != nullptr && found->type == RenderGraphResourceType::Buffer
         ? BufferHandle(found)
         : BufferHandle();
+}
+
+RayTracingAccelerationStructure* RenderGraphExecutionContext::inputAccelerationStructure(std::string_view fieldName) const
+{
+    const auto* found = input(fieldName);
+    return found && found->type == RenderGraphResourceType::AccelerationStructure ? found->accelerationStructure : nullptr;
+}
+
+RayTracingAccelerationStructure* RenderGraphExecutionContext::outputAccelerationStructure(std::string_view fieldName) const
+{
+    const auto* found = output(fieldName);
+    return found && found->type == RenderGraphResourceType::AccelerationStructure ? found->accelerationStructure : nullptr;
+}
+
+Result<> RenderGraphExecutionContext::publishAccelerationStructure(std::string_view fieldName,
+    RayTracingAccelerationStructure* accelerationStructure)
+{
+    auto* found = output(fieldName);
+    if (!found || found->type != RenderGraphResourceType::AccelerationStructure || !commandBuffer().recording()) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (accelerationStructure) {
+        if (!accelerationStructure->valid() || accelerationStructure->deviceIdentity() != commandBuffer().deviceIdentity()) {
+            return makeError(Error::InvalidArgument);
+        }
+        auto retained = commandBuffer().retainResource(accelerationStructure->retainAllocation());
+        if (!retained) { return retained; }
+    }
+    found->accelerationStructure = accelerationStructure;
+    return {};
 }
 
 const BindlessHandle* RenderGraphExecutionContext::bindlessResource(std::string_view fieldName) const

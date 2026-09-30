@@ -67,6 +67,69 @@ bool hasVisibilityBarrier(const GraphAccessPlan& plan, size_t first, size_t last
     return false;
 }
 
+class AccessPlanAccelerationStructureTest final : public RhiTest {
+public:
+    AccessPlanAccelerationStructureTest() { name = "render_graph_access_plan_acceleration_structure"; }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "contract", .layer = bench::Layer::RenderGraph,
+            .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
+            .coverage = {"graph.plan.contract.acceleration_structure"}};
+    }
+    RhiTestResult run(RhiTestContext&) override { return check(); }
+    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
+    RhiTestResult check()
+    {
+        using Access = render::RenderGraphResourceAccess;
+        using Kind = render::RenderGraphPassKind;
+        using Type = render::RenderGraphResourceType;
+        using render::detail::declaredGraphAccess;
+        const std::array resources{
+            GraphAccessResource{.type = Type::Buffer},
+            GraphAccessResource{.type = Type::AccelerationStructure},
+        };
+        const std::array passes{
+            GraphAccessPass{.queue = 1, .uses = {declaredGraphAccess(0, Access::BufferStorageWrite, Kind::Compute)}},
+            GraphAccessPass{.queue = 1, .uses = {
+                declaredGraphAccess(0, Access::BufferAccelerationStructureBuildRead, Kind::Compute),
+                declaredGraphAccess(1, Access::AccelerationStructureBuildWrite, Kind::Compute)}},
+            GraphAccessPass{.queue = 1, .uses = {declaredGraphAccess(1, Access::AccelerationStructureShaderRead, Kind::Compute)}},
+            GraphAccessPass{.queue = 0, .uses = {declaredGraphAccess(1, Access::AccelerationStructureShaderRead, Kind::Raster)}},
+            GraphAccessPass{.queue = 1, .uses = {
+                declaredGraphAccess(1, Access::AccelerationStructureBuildRead, Kind::Compute),
+                declaredGraphAccess(1, Access::AccelerationStructureBuildWrite, Kind::Compute)}},
+        };
+        auto plan = buildGraphAccessPlan(resources, passes);
+        ACCESS_CHECK(plan && plan->passes.size() == passes.size());
+        ACCESS_CHECK(hasPredecessor(*plan, 1, 0));
+        ACCESS_CHECK(plan->passes[1].barriers.size() == 1);
+        const auto& inputBarrier = plan->passes[1].barriers.front();
+        ACCESS_CHECK(inputBarrier.resource == 0 && !inputBarrier.executionOnly);
+        ACCESS_CHECK(inputBarrier.beforeScope.stages == PipelineStageBits::ComputeShader);
+        ACCESS_CHECK(inputBarrier.afterScope.stages == PipelineStageBits::AccelerationStructureBuild);
+        ACCESS_CHECK(inputBarrier.afterScope.access == AccessBits::ShaderRead);
+        ACCESS_CHECK(hasVisibilityBarrier(*plan, 2, 2, PipelineStageBits::AccelerationStructureBuild,
+            AccessBits::AccelerationStructureWrite, PipelineStageBits::ComputeShader));
+        // AS has no image layout. Cross-queue visibility comes from the graph
+        // semaphore dependency, with no source-stage barrier on graphics.
+        ACCESS_CHECK(hasPredecessor(*plan, 3, 1) && !hasPredecessor(*plan, 3, 2));
+        ACCESS_CHECK(plan->passes[3].barriers.empty());
+        ACCESS_CHECK(hasPredecessor(*plan, 4, 2) && hasPredecessor(*plan, 4, 3));
+        ACCESS_CHECK(plan->passes[4].uses.size() == 1 && plan->passes[4].uses.front().writes);
+        ACCESS_CHECK(containsBits(plan->passes[4].uses.front().scope.access,
+            AccessBits::AccelerationStructureRead | AccessBits::AccelerationStructureWrite));
+        for (const auto& barrier : plan->passes[4].barriers) {
+            ACCESS_CHECK(!containsBits(barrier.beforeScope.stages, PipelineStageBits::FragmentShader));
+        }
+        render::RenderPassReflection reflection;
+        auto& input = reflection.addAccelerationStructureInput("source");
+        ACCESS_CHECK(input.resourceType == Type::AccelerationStructure && input.access == Access::AccelerationStructureShaderRead);
+        auto& output = reflection.addAccelerationStructureOutput("result");
+        ACCESS_CHECK(output.resourceType == Type::AccelerationStructure && output.access == Access::AccelerationStructureBuildWrite);
+        return RhiTestResult::pass();
+    }
+};
+
 class AccessPlanWriterVisibilityTest final : public RhiTest {
 public:
     std::optional<bench::Metadata> metadata() const override
@@ -748,6 +811,7 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(AccessPlanWriterVisibilityTest);
+METALLIC_REGISTER_RHI_TEST(AccessPlanAccelerationStructureTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanQueueFanoutTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanWarTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanImageLayoutTest);

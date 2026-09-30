@@ -54,6 +54,7 @@ struct SceneStreamingRequirements {
     bool textureFeedback = false;
     bool sampledImage = false;
     bool optionalClusterAccelerationStructure = false;
+    bool graphManagedAccelerationStructure = false;
     bool operator==(const SceneStreamingRequirements&) const = default;
 };
 

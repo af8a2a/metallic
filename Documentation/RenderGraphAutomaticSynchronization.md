@@ -4,7 +4,23 @@
 
 结论：值得推进。目标是让图编辑者和普通 pass 作者只表达资源用途、读写和数据流，由 RenderGraph 生成同步计划。同步责任归入图编译器与后端；它不能对图编译器本身不可见，也不能仅凭 Buffer / Texture 类型或连线方向推断所有访问。
 
-推荐在现有共享 registry、BufferSlice、typed 参数、prepared dispatch、batch receipt 上增加统一的 **ResourceUse → HazardPlan → Barrier / QueueWait** 编译流程。保留现有 Vulkan 同步编码器，不重建另一套资源身份体系。第 1–8 节的完整 API 属于设计草案；已经实现的范围以第 9–10 节为准，尚未测得新性能收益。
+### 2026-09-30：RTAS 图资源与异步构建
+
+AS 现在使用 `RenderGraphResourceType::AccelerationStructure`，与 Buffer、Texture 一起进入 access planner。普通 TLAS 与 PTLAS 共用该资源类型；底层尺寸、存储和构建参数仍由 builder/RHI 管理。Pass 使用 `addAccelerationStructureInput/Output()`，以 `buildRead()`、`buildWrite()`、`buildReadWrite()` 或 `accelerationStructureRead()` 声明读写；输出通过 `publishAccelerationStructure()` 发布，输入通过 `inputAccelerationStructure()` 获取。AS 没有 image layout，图根据 RAW/WAW/WAR 和实际队列推导 AS barrier 与提交依赖。执行查看器展示 AS 资源、实际存储分配和 TLAS backend。
+
+实例/顶点输入使用 `BufferAccelerationStructureBuildRead`（ASBuild + ShaderRead），scratch 使用 `BufferAccelerationStructureScratchReadWrite`（ASBuild + ASRead/ASWrite），shader ray query 使用执行 shader 的 stage + ASRead。[Vulkan AS 同步规范](https://docs.vulkan.org/spec/latest/chapters/accelstructures.html)。`executeStages()` 的第四个参数支持私有 AS 导入。图管辖的构建设置 `graphManagedSynchronization=true`，避免 RHI 再插入默认的全局 post-build barrier；普通直接调用保留原有同步行为。
+
+`SceneAccelerationStructureBuildOptions::asyncComputePreferred` 和 pass 属性 `"AsyncComputePreferred"` 默认开启；存在 compute 队列时优先使用它，关闭后使用 graphics，缺少独立 compute 时保持单队列执行。该选项进入 scene/stream 资源缓存匹配，并在变换和可见性重建时保留。流送 TLAS 的 input/build 与 early culling 分支并行，在下游 ray query 之前汇合，后续软件/硬件光栅的既有 fork/join 保留。流送的 `accelerationStructure` 输出可连到 Deferred 和 Shadows 的同名输入。
+
+`SceneAccelerationStructurePass` 提供普通 TLAS/PTLAS 图输出和逐帧变换更新。连接 AS 输入的消费者自动继承生产者的 backend、构建队列偏好和资源缓存身份，使 CPU 场景同步只准备变换 payload，GPU 更新由该 pass 录制。每个执行器的不同 AS 生产节点使用独立缓存身份，避免多视图或不同图输出复用可变 TLAS/scratch 而缺少依赖。初次 BLAS/OMM、压缩和顶层构建仍由 scene preparation 的异步 builder 完成；旧图未连 AS 输入时保留现有直接资源路径。新的变换 payload 与 PTLAS operation 上传按录制保留至 GPU 完成，取消提交不提交 source revision。变换编辑仍保留既有的前帧 CPU drain，不承诺跨帧 CPU 重叠。
+
+编辑器预加载将当前图传给 `beginSceneResourcePreparation(..., &graph)`，预加载与 AS 生产节点使用相同配置和缓存身份，避免编译图时再分配一套场景 AS。`pathtracing_meet_mat` 样例加入 RTAS 节点及到 PathTrace 的 AS 连线；两个流送实时样例加入到 Shadows/Deferred 的 AS 连线。
+
+验证（2026-09-30）：复用 MSVC Release `build-scheduling-release` 构建 Metallic/MetallicRhiTests 成功；39 项聚焦测试全部通过。真实 GPU 使用 graphics family 0 / compute family 2，覆盖 TLAS/PTLAS 变换的解析 ray-query、取消重试、共享宿主及多生产节点隔离、预加载后 AS 分配数量/字节数不变、跨 pass 动态发布，以及流送异步开关的逐像素一致性。阶段、fork/join、查看器、场景绑定和样例加载回归通过。meet_mat 管线覆盖 Bunny 场景的编辑器 smoke test 完成提交与呈现。既有 `render_graph_final_blit_pipelines` 白名单缺少 `gpu_driven_realtime` 等样例，另行执行仍失败；该测试及原有呈现属性未修改。
+
+同一 Bunny 160×96 场景，每种模式预热 24 帧后采样 32 帧；Shader/PSO cache 已预热。headless render + readback 的墙钟中位数为异步 2.600 ms、graphics 2.781 ms，原始记录在本地 `.tmp/rtas-async/final/StreamedAsyncRtasTiming.json`。该 preview 路径没有可用的 graph GPU envelope 时间；这些墙钟值含录制、提交、等待及回读，不能解释为 TLAS pass 或生产场景帧率收益。大型场景的长期稳定性和端到端性能尚未验证；验证层测试因本机 layer 版本较旧未启用 KHR OMM。
+
+推荐在现有共享 registry、BufferSlice、typed 参数、prepared dispatch、batch receipt 上增加统一的 **ResourceUse → HazardPlan → Barrier / QueueWait** 编译流程。保留现有 Vulkan 同步编码器，不重建另一套资源身份体系。第 1–8 节的完整 API 属于设计草案；已经实现的范围以本节及第 9–10 节为准，尚未测得生产场景的性能收益。
 
 ## 1. 当前已经自动化了什么
 

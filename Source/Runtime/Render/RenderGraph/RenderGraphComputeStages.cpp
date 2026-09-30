@@ -45,18 +45,19 @@ bool validTextureState(const Texture& texture, ResourceState state)
 Result<> RenderGraphExecutionContext::executeComputeStages(
     std::span<const RenderGraphComputeStage> stages, std::span<const RenderGraphBufferImport> imports)
 {
-    return executeStagesImpl(stages, imports, {}, true);
+    return executeStagesImpl(stages, imports, {}, {}, true);
 }
 
 Result<> RenderGraphExecutionContext::executeStages(std::span<const RenderGraphStage> stages,
-    std::span<const RenderGraphBufferImport> buffers, std::span<const RenderGraphTextureImport> textures)
+    std::span<const RenderGraphBufferImport> buffers, std::span<const RenderGraphTextureImport> textures,
+    std::span<const RenderGraphAccelerationStructureImport> accelerationStructures)
 {
-    return executeStagesImpl(stages, buffers, textures, false);
+    return executeStagesImpl(stages, buffers, textures, accelerationStructures, false);
 }
 
 Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGraphStage> stages,
     std::span<const RenderGraphBufferImport> imports, std::span<const RenderGraphTextureImport> textures,
-    bool computeOnly)
+    std::span<const RenderGraphAccelerationStructureImport> accelerationStructures, bool computeOnly)
 {
     using namespace detail;
     if (computeStagesExecuted_ || stages.empty() || !commandBuffer().recording()) {
@@ -72,6 +73,7 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
     std::unordered_map<std::string, size_t> names;
     std::unordered_map<const void*, size_t> bufferIdentities;
     std::unordered_map<const void*, size_t> textureIdentities;
+    std::unordered_map<const void*, size_t> accelerationStructureIdentities;
 
     // Bindings may be per-worker snapshots. Normalize by retained allocation,
     // not the address of the snapshot, view descriptor or public Buffer wrapper.
@@ -87,6 +89,14 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
             if (bound->buffer.deviceIdentity() != commandBuffer().deviceIdentity()) {
                 return makeError(Error::InvalidArgument);
             }
+        } else if (resource.type == RenderGraphResourceType::AccelerationStructure) {
+            if (resource.accelerationStructure) {
+                if (resource.accelerationStructure->deviceIdentity() != commandBuffer().deviceIdentity()) {
+                    return makeError(Error::InvalidArgument);
+                }
+                textureOwner = resource.accelerationStructure->retainAllocation();
+            }
+            identity = textureOwner ? textureOwner.get() : binding.resource;
         } else {
             if (!resource.view || resource.view->deviceIdentity() != commandBuffer().deviceIdentity()) {
                 return makeError(Error::InvalidArgument);
@@ -97,7 +107,8 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
             // an explicit import/completion contract and are outside this API.
             if (!identity) { return makeError(Error::InvalidArgument); }
         }
-        auto& identities = resource.type == RenderGraphResourceType::Buffer ? bufferIdentities : textureIdentities;
+        auto& identities = resource.type == RenderGraphResourceType::Buffer ? bufferIdentities :
+            resource.type == RenderGraphResourceType::AccelerationStructure ? accelerationStructureIdentities : textureIdentities;
         const auto [entry, inserted] = identities.try_emplace(identity, resources.size());
         const size_t index = entry->second;
         if (inserted) {
@@ -181,6 +192,35 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
         if (!names.emplace(imported.name, index).second) { return makeError(Error::InvalidArgument); }
     }
 
+    for (const auto& imported : accelerationStructures) {
+        if (computeOnly || imported.name.empty() || !imported.accelerationStructure ||
+            !imported.accelerationStructure->valid() ||
+            imported.accelerationStructure->deviceIdentity() != commandBuffer().deviceIdentity() ||
+            !accessMatchesResourceType(imported.access, RenderGraphResourceType::AccelerationStructure) ||
+            imported.access == RenderGraphResourceAccess::None) {
+            return makeError(Error::InvalidArgument);
+        }
+        auto owner = imported.accelerationStructure->retainAllocation();
+        if (!owner) { return makeError(Error::InvalidArgument); }
+        const auto scope = scopeForGraphAccess(imported.access, RenderGraphPassKind::Compute);
+        const auto [entry, inserted] = accelerationStructureIdentities.try_emplace(owner.get(), resources.size());
+        const size_t index = entry->second;
+        if (inserted) {
+            resources.push_back({.type = RenderGraphResourceType::AccelerationStructure,
+                .state = stateForAccess(imported.access),
+                .scope = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}});
+            resolved.push_back({.accelerationStructure = imported.accelerationStructure});
+            permissions.push_back(scope);
+            internalLayouts.push_back(false);
+            finalStates.push_back(ResourceState::Undefined);
+            textureOwners.push_back(std::move(owner));
+        } else if (index < graphResourceCount || permissions[index].stages != scope.stages ||
+            permissions[index].access != scope.access) {
+            return makeError(Error::InvalidArgument);
+        }
+        if (!names.emplace(imported.name, index).second) { return makeError(Error::InvalidArgument); }
+    }
+
     std::vector<GraphAccessPass> accesses;
     accesses.reserve(stages.size());
     std::vector<bool> used(resources.size(), false);
@@ -212,7 +252,7 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
                 if ((static_cast<uint64_t>(resolved[index].buffer.allocationDesc().usage) & required) != required) {
                     return makeError(Error::InvalidArgument);
                 }
-            } else {
+            } else if (resources[index].type == RenderGraphResourceType::Texture2D) {
                 const auto required = static_cast<uint64_t>(textureUsageForAccess(use.access));
                 if ((static_cast<uint64_t>(resolved[index].texture->desc().usage) & required) != required) {
                     return makeError(Error::InvalidArgument);
@@ -252,11 +292,20 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
             if (resource.type == RenderGraphResourceType::Buffer) {
                 resource.memory = resolved[index].buffer.memoryInfo();
                 resource.bufferDesc = resolved[index].buffer.allocationDesc();
+            } else if (resource.type == RenderGraphResourceType::AccelerationStructure) {
+                const auto* accelerationStructure = resolved[index].accelerationStructureResource
+                    ? resolved[index].accelerationStructureResource->accelerationStructure : resolved[index].accelerationStructure;
+                if (accelerationStructure) {
+                    resource.memory = accelerationStructure->memoryInfo();
+                    resource.accelerationStructureDesc = accelerationStructure->desc();
+                }
+                resource.id = resolved[index].accelerationStructureResource
+                    ? resolved[index].accelerationStructureResource->logicalResourceId : resource.memory.allocationId;
             } else {
                 resource.memory = resolved[index].texture->memoryInfo();
                 resource.textureDesc = resolved[index].texture->desc();
             }
-            resource.id = resource.memory.allocationId;
+            if (resource.type != RenderGraphResourceType::AccelerationStructure) { resource.id = resource.memory.allocationId; }
             ids.push_back(resource.id);
             if (resource.privateResource && used[index]) {
                 for (const auto& [name, namedIndex] : names) {
@@ -294,6 +343,7 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
         if (!used[index]) { continue; }
         auto owner = resources[index].type == RenderGraphResourceType::Buffer
             ? resolved[index].buffer.retainAllocation() : textureOwners[index];
+        if (!owner && resources[index].type == RenderGraphResourceType::AccelerationStructure) { continue; }
         auto result = commandBuffer().retainResource(std::move(owner));
         if (!result) { return result; }
     }
@@ -325,6 +375,7 @@ Result<> RenderGraphExecutionContext::executeStagesImpl(std::span<const RenderGr
                 const size_t resource = use.resource;
                 auto owner = resources[resource].type == RenderGraphResourceType::Buffer
                     ? resolved[resource].buffer.retainAllocation() : textureOwners[resource];
+                if (!owner && resources[resource].type == RenderGraphResourceType::AccelerationStructure) { continue; }
                 result = commandBuffer().retainResource(std::move(owner));
                 if (!result) { return result; }
             }

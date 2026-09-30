@@ -53,6 +53,7 @@ enum class RenderGraphFieldVisibility : uint8_t {
 enum class RenderGraphResourceType : uint8_t {
     Texture2D,
     Buffer,
+    AccelerationStructure,
 };
 
 enum class RenderGraphResourceAccess : uint8_t {
@@ -74,6 +75,12 @@ enum class RenderGraphResourceAccess : uint8_t {
     BufferStorageWrite,
     BufferIndirectRead,
     TextureSampleReadGeneral,
+    AccelerationStructureBuildRead,
+    AccelerationStructureBuildWrite,
+    AccelerationStructureBuildReadWrite,
+    AccelerationStructureShaderRead,
+    BufferAccelerationStructureBuildRead,
+    BufferAccelerationStructureScratchReadWrite,
 };
 
 enum class RenderGraphBindlessAccess : uint8_t {
@@ -151,6 +158,11 @@ struct RenderGraphField {
 
     RenderGraphField& texture2D(uint32_t newWidth = 0, uint32_t newHeight = 0);
     RenderGraphField& buffer(uint64_t newSize, uint32_t newStructureStride = 0);
+    RenderGraphField& accelerationStructure();
+    RenderGraphField& accelerationStructureRead();
+    RenderGraphField& buildRead();
+    RenderGraphField& buildWrite();
+    RenderGraphField& buildReadWrite();
     RenderGraphField& setOptional(bool value = true);
     RenderGraphField& sampledRead();
     RenderGraphField& colorWrite();
@@ -178,6 +190,8 @@ public:
     RenderGraphField& addTextureOutput(std::string name, std::string description = {});
     RenderGraphField& addBufferInput(std::string name, std::string description = {});
     RenderGraphField& addBufferOutput(std::string name, std::string description = {});
+    RenderGraphField& addAccelerationStructureInput(std::string name, std::string description = {});
+    RenderGraphField& addAccelerationStructureOutput(std::string name, std::string description = {});
 
     const RenderGraphField* findField(
         std::string_view name,
@@ -224,6 +238,9 @@ struct RenderGraphResource {
     BufferView* bufferView = nullptr;
     BufferDesc bufferDesc;
     BufferViewDesc bufferViewDesc;
+    // Published by the owning pass after its builder selects TLAS or PTLAS.
+    RayTracingAccelerationStructure* accelerationStructure = nullptr;
+    uint64_t logicalResourceId = 0;
     // Scheduled boundary state; GPU completion is tracked by the frame context.
     ResourceState state = ResourceState::Undefined;
     BindlessHandle bindlessHandle;
@@ -312,6 +329,12 @@ struct RenderGraphTextureImport {
     ResourceState finalState = ResourceState::Undefined;
 };
 
+struct RenderGraphAccelerationStructureImport {
+    std::string_view name;
+    RayTracingAccelerationStructure* accelerationStructure = nullptr;
+    RenderGraphResourceAccess access = RenderGraphResourceAccess::AccelerationStructureBuildReadWrite;
+};
+
 class RenderGraphExecutionContext {
 public:
     CommandBuffer& commandBuffer() const { return *commandBuffer_; }
@@ -347,6 +370,11 @@ public:
     BufferHandle buffer(std::string_view fieldName) const;
     BufferHandle inputBuffer(std::string_view fieldName) const;
     BufferHandle outputBuffer(std::string_view fieldName) const;
+    RayTracingAccelerationStructure* inputAccelerationStructure(std::string_view fieldName) const;
+    RayTracingAccelerationStructure* outputAccelerationStructure(std::string_view fieldName) const;
+    // An empty scene may publish null. The owner keeps the public wrapper alive;
+    // the graph retains its native allocation through recording/submission.
+    Result<> publishAccelerationStructure(std::string_view fieldName, RayTracingAccelerationStructure* accelerationStructure);
     const BindlessHandle* bindlessResource(std::string_view fieldName) const;
     const BindlessHandle* bindlessInput(std::string_view fieldName) const;
     using CommandRecorder = std::function<Result<>(CommandBuffer&)>;
@@ -366,7 +394,8 @@ public:
     // internal uses; graph image layouts are restored to the pass boundary.
     Result<> executeStages(std::span<const RenderGraphStage> stages,
         std::span<const RenderGraphBufferImport> buffers = {},
-        std::span<const RenderGraphTextureImport> textures = {});
+        std::span<const RenderGraphTextureImport> textures = {},
+        std::span<const RenderGraphAccelerationStructureImport> accelerationStructures = {});
     // Join independent CPU jobs before returning, including on failure. Capture
     // frozen inputs and distinct output slots; never capture this context or
     // mutate frame/history/subsystems, issue commands, or publish from a job.
@@ -472,7 +501,8 @@ private:
     bool stagesAllowParallel_ = false;
     Result<> executeStagesImpl(std::span<const RenderGraphStage> stages,
         std::span<const RenderGraphBufferImport> buffers,
-        std::span<const RenderGraphTextureImport> textures, bool computeOnly);
+        std::span<const RenderGraphTextureImport> textures,
+        std::span<const RenderGraphAccelerationStructureImport> accelerationStructures, bool computeOnly);
 
     friend class RenderGraphExecutor;
 };

@@ -22,6 +22,83 @@
 namespace metallic::tests {
 namespace {
 
+class RayTracingAccelerationStructureBarrierTest : public RhiTest {
+public:
+    RayTracingAccelerationStructureBarrierTest()
+    {
+        type = RhiTestType::Resource;
+        name = "ray_tracing_acceleration_structure_barriers";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        auto deviceResult = render::createDevice(render::DeviceDesc{
+            .applicationName = "Metallic AS Barrier Test",
+            .enableValidation = context.enableValidation,
+            .enableRayTracingAccelerationStructure = true,
+            .enableRayQuery = true,
+            .enableAsyncCompute = true,
+        });
+        if (!deviceResult) {
+            return render::hasError(deviceResult, render::Error::Unsupported)
+                ? RhiTestResult::skip("ray tracing acceleration structures unavailable")
+                : RhiTestResult::fail(std::string("createDevice returned ") + render::resultToString(deviceResult));
+        }
+        auto device = std::move(*deviceResult);
+        auto accelerationStructureResult = device->createRayTracingAccelerationStructure({
+            .type = render::RayTracingAccelerationStructureType::TopLevel,
+            .size = 4096,
+        });
+        if (!accelerationStructureResult) {
+            return RhiTestResult::fail("failed to create AS barrier resource");
+        }
+        auto accelerationStructure = std::move(*accelerationStructureResult);
+        if (!accelerationStructure->memoryInfo().allocationId ||
+            !accelerationStructure->supportsQueueAccess(render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute) ||
+            accelerationStructure->supportsQueueAccess(render::QueueAccessBits::None)) {
+            return RhiTestResult::fail("AS allocation metadata or compute queue sharing is invalid");
+        }
+        auto* queue = device->getQueue(render::QueueType::Compute);
+        if (!queue) { queue = device->getQueue(render::QueueType::Graphics); }
+        if (!queue) { return RhiTestResult::fail("no AS build queue is available"); }
+        auto poolResult = device->createCommandPool(*queue);
+        if (!poolResult) { return RhiTestResult::fail("failed to create AS barrier command pool"); }
+        auto pool = std::move(*poolResult);
+        auto commandsResult = pool->createCommandBuffer();
+        if (!commandsResult) { return RhiTestResult::fail("failed to create AS barrier commands"); }
+        auto commands = std::move(*commandsResult);
+        if (!commands->begin()) { return RhiTestResult::fail("failed to begin AS barrier commands"); }
+        const render::AccelerationStructureBarrierDesc invalidBarrier;
+        if (!render::hasError(commands->synchronize({.accelerationStructures = std::span(&invalidBarrier, 1)}),
+                render::Error::InvalidArgument) || commands->synchronizationStats().calls != 0) {
+            return RhiTestResult::fail("invalid AS barriers must be rejected before recording");
+        }
+        const render::AccelerationStructureBarrierDesc barriers[]{
+            {.accelerationStructure = accelerationStructure.get(),
+                .before = {render::PipelineStageBits::AccelerationStructureBuild, render::AccessBits::AccelerationStructureWrite},
+                .after = {render::PipelineStageBits::ComputeShader, render::AccessBits::AccelerationStructureRead}},
+            {.accelerationStructure = accelerationStructure.get(),
+                .before = {render::PipelineStageBits::AccelerationStructureBuild, render::AccessBits::AccelerationStructureRead},
+                .after = {render::PipelineStageBits::ComputeShader, render::AccessBits::AccelerationStructureRead}},
+        };
+        if (!commands->synchronize({.accelerationStructures = barriers})) {
+            return RhiTestResult::fail("compute AS build-to-read barriers were rejected");
+        }
+        const auto stats = commands->synchronizationStats();
+        if (stats.calls != 1 || stats.memoryBarriers != 1 || stats.coalescedResources != 2 || stats.imageTransitions != 0) {
+            return RhiTestResult::fail("AS dependencies were not coalesced into a memory barrier");
+        }
+        const std::weak_ptr<void> allocation = accelerationStructure->retainAllocation();
+        accelerationStructure.reset();
+        if (allocation.expired()) { return RhiTestResult::fail("AS barrier commands did not retain the allocation"); }
+        if (!commands->end()) { return RhiTestResult::fail("failed to end AS barrier commands"); }
+        commands.reset();
+        pool.reset();
+        if (!allocation.expired()) { return RhiTestResult::fail("cancelled AS barrier recording leaked the allocation"); }
+        return RhiTestResult::pass("Validated compute AS barriers, allocation metadata, coalescing and retention");
+    }
+};
+
 class SceneAccelerationStructureBuildTest : public RhiTest {
 public:
     explicit SceneAccelerationStructureBuildTest(bool partitioned = false) : partitioned_(partitioned)
@@ -851,6 +928,7 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(SceneAccelerationStructureBuildTest);
+METALLIC_REGISTER_RHI_TEST(RayTracingAccelerationStructureBarrierTest);
 METALLIC_REGISTER_RHI_TEST(SceneClusterAccelerationStructureBuildTest);
 METALLIC_REGISTER_RHI_TEST(ScenePartitionedAccelerationStructureBuildTest);
 METALLIC_REGISTER_RHI_TEST(MeshletStreamClasPoolBuildTest);

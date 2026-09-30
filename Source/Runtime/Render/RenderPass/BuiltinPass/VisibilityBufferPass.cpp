@@ -233,6 +233,8 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
+        reflection.addAccelerationStructureOutput("accelerationStructure", "Stream TLAS for ray-query consumers")
+            .buildWrite().setOptional();
         reflection.addTextureOutput("color", "Optional visibility-buffer diagnostic display (no material shading)")
             .format = Format::Rgba8Unorm;
         RenderGraphField& visibility = reflection.addTextureOutput(
@@ -277,6 +279,8 @@ public:
             runtimeBoolSetting("hybridRaster", "Hybrid Software Rasterization", true),
             runtimeBoolSetting("clusterPrebin", "Cluster Prebinning", true),
             runtimeBoolSetting("asyncSoftwareRaster", "Async Software Rasterization", true),
+            {.key = "AsyncComputePreferred", .label = "Async RTAS Build",
+                .type = RenderGraphRuntimeSettingType::Bool, .defaultValue = true, .rebuildGraph = true},
             runtimeBoolSetting("asyncLateRaster", "Async Late Software Rasterization", false),
             runtimeFloatSetting("softwareRasterMaxPixels", "Software Triangle Size (px)", 8.0f, 1.0f, 32.0f),
             runtimeBoolSetting("softwareRasterSharedScreenVertices", "Shared SW Screen Vertices", true),
@@ -939,6 +943,14 @@ public:
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        const auto result = executeRaster(context);
+        if (!result) { return result; }
+        return context.publishAccelerationStructure("accelerationStructure",
+            streamEnabled_ && streamRuntime_->tlasReady() ? streamRuntime_->accelerationStructure() : nullptr);
+    }
+
+    Result<> executeRaster(RenderGraphExecutionContext& context)
+    {
         // The graph node also owns streaming/traversal work. Keep the actual
         // visibility rendering separately identifiable in GPU traces.
         auto visibilityProfile = context.profileScope("Visibility raster");
@@ -1032,17 +1044,29 @@ public:
         for (uint32_t passIndex = 0; passIndex < 2; ++passIndex) {
             stages.push_back({passIndex == 0 ? "Early instance cull" : "Late instance cull", {},
                 [&, passIndex](CommandBuffer& commands) -> Result<> {
-                    auto cullResult = dispatchCulling(commands, passIndex);
-                    if (cullResult && streamEnabled_) {
-                        cullResult = dispatchStreamCulling(commands,
-                            passIndex == 0 ? GPUSceneCullPhase::Early : GPUSceneCullPhase::Late);
-                    }
+                    const auto cull = [&](CommandBuffer& cullCommands) {
+                        auto cullResult = dispatchCulling(cullCommands, passIndex);
+                        if (cullResult && streamEnabled_) {
+                            cullResult = dispatchStreamCulling(cullCommands,
+                                passIndex == 0 ? GPUSceneCullPhase::Early : GPUSceneCullPhase::Late);
+                        }
+                        return cullResult;
+                    };
+                    // Traversal/BLAS is the fork producer. TLAS input, scratch
+                    // and AS storage are disjoint from early instance culling.
+                    // Join here so the later software/hardware raster forks
+                    // retain their own compute overlap and ray consumers wait.
+                    auto cullResult = passIndex == 0 && streamEnabled_ && streamRuntime_->topLevelBuildPending()
+                        ? context.parallelCompute([&](CommandBuffer& buildCommands) {
+                            auto profile = context.profileScope(buildCommands, "Async TLAS build");
+                            return streamRuntime_->cmdBuildTopLevelAccelerationStructure(buildCommands);
+                        }, cull) : cull(commands);
                     if (!cullResult) { return cullResult; }
                     gpuDrivenDebugCheckpoint(context, passIndex == 0 ? "AfterEarlyCull" : "AfterLateCull",
                         gpuSceneSubsystem, gpuSceneView_, activeFrameSlot_,
                         streamEnabled_ ? streamRuntime_.get() : nullptr, passIndex, residentRecordCapacity_);
                     return {};
-                }});
+                }, RenderGraphPassKind::Unsafe, true});
             if (freezeCullingCamera_) {
                 addResidentRaster(passIndex, true);
                 if (passIndex == 0) { addHzb("Early HZB"); }

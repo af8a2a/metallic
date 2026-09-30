@@ -105,7 +105,8 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     std::string& log,
     ScenePathTraceResources* geometry,
     const MeshletStreamDeferredGpuResourcesView* streamGeometry,
-    CpuProfileRecorder* profiler)
+    CpuProfileRecorder* profiler,
+    RayTracingAccelerationStructure* accelerationStructure)
 {
     ScreenSpaceShadowResult output{};
     CpuProfileScope profile(profiler, "Validate shadow resources");
@@ -125,7 +126,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         return makeError(Error::Unsupported);
     }
     const bool streamed = streamGeometry != nullptr;
-    const bool streamTlas = streamed && streamGeometry->accelerationStructure != nullptr;
+    const bool streamTlas = streamed && (accelerationStructure || streamGeometry->accelerationStructure != nullptr);
     if (!streamed && (geometry == nullptr || !geometry->valid())) {
         log = "Ray-traced shadows require prepared scene geometry";
         return makeError(Error::InvalidArgument);
@@ -309,7 +310,8 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         if (streamTlas) {
             CpuProfileScope resources(profiler, "Prepare material textures");
             if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
-            bindings.push_back({.binding = 0, .accelerationStructure = streamGeometry->accelerationStructure});
+            bindings.push_back({.binding = 0, .accelerationStructure = accelerationStructure
+                ? accelerationStructure : streamGeometry->accelerationStructure});
             bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
             bindings.push_back({.binding = 9, .textureViews = {geometry->materialTextureViews().data(), textureCount}, .sampledImages = geometry->materialTextureSnapshot()});
             bindings.push_back({.binding = 90, .buffer = streamGeometry->pageBuffer});
@@ -322,7 +324,8 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     } else {
         CpuProfileScope resources(profiler, "Prepare material textures");
         if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
-        bindings.push_back({.binding = 0, .accelerationStructure = geometry->accelerationStructure().accelerationStructure()});
+        bindings.push_back({.binding = 0, .accelerationStructure = accelerationStructure
+            ? accelerationStructure : geometry->accelerationStructure().accelerationStructure()});
         bindings.push_back({.binding = 2, .buffer = geometry->shadingVertexBuffer()});
         bindings.push_back({.binding = 3, .buffer = geometry->indexBuffer()});
         bindings.push_back({.binding = 4, .buffer = geometry->primitiveBuffer()});

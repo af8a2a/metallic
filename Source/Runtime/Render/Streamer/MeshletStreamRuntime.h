@@ -500,6 +500,7 @@ struct MeshletStreamRuntimeDesc {
     uint32_t maxPageLoadsInFlight = 128;
     uint32_t queuedFrameCount = 3;
     bool enableClusterRtx = false;
+    bool asyncComputePreferred = true;
     bool enableClas = false; // Build resident CLAS independently of per-frame BLAS/TLAS.
     bool compactClas = false;
     uint32_t coldPageRetentionFrames = 0; // Zero preserves budget-only eviction.
@@ -602,6 +603,7 @@ public:
     // Cached for the root resource lifetime; loading progress refreshes per frame.
     bool sceneReady() const { return sceneReadiness().ready; }
     bool tlasReady() const { return tlasBuilt_; }
+    bool topLevelBuildPending() const { return topLevelBuildPending_; }
     RayTracingAccelerationStructure* accelerationStructure() const;
 
     Result<> cmdBeginFrame(CommandBuffer& commandBuffer, Streamer& streamer, const MeshletStreamFrameDesc& frame,
@@ -616,6 +618,10 @@ public:
     const CpuProfileRecorder& beginFrameCpuProfile() const { return beginFrameCpuProfile_; }
     using TraversalCheckpoint = std::function<void(std::string_view)>;
     Result<> cmdPreTraversal(CommandBuffer& commandBuffer, const MeshletStreamFrameDesc& frame,
+        const TraversalCheckpoint& checkpoint = {}, bool deferTopLevelBuild = false);
+    // The traversal producer must precede this sequence. Its input, scratch and
+    // AS accesses are synchronized by the shared RenderGraph access planner.
+    Result<> cmdBuildTopLevelAccelerationStructure(CommandBuffer& commandBuffer,
         const TraversalCheckpoint& checkpoint = {});
     Result<> cmdPostTraversal(CommandBuffer& commandBuffer);
     Result<> cmdEndFrame(CommandBuffer& commandBuffer);
@@ -894,6 +900,7 @@ private:
     ResourceState blasAddressBufferState_ = ResourceState::Undefined;
     uint64_t blasClusterReferenceAddress_ = 0;
     bool tlasBuilt_ = false;
+    bool topLevelBuildPending_ = false;
     std::vector<FallbackBlasPrimitive> fallbackBlasPrimitives_;
     uint32_t currentFrameUploadCount_ = 0;
     MeshletStreamGpuParams previousFrameParams_;

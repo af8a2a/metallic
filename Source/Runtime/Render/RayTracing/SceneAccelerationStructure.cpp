@@ -1,5 +1,6 @@
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/RayTracing/OpacityMicromapBake.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 
 #include <spdlog/spdlog.h>
 
@@ -20,6 +21,16 @@ using BuildClock = std::chrono::steady_clock;
 constexpr RayTracingAccelerationStructureBuildFlags kSceneBlasBuildFlags =
     RayTracingAccelerationStructureBuildFlags::PreferFastTrace |
     RayTracingAccelerationStructureBuildFlags::AllowCompaction;
+
+Queue& preferredBuildQueue(Device& device, Queue& fallback, bool asyncComputePreferred)
+{
+    if (asyncComputePreferred) {
+        if (Queue* compute = device.getQueue(QueueType::Compute)) {
+            return *compute;
+        }
+    }
+    return fallback;
+}
 
 struct RayTracingVertex {
     float x = 0.0f;
@@ -191,26 +202,33 @@ struct TopLevelBuildStrategy {
     }
 
     Result<> record(CommandBuffer& commands, RayTracingAccelerationStructure& destination,
-        Buffer& instances, uint32_t count, Buffer& scratch, uint64_t offset, bool update = false) const
+        Buffer& instances, uint32_t count, Buffer& scratch, uint64_t offset, bool update = false,
+        bool graphManagedSynchronization = false) const
     {
         if (backend == RayTracingTopLevelBackend::Partitioned) {
             // The current RHI writes all instances with a null source, including
             // transform updates. BLAS and OMM allocations remain unchanged.
             return commands.buildPartitionedAccelerationStructure({.destination = &destination,
                 .instanceBuffer = &instances, .instanceCount = count, .scratchBuffer = &scratch,
-                .scratchBufferOffset = offset});
+                .scratchBufferOffset = offset, .graphManagedSynchronization = graphManagedSynchronization});
         }
         return commands.buildRayTracingAccelerationStructure({.destination = &destination,
             .source = update ? &destination : nullptr,
             .mode = update ? RayTracingAccelerationStructureBuildMode::Update : RayTracingAccelerationStructureBuildMode::Build,
             .instanceBuffer = &instances, .instanceCount = count, .scratchBuffer = &scratch,
-            .scratchBufferOffset = offset});
+            .scratchBufferOffset = offset, .graphManagedSynchronization = graphManagedSynchronization});
     }
 };
 
 } // namespace
 
 struct SceneAccelerationStructureBuilder::Impl {
+    struct TransformUpdateState {
+        uint64_t committedRevision = 0;
+        uint64_t pendingRevision = 0;
+        uint32_t instanceCount = 0;
+        std::shared_ptr<Buffer> instanceBuffer;
+    };
     enum class BuildPhase : uint8_t {
         None,
         BuildBottomLevels,
@@ -235,7 +253,8 @@ struct SceneAccelerationStructureBuilder::Impl {
     std::vector<uint64_t> originalBlasSizes;
     std::vector<RayTracingInstanceDesc> pendingInstances;
     std::vector<uint32_t> pendingInstanceBlasIndices;
-    uint64_t sourceGeometryTransformRevision = 0;
+    std::shared_ptr<TransformUpdateState> transformUpdate = std::make_shared<TransformUpdateState>();
+    bool asyncComputePreferred = true;
     uint64_t scratchOffset = 0;
     uint64_t tlasBytes = 0;
     std::unique_ptr<CommandPool> buildCommandPool;
@@ -291,7 +310,8 @@ struct SceneAccelerationStructureBuilder::Impl {
         pendingInstanceBlasIndices.clear();
         stats = {};
         topLevel = {};
-        sourceGeometryTransformRevision = 0;
+        transformUpdate = std::make_shared<TransformUpdateState>();
+        asyncComputePreferred = true;
         scratchOffset = 0;
         tlasBytes = 0;
         buildDevice = nullptr;
@@ -617,7 +637,7 @@ Result<> SceneAccelerationStructureBuilder::build(
     std::string& log,
     const SceneAccelerationStructureBuildOptions& options)
 {
-    return buildInternal(device, queue, scene, options, true, log);
+    return buildInternal(device, preferredBuildQueue(device, queue, options.asyncComputePreferred), scene, options, true, log);
 }
 
 Result<> SceneAccelerationStructureBuilder::beginBuild(
@@ -627,7 +647,7 @@ Result<> SceneAccelerationStructureBuilder::beginBuild(
     std::string& log,
     const SceneAccelerationStructureBuildOptions& options)
 {
-    return buildInternal(device, queue, scene, options, false, log);
+    return buildInternal(device, preferredBuildQueue(device, queue, options.asyncComputePreferred), scene, options, false, log);
 }
 
 Result<> SceneAccelerationStructureBuilder::buildInternal(
@@ -660,6 +680,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
     }
     clear();
     impl_->topLevel.backend = options.topLevelBackend;
+    impl_->asyncComputePreferred = options.asyncComputePreferred;
     const BuildClock::time_point begin = BuildClock::now();
     impl_->buildBegin = begin;
     const std::vector<scene::RenderPrimitive>& renderPrimitives = scene.renderPrimitives();
@@ -1074,7 +1095,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
     impl_->primitiveToBlas = std::move(primitiveToBlas);
     impl_->pendingInstances = std::move(instances);
     impl_->pendingInstanceBlasIndices = std::move(instanceBlasIndices);
-    impl_->sourceGeometryTransformRevision = scene.geometryTransformRevision();
+    impl_->transformUpdate->committedRevision = scene.geometryTransformRevision();
     impl_->buildDevice = &device;
     impl_->buildQueue = &queue;
     impl_->buildCommandPool = std::move(commandPool);
@@ -1129,6 +1150,44 @@ Result<> SceneAccelerationStructureBuilder::updateInstanceTransforms(
     const scene::Scene& scene,
     std::string& log)
 {
+    Result<> result = prepareInstanceTransformUpdate(device, scene, log);
+    if (!result || !hasPendingInstanceTransformUpdate()) {
+        return result;
+    }
+    Queue& buildQueue = preferredBuildQueue(device, queue, impl_->asyncComputePreferred);
+    std::unique_ptr<CommandPool> commandPool;
+    std::unique_ptr<CommandBuffer> commandBuffer;
+    std::unique_ptr<Fence> fence;
+    if (!(result = device.createCommandPool(buildQueue).transform([&](auto value) { commandPool = std::move(value); })) ||
+        !(result = commandPool->createCommandBuffer().transform([&](auto value) { commandBuffer = std::move(value); })) ||
+        !(result = device.createFence(false).transform([&](auto value) { fence = std::move(value); })) ||
+        !(result = commandBuffer->begin())) {
+        log = resultMessage("create scene TLAS update submission", result);
+        return result;
+    }
+    result = recordInstanceTransformUpdate(*commandBuffer, log, false);
+    if (!result || !(result = commandBuffer->end())) {
+        log = resultMessage("record scene TLAS update", result);
+        return result;
+    }
+    CommandBuffer* commandBuffers[] = {commandBuffer.get()};
+    result = buildQueue.submit(QueueSubmitDesc{
+        .commandBuffers = {commandBuffers, 1},
+        .signalFence = fence.get(),
+    });
+    if (!result || !(result = fence->wait())) {
+        log = resultMessage("submit scene TLAS update", result);
+        return result;
+    }
+    log = "Updated scene acceleration-structure instance transforms.";
+    return {};
+}
+
+Result<> SceneAccelerationStructureBuilder::prepareInstanceTransformUpdate(
+    Device& device,
+    const scene::Scene& scene,
+    std::string& log)
+{
     log.clear();
     if (!valid() || !scene.valid() || impl_->instanceBuffer == nullptr ||
         impl_->scratchBuffer == nullptr || impl_->primitiveToBlas.empty() ||
@@ -1136,11 +1195,15 @@ Result<> SceneAccelerationStructureBuilder::updateInstanceTransforms(
         log = "Scene acceleration structures are not ready for an instance update.";
         return makeError(Error::InvalidArgument);
     }
-    // Lights and cameras advance the scene transform revision without changing
-    // any ray-traced instance. Do not submit (and synchronously wait for) a TLAS
-    // refit unless a render-node transform actually changed.
+    // Lights and cameras do not change ray-traced instances. Preparation must
+    // also survive a cancelled graph recording without losing the needed refit.
     const uint64_t geometryRevision = scene.geometryTransformRevision();
-    if (impl_->sourceGeometryTransformRevision == geometryRevision) {
+    auto& update = *impl_->transformUpdate;
+    if (update.committedRevision == geometryRevision) {
+        update.instanceBuffer.reset();
+        return {};
+    }
+    if (update.instanceBuffer && update.pendingRevision == geometryRevision) {
         return {};
     }
 
@@ -1171,43 +1234,78 @@ Result<> SceneAccelerationStructureBuilder::updateInstanceTransforms(
         return makeError(Error::InvalidArgument);
     }
     if (instances.empty()) {
-        impl_->sourceGeometryTransformRevision = geometryRevision;
+        update.committedRevision = geometryRevision;
+        update.instanceBuffer.reset();
         return {};
     }
 
-    Result<> result = impl_->topLevel.encode(device, instances, impl_->instanceBuffer);
+    // An earlier frame may still read its upload while this frame records. A
+    // fresh immutable buffer avoids host writes racing GPU instance reads.
+    std::unique_ptr<Buffer> instanceBuffer;
+    Result<> result = impl_->topLevel.encode(device, instances, instanceBuffer);
     if (!result) {
         log = resultMessage("encode scene top-level instances", result);
         return result;
     }
-    std::unique_ptr<CommandPool> commandPool;
-    std::unique_ptr<CommandBuffer> commandBuffer;
-    std::unique_ptr<Fence> fence;
-    if (!(result = device.createCommandPool(queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); })) ||
-        !(result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); })) ||
-        !(result = device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); })) ||
-        !(result = commandBuffer->begin())) {
-        log = resultMessage("create scene TLAS update submission", result);
-        return result;
-    }
-    result = impl_->topLevel.record(*commandBuffer, *impl_->tlas, *impl_->instanceBuffer,
-        uint32_t(instances.size()), *impl_->scratchBuffer, impl_->scratchOffset, true);
-    if (!result || !(result = commandBuffer->end())) {
-        log = resultMessage("record scene TLAS update", result);
-        return result;
-    }
-    CommandBuffer* commandBuffers[] = {commandBuffer.get()};
-    result = queue.submit(QueueSubmitDesc{
-        .commandBuffers = {commandBuffers, 1},
-        .signalFence = fence.get(),
-    });
-    if (!result || !(result = fence->wait())) {
-        log = resultMessage("submit scene TLAS update", result);
-        return result;
-    }
-    impl_->sourceGeometryTransformRevision = geometryRevision;
-    log = "Updated scene acceleration-structure instance transforms.";
+    update.instanceBuffer = std::move(instanceBuffer);
+    update.pendingRevision = geometryRevision;
+    update.instanceCount = uint32_t(instances.size());
+    log = "Prepared scene acceleration-structure instance transforms.";
     return {};
+}
+
+Result<> SceneAccelerationStructureBuilder::recordInstanceTransformUpdate(
+    CommandBuffer& commands, std::string& log, bool graphManagedSynchronization)
+{
+    log.clear();
+    if (!valid() || commands.deviceIdentity() != impl_->tlas->deviceIdentity() || !commands.recording()) {
+        log = "Scene acceleration structures are not ready for recording an instance update.";
+        return makeError(Error::InvalidArgument);
+    }
+    if (!hasPendingInstanceTransformUpdate()) {
+        return {};
+    }
+    const auto state = impl_->transformUpdate;
+    const auto upload = state->instanceBuffer;
+    const uint64_t revision = state->pendingRevision;
+    Result<> result = commands.retainResource(upload);
+    if (!result) {
+        return result;
+    }
+    result = impl_->topLevel.record(commands, *impl_->tlas, *upload,
+        state->instanceCount, *impl_->scratchBuffer, impl_->scratchOffset, true, graphManagedSynchronization);
+    if (!result) {
+        log = resultMessage("record scene top-level instance transforms", result);
+        return result;
+    }
+    // Revision publication belongs to queue acceptance, so a cancelled graph
+    // retries the same update on its next recording.
+    auto transaction = std::make_shared<SubmissionTransaction>([state, upload, revision] {
+        state->committedRevision = revision;
+        if (state->instanceBuffer == upload) {
+            state->instanceBuffer.reset();
+        }
+    }, [] {});
+    result = commands.addSubmissionTransaction(std::move(transaction));
+    if (!result) {
+        log = resultMessage("stage scene top-level instance update", result);
+    }
+    return result;
+}
+
+bool SceneAccelerationStructureBuilder::hasPendingInstanceTransformUpdate() const
+{
+    return impl_ && impl_->transformUpdate->instanceBuffer != nullptr;
+}
+
+Buffer* SceneAccelerationStructureBuilder::instanceTransformUpdateBuffer() const
+{
+    return impl_ ? impl_->transformUpdate->instanceBuffer.get() : nullptr;
+}
+
+Buffer* SceneAccelerationStructureBuilder::instanceTransformUpdateScratchBuffer() const
+{
+    return impl_ ? impl_->scratchBuffer.get() : nullptr;
 }
 
 void SceneAccelerationStructureBuilder::clear()

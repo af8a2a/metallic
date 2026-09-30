@@ -55,6 +55,8 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
+        reflection.addAccelerationStructureInput("accelerationStructure", "Optional graph-managed scene TLAS/PTLAS")
+            .accelerationStructureRead().setOptional();
         reflection.addTextureOutput("color", "ReSTIR DI many-light direct illumination")
             .storageWrite()
             .format = boolProperty(&properties(), "outputLinear", false) ? Format::Rgba32Sfloat : Format::Rgba8Unorm;
@@ -522,7 +524,9 @@ public:
             {
                 .binding = 0,
                 .accelerationStructure =
-                    sceneResources_.accelerationStructure().accelerationStructure(),
+                    context.inputAccelerationStructure("accelerationStructure")
+                        ? context.inputAccelerationStructure("accelerationStructure")
+                        : sceneResources_.accelerationStructure().accelerationStructure(),
             },
             {.binding = 1, .textureView = color.view()},
             {.binding = 2, .buffer = sceneResources_.shadingVertexBuffer()},

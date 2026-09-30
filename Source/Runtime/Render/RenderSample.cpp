@@ -232,7 +232,7 @@ public:
     {
         return "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json";
     }
-    std::vector<std::string> scenePathTargets() const override { return {"PathTrace"}; }
+    std::vector<std::string> scenePathTargets() const override { return {"RTAS", "PathTrace"}; }
     std::optional<RenderSampleEnvironmentDesc> environment() const override
     {
         return RenderSampleEnvironmentDesc{

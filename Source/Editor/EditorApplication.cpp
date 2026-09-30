@@ -1622,6 +1622,8 @@ const char* renderGraphResourceTypeName(render::RenderGraphResourceType type)
         return "Texture2D";
     case render::RenderGraphResourceType::Buffer:
         return "Buffer";
+    case render::RenderGraphResourceType::AccelerationStructure:
+        return "AccelerationStructure";
     }
 
     return "Unknown";
@@ -1666,6 +1668,18 @@ const char* renderGraphResourceAccessName(render::RenderGraphResourceAccess acce
         return "ConstantRead";
     case render::RenderGraphResourceAccess::BufferIndirectRead:
         return "IndirectRead";
+    case render::RenderGraphResourceAccess::AccelerationStructureBuildRead:
+        return "ASBuildRead";
+    case render::RenderGraphResourceAccess::AccelerationStructureBuildWrite:
+        return "ASBuildWrite";
+    case render::RenderGraphResourceAccess::AccelerationStructureBuildReadWrite:
+        return "ASBuildReadWrite";
+    case render::RenderGraphResourceAccess::AccelerationStructureShaderRead:
+        return "ASShaderRead";
+    case render::RenderGraphResourceAccess::BufferAccelerationStructureBuildRead:
+        return "ASBuildInputRead";
+    case render::RenderGraphResourceAccess::BufferAccelerationStructureScratchReadWrite:
+        return "ASScratchReadWrite";
     }
 
     return "Unknown";
@@ -1822,7 +1836,7 @@ void setRenderGraphFieldTooltip(const render::RenderGraphField& field)
     if (field.resourceType == render::RenderGraphResourceType::Texture2D) {
         text += "\nFormat: ";
         text += renderGraphFormatName(field.format);
-    } else {
+    } else if (field.resourceType == render::RenderGraphResourceType::Buffer) {
         text += "\nSize: ";
         text += std::to_string(field.size);
         text += " bytes";
@@ -7527,7 +7541,8 @@ void EditorApplication::pollSceneLoad()
             *device_,
             properties,
             *readySceneLoad_,
-            log);
+            log,
+            &renderGraph_);
         if (!result) {
             readySceneLoad_.reset();
             pendingSceneLoadPath_.clear();

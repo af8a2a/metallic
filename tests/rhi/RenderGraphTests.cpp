@@ -11,6 +11,7 @@
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
+#include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -9861,6 +9862,188 @@ public:
     }
 };
 
+class RenderGraphStreamedAsyncAccelerationStructureTest : public RhiTest {
+public:
+    RenderGraphStreamedAsyncAccelerationStructureTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_streamed_async_acceleration_structure";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        constexpr uint32_t kWidth = 160, kHeight = 96;
+        const auto source = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
+        const auto cache = std::filesystem::absolute(context.outputDirectory / "AsyncRtasBunny.meshstream.bin");
+        std::string log;
+        if (!scene::buildMeshletStreamAssetOffline({.sourcePath = source, .outputPath = cache,
+                .meshletOptions = {.maxWorkers = 1}}, log)) {
+            return RhiTestResult::fail(log);
+        }
+        RenderSampleLoadResult sample;
+        if (!loadBuiltInRenderSample(kDefaultGPUDrivenSampleId, sample, log) ||
+            !setRenderSampleScenePath(sample, source.generic_string(), log)) {
+            return RhiTestResult::fail(log);
+        }
+        auto& graph = sample.graph;
+        auto* visibility = graph.findNode("VBuffer");
+        if (!visibility) { return RhiTestResult::fail("streamed sample has no visibility producer"); }
+        const auto visibilityId = visibility->id;
+        auto& props = visibility->properties;
+        props["streamAssetPath"] = cache.generic_string();
+        props["enableClusterRtx"] = true;
+        props["maxResidentPages"] = 64; props["maxResidentBytes"] = 16777216;
+        props["maxLockedFallbackPages"] = 64; props["maxActiveGroups"] = 1024;
+        props["maxClasBytes"] = 16777216; props["maxClasBuildClusters"] = 2048;
+        props["maxBlasBytes"] = 16777216; props["maxFallbackBlasBytes"] = 16777216;
+        props["maxGpuPageRequests"] = 1024; props["maxGpuPageUnloadRequests"] = 1024;
+        props["maxTraversalWorkers"] = 32; props["maxTraversalWorkItems"] = 2048;
+        props["autoLod"] = false; props["lodLevel"] = 0;
+        props["instanceFrustumCull"] = false; props["instanceHzbCull"] = false;
+        props["meshletFrustumCull"] = false; props["hybridRaster"] = false;
+        graph.findNode("Shadows")->properties["sigmaDenoise"] = false;
+        graph.findNode("Shadows")->properties["shadowAngularRadius"] = 0.0;
+        for (const char* name : {"DlssSr", "DlssNr", "AutoExposure"}) {
+            if (auto* node = graph.findNode(name)) { graph.removeNode(node->id); }
+        }
+        graph.addEdge("Deferred.color", "FinalBlit.source");
+        graph.addEdge("VBuffer.accelerationStructure", "Deferred.accelerationStructure");
+        graph.addEdge("VBuffer.accelerationStructure", "Shadows.accelerationStructure");
+        graph.markOutput("FinalBlit.color");
+        scene::Scene fixture;
+        if (!fixture.loadStreamMetadata(source)) { return RhiTestResult::fail(fixture.lastLoadResult().error); }
+        const auto center = fixture.bounds().center();
+        const auto radius = fixture.bounds().radius();
+        graph.setViewProperties({{"camera", {{"eye", {center.x, center.y + radius * .3f, center.z + radius * 3}},
+            {"center", {center.x, center.y, center.z}}, {"znear", .01}, {"zfar", 100},
+            {"fovDegrees", 50}, {"reversedZ", true}}}, {"temporalJitter", false}});
+        scene::LightingSettings lighting;
+        lighting.autoExposure.enabled = false;
+        lighting.exposureEV100 = 2;
+        scene::PunctualLight sun;
+        sun.properties.type = "directional"; sun.properties.intensity = 10;
+        sun.direction = float3(.6f, -1, -.3f);
+        lighting.lights.push_back(sun);
+        RenderGraphPreviewRenderer preview;
+        auto result = preview.initialize(context.enableValidation, true, false);
+        if (!result) {
+            return hasError(result, Error::Unsupported) ? RhiTestResult::skip("streamed RTAS features unavailable") :
+                RhiTestResult::fail(std::string("preview initialize returned ") + toString(result));
+        }
+        preview.setEnvironment({.enabled = false});
+        preview.setLighting(lighting);
+        preview.setExecutionCaptureEnabled(true);
+        for (uint32_t frame = 0; frame < 24; ++frame) {
+            result = preview.render(graph, kWidth, kHeight, "FinalBlit.color");
+            if (!result) {
+                return hasError(result, Error::Unsupported) ? RhiTestResult::skip(preview.lastLog()) :
+                    RhiTestResult::fail("async RTAS render failed: " + preview.lastLog());
+            }
+        }
+        const auto* streamer = preview.subsystemHost()->get<StreamerSubsystem>();
+        if (!streamer || !streamer->sceneReadiness().ready) {
+            return RhiTestResult::fail("streamed RTAS fixture did not finish fallback publication");
+        }
+        // Keep timing informational: a small correctness fixture does not
+        // establish a production speedup. Both modes use the same warmed graph.
+        RenderGraphProperties timings = RenderGraphProperties::array();
+        const auto measure = [&](bool preferred) -> Result<> {
+            for (uint32_t frame = 0; frame < 32; ++frame) {
+                const auto started = std::chrono::steady_clock::now();
+                auto measured = preview.render(graph, kWidth, kHeight, "FinalBlit.color");
+                const double wallMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - started).count();
+                if (!measured) { return measured; }
+                const auto& stats = preview.executionStats();
+                RenderGraphProperties sampleTiming{{"AsyncComputePreferred", preferred},
+                    {"sample", frame}, {"renderAndReadbackWallMilliseconds", wallMs}};
+                if (stats.gpuTimingAvailable) {
+                    sampleTiming["graphGpuMilliseconds"] = stats.gpuMilliseconds;
+                }
+                timings.push_back(std::move(sampleTiming));
+            }
+            return {};
+        };
+        if (!measure(true)) { return RhiTestResult::fail("async RTAS timing frames failed: " + preview.lastLog()); }
+        const auto asynchronous = preview.pixels();
+        if (asynchronous.empty() || std::count_if(asynchronous.begin(), asynchronous.end(),
+                [&](uint32_t pixel) { return pixel != asynchronous.front(); }) < 64) {
+            return RhiTestResult::fail("async RTAS deferred image contains no useful geometry");
+        }
+        auto snapshot = preview.executionSnapshot();
+        if (!snapshot || !snapshot->success) { return RhiTestResult::fail("async RTAS capture is missing"); }
+        const RenderGraphExecutionResourceSnapshot* accelerationStructure = nullptr;
+        const RenderGraphExecutionPassSnapshot* producer = nullptr;
+        for (const auto& resource : snapshot->resources) {
+            if (resource.type == RenderGraphResourceType::AccelerationStructure &&
+                resource.name == "VBuffer.accelerationStructure") { accelerationStructure = &resource; }
+        }
+        for (const auto& pass : snapshot->passes) { if (pass.name == "VBuffer") { producer = &pass; } }
+        if (!accelerationStructure || !producer || !accelerationStructure->memory.allocationId) {
+            return RhiTestResult::fail("stream TLAS is missing from first-class graph allocation capture");
+        }
+        bool buildWrite = false, consumerRead = false, consumerBarrier = false;
+        for (const auto& use : producer->uses) {
+            buildWrite |= use.resourceId == accelerationStructure->id && use.writes &&
+                (uint64_t(use.scope.access) & uint64_t(AccessBits::AccelerationStructureWrite));
+        }
+        for (const auto& pass : snapshot->passes) {
+            if (pass.name != "Shadows" && pass.name != "Deferred") { continue; }
+            const bool producerDependency = std::find(pass.predecessors.begin(), pass.predecessors.end(), producer->id) != pass.predecessors.end();
+            for (const auto& use : pass.uses) {
+                consumerRead |= producerDependency && use.resourceId == accelerationStructure->id && use.reads &&
+                    (uint64_t(use.scope.access) & uint64_t(AccessBits::AccelerationStructureRead));
+            }
+            for (const auto& barrier : pass.barriers) {
+                consumerBarrier |= barrier.resourceId == accelerationStructure->id &&
+                    (uint64_t(barrier.beforeScope.access) & uint64_t(AccessBits::AccelerationStructureWrite)) &&
+                    (uint64_t(barrier.afterScope.access) & uint64_t(AccessBits::AccelerationStructureRead));
+            }
+        }
+        if (!buildWrite || !consumerRead || !consumerBarrier) {
+            return RhiTestResult::fail("AS build-to-ray-query graph dependency or inferred barrier is missing");
+        }
+        const auto hasRtasBranch = [&](const RenderGraphExecutionSnapshot& capture) {
+            return std::any_of(capture.segments.begin(), capture.segments.end(), [&](const auto& segment) {
+                return segment.passId == producer->id && segment.role == RenderGraphSegmentRole::ComputeBranch;
+            });
+        };
+        const bool independentCompute = std::any_of(snapshot->queues.begin(), snapshot->queues.end(),
+            [](const auto& queue) { return queue.type == QueueType::Compute; });
+        if (independentCompute && !hasRtasBranch(*snapshot)) {
+            return RhiTestResult::fail("default RTAS preference did not fork the compute build");
+        }
+        if (!graph.setNodeRuntimeProperty(visibilityId, "AsyncComputePreferred", false)) {
+            return RhiTestResult::fail("failed to disable async RTAS preference");
+        }
+        for (uint32_t frame = 0; frame < 24; ++frame) {
+            if (!preview.render(graph, kWidth, kHeight, "FinalBlit.color")) {
+                return RhiTestResult::fail("graphics RTAS fallback render failed: " + preview.lastLog());
+            }
+        }
+        if (!measure(false)) { return RhiTestResult::fail("graphics RTAS timing frames failed: " + preview.lastLog()); }
+        std::ofstream(context.outputDirectory / "StreamedAsyncRtasTiming.json") <<
+            RenderGraphProperties{{"width", kWidth}, {"height", kHeight},
+                {"warmupFramesPerMode", 24}, {"measuredScope", "Headless render and readback wall time; optional graph GPU envelope"},
+                {"samples", std::move(timings)}}.dump(2) << '\n';
+        const auto fallback = preview.executionSnapshot();
+        if (!fallback || !fallback->success || hasRtasBranch(*fallback)) {
+            return RhiTestResult::fail("disabled RTAS preference still forked the compute build");
+        }
+        if (preview.pixels() != asynchronous) {
+            return RhiTestResult::fail("async and graphics RTAS builds produced different deferred/shadow output");
+        }
+        if (!saveRgba8Png(context.outputDirectory / "StreamedAsyncRtas.png",
+                reinterpret_cast<const uint8_t*>(asynchronous.data()), kWidth, kHeight, log)) {
+            return RhiTestResult::fail(log);
+        }
+        return RhiTestResult::pass(independentCompute ?
+            "Async stream TLAS, first-class AS edges/barriers and flag-disabled output equality" :
+            "Compute queue unavailable: validated AS graph barriers and graphics fallback output equality");
+    }
+};
+
 class ImportancePdfSizeTest : public RhiTest {
 public:
     ImportancePdfSizeTest()
@@ -10339,6 +10522,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenMixedProducerRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphVisibilityBufferPassRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenAlphaMaskRenderTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenSponzaVisibilityRenderTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphStreamedAsyncAccelerationStructureTest);
 METALLIC_REGISTER_RHI_TEST(ImportancePdfSizeTest);
 METALLIC_REGISTER_RHI_TEST(ReGIRGridLayoutTest);
 METALLIC_REGISTER_RHI_TEST(EnvironmentSubsystemAsyncSnapshotTest);

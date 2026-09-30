@@ -36,6 +36,8 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
+        reflection.addAccelerationStructureInput("accelerationStructure", "Optional graph-managed scene TLAS/PTLAS")
+            .accelerationStructureRead().setOptional();
         reflection.addTextureInput("depth", "Hardware depth from the visibility raster")
             .sampledRead().format = Format::D32Sfloat;
         auto& info = reflection.addBufferInput("rasterInfo", "Matching raster camera and scene identity")
@@ -146,7 +148,7 @@ public:
         ScreenSpaceShadowResult shadow;
         std::string log;
         profile.next("Prepare and record shadows");
-        result = shadows_.record(*device_, commands, *context.streamer(), *depth.view(), view, lights, scene->contentRevision(), scene->transformRevision(), screenSpaceShadowSettings(context.properties()), log, &geometry_, stream, &profiler).transform([&](auto value) { shadow = std::move(value); });
+        result = shadows_.record(*device_, commands, *context.streamer(), *depth.view(), view, lights, scene->contentRevision(), scene->transformRevision(), screenSpaceShadowSettings(context.properties()), log, &geometry_, stream, &profiler, context.inputAccelerationStructure("accelerationStructure")).transform([&](auto value) { shadow = std::move(value); });
         if (!result) {
             spdlog::error("RayTracedShadowPass: {} ({})", log, resultToString(result));
             return result;

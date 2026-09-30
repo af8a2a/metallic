@@ -65,6 +65,9 @@ bool accessWrites(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::BufferStorageWrite:
     case RenderGraphResourceAccess::BufferStorageReadWrite:
     case RenderGraphResourceAccess::BufferTransferWrite:
+    case RenderGraphResourceAccess::AccelerationStructureBuildWrite:
+    case RenderGraphResourceAccess::AccelerationStructureBuildReadWrite:
+    case RenderGraphResourceAccess::BufferAccelerationStructureScratchReadWrite:
         return true;
     case RenderGraphResourceAccess::None:
     case RenderGraphResourceAccess::TextureSampleRead:
@@ -76,6 +79,9 @@ bool accessWrites(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::BufferTransferRead:
     case RenderGraphResourceAccess::BufferConstantRead:
     case RenderGraphResourceAccess::BufferIndirectRead:
+    case RenderGraphResourceAccess::AccelerationStructureBuildRead:
+    case RenderGraphResourceAccess::AccelerationStructureShaderRead:
+    case RenderGraphResourceAccess::BufferAccelerationStructureBuildRead:
         return false;
     }
     return false;
@@ -138,6 +144,12 @@ ResourceState stateForAccess(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::BufferStorageReadWrite:
         return ResourceState::General;
     case RenderGraphResourceAccess::TextureSampleReadGeneral:
+    case RenderGraphResourceAccess::AccelerationStructureBuildRead:
+    case RenderGraphResourceAccess::AccelerationStructureBuildWrite:
+    case RenderGraphResourceAccess::AccelerationStructureBuildReadWrite:
+    case RenderGraphResourceAccess::AccelerationStructureShaderRead:
+    case RenderGraphResourceAccess::BufferAccelerationStructureBuildRead:
+    case RenderGraphResourceAccess::BufferAccelerationStructureScratchReadWrite:
         return ResourceState::General;
     case RenderGraphResourceAccess::None:
         return ResourceState::Undefined;
@@ -172,6 +184,12 @@ TextureUsageBits textureUsageForAccess(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::BufferTransferWrite:
     case RenderGraphResourceAccess::BufferConstantRead:
     case RenderGraphResourceAccess::BufferIndirectRead:
+    case RenderGraphResourceAccess::AccelerationStructureBuildRead:
+    case RenderGraphResourceAccess::AccelerationStructureBuildWrite:
+    case RenderGraphResourceAccess::AccelerationStructureBuildReadWrite:
+    case RenderGraphResourceAccess::AccelerationStructureShaderRead:
+    case RenderGraphResourceAccess::BufferAccelerationStructureBuildRead:
+    case RenderGraphResourceAccess::BufferAccelerationStructureScratchReadWrite:
         return TextureUsageBits::None;
     }
     return TextureUsageBits::None;
@@ -180,6 +198,10 @@ TextureUsageBits textureUsageForAccess(RenderGraphResourceAccess access)
 BufferUsageBits bufferUsageForAccess(RenderGraphResourceAccess access)
 {
     switch (access) {
+    case RenderGraphResourceAccess::BufferAccelerationStructureBuildRead:
+        return BufferUsageBits::AccelerationStructureBuildInput | BufferUsageBits::ShaderDeviceAddress;
+    case RenderGraphResourceAccess::BufferAccelerationStructureScratchReadWrite:
+        return BufferUsageBits::Storage | BufferUsageBits::ShaderDeviceAddress;
     case RenderGraphResourceAccess::BufferIndirectRead:
         return BufferUsageBits::Indirect;
     case RenderGraphResourceAccess::BufferShaderRead:
@@ -203,6 +225,10 @@ BufferUsageBits bufferUsageForAccess(RenderGraphResourceAccess access)
     case RenderGraphResourceAccess::TextureStorageWrite:
     case RenderGraphResourceAccess::TextureStorageReadWrite:
     case RenderGraphResourceAccess::TextureSampleReadGeneral:
+    case RenderGraphResourceAccess::AccelerationStructureBuildRead:
+    case RenderGraphResourceAccess::AccelerationStructureBuildWrite:
+    case RenderGraphResourceAccess::AccelerationStructureBuildReadWrite:
+    case RenderGraphResourceAccess::AccelerationStructureShaderRead:
         return BufferUsageBits::None;
     }
     return BufferUsageBits::None;
@@ -232,6 +258,12 @@ BufferViewType bufferViewTypeForField(const RenderGraphField& field)
     case RenderGraphResourceAccess::BufferTransferWrite:
     case RenderGraphResourceAccess::BufferIndirectRead:
     case RenderGraphResourceAccess::TextureSampleReadGeneral:
+    case RenderGraphResourceAccess::AccelerationStructureBuildRead:
+    case RenderGraphResourceAccess::AccelerationStructureBuildWrite:
+    case RenderGraphResourceAccess::AccelerationStructureBuildReadWrite:
+    case RenderGraphResourceAccess::AccelerationStructureShaderRead:
+    case RenderGraphResourceAccess::BufferAccelerationStructureBuildRead:
+    case RenderGraphResourceAccess::BufferAccelerationStructureScratchReadWrite:
         return field.bufferViewType;
     }
     return field.bufferViewType;
@@ -240,6 +272,11 @@ BufferViewType bufferViewTypeForField(const RenderGraphField& field)
 bool accessMatchesResourceType(RenderGraphResourceAccess access, RenderGraphResourceType resourceType)
 {
     switch (access) {
+    case RenderGraphResourceAccess::AccelerationStructureBuildRead:
+    case RenderGraphResourceAccess::AccelerationStructureBuildWrite:
+    case RenderGraphResourceAccess::AccelerationStructureBuildReadWrite:
+    case RenderGraphResourceAccess::AccelerationStructureShaderRead:
+        return resourceType == RenderGraphResourceType::AccelerationStructure;
     case RenderGraphResourceAccess::None:
         return true;
     case RenderGraphResourceAccess::TextureSampleRead:
@@ -260,6 +297,8 @@ bool accessMatchesResourceType(RenderGraphResourceAccess access, RenderGraphReso
     case RenderGraphResourceAccess::BufferTransferWrite:
     case RenderGraphResourceAccess::BufferConstantRead:
     case RenderGraphResourceAccess::BufferIndirectRead:
+    case RenderGraphResourceAccess::BufferAccelerationStructureBuildRead:
+    case RenderGraphResourceAccess::BufferAccelerationStructureScratchReadWrite:
         return resourceType == RenderGraphResourceType::Buffer;
     }
     return false;
@@ -310,6 +349,11 @@ void applyAccessDefaults(RenderGraphField& field)
 
 RenderGraphResourceAccess explicitAccessForState(RenderGraphResourceType type, ResourceState state)
 {
+    if (type == RenderGraphResourceType::AccelerationStructure) {
+        return state == ResourceState::Undefined ? RenderGraphResourceAccess::None :
+            state == ResourceState::ShaderRead ? RenderGraphResourceAccess::AccelerationStructureShaderRead :
+            RenderGraphResourceAccess::AccelerationStructureBuildReadWrite;
+    }
     if (type == RenderGraphResourceType::Texture2D) {
         switch (state) {
         case ResourceState::ShaderRead:

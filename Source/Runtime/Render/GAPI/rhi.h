@@ -643,6 +643,12 @@ struct BufferBarrierDesc {
     BufferRange range;
 };
 
+struct AccelerationStructureBarrierDesc {
+    class RayTracingAccelerationStructure* accelerationStructure = nullptr;
+    SyncScope before;
+    SyncScope after;
+};
+
 struct ClusterAccelerationStructureProperties {
     uint64_t clusterStorageAlignment = 0;
     uint64_t bottomLevelStorageAlignment = 0;
@@ -938,6 +944,9 @@ struct RayTracingAccelerationStructureBuildDesc {
     class Buffer* scratchBuffer = nullptr;
     uint64_t scratchBufferOffset = 0;
     const OpacityMicromapBuildInput* micromap = nullptr;
+    // RenderGraph declares the AS write and synchronizes subsequent consumers.
+    // Standalone builds retain the legacy post-build dependency by default.
+    bool graphManagedSynchronization = false;
 };
 
 struct ClusterAccelerationStructureBottomLevelBuildSizesDesc {
@@ -1042,6 +1051,7 @@ struct PartitionedAccelerationStructureBuildDesc {
     uint32_t instanceCount = 0;
     class Buffer* scratchBuffer = nullptr;
     uint64_t scratchBufferOffset = 0;
+    bool graphManagedSynchronization = false;
 };
 
 struct BarrierDesc {
@@ -1049,6 +1059,7 @@ struct BarrierDesc {
     std::span<const TextureBarrierDesc> textures;
     std::span<const BufferBarrierDesc> buffers;
     std::span<const MemoryBarrierDesc> memory;
+    std::span<const AccelerationStructureBarrierDesc> accelerationStructures;
 };
 
 struct SemaphoreDesc {
@@ -1734,6 +1745,8 @@ public:
     RayTracingAccelerationStructure& operator=(const RayTracingAccelerationStructure&) = delete;
 
     const RayTracingAccelerationStructureDesc& desc() const;
+    ResourceMemoryInfo memoryInfo() const;
+    bool supportsQueueAccess(QueueAccessBits access) const;
     bool valid() const;
     uint64_t deviceAddress() const;
     std::shared_ptr<void> retainAllocation() const;
@@ -2272,10 +2285,12 @@ public:
 private:
     explicit Device(std::unique_ptr<detail::DeviceImpl> impl);
     bool validShaderStage(const ShaderStageDesc& stage) const;
+    static Result<std::unique_ptr<Buffer>> createBuffer(detail::DeviceImpl* implementation, const BufferDesc& desc);
 
     std::unique_ptr<detail::DeviceImpl> impl_;
 
     friend Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc);
+    friend class CommandBuffer;
     friend struct detail::VulkanNativeAccess;
 };
 
