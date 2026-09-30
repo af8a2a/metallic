@@ -21,6 +21,7 @@ public:
         const RenderSubsystemFrameContext& context,
         RenderChangeBits& changes,
         std::string& log) override;
+    Result<> recordPostGraph(const RenderSubsystemFrameContext& context, std::string& log) override;
     void endFrame(const RenderSubsystemFrameContext& context) override;
     void shutdown() override;
 
@@ -50,7 +51,12 @@ public:
 
 private:
     Result<> completeInitialLoads(std::string& log);
-    std::unordered_map<const ScenePathTraceResources*, Buffer*> textureFrames_;
+    struct TextureFrame {
+        std::shared_ptr<ScenePathTraceResources> resources;
+        Buffer* feedback = nullptr;
+        uint64_t frameIndex = 0;
+    };
+    std::unordered_map<const ScenePathTraceResources*, TextureFrame> textureFrames_;
     Device* device_ = nullptr;
     StreamingUploads uploads_;
     SceneResourceManager resources_;
@@ -62,6 +68,7 @@ private:
         std::weak_ptr<MeshletStreamRuntime> runtime;
         std::optional<Error> failure;
         std::string failureLog;
+        bool metadataOnly = false;
     };
     std::vector<InitialLoad> initialLoads_;
 };

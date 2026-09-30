@@ -1384,9 +1384,15 @@ struct ScenePathTraceResources::Impl {
     std::shared_ptr<TextureGeneration> textureGeneration;
     std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot;
     GpuCompletionPoint texturePublication;
+    struct TextureFeedbackBuffers {
+        std::shared_ptr<Buffer> seed;
+        std::shared_ptr<Buffer> device;
+        std::shared_ptr<Buffer> readback;
+    };
     struct TextureFeedback {
-        std::shared_ptr<Buffer> buffer;
+        TextureFeedbackBuffers buffers;
         GpuCompletionPoint completion;
+        std::shared_ptr<SubmissionTransaction> readbackSubmission;
         uint64_t frame = 0;
         bool captureDemand = true;
     };
@@ -1416,7 +1422,7 @@ struct ScenePathTraceResources::Impl {
     };
     std::unique_ptr<TextureMigration> textureMigration;
     std::vector<TextureFeedback> textureFeedback;
-    std::vector<std::shared_ptr<Buffer>> freeTextureFeedback;
+    std::vector<TextureFeedbackBuffers> freeTextureFeedback;
     std::vector<RetiredTexture> retiredTextures;
     std::shared_ptr<Buffer> emptyTextureFeedback;
     std::vector<bool> pinnedImages;
@@ -1485,10 +1491,13 @@ struct ScenePathTraceResources::Impl {
         for (auto it = textureFeedback.begin(); it != textureFeedback.end();) {
             if (it->completion.isCancelled()) { it = textureFeedback.erase(it); continue; }
             if (!it->completion.isComplete()) { ++it; continue; }
-            if (it->captureDemand && !consumeDemand) { ++it; continue; }
-            if (it->captureDemand && it->frame >= lastFeedbackFrame) {
-                it->buffer->invalidate();
-                auto* words = static_cast<const uint32_t*>(it->buffer->map());
+            const bool readbackAccepted = it->readbackSubmission &&
+                it->readbackSubmission->resolved() && !it->readbackSubmission->cancelled();
+            if (it->captureDemand && readbackAccepted && !consumeDemand) { ++it; continue; }
+            if (it->captureDemand && readbackAccepted && it->completion.isSubmitted() &&
+                it->frame >= lastFeedbackFrame) {
+                it->buffers.readback->invalidate();
+                auto* words = static_cast<const uint32_t*>(it->buffers.readback->map());
                 if (words) {
                     for (uint32_t image = 0; image < ktxImages.size(); ++image) {
                         const uint32_t slot = asyncImageTextureIndexMap[image];
@@ -1501,12 +1510,12 @@ struct ScenePathTraceResources::Impl {
                             textureHits[image] = hits;
                         }
                     }
-                    it->buffer->unmap();
+                    it->buffers.readback->unmap();
                     ++textureStats.feedbackFrames;
                     lastFeedbackFrame = it->frame;
                 }
             }
-            freeTextureFeedback.push_back(std::move(it->buffer));
+            freeTextureFeedback.push_back(std::move(it->buffers));
             it = textureFeedback.erase(it);
         }
         std::erase_if(retiredTextures, [](const auto& retired) { return retired.texture.expired(); });
@@ -1720,6 +1729,16 @@ struct ScenePathTraceResources::Impl {
         if (!frame) { return {}; }
         frame->retain(emptyTextureFeedback);
         if (!textureStreaming || baseTextureMips.empty()) { return {}; }
+        // Multiple consumers share one immutable metadata seed and one demand
+        // accumulation for this frame. Never reset demand after another
+        // consumer has already recorded writes to the same shared resources.
+        const auto prepared = std::find_if(textureFeedback.begin(), textureFeedback.end(), [&](const TextureFeedback& value) {
+            return value.frame == frameIndex && value.completion.sameSubmission(frame->completion());
+        });
+        if (prepared != textureFeedback.end()) {
+            feedback = prepared->buffers.device.get();
+            return {};
+        }
         const auto now = SceneResourceLogClock::now();
         if (textureTransitionLastTime != SceneResourceLogClock::time_point{} &&
             !freezePublication && !textureTransitionsFrozen) {
@@ -1753,17 +1772,23 @@ struct ScenePathTraceResources::Impl {
         const bool captureDemand = !freezePublication &&
             std::count_if(textureFeedback.begin(), textureFeedback.end(),
                 [](const TextureFeedback& entry) { return entry.captureDemand; }) < 4;
-        std::shared_ptr<Buffer> buffer;
+        TextureFeedbackBuffers buffers;
         if (!freeTextureFeedback.empty()) {
-            buffer = std::move(freeTextureFeedback.back()); freeTextureFeedback.pop_back();
+            buffers = std::move(freeTextureFeedback.back()); freeTextureFeedback.pop_back();
         } else {
-            std::unique_ptr<Buffer> created;
-            result = device->createBuffer({.size=materialTextures.size()*32, .usage=BufferUsageBits::Storage,
-                .memoryLocation=MemoryLocation::HostReadback}).transform([&](auto rhiValue) { created = std::move(rhiValue); });
+            const uint64_t bytes = materialTextures.size() * 32;
+            result = device->createBuffer({.size=bytes, .usage=BufferUsageBits::TransferSource,
+                .memoryLocation=MemoryLocation::HostUpload}).transform([&](auto value) { buffers.seed = std::move(value); });
             if (!result) { return result; }
-            buffer = std::move(created);
+            result = device->createBuffer({.size=bytes,
+                .usage=BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination,
+                .memoryLocation=MemoryLocation::Device}).transform([&](auto value) { buffers.device = std::move(value); });
+            if (!result) { return result; }
+            result = device->createBuffer({.size=bytes, .usage=BufferUsageBits::TransferDestination,
+                .memoryLocation=MemoryLocation::HostReadback}).transform([&](auto value) { buffers.readback = std::move(value); });
+            if (!result) { return result; }
         }
-        auto* words = static_cast<uint32_t*>(buffer->map());
+        auto* words = static_cast<uint32_t*>(buffers.seed->map());
         if (!words) { return makeError(Error::Failure); }
         std::memset(words,0,materialTextures.size()*32);
         for (uint32_t image = 0; image < ktxImages.size(); ++image) {
@@ -1778,16 +1803,76 @@ struct ScenePathTraceResources::Impl {
             words[slot*8+4] = UINT32_MAX;
             words[slot*8+6] = std::bit_cast<uint32_t>(textureMipTransitions[image].samplingLodFloor(textureTransitionSeconds));
         }
-        buffer->flush(); buffer->unmap();
+        buffers.seed->flush(); buffers.seed->unmap();
         // Sampling metadata must remain available when demand readback is full
         // or publication is frozen. Zero source dimensions disable GPU demand
         // writes on these frames; word 6 still describes this immutable tail.
-        TextureFeedback entry{std::move(buffer),frame->completion(),frameIndex,captureDemand};
-        feedback = entry.buffer.get(); frame->retain(entry.buffer);
+        TextureFeedback entry{.buffers=std::move(buffers), .completion=frame->completion(),
+            .frame=frameIndex, .captureDemand=captureDemand};
+        feedback = entry.buffers.device.get();
+        frame->retain(entry.buffers.seed);
+        frame->retain(entry.buffers.device);
+        frame->retain(entry.buffers.readback);
         frame->retain(textureGeneration);
-        BufferBarrierDesc ready{.buffer = feedback, .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
+        phase.next("Initialize Device texture feedback");
+        const BufferBarrierDesc initialize[] = {
+            {.buffer = entry.buffers.seed.get(),
+                .before = {PipelineStageBits::Host, AccessBits::HostWrite},
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}},
+            {.buffer = feedback,
+                .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}},
+        };
+        if (auto commandResult = commands.synchronize({.buffers = initialize}); !commandResult) { return commandResult; }
+        const auto seed = entry.buffers.seed->slice({0, entry.buffers.seed->desc().size});
+        if (!seed) { return std::unexpected(seed.error()); }
+        const auto destination = feedback->slice({0, feedback->desc().size});
+        if (!destination) { return std::unexpected(destination.error()); }
+        if (auto commandResult = commands.copyBuffer(*seed, *destination); !commandResult) { return commandResult; }
+        const BufferBarrierDesc ready{.buffer = feedback,
+            .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
         if (auto commandResult = commands.synchronize({.buffers = {&ready, 1}}); !commandResult) { return commandResult; }
         textureFeedback.push_back(std::move(entry));
+        return {};
+    }
+
+    Result<> endTextureStreaming(
+        CommandBuffer& commands,
+        uint64_t frameIndex,
+        CpuProfileRecorder* profiler)
+    {
+        auto* frame = commands.frameContext();
+        if (!frame) { return {}; }
+        const auto entry = std::find_if(textureFeedback.begin(), textureFeedback.end(), [&](const TextureFeedback& value) {
+            return value.frame == frameIndex && value.completion.sameSubmission(frame->completion());
+        });
+        if (entry == textureFeedback.end() || !entry->captureDemand || entry->readbackSubmission) { return {}; }
+        CpuProfileScope phase(profiler, "Copy texture feedback readback");
+        const BufferBarrierDesc copy[] = {
+            {.buffer = entry->buffers.device.get(),
+                .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite},
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}},
+            {.buffer = entry->buffers.readback.get(),
+                .before = {PipelineStageBits::Host, AccessBits::HostRead},
+                .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}},
+        };
+        if (auto result = commands.synchronize({.buffers = copy}); !result) { return result; }
+        const auto source = entry->buffers.device->slice({0, entry->buffers.device->desc().size});
+        if (!source) { return std::unexpected(source.error()); }
+        const auto destination = entry->buffers.readback->slice({0, entry->buffers.readback->desc().size});
+        if (!destination) { return std::unexpected(destination.error()); }
+        if (auto result = commands.copyBuffer(*source, *destination); !result) { return result; }
+        const BufferBarrierDesc hostReady{.buffer = entry->buffers.readback.get(),
+            .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+            .after = {PipelineStageBits::Host, AccessBits::HostRead}};
+        if (auto result = commands.synchronize({.buffers = {&hostReady, 1}}); !result) { return result; }
+        // An accepted frame prefix does not prove that its readback tail was
+        // accepted. Keep a transaction on this command buffer so a cancelled
+        // tail can never publish the previous contents of its staging buffer.
+        auto submission = std::make_shared<SubmissionTransaction>(nullptr, nullptr);
+        if (auto result = commands.addSubmissionTransaction(submission); !result) { return result; }
+        entry->readbackSubmission = std::move(submission);
         return {};
     }
 
@@ -3596,6 +3681,14 @@ Result<> ScenePathTraceResources::beginTextureStreaming(
     bool freezePublication)
 {
     return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler, freezePublication);
+}
+
+Result<> ScenePathTraceResources::endTextureStreaming(
+    CommandBuffer& commands,
+    uint64_t frameIndex,
+    CpuProfileRecorder* profiler)
+{
+    return impl_->endTextureStreaming(commands, frameIndex, profiler);
 }
 
 void ScenePathTraceResources::clear()

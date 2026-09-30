@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <set>
 #include <stdexcept>
@@ -25,7 +26,8 @@ using Clock = std::chrono::steady_clock;
 
 Json streamSample(const render::SceneStreamingProfile& s)
 {
-    return {{"softwareRaster",s.softwareRasterIdentity.empty() ? Json(nullptr) : Json::parse(s.softwareRasterIdentity)},
+    return {{"pass",s.passName},{"asset",s.assetPath},
+        {"softwareRaster",s.softwareRasterIdentity.empty() ? Json(nullptr) : Json::parse(s.softwareRasterIdentity)},
         {"frame",s.frameIndex},{"feedbackFrame",s.feedbackFrame},{"generation",s.generation},
         {"lodTransitions", {{"enabled",s.lodTransitionTelemetryEnabled},{"historyBytes",s.lodTransitionHistoryBytes},
             {"demandedGroups",s.lodDemandedGroups},{"ownPageBlockedGroups",s.lodOwnPageBlockedGroups},
@@ -41,6 +43,11 @@ Json streamSample(const render::SceneStreamingProfile& s)
             {"totalAdmitted",s.totalPrefetchAdmitted},{"totalUsed",s.totalPrefetchUsed},{"totalDeferred",s.totalPrefetchDeferred},
             {"gpuRequests",s.prefetchGpuRequests},{"gpuDropped",s.prefetchGpuDropped}}},
         {"geometryBytes",s.geometryUsedBytes},{"geometryCapacity",s.geometryBudgetBytes},
+        {"immutableMetadata", {{"deviceRequested",s.deviceImmutableMetadata},{"ready",s.immutableMetadataReady},
+            {"bytes",s.immutableMetadataBytes},{"allocatedBytes",s.immutableMetadataAllocatedBytes},
+            {"submittedBytes",s.immutableMetadataSubmittedBytes},{"stagingBytes",s.immutableMetadataStagingBytes},
+            {"uploadBatches",s.immutableMetadataUploadBatches},{"groupBytes",s.immutableGroupBytes},
+            {"topologyBytes",s.immutableTopologyBytes}}},
         {"retention", {{"adaptive",s.adaptivePageRetentionEnabled},
             {"reclaimReserveBytes",s.geometryReclaimReserveBytes},{"demandReserveBytes",s.geometryDemandReserveBytes},
             {"coldResidentBytes",s.coldResidentBytes},{"pendingFreeBytes",s.pendingFreeBytes},
@@ -54,9 +61,11 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"clasTransientAllocatedBytes",s.clasTransientAllocatedBytes},{"clasTransientUsedBytes",s.clasTransientUsedBytes},
         {"clasFragmentedFreeBytes",s.clasFragmentedFreeBytes},
         {"clasBuiltClusters",s.clasBuiltClusters},{"clasMovedClusters",s.clasMovedClusters},
+        {"clasTotalBuiltPages",s.clasTotalBuiltPages},{"clasTotalBuiltClusters",s.clasTotalBuiltClusters},
         {"clasPendingPages",s.clasPendingPages},{"residentPages",s.residentPages},{"pendingPages",s.pendingPages},
         {"ioQueued",s.ioQueued},{"ioActive",s.ioActive},{"uploadQueued",s.uploadQueued},
         {"requests",s.requests},{"uploads",s.uploads},{"evictions",s.evictions},{"uploadBytes",s.uploadBytes},
+        {"totalUploadBytes",s.totalUploadBytes},
         {"requestOverflows",s.requestOverflows},{"allocationFailures",s.allocationFailures},{"loadFailures",s.loadFailures},
         {"allocationAttempts",s.cpuWork.allocationAttempts},{"budgetRetrySuppressed",s.cpuWork.budgetRetrySuppressed},
         {"requestDuplicatesMerged",s.cpuWork.requestDuplicatesMerged},{"admissionCandidates",s.cpuWork.admissionCandidates},
@@ -86,12 +95,51 @@ Json streamSample(const render::SceneStreamingProfile& s)
         {"blasPublicationInvalidated",s.blasPublicationInvalidated},
 
 
+        {"textureStreaming",s.textureStreaming},
         {"textureResidentBytes",s.textureResidentBytes},{"textureRetiredBytes",s.textureRetiredBytes},
         {"texturePendingBytes",s.texturePendingBytes},{"textureBudgetBytes",s.textureBudgetBytes},
         {"textureRefinedImages",s.textureRefinedImages},{"textureRequestedImages",s.textureRequestedImages},
+        {"texturePendingImages",s.texturePendingImages},{"textureFeedbackFrames",s.textureFeedbackFrames},
+        {"textureUploadBytes",s.textureUploadBytes},
         {"textureUpgrades",s.textureUpgrades},{"textureDowngrades",s.textureDowngrades},
         {"textureBudgetDeferrals",s.textureBudgetDeferrals},{"textureMaxRequestFrames",s.textureMaxRequestFrames},
         {"lastTextureUploadSequence",s.textureUpload.sequence}};
+}
+
+Json streamSnapshot(const render::RenderGraphExecutionStats& execution)
+{
+    Json samples = Json::array();
+    for (const auto& sample : execution.streaming) { samples.push_back(streamSample(sample)); }
+    return {{"executionId",execution.executionId},{"graphGeneration",execution.graphGeneration},{"streaming",std::move(samples)}};
+}
+
+void recordFrozenCounters(Json& ranges, const Json& sample)
+{
+    auto entry = std::find_if(ranges.begin(), ranges.end(), [&](const Json& value) {
+        return value.at("pass") == sample.at("pass") && value.at("asset") == sample.at("asset") &&
+            value.at("generation") == sample.at("generation");
+    });
+    if (entry == ranges.end()) {
+        ranges.push_back({{"pass",sample.at("pass")},{"asset",sample.at("asset")},
+            {"generation",sample.at("generation")},{"samples",0u},{"counters",Json::object()}});
+        entry = std::prev(ranges.end());
+    }
+    (*entry)["samples"] = entry->at("samples").get<uint64_t>() + 1;
+    auto& counters = (*entry)["counters"];
+    for (const char* key : {"residentPages", "geometryBytes", "clasBytes", "clasPendingPages",
+        "clasTotalBuiltPages", "clasTotalBuiltClusters", "pendingPages", "ioQueued", "ioActive", "uploadQueued",
+        "totalUploadBytes", "textureResidentBytes", "textureRetiredBytes", "texturePendingBytes",
+        "textureRefinedImages", "textureRequestedImages", "texturePendingImages", "textureUpgrades",
+        "textureDowngrades", "textureBudgetDeferrals", "textureFeedbackFrames", "textureUploadBytes", "lastTextureUploadSequence"}) {
+        const uint64_t value = sample.at(key).get<uint64_t>();
+        if (!counters.contains(key)) { counters[key] = {{"first",value},{"last",value},{"min",value},{"max",value}}; }
+        else {
+            auto& range = counters[key];
+            range["last"] = value;
+            range["min"] = std::min(range.at("min").get<uint64_t>(), value);
+            range["max"] = std::max(range.at("max").get<uint64_t>(), value);
+        }
+    }
 }
 
 Json uploadSample(const render::TextureUploadProfile& s)
@@ -122,6 +170,14 @@ bool EditorApplication::runZorahFullRoamBenchmark()
     fullRoamHeight_ = viewportTextureHeight_;
     bool passed = false;
     RasterWorkloadObserver workloadObserver;
+    struct FrozenProperty { uint32_t node; bool existed; Json value; };
+    std::vector<FrozenProperty> frozenProperties;
+    const auto drain = [&]() {
+        if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { throw std::runtime_error("GPU drain failed"); }
+        std::vector<render::RenderGraphExecutionStats> completed;
+        if (!graphExecutor_->collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); })) { throw std::runtime_error("GPU query resolve failed"); }
+        for (const auto& stats : completed) { profiler_.updateRenderGraphGpuStats(stats); }
+    };
     try {
         std::filesystem::create_directories(output);
         Json config = Json::object();
@@ -130,6 +186,25 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             config = Json::parse(input);
         }
         if (config.value("rasterComparison", false)) { return runZorahFullRasterComparison(config, output); }
+        if (config.contains("benchmarkFreezeStreaming") && !config.at("benchmarkFreezeStreaming").is_boolean()) {
+            throw std::runtime_error("benchmarkFreezeStreaming must be a boolean");
+        }
+        const bool freezeStreaming = config.value("benchmarkFreezeStreaming", false);
+        constexpr uint32_t kFreezeSettleFrames = 16;
+        const Json deferredOverrides = config.value("deferredOverrides", Json::object());
+        if (!deferredOverrides.is_object()) { throw std::runtime_error("deferredOverrides must be an object"); }
+        const std::set<std::string> deferredBoolOverrides{"debugDisableDirectLighting", "debugDisableMaterialTextures",
+            "debugDisableNormalMap", "debugForceGeometryNormal", "materialBinning", "stochasticTextureFiltering"};
+        const std::set<std::string> deferredDebugViews{"final", "baseColor", "geometryNormal", "shadingNormal", "tangent", "material"};
+        for (auto it = deferredOverrides.begin(); it != deferredOverrides.end(); ++it) {
+            if (it.key() == "debugView") {
+                if (!it.value().is_string() || !deferredDebugViews.contains(it.value().get<std::string>())) {
+                    throw std::runtime_error("Unsupported deferredOverrides debugView");
+                }
+            } else if (!deferredBoolOverrides.contains(it.key()) || !it.value().is_boolean()) {
+                throw std::runtime_error("Unsupported key or non-boolean value in deferredOverrides: " + it.key());
+            }
+        }
         profilerOpen_ = config.value("profilerOpen", profilerOpen_);
         const bool focusProfiler = config.value("focusProfiler", false);
         report["profilerOpen"] = profilerOpen_;
@@ -142,7 +217,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const auto shaderDebugMode = render::slangShaderDebugMode();
         report["shaderDebugMode"] = shaderDebugMode == render::SlangShaderDebugMode::ShaderDebug ? "unoptimized-debug"
             : shaderDebugMode == render::SlangShaderDebugMode::CaptureSymbols ? "capture-symbols" : "disabled";
-        report["diagnosticRun"] = workloadEvery != 0 || config.value("enableLodTransitionTelemetry", false) ||
+        report["diagnosticRun"] = freezeStreaming || !deferredOverrides.empty() || workloadEvery != 0 || config.value("enableLodTransitionTelemetry", false) ||
             report["graphicsCaptureInjected"].get<bool>() || shaderDebugMode != render::SlangShaderDebugMode::Disabled;
         report["lodTransitionDefinition"] = "Instance-groups in the emitted geometry cut, before raster occlusion and independent of CLAS. Threshold requires continuous auto-visible frames and newly demanded SSE; catchup requires prior-frame demand blocked by own geometry page or dependency. First/reentry and other selected changes are unclassified. History adds 8 bytes per instance-group plus 4 per instance; feedback may lag.";
         const double duration = config.value("durationSeconds",180.0);
@@ -197,6 +272,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "cullHardwareClassification", config.value("cullHardwareClassification", false));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "metadataFastClassification", config.value("metadataFastClassification", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "initialLoad", config.value("initialLoad", true));
+        renderGraph_.setNodeRuntimeProperty(vbuffer->id, "deviceImmutableMetadata", config.value("deviceImmutableMetadata", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "predictivePrefetch", config.value("predictivePrefetch", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "adaptivePageRetention", config.value("adaptivePageRetention", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "enableLodTransitionTelemetry", config.value("enableLodTransitionTelemetry", false));
@@ -204,6 +280,15 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         const auto* dlss = renderGraph_.findNode("DlssSr");
         if (!deferred || !dlss) { throw std::runtime_error("Missing Full shading/reconstruction nodes"); }
         renderGraph_.setNodeRuntimeProperty(deferred->id, "stochasticTextureFiltering", config.value("stochasticTextureFiltering", false));
+        const auto applyDeferredOverrides = [&]() {
+            for (auto it = deferredOverrides.begin(); it != deferredOverrides.end(); ++it) {
+                if (!renderGraph_.setNodeRuntimeProperty(deferred->id, it.key(), it.value())) {
+                    throw std::runtime_error("Failed to apply Deferred override: " + it.key());
+                }
+            }
+        };
+        // Frozen variants warm the same default shading workload before overrides.
+        if (!freezeStreaming) { applyDeferredOverrides(); }
         const std::string dlssMode = config.value("dlssMode", std::string("Quality"));
         if (dlssMode != "Off" && dlssMode != "DLAA" && dlssMode != "Quality" &&
             dlssMode != "Balanced" && dlssMode != "Performance" && dlssMode != "UltraPerformance" &&
@@ -261,6 +346,29 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             if (std::chrono::duration<double>(now-loadingStart).count()>600) { throw std::runtime_error("Full readiness timed out"); }
         }
         if (workloadEvery) { graphExecutor_->setDebugObserver(nullptr); }
+        report["streamingFreeze"] = {{"enabled",freezeStreaming},{"settleFrames",freezeStreaming ? kFreezeSettleFrames : 0u},
+            {"scope","Freeze geometry/CLAS/cut/TLAS and texture publication/mip reveal; camera route remains configured"},
+            {"pendingDefinition","GPU drain resolves submitted work, not CPU decode or texture migration publication; pending work may remain frozen"},
+            {"workingSetDefinition","CPU aggregate counters only; no per-image mip distribution or working-set hash, so equality does not establish identical texture residency across processes"}};
+        if (freezeStreaming) {
+            drain();
+            report["streamingFreeze"]["beforeFreeze"] = streamSnapshot(graphExecutor_->executionStats());
+            for (const auto* node : {vbuffer, deferred}) {
+                const bool existed = node->runtimeProperties.contains("benchmarkFreezeStreaming");
+                frozenProperties.push_back({node->id, existed, existed ? node->runtimeProperties.at("benchmarkFreezeStreaming") : Json(nullptr)});
+                if (!renderGraph_.setNodeRuntimeProperty(node->id, "benchmarkFreezeStreaming", true)) {
+                    throw std::runtime_error("Failed to freeze streaming");
+                }
+            }
+            applyDeferredOverrides();
+            const auto settleStart = Clock::now();
+            for (uint32_t i = 0; i < kFreezeSettleFrames; ++i) {
+                if (!draw()) { throw std::runtime_error("Frozen streaming settle failed/cancelled"); }
+            }
+            drain();
+            report["streamingFreeze"]["settleSeconds"] = std::chrono::duration<double>(Clock::now()-settleStart).count();
+            report["streamingFreeze"]["afterFreezeSettle"] = streamSnapshot(graphExecutor_->executionStats());
+        }
         if (!fullRoamWidth_) { fullRoamWidth_=viewportTextureWidth_; fullRoamHeight_=viewportTextureHeight_; }
         const auto original = viewportCameraProperties();
         const auto cameraAt = [&](double forward, double yaw) {
@@ -281,10 +389,12 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             {"routeFrames",routeFrames},{"sample",sampleId},{"cullHardwareClassification",config.value("cullHardwareClassification",false)},
             {"metadataFastClassification",config.value("metadataFastClassification",true)},
             {"initialLoad",config.value("initialLoad",true)},
+            {"deviceImmutableMetadata",config.value("deviceImmutableMetadata",true)},
             {"predictivePrefetch",config.value("predictivePrefetch",true)},
             {"adaptivePageRetention",config.value("adaptivePageRetention",true)},
             {"enableLodTransitionTelemetry",config.value("enableLodTransitionTelemetry",false)},
             {"stochasticTextureFiltering",config.value("stochasticTextureFiltering",false)},
+            {"benchmarkFreezeStreaming",freezeStreaming},{"deferredOverrides",deferredOverrides},
             {"dlssMode",dlssMode}, {"textureMipTransitionMilliseconds",1000.0 * render::TextureMipTransition::kDurationSeconds},
             {"temporalJitter",viewportView_.temporalJitter()}, {"softwareGroupSize",groupSize}};
         report["absoluteKeyframes"]=Json::array();
@@ -303,7 +413,13 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         report["validationRequested"]=debugRuntime_ && std::getenv("METALLIC_DEBUG_VALIDATION");
         report["graph"]=Json::array();
         for (const auto& node : renderGraph_.nodes()) { auto properties=node.properties; properties.merge_patch(node.runtimeProperties);
-            report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}}); }
+            report["graph"].push_back({{"name",node.name},{"type",node.type},{"properties",properties}});
+            if (node.name == "Deferred") {
+                Json actual = Json::object();
+                for (auto it = deferredOverrides.begin(); it != deferredOverrides.end(); ++it) { actual[it.key()] = properties.at(it.key()); }
+                report["effectiveDeferredOverrides"] = std::move(actual);
+            }
+        }
         const auto graphGeneration = graphExecutor_->executionStats().graphGeneration;
         struct Sample { uint64_t frame; double seconds, ms; size_t segment; uint64_t availableBytes; Json graphPreparation; bool diagnostic = false; render::vulkan::StreamlineFrameBeginProfile frameBegin; };
         std::vector<Sample> samples;
@@ -327,7 +443,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
             applyViewportCameraProperties(cameraAt(blend("forward"),blend("yaw")),nullptr);
             samples.push_back({profiler_.nextFrameIndex(),seconds,0,segment,device_->memoryBudget().availableBytes});
             const bool diagnostic = workloadEvery && (samples.size() - 1) % workloadEvery == 0;
-            samples.back().diagnostic = diagnostic;
+            samples.back().diagnostic = diagnostic || freezeStreaming || !deferredOverrides.empty();
             if (workloadEvery) {
                 workloadSetting(diagnostic && config.value("softwareWorkloadCounters", true));
                 workloadObserver.capture = diagnostic;
@@ -348,10 +464,8 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         render::profiling::pacingTrace("CaptureEnd");
         profiler_.endCapture();
         // Resolve outstanding queries after measurement; no per-frame readback wait.
-        if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { throw std::runtime_error("GPU drain failed"); }
-        std::vector<render::RenderGraphExecutionStats> completed;
-        if (!graphExecutor_->collectCompletedGpuExecutionStats().transform([&](auto value) { completed = std::move(value); })) { throw std::runtime_error("GPU query resolve failed"); }
-        for (const auto& stats : completed) { profiler_.updateRenderGraphGpuStats(stats); }
+        drain();
+        if (freezeStreaming) { report["streamingFreeze"]["afterCapture"] = streamSnapshot(graphExecutor_->executionStats()); }
         if (workloadEvery) {
             report["workloads"] = workloadObserver.takeAfterDrain();
             graphExecutor_->setDebugObserver(nullptr);
@@ -364,6 +478,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         std::map<std::string,uint32_t> scopeIds;
         std::set<std::pair<uint64_t,uint64_t>> uploads;
         Json definitions=Json::array();
+        Json frozenCounters = Json::array();
         size_t missingGpu=0;
         for (size_t i=0; i<frames.size(); ++i) {
             const auto& f=frames[i]; const auto& sample=samples[i];
@@ -414,7 +529,9 @@ bool EditorApplication::runZorahFullRoamBenchmark()
                         throw std::runtime_error("Live roam did not bind requested SW group size");
                     }
                 }
-                row["streaming"].push_back(streamSample(s));
+                auto streaming = streamSample(s);
+                if (freezeStreaming) { recordFrozenCounters(frozenCounters, streaming); }
+                row["streaming"].push_back(std::move(streaming));
                 if (s.textureUpload.sequence && uploads.insert({s.generation,s.textureUpload.sequence}).second) {
                     auto upload=uploadSample(s.textureUpload); upload["streamGeneration"]=s.generation;
                     uploadFile<<upload.dump()<<'\n';
@@ -426,6 +543,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         report["scopes"]=std::move(definitions);
         report["frames"]=frames.size(); report["missingGpuFrames"]=missingGpu;
         report["uploadSamples"]=uploads.size(); report["graphGeneration"]=graphGeneration;
+        if (freezeStreaming) { report["streamingFreeze"]["captureCounterRanges"] = std::move(frozenCounters); }
         if (missingGpu) { throw std::runtime_error("Incomplete GPU timing coverage"); }
         report["status"]="capture_complete";
         passed=true;
@@ -436,6 +554,14 @@ bool EditorApplication::runZorahFullRoamBenchmark()
     profiler_.endCapture();
     // Keep readback allocations alive until all submitted copies complete, also on failure.
     if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { passed = false; report["status"] = "failed"; }
+    for (const auto& property : frozenProperties) {
+        if (const auto* node = renderGraph_.findNode(property.node)) {
+            auto properties = node->runtimeProperties;
+            if (property.existed) { properties["benchmarkFreezeStreaming"] = property.value; }
+            else { properties.erase("benchmarkFreezeStreaming"); }
+            if (!renderGraph_.setNodeRuntimeProperties(property.node, std::move(properties))) { passed = false; report["status"] = "failed"; }
+        } else { passed = false; report["status"] = "failed"; }
+    }
     graphExecutor_->setDebugObserver(debugRuntime_.get());
     fullRoamActive_=false; fullRoamWidth_=fullRoamHeight_=0;
     profiler_.beginCapture(); profiler_.endCapture(); // Release retained capture samples after export.

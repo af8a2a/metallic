@@ -1086,7 +1086,7 @@ public:
                     std::unique_ptr<Semaphore>& gate;
                     ~Drain()
                     {
-                        if (gate && gate->currentValue() < 1) { (void)gate->signal(1); }
+                        if (gate && gate->currentValue() < 2) { (void)gate->signal(2); }
                         frame.cancel();
                         (void)queue.waitIdle();
                     }
@@ -1099,7 +1099,12 @@ public:
                     "Initial loading command resources failed");
                 uint64_t frameId = 0;
                 nlohmann::json report = nlohmann::json::array();
-                for (uint32_t cycle = 0; cycle < 2; ++cycle) {
+                std::vector<std::array<uint32_t, 6>> deviceMetadataCut;
+                for (uint32_t cycle = 0; cycle < 3; ++cycle) {
+                    desc.deviceImmutableMetadata = cycle != 1;
+                    // Initialization assigns TransferSource usage only when
+                    // readback is enabled before these buffers are allocated.
+                    runtime.setDebugReadbackEnabled(true);
                     require(bool(runtime.initialize(*device, desc, log)), log);
                     require(bool(loader.initialize(*device, log)), log);
                     require(!runtime.sceneReady() && runtime.sceneReadiness().completedPages == 0,
@@ -1107,17 +1112,31 @@ public:
                     require(runtime.asset().primitiveCount() == 4 &&
                         runtime.debugSnapshot(false).at("terminalPageCount").get<uint32_t>() >= 4,
                         "Initial loading fixture must contain multiple independent roots");
-                    if (cycle == 0) {
+                    if (cycle < 2) {
+                        const uint64_t gateValue = cycle + 1;
                         for (uint32_t attempt = 0; attempt < 2; ++attempt) {
                             require(bool(frame.begin(++frameId)) && bool(pool->reset()) &&
                                 bool(commands->begin(&frame)) && bool(streamer->beginFrame(frame)),
                                 "Initial upload begin failed");
+                            const bool metadataBatch = desc.deviceImmutableMetadata && !runtime.immutableMetadataReady();
+                            if (metadataBatch) {
+                                require(runtime.immutableMetadataUploadedBytes() == 0,
+                                    "Cancelled metadata recording advanced its upload offset");
+                                require(hasError(runtime.cmdPreTraversal(*commands, MeshletStreamFrameDesc{}), Error::InvalidArgument),
+                                    "Traversal accepted uninitialized Device metadata");
+                            }
                             require(bool(runtime.cmdLoadInitialResources(*commands, *streamer)),
                                 "Initial upload recording failed");
                             const auto snapshot = runtime.debugSnapshot(false);
-                            require(snapshot.at("orderedUploadPages").get<uint32_t>() >= 4 &&
-                                runtime.residency().stats().frameUploadBytes > desc.maxUploadBytesPerFrame,
-                                "Initial root uploads remained limited by normal frame budgets");
+                            if (metadataBatch) {
+                                require(!runtime.immutableMetadataReady() && runtime.immutableMetadataUploadedBytes() == 0 &&
+                                    snapshot.at("orderedUploadPages") == 0,
+                                    "Unsubmitted metadata copy advanced readiness, bytes, or root publication");
+                            } else {
+                                require(snapshot.at("orderedUploadPages").get<uint32_t>() >= 4 &&
+                                    runtime.residency().stats().frameUploadBytes > desc.maxUploadBytesPerFrame,
+                                    "Initial root uploads remained limited by normal frame budgets");
+                            }
                             require(!runtime.sceneReady() && runtime.residency().residentPageCount() == 0,
                                 "Unsubmitted initial uploads made the scene ready");
                             require(bool(commands->end()), "Initial upload end failed");
@@ -1125,10 +1144,14 @@ public:
                             if (attempt == 0) {
                                 frame.cancel();
                                 require(!runtime.sceneReady(), "Cancelled initial uploads made the scene ready");
+                                if (metadataBatch) {
+                                    require(!runtime.immutableMetadataReady() && runtime.immutableMetadataUploadedBytes() == 0,
+                                        "Cancelled Device metadata became initialized");
+                                }
                                 continue;
                             }
                             CommandBuffer* list[]{commands.get()};
-                            const SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
+                            const SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = gateValue};
                             require(bool(tracker.submit({.waitSemaphores = {&wait, 1},
                                 .commandBuffers = {list, 1}}, frame)), "Initial gated upload submit failed");
                             for (uint32_t query = 0; query < 16; ++query) {
@@ -1136,10 +1159,44 @@ public:
                                 require(!frame.completion().isComplete() && !runtime.sceneReady() &&
                                     runtime.residency().residentPageCount() == 0,
                                     "Queue acceptance or CPU polling published an incomplete root copy");
+                                if (metadataBatch) {
+                                    require(!runtime.immutableMetadataReady() && runtime.immutableMetadataUploadedBytes() > 0,
+                                        "Device metadata readiness did not wait for the accepted GPU copy");
+                                }
                             }
-                            require(bool(gate->signal(1)) && bool(frame.wait(5'000'000'000ull)),
+                            require(bool(gate->signal(gateValue)) && bool(frame.wait(5'000'000'000ull)),
                                 "Initial gated upload did not complete");
                         }
+                    } else {
+                        // Aggregate completion can be valid even though the
+                        // metadata tail was cancelled after an accepted prefix.
+                        std::unique_ptr<CommandBuffer> prefix;
+                        require(bool(pool->createCommandBuffer().transform([&](auto value) { prefix = std::move(value); })),
+                            "Metadata prefix command allocation failed");
+                        require(bool(frame.begin(++frameId)) && bool(pool->reset()) &&
+                            bool(commands->begin(&frame)) && bool(streamer->beginFrame(frame)),
+                            "Metadata cancelled-tail begin failed");
+                        require(bool(runtime.cmdLoadInitialResources(*commands, *streamer)) && bool(commands->end()),
+                            "Metadata cancelled-tail recording failed");
+                        streamer->endFrame();
+                        require(bool(prefix->begin(&frame)) && bool(prefix->end()), "Metadata prefix recording failed");
+                        CommandBuffer* prefixCommands[]{prefix.get()};
+                        require(bool(tracker.submitSegment({.commandBuffers = {prefixCommands, 1}}, frame)),
+                            "Metadata prefix submit failed");
+                        frame.cancel();
+                        require(bool(frame.wait(5'000'000'000ull)) && frame.completion().isSubmitted() && frame.completion().isComplete(),
+                            "Metadata cancelled-tail fixture did not retain accepted-prefix completion");
+                        require(!runtime.immutableMetadataReady() && runtime.immutableMetadataUploadedBytes() == 0 &&
+                            !runtime.sceneReady(), "Cancelled metadata tail trusted aggregate prefix completion");
+
+                        bool metadataComplete = false;
+                        for (uint32_t call = 0; call < 64 && !metadataComplete; ++call) {
+                            require(bool(loader.pump(runtime, .001, metadataComplete, log, true)), log);
+                        }
+                        require(metadataComplete && runtime.immutableMetadataReady() && runtime.immutableMetadataUploadedBytes() > 0 &&
+                            !runtime.sceneReady() && runtime.residency().residentPageCount() == 0 &&
+                            runtime.sceneReadiness().completedPages == 0,
+                            "Metadata-only retry published geometry roots or failed to initialize Device tables");
                     }
 
                     bool complete = false;
@@ -1152,6 +1209,9 @@ public:
                             "Initial loading exceeded a resource budget or failed page IO");
                     }
                     require(complete && runtime.sceneReady(), "Initial loading did not converge in bounded submissions");
+                    require(runtime.immutableMetadataReady() &&
+                        (desc.deviceImmutableMetadata ? runtime.immutableMetadataUploadedBytes() > 0 : runtime.immutableMetadataUploadedBytes() == 0),
+                        "Initial loader did not hand off initialized metadata for the selected memory path");
                     require(loader.stats().batches > 0 && loader.stats().batches <= 64,
                         "Initial loading did not use a bounded independent submission sequence");
                     require(!runtime.tlasReady() && !runtime.accelerationStructure() &&
@@ -1161,8 +1221,85 @@ public:
                     require(snapshot.at("fallbackBlasSubmitted").get<uint32_t>() == 4 &&
                         snapshot.at("maxUploadBytesPerFrame") == desc.maxUploadBytesPerFrame,
                         "Initial loading omitted fallback BLAS or changed the normal byte budget");
+                    require(snapshot.at("immutableMetadataDeviceRequested") == desc.deviceImmutableMetadata &&
+                        snapshot.at("immutableMetadataStagingPeakBytes").get<uint64_t>() <= (64ull << 20) &&
+                        snapshot.at("immutableMetadataStagingBytes") == 0,
+                        "Metadata upload did not honor its staging budget or release completed staging");
+                    if (desc.deviceImmutableMetadata) {
+                        require(snapshot.at("immutableMetadataSubmittedBytes") == snapshot.at("immutableMetadataBytes"),
+                            "Initial loading handed off an incomplete immutable metadata copy");
+                    }
                     report.push_back({{"cycle", cycle}, {"batches", loader.stats().batches},
                         {"rootPages", snapshot.at("terminalPageCount")}, {"runtime", snapshot}});
+
+                    // Read the real GPU traversal cut after loader handoff. The
+                    // Device copy must contain the same groups/topology as the
+                    // original HostUpload metadata, including every primitive.
+                    MeshletStreamFrameDesc view{.width = 192, .height = 128,
+                        .selectedLodLevel = 31, .enableGpuLodSelection = false};
+                    view.camera = {.eye = {-.0168404f, .110154f, .22f},
+                        .center = {-.0168404f, .110154f, -.00153695f}, .znear = .001f, .zfar = 10.f};
+                    require(bool(frame.begin(++frameId)) && bool(pool->reset()) &&
+                        bool(commands->begin(&frame)) && bool(streamer->beginFrame(frame)),
+                        "Metadata traversal begin failed");
+                    require(bool(runtime.cmdBeginFrame(*commands, *streamer, view)) &&
+                        bool(commands->copyStreamedData(*streamer)) &&
+                        bool(runtime.cmdPreTraversal(*commands, view)) &&
+                        bool(runtime.cmdPostTraversal(*commands)) && bool(runtime.cmdEndFrame(*commands)),
+                        "Metadata traversal recording failed");
+                    std::vector<DebugResourceBinding> bindings;
+                    runtime.appendDebugBindings(bindings, "metadata.");
+                    const uint64_t headerBytes = sizeof(MeshletStreamGpuActiveHeader);
+                    const uint64_t groupsBytes = uint64_t(desc.maxActiveGroups) * sizeof(MeshletStreamGpuActiveGroup);
+                    std::unique_ptr<Buffer> cutReadback;
+                    require(bool(device->createBuffer({.size = headerBytes + groupsBytes,
+                        .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback})
+                        .transform([&](auto value) { cutReadback = std::move(value); })), "Metadata cut readback allocation failed");
+                    uint64_t readOffset = 0;
+                    for (const auto& [id, maximumBytes] : {std::pair{"metadata.activeHeader", headerBytes},
+                            std::pair{"metadata.activeGroups", groupsBytes}}) {
+                        const auto binding = std::find_if(bindings.begin(), bindings.end(), [&](const auto& value) { return value.id == id; });
+                        require(binding != bindings.end(), "Metadata traversal cut binding missing");
+                        BufferBarrierDesc barrier{.buffer = binding->buffer,
+                            .before = resourceSyncScope(binding->state, PipelineStageBits::AllCommands),
+                            .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+                        require(bool(commands->synchronize({.buffers = {&barrier, 1}})), "Metadata cut copy barrier failed");
+                        const uint64_t copyBytes = std::min(maximumBytes, binding->buffer->desc().size);
+                        auto src = binding->buffer->slice({0, copyBytes});
+                        auto dst = cutReadback->slice({readOffset, copyBytes});
+                        require(bool(src) && bool(dst), "Metadata cut slice failed");
+                        const auto copied = commands->copyBuffer(*src, *dst);
+                        require(bool(copied), std::string("Metadata cut copy ") + id + ": " + resultToString(copied));
+                        std::swap(barrier.before, barrier.after);
+                        require(bool(commands->synchronize({.buffers = {&barrier, 1}})), "Metadata cut restore barrier failed");
+                        readOffset += maximumBytes;
+                    }
+                    const BufferBarrierDesc cutReady{.buffer = cutReadback.get(),
+                        .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+                        .after = {PipelineStageBits::Host, AccessBits::HostRead}};
+                    require(bool(commands->synchronize({.buffers = {&cutReady, 1}})) && bool(commands->end()),
+                        "Metadata traversal end failed");
+                    CommandBuffer* traversalCommands[]{commands.get()};
+                    require(bool(tracker.submit({.commandBuffers = {traversalCommands, 1}}, frame)) &&
+                        bool(frame.wait(5'000'000'000ull)), "Metadata traversal submit failed");
+                    streamer->endFrame();
+                    std::vector<uint8_t> cutBytes(headerBytes + groupsBytes);
+                    require(readBufferBytes(*cutReadback, cutBytes.data(), cutBytes.size()), "Metadata cut readback failed");
+                    MeshletStreamGpuActiveHeader active;
+                    std::memcpy(&active, cutBytes.data(), sizeof(active));
+                    require(active.activeGroupCount > 0 && active.activeGroupCount <= desc.maxActiveGroups && active.overflowCount == 0,
+                        "Initialized metadata produced an empty or overflowing traversal cut");
+                    std::vector<std::array<uint32_t, 6>> cut;
+                    for (uint32_t group = 0; group < active.activeGroupCount; ++group) {
+                        MeshletStreamGpuActiveGroup entry;
+                        std::memcpy(&entry, cutBytes.data() + headerBytes + group * sizeof(entry), sizeof(entry));
+                        cut.push_back({entry.instanceIndex, entry.primitiveIndex, entry.pageIndex,
+                            entry.lodLevel, entry.clusterCount, entry.clusterSelectionMask});
+                    }
+                    std::sort(cut.begin(), cut.end());
+                    if (cycle == 0) { deviceMetadataCut = cut; }
+                    else { require(cut == deviceMetadataCut, "Device and Host metadata produced different GPU traversal cuts"); }
+                    report.back()["metadataTraversalGroups"] = active.activeGroupCount;
 
                     auto& residency = const_cast<MeshletStreamResidencyManager&>(runtime.residency());
                     std::vector<uint32_t> refinements;
@@ -1198,7 +1335,7 @@ public:
             // Include retirement and device destruction in the validation verdict.
             device.reset();
             require(validationMessages.load() == 0, "Initial loading produced Vulkan validation errors");
-            return RhiTestResult::pass("Independent root/CLAS/fallback loading, cancellation, GPU-gated readiness, steady-state budgets and reload");
+            return RhiTestResult::pass("Device/Host metadata agree on GPU traversal; independent loading, cancellation, GPU-gated readiness, steady-state budgets and reload");
         } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
     }
 };

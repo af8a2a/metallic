@@ -612,6 +612,7 @@ public:
                 .pushData = push,
                 .pushDataSize = 16,
             }),"feedback dispatch");
+            require(resources.endTextureStreaming(*commands,index,&textureProfile),"feedback readback");
             require(commands->end(),"feedback end");
             if (cancel) { frame.cancel(); return; }
             auto* command = commands.get();
@@ -676,6 +677,129 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(KtxTextureStreamingTest);
+
+class KtxTextureFeedbackSubmissionContractTest final : public RhiTest {
+public:
+    KtxTextureFeedbackSubmissionContractTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "ktx2_texture_feedback_submission_contract";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        if (!context.device.capabilities().bindlessDescriptorHeap) {
+            return RhiTestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
+        }
+        const auto directory = context.outputDirectory / "texture-feedback-submission";
+        std::filesystem::create_directories(directory);
+        const auto path = makeScene(directory, true);
+        scene::Scene scene;
+        require(scene.loadStreamMetadata(path), scene.lastLoadResult().error);
+        ScenePathTraceResources resources;
+        std::string log;
+        require(resources.prepare(context.device, context.graphicsQueue,
+            {{"path",path.string()}, {"materialTextureMaxDimension",128}, {"materialTextureBudgetMiB",4},
+             {"materialTextureStreaming",true}, {"materialTextureRefineDimension",512},
+             {"materialTextureColdFrames",120}}, &scene, log), log);
+        const uint32_t slot = resources.logicalTextureIndices()[1];
+        const uint32_t baseMip = resources.materialTextureFirstMips()[1];
+        const uint64_t baseline = resources.textureStats().residentAllocationBytes;
+        ShaderCompileResult shader;
+        require(compileSlangShaderToSpirv({.moduleName = "Features/Debug/TextureResidencyProbe", .entryPointName = "main",
+            .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics)
+                .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
+        ComputeProgram program;
+        const ComputeProgramBindingDesc layout{.binding = 0};
+        require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
+            .bindings = {&layout,1}, .requiresRayQuery = false}, log), log);
+        std::unique_ptr<CommandPool> pool;
+        std::array<std::unique_ptr<CommandBuffer>, 3> commands;
+        QueueSubmissionTracker tracker;
+        RenderFrameContext frame;
+        require(context.device.createCommandPool(context.graphicsQueue).transform([&](auto value) { pool = std::move(value); }),
+            "feedback contract pool");
+        for (auto& command : commands) {
+            require(pool->createCommandBuffer().transform([&](auto value) { command = std::move(value); }),
+                "feedback contract command");
+        }
+        require(tracker.initialize(context.device, context.graphicsQueue), "feedback contract tracker");
+        struct Drain {
+            Queue& queue;
+            RenderFrameContext& frame;
+            ~Drain() { frame.cancel(); (void)queue.waitIdle(); }
+        } drain{context.graphicsQueue,frame};
+        uint64_t frameIndex = 0;
+        const auto dispatch = [&](CommandBuffer& command, Buffer& feedback, uint32_t mip, uint32_t samples) {
+            const ComputeDispatchBinding binding{.binding = 0, .buffer = &feedback};
+            const uint32_t push[]{slot,mip,samples,0};
+            require(program.dispatch({.commandBuffer = &command, .bindings = {&binding,1},
+                .pushData = push, .pushDataSize = sizeof(push)}), "feedback contract demand");
+        };
+        const auto tick = [&](bool fineDemand, bool cancelReadback = false) {
+            require(frame.wait(), "feedback contract wait");
+            require(pool->reset(), "feedback contract reset");
+            require(frame.begin(++frameIndex), "feedback contract frame");
+            require(commands[0]->begin(&frame), "feedback first consumer begin");
+            Buffer* first = nullptr;
+            require(resources.beginTextureStreaming(*commands[0], frameIndex, first), "feedback first consumer metadata");
+            require(first != nullptr && first->desc().memoryLocation == MemoryLocation::Device,
+                "Texture feedback atomics must target a Device buffer");
+            const uint64_t consumedAtBegin = resources.textureStats().feedbackFrames;
+            require(resources.uploadMaterialTextures(*commands[0]), "feedback retain generation");
+            // The accepted prefix can write fine demand even if its readback tail
+            // is cancelled. Frame completion alone must not publish that sample.
+            dispatch(*commands[0], *first, cancelReadback ? 0u : baseMip, 1000);
+            require(commands[0]->end(), "feedback first consumer end");
+            require(commands[1]->begin(&frame), "feedback second consumer begin");
+            Buffer* second = nullptr;
+            require(resources.beginTextureStreaming(*commands[1], frameIndex, second), "feedback second consumer metadata");
+            require(second == first, "Consumers in one frame must share accumulated texture feedback");
+            dispatch(*commands[1], *second, 0, fineDemand ? 1000u : 0u);
+            require(commands[1]->end(), "feedback second consumer end");
+            require(commands[2]->begin(&frame), "feedback readback tail begin");
+            require(resources.endTextureStreaming(*commands[2], frameIndex), "feedback graph-end readback");
+            require(commands[2]->end(), "feedback readback tail end");
+            if (cancelReadback) {
+                CommandBuffer* prefix = commands[0].get();
+                require(tracker.submitSegment({.commandBuffers = {&prefix,1}}, frame)
+                    .transform([](auto) {}), "feedback accepted prefix");
+                frame.cancel();
+                require(frame.completion().isSubmitted() && !frame.completion().isCancelled(),
+                    "Accepted prefix must preserve submitted aggregate completion");
+                require(frame.wait(), "feedback cancelled-tail prefix completion");
+            } else {
+                const std::array<CommandBuffer*, 3> buffers{commands[0].get(),commands[1].get(),commands[2].get()};
+                require(tracker.submit({.commandBuffers = buffers}, frame), "feedback all consumers and readback submit");
+            }
+            return consumedAtBegin;
+        };
+        tick(false, true);
+        require(tick(false) == 0, "Cancelled readback was consumed because the prefix completed");
+        for (uint32_t step = 0; step < 24; ++step) {
+            tick(false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        require(resources.textureStats().upgrades == 0 &&
+            resources.textureStats().residentAllocationBytes == baseline &&
+            resources.materialTextureFirstMips()[1] == baseMip,
+            "Cancelled readback triggered texture refinement");
+        // Only the second consumer requests fine mips. Copying after the first
+        // consumer or reinitializing for the second would lose this requirement.
+        for (uint32_t attempt = 0; attempt < 300 && resources.materialTextureFirstMips()[1] != 1; ++attempt) {
+            tick(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        require(frame.wait(), "feedback shared-demand completion");
+        require(resources.materialTextureFirstMips()[1] == 1 && resources.textureStats().upgrades == 2,
+            "Graph-end readback lost the second consumer's fine mip demand");
+        for (auto& command : commands) { command.reset(); }
+        require(frame.reset(), "feedback contract final reset");
+        resources.clear();
+        return RhiTestResult::pass("Cancelled readback tail is ignored after an accepted prefix; independent consumers accumulate before graph-end copy");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(KtxTextureFeedbackSubmissionContractTest);
 
 class KtxTextureStreamingSamplingStabilityTest final : public RhiTest {
 public:
@@ -757,6 +881,7 @@ public:
             const Push push{imageSlot, visible ? 1u : 0u, .25f, 5.25f};
             require(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings,
                 .pushData = &push, .pushDataSize = sizeof(push)}), "stability probe dispatch");
+            require(resources.endTextureStreaming(*commands, frameIndex), "stability feedback readback");
             require(commands->end(), "stability end");
             auto* command = commands.get();
             require(tracker.submit({.commandBuffers = {&command, 1}}, frame), "stability submit");

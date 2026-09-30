@@ -13,6 +13,7 @@
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
@@ -781,6 +782,76 @@ public:
     }
 };
 
+struct TestTextureFeedbackState {
+    std::weak_ptr<render::ScenePathTraceResources> resources;
+    render::Buffer* feedback = nullptr;
+    bool sharedFeedback = false;
+};
+
+TestTextureFeedbackState& testTextureFeedbackState()
+{
+    static TestTextureFeedbackState state;
+    return state;
+}
+
+class TestTextureFeedbackPass final : public render::ComputePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        if (properties().value("after", false)) {
+            reflection.addBufferInput("previous", "Earlier texture feedback consumer").buffer(16).shaderRead();
+        }
+        reflection.addBufferOutput("token", "Texture feedback consumer ordering").buffer(16).storageReadWrite();
+        return reflection;
+    }
+
+    render::SceneStreamingRequirements sceneResourcesRequired(const render::RenderGraphCompileContext&) const override
+    {
+        return {.features = render::SceneResourceFeatureBits::Materials | render::SceneResourceFeatureBits::MaterialTextures,
+            .textureFeedback = true};
+    }
+
+    render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
+    {
+        render::ShaderCompileResult shader;
+        auto result = render::compileSlangShaderToSpirv({
+            .moduleName = "Features/Debug/TextureResidencyProbe", .entryPointName = "main",
+            .searchPath = kShaderSearchPath}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+        if (!result) { log = shader.diagnostics; return result; }
+        const render::ComputeProgramBindingDesc binding{.binding = 0};
+        return program_.initialize(*context.device, {
+            .spirv = shader.spirv, .pushConstantSize = 16, .bindings = {&binding, 1},
+            .requiresRayQuery = false}, log);
+    }
+
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        const auto* prepared = context.preparedScene();
+        if (!prepared || !prepared->ready || !prepared->snapshot || !prepared->snapshot->pathTraceResources ||
+            !prepared->textureFeedback || prepared->textureFeedback->desc().memoryLocation != render::MemoryLocation::Device) {
+            return render::makeError(render::Error::InvalidArgument);
+        }
+        auto resources = prepared->snapshot->pathTraceResources;
+        if (resources->logicalTextureIndices().empty()) { return render::makeError(render::Error::InvalidArgument); }
+        auto& state = testTextureFeedbackState();
+        if (context.properties().value("after", false)) {
+            state.sharedFeedback = state.resources.lock() == resources && state.feedback == prepared->textureFeedback;
+            if (!state.sharedFeedback) { return render::makeError(render::Error::InvalidArgument); }
+        } else {
+            state.resources = resources;
+            state.feedback = prepared->textureFeedback;
+        }
+        const render::ComputeDispatchBinding binding{.binding = 0, .buffer = prepared->textureFeedback};
+        const uint32_t push[]{resources->logicalTextureIndices()[0], context.properties().value("wantedMip", 0u), 1u, 0u};
+        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {&binding, 1},
+            .pushData = push, .pushDataSize = sizeof(push)});
+    }
+
+private:
+    render::ComputeProgram program_;
+};
+
 class TestEnvironmentConsumerPass final : public render::ComputePass {
 public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
@@ -858,6 +929,9 @@ void registerTestPass()
         "TestMissingSubsystemPass",
         "Test-only pass with an intentionally missing subsystem",
         []() { return std::make_unique<TestMissingSubsystemPass>(); });
+    render::registerRenderGraphPassType(
+        "TestTextureFeedbackPass", "Test shared texture feedback and graph epilogue submission",
+        []() { return std::make_unique<TestTextureFeedbackPass>(); });
     render::registerRenderGraphPassType(
         "TestEnvironmentConsumerPass",
         "Test-only environment subsystem consumer",
@@ -7410,6 +7484,140 @@ public:
     }
 };
 
+class RenderGraphTextureFeedbackEpilogueTest final : public RhiTest {
+public:
+    RenderGraphTextureFeedbackEpilogueTest()
+    {
+        type = RhiTestType::Rendering;
+        name = "render_graph_texture_feedback_epilogue";
+    }
+
+    RhiTestResult run(RhiTestContext& context) override
+    {
+        using namespace render;
+        if (!context.device.capabilities().bindlessDescriptorHeap) {
+            return RhiTestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
+        }
+        registerTestPass();
+        const auto directory = std::filesystem::absolute(context.outputDirectory / "graph-texture-feedback");
+        std::filesystem::create_directories(directory);
+        // An uncompressed BC4 mip chain keeps this fixture independent of asset
+        // caches. Its coarse tail starts at mip 2; only the later pass asks for 0.
+        constexpr uint32_t kMipCount = 7;
+        constexpr uint32_t kDfdOffset = 80 + kMipCount * 24;
+        const std::array<uint8_t, 12> magic{0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a};
+        std::vector<uint8_t> texture(kDfdOffset + 28);
+        std::copy(magic.begin(), magic.end(), texture.begin());
+        const auto put = [&]<typename T>(size_t offset, T value) {
+            std::memcpy(texture.data() + offset, &value, sizeof(value));
+        };
+        put(12, 139u); put(16, 1u); put(20, 64u); put(24, 64u);
+        put(36, 1u); put(40, kMipCount); put(48, kDfdOffset); put(52, 28u); put(kDfdOffset, 28u);
+        for (uint32_t mip = 0; mip < kMipCount; ++mip) {
+            const uint32_t dimension = std::max(64u >> mip, 1u);
+            const uint64_t bytes = uint64_t((dimension + 3) / 4) * ((dimension + 3) / 4) * 8;
+            const size_t offset = texture.size();
+            put(80 + mip * 24, uint64_t(offset));
+            put(88 + mip * 24, bytes); put(96 + mip * 24, bytes);
+            texture.resize(offset + bytes);
+            for (size_t block = offset; block < texture.size(); block += 8) {
+                texture[block] = texture[block + 1] = 77;
+            }
+        }
+        {
+            std::ofstream output(directory / "texture.ktx2", std::ios::binary);
+            output.write(reinterpret_cast<const char*>(texture.data()), texture.size());
+        }
+        const auto scenePath = directory / "Scene.gltf";
+        {
+            std::ofstream output(scenePath);
+            output << R"({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],
+                "buffers":[{"uri":"unused.bin","byteLength":36}],"bufferViews":[{"buffer":0,"byteLength":36}],
+                "accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}],
+                "meshes":[{"primitives":[{"attributes":{"POSITION":0},"material":0}]}],
+                "images":[{"uri":"texture.ktx2"}],"textures":[{"source":0}],
+                "materials":[{"pbrMetallicRoughness":{"baseColorTexture":{"index":0}}}]})";
+        }
+
+        for (bool externalCommands : {false, true}) {
+            testTextureFeedbackState() = {};
+            RenderGraph graph;
+            const RenderGraphProperties properties{{"path", scenePath.generic_string()}, {"streamAssetOnly", true},
+                {"materialTextureStreaming", true}, {"materialTextureMaxDimension", 16},
+                {"materialTextureRefineDimension", 64}, {"materialTextureBudgetMiB", 8}, {"wantedMip", 2}};
+            graph.addNode("TestTextureFeedbackPass", "Coarse", properties);
+            auto fineProperties = properties;
+            fineProperties["after"] = true;
+            fineProperties["wantedMip"] = 0;
+            graph.addNode("TestTextureFeedbackPass", "Fine", fineProperties);
+            if (!graph.addEdge("Coarse.token", "Fine.previous") || !graph.markOutput("Fine.token")) {
+                return RhiTestResult::fail("Could not construct shared-feedback graph");
+            }
+            RenderGraphExecutor executor;
+            std::string log;
+            auto result = executor.compile(context.device, graph, 16, 16, log);
+            if (!result) { return RhiTestResult::fail("Texture feedback graph compile: " + log); }
+            if (executor.subsystemHost()->get<GPUSceneSubsystem>() != nullptr) {
+                return RhiTestResult::fail("Feedback regression must exercise a streamer-only graph");
+            }
+            QueueSubmissionTracker submissions;
+            RenderFrameContext frame;
+            std::unique_ptr<CommandPool> pool;
+            std::unique_ptr<CommandBuffer> commands;
+            if (externalCommands) {
+                result = submissions.initialize(context.device, context.graphicsQueue);
+                if (result) { result = context.device.createCommandPool(context.graphicsQueue).transform([&](auto value) { pool = std::move(value); }); }
+                if (result) { result = pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }); }
+                if (!result) { return RhiTestResult::fail("Texture feedback command resources: " + std::string(resultToString(result))); }
+            }
+            struct Drain {
+                Queue& queue;
+                RenderFrameContext& frame;
+                ~Drain() { frame.cancel(); (void)queue.waitIdle(); }
+            } drain{context.graphicsQueue, frame};
+            std::shared_ptr<ScenePathTraceResources> resources;
+            bool refined = false;
+            for (uint32_t iteration = 0; iteration < 300 && !refined; ++iteration) {
+                if (externalCommands) {
+                    result = frame.wait(5'000'000'000ull);
+                    if (result) { result = pool->reset(); }
+                    if (result) { result = frame.begin(iteration + 1); }
+                    if (result) { result = commands->begin(&frame); }
+                    if (result) { result = executor.execute(*commands); }
+                    if (result) { result = commands->end(); }
+                    CommandBuffer* list[]{commands.get()};
+                    if (result) { result = submissions.submit({.commandBuffers = {list, 1}}, frame); }
+                    if (result) { result = frame.wait(5'000'000'000ull); }
+                } else {
+                    result = executor.execute(RenderGraphSubmitDesc{.graphicsQueue = &context.graphicsQueue});
+                    if (result) { result = executor.waitForSubmittedWork(5'000'000'000ull); }
+                }
+                if (!result) { return RhiTestResult::fail("Texture feedback graph execute: " + std::string(resultToString(result))); }
+                resources = testTextureFeedbackState().resources.lock();
+                if (!resources || !testTextureFeedbackState().sharedFeedback || resources->materialTextureFirstMips().size() != 1) {
+                    return RhiTestResult::fail("Consumers did not share one streamed texture feedback generation");
+                }
+                if (iteration == 0 && resources->materialTextureFirstMips()[0] != 2) {
+                    return RhiTestResult::fail("Texture fixture did not start at its coarse tail");
+                }
+                refined = resources->materialTextureFirstMips()[0] == 0;
+                if (!refined) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+            }
+            // Streaming publishes one mip at a time, so mip 2 -> 0 requires
+            // two accepted physical tail replacements.
+            if (!refined || resources->textureStats().feedbackFrames == 0 || resources->textureStats().upgrades != 2) {
+                return RhiTestResult::fail(std::string(externalCommands ? "External-command" : "Graph-submitted") +
+                    " epilogue did not consume the later pass's fine-mip demand: mip=" +
+                    std::to_string(resources->materialTextureFirstMips()[0]) + " feedbackFrames=" +
+                    std::to_string(resources->textureStats().feedbackFrames) + " upgrades=" +
+                    std::to_string(resources->textureStats().upgrades));
+            }
+        }
+        testTextureFeedbackState() = {};
+        return RhiTestResult::pass("Streamer-only graph joins shared Device feedback consumers and asynchronously refines through both executor entry points");
+    }
+};
+
 class RenderGraphImageSamplePassPreviewTest : public RhiTest {
 public:
     RenderGraphImageSamplePassPreviewTest()
@@ -10066,6 +10274,7 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphCopyColorWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBindlessTextureWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphBufferWorkflowTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphMultiQueueSubmitTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphTextureFeedbackEpilogueTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphImageSamplePassPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphMaterialShaderObjectPassSmokeTest);
 class StreamSceneOpenRoutingTest final : public RhiTest {

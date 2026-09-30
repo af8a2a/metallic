@@ -20,12 +20,14 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <spdlog/spdlog.h>
 
 namespace metallic::render {
 namespace {
 
 inline constexpr bool kDefaultReversedZ = true;
+inline constexpr uint64_t kImmutableMetadataUploadBatchBytes = 64ull * 1024ull * 1024ull;
 
 uint64_t alignUp(uint64_t value, uint64_t alignment)
 {
@@ -180,6 +182,39 @@ Result<> createAndPopulateHostStorageBuffer(
     }
     outBuffer->flush({0, byteSize});
     outBuffer->unmap();
+    return {};
+}
+
+template<typename ValueType, typename Populate>
+Result<> createAndPopulateImmutableStorageBuffer(
+    Device& device, bool deviceStorage, size_t valueCount,
+    std::unique_ptr<Buffer>& outBuffer, std::vector<std::byte>* uploadData,
+    std::string& log, std::string_view label, Populate&& populate)
+{
+    if (!deviceStorage) {
+        return createAndPopulateHostStorageBuffer<ValueType>(
+            device, valueCount, outBuffer, log, label, std::forward<Populate>(populate));
+    }
+    const uint64_t allocationCount = std::max<uint64_t>(valueCount, 1u);
+    if (!uploadData || allocationCount > std::numeric_limits<size_t>::max() / sizeof(ValueType)) {
+        log += std::string(label) + " byte size overflowed\n";
+        return makeError(Error::OutOfMemory);
+    }
+    const uint64_t byteSize = allocationCount * sizeof(ValueType);
+    auto result = createNamedBuffer(device, BufferDesc{
+        .size = byteSize,
+        .structureStride = 0,
+        .usage = BufferUsageBits::Storage | BufferUsageBits::TransferDestination,
+        .memoryLocation = MemoryLocation::Device,
+        .memoryDomain = MemoryBudgetDomain::Geometry,
+    }, outBuffer, log, label);
+    if (!result) { return result; }
+    uploadData->resize(static_cast<size_t>(byteSize));
+    for (size_t index = 0; index < valueCount; ++index) {
+        ValueType value{};
+        populate(value, index);
+        std::memcpy(uploadData->data() + index * sizeof(ValueType), &value, sizeof(ValueType));
+    }
     return {};
 }
 
@@ -825,6 +860,10 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     }
 
     coldPageRetentionFrames_ = desc.coldPageRetentionFrames;
+    deviceImmutableMetadata_ = desc.deviceImmutableMetadata;
+    if (deviceImmutableMetadata_) {
+        immutableMetadataUpload_ = std::make_shared<ImmutableMetadataUpload>();
+    }
     const bool enableClas = desc.enableClas && device.capabilities().clusterAccelerationStructure;
     clusterRtxEnabled_ = desc.enableClusterRtx;
     maxResidentPages_ = desc.maxResidentPages;
@@ -2132,6 +2171,8 @@ void MeshletStreamRuntime::reset()
     lodLevelBuffer_.reset();
     groupBuffer_.reset();
     lodTopologyBuffer_.reset();
+    immutableMetadataUpload_.reset();
+    deviceImmutableMetadata_ = false;
     lodStateBuffer_.reset();
     demandBuffer_.reset();
     demandHandle_ = {};
@@ -2273,6 +2314,128 @@ void MeshletStreamRuntime::reset()
     previousFrameParamsValid_ = false;
 }
 
+bool MeshletStreamRuntime::immutableMetadataReady() const
+{
+    if (!deviceImmutableMetadata_) { return true; }
+    const auto& upload = immutableMetadataUpload_;
+    if (upload && upload->completed) { return true; }
+    const bool completed = upload && upload->submittedBytes == upload->totalBytes && upload->submission &&
+        upload->submission->resolved() && !upload->submission->cancelled() &&
+        upload->completion.isSubmitted() && upload->completion.isComplete();
+    if (completed) { upload->completed = true; }
+    return completed;
+}
+
+uint64_t MeshletStreamRuntime::immutableMetadataUploadedBytes() const
+{
+    return immutableMetadataUpload_ ? immutableMetadataUpload_->submittedBytes : 0;
+}
+
+Result<> MeshletStreamRuntime::prepareImmutableMetadataRead(CommandBuffer& commandBuffer) const
+{
+    if (!immutableMetadataReady()) { return makeError(Error::InvalidArgument); }
+    if (!immutableMetadataUpload_) { return {}; }
+    // Retain and wait the timeline even after the loader's CPU wait/reset: a
+    // consumer may use a different queue from the initial upload queue.
+    return commandBuffer.addDependency(immutableMetadataUpload_->completion);
+}
+
+Result<> MeshletStreamRuntime::uploadImmutableMetadata(CommandBuffer& commandBuffer)
+{
+    const auto upload = immutableMetadataUpload_;
+    auto* frame = commandBuffer.frameContext();
+    if (!upload || !upload->staging || !frame || !frame->recording() || !commandBuffer.recording()) {
+        return makeError(Error::InvalidArgument);
+    }
+    // Do not reuse mapped staging while a previous accepted copy still reads it.
+    // A cancelled copy never advances the offset, including a cancelled tail
+    // whose frame aggregate covers some other accepted commands.
+    if (upload->submission && (!upload->submission->resolved() ||
+        (!upload->submission->cancelled() && !upload->completion.isComplete()))) {
+        return makeError(Error::InvalidArgument);
+    }
+    const uint64_t offset = upload->submittedBytes;
+    if (offset >= upload->totalBytes) { return makeError(Error::InvalidArgument); }
+    const uint64_t bytes = std::min(upload->totalBytes - offset, upload->staging->desc().size);
+    const uint64_t groupBytes = groupBuffer_->desc().size;
+    const uint64_t groupCopyBytes = offset < groupBytes ? std::min(bytes, groupBytes - offset) : 0;
+    const uint64_t topologyOffset = offset > groupBytes ? offset - groupBytes : 0;
+    const uint64_t topologyCopyBytes = bytes - groupCopyBytes;
+    auto* mapped = static_cast<std::byte*>(upload->staging->map());
+    if (!mapped) { return makeError(Error::Failure); }
+    if (groupCopyBytes) {
+        std::memcpy(mapped, upload->groups.data() + offset, static_cast<size_t>(groupCopyBytes));
+    }
+    if (topologyCopyBytes) {
+        std::memcpy(mapped + groupCopyBytes, upload->topology.data() + topologyOffset,
+            static_cast<size_t>(topologyCopyBytes));
+    }
+    upload->staging->flush({0, bytes});
+    upload->staging->unmap();
+
+    auto result = commandBuffer.retainResource(upload);
+    if (result) { result = commandBuffer.retainResource(upload->staging->retainAllocation()); }
+    for (const auto& lease : {groupHandle_, lodTopologyHandle_}) {
+        if (result) { result = registry_->retain(commandBuffer, lease); }
+    }
+    if (!result) { return result; }
+    const BufferBarrierDesc stagingReady{
+        .buffer = upload->staging.get(),
+        .before = {PipelineStageBits::Host, AccessBits::HostWrite},
+        .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
+        .range = {0, bytes},
+    };
+    result = commandBuffer.synchronize({.buffers = {&stagingReady, 1}});
+    if (!result) { return result; }
+    const auto copy = [&](Buffer& destination, uint64_t destinationOffset,
+                          uint64_t sourceOffset, uint64_t copyBytes) -> Result<> {
+        if (copyBytes == 0) { return {}; }
+        const BufferBarrierDesc transferReady{
+            .buffer = &destination, .before = {},
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+            .range = {destinationOffset, copyBytes},
+        };
+        auto copied = commandBuffer.synchronize({.buffers = {&transferReady, 1}});
+        if (!copied) { return copied; }
+        auto source = upload->staging->slice({sourceOffset, copyBytes});
+        if (!source) { return std::unexpected(source.error()); }
+        auto target = destination.slice({destinationOffset, copyBytes});
+        if (!target) { return std::unexpected(target.error()); }
+        copied = commandBuffer.copyBuffer(*source, *target);
+        if (!copied) { return copied; }
+        const BufferBarrierDesc shaderReady{
+            .buffer = &destination,
+            .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
+            .after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
+            .range = {destinationOffset, copyBytes},
+        };
+        return commandBuffer.synchronize({.buffers = {&shaderReady, 1}});
+    };
+    result = copy(*groupBuffer_, offset, 0, groupCopyBytes);
+    if (result) { result = copy(*lodTopologyBuffer_, topologyOffset, groupCopyBytes, topologyCopyBytes); }
+    if (!result) { return result; }
+    const auto weak = std::weak_ptr<ImmutableMetadataUpload>(upload);
+    auto transaction = std::make_shared<SubmissionTransaction>(
+        [weak, bytes, cache = sceneReadinessCache_] {
+            if (auto accepted = weak.lock()) {
+                accepted->submittedBytes += bytes;
+                ++accepted->uploadBatches;
+                if (accepted->submittedBytes == accepted->totalBytes) {
+                    std::vector<std::byte>().swap(accepted->groups);
+                    std::vector<std::byte>().swap(accepted->topology);
+                }
+            }
+            cache->valid = false;
+        },
+        [cache = sceneReadinessCache_] { cache->valid = false; });
+    result = commandBuffer.addSubmissionTransaction(transaction);
+    if (!result) { return result; }
+    upload->submission = std::move(transaction);
+    upload->completion = frame->completion();
+    sceneReadinessCache_->valid = false;
+    return {};
+}
+
 bool MeshletStreamRuntime::ready() const
 {
     return asset_.valid() &&
@@ -2332,7 +2495,13 @@ bool MeshletStreamRuntime::ready() const
 StreamSceneReadiness MeshletStreamRuntime::sceneReadiness() const
 {
     auto& cache = *sceneReadinessCache_;
-    if (cache.valid || cache.rootsInvalidated) { return cache.value; }
+    const bool metadataReady = immutableMetadataReady();
+    if (!metadataReady) { cache.valid = false; }
+    if (cache.valid || cache.rootsInvalidated) {
+        auto value = cache.value;
+        value.ready = value.ready && metadataReady;
+        return value;
+    }
     ++cache.scans;
     StreamSceneReadiness result;
     const bool needsClas = clusterRtxEnabled_ && clasPool_;
@@ -2341,7 +2510,7 @@ StreamSceneReadiness MeshletStreamRuntime::sceneReadiness() const
         result.completedPages += residency_.pageResident(page) ? 1u : 0u;
         if (needsClas) { result.completedPages += clasPool_->pageHasClas(page) ? 1u : 0u; }
     }
-    result.ready = ready() && *pageTableInitialized_ && result.requiredPages != 0 &&
+    result.ready = ready() && metadataReady && *pageTableInitialized_ && result.requiredPages != 0 &&
         result.completedPages == result.requiredPages &&
         (!clusterRtxEnabled_ || std::all_of(fallbackBlasPrimitives_.begin(), fallbackBlasPrimitives_.end(),
             [](const auto& fallback) { return fallback.submitted(); }));
@@ -2357,6 +2526,7 @@ RayTracingAccelerationStructure* MeshletStreamRuntime::accelerationStructure() c
 
 void MeshletStreamRuntime::prepareMaintenance(CpuProfileRecorder* profiler, bool allowLegacyReadback)
 {
+    if (immutableMetadataReady() && immutableMetadataUpload_) { immutableMetadataUpload_->staging.reset(); }
     if (maintenancePrepared_ || rasterSnapshotFrozen_ || !ready()) { return; }
     maintenancePrepared_ = true;
     if (!sceneReadinessCache_->value.ready) { sceneReadinessCache_->valid = false; }
@@ -2393,9 +2563,11 @@ Result<> MeshletStreamRuntime::cmdBeginFrame(
 Result<> MeshletStreamRuntime::cmdLoadInitialResources(
     CommandBuffer& commandBuffer, Streamer& streamer, const std::function<Result<>()>& flushUploads)
 {
-    if (!commandBuffer.frameContext() || !commandBuffer.frameContext()->recording()) {
+    if (!ready() || !commandBuffer.frameContext() || !commandBuffer.frameContext()->recording()) {
         return makeError(Error::InvalidArgument);
     }
+    if (!immutableMetadataReady()) { return uploadImmutableMetadata(commandBuffer); }
+    if (immutableMetadataUpload_) { immutableMetadataUpload_->staging.reset(); }
     auto result = beginUploadBatch(commandBuffer, streamer, {}, flushUploads, true);
     if (!result) { return result; }
     if (residency_.stats().framePageLoadFailureCount != 0) { return makeError(Error::Failure); }
@@ -2413,6 +2585,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
     bool initialLoad)
 {
     if (!registry_) { return makeError(Error::InvalidArgument); }
+    if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     for (const auto& lease : {
         pageHandle_, activeGroupHandle_, activeHeaderHandle_, pageTableHandle_,
         paramsHandle_, visibleClusterHandle_, rasterBindingsHandle_, requestHandle_,
@@ -2562,6 +2735,7 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
     if (!ready()) {
         return makeError(Error::InvalidArgument);
     }
+    if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
 
     if (rasterSnapshotFrozen_) {
         Result<> result = clearRequestBuffer(commandBuffer);
@@ -2634,6 +2808,7 @@ Result<> MeshletStreamRuntime::cmdPreTraversal(CommandBuffer& commandBuffer, con
 Result<> MeshletStreamRuntime::cmdBuildPendingClas(CommandBuffer& commandBuffer,
     const TraversalCheckpoint& checkpoint)
 {
+    if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     if (!clasPool_) { return {}; }
     Result<> result;
     if (checkpoint) { checkpoint("BeforeStreamClasBuild"); }
@@ -2695,12 +2870,12 @@ Result<> MeshletStreamRuntime::cmdBuildPendingClas(CommandBuffer& commandBuffer,
 
 Result<> MeshletStreamRuntime::cmdPostTraversal(CommandBuffer& commandBuffer)
 {
-    (void)commandBuffer;
-    return ready() ? Result<>{} : makeError(Error::InvalidArgument);
+    return ready() ? prepareImmutableMetadataRead(commandBuffer) : makeError(Error::InvalidArgument);
 }
 
 Result<> MeshletStreamRuntime::cmdEndFrame(CommandBuffer& commandBuffer)
 {
+    if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     if (rasterSnapshotFrozen_) { return ready() ? Result<>{} : makeError(Error::InvalidArgument); }
     if (!ready()) {
         return makeError(Error::InvalidArgument);
@@ -2779,6 +2954,7 @@ Result<> MeshletStreamRuntime::cmdPrepareVisibility(CommandBuffer& commandBuffer
     if (!ready()) {
         return makeError(Error::InvalidArgument);
     }
+    if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     if (auto commandResult = transitionBuffer(
         commandBuffer,
         *drawIndirectBuffer_,
@@ -2798,6 +2974,7 @@ Result<> MeshletStreamRuntime::cmdPrepareDeferred(CommandBuffer& commandBuffer)
     if (!ready()) {
         return makeError(Error::InvalidArgument);
     }
+    if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     if (auto commandResult = transitionBuffer(
         commandBuffer,
         *visibleClusterBuffer_,
@@ -2974,7 +3151,7 @@ Result<> MeshletStreamRuntime::syncGPUSceneInstanceMapping(std::span<const uint3
 
 void MeshletStreamRuntime::cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation) const
 {
-    if (ready() && drawTaskCount() > 0) {
+    if (ready() && drawTaskCount() > 0 && prepareImmutableMetadataRead(commandBuffer)) {
         commandBuffer.drawMeshTasksIndirect(*drawIndirectBuffer_, tessellation ? sizeof(MeshletStreamGpuDrawIndirect) : 0u);
     }
 }
@@ -3231,8 +3408,9 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
         .memoryLocation = MemoryLocation::Device,
     }, demandBuffer_, log, "MeshletStreamRuntime demand bits and statistics");
     if (!result) { return result; }
-    result = createAndPopulateHostStorageBuffer<uint32_t>(device, topology.size(),
-        lodTopologyBuffer_, log, "MeshletStreamRuntime LOD topology",
+    result = createAndPopulateImmutableStorageBuffer<uint32_t>(device, deviceImmutableMetadata_, topology.size(),
+        lodTopologyBuffer_, immutableMetadataUpload_ ? &immutableMetadataUpload_->topology : nullptr,
+        log, "MeshletStreamRuntime LOD topology",
         [&topology](uint32_t& word, size_t index) { word = topology[index]; });
     if (!result) {
         return result;
@@ -3262,10 +3440,12 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
             return makeError(Error::InvalidArgument);
         }
     }
-    result = createAndPopulateHostStorageBuffer<MeshletStreamGpuGroup>(
+    result = createAndPopulateImmutableStorageBuffer<MeshletStreamGpuGroup>(
         device,
+        deviceImmutableMetadata_,
         groups.size(),
         groupBuffer_,
+        immutableMetadataUpload_ ? &immutableMetadataUpload_->groups : nullptr,
         log,
         "MeshletStreamRuntime groups",
         [groups, &parents, &parentOffsets, &refinementBounds](MeshletStreamGpuGroup& gpuGroup, size_t index) {
@@ -3292,7 +3472,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
     }
 
     const std::span<const scene::MeshletStreamNodeInfo> nodes = asset_.nodes();
-    return createAndPopulateHostStorageBuffer<MeshletStreamGpuNode>(
+    result = createAndPopulateHostStorageBuffer<MeshletStreamGpuNode>(
         device,
         nodes.size(),
         nodeBuffer_,
@@ -3313,7 +3493,21 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
                 std::end(node.boundsCenterRadius),
                 std::begin(gpuNode.boundsCenterRadius));
         });
-
+    if (!result || !immutableMetadataUpload_) { return result; }
+    auto& upload = *immutableMetadataUpload_;
+    upload.totalBytes = groupBuffer_->desc().size + lodTopologyBuffer_->desc().size;
+    std::unique_ptr<Buffer> staging;
+    result = createNamedBuffer(device, BufferDesc{
+        .size = std::min(upload.totalBytes, kImmutableMetadataUploadBatchBytes),
+        .usage = BufferUsageBits::TransferSource,
+        .memoryLocation = MemoryLocation::HostUpload,
+        .memoryDomain = MemoryBudgetDomain::Upload,
+    }, staging, log, "MeshletStreamRuntime immutable metadata staging");
+    if (!result) { return result; }
+    upload.stagingPeakBytes = staging->desc().size;
+    upload.stagingAllocatedBytes = staging->memoryInfo().sizeBytes;
+    upload.staging = std::move(staging);
+    return {};
 }
 
 Result<> MeshletStreamRuntime::initializePageTableIfNeeded(CommandBuffer& commandBuffer)
@@ -3807,6 +4001,7 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
 
 Result<> MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
 {
+    if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     if (clasPool_ == nullptr ||
         blasBuildCapacity_ == 0 ||
         maxBlasClustersPerBuild_ == 0 ||
@@ -3844,6 +4039,7 @@ Result<> MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
 
 Result<> MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer)
 {
+    if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     if (clasPool_ == nullptr ||
         fallbackBlasStorageBuffer_ == nullptr ||
         fallbackBlasScratchBuffer_ == nullptr ||
@@ -3985,6 +4181,7 @@ Result<> MeshletStreamRuntime::buildTlasInstances(CommandBuffer& commandBuffer)
 
 Result<> MeshletStreamRuntime::cmdBuildTlas(CommandBuffer& commandBuffer)
 {
+    if (auto result = prepareImmutableMetadataRead(commandBuffer); !result) { return result; }
     if (tlas_ == nullptr ||
         !tlas_->valid() ||
         tlasScratchBuffer_ == nullptr ||
@@ -4141,6 +4338,19 @@ SceneStreamingProfile MeshletStreamRuntime::profilingStats() const
     result.generation = debugGeneration_;
     result.frameIndex = frameIndex_;
     result.feedbackFrame = debugRequestSourceKnown_ ? debugRequestSourceFrame_ : UINT64_MAX;
+    result.deviceImmutableMetadata = deviceImmutableMetadata_;
+    result.immutableMetadataReady = immutableMetadataReady();
+    result.immutableGroupBytes = groupBuffer_ ? groupBuffer_->desc().size : 0;
+    result.immutableTopologyBytes = lodTopologyBuffer_ ? lodTopologyBuffer_->desc().size : 0;
+    result.immutableMetadataBytes = result.immutableGroupBytes + result.immutableTopologyBytes;
+    result.immutableMetadataAllocatedBytes = (groupBuffer_ ? groupBuffer_->memoryInfo().sizeBytes : 0) +
+        (lodTopologyBuffer_ ? lodTopologyBuffer_->memoryInfo().sizeBytes : 0);
+    if (immutableMetadataUpload_) {
+        result.immutableMetadataSubmittedBytes = immutableMetadataUpload_->submittedBytes;
+        result.immutableMetadataStagingBytes = immutableMetadataUpload_->staging ?
+            immutableMetadataUpload_->staging->desc().size : 0;
+        result.immutableMetadataUploadBatches = immutableMetadataUpload_->uploadBatches;
+    }
     result.lodTransitionTelemetryEnabled = lodTransitionTelemetry_;
     result.lodTransitionHistoryBytes = lodTransitionHistoryBytes_;
     result.lodDemandedGroups = recentDemandStats_[19];
@@ -4351,6 +4561,22 @@ nlohmann::json MeshletStreamRuntime::debugSnapshot(bool includePages) const
         {"requestReadbackBytes", requestReadbackBuffer_ ? requestReadbackBuffer_->desc().size * (requestReadbacks_.size() + 1u) : 0},
         {"consumedRequestFrame", consumedRequestFrame_}, {"maintenancePrepared", maintenancePrepared_},
         {"lodTopologyBytes", lodTopologyBuffer_ ? lodTopologyBuffer_->desc().size : 0},
+        {"groupsBytes", groupBuffer_ ? groupBuffer_->desc().size : 0},
+        {"immutableMetadataDeviceRequested", deviceImmutableMetadata_},
+        {"immutableMetadataReady", immutableMetadataReady()},
+        {"immutableMetadataBytes", (groupBuffer_ ? groupBuffer_->desc().size : 0) +
+            (lodTopologyBuffer_ ? lodTopologyBuffer_->desc().size : 0)},
+        {"immutableMetadataAllocatedBytes", (groupBuffer_ ? groupBuffer_->memoryInfo().sizeBytes : 0) +
+            (lodTopologyBuffer_ ? lodTopologyBuffer_->memoryInfo().sizeBytes : 0)},
+        {"immutableMetadataSubmittedBytes", immutableMetadataUploadedBytes()},
+        {"immutableMetadataCopyPending", immutableMetadataUpload_ && immutableMetadataUpload_->submission &&
+            (!immutableMetadataUpload_->submission->resolved() ||
+                (!immutableMetadataUpload_->submission->cancelled() && !immutableMetadataUpload_->completion.isComplete()))},
+        {"immutableMetadataStagingBytes", immutableMetadataUpload_ && immutableMetadataUpload_->staging ?
+            immutableMetadataUpload_->staging->desc().size : 0},
+        {"immutableMetadataStagingPeakBytes", immutableMetadataUpload_ ? immutableMetadataUpload_->stagingPeakBytes : 0},
+        {"immutableMetadataStagingAllocatedBytes", immutableMetadataUpload_ ? immutableMetadataUpload_->stagingAllocatedBytes : 0},
+        {"immutableMetadataUploadBatches", immutableMetadataUpload_ ? immutableMetadataUpload_->uploadBatches : 0},
         {"lodStateBytes", lodStateBuffer_ ? lodStateBuffer_->desc().size : 0},
         {"requestSourceFrame", debugRequestSourceKnown_ ? DebugValue(debugRequestSourceFrame_) : DebugValue(nullptr)},
         {"pageCount", residency_.trackedPageCount()}, {"pages", std::move(pages)}, {"pagesTruncated", count < residency_.trackedPageCount()},

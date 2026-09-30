@@ -40,8 +40,26 @@ Result<> StreamerSubsystem::beginFrame(const RenderSubsystemFrameContext& contex
     return {};
 }
 
+Result<> StreamerSubsystem::recordPostGraph(const RenderSubsystemFrameContext& context, std::string& log)
+{
+    if (textureFrames_.empty()) { return {}; }
+    if (!context.commandBuffer) { return makeError(Error::InvalidArgument); }
+    // The graph epilogue joins every consumer, including multiple Deferred
+    // passes sharing these scene resources and passes without streamed geometry.
+    for (const auto& entry : textureFrames_) {
+        const auto& frame = entry.second;
+        const auto result = frame.resources->endTextureStreaming(*context.commandBuffer, frame.frameIndex);
+        if (!result) {
+            log = "Texture feedback readback recording failed: " + std::string(resultToString(result));
+            return result;
+        }
+    }
+    return {};
+}
+
 void StreamerSubsystem::endFrame(const RenderSubsystemFrameContext&)
 {
+    textureFrames_.clear();
     uploads_.endFrame();
 }
 
@@ -58,6 +76,7 @@ void StreamerSubsystem::shutdown()
     // The host waits for submitted work and retires graph passes before this.
     initialLoads_.clear();
     streams_.clear();
+    textureFrames_.clear();
     resources_.clear();
     uploads_.reset();
     device_ = nullptr;
@@ -205,19 +224,21 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
     if (prepared.snapshot && prepared.snapshot->pathTraceResources) {
         auto resources = prepared.snapshot->pathTraceResources;
         if (requirements.textureFeedback) {
-            auto [entry, inserted] = textureFrames_.try_emplace(resources.get(), nullptr);
+            auto [entry, inserted] = textureFrames_.try_emplace(resources.get());
             if (inserted) {
+                entry->second.resources = resources;
+                entry->second.frameIndex = context.frameIndex();
                 CpuProfileRecorder profiler;
                 Result<> result;
                 {
                     CpuProfileScope profile(&profiler, "Texture streaming");
                     result = resources->beginTextureStreaming(context.commandBuffer(), context.frameIndex(),
-                        entry->second, &profiler, context.properties().value("benchmarkFreezeStreaming", false));
+                        entry->second.feedback, &profiler, context.properties().value("benchmarkFreezeStreaming", false));
                 }
                 context.publishCpuProfile(profiler.sections);
                 if (!result) { textureFrames_.erase(entry); return result; }
             }
-            prepared.textureFeedback = entry->second;
+            prepared.textureFeedback = entry->second.feedback;
         }
         const auto result = resources->uploadMaterialTextures(context.commandBuffer());
         if (!result) { return result; }
@@ -304,7 +325,11 @@ Result<std::shared_ptr<MeshletStreamRuntime>> StreamerSubsystem::acquireStream(
     session->setDebugReadbackEnabled(debugReadback);
     Result<> result = session->initialize(*device_, desc, log, cache);
     if (!result) { return makeError(result.error()); }
-    if (desc.initialLoad) { initialLoads_.push_back({.runtime = session}); }
+    if (desc.initialLoad || desc.deviceImmutableMetadata) {
+        // Immutable Device tables are mandatory before any consumer, even when
+        // root pages keep their existing lazy-loading policy.
+        initialLoads_.push_back({.runtime = session, .metadataOnly = !desc.initialLoad});
+    }
     streams_.push_back(session);
     outSession = std::move(session);
     return outSession;
@@ -334,18 +359,24 @@ Result<> StreamerSubsystem::completeInitialLoads(std::string& log)
         while (!complete) {
             const auto beforeBytes = loader.stats().uploadBytes;
             const auto beforePages = session->sceneReadiness().completedPages;
-            result = loader.pump(*session, 16.0, complete, log);
+            result = loader.pump(*session, 16.0, complete, log, pending.metadataOnly);
             if (!result) { return fail(result); }
             const auto now = std::chrono::steady_clock::now();
             const auto readiness = session->sceneReadiness();
             if (!complete && now - progressAt >= std::chrono::seconds(5)) {
-                spdlog::info("[StreamInitialLoad] resources={}/{} batches={} uploadedMiB={:.1f}",
-                    readiness.completedPages, readiness.requiredPages, loader.stats().batches,
-                    double(loader.stats().uploadBytes) / (1024.0 * 1024.0));
+                if (pending.metadataOnly) {
+                    spdlog::info("[StreamMetadataLoad] batches={} uploadedMiB={:.1f}",
+                        loader.stats().batches, double(session->immutableMetadataUploadedBytes()) / (1024.0 * 1024.0));
+                } else {
+                    spdlog::info("[StreamInitialLoad] resources={}/{} batches={} uploadedMiB={:.1f}",
+                        readiness.completedPages, readiness.requiredPages, loader.stats().batches,
+                        double(loader.stats().uploadBytes) / (1024.0 * 1024.0));
+                }
                 progressAt = now;
             }
             if (!complete && now - start >= std::chrono::minutes(5)) {
-                log = "Initial geometry loading did not become ready within 5 minutes";
+                log = pending.metadataOnly ? "Immutable geometry metadata did not become ready within 5 minutes" :
+                    "Initial geometry loading did not become ready within 5 minutes";
                 return fail(makeError(Error::Failure));
             }
             if (!complete && beforeBytes == loader.stats().uploadBytes && beforePages == readiness.completedPages) {
@@ -355,11 +386,18 @@ Result<> StreamerSubsystem::completeInitialLoads(std::string& log)
         const auto stats = loader.stats();
         result = loader.reset();
         if (!result) { log = "Initial geometry loader handoff failed"; return fail(result); }
-        spdlog::info("[StreamInitialLoad] ready resources={} batches={} uploadedMiB={:.1f} elapsedMs={:.3f} gpuWaitMs={:.3f}",
-            session->sceneReadiness().requiredPages, stats.batches,
-            double(stats.uploadBytes) / (1024.0 * 1024.0),
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
-            stats.gpuWaitMilliseconds);
+        if (pending.metadataOnly) {
+            spdlog::info("[StreamMetadataLoad] ready batches={} uploadedMiB={:.1f} elapsedMs={:.3f} gpuWaitMs={:.3f}",
+                stats.batches, double(session->immutableMetadataUploadedBytes()) / (1024.0 * 1024.0),
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
+                stats.gpuWaitMilliseconds);
+        } else {
+            spdlog::info("[StreamInitialLoad] ready resources={} batches={} uploadedMiB={:.1f} elapsedMs={:.3f} gpuWaitMs={:.3f}",
+                session->sceneReadiness().requiredPages, stats.batches,
+                double(stats.uploadBytes) / (1024.0 * 1024.0),
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
+                stats.gpuWaitMilliseconds);
+        }
         pending.runtime.reset();
     }
     initialLoads_.clear();

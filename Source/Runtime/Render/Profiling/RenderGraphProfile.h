@@ -111,6 +111,13 @@ struct SceneStreamingProfile {
 
     uint64_t geometryUsedBytes = 0;
     uint64_t geometryBudgetBytes = 0;
+    // Immutable group/topology allocation requests and accepted initialization;
+    // these are CPU counters, not proof of physical residency after capture injection.
+    bool deviceImmutableMetadata = false, immutableMetadataReady = false;
+    uint64_t immutableMetadataBytes = 0, immutableMetadataAllocatedBytes = 0;
+    uint64_t immutableMetadataSubmittedBytes = 0, immutableMetadataStagingBytes = 0;
+    uint64_t immutableMetadataUploadBatches = 0;
+    uint64_t immutableGroupBytes = 0, immutableTopologyBytes = 0;
     uint64_t clasUsedBytes = 0;
     uint64_t clasCapacityBytes = 0; // Configured budget; not physical allocation.
     uint64_t clasAllocatedBytes = 0;

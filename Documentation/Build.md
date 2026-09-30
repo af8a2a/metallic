@@ -105,6 +105,18 @@ External `ngfx` launchers use their own capture settings. The remaining live
 injection overhead is separate from ordinary renderer baseline performance. See the
 [ZorahFull capture performance measurements](ZorahFullNsightPerformance20260930.md).
 
+Texture streaming feedback accumulates in Device storage and is copied to
+HostReadback after all RenderGraph consumers finish. RenderGraph stream sessions
+also default immutable groups and LOD topology to Device storage, initialized
+through bounded 64 MiB staging batches before traversal. These resource changes
+retain the SDK-default capture policy. The runtime property
+`deviceImmutableMetadata: false` selects the original HostUpload metadata path
+for comparison. Raw `MeshletStreamRuntimeDesc` keeps that original default for
+direct callers; opting into Device metadata requires pumping
+`MeshletStreamInitialLoader` before frame recording, with `metadataOnly=true`
+when root pages should remain lazy. See the
+[implementation and validation](ZorahFullNsightFixImplementation20260930.md).
+
 When Nsight Graphics capture injection is active, opacity micromaps use the
 `VK_EXT_opacity_micromap` backend, including native EXT builds and shader support.
 Ordinary execution uses `VK_KHR_opacity_micromap`. This avoids the current capture

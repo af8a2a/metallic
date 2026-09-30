@@ -66,7 +66,7 @@ Result<> MeshletStreamInitialLoader::initialize(Device& device, std::string& log
 }
 
 Result<> MeshletStreamInitialLoader::pump(MeshletStreamRuntime& runtime,
-    double budgetMilliseconds, bool& complete, std::string& log)
+    double budgetMilliseconds, bool& complete, std::string& log, bool metadataOnly)
 {
     log.clear();
     complete = false;
@@ -78,7 +78,7 @@ Result<> MeshletStreamInitialLoader::pump(MeshletStreamRuntime& runtime,
     ++stats_.pumpCalls;
     const AccumulatedTimer pumpTimer{stats_.pumpMilliseconds};
     auto readiness = runtime.sceneReadiness();
-    if (readiness.ready) {
+    if (metadataOnly ? runtime.immutableMetadataReady() : readiness.ready) {
         const auto result = frame_.wait(kGpuWaitTimeoutNanoseconds);
         if (!result) {
             log = std::string("Initial geometry loader handoff wait failed (30 s timeout): ") + resultToString(result);
@@ -104,6 +104,7 @@ Result<> MeshletStreamInitialLoader::pump(MeshletStreamRuntime& runtime,
         result = uploads_.beginFrame(frame_);
         if (!result) { return fail(result, "upload frame begin"); }
 
+        const uint64_t metadataBytesBefore = runtime.immutableMetadataUploadedBytes();
         result = runtime.cmdLoadInitialResources(*commands_, *uploads_.streamer(), [&] {
             return uploads_.flush(*commands_);
         });
@@ -127,9 +128,11 @@ Result<> MeshletStreamInitialLoader::pump(MeshletStreamRuntime& runtime,
         }
         if (!result) { return fail(result, "GPU completion wait (30 s timeout)"); }
 
+        const uint64_t metadataUploadedBytes = runtime.immutableMetadataUploadedBytes() - metadataBytesBefore;
+        stats_.uploadBytes += metadataUploadedBytes;
         const auto nextReadiness = runtime.sceneReadiness();
-        complete = nextReadiness.ready;
-        const bool progressed = residency.frameUploadBytes != 0 ||
+        complete = metadataOnly ? runtime.immutableMetadataReady() : nextReadiness.ready;
+        const bool progressed = metadataUploadedBytes != 0 || residency.frameUploadBytes != 0 ||
             clas.frameBuiltClusterCount != 0 || clas.frameMovedClusterCount != 0 ||
             nextReadiness.completedPages != readiness.completedPages;
         readiness = nextReadiness;

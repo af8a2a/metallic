@@ -16,6 +16,7 @@
 #include "Runtime/Scene/Scene.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -527,6 +528,11 @@ struct MeshletStreamRuntimeDesc {
     bool enableLodTransitionTelemetry = false; // Optional per-instance/group history allocation.
     uint32_t rasterMaterialTextureCapacity = 0;
     bool compactShadingAttributes = false;
+    // RenderGraph factories enable this by default; raw descriptors keep the
+    // existing direct-call initialization contract. Upload immutable groups/topology
+    // once through the initial loader. Direct
+    // callers must pump it (metadataOnly preserves lazy roots) before cmdBeginFrame.
+    bool deviceImmutableMetadata = false;
     // The subsystem drains a dedicated root-loading queue after scene/pass
     // replacement, before graph recording. Direct callers may use the loader.
     bool initialLoad = true;
@@ -579,6 +585,8 @@ public:
     // Its owner handles persistence; no cache pointer survives this call.
     Result<> initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log,
         PipelineCache* pipelineCache = nullptr);
+    bool immutableMetadataReady() const;
+    uint64_t immutableMetadataUploadedBytes() const;
     Result<> syncRuntimeScene(const scene::Scene& scene, std::string& log);
     Result<> syncRuntimeScene(
         const scene::Scene& scene,
@@ -682,6 +690,8 @@ private:
     uint32_t computeMaxActiveGroups(uint32_t capacity) const;
     uint32_t computeMaxPrimitiveGroups() const;
     Result<> initializeSceneMetadataBuffers(Device& device, std::string& log);
+    Result<> uploadImmutableMetadata(CommandBuffer& commandBuffer);
+    Result<> prepareImmutableMetadataRead(CommandBuffer& commandBuffer) const;
 
     Result<> initializePageTableIfNeeded(CommandBuffer& commandBuffer);
     Result<> applyPageTablePatches(CommandBuffer& commandBuffer);
@@ -730,6 +740,21 @@ private:
     std::unique_ptr<Buffer> lodLevelBuffer_;
     std::unique_ptr<Buffer> groupBuffer_;
     std::unique_ptr<Buffer> lodTopologyBuffer_;
+    struct ImmutableMetadataUpload {
+        std::vector<std::byte> groups;
+        std::vector<std::byte> topology;
+        std::shared_ptr<Buffer> staging;
+        std::shared_ptr<SubmissionTransaction> submission;
+        GpuCompletionPoint completion;
+        uint64_t totalBytes = 0;
+        uint64_t submittedBytes = 0;
+        uint64_t stagingPeakBytes = 0;
+        uint64_t stagingAllocatedBytes = 0;
+        uint32_t uploadBatches = 0;
+        bool completed = false;
+    };
+    std::shared_ptr<ImmutableMetadataUpload> immutableMetadataUpload_;
+    bool deviceImmutableMetadata_ = false;
     std::unique_ptr<Buffer> lodStateBuffer_;
     std::unique_ptr<Buffer> demandBuffer_;
     std::unique_ptr<Buffer> nodeBuffer_;

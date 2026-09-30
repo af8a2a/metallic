@@ -92,7 +92,8 @@ public:
     bool preparing() const;
     Result<> syncRuntimeScene(const scene::Scene* runtimeScene, std::string& log);
     Result<> uploadMaterialTextures(CommandBuffer& commandBuffer);
-    // Called once by the deferred consumer with a frame context; never waits for
+    // Called before consumers with a frame context; repeat calls in the same
+    // frame share one seed and demand buffer. Never waits for
     // feedback or decode. Each texture slot has eight uint words: source width,
     // height, mip count, resident first mip, wanted mip, hit count, float bits of
     // the tail-relative sampling LOD floor, reserved. Sampling metadata remains
@@ -104,6 +105,13 @@ public:
         Buffer*& feedback,
         CpuProfileRecorder* profiler = nullptr,
         bool freezePublication = false);
+    // Record once after every consumer of this frame's texture feedback. Demand
+    // is accumulated in Device memory and copied asynchronously to HostReadback;
+    // beginTextureStreaming consumes only completed, accepted readback commands.
+    Result<> endTextureStreaming(
+        CommandBuffer& commands,
+        uint64_t frameIndex,
+        CpuProfileRecorder* profiler = nullptr);
     bool textureUploadsReady() const;
     bool gpuWorkComplete();
     SceneUploadStats uploadStats() const;

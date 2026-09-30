@@ -2920,17 +2920,18 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
             break;
         }
     }
-    const auto cpuEnd = std::chrono::steady_clock::now();
-    impl_->lastExecutionStats.cpuMilliseconds =
-        std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
-    impl_->finishGpuTiming(commandBuffer, result.has_value());
-
     const Result<> graphResult = result;
     Result<> postResult = impl_->subsystemHost->recordPostGraph(
         commandBuffer,
         upload != nullptr ? upload->streamer() : nullptr,
         requiredSubsystems,
         subsystemLog);
+    const auto cpuEnd = std::chrono::steady_clock::now();
+    impl_->lastExecutionStats.cpuMilliseconds =
+        std::chrono::duration<double, std::milli>(cpuEnd - cpuBegin).count();
+    // Include subsystem epilogue work, including asynchronous texture demand
+    // readback, in the same GPU envelope as executeAndSubmit().
+    impl_->finishGpuTiming(commandBuffer, graphResult.has_value() && postResult.has_value());
     impl_->subsystemHost->endFrame();
     if (!postResult) {
         spdlog::error("[RenderGraph] {}", subsystemLog);
@@ -3085,7 +3086,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
         Queue* queue = queueForSubmitDesc(desc, type);
         return queue != nullptr ? queue : desc.graphicsQueue;
     };
-    const bool subsystemCommands = impl_->requiredSubsystemIds.size() > 1;
+    const bool textureFeedbackCommands = std::any_of(impl_->executionList.begin(), impl_->executionList.end(),
+        [](const Impl::CompiledNode& node) { return node.sceneRequirements.textureFeedback; });
+    const bool subsystemCommands = impl_->requiredSubsystemIds.size() > 1 || textureFeedbackCommands;
     std::vector<std::string> submissionBlockingPasses;
     for (const auto& node : impl_->executionList) {
         if (!node.pass->supportsPipelinedSubmission() || node.preparedScene ||
@@ -3468,9 +3471,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             return {};
         };
     }
-    // The always-present scene resource registry/upload subsystem has no GPU
-    // hooks. Explicit subsystem requirements get graphics prologue/epilogue
-    // boundaries because their private resource accesses are not graph fields.
+    // Explicit subsystem requirements and scene texture feedback get graphics
+    // prologue/epilogue boundaries because their private resource accesses are
+    // not graph fields. Feedback readback follows every consumer at the epilogue.
     if (subsystemCommands) {
         result = beginSegment(QueueType::Graphics);
         if (!result) { return abort(result); }

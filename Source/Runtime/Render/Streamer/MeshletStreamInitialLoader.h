@@ -35,8 +35,9 @@ public:
     // Always attempts one batch when incomplete. The budget limits additional
     // batches; an individual recording/GPU wait may exceed it. Successful return
     // guarantees that every submitted batch is complete before graph handoff.
+    // metadataOnly initializes Device tables while preserving lazy root loading.
     Result<> pump(MeshletStreamRuntime& runtime, double budgetMilliseconds,
-        bool& complete, std::string& log);
+        bool& complete, std::string& log, bool metadataOnly = false);
     Result<> reset();
     const MeshletStreamInitialLoadStats& stats() const { return stats_; }
 

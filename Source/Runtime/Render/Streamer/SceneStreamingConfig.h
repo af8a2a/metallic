@@ -283,6 +283,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .enableLodTransitionTelemetry = boolProperty(&properties, "enableLodTransitionTelemetry", false),
         .rasterMaterialTextureCapacity = textureCapacity,
         .compactShadingAttributes = boolProperty(&properties, "compactShadingAttributes", false),
+        .deviceImmutableMetadata = boolProperty(&properties, "deviceImmutableMetadata", true),
         .initialLoad = boolProperty(&properties, "initialLoad", true),
     };
 }
@@ -355,6 +356,7 @@ MeshletStreamRuntimeDesc assetStreamRuntimeDesc(const RenderGraphProperties& pro
         .predictivePrefetch = boolProperty(&properties, "predictivePrefetch", true),
         .enableLodTransitionTelemetry = boolProperty(&properties, "enableLodTransitionTelemetry", false),
         .compactShadingAttributes = boolProperty(&properties, "compactShadingAttributes", false),
+        .deviceImmutableMetadata = boolProperty(&properties, "deviceImmutableMetadata", true),
         .initialLoad = boolProperty(&properties, "initialLoad", true),
     };
 }

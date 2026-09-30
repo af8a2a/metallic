@@ -56,20 +56,39 @@ def analyze(root):
                 timers[s['id']]['gpu'].append(s['gpuMs'])
                 stage_timers[row['stage']][s['id']]['gpu'].append(s['gpuMs'])
     scopes = [dict(**definitions[i], cpuMs=distribution(v['cpu']), gpuMs=distribution(v['gpu'])) for i,v in timers.items()]
-    required = ['BLAS reset','BLAS cut compare','BLAS count','BLAS setup','BLAS insert','BLAS build','TLAS input','TLAS build']
+    frozen = capture.get('streamingFreeze', {}).get('enabled', False)
+    # Frozen diagnostic cuts reuse RTAS; those build scopes are intentionally absent.
+    required = ['Deferred shading']
+    if not frozen:
+        required += ['BLAS reset','BLAS cut compare','BLAS count','BLAS setup','BLAS insert','BLAS build','TLAS input','TLAS build']
     missing = [name for name in required if not any(s['path'].endswith('/'+name) and s['gpuMs'] and s['gpuMs']['count']==len(rows) for s in scopes)]
     if missing:
-        raise ValueError(f'Missing RTAS timing coverage: {missing}')
+        raise ValueError(f'Missing {"frozen shading" if frozen else "RTAS"} timing coverage: {missing}')
     if not any(s['path'].endswith('/Texture streaming') and s['cpuMs']['count']==len(rows) for s in scopes):
         raise ValueError('Missing texture CPU timing coverage')
     uploads = [json.loads(line) for line in (root/'Uploads.jsonl').read_text(encoding='utf-8-sig').splitlines()]
     executions = {s['executionId'] for r in rows for s in r['scopes'] if s['executionId'] is not None}
     uploads = [s for s in uploads if s['submitFrame'] in executions]
+    metadata = [s['immutableMetadata'] for row in rows for s in row['streaming']
+                if s.get('pass') == 'VBuffer' and 'immutableMetadata' in s]
+    metadata_audit = None
+    if 'deviceImmutableMetadata' in capture.get('config', {}):
+        expected_device = capture['config']['deviceImmutableMetadata']
+        if len(metadata) != len(rows):
+            raise ValueError('Missing immutable metadata coverage')
+        if any(s['deviceRequested'] != expected_device or not s['ready'] for s in metadata):
+            raise ValueError('Immutable metadata placement/readiness mismatch')
+        if expected_device and any(s['submittedBytes'] != s['bytes'] or s['stagingBytes'] != 0 for s in metadata):
+            raise ValueError('Immutable metadata upload incomplete')
+        metadata_audit = dict(deviceRequested=expected_device, frames=len(metadata), ready=True,
+            fields={key: dict(min=min(s[key] for s in metadata), max=max(s[key] for s in metadata))
+                    for key in ('bytes','allocatedBytes','submittedBytes','stagingBytes','uploadBatches','groupBytes','topologyBytes')})
     slowest = sorted(rows, key=lambda r:r['frameMs'], reverse=True)[:20]
     result = dict(protocol=capture['protocol'], outputExtent=capture['outputExtent'], renderExtent=capture['renderExtent'],
                   validation=capture['validationRequested'], diagnosticRun=diagnostic_run(capture),
                   graphicsCaptureInjected=capture.get("graphicsCaptureInjected"),
                   shaderDebugMode=capture.get("shaderDebugMode"),
+                  immutableMetadata=metadata_audit,
                   diagnosticFrames=sum(r.get("diagnostic",False) for r in rows), **frame_stats(rows),
                   stages={k:frame_stats(v) for k,v in stages.items()}, scopes=scopes,
                   stageScopes={stage:[dict(**definitions[i], cpuMs=distribution(v['cpu']), gpuMs=distribution(v['gpu']))
