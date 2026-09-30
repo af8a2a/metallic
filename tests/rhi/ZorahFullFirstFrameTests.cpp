@@ -10,6 +10,7 @@
 #include <fstream>
 #include <set>
 #include <stdexcept>
+#include <string_view>
 
 namespace metallic::tests {
 namespace {
@@ -33,8 +34,10 @@ public:
         }
         const auto directory = std::filesystem::absolute(context.outputDirectory);
         std::filesystem::create_directories(directory);
+        const char* skipMiniValue = std::getenv("METALLIC_ZORAH_FULL_SKIP_MINI");
+        const bool switchFromMiniZorah = !(skipMiniValue && std::string_view(skipMiniValue) == "1");
         Json report{{"status", "running"}, {"protocol", "zorah-full-first-frame-v1"},
-            {"width", 960}, {"height", 540}, {"dlss", false}, {"switchFromMiniZorah", true}, {"validation",context.enableValidation},
+            {"width", 960}, {"height", 540}, {"dlss", false}, {"switchFromMiniZorah", switchFromMiniZorah}, {"validation",context.enableValidation},
             {"skipMeshesApplied", false}, {"runs", Json::array()}};
         const auto save = [&]() { std::ofstream(directory / "ZorahFullFirstFrame.json") << report.dump(2) << '\n'; };
         save();
@@ -44,6 +47,15 @@ public:
             requireFull(loadBuiltInRenderSample(kGPUDrivenZorahFullSampleId, sample, log), log);
             requireFull(!sample.desc.loadSceneInEditor, "Full sample must bypass resident import");
             auto graph = sample.graph;
+            if (const char* cache = std::getenv("METALLIC_ZORAH_FULL_CACHE"); cache && *cache) {
+                graph.setNodeRuntimeProperty(graph.findNode("VBuffer")->id, "streamAssetPath", cache);
+            }
+            const auto effectiveProperties = [&](const char* name) {
+                const auto* node = graph.findNode(name);
+                auto properties = node->properties;
+                properties.merge_patch(node->runtimeProperties);
+                return properties;
+            };
             graph.markOutput("VBuffer.color");
             // Headless evidence uses native resolution. The interactive sample
             // retains DLSS-SR; its timing is not compared to this readback run.
@@ -53,13 +65,17 @@ public:
             graph.addEdge("AutoExposure.color", "FinalBlit.source");
             auto view = graph.viewProperties(); view["temporalJitter"] = false; graph.setViewProperties(view);
             report["camera"] = view["camera"];
-            report["properties"] = graph.findNode("VBuffer")->properties;
+            const auto streamProperties = effectiveProperties("VBuffer");
+            report["properties"] = streamProperties;
             const auto source = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath;
+            auto cache = std::filesystem::path(streamProperties.at("streamAssetPath").get<std::string>());
+            if (!cache.is_absolute()) { cache = std::filesystem::path(PROJECT_SOURCE_DIR) / cache; }
+            report["cache"] = cache.lexically_normal().generic_string();
+            save();
             scene::MeshletStreamAsset asset;
-            requireFull(asset.open(std::filesystem::path(PROJECT_SOURCE_DIR) /
-                graph.findNode("VBuffer")->properties.at("streamAssetPath").get<std::string>(), log), log);
+            requireFull(asset.open(cache, log), log);
             requireFull(asset.isCurrentForSource(source), "Full cache is stale");
-            requireFull(asset.primitiveCount() == 5715 && asset.instanceCount() == 43068,
+            requireFull(asset.primitiveCount() == 5408 && asset.instanceCount() == 43068,
                 "Full cook lost geometries or primitive instances");
             report["cook"] = {{"primitives",asset.primitiveCount()}, {"instances",asset.instanceCount()},
                 {"pages",asset.pageCount()}, {"revision",asset.cookRevision()}};
@@ -78,20 +94,22 @@ public:
             budgetDevice->setMemoryBudgetPolicy(budgetPolicy);
             report["deviceInitializeSeconds"] = std::chrono::duration<double>(Clock::now()-deviceStarted).count();
             for (uint32_t cycle = 0; cycle < cycles; ++cycle) {
-                // Populate the executor-owned queued frame slots with MiniZorah
-                // before Full. A readback-only warmup does not cover editor switches.
-                RenderSampleLoadResult mini;
-                requireFull(loadBuiltInRenderSample(kDefaultGPUDrivenSampleId, mini, log), log);
-                mini.graph.removeNode(mini.graph.findNode("DlssSr")->id);
-                mini.graph.removeNode(mini.graph.findNode("DlssNr")->id);
-                mini.graph.addEdge("Deferred.color", "AutoExposure.source");
-                mini.graph.addEdge("AutoExposure.color", "FinalBlit.source");
-                preview.bindRuntimeScene(nullptr);
-                for (uint32_t frame = 0; frame < 8; ++frame) {
-                    requireFull(bool(preview.render(mini.graph,960,540,mini.desc.previewOutput,false)),preview.lastLog());
+                if (switchFromMiniZorah) {
+                    // Populate queued frame slots before Full for the default scene-switch test.
+                    // Explicit Full-only validation does not require an unrelated MiniZorah cook.
+                    RenderSampleLoadResult mini;
+                    requireFull(loadBuiltInRenderSample(kDefaultGPUDrivenSampleId, mini, log), log);
+                    mini.graph.removeNode(mini.graph.findNode("DlssSr")->id);
+                    mini.graph.removeNode(mini.graph.findNode("DlssNr")->id);
+                    mini.graph.addEdge("Deferred.color", "AutoExposure.source");
+                    mini.graph.addEdge("AutoExposure.color", "FinalBlit.source");
+                    preview.bindRuntimeScene(nullptr);
+                    for (uint32_t frame = 0; frame < 8; ++frame) {
+                        requireFull(bool(preview.render(mini.graph,960,540,mini.desc.previewOutput,false)),preview.lastLog());
+                    }
+                    requireFull(preview.subsystemHost()->get<StreamerSubsystem>()->streamCount()==1,
+                        "MiniZorah warmup did not retain exactly one stream");
                 }
-                requireFull(preview.subsystemHost()->get<StreamerSubsystem>()->streamCount()==1,
-                    "MiniZorah warmup did not retain exactly one stream");
                 graph.markDirty();
                 const auto started = Clock::now();
                 const auto elapsed = [&]() { return std::chrono::duration<double>(Clock::now()-started).count(); };
@@ -174,11 +192,11 @@ public:
                 std::shared_ptr<SceneResourceSnapshot> materials;
                 const scene::Scene* renderedScene=&scene;
                 if (!worldBinding) {
-                    requireFull(bool(streamer->manager().resolveScene(graph.findNode("VBuffer")->properties, nullptr, log).transform([&](auto value) { renderedScene = std::move(value); })),log);
+                    requireFull(bool(streamer->manager().resolveScene(effectiveProperties("VBuffer"), nullptr, log).transform([&](auto value) { renderedScene = std::move(value); })),log);
                     requireFull(renderedScene && renderedScene->hasStreamGeometry() &&
                         renderedScene->renderNodes().size()==asset.instanceCount(),"Asset entry did not resolve Full metadata");
                 }
-                requireFull(bool(streamer->manager().acquire(*device, *device->getQueue(QueueType::Graphics), graph.findNode("Deferred")->properties, renderedScene, SceneResourceFeatureBits::Materials, log).transform([&](auto value) { materials = std::move(value); })),log);
+                requireFull(bool(streamer->manager().acquire(*device, *device->getQueue(QueueType::Graphics), effectiveProperties("Deferred"), renderedScene, SceneResourceFeatureBits::Materials, log).transform([&](auto value) { materials = std::move(value); })),log);
                 const auto tex=materials->pathTraceResources->textureStats();
                 const auto memory = device->memoryBudget();
                 const auto& textureDomain = memory.domains[size_t(MemoryBudgetDomain::MaterialTextures)];

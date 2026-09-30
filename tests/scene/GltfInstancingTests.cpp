@@ -122,14 +122,52 @@ TEST(GltfInstancing, ResidentAndCookMatchMetadataInstances)
     ASSERT_TRUE(buildMeshletStreamAssetOffline({.sourcePath = path, .outputPath = output}, reason)) << reason;
     MeshletStreamAsset asset;
     ASSERT_TRUE(asset.open(output, reason)) << reason;
+    ASSERT_EQ(asset.primitiveCount(), 1u);
+    ASSERT_EQ(asset.geometryCount(), 1u);
     ASSERT_EQ(asset.instanceCount(), metadata.renderNodes().size());
     for (size_t i = 0; i < asset.instances().size(); ++i) {
         const auto& instance = asset.instances()[i];
         EXPECT_EQ(instance.renderNodeIndex, i);
+        EXPECT_EQ(instance.primitiveIndex, 0u);
         EXPECT_EQ(instance.materialIndex, metadata.renderNodes()[i].materialIndex);
         for (size_t c = 0; c < 16; ++c) {
             EXPECT_NEAR(instance.worldMatrix[c], metadata.renderNodes()[i].worldMatrix.a[c], 1e-5);
             EXPECT_NEAR(resident.renderNodes()[i].worldMatrix.a[c], metadata.renderNodes()[i].worldMatrix.a[c], 1e-5);
+        }
+    }
+}
+
+TEST(GltfInstancing, MateriallessAliasDoesNotInheritCanonicalMaterial)
+{
+    InstanceFixture fixture;
+    fixture.geometry();
+    fixture.root["meshes"][0]["primitives"][0]["material"] = 1;
+    fixture.root["meshes"][0]["primitives"][1].erase("material");
+    const auto path = fixture.save();
+    Scene metadata;
+    ASSERT_TRUE(metadata.loadStreamMetadata(path)) << metadata.lastLoadResult().error;
+    ASSERT_EQ(metadata.renderNodes().size(), 6u);
+    for (size_t index = 0; index < metadata.renderNodes().size(); ++index) {
+        EXPECT_EQ(metadata.renderNodes()[index].materialIndex, index % 2 == 0 ? 1 : -1);
+    }
+    for (const auto compression : {MeshletStreamPayloadCompression::None,
+             MeshletStreamPayloadCompression::Reference}) {
+        const auto output = fixture.directory /
+            (std::to_string(static_cast<uint32_t>(compression)) + ".meshstream.bin");
+        std::string reason;
+        ASSERT_TRUE(buildMeshletStreamAssetOffline({.sourcePath=path, .outputPath=output,
+            .compressionMode=compression}, reason)) << reason;
+        MeshletStreamAsset asset;
+        ASSERT_TRUE(asset.open(output, reason)) << reason;
+        ASSERT_EQ(asset.primitiveCount(), 1u);
+        ASSERT_EQ(asset.geometryCount(), 1u);
+        ASSERT_EQ(asset.instanceCount(), metadata.renderNodes().size());
+        EXPECT_EQ(asset.primitives().front().materialIndex, 1u);
+        for (size_t index = 0; index < asset.instances().size(); ++index) {
+            const auto& instance = asset.instances()[index];
+            EXPECT_EQ(instance.renderNodeIndex, index);
+            EXPECT_EQ(instance.primitiveIndex, 0u);
+            EXPECT_EQ(instance.materialIndex, index % 2 == 0 ? 1u : 0u);
         }
     }
 }

@@ -2860,7 +2860,9 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
         MeshletStreamGpuInstance& gpuInstance = gpuInstances[index];
         gpuInstance = MeshletStreamGpuInstance{};
         gpuInstance.primitiveIndex = instance.primitiveIndex;
-        gpuInstance.materialIndex = instance.materialIndex;
+        // The cook owns shared geometry; the runtime node owns the binding.
+        // Composed scenes rebase material indices independently of the cache.
+        gpuInstance.materialIndex = static_cast<uint32_t>(std::max(renderNode.materialIndex, 0));
         gpuInstance.visible = renderNode.visible ? 1u : 0u;
         gpuInstance.gpuSceneInstanceIndex = index < gpuSceneInstanceMapping_.size()
             ? gpuSceneInstanceMapping_[index]

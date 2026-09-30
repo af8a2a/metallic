@@ -28,6 +28,7 @@ enum class MeshletStreamPayloadCompression : uint32_t {
     None = 0,
     ByteRle = 1,
     GpuTiles = 2,
+    Reference = 3, // Per-cluster reference P/UV and shared normal/tangent encoding.
 };
 
 enum class MeshletStreamPayloadFormat : uint32_t {

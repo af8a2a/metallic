@@ -3541,12 +3541,15 @@ void testUnsupportedRequiredExtension(const std::filesystem::path& directory)
         "KHR_materials_iridescence",
         "KHR_materials_pbrSpecularGlossiness",
         "KHR_materials_sheen",
-        "KHR_materials_specular",
-        "KHR_materials_unlit",
         "KHR_materials_volume_scatter",
     };
     for (const std::string& extension : unsupportedMaterialExtensions) {
         expectUnsupportedRequired(extension);
+    }
+    for (const std::string extension : {"KHR_materials_specular", "KHR_materials_unlit"}) {
+        metallic::scene::Scene scene;
+        const auto gltfPath = writeUnsupportedRequiredExtensionScene(directory, extension);
+        EXPECT_TRUE(scene.load(gltfPath)) << scene.lastLoadResult().error;
     }
 }
 

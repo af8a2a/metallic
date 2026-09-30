@@ -1,6 +1,7 @@
 #include "RhiTest.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <cstdlib>
 #include <cstring>
@@ -102,6 +104,27 @@ RenderGraph materialGraph(const std::filesystem::path& path, const std::filesyst
     return graph;
 }
 
+void requireSharedMaterialGeometry(const std::filesystem::path& cache,
+    std::span<const uint32_t> materialIndices)
+{
+    scene::MeshletStreamAsset asset;
+    std::string log;
+    require(asset.open(cache, log), log);
+    require(asset.primitiveCount() == 1 && asset.geometryCount() == 1,
+        "Material variants must share one cooked geometry");
+    require(asset.instanceCount() == materialIndices.size(), "Shared geometry lost source instances");
+    for (const auto& page : asset.pages()) {
+        require(page.compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::Reference),
+            "Material regression must exercise reference-compressed pages");
+    }
+    for (size_t index = 0; index < materialIndices.size(); ++index) {
+        const auto& instance = asset.instances()[index];
+        require(instance.primitiveIndex == 0 && instance.renderNodeIndex == index &&
+            instance.materialIndex == materialIndices[index],
+            "Shared geometry lost an instance material binding");
+    }
+}
+
 class StreamMaterialShadingTest final : public RhiTest {
 public:
     StreamMaterialShadingTest() { type = RhiTestType::Rendering; name = "stream_material_shading"; }
@@ -112,7 +135,9 @@ public:
             const auto path = materialFixture(directory);
             const auto cache = directory / "Z4.meshstream.bin";
             std::string log;
-            require(scene::buildMeshletStreamAssetOffline({.sourcePath=path, .outputPath=cache}, log), log);
+            require(scene::buildMeshletStreamAssetOffline({.sourcePath=path, .outputPath=cache,
+                .compressionMode=scene::MeshletStreamPayloadCompression::Reference}, log), log);
+            requireSharedMaterialGeometry(cache, std::array<uint32_t, 3>{257, 258, 259});
             std::map<std::string, std::vector<uint32_t>> reference;
             Json report = Json::array();
             for (bool streamed : {false,true}) {
@@ -170,7 +195,7 @@ public:
                     graph.setNodeRuntimeProperty(graph.findNode("Raster")->id,"hybridRaster",false);
                 }
             }
-            return RhiTestResult::pass("Stream attributes, transformed textures, mirrored TBN, MASK and material ID 257 match resident shading");
+            return RhiTestResult::pass("Shared geometry preserves instance PBR, unlit, MASK, sidedness, mirrored TBN and material ID 257");
         } catch(const std::exception& error) { return RhiTestResult::fail(error.what()); }
     }
 };
@@ -211,8 +236,46 @@ public:
             { std::ofstream output(path); output << root.dump(2); }
             const auto cache = directory / "Z4.meshstream.bin";
             std::string log;
-            require(scene::buildMeshletStreamAssetOffline({.sourcePath=path,.outputPath=cache},log),log);
+            require(scene::buildMeshletStreamAssetOffline({.sourcePath=path,.outputPath=cache,
+                .compressionMode=scene::MeshletStreamPayloadCompression::Reference},log),log);
+            requireSharedMaterialGeometry(cache, std::array<uint32_t, 4>{257, 258, 259, 260});
             scene::SceneDocument scene;
+            // A preceding source shifts every material ID, while the cache keeps
+            // source-local bindings. Stream ray hits must use runtime instance IDs.
+            const auto prefixPath = directory / "MaterialPrefix.gltf";
+            const Json prefix = {{"asset", {{"version", "2.0"}}}, {"scene", 0},
+                {"scenes", {{{"nodes", Json::array()}}}}, {"nodes", Json::array()},
+                {"materials", {{{"name", "Prefix"}}}}};
+            { std::ofstream output(prefixPath); output << prefix.dump(); }
+            require(scene.compose({
+                {.id="prefix", .path=prefixPath}, {.id="shared", .path=path}}, log, path), log);
+            require(scene.materialIndexForSource("shared", 257) == 258,
+                "Composed fixture did not rebase material bindings");
+            {
+                std::unique_ptr<Device> device;
+                require(bool(createDevice({.applicationName="Shared material binding regression",
+                    .enableValidation=context.enableValidation, .enableBindlessDescriptorHeap=true,
+                    .enableShaderObject=true}).transform([&](auto value) { device=std::move(value); })),
+                    "Cannot create material binding test device");
+                MeshletStreamRuntime runtime;
+                require(bool(runtime.initialize(*device, {.sourcePath=path, .streamAssetPath=cache,
+                    .maxResidentBytes=1ull<<20, .maxResidentPages=32, .maxLockedFallbackPages=32,
+                    .maxGpuPageRequests=128, .maxGpuPageUnloadRequests=128, .maxActiveGroups=128,
+                    .maxRasterCandidates=128, .maxTraversalWorkers=32, .maxTraversalWorkItems=256,
+                    .pageLoadConcurrency=0, .queuedFrameCount=1}, log)), log);
+                require(bool(runtime.syncRuntimeScene(scene, log)), log);
+                Buffer* buffer=runtime.deferredGpuResources().instanceBuffer;
+                const auto* instances=static_cast<const MeshletStreamGpuInstance*>(buffer->map());
+                require(instances != nullptr, "Cannot read shared material instance bindings");
+                bool validBindings=true;
+                for (uint32_t index=0; index<4; ++index) {
+                    validBindings &= instances[index].primitiveIndex == 0 &&
+                        instances[index].materialIndex == 258 + index;
+                }
+                buffer->unmap();
+                require(validBindings, "Shared geometry lost runtime material rebasing in GPU bindings");
+            }
+            // The pixel regression exercises a complete metadata-only stream.
             require(scene.loadStreamMetadata(path),scene.lastLoadResult().error);
             RenderGraphPreviewRenderer preview;
             preview.bindRuntimeScene(&scene);
@@ -247,7 +310,7 @@ public:
             uint32_t changed=0;
             for(size_t i=0;i<unbinned.size();++i) { changed+=unbinned[i]!=preview.pixels()[i]; }
             require(changed<16,"Material binning changed BLEND/glass continuation");
-            return RhiTestResult::pass("BLEND composites background; IOR=1 glass continues through streamed CLAS with MASK holes and material ID 260");
+            return RhiTestResult::pass("Shared CLAS geometry preserves instance BLEND, IOR=1 glass, MASK holes and material ID 260");
         } catch(const std::exception& error) { return RhiTestResult::fail(error.what()); }
     }
 };
@@ -271,7 +334,9 @@ public:
             { std::ofstream output(path); output<<root.dump(2); }
             auto cache=directory/"Z4.meshstream.bin";
             std::string log;
-            require(scene::buildMeshletStreamAssetOffline({.sourcePath=path,.outputPath=cache},log),log);
+            require(scene::buildMeshletStreamAssetOffline({.sourcePath=path,.outputPath=cache,
+                .compressionMode=scene::MeshletStreamPayloadCompression::Reference},log),log);
+            requireSharedMaterialGeometry(cache, std::array<uint32_t, 2>{257, 258});
             std::vector<uint32_t> reference;
             for(bool streamed : {false,true}) {
                 scene::SceneDocument scene;

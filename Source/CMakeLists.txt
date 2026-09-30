@@ -267,6 +267,8 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/GeometryAttributes.cpp
     Runtime/Scene/MeshletStreamAsset.cpp
     Runtime/Scene/MeshletStreamGpuCodec.cpp
+    Runtime/Scene/MeshletStreamReferenceCodec.cpp
+    Runtime/Scene/MeshletBuildParallel.cpp
     Runtime/Scene/Scene.cpp
     Runtime/Scene/SceneDocument.cpp
     Runtime/Scene/SceneGraph.cpp

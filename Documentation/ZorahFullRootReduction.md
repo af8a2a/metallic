@@ -1,6 +1,6 @@
 # ZorahFull 合法保底集缩小
 
-2026-09-29：已实现新的 LOD cook 策略，并完成三个真实大型 primitive 的离线和 GPU 验证。按用户选择，本轮不重建或替换 ZorahFull 的约 191 GiB 正式缓存；下列收益只代表三个独立探针，不能当作 Full 总量或加载时间的改善。
+2026-09-29：已实现新的 LOD cook 策略，并完成三个真实大型 primitive 的离线和 GPU 验证。本页记录探针阶段的结果；用户随后要求取消旧资源兼容并执行 Full 全量重建。下列收益只代表三个独立探针，不能当作 Full 总量或加载时间的改善。
 
 ## 策略与覆盖约束
 
@@ -46,7 +46,7 @@ Cylinder 仍有约 368 万个受保护顶点，收益明显小于 Dome，不能�
 
 ## 缓存与使用
 
-`kGeometryCookRevision` 从 2 升至 3，resident meshlet cache 从 3 升至 4。revision 2 完整 stream 缓存仍允许运行，但离线 cooker 视为非当前版本；revision 1 仍拒绝，legacy position-only 的兼容限制保持。partial checkpoint 现在记录并核对 cook revision，防止新旧策略混合续建。
+`kGeometryCookRevision` 从 2 升至 3，resident meshlet cache 从 3 升至 4。按后续全量重建要求，运行时只接受当前 cook revision，已移除 revision 2 和 legacy position-only 的兼容例外；旧缓存需要重新 cook。partial checkpoint 记录并核对 cook revision，防止新旧策略混合续建，同版本正常续建保留。
 
 新离线 cook 默认采用该策略；已有 Full 正式缓存不会因此自动变小。以后重建时必须预留完整输出及临时 decode/checkpoint 空间，再验证完整场景。诊断可用：
 

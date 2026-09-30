@@ -429,13 +429,14 @@ struct AttributeFixture {
 
 TEST(GeometryAttributes, CompactUploadPreservesGeometryUvAndDiskPayload)
 {
-    for (bool byteRle : {false, true}) {
+    for (auto compression : {MeshletStreamPayloadCompression::None,
+            MeshletStreamPayloadCompression::ByteRle, MeshletStreamPayloadCompression::Reference}) {
         AttributeFixture fixture;
         const auto source = fixture.save();
         const auto cache = fixture.directory / "compact.bin";
         std::string reason;
         ASSERT_TRUE(buildMeshletStreamAssetOffline({.sourcePath=source,.outputPath=cache,
-            .compressionMode=byteRle ? MeshletStreamPayloadCompression::ByteRle : MeshletStreamPayloadCompression::None},reason)) << reason;
+            .compressionMode=compression},reason)) << reason;
         MeshletStreamAsset original, compact;
         ASSERT_TRUE(original.open(cache,reason)) << reason;
         ASSERT_TRUE(compact.open(cache,reason)) << reason;
@@ -466,7 +467,7 @@ TEST(GeometryAttributes, CompactUploadPreservesGeometryUvAndDiskPayload)
             MeshletStreamPayloadHeader disk;
             std::memcpy(&disk,compact.pagePayload(page).data(),sizeof(disk));
             EXPECT_EQ(disk.normalFormat,uint32_t(MeshletStreamPayloadFormat::Float32x4));
-            if (!byteRle) {
+            if (compression == MeshletStreamPayloadCompression::None) {
                 std::vector<uint8_t> damaged(compact.pagePayload(page).begin(),compact.pagePayload(page).end());
                 disk.normalOffsetBytes=disk.positionOffsetBytes; std::memcpy(damaged.data(),&disk,sizeof(disk));
                 EXPECT_FALSE(decodeMeshletStreamPayloadForDevice(compact.pages()[page],damaged,bStorage,b,reason));
@@ -479,35 +480,40 @@ TEST(GeometryAttributes, CompactUploadPreservesGeometryUvAndDiskPayload)
 
 TEST(GeometryAttributes, CookAttributesReuseAndResume)
 {
-    AttributeFixture fixture;
-    auto source = fixture.save();
-    const auto output = fixture.directory / "test.meshstream.bin";
-    std::string reason;
-    MeshletStreamAssetOfflineBuildDesc desc{.sourcePath = source, .outputPath = output, .maxNewGeometriesPerInvocation = 1};
-    ASSERT_FALSE(buildMeshletStreamAssetOffline(desc, reason));
-    EXPECT_NE(reason.find("paused"), std::string::npos) << reason;
-    desc.maxNewGeometriesPerInvocation = 0;
-    ASSERT_TRUE(buildMeshletStreamAssetOffline(desc, reason)) << reason;
-    MeshletStreamAsset asset;
-    ASSERT_TRUE(asset.open(output, reason)) << reason;
-    EXPECT_TRUE(asset.isCurrentForSource(source));
-    EXPECT_TRUE(asset.isRuntimeCompatibleForSource(source, reason)) << reason;
-    ASSERT_EQ(asset.instances().size(), 4u);
-    EXPECT_EQ(asset.primitiveCount(), 3u); // Same material/accessors share; different material or UV identity does not.
-    EXPECT_EQ(asset.instances()[0].primitiveIndex, asset.instances()[1].primitiveIndex);
-    EXPECT_NE(asset.instances()[0].primitiveIndex, asset.instances()[2].primitiveIndex);
-    EXPECT_NE(asset.instances()[0].primitiveIndex, asset.instances()[3].primitiveIndex);
-    std::vector<MeshletStreamAttributeValidation> validation;
-    ASSERT_TRUE(validateMeshletStreamAttributes(asset, source, validation, reason)) << reason;
-    for (const auto& result : validation) {
-        EXPECT_EQ(result.sourceVertices, 4u); EXPECT_EQ(result.preparedVertices, 6u);
-        EXPECT_EQ(result.lod0Triangles, 2u); EXPECT_GT(result.negativeTangentVertices, 0u);
+    for (auto compression : {MeshletStreamPayloadCompression::None,
+            MeshletStreamPayloadCompression::Reference}) {
+        AttributeFixture fixture;
+        auto source = fixture.save();
+        const auto output = fixture.directory / "test.meshstream.bin";
+        std::string reason;
+        MeshletStreamAssetOfflineBuildDesc desc{.sourcePath = source, .outputPath = output,
+            .compressionMode = compression, .maxNewGeometriesPerInvocation = 1};
+        ASSERT_FALSE(buildMeshletStreamAssetOffline(desc, reason));
+        EXPECT_NE(reason.find("paused"), std::string::npos) << reason;
+        desc.maxNewGeometriesPerInvocation = 0;
+        ASSERT_TRUE(buildMeshletStreamAssetOffline(desc, reason)) << reason;
+        MeshletStreamAsset asset;
+        ASSERT_TRUE(asset.open(output, reason)) << reason;
+        EXPECT_TRUE(asset.isCurrentForSource(source));
+        EXPECT_TRUE(asset.isRuntimeCompatibleForSource(source, reason)) << reason;
+        ASSERT_EQ(asset.instances().size(), 4u);
+        EXPECT_EQ(asset.primitiveCount(), 2u); // Geometry attributes define identity; material stays on each instance.
+        EXPECT_EQ(asset.instances()[0].primitiveIndex, asset.instances()[1].primitiveIndex);
+        EXPECT_EQ(asset.instances()[0].primitiveIndex, asset.instances()[2].primitiveIndex);
+        EXPECT_NE(asset.instances()[0].materialIndex, asset.instances()[2].materialIndex);
+        EXPECT_NE(asset.instances()[0].primitiveIndex, asset.instances()[3].primitiveIndex);
+        std::vector<MeshletStreamAttributeValidation> validation;
+        ASSERT_TRUE(validateMeshletStreamAttributes(asset, source, validation, reason)) << reason;
+        for (const auto& result : validation) {
+            EXPECT_EQ(result.sourceVertices, 4u); EXPECT_EQ(result.preparedVertices, 6u);
+            EXPECT_EQ(result.lod0Triangles, 2u); EXPECT_GT(result.negativeTangentVertices, 0u);
+        }
+        // Validator must detect attribute corruption even when sizes, topology and
+        // payload decoding remain valid. Mutate source UV without changing its shape.
+        std::fstream binary(fixture.directory / "mesh.bin", std::ios::in | std::ios::out | std::ios::binary);
+        binary.seekp(96); const float changed = 0.125f; binary.write(reinterpret_cast<const char*>(&changed), 4); binary.close();
+        EXPECT_FALSE(validateMeshletStreamAttributes(asset, source, validation, reason));
     }
-    // Validator must detect attribute corruption even when sizes, topology and
-    // payload decoding remain valid. Mutate source UV without changing its shape.
-    std::fstream binary(fixture.directory / "mesh.bin", std::ios::in | std::ios::out | std::ios::binary);
-    binary.seekp(96); const float changed = 0.125f; binary.write(reinterpret_cast<const char*>(&changed), 4); binary.close();
-    EXPECT_FALSE(validateMeshletStreamAttributes(asset, source, validation, reason));
 }
 
 void setCookRevision(const std::filesystem::path& path, uint32_t revision)
@@ -520,7 +526,7 @@ void setCookRevision(const std::filesystem::path& path, uint32_t revision)
     ASSERT_TRUE(file.good());
 }
 
-TEST(GeometryAttributes, PreviousExactAttributeCookIsRuntimeCompatibleButNotCurrent)
+TEST(GeometryAttributes, PreviousExactAttributeCookRequiresRecooking)
 {
     AttributeFixture fixture;
     const auto source = fixture.save();
@@ -532,8 +538,8 @@ TEST(GeometryAttributes, PreviousExactAttributeCookIsRuntimeCompatibleButNotCurr
     MeshletStreamAsset asset;
     ASSERT_TRUE(asset.open(output, reason)) << reason;
     EXPECT_FALSE(asset.isCurrentForSource(source));
-    EXPECT_TRUE(asset.isRuntimeCompatibleForSource(source, reason)) << reason;
-    EXPECT_TRUE(reason.empty());
+    EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
+    EXPECT_NE(reason.find("cook revision"), std::string::npos) << reason;
     std::vector<MeshletStreamAttributeValidation> validation;
     EXPECT_TRUE(validateMeshletStreamAttributes(asset, source, validation, reason)) << reason;
     const auto binary = fixture.directory / "mesh.bin";
@@ -542,7 +548,8 @@ TEST(GeometryAttributes, PreviousExactAttributeCookIsRuntimeCompatibleButNotCurr
     EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
     EXPECT_NE(reason.find("dependencies"), std::string::npos) << reason;
     std::filesystem::last_write_time(binary, oldWriteTime);
-    EXPECT_TRUE(asset.isRuntimeCompatibleForSource(source, reason)) << reason;
+    EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
+    EXPECT_NE(reason.find("cook revision"), std::string::npos) << reason;
     asset.close();
 
     setCookRevision(output, 1);
@@ -590,13 +597,13 @@ TEST(GeometryAttributes, StalePartialCookRevisionRestartsAllGeometries)
         };
         ASSERT_TRUE(buildMeshletStreamAssetOffline(desc, reason)) << reason;
         const std::vector<uint32_t> expected = revision == kGeometryCookRevision ?
-            std::vector<uint32_t>{2, 3} : std::vector<uint32_t>{0, 2, 3};
+            std::vector<uint32_t>{3} : std::vector<uint32_t>{0, 3};
         EXPECT_EQ(decodedPrimitives, expected);
         EXPECT_FALSE(std::filesystem::exists(partial));
         MeshletStreamAsset asset;
         ASSERT_TRUE(asset.open(output, reason)) << reason;
         EXPECT_TRUE(asset.isCurrentForSource(source));
-        EXPECT_EQ(asset.primitiveCount(), 3u);
+        EXPECT_EQ(asset.primitiveCount(), 2u);
         std::vector<MeshletStreamAttributeValidation> validation;
         EXPECT_TRUE(validateMeshletStreamAttributes(asset, source, validation, reason)) << reason;
     }
@@ -609,7 +616,7 @@ void usePositionOnly(AttributeFixture& fixture)
     }
 }
 
-TEST(GeometryAttributes, LegacyPositionOnlyCookIsRuntimeCompatibleButNotCurrent)
+TEST(GeometryAttributes, LegacyPositionOnlyCookRequiresRecooking)
 {
     AttributeFixture fixture;
     usePositionOnly(fixture);
@@ -621,8 +628,8 @@ TEST(GeometryAttributes, LegacyPositionOnlyCookIsRuntimeCompatibleButNotCurrent)
     MeshletStreamAsset asset;
     ASSERT_TRUE(asset.open(output, reason)) << reason;
     EXPECT_FALSE(asset.isCurrentForSource(source));
-    EXPECT_TRUE(asset.isRuntimeCompatibleForSource(source, reason)) << reason;
-    EXPECT_TRUE(reason.empty());
+    EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
+    EXPECT_NE(reason.find("cook revision"), std::string::npos) << reason;
     asset.close();
 
     setCookRevision(output, kGeometryCookRevision + 1);
@@ -631,8 +638,11 @@ TEST(GeometryAttributes, LegacyPositionOnlyCookIsRuntimeCompatibleButNotCurrent)
     EXPECT_NE(reason.find("cook revision"), std::string::npos) << reason;
     asset.close();
 
-    setCookRevision(output, 0);
+    setCookRevision(output, kGeometryCookRevision);
     ASSERT_TRUE(asset.open(output, reason)) << reason;
+    EXPECT_TRUE(asset.isCurrentForSource(source));
+    EXPECT_TRUE(asset.isRuntimeCompatibleForSource(source, reason)) << reason;
+    EXPECT_TRUE(reason.empty());
     const auto binary = fixture.directory / "mesh.bin";
     const auto oldWriteTime = std::filesystem::last_write_time(binary);
     std::filesystem::last_write_time(binary, oldWriteTime + std::chrono::seconds(2));
@@ -657,7 +667,7 @@ TEST(GeometryAttributes, LegacyAttributedCookStillRequiresRecooking)
     ASSERT_TRUE(asset.open(output, reason)) << reason;
     EXPECT_FALSE(asset.isCurrentForSource(source));
     EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
-    EXPECT_NE(reason.find("legacy pages contain vertex attributes"), std::string::npos) << reason;
+    EXPECT_NE(reason.find("cook revision"), std::string::npos) << reason;
 }
 
 TEST(GeometryAttributes, LegacyGpuInstancingRequiresRecookingEvenWithoutAttributes)
@@ -673,7 +683,7 @@ TEST(GeometryAttributes, LegacyGpuInstancingRequiresRecookingEvenWithoutAttribut
     MeshletStreamAsset asset;
     ASSERT_TRUE(asset.open(output, reason)) << reason;
     EXPECT_FALSE(asset.isRuntimeCompatibleForSource(source, reason));
-    EXPECT_NE(reason.find("GPU instancing"), std::string::npos) << reason;
+    EXPECT_NE(reason.find("cook revision"), std::string::npos) << reason;
 }
 
 TEST(GeometryAttributes, RejectsBrokenAttributesInsteadOfDroppingThem)

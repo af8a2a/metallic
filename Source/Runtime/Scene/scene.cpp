@@ -9,6 +9,7 @@
 #include "Runtime/Scene/Scene.h"
 #include "Runtime/Scene/GeometryAttributes.h"
 #include "Runtime/Scene/GltfGpuInstancing.h"
+#include "Runtime/Scene/MeshletBuildParallel.h"
 #include "Runtime/Scene/UsdSceneImporter.h"
 
 #include "meshoptimizer.h"
@@ -44,6 +45,7 @@
 #include <cfloat>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstring>
 #include <fstream>
@@ -1065,11 +1067,9 @@ bool buildTriangleIndexBuffer(const RenderPrimitive& primitive, std::vector<uint
     return true;
 }
 
-bool appendMeshletCluster(
+bool prepareMeshletCluster(
     const RenderPrimitive& primitive,
-    std::vector<MeshletCluster>& outClusters,
-    std::vector<uint32_t>& outVertices,
-    std::vector<uint8_t>& outTriangles,
+    MeshletCluster& cluster,
     const uint32_t* vertices,
     uint32_t vertexCount,
     const uint8_t* triangles,
@@ -1083,9 +1083,7 @@ bool appendMeshletCluster(
     if (vertexCount == 0 ||
         triangleCount == 0 ||
         vertexCount > kMeshletClusterMaxVertices ||
-        triangleCount > kMeshletClusterMaxTriangles ||
-        outVertices.size() + vertexCount > std::numeric_limits<uint32_t>::max() ||
-        outTriangles.size() + static_cast<size_t>(triangleCount) * 3u > std::numeric_limits<uint32_t>::max()) {
+        triangleCount > kMeshletClusterMaxTriangles) {
         return false;
     }
 
@@ -1100,15 +1098,7 @@ bool appendMeshletCluster(
         }
     }
 
-    const uint32_t vertexOffset = static_cast<uint32_t>(outVertices.size());
-    const uint32_t triangleOffset = static_cast<uint32_t>(outTriangles.size());
-    outVertices.insert(outVertices.end(), vertices, vertices + vertexCount);
-    outTriangles.insert(outTriangles.end(), triangles, triangles + static_cast<size_t>(triangleCount) * 3u);
-
-    MeshletCluster cluster;
-    cluster.vertexOffset = vertexOffset;
     cluster.vertexCount = vertexCount;
-    cluster.triangleOffset = triangleOffset;
     cluster.triangleCount = triangleCount;
     cluster.lodLevel = lodLevel;
     cluster.lodGroupChildIndex = lodGroupChildIndex;
@@ -1140,6 +1130,37 @@ bool appendMeshletCluster(
         cluster.bounds.include(primitive.positions[vertices[localVertexIndex]]);
     }
 
+    return true;
+}
+
+bool appendMeshletCluster(
+    const RenderPrimitive& primitive,
+    std::vector<MeshletCluster>& outClusters,
+    std::vector<uint32_t>& outVertices,
+    std::vector<uint8_t>& outTriangles,
+    const uint32_t* vertices,
+    uint32_t vertexCount,
+    const uint8_t* triangles,
+    uint32_t triangleCount,
+    uint32_t lodLevel,
+    int32_t lodGroupIndex,
+    uint32_t lodGroupChildIndex,
+    int32_t refinedGroupIndex,
+    float lodError)
+{
+    if (outVertices.size() + vertexCount > std::numeric_limits<uint32_t>::max() ||
+        outTriangles.size() + static_cast<size_t>(triangleCount) * 3u > std::numeric_limits<uint32_t>::max()) {
+        return false;
+    }
+    MeshletCluster cluster;
+    if (!prepareMeshletCluster(primitive, cluster, vertices, vertexCount, triangles, triangleCount,
+            lodLevel, lodGroupIndex, lodGroupChildIndex, refinedGroupIndex, lodError)) {
+        return false;
+    }
+    cluster.vertexOffset = static_cast<uint32_t>(outVertices.size());
+    cluster.triangleOffset = static_cast<uint32_t>(outTriangles.size());
+    outVertices.insert(outVertices.end(), vertices, vertices + vertexCount);
+    outTriangles.insert(outTriangles.end(), triangles, triangles + static_cast<size_t>(triangleCount) * 3u);
     outClusters.push_back(cluster);
     return true;
 }
@@ -1181,40 +1202,93 @@ bool meshletLodNormalsHaveSeam(const float* a, const float* b)
     return false;
 }
 
-template <typename Output>
-int emitClusterLodGroup(
-    const clodConfig& config,
-    const clodMesh& mesh,
+struct PreparedMeshletLodGroup {
+    MeshletLodGroup group;
+    std::vector<MeshletCluster> clusters;
+    std::vector<uint32_t> vertices;
+    std::vector<uint8_t> triangles;
+    bool valid = true;
+};
+
+struct MeshletLodWorkerScratch {
+    std::vector<unsigned int> merged;
+    std::array<uint32_t, kMeshletClusterMaxTriangles * 3u> localVertices{};
+    std::array<uint8_t, kMeshletClusterMaxTriangles * 3u> localTriangles{};
+    PreparedMeshletLodGroup output;
+};
+
+void prepareClusterLodGroup(
+    const RenderPrimitive& primitive,
     const std::vector<clod::Cluster>& clusters,
     const std::vector<int>& group,
     const clodBounds& simplified,
     int depth,
-    Output& output)
+    MeshletLodWorkerScratch& scratch)
 {
-    std::vector<clodCluster> outputClusters(group.size());
+    PreparedMeshletLodGroup& output = scratch.output;
+    output.group = {};
+    output.clusters.clear();
+    output.vertices.clear();
+    output.triangles.clear();
+    output.valid = depth >= 0 && !group.empty();
+    if (!output.valid) { return; }
+    output.group.clusterCount = static_cast<uint32_t>(group.size());
+    output.group.lodLevel = static_cast<uint32_t>(depth);
+    output.group.boundingSphereCenter = float3(simplified.center[0], simplified.center[1], simplified.center[2]);
+    output.group.boundingSphereRadius = simplified.radius;
+    output.group.maxQuadricError = simplified.error;
+    output.clusters.reserve(group.size());
+    output.vertices.reserve(group.size() * kMeshletClusterMaxVertices);
+    output.triangles.reserve(group.size() * kMeshletClusterMaxTriangles * 3u);
     for (size_t groupIndex = 0; groupIndex < group.size(); ++groupIndex) {
         const clod::Cluster& cluster = clusters[group[groupIndex]];
-        clodCluster& outputCluster = outputClusters[groupIndex];
-        outputCluster.refined = cluster.refined;
-        outputCluster.bounds = config.optimize_bounds && cluster.refined != -1
-            ? clod::boundsCompute(mesh, cluster.indices, cluster.bounds.error)
-            : cluster.bounds;
-        outputCluster.indices = cluster.indices.data();
-        outputCluster.index_count = cluster.indices.size();
-        outputCluster.vertex_count = cluster.vertices;
+        if (cluster.indices.empty() || cluster.indices.size() % 3u != 0 ||
+            cluster.indices.size() > scratch.localTriangles.size() ||
+            cluster.vertices > kMeshletClusterMaxVertices) {
+            output.valid = false;
+            return;
+        }
+        const size_t vertexCount = clodLocalIndices(scratch.localVertices.data(), scratch.localTriangles.data(),
+            cluster.indices.data(), cluster.indices.size());
+        if (vertexCount == 0 || vertexCount > kMeshletClusterMaxVertices || vertexCount != cluster.vertices) {
+            output.valid = false;
+            return;
+        }
+        const uint32_t triangleCount = static_cast<uint32_t>(cluster.indices.size() / 3u);
+        meshopt_optimizeMeshlet(scratch.localVertices.data(), scratch.localTriangles.data(),
+            triangleCount, vertexCount);
+        MeshletCluster prepared;
+        if (!prepareMeshletCluster(primitive, prepared, scratch.localVertices.data(),
+                static_cast<uint32_t>(vertexCount), scratch.localTriangles.data(), triangleCount,
+                output.group.lodLevel, kInvalidSceneIndex, static_cast<uint32_t>(groupIndex),
+                cluster.refined, cluster.bounds.error)) {
+            output.valid = false;
+            return;
+        }
+        prepared.vertexOffset = static_cast<uint32_t>(output.vertices.size());
+        prepared.triangleOffset = static_cast<uint32_t>(output.triangles.size());
+        output.vertices.insert(output.vertices.end(), scratch.localVertices.begin(),
+            scratch.localVertices.begin() + vertexCount);
+        output.triangles.insert(output.triangles.end(), scratch.localTriangles.begin(),
+            scratch.localTriangles.begin() + cluster.indices.size());
+        output.group.bounds.include(prepared.bounds);
+        output.clusters.push_back(prepared);
     }
-    return output(
-        clodGroup{depth, simplified},
-        outputClusters.data(),
-        outputClusters.size());
 }
 
 template <typename Output>
-size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, bool hasNormals, Output& output,
+size_t buildClusterLodParallel(const RenderPrimitive& primitive, clodConfig config, clodMesh mesh,
+    bool hasNormals, Output& output,
     const MeshletBuildOptions& options)
 {
-    // Like vk_lod_clusters, simplify independent groups concurrently, then emit
-    // them in task order so refinement indices stay deterministic/checkpointable.
+    // Keep the reference's group work (simplify, recluster, local remap and
+    // bounds) on persistent workers. Only the bounded final append is ordered.
+    const size_t hardwareThreads = std::max<size_t>(1u, std::thread::hardware_concurrency());
+    const size_t workerCount = options.maxWorkers != 0 ?
+        std::min<size_t>(options.maxWorkers, hardwareThreads) :
+        std::max<size_t>(1u, hardwareThreads / 2u);
+    MeshletBuildParallel& parallel = MeshletBuildParallel::shared(workerCount);
+    std::vector<MeshletLodWorkerScratch> workerScratch(parallel.workerCount());
     assert(mesh.vertex_attributes_stride % sizeof(float) == 0);
     assert(mesh.attribute_count * sizeof(float) <= mesh.vertex_attributes_stride);
     assert(mesh.attribute_protect_mask <
@@ -1264,9 +1338,10 @@ size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, bool hasNormals
 
     std::vector<clod::Cluster> clusters =
         clod::clusterize(config, mesh, mesh.indices, mesh.index_count);
-    for (clod::Cluster& cluster : clusters) {
+    parallel.forEach(clusters.size(), [&](size_t clusterIndex, size_t) {
+        clod::Cluster& cluster = clusters[clusterIndex];
         cluster.bounds = clod::boundsCompute(mesh, cluster.indices, 0.0f);
-    }
+    });
 
     std::vector<int> pending(clusters.size());
     for (size_t clusterIndex = 0; clusterIndex < clusters.size(); ++clusterIndex) {
@@ -1285,88 +1360,78 @@ size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, bool hasNormals
             uint64_t inputTriangleCount = 0;
             uint64_t targetTriangleCount = 0;
             uint64_t simplifiedTriangleCount = 0;
+            int refined = kInvalidSceneIndex;
             bool terminal = false;
             bool emptyResult = false;
             bool noReduction = false;
         };
         std::vector<TaskResult> results(groups.size());
-        std::atomic_size_t nextTask{0};
-        std::exception_ptr taskFailure;
-        std::mutex failureMutex;
-        const auto processTasks = [&]() {
+        std::mutex outputMutex;
+        std::condition_variable outputReady;
+        size_t nextOutput = 0;
+        bool outputCancelled = false;
+        parallel.forEach(groups.size(), [&](size_t taskIndex, size_t workerIndex) {
             try {
-                for (;;) {
-                    const size_t taskIndex = nextTask.fetch_add(1, std::memory_order_relaxed);
-                    if (taskIndex >= groups.size()) {
-                        return;
-                    }
+                const std::vector<int>& group = groups[taskIndex];
+                MeshletLodWorkerScratch& scratch = workerScratch[workerIndex];
+                std::vector<unsigned int>& merged = scratch.merged;
+                merged.clear();
+                merged.reserve(group.size() * config.max_triangles * 3u);
+                for (const int clusterIndex : group) {
+                    merged.insert(merged.end(), clusters[clusterIndex].indices.begin(),
+                        clusters[clusterIndex].indices.end());
+                }
 
-                    const std::vector<int>& group = groups[taskIndex];
-                    std::vector<unsigned int> merged;
-                    merged.reserve(group.size() * config.max_triangles * 3u);
-                    for (const int clusterIndex : group) {
-                        merged.insert(
-                            merged.end(),
-                            clusters[clusterIndex].indices.begin(),
-                            clusters[clusterIndex].indices.end());
-                    }
-
-                    const size_t targetSize =
-                        static_cast<size_t>((merged.size() / 3u) * config.simplify_ratio) * 3u;
-                    TaskResult& result = results[taskIndex];
+                const size_t targetSize =
+                    static_cast<size_t>((merged.size() / 3u) * config.simplify_ratio) * 3u;
+                TaskResult& result = results[taskIndex];
 #if MESHOPTIMIZER_VERSION >= 1020
-                    result.bounds = clod::mergeGroups(clusters, group);
+                result.bounds = clod::mergeGroups(clusters, group);
 #else
-                    result.bounds = clod::boundsMerge(clusters, group);
+                result.bounds = clod::boundsMerge(clusters, group);
 #endif
-                    float error = 0.0f;
-                    std::vector<unsigned int> simplified =
-                        clod::simplify(config, mesh, merged, locks, targetSize, &error);
-                    if (options.lodStats) {
-                        result.inputTriangleCount = merged.size() / 3u;
-                        result.targetTriangleCount = targetSize / 3u;
-                        result.simplifiedTriangleCount = simplified.size() / 3u;
-                    }
-                    result.emptyResult = simplified.empty();
-                    result.noReduction = simplified.size() > merged.size() * config.simplify_threshold;
-                    if (result.emptyResult || result.noReduction) {
-                        result.bounds.error = FLT_MAX;
-                        result.terminal = true;
-                        continue;
-                    }
-
+                float error = 0.0f;
+                std::vector<unsigned int> simplified =
+                    clod::simplify(config, mesh, merged, locks, targetSize, &error);
+                if (options.lodStats) {
+                    result.inputTriangleCount = merged.size() / 3u;
+                    result.targetTriangleCount = targetSize / 3u;
+                    result.simplifiedTriangleCount = simplified.size() / 3u;
+                }
+                result.emptyResult = simplified.empty();
+                result.noReduction = simplified.size() > merged.size() * config.simplify_threshold;
+                if (result.emptyResult || result.noReduction) {
+                    result.bounds.error = FLT_MAX;
+                    result.terminal = true;
+                } else {
                     result.bounds.error = std::max(
                         result.bounds.error * config.simplify_error_merge_previous,
                         error) + error * config.simplify_error_merge_additive;
-                    result.split = clod::clusterize(
-                        config,
-                        mesh,
-                        simplified.data(),
-                        simplified.size());
+                    result.split = clod::clusterize(config, mesh, simplified.data(), simplified.size());
                 }
-            } catch (...) {
-                std::lock_guard lock(failureMutex);
-                if (!taskFailure) { taskFailure = std::current_exception(); }
-                nextTask.store(groups.size(), std::memory_order_relaxed);
-            }
-        };
 
-        const size_t hardwareThreads =
-            std::max<size_t>(1u, std::thread::hardware_concurrency());
-        const size_t workerCount = std::min(
-            groups.size(),
-            options.maxWorkers != 0 ? size_t(options.maxWorkers) :
-                std::max<size_t>(1u, hardwareThreads / 2u));
-        std::vector<std::jthread> workers;
-        workers.reserve(workerCount > 0 ? workerCount - 1u : 0u);
-        for (size_t workerIndex = 1; workerIndex < workerCount; ++workerIndex) {
-            workers.emplace_back(processTasks);
-        }
-        processTasks();
-        for (std::jthread& worker : workers) {
-            worker.join();
-        }
-        if (taskFailure) { std::rethrow_exception(taskFailure); }
+                prepareClusterLodGroup(primitive, clusters, group, result.bounds, depth, scratch);
+                std::unique_lock lock(outputMutex);
+                outputReady.wait(lock, [&] { return outputCancelled || nextOutput == taskIndex; });
+                if (outputCancelled) { return; }
+                result.refined = output(scratch.output);
+                // Partitioned groups own disjoint input index vectors. Their
+                // storage can be released after output without retaining old LODs.
+                for (const int clusterIndex : group) {
+                    std::vector<unsigned int>().swap(clusters[clusterIndex].indices);
+                }
+                ++nextOutput;
+                lock.unlock();
+                outputReady.notify_all();
+            } catch (...) {
+                {
+                    std::lock_guard lock(outputMutex);
+                    outputCancelled = true;
+                }
+                outputReady.notify_all();
+                throw;
+            }
+        });
 
         MeshletLodDepthBuildStats* depthStats = nullptr;
         if (options.lodStats) {
@@ -1391,25 +1456,11 @@ size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, bool hasNormals
                 depthStats->emptyResultGroupCount += result.emptyResult ? 1u : 0u;
                 depthStats->noReductionGroupCount += result.noReduction ? 1u : 0u;
             }
-            const int refined = emitClusterLodGroup(
-                config,
-                mesh,
-                clusters,
-                groups[taskIndex],
-                result.bounds,
-                depth,
-                output);
-            // Once emitted, only the cluster's bounds/refinement metadata is
-            // needed. clear() retained every old LOD's index allocation, and
-            // terminal branches previously retained even their index contents.
-            for (const int clusterIndex : groups[taskIndex]) {
-                std::vector<unsigned int>().swap(clusters[clusterIndex].indices);
-            }
             if (result.terminal) {
                 continue;
             }
             for (clod::Cluster& cluster : result.split) {
-                cluster.refined = refined;
+                cluster.refined = result.refined;
                 cluster.bounds = result.bounds;
                 clusters.push_back(std::move(cluster));
                 pending.push_back(static_cast<int>(clusters.size() - 1u));
@@ -1432,7 +1483,8 @@ size_t buildClusterLodParallel(clodConfig config, clodMesh mesh, bool hasNormals
         }
         clodBounds bounds = clusters[pending.front()].bounds;
         bounds.error = FLT_MAX;
-        emitClusterLodGroup(config, mesh, clusters, pending, bounds, depth, output);
+        prepareClusterLodGroup(primitive, clusters, pending, bounds, depth, workerScratch.front());
+        output(workerScratch.front().output);
     }
     return clusters.size();
 }
@@ -1712,16 +1764,17 @@ bool buildMeshletLods(RenderPrimitive& primitive, const MeshletBuildOptions& opt
     primitive.meshletLodTriangles.reserve(std::max<size_t>(clusterIndices.size(), primitive.meshletTriangles.size() * 2u));
 
     bool success = true;
-    auto outputGroup = [&](clodGroup group, const clodCluster* clusters, size_t clusterCount) -> int {
-        if (!success ||
-            group.depth < 0 ||
-            clusterCount == 0 ||
-            primitive.meshletLodGroups.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+    auto outputGroup = [&](const PreparedMeshletLodGroup& prepared) -> int {
+        if (!success || !prepared.valid || prepared.clusters.empty() ||
+            primitive.meshletLodGroups.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max()) ||
+            primitive.meshletLodClusters.size() + prepared.clusters.size() > std::numeric_limits<uint32_t>::max() ||
+            primitive.meshletLodVertices.size() + prepared.vertices.size() > std::numeric_limits<uint32_t>::max() ||
+            primitive.meshletLodTriangles.size() + prepared.triangles.size() > std::numeric_limits<uint32_t>::max()) {
             success = false;
             return kInvalidSceneIndex;
         }
 
-        const uint32_t lodLevel = static_cast<uint32_t>(group.depth);
+        const uint32_t lodLevel = prepared.group.lodLevel;
         while (primitive.meshletLodLevels.size() <= lodLevel) {
             MeshletLodLevel level;
             level.groupOffset = static_cast<uint32_t>(primitive.meshletLodGroups.size());
@@ -1732,63 +1785,19 @@ bool buildMeshletLods(RenderPrimitive& primitive, const MeshletBuildOptions& opt
         }
 
         const int32_t groupIndex = static_cast<int32_t>(primitive.meshletLodGroups.size());
-        MeshletLodGroup lodGroup;
+        MeshletLodGroup lodGroup = prepared.group;
         lodGroup.clusterOffset = static_cast<uint32_t>(primitive.meshletLodClusters.size());
-        lodGroup.clusterCount = static_cast<uint32_t>(clusterCount);
-        lodGroup.lodLevel = lodLevel;
-        lodGroup.boundingSphereCenter = float3(
-            group.simplified.center[0],
-            group.simplified.center[1],
-            group.simplified.center[2]);
-        lodGroup.boundingSphereRadius = group.simplified.radius;
-        lodGroup.maxQuadricError = group.simplified.error;
-
-        for (size_t clusterIndex = 0; clusterIndex < clusterCount; ++clusterIndex) {
-            const clodCluster& cluster = clusters[clusterIndex];
-            if (cluster.index_count == 0 ||
-                cluster.index_count % 3u != 0 ||
-                cluster.index_count / 3u > kMeshletClusterMaxTriangles ||
-                cluster.vertex_count > kMeshletClusterMaxVertices) {
-                success = false;
-                return kInvalidSceneIndex;
-            }
-
-            std::vector<uint32_t> localVertices(cluster.index_count);
-            std::vector<uint8_t> localTriangles(cluster.index_count);
-            const size_t localVertexCount = clodLocalIndices(
-                localVertices.data(),
-                localTriangles.data(),
-                cluster.indices,
-                cluster.index_count);
-            const uint32_t vertexCount = static_cast<uint32_t>(localVertexCount);
-            const uint32_t triangleCount = static_cast<uint32_t>(cluster.index_count / 3u);
-            if (vertexCount == 0 ||
-                vertexCount > kMeshletClusterMaxVertices ||
-                vertexCount != cluster.vertex_count) {
-                success = false;
-                return kInvalidSceneIndex;
-            }
-
-            meshopt_optimizeMeshlet(localVertices.data(), localTriangles.data(), triangleCount, vertexCount);
-            if (!appendMeshletCluster(
-                    primitive,
-                    primitive.meshletLodClusters,
-                    primitive.meshletLodVertices,
-                    primitive.meshletLodTriangles,
-                    localVertices.data(),
-                    vertexCount,
-                    localTriangles.data(),
-                    triangleCount,
-                    lodLevel,
-                    groupIndex,
-                    static_cast<uint32_t>(clusterIndex),
-                    cluster.refined,
-                    cluster.bounds.error)) {
-                success = false;
-                return kInvalidSceneIndex;
-            }
-
-            lodGroup.bounds.include(primitive.meshletLodClusters.back().bounds);
+        const uint32_t vertexOffset = static_cast<uint32_t>(primitive.meshletLodVertices.size());
+        const uint32_t triangleOffset = static_cast<uint32_t>(primitive.meshletLodTriangles.size());
+        primitive.meshletLodVertices.insert(primitive.meshletLodVertices.end(),
+            prepared.vertices.begin(), prepared.vertices.end());
+        primitive.meshletLodTriangles.insert(primitive.meshletLodTriangles.end(),
+            prepared.triangles.begin(), prepared.triangles.end());
+        for (MeshletCluster cluster : prepared.clusters) {
+            cluster.vertexOffset += vertexOffset;
+            cluster.triangleOffset += triangleOffset;
+            cluster.lodGroupIndex = groupIndex;
+            primitive.meshletLodClusters.push_back(cluster);
         }
 
         MeshletLodLevel& level = primitive.meshletLodLevels[lodLevel];
@@ -1801,7 +1810,7 @@ bool buildMeshletLods(RenderPrimitive& primitive, const MeshletBuildOptions& opt
         return groupIndex;
     };
 
-    buildClusterLodParallel(config, mesh, hasNormals, outputGroup, options);
+    buildClusterLodParallel(primitive, config, mesh, hasNormals, outputGroup, options);
     if (!success ||
         primitive.meshletLodLevels.empty() ||
         primitive.meshletLodGroups.empty() ||

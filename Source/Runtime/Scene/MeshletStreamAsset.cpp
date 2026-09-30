@@ -4,6 +4,7 @@
 #include "Runtime/Scene/GeometryEncoding.h"
 #include "Runtime/Scene/GltfGpuInstancing.h"
 #include "Runtime/Scene/MeshletStreamGpuCodec.h"
+#include "Runtime/Scene/MeshletStreamReferenceCodec.h"
 
 #include "json.hpp"
 #include "meshoptimizer.h"
@@ -11,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -333,7 +335,8 @@ bool meshletStreamCompressionSupported(uint32_t compressionMode)
 {
     return compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::None) ||
         compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::ByteRle) ||
-        compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::GpuTiles);
+        compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::GpuTiles) ||
+        compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::Reference);
 }
 
 bool encodeByteRle(std::span<const uint8_t> source, std::vector<uint8_t>& outBytes)
@@ -441,6 +444,10 @@ bool encodePayloadForStorage(
             devicePayload.begin(),
             devicePayload.begin() + static_cast<std::ptrdiff_t>(sizeof(MeshletStreamPayloadHeader)));
         outStoredPayload.insert(outStoredPayload.end(), encodedBody.begin(), encodedBody.end());
+    } else if (compressionMode == MeshletStreamPayloadCompression::Reference) {
+        if (!encodeMeshletStreamReferencePage(devicePayload, outStoredPayload, reason)) {
+            return false;
+        }
     } else {
         reason = "meshlet page compression mode is unsupported";
         return false;
@@ -3313,7 +3320,8 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
     int32_t meshIndex,
     int32_t primitiveIndex,
     RenderPrimitive& outPrimitive,
-    std::string& reason)
+    std::string& reason,
+    bool referencePrecision = false)
 {
     outPrimitive = {};
     const tinygltf::Model& model = source.model;
@@ -3366,6 +3374,13 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
         reason = "streamasset builder failed to read primitive POSITION accessor";
         return false;
     }
+    if (referencePrecision) {
+        for (auto& position : outPrimitive.positions) {
+            for (float* component : {&position.x, &position.y, &position.z}) {
+                *component = std::bit_cast<float>(std::bit_cast<uint32_t>(*component) & ~uint32_t(127));
+            }
+        }
+    }
     outPrimitive.localBounds = boundsFromPositionsForStreamBuilder(outPrimitive.positions);
 
     const auto normalAccessorIter = gltfPrimitive.attributes.find("NORMAL");
@@ -3397,6 +3412,13 @@ bool loadRenderPrimitiveForStreamAssetBuilder(
     }
 
     const auto tangentAccessorIter = gltfPrimitive.attributes.find("TANGENT");
+    if (referencePrecision) {
+        for (auto& texcoord : outPrimitive.texcoords0) {
+            for (float* component : {&texcoord.x, &texcoord.y}) {
+                *component = std::bit_cast<float>(std::bit_cast<uint32_t>(*component) & ~uint32_t(127));
+            }
+        }
+    }
     if (tangentAccessorIter != gltfPrimitive.attributes.end() &&
         validGltfIndex(tangentAccessorIter->second, model.accessors.size())) {
         outPrimitive.tangents = readFloat4AccessorForStreamBuilder(
@@ -3447,10 +3469,10 @@ uint64_t gltfPrimitiveKey(int32_t meshIndex, int32_t primitiveIndex)
 
 std::string gltfGeometryKey(const tinygltf::Primitive& primitive)
 {
-    // Exact accessor identity, including every attribute. Material stays in the
-    // key because page and cluster headers still carry a material binding.
+    // Every geometry attribute participates. Instance material bindings are
+    // independent; the page material is the canonical representative only.
     return nlohmann::json{{"mode", primitive.mode}, {"indices", primitive.indices},
-        {"attributes", primitive.attributes}, {"material", primitive.material}, {"targets", primitive.targets}}.dump();
+        {"attributes", primitive.attributes}, {"targets", primitive.targets}}.dump();
 }
 
 MeshletStreamPartialFileHeader makePartialBuildHeader(
@@ -3993,7 +4015,8 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
                     static_cast<int32_t>(meshIndex),
                     static_cast<int32_t>(primitiveIndex),
                     primitive,
-                    reason)) {
+                    reason,
+                    compressionMode == MeshletStreamPayloadCompression::Reference)) {
                 return false;
             }
 
@@ -4114,10 +4137,7 @@ bool appendStreamAssetInstancesFromGltf(
                 MeshletStreamInstanceInfo instance;
                 instance.renderNodeIndex = renderNodeIndex++;
                 instance.primitiveIndex = streamPrimitiveIndex;
-                instance.materialIndex = static_cast<uint32_t>(
-                    gltfPrimitive.material >= 0
-                        ? gltfPrimitive.material
-                        : static_cast<int32_t>(state.primitives[streamPrimitiveIndex].materialIndex));
+                instance.materialIndex = static_cast<uint32_t>(std::max(gltfPrimitive.material, 0));
                 instance.visible = visible ? 1u : 0u;
                 copyMatrix(worldMatrix, instance.worldMatrix);
                 state.instances.push_back(instance);
@@ -4609,58 +4629,9 @@ bool MeshletStreamAsset::isRuntimeCompatibleForSource(const std::filesystem::pat
     if (impl_->header.reserved1 == kGeometryCookRevision) {
         return true;
     }
-    // Revision 3 canonicalizes exact duplicates and tolerates normal seam noise.
-    // Revision 2 remains valid at runtime, but is not current for offline cooking.
-    if (kGeometryCookRevision == 3 && impl_->header.reserved1 == 2) {
-        return true;
-    }
     reason = "geometry cook revision " + std::to_string(impl_->header.reserved1) +
         " requires re-cooking for revision " + std::to_string(kGeometryCookRevision);
-    // Revisions 1/2 changed attributes; revision 3 changes LOD topology without
-    // invalidating position-only pages. Do not extend this to future policies.
-    if ((kGeometryCookRevision != 1 && kGeometryCookRevision != 2 && kGeometryCookRevision != 3) ||
-        impl_->header.reserved1 != 0) {
-        return false;
-    }
-    constexpr uint32_t compatibleFlags = kMeshletStreamPayloadAttributePosition | kMeshletStreamPayloadAttributeMaterial;
-    for (const auto& page : pages()) {
-        if ((page.attributeFlags & ~compatibleFlags) != 0) {
-            reason += "; legacy pages contain vertex attributes";
-            return false;
-        }
-    }
-    // Also check the source: old importers could omit attributes or expanded
-    // instances. Page flags alone cannot establish compatibility in that case.
-    if (sourcePath.extension() != ".gltf") {
-        reason += "; legacy compatibility requires a position-only static glTF";
-        return false;
-    }
-    try {
-        std::ifstream file(sourcePath);
-        const auto root = nlohmann::json::parse(file);
-        for (const auto& mesh : root.at("meshes")) {
-            for (const auto& primitive : mesh.at("primitives")) {
-                const auto& attributes = primitive.at("attributes");
-                if (!attributes.is_object() || attributes.size() != 1 || !attributes.contains("POSITION") ||
-                    (primitive.contains("targets") && !primitive.at("targets").empty())) {
-                    reason += "; source has vertex attributes or morph targets";
-                    return false;
-                }
-            }
-        }
-        for (const auto& node : root.at("nodes")) {
-            if (node.contains("skin") || (node.contains("extensions") &&
-                node.at("extensions").contains("EXT_mesh_gpu_instancing"))) {
-                reason += "; source uses skinning or GPU instancing";
-                return false;
-            }
-        }
-    } catch (const std::exception& error) {
-        reason += "; cannot verify legacy source: " + std::string(error.what());
-        return false;
-    }
-    reason.clear();
-    return true;
+    return false;
 }
 
 uint32_t MeshletStreamAsset::cookRevision() const
@@ -4999,6 +4970,16 @@ bool decodeMeshletStreamPayloadForDevice(
             compactDeviceShading(page, scratchPayload, outDevicePayload, reason);
     }
 
+    if (page.compressionMode == uint32_t(MeshletStreamPayloadCompression::Reference)) {
+        if (!decodeMeshletStreamReferencePage(storedPayload, scratchPayload, reason) ||
+            scratchPayload.size() != page.uncompressedSize ||
+            !validateDevicePayloadClusters(scratchPayload, page, reason)) {
+            if (reason.empty()) { reason = "Reference decoded payload size does not match its page"; }
+            return false;
+        }
+        return compactDevicePositions(page, scratchPayload, scratchPayload, outDevicePayload, reason) &&
+            compactDeviceShading(page, scratchPayload, outDevicePayload, reason);
+    }
     if (page.compressionMode != static_cast<uint32_t>(MeshletStreamPayloadCompression::ByteRle)) {
         reason = "streamasset compressed payload mode is unsupported";
         return false;
@@ -5085,14 +5066,79 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
         return false;
     }
 
+    StreamGltfSource referenceSource;
+    std::string referenceSourceReason;
+    const bool hasReferenceSource = desc.compressionMode == MeshletStreamPayloadCompression::Reference &&
+        loadGltfModelForStreamAssetBuilder(desc.sourcePath, referenceSource, referenceSourceReason);
+    const auto equalAttributeStream = [](const auto& lhs, const auto& rhs, size_t components) {
+        if (lhs.size() != rhs.size()) { return false; }
+        for (size_t i = 0; i < lhs.size(); ++i) {
+            if (std::memcmp(&lhs[i].x, &rhs[i].x, components * sizeof(float)) != 0) { return false; }
+        }
+        return true;
+    };
     const std::vector<RenderPrimitive>& renderPrimitives = desc.scene->renderPrimitives();
     std::vector<int32_t> primitiveMap(renderPrimitives.size(), kInvalidSceneIndex);
     for (size_t renderPrimitiveIndex = 0; renderPrimitiveIndex < renderPrimitives.size(); ++renderPrimitiveIndex) {
+        const RenderPrimitive* primitive = &renderPrimitives[renderPrimitiveIndex];
+        RenderPrimitive referencePrimitive;
+        if (desc.compressionMode == MeshletStreamPayloadCompression::Reference) {
+            bool preparedFromSource = false;
+            if (hasReferenceSource) {
+                RenderPrimitive sourcePrimitive;
+                std::string sourceReason;
+                if (loadRenderPrimitiveForStreamAssetBuilder(referenceSource, primitive->meshIndex,
+                        primitive->primitiveIndex, sourcePrimitive, sourceReason) &&
+                    sourcePrimitive.mode == primitive->mode && sourcePrimitive.indices == primitive->indices &&
+                    equalAttributeStream(sourcePrimitive.positions, primitive->positions, 3) &&
+                    equalAttributeStream(sourcePrimitive.normals, primitive->normals, 3) &&
+                    equalAttributeStream(sourcePrimitive.texcoords0, primitive->texcoords0, 2) &&
+                    equalAttributeStream(sourcePrimitive.tangents, primitive->tangents, 4) &&
+                    loadRenderPrimitiveForStreamAssetBuilder(referenceSource, primitive->meshIndex,
+                        primitive->primitiveIndex, referencePrimitive, sourceReason, true)) {
+                    // A resident importer has already repaired zero normals
+                    // and split generated tangents. Reprepare matching source
+                    // geometry with quantized positions before either step.
+                    referencePrimitive.name = primitive->name;
+                    referencePrimitive.meshIndex = primitive->meshIndex;
+                    referencePrimitive.primitiveIndex = primitive->primitiveIndex;
+                    referencePrimitive.materialIndex = primitive->materialIndex;
+                    referencePrimitive.storage = primitive->storage;
+                    preparedFromSource = true;
+                }
+            }
+            if (!preparedFromSource) {
+                // Custom or edited Scene geometry remains authoritative.
+                referencePrimitive = *primitive;
+                // Quantize before rebuilding the hierarchy so all bounds and
+                // LOD errors describe the codec's reconstructed positions.
+                for (auto& position : referencePrimitive.positions) {
+                    for (float* component : {&position.x, &position.y, &position.z}) {
+                        *component = std::bit_cast<float>(std::bit_cast<uint32_t>(*component) & ~uint32_t(127));
+                    }
+                }
+                for (auto& texcoord : referencePrimitive.texcoords0) {
+                    for (float* component : {&texcoord.x, &texcoord.y}) {
+                        *component = std::bit_cast<float>(std::bit_cast<uint32_t>(*component) & ~uint32_t(127));
+                    }
+                }
+                referencePrimitive.localBounds = boundsFromPositionsForStreamBuilder(referencePrimitive.positions);
+                if (!referencePrimitive.hasAuthoredTangents) {
+                    referencePrimitive.tangents.clear();
+                    generateMissingTangents(referencePrimitive);
+                }
+            }
+            if (!buildStreamMeshletsForPrimitive(referencePrimitive)) {
+                reason = "reference streamasset build failed to rebuild quantized geometry";
+                return false;
+            }
+            primitive = &referencePrimitive;
+        }
         int32_t primitiveIndex = kInvalidSceneIndex;
         if (!appendStreamPrimitivePages(
                 stream,
                 state,
-                renderPrimitives[renderPrimitiveIndex],
+                *primitive,
                 static_cast<uint32_t>(renderPrimitiveIndex),
                 desc.compressionMode,
                 primitiveIndex,
@@ -5442,7 +5488,11 @@ bool validateMeshletStreamAttributes(const MeshletStreamAsset& asset,
         if (info.renderPrimitiveIndex >= sourcePrimitives.size()) { reason = "Invalid source primitive"; return false; }
         const auto [mesh, primitiveIndex] = sourcePrimitives[info.renderPrimitiveIndex];
         RenderPrimitive primitive;
-        if (!loadRenderPrimitiveForStreamAssetBuilder(source, mesh, primitiveIndex, primitive, reason)) { return false; }
+        const bool referencePrecision = std::any_of(
+            asset.pages().begin() + info.pageOffset,
+            asset.pages().begin() + info.pageOffset + info.pageCount,
+            [](const auto& page) { return page.compressionMode == uint32_t(MeshletStreamPayloadCompression::Reference); });
+        if (!loadRenderPrimitiveForStreamAssetBuilder(source, mesh, primitiveIndex, primitive, reason, referencePrecision)) { return false; }
         MeshletStreamAttributeValidation result;
         result.sourcePrimitive = info.renderPrimitiveIndex;
         result.sourceVertices = source.model.accessors[source.model.meshes[mesh].primitives[primitiveIndex].attributes.at("POSITION")].count;
@@ -5458,6 +5508,15 @@ bool validateMeshletStreamAttributes(const MeshletStreamAsset& asset,
             if (normal) { std::memcpy(key.data() + 3, &primitive.normals[v].x, 12); }
             if (uv) { std::memcpy(key.data() + 6, &primitive.texcoords0[v].x, 8); }
             if (tangent) { std::memcpy(key.data() + 8, &primitive.tangents[v].x, 16); }
+            if (referencePrecision) {
+                float normalValue[3]{}, tangentValue[4]{};
+                if (normal) { std::memcpy(normalValue, key.data() + 3, 12); }
+                if (tangent) { std::memcpy(tangentValue, key.data() + 8, 16); }
+                canonicalizeMeshletStreamReferenceVertex(nullptr, normal ? normalValue : nullptr,
+                    nullptr, tangent ? tangentValue : nullptr);
+                if (normal) { std::memcpy(key.data() + 3, normalValue, 12); }
+                if (tangent) { std::memcpy(key.data() + 8, tangentValue, 16); }
+            }
             remap[v] = vertices.emplace(key, static_cast<uint32_t>(vertices.size())).first->second;
         }
         std::map<Triangle, uint32_t> triangles;

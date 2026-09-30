@@ -196,8 +196,12 @@ Json inspectAsset(const MeshletStreamAsset& asset, bool validatePayloads)
     uint64_t terminalInstanceGroups = 0, terminalInstanceClusters = 0, stateBytes = 0;
     Json geometries = Json::array();
     std::vector<uint32_t> instanceCounts(asset.primitiveCount(), 0);
+    std::vector<Json> instanceMaterials(asset.primitiveCount(), Json::object());
     for (const auto& instance : asset.instances()) {
         ++instanceCounts[instance.primitiveIndex];
+        auto& histogram = instanceMaterials[instance.primitiveIndex];
+        const auto material = std::to_string(instance.materialIndex);
+        histogram[material] = histogram.value(material, uint64_t(0)) + 1;
         const auto roots = asset.primitiveTerminalGroups(instance.primitiveIndex);
         terminalInstanceGroups += roots.size();
         for (uint32_t root : roots) { terminalInstanceClusters += asset.groups()[root].clusterCount; }
@@ -206,7 +210,7 @@ Json inspectAsset(const MeshletStreamAsset& asset, bool validatePayloads)
     for (uint32_t index = 0; index < asset.primitiveCount(); ++index) {
         const auto& primitive = asset.primitives()[index];
         geometries.push_back({{"primitive", index}, {"sourcePrimitive", primitive.renderPrimitiveIndex},
-            {"instances", instanceCounts[index]}, {"groups", primitive.groupCount},
+            {"instances", instanceCounts[index]}, {"instanceMaterials", instanceMaterials[index]}, {"groups", primitive.groupCount},
             {"levels", primitive.lodLevelCount}, {"terminalGroups", asset.primitiveTerminalGroups(index).size()}});
     }
     const uint64_t directoryBytes = asset.primitives().size_bytes() + asset.instances().size_bytes() +
@@ -261,6 +265,7 @@ Json inspectLodStats(const MeshletLodBuildStats& stats)
 int run(int argc, char** argv)
 {
     MeshletStreamAssetOfflineBuildDesc desc;
+    desc.compressionMode = MeshletStreamPayloadCompression::Reference;
     std::filesystem::path manifestPath;
     uint64_t memoryMiB = 0;
     bool inspectOnly = false, validatePayloads = false, validateAttributes = false;
@@ -276,10 +281,10 @@ int run(int argc, char** argv)
         if (option == "--help") {
             std::puts("MetallicMeshletCook --source file.gltf --output file.meshstream.bin\n"
                 "  --report file.json --workers N --memory-mib N\n"
-                "  --max-geometries N --checkpoint-interval N --compression none|byte-rle\n"
+                "  --max-geometries N --checkpoint-interval N --compression reference|none|byte-rle (default: reference)\n"
                 "  --inspect (skip cooking) --validate-payloads (check every page)\n"
                 "  --compact-shading (inspect runtime packed normal/tangent sizes; requires --inspect)\n"
-                "  --validate-attributes (requires --source; exact LOD0 and all-LOD vertex attributes)\n"
+                "  --validate-attributes (requires --source; LOD0 topology and all-LOD source attributes; reference precision when compressed)\n"
                 "  --lod-diagnostics (record simplification stops and source attribute discontinuities)\n"
                 "Exit 2 means a recoverable geometry-budget pause. Zero budgets preserve library defaults.");
             return 0;
@@ -292,6 +297,7 @@ int run(int argc, char** argv)
         else if (option == "--compression") {
             if (value == "none") { desc.compressionMode = MeshletStreamPayloadCompression::None; }
             else if (value == "byte-rle") { desc.compressionMode = MeshletStreamPayloadCompression::ByteRle; }
+            else if (value == "reference") { desc.compressionMode = MeshletStreamPayloadCompression::Reference; }
             else { throw std::runtime_error("Unknown compression"); }
         } else if (option == "--memory-mib") { memoryMiB = parseNumber(value); }
         else if (option == "--workers" || option == "--max-geometries" || option == "--checkpoint-interval") {
@@ -365,7 +371,10 @@ int run(int argc, char** argv)
         if (desc.sourcePath.empty()) { throw std::runtime_error("--validate-attributes requires --source"); }
         std::vector<MeshletStreamAttributeValidation> validation;
         if (!validateMeshletStreamAttributes(asset, desc.sourcePath, validation, reason)) { throw std::runtime_error(reason); }
-        report["attributeValidation"] = {{"status", "exact-source-match"}, {"primitives", Json::array()}};
+        const bool referencePrecision = std::any_of(asset.pages().begin(), asset.pages().end(),
+            [](const auto& page) { return page.compressionMode == uint32_t(MeshletStreamPayloadCompression::Reference); });
+        report["attributeValidation"] = {{"status", referencePrecision ?
+            "reference-quantized-source-match" : "exact-source-match"}, {"primitives", Json::array()}};
         for (const auto& p : validation) {
             report["attributeValidation"]["primitives"].push_back({{"sourcePrimitive", p.sourcePrimitive},
                 {"sourceVertices", p.sourceVertices}, {"preparedVertices", p.preparedVertices},

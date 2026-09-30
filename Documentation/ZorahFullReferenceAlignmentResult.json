@@ -1,0 +1,535 @@
+{
+  "status": "complete",
+  "date": "2026-09-30",
+  "requirements": {
+    "cacheWithinReferenceFivePercent": "passed",
+    "geometryInternalParallelism": "implemented and measured"
+  },
+  "cacheComparison": {
+    "original": {
+      "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.revision2.backup.meshstream.bin",
+      "bytes": 205327470912,
+      "GiB": 191.22610884904861,
+      "cookRevision": 2
+    },
+    "vkLodClustersReference": {
+      "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.nvsngeo",
+      "bytes": 53319001672,
+      "GiB": 49.657189913094044
+    },
+    "publishedMetallic": {
+      "path": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+      "bytes": 54921584816,
+      "GiB": 51.14971177279949,
+      "cookRevision": 4,
+      "containerVersion": 9
+    },
+    "differencePercentFromReference": 3.0056510694977723,
+    "reductionPercentFromOriginal": 73.25171124348067,
+    "acceptedByteRange": [
+      50653051589,
+      55984951755
+    ],
+    "publication": "Validated temporary cache was renamed on the same volume. Complete original cache is preserved under the revision2 backup name."
+  },
+  "fullSourceCoverage": {
+    "geometries": 5408,
+    "instances": 43068,
+    "lod0Triangles": 1630979739,
+    "allLodTriangles": 3244109167,
+    "allLodClusters": 35318356,
+    "pages": 1463564,
+    "allPagesPayloadValidation": "all-pages",
+    "materialIndependentGeometry": true,
+    "perGeometryInstanceMaterialHistogramsVerified": true
+  },
+  "fullCookMeasurement": {
+    "workers": 8,
+    "compression": "Reference; P/UV discard low7bits, N22+T10bits; general compression disabled",
+    "memoryCommitBudgetBytes": 17179869184,
+    "peakProcessCommitBytes": 3448946688,
+    "peakWorkingSetBytesIncludingMappedFilePages": 20731678720,
+    "decodeSeconds": 625.0281088,
+    "buildSeconds": 2049.5207736,
+    "encodeAndCheckpointSeconds": 1101.1599617,
+    "throughLastGeometrySeconds": 3783.8003394,
+    "wholeInvocationIncludingAllPageValidationSeconds": 4223.8931468,
+    "postCookInspectionAndValidationSeconds": 440.09280739999986,
+    "conditions": "New output and no cook/checkpoint reuse; existing OS cache not flushed; 8 internal workers, 169 checkpoints. A 33.24s GPU correctness probe ran concurrently early in the full cook, so no contention-free full-scene speedup claim is made."
+  },
+  "internalParallelMeasurement": {
+    "scope": "Only build phase speedup is reported; whole invocation includes decode/encode/checkpoint and full payload/attribute validation.",
+    "cacheConditions": "Each probe has an unmeasured 8-worker fresh cook before the measured 1-worker then 8-worker fresh cooks. OS file cache is not flushed. Warmup reads the same input ranges. Every output path is new; no existing cook/checkpoint cache is reused.",
+    "memoryMiB": 8192,
+    "probes": [
+      {
+        "name": "Dome",
+        "workers1BuildSeconds": 7.2165158,
+        "workers8BuildSeconds": 2.9675617,
+        "buildPhaseSpeedup": 2.431799749942857,
+        "identicalCacheSha256": true,
+        "sha256": "1E1EFDEDB9694706B2C932A00C9B47F5012BD0BD41F5FB0DB38A43C0AC2B3E3A",
+        "workers1InvocationSecondsIncludingValidation": 19.4538341,
+        "workers8InvocationSecondsIncludingValidation": 15.3947753
+      },
+      {
+        "name": "Cylinder",
+        "workers1BuildSeconds": 7.05459,
+        "workers8BuildSeconds": 4.23741,
+        "buildPhaseSpeedup": 1.6648353593350658,
+        "identicalCacheSha256": true,
+        "sha256": "E15BCB23FCC070B954D8FC25EE73668EC6E8336DB387DF9C95604DBABB06932D",
+        "workers1InvocationSecondsIncludingValidation": 18.0735912,
+        "workers8InvocationSecondsIncludingValidation": 14.4987222
+      },
+      {
+        "name": "Window",
+        "workers1BuildSeconds": 3.4884199,
+        "workers8BuildSeconds": 1.4678893,
+        "buildPhaseSpeedup": 2.376487041631818,
+        "identicalCacheSha256": true,
+        "sha256": "6DAFDFEE4C8672BCE17CA73B58C5AE121D0A3A26589DE67D6276BAFD4E0B8367",
+        "workers1InvocationSecondsIncludingValidation": 10.6966985,
+        "workers8InvocationSecondsIncludingValidation": 8.2044371
+      }
+    ],
+    "interpretation": "Build-stage speedup 1.66 to 2.43x for these three same-source probes. No same-condition complete vk_lod_clusters timing was measured."
+  },
+  "validation": {
+    "unifiedReleaseBuild": {
+      "targets": [
+        "MetallicMeshletCook",
+        "MetallicSceneTests",
+        "MetallicRhiTests"
+      ],
+      "status": "passed"
+    },
+    "sceneTests": {
+      "total": 98,
+      "passed": 89,
+      "skipped": 9,
+      "failed": 0,
+      "log": "E:\\metallic\\build-scheduling-release\\reference-alignment-scene-tests-final.log"
+    },
+    "verifierUnitTests": {
+      "passed": 12
+    },
+    "referenceCodecSamples": {
+      "pages": 2048,
+      "vertices": 4438104,
+      "canonicalMismatches": 0,
+      "maximumNormalErrorDegreesApproximately": 0.162,
+      "maximumProjectedTangentErrorDegreesApproximately": 0.353,
+      "report": "E:\\metallic\\.cache\\meshlet-cache-comparison-20260930\\ReferenceCodecSample.json"
+    },
+    "sourceAttributeAndTopologyValidation": "All LOD vertex attributes at Reference precision plus directed LOD0 triangle multisets passed on Dome/Cylinder/Window. Full source attribute decoding was not performed.",
+    "materialGpuTests": {
+      "passed": 3,
+      "failed": 0,
+      "directory": "E:\\metallic\\.cache\\reference-meshlet-gpu-material-bitmap-final-20260930"
+    },
+    "zorahResidentProbeGpuComparisons": {
+      "passed": 12,
+      "failed": 0,
+      "report": "E:\\metallic\\.cache\\reference-cook-20260930\\GpuOutput\\VerificationSummary.json"
+    },
+    "fullGpu": {
+      "status": "passed",
+      "test": "RhiRendering.zorah_full_first_frame",
+      "scope": "Full ZorahFull at fixed camera, two asset/world load and retirement cycles, no Mini switch or long traversal",
+      "dimensions": [
+        960,
+        540
+      ],
+      "validation": true,
+      "dlss": false,
+      "runs": [
+        {
+          "cycle": 0,
+          "sceneBinding": "asset",
+          "retired": true,
+          "firstReadyFrame": 1,
+          "firstReadySeconds": 64.0265642,
+          "totalSeconds": 82.716176,
+          "baseColorNonblackPixels": 389289,
+          "unbinnedBaseColorNonblackPixels": 389295,
+          "frameCount": 121,
+          "maxima": {
+            "allocationFailures": 0,
+            "requestOverflows": 0,
+            "loadFailures": 0,
+            "geometryUsedBytes": 2378885376,
+            "clasUsedBytes": 878166144,
+            "clasCapacityBytes": 2147483648,
+            "geometryBudgetBytes": 3758096384
+          }
+        },
+        {
+          "cycle": 1,
+          "sceneBinding": "world",
+          "retired": true,
+          "firstReadyFrame": 1,
+          "firstReadySeconds": 76.3670355,
+          "totalSeconds": 112.0289328,
+          "baseColorNonblackPixels": 389400,
+          "unbinnedBaseColorNonblackPixels": 389400,
+          "frameCount": 121,
+          "maxima": {
+            "allocationFailures": 0,
+            "requestOverflows": 0,
+            "loadFailures": 0,
+            "geometryUsedBytes": 3050800640,
+            "clasUsedBytes": 1136432384,
+            "clasCapacityBytes": 2147483648,
+            "geometryBudgetBytes": 3758096384
+          }
+        }
+      ],
+      "vulkanAndShaderErrorLines": [],
+      "visualInspection": "Reviewed cycle0 settled final-color and base-color plus cycle1 settled final-color images. Nonblack textured structures render consistently in this fixed view; no full-scene resident A/B comparison or long traversal was performed.",
+      "report": "E:\\metallic\\.cache\\reference-cook-20260930\\FullGpuOutput\\ZorahFullFirstFrame.json",
+      "publishedCache": "E:\\metallic\\Asset\\ZorahFull\\zorah_textured_public.v1.gltf.meshstream.bin",
+      "cachePublication": "The tested reference filename was renamed on the same volume to the published cache after successful validation. Original GPU report preserves the tested prepublication path."
+    },
+    "limits": "Full GPU coverage is a fixed 960x540 camera, two asset/world load/retirement cycles and 120 stable frames after readiness. No Mini scene switch, long traversal or whole-scene resident image comparison was performed."
+  },
+  "implementationComparison": {
+    "schemaVersion": 1,
+    "generatedOn": "2026-09-30",
+    "timezone": "Asia/Shanghai",
+    "scope": "Read-only audit of the implemented Reference codec, geometry sharing and persistent internal parallelism against the current local vk_lod_clusters implementation.",
+    "sourceRepository": "E:/metallic",
+    "referenceRepository": "E:/vk_lod_clusters",
+    "fullCookResult": {
+      "asset": "E:/metallic/Asset/ZorahFull/zorah_textured_public.v1.gltf.reference.meshstream.bin",
+      "referenceAsset": "E:/metallic/Asset/ZorahFull/zorah_textured_public.v1.gltf.nvsngeo",
+      "cookManifest": "E:/metallic/.cache/reference-cook-20260930/full/Full.cook.json",
+      "coverageAudit": "E:/metallic/.cache/reference-cook-20260930/full/Full.coverage.json",
+      "actualFileBytes": 54921584816,
+      "referenceFileBytes": 53319001672,
+      "minimumAllowedBytes": 50653051589,
+      "maximumAllowedBytes": 55984951755,
+      "differencePercent": 3.0056510694977723,
+      "withinFivePercent": true,
+      "storedPayloadBytes": 54455994076,
+      "geometryCount": 5408,
+      "instanceCount": 43068,
+      "lod0SourceTriangles": 1630979739,
+      "clustersAllLods": 35318356,
+      "trianglesAllLods": 3244109167,
+      "pageCount": 1463564,
+      "cookRevision": 4,
+      "maxWorkers": 8,
+      "elapsedSecondsThisInvocationIncludingPayloadValidation": 4223.8931468,
+      "peakProcessCommitBytes": 3448946688,
+      "payloadValidation": "all-pages",
+      "coverageStatus": "verified",
+      "coverageScope": "glTF metadata dedup representatives, LOD0 counts and aggregate per-geometry instances; the separate coverage audit does not decode attributes, transforms or images.",
+      "fullSourceAttributeValidationClaimed": false,
+      "fullSceneVisualCorrectnessClaimed": false
+    },
+    "implementedBehavior": [
+      {
+        "topic": "Position and UV structured compression",
+        "behavior": "Drop seven low float bits before LOD construction, then encode each cluster stream using unsigned float-bit component bases, delta trailing-zero shifts and minimal bit widths. If a packed block is not smaller, store its quantized component words raw.",
+        "defaultAdditionalGeneralCompression": false,
+        "additionalGeneralCompression": "The standalone codec supports optional GDeflate tiles and uses them only when smaller; the final Full cook uses the default structural-only mode.",
+        "metallicReferences": [
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamReferenceCodec.h",
+            "line": 10
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamReferenceCodec.cpp",
+            "line": 283
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamReferenceCodec.cpp",
+            "line": 310
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamReferenceCodec.cpp",
+            "line": 504
+          }
+        ],
+        "referenceReferences": [
+          {
+            "file": "E:/vk_lod_clusters/src/scene_cluster_compression.cpp",
+            "line": 190
+          },
+          {
+            "file": "E:/vk_lod_clusters/src/scene_cluster_compression.cpp",
+            "line": 348
+          }
+        ]
+      },
+      {
+        "topic": "Shared normal and tangent-frame word",
+        "behavior": "Pack a 22-bit octahedral normal together with a 9-bit tangent angle and one exact handedness bit into one uint32. For the tangent angle, use the decoded quantized normal on both encode and decode, and reorthogonalize the basis near the south pole.",
+        "precisionEvidence": "A 2048-page old-cache sample matched the source canonicalizer with zero vertex-tuple mismatches. The observed minimum normal cosine was 0.999996, and minimum projected-tangent cosine was 0.999981. These are sample results, not an exhaustive Full attribute-error audit.",
+        "precisionEvidenceFile": "E:/metallic/.cache/meshlet-cache-comparison-20260930/ReferenceCodecSample.json",
+        "tangentFrameQualification": "The joint frame stores the tangent projected into the normal plane, as in the reference representation. Authored tangents nearly parallel to their normal can change direction substantially; that difference is not the angular quantizer error.",
+        "metallicReferences": [
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamReferenceCodec.cpp",
+            "line": 105
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamReferenceCodec.cpp",
+            "line": 137
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamReferenceCodec.cpp",
+            "line": 482
+          }
+        ],
+        "referenceReferences": [
+          {
+            "file": "E:/vk_lod_clusters/shaders/attribute_encoding.h",
+            "line": 12
+          },
+          {
+            "file": "E:/vk_lod_clusters/shaders/attribute_encoding.h",
+            "line": 157
+          },
+          {
+            "file": "E:/vk_lod_clusters/src/scene_cluster_compression.cpp",
+            "line": 402
+          }
+        ]
+      },
+      {
+        "topic": "Attribute fallback and transport validation",
+        "behavior": "Use per-vertex bitmap/raw fallback for invalid shading frames or nonstandard normal.w without changing neighboring valid vertices. Preserve the original decoded layout, non-attribute bytes, topology and IDs. Validate the versioned envelope, metadata and tile CRC32C, ranges, cluster coverage and local triangle indices before returning the decoded payload.",
+        "runtimeBehavior": "Reference pages decode on the CPU and then use the existing position and shading compaction path for GPU upload; they do not use the GpuTiles GPU decompression protocol.",
+        "metallicReferences": [
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamReferenceCodec.cpp",
+            "line": 456
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamReferenceCodec.cpp",
+            "line": 535
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp",
+            "line": 4973
+          }
+        ]
+      },
+      {
+        "topic": "Source preparation and hierarchy consistency",
+        "behavior": "Offline loading quantizes positions and UVs before bounds, zero-normal recovery, generated tangents and LOD construction. Generic Scene building re-prepares source geometry at Reference precision only after its mode, indices and P3/N3/UV2/T4 bytes match the resident geometry exactly, excluding float3 padding. Scene name, mesh/primitive identity, material and storage bindings are preserved. Edited or custom Scene geometry continues through the original clone/quantize/rebuild fallback.",
+        "regressionEvidence": "The fixed single-triangle zero-normal regression and mirrored generated-tangent/source-edit preservation integration tests pass after the generic preparation fix.",
+        "metallicReferences": [
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp",
+            "line": 3377
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp",
+            "line": 3415
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp",
+            "line": 5086
+          },
+          {
+            "file": "E:/metallic/tests/scene/MeshletReferenceSceneBuildTests.cpp",
+            "line": 15
+          },
+          {
+            "file": "E:/metallic/tests/scene/MeshletReferenceSceneBuildTests.cpp",
+            "line": 67
+          }
+        ]
+      },
+      {
+        "topic": "Material-independent geometry sharing",
+        "behavior": "The offline geometry key retains primitive mode, indices, every attribute accessor and morph targets but excludes material identity. Material variants reuse the same cooked primitive. Page and cluster records retain the canonical representative material, while each instance retains its actual material binding. Missing material maps to index zero, matching the existing resident default.",
+        "metallicReferences": [
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp",
+            "line": 3470
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp",
+            "line": 3973
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp",
+            "line": 4140
+          }
+        ],
+        "referenceReferences": [
+          {
+            "file": "E:/vk_lod_clusters/src/scene_gltf.cpp",
+            "line": 688
+          },
+          {
+            "file": "E:/vk_lod_clusters/src/scene_gltf.cpp",
+            "line": 998
+          }
+        ]
+      },
+      {
+        "topic": "Persistent internal parallelism and ordered emission",
+        "behavior": "Reuse a worker-count-specific persistent pool across geometries and LODs. Execute group merge, simplify, recluster, local vertex remap, meshlet optimization and bounds preparation on workers, with reusable per-worker scratch. Append output in task-index order so IDs and bytes remain deterministic; worker scratch bounds prepared-output memory. Release consumed cluster index storage after output.",
+        "metallicReferences": [
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletBuildParallel.cpp",
+            "line": 123
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletBuildParallel.cpp",
+            "line": 156
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/scene.cpp",
+            "line": 1284
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/scene.cpp",
+            "line": 1373
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/scene.cpp",
+            "line": 1415
+          }
+        ],
+        "referenceReferences": [
+          {
+            "file": "E:/vk_lod_clusters/src/scene_cluster_lod.cpp",
+            "line": 808
+          },
+          {
+            "file": "E:/vk_lod_clusters/src/scene_cluster_lod.cpp",
+            "line": 822
+          }
+        ]
+      }
+    ],
+    "remainingDifferences": [
+      {
+        "topic": "Float quantization rounding",
+        "difference": "Metallic clears the seven low bits by truncation. vk_lod_clusters adds half a quantization step before masking and flushes denormals to zero. The retained precision is the same, but reconstructed values and cache bytes are not identical.",
+        "references": [
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamReferenceCodec.cpp",
+            "line": 175
+          },
+          {
+            "file": "E:/vk_lod_clusters/src/scene_gltf.cpp",
+            "line": 160
+          }
+        ]
+      },
+      {
+        "topic": "Primitive versus whole-mesh geometry",
+        "difference": "Metallic builds and shares individual primitives. vk_lod_clusters aggregates supported primitives within a mesh and supports local material slots and multi-material clusters. Cross-primitive aggregation was not implemented in Metallic.",
+        "references": [
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp",
+            "line": 3970
+          },
+          {
+            "file": "E:/vk_lod_clusters/src/scene_gltf.cpp",
+            "line": 648
+          },
+          {
+            "file": "E:/vk_lod_clusters/src/scene_gltf.cpp",
+            "line": 1276
+          }
+        ]
+      },
+      {
+        "topic": "Cache record layout",
+        "difference": "Metallic retains its 96-byte cluster record, existing directory representation and checked transport envelope. The reference uses a 16-byte packed core cluster header plus separate bounds/refinement data. Equal approximate file size does not imply identical layout or identical cluster counts.",
+        "references": [
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp",
+            "line": 179
+          },
+          {
+            "file": "E:/vk_lod_clusters/shaders/shaderio_scene.h",
+            "line": 103
+          }
+        ]
+      },
+      {
+        "topic": "Seam protection, simplification and terminal roots",
+        "difference": "Metallic protects the quantized source UV discontinuities, tangent handedness and significant normalized normal seams, and disables Sloppy fallback when attributes are present. The reference default permits Sloppy fallback. Metallic can therefore retain more intermediate LOD geometry and branches terminating at finer LODs. Its runtime retains the complete terminal-root cut across all LOD levels.",
+        "references": [
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/scene.cpp",
+            "line": 1305
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/scene.cpp",
+            "line": 1744
+          },
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp",
+            "line": 1095
+          },
+          {
+            "file": "E:/vk_lod_clusters/src/meshopt_clusterlod.h",
+            "line": 710
+          }
+        ]
+      },
+      {
+        "topic": "Outer geometry scheduling",
+        "difference": "Metallic retains serial per-geometry decode/build/encode/checkpoint scheduling and uses the new pool internally. vk_lod_clusters switches between outer-geometry and inner parallelism according to remaining geometry count and applies memory throttling to outer processing.",
+        "references": [
+          {
+            "file": "E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp",
+            "line": 3970
+          },
+          {
+            "file": "E:/vk_lod_clusters/src/scene.cpp",
+            "line": 203
+          },
+          {
+            "file": "E:/vk_lod_clusters/src/scene_gltf.cpp",
+            "line": 782
+          }
+        ]
+      }
+    ],
+    "performanceInterpretation": {
+      "sameWorkloadEndToEndSpeedupClaimed": false,
+      "reasons": [
+        "No equivalent full vk_lod_clusters build timing with matched hardware, cache/warmup conditions, process budgets and validation scope is available.",
+        "The historical Metallic build used a different cook revision, material duplication and output volume, and lacks the raw stage logs needed for a controlled comparison.",
+        "The Full invocation elapsed time includes all-page payload validation and is not only the meshlet construction time.",
+        "The controlled one-versus-eight-worker geometry probes establish internal parallelism behavior for those probes; they are not a full ZorahFull end-to-end comparison against the reference.",
+        "The codec sample timings cover only sampled encoding and must not be reported as whole-scene cook speedups."
+      ],
+      "availableMeasuredScopes": [
+        "geometry decode",
+        "geometry build",
+        "encode and checkpoint",
+        "Full invocation including payload validation",
+        "controlled geometry probe A/B",
+        "sampled codec encoding"
+      ],
+      "references": [
+        {
+          "file": "E:/metallic/Source/Tools/MeshletCookMain.cpp",
+          "line": 335
+        },
+        {
+          "file": "E:/metallic/Source/Tools/MeshletCookMain.cpp",
+          "line": 389
+        }
+      ]
+    }
+  },
+  "evidence": {
+    "fullCook": "E:\\metallic\\.cache\\reference-cook-20260930\\full\\Full.cook.json",
+    "sourceCoverageAndSize": "E:\\metallic\\.cache\\reference-cook-20260930\\full\\Full.coverage.json",
+    "parallelAB": "E:\\metallic\\.cache\\reference-parallel-20260930\\Run-20260930-082313\\Summary.json",
+    "fullGpu": "E:\\metallic\\.cache\\reference-cook-20260930\\FullGpuOutput\\ZorahFullFirstFrame.json"
+  }
+}
