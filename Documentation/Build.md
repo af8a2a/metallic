@@ -91,6 +91,19 @@ Capture export requires an installed
 Nsight Graphics SDK and runtime.
 For the ZorahFull export memory-pressure fix and full-scene capture/replay
 regression, see [the investigation](ZorahFullNsightCaptureMemory.md).
+Graphics Capture injection changes live execution even before F11 is pressed.
+For a production performance baseline, set both
+`METALLIC_NSIGHT_GRAPHICS_CAPTURE=0` and `METALLIC_SHADER_CAPTURE_SYMBOLS=0`, and
+do not pass `--nsight-capture` or `--nsight-shader-debug`.
+Editor and sample executables retain Nsight's SDK-default demotion of
+host-visible video memory to system memory during self-injected Graphics Capture.
+An experimental CPU-hash mode reduced measured live overhead but its tested
+ZorahFull capture failed actual replay with GPU device loss. The original SDK
+path exported three captures and its first capture passed three-loop replay;
+the HVVM experiment was removed from the runtime and benchmark launcher.
+External `ngfx` launchers use their own capture settings. The remaining live
+injection overhead is separate from ordinary renderer baseline performance. See the
+[ZorahFull capture performance measurements](ZorahFullNsightPerformance20260930.md).
 
 When Nsight Graphics capture injection is active, opacity micromaps use the
 `VK_EXT_opacity_micromap` backend, including native EXT builds and shader support.

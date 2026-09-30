@@ -26,6 +26,14 @@ def frame_stats(rows):
                 longestOverBudgetRun=longest, sampledRouteMeets30Fps=bool(values) and max(values) <= 1000/30)
 
 
+def diagnostic_run(capture):
+    return bool(capture.get("diagnosticRun", False) or capture.get("graphicsCaptureInjected") is True or
+                capture.get("shaderDebugMode") not in (None, "disabled"))
+
+
+DIAGNOSTIC_NOTICE = '**Diagnostic run: capture injection, non-default shader compilation or workload replay/copies perturb timing; not a performance acceptance sample.**'
+
+
 def analyze(root):
     capture = json.loads((root/'Capture.json').read_text(encoding='utf-8-sig'))
     if capture['status'] != 'capture_complete':
@@ -59,7 +67,9 @@ def analyze(root):
     uploads = [s for s in uploads if s['submitFrame'] in executions]
     slowest = sorted(rows, key=lambda r:r['frameMs'], reverse=True)[:20]
     result = dict(protocol=capture['protocol'], outputExtent=capture['outputExtent'], renderExtent=capture['renderExtent'],
-                  validation=capture['validationRequested'], diagnosticRun=capture.get("diagnosticRun",False),
+                  validation=capture['validationRequested'], diagnosticRun=diagnostic_run(capture),
+                  graphicsCaptureInjected=capture.get("graphicsCaptureInjected"),
+                  shaderDebugMode=capture.get("shaderDebugMode"),
                   diagnosticFrames=sum(r.get("diagnostic",False) for r in rows), **frame_stats(rows),
                   stages={k:frame_stats(v) for k,v in stages.items()}, scopes=scopes,
                   stageScopes={stage:[dict(**definitions[i], cpuMs=distribution(v['cpu']), gpuMs=distribution(v['gpu']))
@@ -97,7 +107,7 @@ def analyze(root):
         d=data['frameMs']
         lines.append(f"| {stage} | {d['count']} | {d['p50']:.3f} | {d['p95']:.3f} | {d['p99']:.3f} | {d['max']:.3f} | {data['overBudget']} |")
     if result['diagnosticRun']:
-        lines += ['', '**Diagnostic run: workload replay/copies perturb timing; not a performance acceptance sample.**']
+        lines += ['', DIAGNOSTIC_NOTICE]
     lines += ['', 'GPU scopes are inclusive; do not sum parents and children. Scope means use recorded occurrences. Independent uploads are separate submissions.', '', '| Scope | GPU mean ms | GPU p99 ms |', '|---|---:|---:|']
     for s in gpu[:25]:
         lines.append(f"| {s['path']} | {s['gpuMs']['mean']:.3f} | {s['gpuMs']['p99']:.3f} |")
@@ -121,14 +131,17 @@ if __name__ == '__main__':
         for run in runs:
             c=json.loads((run/'Capture.json').read_text(encoding='utf-8-sig'))
             current={k:c[k] for k in ('outputExtent','renderExtent','validationRequested','config','absoluteKeyframes','graph','hidden','vsync')}
+            current.update({k:c.get(k) for k in ('graphicsCaptureInjected','shaderDebugMode')})
+            current['diagnosticRun'] = diagnostic_run(c)
             if conditions is not None and current!=conditions:
                 raise ValueError('Runs have different capture conditions')
             conditions=current
             summary=json.loads((run/'Summary.json').read_text(encoding='utf-8'))
             results.append(dict(run=run.name,frameMs=summary['frameMs'],overBudget=summary['overBudget'],
                                 longestOverBudgetRun=summary['longestOverBudgetRun'],uploadGpuMs=summary['uploadGpuMs'],
+                                diagnosticRun=current['diagnosticRun'],
                                 sampledRouteMeets30Fps=summary['sampledRouteMeets30Fps']))
-        aggregate=dict(conditions=conditions,runs=results,
+        aggregate=dict(conditions=conditions,runs=results,diagnosticRun=conditions['diagnosticRun'],
                        allSampledRoutesMeet30Fps=all(r['sampledRouteMeets30Fps'] for r in results))
         (root/'Comparison.json').write_text(json.dumps(aggregate,ensure_ascii=False,indent=2),encoding='utf-8')
         lines=['# Full replay repetitions','',f"Output {conditions['outputExtent']}; render {conditions['renderExtent']}; hidden={conditions['hidden']}.",
@@ -136,5 +149,7 @@ if __name__ == '__main__':
         for r in results:
             d=r['frameMs']
             lines.append(f"| {r['run']} | {d['count']} | {d['p50']:.3f} | {d['p95']:.3f} | {d['p99']:.3f} | {d['max']:.3f} | {r['overBudget']} |")
+        if aggregate['diagnosticRun']:
+            lines += ['', DIAGNOSTIC_NOTICE]
         (root/'Comparison.md').write_text('\n'.join(lines)+'\n',encoding='utf-8')
         print(json.dumps(results,ensure_ascii=False))

@@ -1,4 +1,5 @@
 #include "Editor/EditorApplication.h"
+#include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Profiling/PacingTrace.h"
 #include "Editor/EditorRasterWorkload.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
@@ -137,7 +138,12 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         workloadObserver.captureCull = config.value("classifyCounters", false);
         if (workloadEvery && workloadEvery < 10) { throw std::runtime_error("workloadEvery must be 0 or at least 10"); }
         report["workloadEvery"] = workloadEvery;
-        report["diagnosticRun"] = workloadEvery != 0 || config.value("enableLodTransitionTelemetry", false);
+        report["graphicsCaptureInjected"] = render::profiling::NsightGraphicsCapture::vulkanInjectionActive();
+        const auto shaderDebugMode = render::slangShaderDebugMode();
+        report["shaderDebugMode"] = shaderDebugMode == render::SlangShaderDebugMode::ShaderDebug ? "unoptimized-debug"
+            : shaderDebugMode == render::SlangShaderDebugMode::CaptureSymbols ? "capture-symbols" : "disabled";
+        report["diagnosticRun"] = workloadEvery != 0 || config.value("enableLodTransitionTelemetry", false) ||
+            report["graphicsCaptureInjected"].get<bool>() || shaderDebugMode != render::SlangShaderDebugMode::Disabled;
         report["lodTransitionDefinition"] = "Instance-groups in the emitted geometry cut, before raster occlusion and independent of CLAS. Threshold requires continuous auto-visible frames and newly demanded SSE; catchup requires prior-frame demand blocked by own geometry page or dependency. First/reentry and other selected changes are unclassified. History adds 8 bytes per instance-group plus 4 per instance; feedback may lag.";
         const double duration = config.value("durationSeconds",180.0);
         const double warmup = config.value("warmupSeconds",5.0);

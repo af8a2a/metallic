@@ -7,6 +7,8 @@ param(
     [int]$Height=0,
     [string]$RouteConfig='',
     [switch]$Validation,
+    [switch]$NsightCapture,
+    [switch]$ShaderCaptureSymbols,
     [switch]$NoVSync,
     [switch]$RasterComparison,
     [switch]$MetadataComparison,
@@ -61,7 +63,7 @@ if ($WorkloadCounters) { $config.workloadCounters=$true; $config.workloadEvery=6
 $analyzer=if ($config.rasterComparison) {"AnalyzeZorahFullRasterComparison.py"} else {"AnalyzeZorahFullRoam.py"}
 New-Item -ItemType Directory -Path $output | Out-Null
 $config | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath (Join-Path $output 'Config.json') -Encoding utf8
-$keys=@('METALLIC_SW_GROUP_EXPERIMENT','METALLIC_FULL_ROAM_OUTPUT','METALLIC_FULL_ROAM_CONFIG','METALLIC_FULL_ROAM_HIDDEN','METALLIC_FULL_ROAM_NO_VSYNC','METALLIC_NSIGHT_GRAPHICS_CAPTURE','METALLIC_DEBUG_CONTROL','METALLIC_DEBUG_VALIDATION')
+$keys=@('METALLIC_SW_GROUP_EXPERIMENT','METALLIC_FULL_ROAM_OUTPUT','METALLIC_FULL_ROAM_CONFIG','METALLIC_FULL_ROAM_HIDDEN','METALLIC_FULL_ROAM_NO_VSYNC','METALLIC_NSIGHT_GRAPHICS_CAPTURE','METALLIC_SHADER_CAPTURE_SYMBOLS','METALLIC_NSIGHT_SHADER_DEBUG','METALLIC_DEBUG_CONTROL','METALLIC_DEBUG_VALIDATION')
 $previous=@{}
 foreach ($key in $keys) { $previous[$key]=[Environment]::GetEnvironmentVariable($key,'Process') }
 function Get-ShaderDigest {
@@ -74,7 +76,7 @@ function Get-ShaderDigest {
 }
 $manifest=@{protocol=$(if ($RasterComparison) {'zorah-full-raster-comparison-v1'} else {'zorah-full-editor-roam-v1'}); started=(Get-Date).ToString('o'); gitHead=(& git -C $repo rev-parse HEAD)
     executableSha256=(Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash; shaderSha256=(Get-ShaderDigest)
-    config=$config; validation=[bool]$Validation; hidden=$true; vsync=(!$NoVSync); reflexMode=$env:METALLIC_REFLEX_MODE; blasInstanceReuse=$env:METALLIC_BLAS_INSTANCE_REUSE; streamMaintenanceBeforePacing=$env:METALLIC_STREAM_MAINTENANCE_BEFORE_PACING; runs=$Runs; gpu=(& nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader)
+    config=$config; validation=[bool]$Validation; nsightCaptureRequested=[bool]$NsightCapture; shaderCaptureSymbols=([bool]$NsightCapture -or [bool]$ShaderCaptureSymbols); hidden=$true; vsync=(!$NoVSync); reflexMode=$env:METALLIC_REFLEX_MODE; blasInstanceReuse=$env:METALLIC_BLAS_INSTANCE_REUSE; streamMaintenanceBeforePacing=$env:METALLIC_STREAM_MAINTENANCE_BEFORE_PACING; runs=$Runs; gpu=(& nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader)
     dirty=(& git -C $repo status --short)
 }
 $asset=Get-Item -LiteralPath (Join-Path $repo 'Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin')
@@ -85,7 +87,9 @@ try {
     $env:METALLIC_FULL_ROAM_CONFIG=Join-Path $output 'Config.json'
     $env:METALLIC_FULL_ROAM_HIDDEN='1'
     $env:METALLIC_FULL_ROAM_NO_VSYNC=if ($NoVSync) {'1'} else {$null}
-    $env:METALLIC_NSIGHT_GRAPHICS_CAPTURE='0'
+    $env:METALLIC_NSIGHT_GRAPHICS_CAPTURE=if ($NsightCapture) {'1'} else {'0'}
+    $env:METALLIC_SHADER_CAPTURE_SYMBOLS=if ($NsightCapture -or $ShaderCaptureSymbols) {'1'} else {'0'}
+    $env:METALLIC_NSIGHT_SHADER_DEBUG='0'
     $env:METALLIC_DEBUG_CONTROL=if ($Validation) {'1'} else {$null}
     $env:METALLIC_DEBUG_VALIDATION=if ($Validation) {'1'} else {$null}
     for ($run=1; $run -le $Runs; ++$run) {
@@ -108,7 +112,11 @@ try {
                     break
                 }
             }
-            $capture=Get-Content -LiteralPath (Join-Path $directory 'Capture.json') -Raw | ConvertFrom-Json
+            $capturePath=Join-Path $directory 'Capture.json'
+            if (-not (Test-Path -LiteralPath $capturePath)) {
+                throw "Benchmark exited without a report (exit code $($process.ExitCode)); inspect stdout.log and stderr.log in $directory"
+            }
+            $capture=Get-Content -LiteralPath $capturePath -Raw | ConvertFrom-Json
             if ($capture.status -ne 'capture_complete') { throw "Capture failed: $($capture.error)" }
             if (Select-String -LiteralPath (Join-Path $directory 'stdout.log'),(Join-Path $directory 'stderr.log') -Pattern 'Validation Error|VUID-|DeviceLost' -Quiet) { throw 'Validation/device error in capture' }
             python (Join-Path $PSScriptRoot $analyzer) $directory

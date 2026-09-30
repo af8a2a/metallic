@@ -26,6 +26,8 @@ def stats(values):
 def analyze(directory):
     capture = load(directory / "Capture.json")
     assert capture["status"] == "capture_complete" and not capture.get("diagnosticRun", False)
+    assert capture.get("graphicsCaptureInjected") in (None, False), "Injected capture is diagnostic"
+    assert capture.get("shaderDebugMode") in (None, "disabled"), "Non-default shader compilation is diagnostic"
     rows = [json.loads(line) for line in (directory / "Frames.jsonl").read_text(encoding="utf-8-sig").splitlines()]
     assert len(rows) == capture["frames"] and capture["missingGpuFrames"] == 0
     paths = {s["id"]: s["path"] for s in capture["scopes"]}
@@ -55,7 +57,8 @@ def analyze(directory):
                             cpu={paths[i]: t for i, t in cpu.items() if t >= 1},
                             gpu={paths[i]: t for i, t in gpu.items() if t >= 1}))
     scopes = [dict(path=paths[i], leaf=not children[i], **{k:stats(v) for k,v in data.items()}) for i,data in samples.items()]
-    return dict(run=directory.name, frames=stats([r["frameMs"] for r in rows]),
+    return dict(run=directory.name, graphicsCaptureInjected=capture.get("graphicsCaptureInjected"),
+                shaderDebugMode=capture.get("shaderDebugMode"), frames=stats([r["frameMs"] for r in rows]),
                 slowFrames=sum(r["frameMs"] > 1000/30 for r in rows),
                 stages={k:dict(frameMs=stats(v), slowFrames=sum(t > 1000/30 for t in v)) for k,v in stages.items()},
                 scopes=scopes,
@@ -75,11 +78,18 @@ def main(root):
     if not directories:
         raise ValueError("No complete captures")
     condition_keys = ("config", "absoluteKeyframes", "outputExtent", "renderExtent", "graph", "hidden", "vsync", "validationRequested")
-    conditions = [{k:load(p/"Capture.json")[k] for k in condition_keys} for p in directories]
+    conditions = []
+    for directory in directories:
+        capture = load(directory / "Capture.json")
+        condition = {k:capture[k] for k in condition_keys}
+        condition.update({k:capture.get(k) for k in ("graphicsCaptureInjected", "shaderDebugMode")})
+        conditions.append(condition)
     assert all(c == conditions[0] for c in conditions), "Replay conditions differ"
     results = [analyze(p) for p in directories]
     (root/"SlowFrames.json").write_text(json.dumps(dict(conditions=conditions[0], runs=results),indent=2)+"\n",encoding="utf-8")
     lines = ["# Full slow frame attribution", "", "Inclusive GPU intervals are not summed with CPU wall time. Missing CPU scopes contribute zero per frame; GPU means cover recorded samples only.", ""]
+    if any(r["graphicsCaptureInjected"] is None or r["shaderDebugMode"] is None for r in results):
+        lines += ["Legacy reports did not record injection or shader compiler state. This analysis attributes timings without certifying production measurement conditions.", ""]
     for r in results:
         lines += [f"## {r['run']}", "", f"Frames {r['frames']['count']}; mean {r['frames']['mean']:.3f} ms; P95 {r['frames']['p95']:.3f} ms; over 33.33 ms: {r['slowFrames']}.", "",
                   "| CPU leaf scope (inclusive) | All mean | Within budget | Slow mean | P95 |", "|---|---:|---:|---:|---:|"]

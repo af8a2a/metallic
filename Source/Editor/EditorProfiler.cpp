@@ -1,4 +1,5 @@
 #include "Editor/EditorProfiler.h"
+#include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 
 #include "imgui.h"
@@ -1090,6 +1091,10 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
         static_cast<unsigned long long>(frame.index), static_cast<unsigned long long>(latestFrame_.index - frame.index)); }
     else { ImGui::TextDisabled("GPU queries pending / unavailable"); }
     ImGui::TextDisabled("GPU envelope covers RenderGraph; editor UI and presentation are outside this interval.");
+    if (render::profiling::NsightGraphicsCapture::vulkanInjectionActive()) {
+        ImGui::TextColored(ImVec4(1, .65f, .2f, 1),
+            "Graphics Capture is active; live timings include capture overhead. Measure a separate baseline without injection.");
+    }
     if (frame.profilingOverflow) { ImGui::TextColored(ImVec4(1, .65f, .2f, 1), "Profiler scope/display budget exceeded; some entries may be unavailable."); }
     if (ImGui::BeginTabBar("ProfilerTabs")) {
         if (ImGui::BeginTabItem("Table")) {
