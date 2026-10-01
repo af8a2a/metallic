@@ -241,11 +241,16 @@ public:
         render::RenderGraph graph;
         graph.addNode("SceneRealtimeLightingPass", "Lighting", {{"path", "Asset/meet_mat.glb"},
             {"camera", {{"eye", {0.0, 0.25, 3.0}}, {"center", {0.0, 0.15, 0.0}}}}});
-        graph.markOutput("Lighting.color");
+        graph.addNode("AutoExposurePass", "Exposure");
+        graph.addNode("FinalBlitPass", "Display");
+        graph.addEdge("Lighting.color", "Exposure.source");
+        graph.addEdge("Exposure.color", "Display.source");
+        graph.markOutput("Display.color");
         result = preview.render(graph, 64, 64);
         if (!result) { return RHITestResult::fail(preview.lastLog()); }
         const auto dark = preview.pixels();
         scene::LightingSettings settings;
+        settings.autoExposure.enabled = false;
         auto& light = settings.lights.emplace_back();
         light.properties.type = "directional";
         light.properties.intensityUnit = scene::LightUnit::Lux;
@@ -279,7 +284,9 @@ public:
             {"outputLinear", true}, {"camera", {{"eye", {0.0, 0.25, 3.0}}, {"center", {0.0, 0.15, 0.0}}}}});
         const uint32_t exposureId = hdrGraph.addNode("AutoExposurePass", "Exposure")->id;
         hdrGraph.addEdge("Lighting.color", "Exposure.source");
-        hdrGraph.markOutput("Exposure.color");
+        hdrGraph.addNode("FinalBlitPass", "Display");
+        hdrGraph.addEdge("Exposure.color", "Display.source");
+        hdrGraph.markOutput("Display.color");
         auto& hdrLight = settings.lights.emplace_back();
         hdrLight.properties.type = "directional";
         hdrLight.properties.intensityUnit = scene::LightUnit::Lux;
@@ -290,7 +297,7 @@ public:
         preview.setLighting(settings);
         result = preview.render(hdrGraph, 64, 64);
         if (!result || preview.pixels() != lit) {
-            return RHITestResult::fail("HDR + manual post exposure differs from inline exposure: " + preview.lastLog());
+            return RHITestResult::fail("Legacy outputLinear property changed the fixed linear-HDR chain: " + preview.lastLog());
         }
         settings.autoExposure.enabled = true;
         preview.setLighting(settings);

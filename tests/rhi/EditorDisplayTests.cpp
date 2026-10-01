@@ -50,7 +50,8 @@ public:
             .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
             .colorAttachmentCount = 1, .pColorAttachmentFormats = &format};
         ui.initialized = ImGui_ImplVulkan_Init(&init);
-        if (!ui.initialized || !ui.display.initialize(native.device, format, true, 203.0f)) {
+        if (!ui.initialized || !ui.display.initialize(native.device, format, true, 203.0f,
+                VK_FORMAT_A2B10G10R10_UNORM_PACK32)) {
             return RHITestResult::fail("HDR ImGui initialization failed");
         }
         std::unique_ptr<render::Texture> output, source;
@@ -109,6 +110,8 @@ public:
         list->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
         // Verify reset restores UI transfer/brightness after the HDR viewport.
         list->AddRectFilled(ImVec2(24, 24), ImVec2(32, 32), IM_COL32(128, 128, 128, 255));
+        list->AddRectFilled(ImVec2(16, 24), ImVec2(24, 32), IM_COL32(255, 255, 255, 128));
+        list->AddRectFilled(ImVec2(0, 0), ImVec2(4, 4), IM_COL32_BLACK);
         ImGui::Render();
         attachment.view = outputView.get();
         attachment.clearColor = {0, 0, 0, 1};
@@ -143,8 +146,68 @@ public:
             near(channel(28, 28, 0), std::pow((128.0f / 255.0f + 0.055f) / 1.055f, 2.4f) * 203.0f / 80.0f);
         readback->unmap();
         ImGui_ImplVulkan_RemoveTexture(descriptor);
-        return correct ? RHITestResult::pass("FP16 UI paper white, scRGB image and callback reset verified") :
-            RHITestResult::fail("ImGui clipped HDR, applied gamma twice, or failed to restore UI brightness");
+        if (!correct) { return RHITestResult::fail("ImGui clipped HDR, applied gamma twice, or failed to restore UI brightness"); }
+
+        std::unique_ptr<render::Texture> pq;
+        std::unique_ptr<render::TextureView> pqView;
+        auto pqDesc = texture;
+        pqDesc.format = render::Format::A2B10G10R10UnormPack32;
+        if (!device.createTexture(pqDesc).transform([&](auto value) { pq = std::move(value); }) ||
+            !device.createTextureView(*pq, {}).transform([&](auto value) { pqView = std::move(value); }) ||
+            !pool->reset() || !fence->reset() || !commands->begin()) {
+            return RHITestResult::fail("PQ fixture allocation failed");
+        }
+        const auto outputDescriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*outputView),
+            render::vulkan::nativeImageLayout(*outputView, render::ResourceState::ShaderRead));
+        const render::TextureBarrierDesc encodeBarriers[] = {
+            {.texture = output.get(), .oldLayout = render::TextureLayout::TransferSource,
+                .newLayout = render::TextureLayout::ShaderRead,
+                .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
+                .after = {render::PipelineStageBits::FragmentShader, render::AccessBits::ShaderRead}},
+            {.texture = pq.get(), .oldLayout = render::TextureLayout::Undefined,
+                .newLayout = render::TextureLayout::ColorAttachment,
+                .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorWrite}},
+        };
+        if (!commands->synchronize({.textures = encodeBarriers})) { return RHITestResult::fail("PQ barriers failed"); }
+        attachment.view = pqView.get();
+        if (!commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}})) {
+            return RHITestResult::fail("PQ rendering failed");
+        }
+        ui.display.encodeHDR10(render::vulkan::nativeCommandBuffer(*commands), outputDescriptor, 32, 32);
+        commands->endRendering();
+        toReadback.texture = pq.get();
+        if (!commands->synchronize({.textures = {&toReadback, 1}})) { return RHITestResult::fail("PQ readback barrier failed"); }
+        commands->copyTextureToBuffer({.texture = pq.get(), .buffer = readback.get(), .width = 32, .height = 32});
+        if (!commands->end() || !context.graphicsQueue.submit({.commandBuffers = {&command, 1},
+                .signalFence = fence.get()}) || !fence->wait()) { return RHITestResult::fail("PQ submit failed"); }
+        readback->invalidate();
+        const auto* packed = static_cast<const uint32_t*>(readback->map());
+        if (!packed) { return RHITestResult::fail("PQ readback failed"); }
+        // Independent CPU reference in absolute nits, including 10-bit quantization.
+        auto pqCode = [](double nits) {
+            const double p = std::pow(nits / 10000.0, 2610.0 / 16384.0);
+            return int(std::lround(1023.0 * std::pow((3424.0 / 4096.0 + 2413.0 / 128.0 * p) /
+                (1.0 + 2392.0 / 128.0 * p), 2523.0 / 32.0)));
+        };
+        auto check = [&](uint32_t x, uint32_t y, double r, double g, double b) {
+            const uint32_t pixel = packed[y * 32 + x];
+            const double nits[] = {0.627403896 * r + 0.329283038 * g + 0.043313066 * b,
+                0.069097289 * r + 0.919540395 * g + 0.011362316 * b,
+                0.016391439 * r + 0.088013308 * g + 0.895595253 * b};
+            for (uint32_t c = 0; c < 3; ++c) {
+                if (std::abs(int((pixel >> (10 * c)) & 1023) - pqCode(nits[c])) > 1) { return false; }
+            }
+            return (pixel >> 30) == 3;
+        };
+        const double alpha = 128.0 / 255.0;
+        const bool pqCorrect = check(1, 1, 0, 0, 0) && check(8, 8, 203, 203, 203) &&
+            check(8, 24, 1000, 400, 80) &&
+            check(20, 28, 203 * alpha + 1000 * (1 - alpha), 203 * alpha + 400 * (1 - alpha),
+                203 * alpha + 80 * (1 - alpha));
+        readback->unmap();
+        ImGui_ImplVulkan_RemoveTexture(outputDescriptor);
+        return pqCorrect ? RHITestResult::pass("FP16 UI composition, linear alpha blending, BT.2020/PQ and RGB10A2 pixels verified") :
+            RHITestResult::fail("HDR10 conversion, absolute luminance or linear UI blending mismatch");
     }
 };
 

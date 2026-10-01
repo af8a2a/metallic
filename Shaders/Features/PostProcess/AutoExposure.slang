@@ -25,10 +25,8 @@ struct AutoExposurePush
     float transitionDistance;
     float deltaSeconds;
     uint automatic;
-    uint toneCurve;
     float sourceExposure;
     float artisticExposure;
-    uint outputLinear;
 };
 
 #define gSource getResource<Texture2D<float4>>(0)
@@ -149,20 +147,6 @@ void autoExposureApplyMain(uint3 pixel : SV_DispatchThreadID)
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float3 color = physicalColor(pixel.xy, push) * gExposure[0].x * push.artisticExposure;
     color = min(color, float3(1e30));
-    if (push.outputLinear != 0u) {
-        // Preserve highlight headroom until the scene-to-display boundary.
-        gOutput[pixel.xy] = float4(min(color, float3(65504.0)), 1.0);
-        return;
-    }
-    if (push.toneCurve == 2u) {
-        // Reference LookDev: preserve scene-linear values, then encode sRGB.
-        // Values above display white clip; the upstream HDR output remains available.
-        color = saturate(color);
-        float3 srgb = select(color <= 0.0031308, color * 12.92,
-            1.055 * pow(color, 1.0 / 2.4) - 0.055);
-        gOutput[pixel.xy] = float4(srgb, 1.0);
-        return;
-    }
-    color = push.toneCurve == 1u ? 1.0 - exp(-color) : color / (color + 1.0);
-    gOutput[pixel.xy] = float4(pow(saturate(color), 1.0 / 2.2), 1.0);
+    // Display mapping belongs exclusively to FinalBlit.
+    gOutput[pixel.xy] = float4(min(color, float3(65504.0)), 1.0);
 }

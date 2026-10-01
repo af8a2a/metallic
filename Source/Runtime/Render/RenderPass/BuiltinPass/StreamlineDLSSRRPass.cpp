@@ -108,6 +108,7 @@ public:
             .texture2D(context.width, context.height)
             .storageReadWrite();
         outputColor.format = Format::RGBA16Sfloat;
+        outputColor.colorEncoding = DisplayColorEncoding::SceneLinear;
         outputColor.usage = outputColor.usage | TextureUsageBits::TransferDestination;
         outputColor.stageAccess(RenderGraphResourceAccess::TextureTransferWrite);
         if (boolProperty(&properties(), "useRasterCamera", false)) {

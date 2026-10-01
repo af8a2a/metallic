@@ -60,7 +60,8 @@ public:
         source.matchOutputExtent = false;
         auto& color = reflection.addTextureOutput("color", "Final image presented by the viewport to the swapchain");
         color.storageWrite().transient(RenderGraphInitialization::FullOverwrite);
-        const bool hdr = context.displayOutput.mode == DisplayOutputMode::HDRscRGB;
+        // Both HDR profiles retain linear scRGB until UI composition is complete.
+        const bool hdr = isHDROutput(context.displayOutput.mode);
         color.format = hdr ? Format::RGBA16Sfloat : Format::RGBA8Unorm;
         color.colorEncoding = hdr ? DisplayColorEncoding::scRGB : DisplayColorEncoding::sRGB;
         color.presentationOutput = true;
@@ -70,6 +71,8 @@ public:
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         return {
+            runtimeEnumSetting("toneCurve", "SDR Tone Curve", "reinhard",
+                {{"Reinhard", "reinhard"}, {"Exponential (RTXDI)", "exponential"}, {"None", "none"}}),
             runtimeEnumSetting("inputEncoding", "Input Color", "auto",
                 {{"Automatic", "auto"}, {"sRGB display color", "srgb"},
                     {"Exposed scene-linear", "linear"}, {"scRGB (absolute)", "scrgb"}}),
@@ -109,9 +112,11 @@ public:
         // sRGB texture sampling already decodes the transfer function.
         const bool sampledSrgb = sampleSource &&
             (source.desc().format == Format::RGBA8sRGB || source.desc().format == Format::BGRA8sRGB);
-        const Push push{displayOutput_.mode == DisplayOutputMode::HDRscRGB ? 1u : 0u,
+        const auto toneCurve = context.properties().value("toneCurve", "reinhard");
+        const Push push{isHDROutput(displayOutput_.mode) ? 1u : 0u,
             static_cast<uint32_t>(encoding), calibration ? 1u : 0u, sampledSrgb ? 1u : 0u,
-            displayOutput_.paperWhiteNits, displayOutput_.peakNits, std::exp2(displayOutput_.exposureEV), 0.0f};
+            displayOutput_.paperWhiteNits, displayOutput_.peakNits, std::exp2(displayOutput_.exposureEV),
+            toneCurve == "none" ? 2u : (toneCurve == "exponential" ? 1u : 0u)};
         TextureView* sourceView = sampleSource ? source.view() : nullptr;
         const ComputeDispatchBinding bindings[] = {
             {.binding = 0, .textureView = color.view()},
@@ -131,7 +136,8 @@ public:
 private:
     struct Push {
         uint32_t hdr, inputEncoding, calibration, sampledSrgb;
-        float paperWhiteNits, peakNits, exposure, padding;
+        float paperWhiteNits, peakNits, exposure;
+        uint32_t toneCurve;
     };
     static_assert(sizeof(Push) == 32);
 

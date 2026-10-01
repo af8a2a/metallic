@@ -29,6 +29,12 @@ inline bool selectSurfaceFormat(std::span<const VkSurfaceFormatKHR> available,
             return true;
         }
         if (!allowSdrFallback) { return false; }
+    } else if (requestedMode == DisplayOutputMode::HDR10_PQ) {
+        if (findPair(VK_FORMAT_A2B10G10R10_UNORM_PACK32, VK_COLOR_SPACE_HDR10_ST2084_EXT)) {
+            actualMode = DisplayOutputMode::HDR10_PQ;
+            return true;
+        }
+        if (!allowSdrFallback) { return false; }
     } else if (requestedMode != DisplayOutputMode::SDR) {
         return false;
     }

@@ -232,9 +232,7 @@
                 "x": 1558.7313232421875,
                 "y": 233.73342895507812
             },
-            "properties": {
-                "toneCurve": "exponential"
-            }
+            "properties": {}
         },
         {
             "id": 5,
@@ -243,7 +241,9 @@
                 "x": 1918.7313232421875,
                 "y": 233.73342895507812
             },
-            "properties": {},
+            "properties": {
+                "toneCurve": "exponential"
+            },
             "type": "FinalBlitPass"
         }
     ],

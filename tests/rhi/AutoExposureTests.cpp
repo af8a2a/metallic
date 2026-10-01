@@ -9,6 +9,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 
 namespace metallic::tests {
 namespace {
@@ -71,9 +72,9 @@ public:
         render::RenderPassReflection reflection;
         reflection.addBufferInput("exposure").buffer(16, 16).transferRead();
         reflection.addBufferInput("histogram").buffer(histogramBytes, 4).transferRead();
-        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA8Unorm;
+        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA16Sfloat;
         reflection.addBufferOutput("data")
-            .buffer(16 + histogramBytes + uint64_t(context.width) * context.height * 4)
+            .buffer(16 + histogramBytes + uint64_t(context.width) * context.height * 8)
             .transferWrite().hostReadback();
         return reflection;
     }
@@ -130,7 +131,12 @@ public:
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
                 .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
                     if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
-                        ++*static_cast<std::atomic_uint*>(target);
+                        std::fprintf(stderr, "AutoExposure validation: %s\n", message.message);
+                        // Broken loader manifest registrations are GENERAL messages,
+                        // not synchronization validation of this workload.
+                        if (message.type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) {
+                            ++*static_cast<std::atomic_uint*>(target);
+                        }
                     }
                 }, &validationErrors}, .preferUnifiedImageLayouts = preferUnified})
                 .transform([&](auto value) { device = std::move(value); });
@@ -195,7 +201,7 @@ public:
                     if (mapped == nullptr) { return "downstream readback is not mapped"; }
                     std::array<float, 4> exposure{};
                     std::array<uint32_t, kHistogramCount> histogram{};
-                    std::array<uint32_t, kWidth * kHeight> pixels{};
+                    std::array<uint16_t, kWidth * kHeight * 4> pixels{};
                     std::memcpy(exposure.data(), mapped, sizeof(exposure));
                     std::memcpy(histogram.data(), mapped + sizeof(exposure), sizeof(histogram));
                     std::memcpy(pixels.data(), mapped + sizeof(exposure) + sizeof(histogram), sizeof(pixels));
@@ -219,15 +225,16 @@ public:
                             if (weight != expected) { return "downstream histogram has missing or stale tile writes"; }
                         }
                     }
-                    const float linear = std::min(luminance * exposure[0], 1.0f);
-                    const float srgb = linear <= 0.0031308f ? linear * 12.92f
-                        : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
-                    const int expected = static_cast<int>(std::lround(srgb * 255));
-                    for (uint32_t pixel : pixels) {
-                        if ((pixel >> 24) != 255) { return "downstream color has unwritten pixels"; }
-                        for (uint32_t shift : {0u, 8u, 16u}) {
-                            if (std::abs(static_cast<int>((pixel >> shift) & 255) - expected) > 1) {
-                                return "apply or downstream color copy did not observe the reduced exposure";
+                    const float linear = luminance * exposure[0];
+                    for (size_t pixel = 0; pixel < pixels.size(); pixel += 4) {
+                        if (pixels[pixel + 3] != 0x3c00) { return "downstream color has unwritten pixels"; }
+                        for (size_t c = 0; c < 3; ++c) {
+                            const uint16_t value = pixels[pixel + c];
+                            const int exponent = (value >> 10) & 31;
+                            const float decoded = exponent == 0 ? std::ldexp(float(value & 1023), -24) :
+                                std::ldexp(float((value & 1023) + 1024), exponent - 25);
+                            if (std::abs(decoded - linear) > 0.002f) {
+                                return "linear apply or downstream copy did not observe reduced exposure";
                             }
                         }
                     }
@@ -410,9 +417,11 @@ public:
             [] { return std::make_unique<AutoExposureFixturePass>(); });
         render::RenderGraph graph;
         const uint32_t sourceId = graph.addNode("AutoExposureFixturePass", "Source")->id;
-        graph.addNode("AutoExposurePass", "Exposure", {{"toneCurve", "none"}});
+        graph.addNode("AutoExposurePass", "Exposure");
+        graph.addNode("FinalBlitPass", "Display", {{"toneCurve", "none"}});
         graph.addEdge("Source.color", "Exposure.source");
-        graph.markOutput("Exposure.color");
+        graph.addEdge("Exposure.color", "Display.source");
+        graph.markOutput("Display.color");
         render::RenderGraphPreviewRenderer preview;
         scene::LightingSettings lighting;
         lighting.autoExposure.enabled = false;
@@ -427,7 +436,7 @@ public:
         if (!result) { return RHITestResult::fail("sRGB renderer initialization failed"); }
         for (float linear : {0.0f, 0.001f, 0.0031308f, 0.18f, 0.8f, 1.0f, 16.0f}) {
             graph.findNode(sourceId)->runtimeProperties = {{"luminance", linear * 2.0f}};
-            if (!preview.render(graph, 17, 9, "Exposure.color")) {
+            if (!preview.render(graph, 17, 9, "Display.color")) {
                 return RHITestResult::fail(preview.lastLog());
             }
             const float srgb = linear <= 0.0031308f ? linear * 12.92f

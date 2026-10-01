@@ -638,8 +638,9 @@ public:
         auto& color = reflection.addTextureOutput("color", visibilityDeferred_ ? "OpenPBR deferred physical HDR" :
             (realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene"))
             .storageReadWrite();
+        color.colorEncoding = DisplayColorEncoding::SceneLinear;
         color.format = (exportGuides || (visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false))) ? Format::RGBA16Sfloat :
-                ((visibilityDeferred_ || boolProperty(properties(), "outputLinear", false)) ? Format::RGBA32Sfloat : Format::RGBA8Unorm);
+                Format::RGBA32Sfloat;
         if (cacheModeFromProperties(properties()) == kScenePathTraceCacheModeNRC) {
             color.stageAccess(RenderGraphResourceAccess::TextureStorageReadWrite, RenderGraphPassKind::Unsafe);
         }
@@ -679,7 +680,6 @@ public:
     {
         if (realtime_) {
             std::vector<RenderGraphRuntimeSetting> settings{
-                linearOutputSetting(),
                 runtimeBoolSetting("flipBitangent", "Flip Bitangent", false, true),
                 runtimeBoolSetting("debugDisableShadows", "Disable Shadows", false, true),
             };
@@ -717,7 +717,6 @@ public:
             return settings;
         }
         std::vector<RenderGraphRuntimeSetting> settings{
-            linearOutputSetting(),
             runtimeIntSetting(
                 "maxDepth",
                 "Max Depth",
@@ -1728,8 +1727,7 @@ public:
         push.materialTextureCount = sceneResources_.materialTextureCount();
         push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
         push.cacheMode = cacheMode;
-        push.outputLinear = visibilityDeferred_ || cacheMode == kScenePathTraceCacheModeNRC ||
-            boolProperty(context.properties(), "outputLinear", false) ? 1u : 0u;
+        push.outputLinear = 1u;
         TextureView* visibilityView = nullptr;
         TextureView* visibilityDepthView = nullptr;
         TextureView* domainView = nullptr;
@@ -2337,7 +2335,7 @@ private:
         // NRC's native resolve shader declares rgba32f storage output.
         const Format historyFormat = nrcHistory ? Format::RGBA32Sfloat :
             exportDenoiserGuides(context.properties()) ? Format::RGBA16Sfloat :
-            ((visibilityDeferred_ || boolProperty(context.properties(), "outputLinear", false)) ? Format::RGBA32Sfloat : Format::RGBA8Unorm);
+            Format::RGBA32Sfloat;
         const TextureDesc historyDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled |
@@ -2850,7 +2848,7 @@ private:
             .width = push.width,
             .height = push.height,
             .exposure = context.world() != nullptr ? std::exp2(-context.world()->lighting().exposureEV100) : 1.0f,
-            .outputLinear = boolProperty(context.properties(), "outputLinear", false) ? 1u : 0u,
+            .outputLinear = 1u,
             .hasHistory = push.hasHistory,
             .accumulationFrame = push.accumulationFrame,
         };

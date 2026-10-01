@@ -30,6 +30,28 @@ public float3 displayMapToScRgb(float3 color, float paperWhiteNits, float peakNi
     return maximum > 0.0 ? (color / maximum) * (nits / 80.0) : float3(0.0);
 }
 
+// ST 2084 uses absolute luminance (10000 nits is code value 1).
+public float3 displayNitsToPQ(float3 nits)
+{
+    const float m1 = 2610.0 / 16384.0;
+    const float m2 = 2523.0 / 32.0;
+    const float c1 = 3424.0 / 4096.0;
+    const float c2 = 2413.0 / 128.0;
+    const float c3 = 2392.0 / 128.0;
+    float3 p = pow(saturate(nits / 10000.0), m1);
+    return pow((c1 + c2 * p) / (1.0 + c3 * p), m2);
+}
+
+public float3 displayScRgbToHDR10(float3 color)
+{
+    // Linear Rec.709/D65 -> linear BT.2020/D65, then absolute PQ.
+    float3 rec2020 = float3(
+        dot(color, float3(0.627403896, 0.329283038, 0.043313066)),
+        dot(color, float3(0.069097289, 0.919540395, 0.011362316)),
+        dot(color, float3(0.016391439, 0.088013308, 0.895595253)));
+    return displayNitsToPQ(rec2020 * 80.0);
+}
+
 public float3 displayCalibrationNits(float2 uv)
 {
     if (uv.y < 0.5) {

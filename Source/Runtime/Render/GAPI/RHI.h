@@ -618,9 +618,28 @@ struct TextureViewDesc {
 };
 
 enum class DisplayOutputMode : uint8_t {
-    SDR,
-    HDRscRGB,
+    SDR_sRGB,
+    HDR_scRGB,
+    HDR10_PQ,
+    // Source compatibility for existing integrations.
+    SDR = SDR_sRGB,
+    HDRscRGB = HDR_scRGB,
 };
+
+constexpr bool isHDROutput(DisplayOutputMode mode)
+{
+    return mode == DisplayOutputMode::HDR_scRGB || mode == DisplayOutputMode::HDR10_PQ;
+}
+
+constexpr const char* displayOutputName(DisplayOutputMode mode)
+{
+    switch (mode) {
+    case DisplayOutputMode::SDR_sRGB: return "SDR_sRGB";
+    case DisplayOutputMode::HDR_scRGB: return "HDR_scRGB";
+    case DisplayOutputMode::HDR10_PQ: return "HDR10_PQ";
+    default: return "Unknown";
+    }
+}
 
 struct SwapchainDesc {
     WindowHandle window;
@@ -632,6 +651,7 @@ struct SwapchainDesc {
     bool vsync = true;
     DisplayOutputMode outputMode = DisplayOutputMode::SDR;
     bool allowSdrFallback = true;
+    float peakNits = 1000.0f;
 };
 
 enum class TextureLayout : uint8_t {

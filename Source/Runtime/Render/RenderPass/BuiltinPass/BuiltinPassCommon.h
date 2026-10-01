@@ -252,13 +252,6 @@ inline RenderGraphRuntimeSetting runtimeBoolSetting(
     };
 }
 
-inline RenderGraphRuntimeSetting linearOutputSetting()
-{
-    auto setting = runtimeBoolSetting("outputLinear", "HDR Output (Auto Exposure)", false, true);
-    setting.rebuildGraph = true;
-    return setting;
-}
-
 inline RenderGraphRuntimeSetting runtimeIntSetting(
     std::string key,
     std::string label,

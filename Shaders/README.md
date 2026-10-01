@@ -1,5 +1,8 @@
 # Shader 模块
 
+Renderer 固定使用 scene-linear Rec.709/D65 HDR；显示变换、SDR/scRGB/HDR10 输出与
+LookDev 默认值见 [Display Output](../Documentation/DisplayOutput.md)。
+
 Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import`，同一模块的实现
 文件用 `__include`，第三方 HLSL 的宏配置与文本包含留在 Interop 或程序内部。
 

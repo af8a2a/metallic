@@ -49,9 +49,7 @@
                 "x": 440.0,
                 "y": 120.0
             },
-            "properties": {
-                "toneCurve": "none"
-            }
+            "properties": {}
         },
         {
             "id": 3,
@@ -61,7 +59,9 @@
                 "x": 800.0,
                 "y": 120.0
             },
-            "properties": {}
+            "properties": {
+                "toneCurve": "none"
+            }
         }
     ],
     "edges": [

@@ -26,6 +26,15 @@ public:
             return render::vulkan::selectSurfaceFormat(formats, sdr.format, mode, fallback, selected, actual);
         };
         const std::array full{pq, wrongPair, sdr, hdr};
+        if (!choose(full, DisplayOutputMode::HDR10_PQ, false) || actual != DisplayOutputMode::HDR10_PQ ||
+            selected.format != pq.format || selected.colorSpace != pq.colorSpace) {
+            return RHITestResult::fail("HDR10 must select the exact RGB10A2/BT.2020 PQ pair");
+        }
+        const std::array noPq{wrongPair, sdr, hdr};
+        if (choose(noPq, DisplayOutputMode::HDR10_PQ, false) ||
+            !choose(noPq, DisplayOutputMode::HDR10_PQ, true) || actual != DisplayOutputMode::SDR) {
+            return RHITestResult::fail("HDR10 must reject missing pairs or explicitly fall back to SDR");
+        }
         if (!choose(full, DisplayOutputMode::HDRscRGB, false) || actual != DisplayOutputMode::HDRscRGB ||
             selected.format != hdr.format || selected.colorSpace != hdr.colorSpace) {
             return RHITestResult::fail("scRGB must select the exact FP16/extended-linear pair");
@@ -45,6 +54,24 @@ public:
         if (choose(std::span(&anySdr, 1), DisplayOutputMode::HDRscRGB, false) ||
             !choose(std::span(&anySdr, 1), DisplayOutputMode::HDRscRGB, true) || selected.format != sdr.format) {
             return RHITestResult::fail("UNDEFINED format must still respect the advertised color space");
+        }
+        for (const auto mode : {DisplayOutputMode::SDR_sRGB, DisplayOutputMode::HDR_scRGB, DisplayOutputMode::HDR10_PQ}) {
+            render::RenderGraphCompileContext compile;
+            compile.width = compile.height = 64;
+            compile.displayOutput.mode = mode;
+            if (!compile.displayOutput.valid()) { return RHITestResult::fail("Invalid formal display profile"); }
+            for (const char* passName : {"ScenePathTracePass", "SceneRealtimeLightingPass", "SceneRTXDIPass",
+                    "RTXDICompositePass", "AutoExposurePass"}) {
+                auto pass = render::createRenderGraphPass(passName);
+                pass->setProperties({{"outputLinear", false}});
+                const auto reflection = pass->reflect(compile);
+                const auto* color = reflection.findField("color", render::RenderGraphFieldVisibility::Output);
+                if (!color || (color->format != render::Format::RGBA16Sfloat && color->format != render::Format::RGBA32Sfloat) ||
+                    (color->colorEncoding != render::DisplayColorEncoding::SceneLinear &&
+                        color->colorEncoding != render::DisplayColorEncoding::ExposedLinear)) {
+                    return RHITestResult::fail(std::string(passName) + " changed its linear-HDR contract with the output profile");
+                }
+            }
         }
         return RHITestResult::pass();
     }
@@ -181,16 +208,21 @@ public:
         }
         options.displayOutput.mode = render::DisplayOutputMode::SDR;
         if (!frame() || executor.outputResource("FinalBlit.color")->desc.format != render::Format::RGBA8Unorm ||
-            executor.outputResource("Exposure.color")->desc.format != render::Format::RGBA8Unorm) {
-            return RHITestResult::fail("HDR -> SDR transition retained HDR resources");
+            executor.outputResource("Exposure.color")->desc.format != render::Format::RGBA16Sfloat) {
+            return RHITestResult::fail("SDR output changed the internal linear-HDR contract");
         }
         const auto* sdr = reinterpret_cast<const uint8_t*>(pixels.data());
-        if (std::abs(int(sdr[0]) - 186) > 1 || sdr[3] != 255) {
-            return RHITestResult::fail("SDR fallback changed the existing Reinhard/gamma result");
+        if (std::abs(int(sdr[0]) - 188) > 1 || sdr[3] != 255) {
+            return RHITestResult::fail("SDR fallback must apply Reinhard and exact sRGB once");
         }
         options.displayOutput.mode = render::DisplayOutputMode::HDRscRGB;
         if (!frame() || !near(halfToFloat(pixels[0]), 5.0f)) {
             return RHITestResult::fail("SDR -> HDR transition failed");
+        }
+        options.displayOutput.mode = render::DisplayOutputMode::HDR10_PQ;
+        if (!frame() || !near(halfToFloat(pixels[0]), 5.0f) ||
+            executor.outputResource("Exposure.color")->desc.format != render::Format::RGBA16Sfloat) {
+            return RHITestResult::fail("HDR10 must retain the same linear composition image as scRGB");
         }
         return RHITestResult::pass("Verified FP16 nits, gradients, exposure, highlight shoulder, reload and HDR/SDR switching");
     }

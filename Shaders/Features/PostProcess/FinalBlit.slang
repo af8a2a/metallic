@@ -10,7 +10,7 @@ struct DisplayOutputPush
     float paperWhiteNits;
     float peakNits;
     float exposure;
-    float padding;
+    uint toneCurve;
 };
 
 float3 displayOutput(float3 color, DisplayOutputPush push)
@@ -23,9 +23,11 @@ float3 displayOutput(float3 color, DisplayOutputPush push)
         return displayMapToScRgb(color * push.exposure, push.paperWhiteNits, push.peakNits);
     }
     if (push.inputEncoding == 2u) { return displayLinearToSrgb(saturate(color * (80.0 / push.paperWhiteNits))); }
-    if (push.inputEncoding == 1u) {
+    if (push.inputEncoding == 1u || push.inputEncoding == 3u) {
         color = max(color * push.exposure, 0.0);
-        return displayLinearToSrgb(color / (color + 1.0));
+        color = push.toneCurve == 2u ? saturate(color) :
+            (push.toneCurve == 1u ? 1.0 - exp(-color) : color / (color + 1.0));
+        return displayLinearToSrgb(color);
     }
     return push.sampledSrgb != 0u ? displayLinearToSrgb(color) : color;
 }

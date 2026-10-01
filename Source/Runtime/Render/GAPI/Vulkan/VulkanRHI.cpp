@@ -3393,6 +3393,7 @@ struct DeviceImpl {
     std::array<VmaPool, VK_MAX_MEMORY_TYPES> materialImagePools{};
     std::shared_ptr<MemoryBudgetState> memoryBudgetState = std::make_shared<MemoryBudgetState>();
     bool memoryBudgetExtension = false;
+    bool hdrMetadataExtension = false;
     VkPhysicalDeviceMemoryProperties memoryProperties{};
     mutable std::chrono::steady_clock::time_point lastBudgetRefresh{};
     mutable uint32_t budgetRefreshIndex = 0;
@@ -4283,10 +4284,10 @@ Result<> SwapchainImpl::initialize(const SwapchainDesc& desc)
         return makeError(Error::Unsupported);
     }
     if (outputMode != desc.outputMode) {
-        spdlog::warn("scRGB surface pair unavailable; falling back to SDR");
+        spdlog::warn("{} surface pair unavailable; falling back to SDR_sRGB", displayOutputName(desc.outputMode));
     }
     spdlog::info("Swapchain output: {}, VkFormat {}, VkColorSpace {}",
-        outputMode == DisplayOutputMode::HDRscRGB ? "scRGB HDR" : "SDR",
+        displayOutputName(outputMode),
         static_cast<int>(selectedFormat.format), static_cast<int>(selectedFormat.colorSpace));
 
     uint32_t presentModeCount = 0;
@@ -4354,6 +4355,17 @@ Result<> SwapchainImpl::initialize(const SwapchainDesc& desc)
     vkResult = vkCreateSwapchainKHR(device->device, &createInfo, nullptr, &swapchain);
     if (vkResult != VK_SUCCESS) {
         return resultFromVk(vkResult);
+    }
+
+    if (outputMode == DisplayOutputMode::HDR10_PQ && device->hdrMetadataExtension && vkSetHdrMetadataEXT) {
+        const float peak = std::isfinite(desc.peakNits) ? std::clamp(desc.peakNits, 80.0f, 10000.0f) : 1000.0f;
+        VkHdrMetadataEXT metadata{.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
+            .displayPrimaryRed = {0.708f, 0.292f}, .displayPrimaryGreen = {0.170f, 0.797f},
+            .displayPrimaryBlue = {0.131f, 0.046f}, .whitePoint = {0.3127f, 0.3290f},
+            .maxLuminance = peak, .minLuminance = 0.0f,
+            .maxContentLightLevel = 0.0f, .maxFrameAverageLightLevel = 0.0f};
+        // Content light levels are unknown until measured, not guessed from mastering peak.
+        vkSetHdrMetadataEXT(device->device, 1, &swapchain, &metadata);
     }
 
     uint32_t actualImageCount = 0;
@@ -11451,6 +11463,8 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     }
     std::vector<const char*> deviceExtensions = enabledDeviceExtensions(selectedFeatures);
     const VulkanExtensionSet selectedDeviceExtensions = VulkanExtensionSet::query(deviceImpl->physicalDevice);
+    deviceImpl->hdrMetadataExtension = selectedDeviceExtensions.has(VK_EXT_HDR_METADATA_EXTENSION_NAME);
+    if (deviceImpl->hdrMetadataExtension) { deviceExtensions.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME); }
     deviceImpl->memoryBudgetExtension = selectedDeviceExtensions.has(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     if (deviceImpl->memoryBudgetExtension && std::none_of(deviceExtensions.begin(), deviceExtensions.end(), [](const char* name) {
             return std::strcmp(name, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0;

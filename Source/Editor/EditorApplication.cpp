@@ -2211,6 +2211,12 @@ int EditorApplication::run(
             smokeFrameCount = static_cast<uint32_t>(std::clamp(std::strtoul(count, nullptr, 10), 1ul, 256ul));
         }
         for (uint32_t index = 0; index < smokeFrameCount; ++index) {
+            if (environmentFlagEnabled("METALLIC_SMOKE_TEST_OUTPUT_PROFILES") && index % 4 == 0) {
+                constexpr render::DisplayOutputMode profiles[] = {render::DisplayOutputMode::HDR_scRGB,
+                    render::DisplayOutputMode::HDR10_PQ, render::DisplayOutputMode::SDR_sRGB};
+                requestedOutput_ = profiles[(index / 4) % 3];
+                swapchainOutOfDate_ = true;
+            }
             METALLIC_TRACY_CPU_SCOPE("Editor Frame");
             auto profileFrame = profiler_.beginFrame();
             if (!waitForFrameSlotBeforeInput()) {
@@ -2456,6 +2462,21 @@ void EditorApplication::advanceNsightGraphicsCaptureAfterPresent()
 bool EditorApplication::initialize()
 {
     StartupLogScope initializeScope("Editor initialization");
+
+    if (const char* requested = std::getenv("METALLIC_OUTPUT_PROFILE")) {
+        bool recognized = false;
+        for (const auto profile : {render::DisplayOutputMode::SDR_sRGB,
+                render::DisplayOutputMode::HDR_scRGB, render::DisplayOutputMode::HDR10_PQ}) {
+            if (std::string_view(requested) == render::displayOutputName(profile)) {
+                requestedOutput_ = profile;
+                recognized = true;
+            }
+        }
+        if (!recognized) {
+            spdlog::error("Unknown METALLIC_OUTPUT_PROFILE: {}", requested);
+            return false;
+        }
+    }
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
         spdlog::error("SDL_Init failed: {}", SDL_GetError());
@@ -2726,12 +2747,12 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             .height = height,
             .imageCount = kSwapchainImageCount,
             .framesInFlight = kFrameSlotCount,
-            .format = render::Format::BGRA8Unorm,
+            .format = render::Format::BGRA8sRGB,
             .vsync = !(std::getenv("METALLIC_FULL_ROAM_OUTPUT") != nullptr &&
                 std::getenv("METALLIC_FULL_ROAM_NO_VSYNC") != nullptr &&
                 std::string_view(std::getenv("METALLIC_FULL_ROAM_NO_VSYNC")) == "1"),
-            .outputMode = hdrOutputRequested_ && displayHdrEnabled_
-                ? render::DisplayOutputMode::HDRscRGB : render::DisplayOutputMode::SDR,
+            .outputMode = displayHdrEnabled_ ? requestedOutput_ : render::DisplayOutputMode::SDR_sRGB,
+            .peakNits = displayOutput_.peakNits,
         }).transform([&](auto rhiValue) { swapchain_ = std::move(rhiValue); });
     if (!result || swapchain_ == nullptr) {
         spdlog::error("createSwapchain failed with Result {}", render::resultToString(result));
@@ -2775,11 +2796,25 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
     swapchainHeight_ = swapchain_->height();
     swapchainOutOfDate_ = false;
     displayOutput_.mode = swapchain_->outputMode();
+    if (displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ) {
+        displayCompositions_.resize(swapchain_->imageCount());
+        for (auto& composition : displayCompositions_) {
+            result = device_->createTexture({.type = render::TextureType::Texture2D,
+                .usage = render::TextureUsageBits::ColorAttachment | render::TextureUsageBits::Sampled,
+                .format = render::Format::RGBA16Sfloat, .width = swapchainWidth_, .height = swapchainHeight_})
+                .transform([&](auto value) { composition.texture = std::move(value); });
+            if (!result) { return false; }
+            result = device_->createTextureView(*composition.texture, {})
+                .transform([&](auto value) { composition.view = std::move(value); });
+            if (!result) { return false; }
+        }
+    }
     if (displayOutput_ != previousOutput) { renderGraph_.markDirty(); }
 
     if (imguiRendererInitialized_) {
         ImGui_ImplVulkan_SetMinImageCount(kMinSwapchainImageCount);
-        const VkFormat colorFormat = render::vulkan::nativeSwapchainFormat(*swapchain_);
+        const bool pqOutput = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ;
+        const VkFormat colorFormat = pqOutput ? VK_FORMAT_R16G16B16A16_SFLOAT : render::vulkan::nativeSwapchainFormat(*swapchain_);
         if (previousFormat != swapchain_->format()) {
             VkPipelineRenderingCreateInfo renderingInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
                 .colorAttachmentCount = 1, .pColorAttachmentFormats = &colorFormat};
@@ -2789,7 +2824,8 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             ImGui_ImplVulkan_CreateMainPipeline(&pipelineInfo);
         }
         if (!displayRenderer_.initialize(render::vulkan::nativeDevice(*device_).device, colorFormat,
-                displayOutput_.mode == render::DisplayOutputMode::HDRscRGB, displayOutput_.paperWhiteNits)) {
+                render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
+                pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED)) {
             return false;
         }
     }
@@ -2798,6 +2834,12 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
 
 void EditorApplication::destroySwapchainResources()
 {
+    for (auto& composition : displayCompositions_) {
+        if (composition.descriptor && imguiRendererInitialized_) {
+            ImGui_ImplVulkan_RemoveTexture(composition.descriptor);
+        }
+    }
+    displayCompositions_.clear();
     swapchainImageViews_.clear();
     swapchainImageStates_.clear();
     renderFinishedSemaphores_.clear();
@@ -2818,7 +2860,8 @@ bool EditorApplication::initializeImGuiBackends()
 
     const render::vulkan::NativeDevice nativeDevice = render::vulkan::nativeDevice(*device_);
     const render::vulkan::NativeQueue nativeQueue = render::vulkan::nativeQueue(*graphicsQueue_);
-    const VkFormat colorFormat = render::vulkan::nativeSwapchainFormat(*swapchain_);
+    const bool pqOutput = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ;
+    const VkFormat colorFormat = pqOutput ? VK_FORMAT_R16G16B16A16_SFLOAT : render::vulkan::nativeSwapchainFormat(*swapchain_);
     if (nativeDevice.instance == VK_NULL_HANDLE ||
         nativeDevice.physicalDevice == VK_NULL_HANDLE ||
         nativeDevice.device == VK_NULL_HANDLE ||
@@ -2857,7 +2900,8 @@ bool EditorApplication::initializeImGuiBackends()
         return false;
     }
     return displayRenderer_.initialize(nativeDevice.device, colorFormat,
-        displayOutput_.mode == render::DisplayOutputMode::HDRscRGB, displayOutput_.paperWhiteNits);
+        render::isHDROutput(displayOutput_.mode), displayOutput_.paperWhiteNits,
+                pqOutput ? render::vulkan::nativeSwapchainFormat(*swapchain_) : VK_FORMAT_UNDEFINED);
 }
 
 bool EditorApplication::createViewportSampler()
@@ -3367,12 +3411,20 @@ void EditorApplication::drawDockspace()
         }
 
         if (ImGui::BeginMenu("Display Output")) {
-            if (ImGui::MenuItem("Enable scRGB HDR", nullptr, &hdrOutputRequested_)) { swapchainOutOfDate_ = true; }
-            ImGui::Text("Active: %s", displayOutput_.mode == render::DisplayOutputMode::HDRscRGB ? "scRGB HDR (FP16)" : "SDR");
-            if (!displayHdrEnabled_) { ImGui::TextDisabled("Enable HDR in Windows display settings to use HDR output"); }
-            else if (hdrOutputRequested_ && displayOutput_.mode == render::DisplayOutputMode::SDR) {
-                ImGui::TextDisabled("scRGB surface unavailable; using SDR fallback");
+            for (const auto profile : {render::DisplayOutputMode::SDR_sRGB,
+                    render::DisplayOutputMode::HDR_scRGB, render::DisplayOutputMode::HDR10_PQ}) {
+                if (ImGui::MenuItem(render::displayOutputName(profile), nullptr, requestedOutput_ == profile)) {
+                    requestedOutput_ = profile;
+                    swapchainOutOfDate_ = true;
+                }
             }
+            ImGui::Text("Active: %s", render::displayOutputName(displayOutput_.mode));
+            ImGui::TextDisabled("Renderer: scene-linear Rec.709 / D65; Windows HDR default: scRGB");
+            if (!displayHdrEnabled_) { ImGui::TextDisabled("Enable HDR in Windows display settings to use HDR output"); }
+            else if (requestedOutput_ != displayOutput_.mode) {
+                ImGui::TextDisabled("Requested surface profile unavailable; using SDR fallback");
+            }
+            ImGui::TextDisabled("SDR reference white: 100 nits (calibrate the display)");
             if (ImGui::Checkbox("Follow system SDR white", &followSystemPaperWhite_)) { swapchainOutOfDate_ = true; }
             ImGui::BeginDisabled(followSystemPaperWhite_);
             if (ImGui::SliderFloat("Paper white (nits)", &displayOutput_.paperWhiteNits, 80.0f, 500.0f)) {
@@ -3383,9 +3435,12 @@ void EditorApplication::drawDockspace()
             ImGui::EndDisabled();
             bool displayChanged = ImGui::SliderFloat("Peak (nits)", &displayOutput_.peakNits,
                 displayOutput_.paperWhiteNits, 10000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
-            displayChanged |= ImGui::SliderFloat("HDR exposure (EV)", &displayOutput_.exposureEV, -10.0f, 10.0f);
+            displayChanged |= ImGui::SliderFloat("Display exposure (EV)", &displayOutput_.exposureEV, -10.0f, 10.0f);
             displayChanged |= ImGui::Checkbox("Calibration pattern", &displayOutput_.calibrationPattern);
-            if (displayChanged) { renderGraph_.markDirty(); }
+            if (displayChanged) {
+                renderGraph_.markDirty();
+                if (displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ) { swapchainOutOfDate_ = true; }
+            }
             ImGui::TextDisabled("Pattern: 80 / 203 / 400 / 1000 nits, then gray / RGB ramps");
             ImGui::TextDisabled("Detached windows use SDR preview");
             ImGui::EndMenu();
@@ -7046,18 +7101,26 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             return false;
         }
 
+        const bool pqOutput = displayOutput_.mode == render::DisplayOutputMode::HDR10_PQ;
+        auto* composition = pqOutput ? &displayCompositions_[imageIndex] : nullptr;
+        if (composition && !composition->descriptor) {
+            composition->descriptor = ImGui_ImplVulkan_AddTexture(
+                render::vulkan::nativeImageView(*composition->view),
+                render::vulkan::nativeImageLayout(*composition->view, render::ResourceState::ShaderRead));
+            if (!composition->descriptor) { return false; }
+        }
         render::TextureBarrierDesc toColor{
-            .texture = swapchainTexture,
-            .oldLayout = metallic::render::textureLayoutForResourceState(swapchainImageStates_[imageIndex]),
+            .texture = composition ? composition->texture.get() : swapchainTexture,
+            .oldLayout = metallic::render::textureLayoutForResourceState(composition ? composition->state : swapchainImageStates_[imageIndex]),
             .newLayout = render::TextureLayout::ColorAttachment,
-            .before = metallic::render::resourceSyncScope(swapchainImageStates_[imageIndex], metallic::render::PipelineStageBits::AllCommands),
+            .before = metallic::render::resourceSyncScope(composition ? composition->state : swapchainImageStates_[imageIndex], metallic::render::PipelineStageBits::AllCommands),
             .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
         if (auto commandResult = frame.commandBuffer->synchronize(render::BarrierDesc{
             .textures = {&toColor, 1},
         }); !commandResult) { return false; }
-        swapchainImageStates_[imageIndex] = render::ResourceState::ColorAttachment;
+        if (!composition) { swapchainImageStates_[imageIndex] = render::ResourceState::ColorAttachment; }
 
         const render::Rect renderArea{
             .x = 0,
@@ -7066,7 +7129,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             .height = swapchain_->height(),
         };
         render::RenderingAttachmentDesc colorAttachment{
-            .view = swapchainImageViews_[imageIndex].get(),
+            .view = composition ? composition->view.get() : swapchainImageViews_[imageIndex].get(),
             .state = render::ResourceState::ColorAttachment,
             .loadOp = render::LoadOp::Clear,
             .storeOp = render::StoreOp::Store,
@@ -7099,6 +7162,29 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
 
         frame.commandBuffer->endRendering();
         frame.commandBuffer->endDebugLabel();
+
+        if (composition) {
+            const render::TextureBarrierDesc barriers[] = {
+                {.texture = composition->texture.get(), .oldLayout = render::TextureLayout::ColorAttachment,
+                    .newLayout = render::TextureLayout::ShaderRead,
+                    .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorWrite},
+                    .after = {render::PipelineStageBits::FragmentShader, render::AccessBits::ShaderRead}},
+                {.texture = swapchainTexture,
+                    .oldLayout = render::textureLayoutForResourceState(swapchainImageStates_[imageIndex]),
+                    .newLayout = render::TextureLayout::ColorAttachment,
+                    .before = render::resourceSyncScope(swapchainImageStates_[imageIndex], render::PipelineStageBits::AllCommands),
+                    .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorWrite}},
+            };
+            if (!frame.commandBuffer->synchronize({.textures = barriers})) { return false; }
+            composition->state = render::ResourceState::ShaderRead;
+            colorAttachment.view = swapchainImageViews_[imageIndex].get();
+            colorAttachment.loadOp = render::LoadOp::DontCare;
+            if (!frame.commandBuffer->beginRendering({.renderArea = renderArea,
+                    .colorAttachments = {&colorAttachment, 1}})) { return false; }
+            displayRenderer_.encodeHDR10(render::vulkan::nativeCommandBuffer(*frame.commandBuffer),
+                composition->descriptor, swapchainWidth_, swapchainHeight_);
+            frame.commandBuffer->endRendering();
+        }
 
         render::TextureBarrierDesc toPresent{
             .texture = swapchainTexture,

@@ -62,7 +62,8 @@ render::RenderGraph fixtureGraph(bool enabled, bool fallback)
         [] { return std::make_unique<DLSSNRFixturePass>(); });
     render::RenderGraph graph;
     graph.addNode("DLSSNRFixturePass", "Source");
-    graph.addNode("DLSSNRPass", "Nr", {{"enabled", enabled}, {"fallbackToInput", fallback}});
+    graph.addNode("DLSSNRPass", "Nr", {{"enabled", enabled}, {"fallbackToInput", fallback},
+        {"displayReferredInput", true}});
     graph.addEdge("Source.color", "Nr.inputColor");
     graph.addEdge("Source.motion", "Nr.motionVectors");
     graph.addEdge("Source.depth", "Nr.depth");
@@ -389,13 +390,24 @@ public:
             return RHITestResult::fail(log);
         }
         auto& graph = sample.graph;
+        // NR is a display-referred effect. Keep the renderer linear and explicitly
+        // insert its SDR display boundary for this SDK-only comparison.
+        uint32_t inputEdge = 0;
+        for (const auto& edge : graph.edges()) {
+            if (edge.dstPass == "DLSSNR" && edge.dstField == "inputColor") { inputEdge = edge.id; }
+        }
+        graph.removeEdge(inputEdge);
+        graph.addNode("FinalBlitPass", "NrDisplay");
+        graph.addEdge("AutoExposure.color", "NrDisplay.source");
+        graph.addEdge("NrDisplay.color", "DLSSNR.inputColor");
+        graph.findNode("DLSSNR")->properties["displayReferredInput"] = true;
         graph.findNode("PathTrace")->properties["maxDepth"] = 4;
         graph.findNode("DLSSNR")->properties["fallbackToInput"] = false;
         graph.findNode("AutoExposure")->properties["adaptationDeltaSeconds"] = 1.0f / 60.0f;
         render::registerRenderGraphPassType("DLSSNRReadbackPass", "NR GPU readback",
             [] { return std::make_unique<DLSSNRReadbackPass>(); });
         graph.addNode("DLSSNRReadbackPass", "BeforeNr");
-        graph.addEdge("AutoExposure.color", "BeforeNr.color");
+        graph.addEdge("NrDisplay.color", "BeforeNr.color");
         graph.markOutput("BeforeNr.pixels");
         graph.addNode("DLSSNRReadbackPass", "AfterNr");
         graph.addEdge("DLSSNR.color", "AfterNr.color");

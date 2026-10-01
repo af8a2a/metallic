@@ -247,11 +247,18 @@ private:
     std::unique_ptr<render::Swapchain> swapchain_;
     EditorDisplayRenderer displayRenderer_;
     render::DisplayOutputParameters displayOutput_;
-    bool hdrOutputRequested_ = true;
-    bool followSystemPaperWhite_ = true;
+    render::DisplayOutputMode requestedOutput_ = render::DisplayOutputMode::HDR_scRGB;
+    bool followSystemPaperWhite_ = false;
     bool displayHdrEnabled_ = false;
     std::vector<std::unique_ptr<render::TextureView>> swapchainImageViews_;
     std::vector<render::ResourceState> swapchainImageStates_;
+    struct DisplayComposition {
+        std::unique_ptr<render::Texture> texture;
+        std::unique_ptr<render::TextureView> view;
+        VkDescriptorSet descriptor = VK_NULL_HANDLE;
+        render::ResourceState state = render::ResourceState::Undefined;
+    };
+    std::vector<DisplayComposition> displayCompositions_;
     static constexpr uint32_t kFrameSlotCount = 2;
     struct FrameSlot {
         explicit FrameSlot(uint32_t index) : context(index) {}

@@ -18,7 +18,7 @@ EditorDisplayRenderer::~EditorDisplayRenderer()
 void EditorDisplayRenderer::shutdown()
 {
     if (device_ == VK_NULL_HANDLE) { return; }
-    for (VkPipeline pipeline : {mainPipeline_, mainImagePipeline_}) {
+    for (VkPipeline pipeline : {mainPipeline_, mainImagePipeline_, pqPipeline_}) {
         if (pipeline) { vkDestroyPipeline(device_, pipeline, nullptr); }
     }
     for (const auto& [format, pipeline] : secondaryImagePipelines_) {
@@ -29,21 +29,24 @@ void EditorDisplayRenderer::shutdown()
     for (VkDescriptorSetLayout layout : setLayouts_) {
         if (layout) { vkDestroyDescriptorSetLayout(device_, layout, nullptr); }
     }
-    mainPipeline_ = mainImagePipeline_ = VK_NULL_HANDLE;
+    mainPipeline_ = mainImagePipeline_ = pqPipeline_ = VK_NULL_HANDLE;
     layout_ = VK_NULL_HANDLE;
     setLayouts_[0] = setLayouts_[1] = VK_NULL_HANDLE;
     device_ = VK_NULL_HANDLE;
 }
 
-bool EditorDisplayRenderer::initialize(VkDevice device, VkFormat mainFormat, bool hdr, float paperWhiteNits)
+bool EditorDisplayRenderer::initialize(VkDevice device, VkFormat mainFormat, bool hdr, float paperWhiteNits,
+    VkFormat pqOutputFormat)
 {
     if (device_ == device && mainPipeline_ && mainImagePipeline_ && mainFormat_ == mainFormat &&
-        hdr_ == hdr && paperWhiteNits_ == paperWhiteNits) { return true; }
+        hdr_ == hdr && paperWhiteNits_ == paperWhiteNits && pqOutputFormat_ == pqOutputFormat &&
+        (pqOutputFormat == VK_FORMAT_UNDEFINED || pqPipeline_)) { return true; }
     shutdown();
     device_ = device;
     mainFormat_ = mainFormat;
     hdr_ = hdr;
     paperWhiteNits_ = paperWhiteNits;
+    pqOutputFormat_ = pqOutputFormat;
     for (uint32_t index = 0; index < 2; ++index) {
         VkDescriptorSetLayoutBinding binding{.binding = 0,
             .descriptorType = index == 0 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER,
@@ -58,10 +61,14 @@ bool EditorDisplayRenderer::initialize(VkDevice device, VkFormat mainFormat, boo
     if (vkCreatePipelineLayout(device_, &layoutInfo, nullptr, &layout_) != VK_SUCCESS) { return false; }
     mainPipeline_ = createPipeline(mainFormat, hdr, false, paperWhiteNits);
     mainImagePipeline_ = createPipeline(mainFormat, hdr, true, paperWhiteNits);
+    if (pqOutputFormat != VK_FORMAT_UNDEFINED) {
+        pqPipeline_ = createPipeline(pqOutputFormat, true, false, paperWhiteNits, true);
+        if (!pqPipeline_) { return false; }
+    }
     return mainPipeline_ && mainImagePipeline_;
 }
 
-VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool scRgbImage, float paperWhiteNits)
+VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool scRgbImage, float paperWhiteNits, bool encodePQ)
 {
     const std::string white = std::to_string(paperWhiteNits);
     const render::SlangMacroDefine defines[] = {
@@ -73,7 +80,8 @@ VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool
     auto destroyModules = [&] {
         for (auto module : modules) { if (module) { vkDestroyShaderModule(device_, module, nullptr); } }
     };
-    const char* entries[] = {"editorDisplayVertex", "editorDisplayFragment"};
+    const char* entries[] = {encodePQ ? "editorOutputVertex" : "editorDisplayVertex",
+        encodePQ ? "editorOutputPQFragment" : "editorDisplayFragment"};
     for (uint32_t index = 0; index < 2; ++index) {
         render::ShaderCompileResult shader;
         if (!render::compileSlangShaderToSpirv({
@@ -111,6 +119,10 @@ VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool
         .vertexAttributeDescriptionCount = 3, .pVertexAttributeDescriptions = attributes};
     VkPipelineInputAssemblyStateCreateInfo assembly{.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    if (encodePQ) {
+        vertex.vertexBindingDescriptionCount = 0;
+        vertex.vertexAttributeDescriptionCount = 0;
+    }
     VkPipelineViewportStateCreateInfo viewport{.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
         .viewportCount = 1, .scissorCount = 1};
     VkPipelineRasterizationStateCreateInfo raster{.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
@@ -125,6 +137,7 @@ VkPipeline EditorDisplayRenderer::createPipeline(VkFormat format, bool hdr, bool
         .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
     VkPipelineColorBlendStateCreateInfo blend{.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .attachmentCount = 1, .pAttachments = &attachment};
+    if (encodePQ) { attachment.blendEnable = VK_FALSE; }
     VkDynamicState dynamicStates[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dynamic{.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
         .dynamicStateCount = 2, .pDynamicStates = dynamicStates};
@@ -163,6 +176,17 @@ void EditorDisplayRenderer::beginScRgbImage(ImDrawList& list, ImGuiViewport* vie
 {
     ImageCallbackData data{this, viewport};
     list.AddCallback(bindImagePipeline, &data, sizeof(data));
+}
+
+void EditorDisplayRenderer::encodeHDR10(VkCommandBuffer commands, VkDescriptorSet source, uint32_t width, uint32_t height)
+{
+    VkViewport viewport{0.0f, 0.0f, float(width), float(height), 0.0f, 1.0f};
+    VkRect2D scissor{{0, 0}, {width, height}};
+    vkCmdSetViewport(commands, 0, 1, &viewport);
+    vkCmdSetScissor(commands, 0, 1, &scissor);
+    vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pqPipeline_);
+    vkCmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, layout_, 0, 1, &source, 0, nullptr);
+    vkCmdDraw(commands, 3, 1, 0, 0);
 }
 
 } // namespace metallic

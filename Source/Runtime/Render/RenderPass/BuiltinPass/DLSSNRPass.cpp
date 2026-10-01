@@ -24,10 +24,11 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext& context) const override
     {
         RenderPassReflection reflection;
-        auto& input = reflection.addTextureInput("inputColor", "Tone-mapped sRGB display color (RGBA8 UNORM)")
+        auto& input = reflection.addTextureInput("inputColor", "Exposed linear HDR; SDR-only NR is bypassed")
             .texture2D(context.width, context.height).storageReadWrite();
-        const bool hdr = context.displayOutput.mode == DisplayOutputMode::HDRscRGB;
-        const Format colorFormat = hdr ? Format::RGBA16Sfloat : Format::RGBA8Unorm;
+        // Explicit display-only integration remains available after an SDR output transform.
+        const bool displayReferred = properties().value("displayReferredInput", false);
+        const Format colorFormat = displayReferred ? Format::RGBA8Unorm : Format::RGBA16Sfloat;
         input.format = colorFormat;
         input.usage = input.usage | TextureUsageBits::TransferSource | TextureUsageBits::Sampled;
         input.stageAccess(RenderGraphResourceAccess::TextureTransferRead)
@@ -43,7 +44,7 @@ public:
         auto& output = reflection.addTextureOutput("color", "Experimental DLSS Neural Rendering output")
             .texture2D(context.width, context.height).storageReadWrite();
         output.format = colorFormat;
-        output.colorEncoding = hdr ? DisplayColorEncoding::ExposedLinear : DisplayColorEncoding::sRGB;
+        output.colorEncoding = displayReferred ? DisplayColorEncoding::sRGB : DisplayColorEncoding::ExposedLinear;
         output.usage = output.usage | TextureUsageBits::TransferDestination;
         output.stageAccess(RenderGraphResourceAccess::TextureTransferWrite);
         return reflection;
@@ -83,7 +84,7 @@ public:
         device_ = context.device;
         hasHistory_ = false;
         failed_ = false;
-        hdrBypass_ = context.displayOutput.mode == DisplayOutputMode::HDRscRGB;
+        hdrBypass_ = !properties().value("displayReferredInput", false);
         if (context.device == nullptr || context.graphicsQueue == nullptr ||
             context.width == 0 || context.height == 0) {
             log = "DLSSNRPass requires a device, graphics queue and non-zero dimensions";
@@ -91,7 +92,7 @@ public:
         }
         if (!properties().value("enabled", true)) { return {}; }
         if (hdrBypass_) {
-            log = "DLSS-NR currently requires SDR RGBA8 input; preserving HDR input without NR";
+            log = "DLSS-NR requires SDR RGBA8 input; preserving the fixed linear-HDR renderer output without NR";
             if (!properties().value("fallbackToInput", true)) { return makeError(Error::Unsupported); }
             spdlog::warn("[DLSS-NR] {}", log);
             return {};

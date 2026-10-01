@@ -11,6 +11,7 @@ enum class DisplayColorEncoding : uint8_t {
     sRGB,
     ExposedLinear,
     scRGB,
+    SceneLinear, // Rec.709 primaries, D65, unbounded scene-referred radiance.
 };
 
 struct DisplayOutputParameters {
@@ -22,7 +23,7 @@ struct DisplayOutputParameters {
 
     bool valid() const
     {
-        return (mode == DisplayOutputMode::SDR || mode == DisplayOutputMode::HDRscRGB) &&
+        return (mode == DisplayOutputMode::SDR_sRGB || isHDROutput(mode)) &&
             std::isfinite(paperWhiteNits) && paperWhiteNits >= 80.0f && paperWhiteNits <= 10000.0f &&
             std::isfinite(peakNits) && peakNits >= paperWhiteNits && peakNits <= 10000.0f &&
             std::isfinite(exposureEV) && exposureEV >= -20.0f && exposureEV <= 20.0f;

@@ -57,9 +57,10 @@ public:
         RenderPassReflection reflection;
         reflection.addAccelerationStructureInput("accelerationStructure", "Optional graph-managed scene TLAS/PTLAS")
             .accelerationStructureRead().setOptional();
-        reflection.addTextureOutput("color", "ReSTIR DI many-light direct illumination")
-            .storageWrite()
-            .format = boolProperty(&properties(), "outputLinear", false) ? Format::RGBA32Sfloat : Format::RGBA8Unorm;
+        auto& color = reflection.addTextureOutput("color", "ReSTIR DI many-light direct illumination")
+            .storageWrite();
+        color.format = Format::RGBA32Sfloat;
+        color.colorEncoding = DisplayColorEncoding::SceneLinear;
         reflection.addTextureOutput("noisyDiffuse", "RELAX diffuse radiance and hit distance")
             .storageWrite()
             .format = Format::RGBA16Sfloat;
@@ -87,7 +88,6 @@ public:
     std::vector<RenderGraphRuntimeSetting> runtimeSettings() const override
     {
         std::vector<RenderGraphRuntimeSetting> settings{
-            linearOutputSetting(),
             runtimeEnumSetting("lightSource", "Light Source", "scene",
                 {{"Scene / Virtual Lights", "scene"}, {"Synthetic Benchmark", "bench"}}, true),
             runtimeIntSetting(
@@ -987,7 +987,7 @@ private:
         outPush.bitangentFlip = boolProperty(&properties, "flipBitangent", false) ? -1.0f : 1.0f;
         outPush.lightIntensity = std::max(floatProperty(properties, "lightIntensity", 12.0f), 0.0f);
         outPush.exposure = std::max(floatProperty(properties, "exposure", 1.0f), 0.001f);
-        outPush.outputLinear = boolProperty(&properties, "outputLinear", false) ? 1u : 0u;
+        outPush.outputLinear = 1u;
         setBehavior(
             kRTXDIBehaviorLocalLightImportance,
             boolProperty(&properties, "localLightImportanceSampling", true));

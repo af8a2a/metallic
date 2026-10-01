@@ -171,7 +171,8 @@ private:
 
         // Presentation remains a pinning/root contract even when its own shader
         // writes the entire image; HDR uses the same lifetime semantics.
-        for (const auto mode : {render::DisplayOutputMode::SDR, render::DisplayOutputMode::HDRscRGB}) {
+        for (const auto mode : {render::DisplayOutputMode::SDR_sRGB, render::DisplayOutputMode::HDR_scRGB,
+                render::DisplayOutputMode::HDR10_PQ}) {
             auto displayContext = context;
             displayContext.displayOutput.mode = mode;
             result = checkReflection("FinalBlitPass", properties, {{"color", overwrite, true}}, displayContext);
