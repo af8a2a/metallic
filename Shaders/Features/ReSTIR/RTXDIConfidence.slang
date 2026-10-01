@@ -1,37 +1,41 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/RTXDIPostProcessParameters.h"
+
+[[vk::push_constant]] ConstantBuffer<RTXDIConfidenceParams> gParams;
+
+import ShaderCore;
 using Metallic;
 
 // RTXDI temporal lighting gradients converted to NRD history confidence.
 // This follows the FullSample gradient strata, A-trous filtering, confidence
 // conversion, and short non-linear temporal filtering flow.
 
-#define gNoisyDiffuse getResource<RWTexture2D<float4>>(0)
+#define gNoisyDiffuse resolveDescriptor(gParams.noisyDiffuse)
 
-#define gNoisySpecular getResource<RWTexture2D<float4>>(1)
+#define gNoisySpecular resolveDescriptor(gParams.noisySpecular)
 
-#define gBaseColorMetalness getResource<RWTexture2D<float4>>(2)
+#define gBaseColorMetalness resolveDescriptor(gParams.baseColorMetalness)
 
-#define gMotionVectors getResource<RWTexture2D<float4>>(3)
+#define gMotionVectors resolveDescriptor(gParams.motionVectors)
 
-#define gPreviousLuminance getResource<RWTexture2D<float2>>(4)
+#define gPreviousLuminance resolveDescriptor(gParams.previousLuminance)
 
-#define gCurrentLuminance getResource<RWTexture2D<float2>>(5)
+#define gCurrentLuminance resolveDescriptor(gParams.currentLuminance)
 
-#define gGradientA getResource<RWTexture2D<float4>>(6)
+#define gGradientA resolveDescriptor(gParams.gradientA)
 
-#define gGradientB getResource<RWTexture2D<float4>>(7)
+#define gGradientB resolveDescriptor(gParams.gradientB)
 
-#define gPreviousDiffuseConfidence getResource<RWTexture2D<float>>(8)
+#define gPreviousDiffuseConfidence resolveDescriptor(gParams.previousDiffuseConfidence)
 
-#define gPreviousSpecularConfidence getResource<RWTexture2D<float>>(9)
+#define gPreviousSpecularConfidence resolveDescriptor(gParams.previousSpecularConfidence)
 
-#define gDiffuseConfidence getResource<RWTexture2D<float>>(10)
+#define gDiffuseConfidence resolveDescriptor(gParams.diffuseConfidence)
 
-#define gSpecularConfidence getResource<RWTexture2D<float>>(11)
+#define gSpecularConfidence resolveDescriptor(gParams.specularConfidence)
 
-#define gCurrentDiffuseConfidence getResource<RWTexture2D<float>>(12)
+#define gCurrentDiffuseConfidence resolveDescriptor(gParams.currentDiffuseConfidence)
 
-#define gCurrentSpecularConfidence getResource<RWTexture2D<float>>(13)
+#define gCurrentSpecularConfidence resolveDescriptor(gParams.currentSpecularConfidence)
 
 static const uint kComputeGradient = 0u;
 static const uint kFilterAToB = 1u;
@@ -40,22 +44,6 @@ static const uint kResolveA = 3u;
 static const uint kResolveB = 4u;
 static const uint kGradientFactor = 3u;
 static const float kFP16Maximum = 65504.0;
-
-struct RTXDIConfidencePush
-{
-    uint mode;
-    uint width;
-    uint height;
-    uint gradientWidth;
-    uint gradientHeight;
-    uint hasHistory;
-    uint filterStep;
-    uint padding0;
-    float darknessBias;
-    float sensitivity;
-    float blendFactor;
-    float padding1;
-};
 
 float luminance(float3 color)
 {
@@ -240,7 +228,7 @@ void resolveConfidence(uint2 pixel, bool sourceA, RTXDIConfidencePush push)
 void rtxdiConfidenceMain(
     uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    RTXDIConfidencePush push = getConstants<RTXDIConfidencePush>();
+    RTXDIConfidencePush push = gParams.settings;
     uint2 pixel = dispatchThreadId.xy;
     if (push.mode == kComputeGradient) {
         computeGradient(pixel, push);

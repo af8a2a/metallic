@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/RTXDIPostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -47,6 +49,7 @@ public:
             return {};
         }
 
+        device_ = context.device;
         ShaderCompileResult compileResult;
         Result<> result = compileSlangShaderToSpirv(SlangShaderDesc{
                 .moduleName = kRTXDICompositeShaderModuleName,
@@ -62,20 +65,12 @@ public:
             return result;
         }
 
-        const ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 1, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 3, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 4, .kind = ComputeResourceBindingKind::StorageImage},
-        };
         std::string programLog;
         result = program_.initialize(
             *context.device,
-            ComputeProgramDesc{
+            ComputeKernelDesc{
                 .spirv = compileResult.spirv,
-                .pushConstantSize = sizeof(RTXDICompositePush),
-                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+                .parameters = parameterAbi<RTXDICompositeParams>(kRTXDICompositeABI, ParameterTransport::InlinePush),
                 .debugName = "RTXDICompositePass",
             },
             programLog);
@@ -104,27 +99,26 @@ public:
             return makeError(Error::InvalidArgument);
         }
 
-        RTXDICompositePush push;
+        RTXDICompositePush push{};
         push.width = context.width();
         push.height = context.height();
         push.exposure = floatProperty(context.properties(), "exposure", 1.0f, 0.05f, 8.0f);
         push.outputLinear = 1u;
-        const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureView = denoisedDiffuse.view()},
-            {.binding = 1, .textureView = denoisedSpecular.view()},
-            {.binding = 2, .textureView = baseColorMetalness.view()},
-            {.binding = 3, .textureView = emissive.view()},
-            {.binding = 4, .textureView = color.view()},
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
+        RTXDICompositeParams params{
+            .denoisedDiffuse = writer.storageImage(denoisedDiffuse.view()),
+            .denoisedSpecular = writer.storageImage(denoisedSpecular.view()),
+            .baseColorMetalness = writer.storageImage(baseColorMetalness.view()),
+            .emissive = writer.storageImage(emissive.view()),
+            .output = writer.storageImage(color.view()),
+            .settings = push,
         };
-        return program_.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-            .groupCountZ = 1,
-        });
+        auto encoded = writer.encode(params, kRTXDICompositeABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        return program_.dispatch(context.commandBuffer(), *encoded,
+            (context.width() + 7u) / 8u, (context.height() + 7u) / 8u);
     }
 
 private:
@@ -151,7 +145,8 @@ private:
         return std::isfinite(value) ? std::clamp(value, minimum, maximum) : fallback;
     }
 
-    ComputeProgram program_;
+    Device* device_ = nullptr;
+    ComputeKernel program_;
 };
 
 } // namespace

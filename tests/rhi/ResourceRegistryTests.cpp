@@ -4,6 +4,7 @@
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
+#include "Runtime/Render/Core/RTXDIPostProcessParameters.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -108,7 +109,7 @@ render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kerne
 class PostProcessParameterLayoutTest : public RHITest {
 public:
     PostProcessParameterLayoutTest() { type = RHITestType::Resource; name = "post_process_parameter_spirv_layout"; }
-    bool lighting = false;
+    uint32_t category = 0;
     RHITestResult run(RHITestContext&) override
     {
         using namespace render;
@@ -141,6 +142,17 @@ public:
             {"Metallic.EnvironmentLightingPrecomputeParams", {FIELD(EnvironmentLightingPrecomputeParams, radiance),
                 FIELD(EnvironmentLightingPrecomputeParams, partials), FIELD(EnvironmentLightingPrecomputeParams, coefficients),
                 FIELD(EnvironmentLightingPrecomputeParams, specular), FIELD(EnvironmentLightingPrecomputeParams, settings)}},
+            {"Metallic.RTXDIConfidenceParams", {FIELD(RTXDIConfidenceParams, noisyDiffuse), FIELD(RTXDIConfidenceParams, noisySpecular),
+                FIELD(RTXDIConfidenceParams, baseColorMetalness), FIELD(RTXDIConfidenceParams, motionVectors),
+                FIELD(RTXDIConfidenceParams, previousLuminance), FIELD(RTXDIConfidenceParams, currentLuminance),
+                FIELD(RTXDIConfidenceParams, gradientA), FIELD(RTXDIConfidenceParams, gradientB),
+                FIELD(RTXDIConfidenceParams, previousDiffuseConfidence), FIELD(RTXDIConfidenceParams, previousSpecularConfidence),
+                FIELD(RTXDIConfidenceParams, diffuseConfidence), FIELD(RTXDIConfidenceParams, specularConfidence),
+                FIELD(RTXDIConfidenceParams, currentDiffuseConfidence), FIELD(RTXDIConfidenceParams, currentSpecularConfidence),
+                FIELD(RTXDIConfidenceParams, settings)}},
+            {"Metallic.RTXDICompositeParams", {FIELD(RTXDICompositeParams, denoisedDiffuse), FIELD(RTXDICompositeParams, denoisedSpecular),
+                FIELD(RTXDICompositeParams, baseColorMetalness), FIELD(RTXDICompositeParams, emissive),
+                FIELD(RTXDICompositeParams, output), FIELD(RTXDICompositeParams, settings)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -158,10 +170,12 @@ public:
             {"Features/Lighting/PrepareLightsPdf", "prepareLightsPdfMain", 6},
             {"Features/Lighting/BuildReGIR", "buildReGIRMain", 7},
             {"Features/Environment/EnvironmentLightingPrecompute", "environmentLightingPrecomputeMain", 8},
+            {"Features/ReSTIR/RTXDIConfidence", "rtxdiConfidenceMain", 9},
+            {"Features/ReSTIR/RTXDIComposite", "rtxdiCompositeMain", 10},
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout >= 4) != lighting) { continue; }
+                if ((program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
                 std::string log;
                 auto shader = compileSlangShaderToSpirv({.moduleName = program.module, .entryPointName = program.entry,
@@ -202,7 +216,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(lighting ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -214,9 +228,15 @@ METALLIC_REGISTER_RHI_TEST(PostProcessParameterLayoutTest);
 
 class LightingParameterLayoutTest final : public PostProcessParameterLayoutTest {
 public:
-    LightingParameterLayoutTest() { lighting = true; name = "lighting_parameter_spirv_layout"; }
+    LightingParameterLayoutTest() { category = 1; name = "lighting_parameter_spirv_layout"; }
 };
 METALLIC_REGISTER_RHI_TEST(LightingParameterLayoutTest);
+
+class RTXDIParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    RTXDIParameterLayoutTest() { category = 2; name = "rtxdi_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(RTXDIParameterLayoutTest);
 
 class RegistryIdentityTest final : public RHITest {
 public:

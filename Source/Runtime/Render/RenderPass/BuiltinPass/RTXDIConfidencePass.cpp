@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/RTXDIPostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -109,6 +111,7 @@ public:
             return result;
         }
 
+        device_ = context.device;
         ShaderCompileResult compileResult;
         result = compileSlangShaderToSpirv(SlangShaderDesc{
                 .moduleName = kRTXDIConfidenceShaderModuleName,
@@ -126,29 +129,12 @@ public:
             return result;
         }
 
-        const ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 1, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 3, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 4, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 5, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 6, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 7, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 8, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 9, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 10, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 11, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 12, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 13, .kind = ComputeResourceBindingKind::StorageImage},
-        };
         std::string programLog;
         result = program_.initialize(
             *context.device,
-            ComputeProgramDesc{
+            ComputeKernelDesc{
                 .spirv = compileResult.spirv,
-                .pushConstantSize = sizeof(RTXDIConfidencePush),
-                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+                .parameters = parameterAbi<RTXDIConfidenceParams>(kRTXDIConfidenceABI, ParameterTransport::InlinePush),
                 .debugName = "RTXDIConfidencePass",
             },
             programLog);
@@ -163,6 +149,16 @@ public:
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        if (device_ == nullptr || !program_.valid()) {
+            return makeError(Error::InvalidArgument);
+        }
+        // RenderGraph can reuse the compiled pass when only the viewport changes.
+        // Refresh private resources before encoding handles or resolving history.
+        std::string gradientLog;
+        const auto gradientResult = ensureGradientTextures(*device_,
+            std::max((context.width() + kGradientFactor - 1u) / kGradientFactor, 1u),
+            std::max((context.height() + kGradientFactor - 1u) / kGradientFactor, 1u), gradientLog);
+        if (!gradientResult) { return gradientResult; }
         TextureHandle noisyDiffuse = context.inputTexture("noisyDiffuse");
         TextureHandle noisySpecular = context.inputTexture("noisySpecular");
         TextureHandle baseColorMetalness = context.inputTexture("baseColorMetalness");
@@ -223,7 +219,7 @@ public:
             return result;
         }
 
-        RTXDIConfidencePush push;
+        RTXDIConfidencePush push{};
         push.width = context.width();
         push.height = context.height();
         push.gradientWidth = gradientWidth_;
@@ -255,36 +251,35 @@ public:
             3.0f);
         push.blendFactor = 1.0f / (historyLength + 1.0f);
 
-        const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureView = noisyDiffuse.view()},
-            {.binding = 1, .textureView = noisySpecular.view()},
-            {.binding = 2, .textureView = baseColorMetalness.view()},
-            {.binding = 3, .textureView = motionVectors.view()},
-            {.binding = 4, .textureView = luminanceHistory.previous},
-            {.binding = 5, .textureView = luminanceHistory.current},
-            {.binding = 6, .textureView = gradientA_.view.get()},
-            {.binding = 7, .textureView = gradientB_.view.get()},
-            {.binding = 8, .textureView = diffuseConfidenceHistory.previous},
-            {.binding = 9, .textureView = specularConfidenceHistory.previous},
-            {.binding = 10, .textureView = diffuseConfidence.view()},
-            {.binding = 11, .textureView = specularConfidence.view()},
-            {.binding = 12, .textureView = diffuseConfidenceHistory.current},
-            {.binding = 13, .textureView = specularConfidenceHistory.current},
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
+        RTXDIConfidenceParams params{
+            .noisyDiffuse = writer.storageImage(noisyDiffuse.view()),
+            .noisySpecular = writer.storageImage(noisySpecular.view()),
+            .baseColorMetalness = writer.storageImage(baseColorMetalness.view()),
+            .motionVectors = writer.storageImage(motionVectors.view()),
+            .previousLuminance = writer.storageImage(luminanceHistory.previous),
+            .currentLuminance = writer.storageImage(luminanceHistory.current),
+            .gradientA = writer.storageImage(gradientA_.view.get()),
+            .gradientB = writer.storageImage(gradientB_.view.get()),
+            .previousDiffuseConfidence = writer.storageImage(diffuseConfidenceHistory.previous),
+            .previousSpecularConfidence = writer.storageImage(specularConfidenceHistory.previous),
+            .diffuseConfidence = writer.storageImage(diffuseConfidence.view()),
+            .specularConfidence = writer.storageImage(specularConfidence.view()),
+            .currentDiffuseConfidence = writer.storageImage(diffuseConfidenceHistory.current),
+            .currentSpecularConfidence = writer.storageImage(specularConfidenceHistory.current),
+            .settings = push,
         };
         auto dispatch = [&](CommandBuffer& commands, uint32_t mode,
-                            uint32_t width, uint32_t height, uint32_t filterStep = 0u) {
+                            uint32_t width, uint32_t height, uint32_t filterStep = 0u) -> Result<> {
             auto stagePush = push;
             stagePush.mode = mode;
             stagePush.filterStep = filterStep;
-            return program_.dispatch(ComputeDispatchDesc{
-                .commandBuffer = &commands,
-                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
-                .pushData = &stagePush,
-                .pushDataSize = sizeof(stagePush),
-                .groupCountX = (width + 7u) / 8u,
-                .groupCountY = (height + 7u) / 8u,
-                .groupCountZ = 1,
-            });
+            params.settings = stagePush;
+            auto encoded = writer.encode(params, kRTXDIConfidenceABI, ParameterTransport::InlinePush);
+            if (!encoded) { return makeError(encoded.error()); }
+            return program_.dispatch(commands, *encoded, (width + 7u) / 8u, (height + 7u) / 8u);
         };
 
         const uint32_t filterPassCount = uintProperty(
@@ -558,7 +553,8 @@ private:
         return name;
     }
 
-    ComputeProgram program_;
+    Device* device_ = nullptr;
+    ComputeKernel program_;
     ConfidenceGradientTexture gradientA_;
     ConfidenceGradientTexture gradientB_;
     uint32_t gradientWidth_ = 0;

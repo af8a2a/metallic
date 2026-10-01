@@ -894,32 +894,6 @@ struct SceneRTXDIPush {
 
 static_assert(sizeof(SceneRTXDIPush) == 256);
 
-struct RTXDIConfidencePush {
-    uint32_t mode = 0;
-    uint32_t width = 1;
-    uint32_t height = 1;
-    uint32_t gradientWidth = 1;
-    uint32_t gradientHeight = 1;
-    uint32_t hasHistory = 0;
-    uint32_t filterStep = 1;
-    uint32_t padding0 = 0;
-    float darknessBias = 0.000244140625f;
-    float sensitivity = 8.0f;
-    float blendFactor = 1.0f;
-    float padding1 = 0.0f;
-};
-
-static_assert(sizeof(RTXDIConfidencePush) == 48);
-
-struct RTXDICompositePush {
-    uint32_t width = 1;
-    uint32_t height = 1;
-    float exposure = 1.0f;
-    uint32_t outputLinear = 0;
-};
-
-static_assert(sizeof(RTXDICompositePush) == 16);
-
 inline std::string resultMessage(std::string_view label, const Result<>& result)
 {
     std::string message(label);

@@ -324,6 +324,7 @@ add_executable(MetallicRHITests
     rhi/ParallelRecordingTests.cpp
     rhi/SchedulingBenchmarkTests.cpp
     rhi/FinalBlitTests.cpp
+    rhi/RTXDIPostProcessTests.cpp
     rhi/DisplayOutputTests.cpp
     rhi/EditorDisplayTests.cpp
     ../Source/Editor/EditorDisplayRenderer.cpp

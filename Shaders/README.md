@@ -78,6 +78,11 @@ LightGridDebug、PrepareLightsPdf、BuildReGIR 和 EnvironmentLightingPrecompute
 不再上传完整 mip 句柄数组或创建环境 PDF 的占位光源 buffer。无 frame 的录制同样通过参数包保留资源与 kernel。
 Lighting 库只导入 `ShaderCore`，不隐式引入任何参数根布局。
 
+[RTXDIPostProcessParameters.h](../Source/Runtime/Render/Core/RTXDIPostProcessParameters.h) 共用
+RTXDI Confidence（160 字节）和 Composite（56 字节）的 inline 参数声明。
+Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册的具名图像句柄；
+历史纹理和 ping-pong 梯度的访问与同步仍由 RenderGraph 阶段声明负责。
+
 `Core` 保留 `getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
 作为尚未迁移的 ComputeProgram / SDK 调用的兼容入口。它导入 `ParameterRoot`，通过根地址读取资源表和常量，
 因此不能和另一份 inline push 声明混用。数组通过 slot 的 `payload` 地址读取 registry 的句柄，
