@@ -1,32 +1,20 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/LightingKernelParameters.h"
+[[vk::push_constant]] ConstantBuffer<PrepareLightsPdfParams> gParams;
+
+import ShaderCore;
 using Metallic;
 import Lighting;
 using Metallic.Lighting;
 
 // GPU PDF preparation for RTXDI-style local-light and environment importance sampling.
 
-static const uint kMaxPdfMipCount = 16u;
 static const uint kPrepareLocalLights = 0u;
 static const uint kPrepareEnvironment = 1u;
 static const uint kGenerateLocalMip = 2u;
 static const uint kGenerateEnvironmentMip = 3u;
 static const float kPi = 3.14159265358979323846;
 
-#define gEnvironmentMap getResource<Texture2D<float4>>(0)
-
-#define gLocalPdfMips(index) getResourceArray<RWTexture2D<float>>(1, index)
-
-#define gEnvironmentPdfMips(index) getResourceArray<RWTexture2D<float>>(2, index)
-
-struct PrepareLightsPdfPush
-{
-    uint mode;
-    uint lightCount;
-    uint sourceMipLevel;
-    uint padding0;
-    uint2 sourceSize;
-    uint2 destinationSize;
-};
+#define gEnvironmentMap resolveDescriptor(gParams.environment)
 
 float luminance(float3 color)
 {
@@ -54,8 +42,8 @@ void prepareLocalLightPdf(uint2 dispatchPosition, PrepareLightsPdfPush push)
     if (any(pdfPosition >= push.destinationSize)) {
         return;
     }
-    gLocalPdfMips(0)[pdfPosition] = linearIndex < min(push.lightCount, punctualLightCount(getResource<StructuredBuffer<GPUPunctualLight>>(50)))
-        ? punctualLightPower(getResource<StructuredBuffer<GPUPunctualLight>>(50)[linearIndex + 1u])
+    resolveDescriptor(gParams.destinationMip)[pdfPosition] = linearIndex < min(push.lightCount, min(uint(gParams.lights.data[0].positionRange.x), gParams.lights.length() - 1u))
+        ? punctualLightPower(gParams.lights.data[linearIndex + 1u])
         : 0.0;
 }
 
@@ -73,17 +61,17 @@ void prepareEnvironmentPdf(uint2 position, PrepareLightsPdfPush push)
             (kPi / float(max(push.sourceSize.y, 1u)));
         weight = luminance(radiance) * max(sin(theta), 0.0);
     }
-    gEnvironmentPdfMips(0)[position] = weight;
+    resolveDescriptor(gParams.destinationMip)[position] = weight;
 }
 
 float loadLocalPdf(uint mipLevel, uint2 position, uint2 sourceSize)
 {
-    return all(position < sourceSize) ? max(gLocalPdfMips(mipLevel)[position], 0.0) : 0.0;
+    return all(position < sourceSize) ? max(resolveDescriptor(gParams.sourceMip)[position], 0.0) : 0.0;
 }
 
 float loadEnvironmentPdf(uint mipLevel, uint2 position, uint2 sourceSize)
 {
-    return all(position < sourceSize) ? max(gEnvironmentPdfMips(mipLevel)[position], 0.0) : 0.0;
+    return all(position < sourceSize) ? max(resolveDescriptor(gParams.sourceMip)[position], 0.0) : 0.0;
 }
 
 void generateLocalMip(uint2 position, PrepareLightsPdfPush push)
@@ -97,7 +85,7 @@ void generateLocalMip(uint2 position, PrepareLightsPdfPush push)
         loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 0u), push.sourceSize) * 0.25 +
         loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 1u), push.sourceSize) * 0.25 +
         loadLocalPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 1u), push.sourceSize) * 0.25;
-    gLocalPdfMips(push.sourceMipLevel + 1u)[position] = sum;
+    resolveDescriptor(gParams.destinationMip)[position] = sum;
 }
 
 void generateEnvironmentMip(uint2 position, PrepareLightsPdfPush push)
@@ -111,7 +99,7 @@ void generateEnvironmentMip(uint2 position, PrepareLightsPdfPush push)
         loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 0u), push.sourceSize) * 0.25 +
         loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(0u, 1u), push.sourceSize) * 0.25 +
         loadEnvironmentPdf(push.sourceMipLevel, sourcePosition + uint2(1u, 1u), push.sourceSize) * 0.25;
-    gEnvironmentPdfMips(push.sourceMipLevel + 1u)[position] = sum;
+    resolveDescriptor(gParams.destinationMip)[position] = sum;
 }
 
 [shader("compute")]
@@ -119,8 +107,9 @@ void generateEnvironmentMip(uint2 position, PrepareLightsPdfPush push)
 void prepareLightsPdfMain(
     uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    PrepareLightsPdfPush push = getConstants<PrepareLightsPdfPush>();
+    PrepareLightsPdfPush push = gParams.settings;
     if (push.mode == kPrepareLocalLights) {
+        if (gParams.lights.length() == 0u) { return; }
         prepareLocalLightPdf(dispatchThreadId.xy, push);
     } else if (push.mode == kPrepareEnvironment) {
         prepareEnvironmentPdf(dispatchThreadId.xy, push);

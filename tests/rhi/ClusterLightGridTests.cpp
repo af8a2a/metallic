@@ -1,6 +1,7 @@
 #include "RHITest.h"
 
 #include "Runtime/Render/ClusterLightGrid.h"
+#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
@@ -107,7 +108,14 @@ public:
         GRID_CHECK(pool_->reset());
         GRID_CHECK(commands_->begin(frames_[slot].get()));
         GRID_CHECK(host_.beginFrame(nextFrame_ - 1, slot, nullptr, log_, frames_[slot].get()));
+        auto registry = device_->resourceRegistry();
+        GRID_CHECK(registry);
+        const auto before = (*registry)->stats();
         const auto result = grid.record(*device_, *commands_, host_, scene, view, slot, desc, log_);
+        const auto after = (*registry)->stats();
+        // Grid construction uses ordinary BDA data and inline values only.
+        GRID_CHECK(after.descriptorWrites == before.descriptorWrites);
+        GRID_CHECK(after.parameterBytes == before.parameterBytes);
         if (!result) {
             return RHITestResult::fail("ClusterLightGrid record failed: " + log_ + " (" + toString(result) + ")");
         }

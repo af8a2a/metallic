@@ -52,7 +52,7 @@ public:
     // Camera-independent full-scene proposal: never use DrawSet/LightGrid's
     // camera-filtered candidates for secondary path vertices.
     Result<> buildSampling(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
-        TextureView& environment, const ReGIRBuildParameters& parameters,
+        const ReGIRBuildParameters& parameters,
         uint32_t gridSize, uint32_t lightsPerCell, bool buildGrid, std::string& log);
     Buffer* buffer() const { return buffer_.get(); }
     Buffer* reGIRBuffer() const;

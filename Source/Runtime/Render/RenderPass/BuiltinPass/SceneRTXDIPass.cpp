@@ -507,7 +507,7 @@ public:
                 floatProperty(context.properties(), "regirSamplingJitter", 1.0f),
                 0.0f);
             result = lights_.buildSampling(*device_, context.commandBuffer(), *context.subsystems(),
-                *environmentTextureView, reGIRBuild,
+                reGIRBuild,
                 uintProperty(context.properties(), "regirGridSize", kDefaultReGIRGridSize, 4, kMaxReGIRGridSize),
                 uintProperty(context.properties(), "regirLightsPerCell", kDefaultReGIRLightsPerCell, 8, kMaxReGIRLightsPerCell),
                 (push.behaviorFlags & kRTXDIBehaviorReGIR) != 0u ||

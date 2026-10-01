@@ -1,6 +1,7 @@
+#include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/ReGIR.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -22,24 +23,6 @@ namespace {
 inline constexpr const char* kBuildReGIRShaderModuleName = "Features/Lighting/BuildReGIR";
 inline constexpr const char* kBuildReGIREntryPoint = "buildReGIRMain";
 inline constexpr uint32_t kReGIRBuildGroupSize = 256;
-
-struct BuildReGIRPush {
-    uint32_t lightCount = 0;
-    uint32_t gridSize = 0;
-    uint32_t lightsPerCell = 0;
-    uint32_t buildSamples = 0;
-    uint32_t frameIndex = 0;
-    uint32_t padding0 = 0;
-    uint32_t lightSlotCount = 0;
-    uint32_t padding1 = 0;
-    float sceneCenterRadius[4] = {};
-    float samplingJitter = 1.0f;
-    uint32_t padding2 = 0;
-    uint32_t padding3 = 0;
-    uint32_t padding4 = 0;
-};
-
-static_assert(sizeof(BuildReGIRPush) == 64);
 
 std::string resultMessage(std::string_view label, Result<> result)
 {
@@ -86,21 +69,16 @@ ReGIRGridLayout computeReGIRGridLayout(uint32_t gridSize, uint32_t lightsPerCell
 }
 
 struct ReGIRLightSelector::Impl {
-    ComputeProgram program;
+    ComputeKernel program;
+    Device* device = nullptr;
     ReGIRGridLayout layout;
     std::shared_ptr<Buffer> buffer;
-    // Legacy callers without a frame context must keep the selector alive until
-    // GPU completion. Frame-context callers retain only their submitted buffer.
-    std::vector<std::shared_ptr<Buffer>> retiredBuffers;
-    bool needsExplicitRetention = false;
     ResourceState state = ResourceState::Undefined;
 
     void clearGrid()
     {
         layout = {};
         buffer.reset();
-        retiredBuffers.clear();
-        needsExplicitRetention = false;
         state = ResourceState::Undefined;
     }
 };
@@ -138,19 +116,13 @@ Result<> ReGIRLightSelector::initialize(Device& device, std::string& log)
         return compile;
     }
 
-    const ComputeProgramBindingDesc bindings[] = {
-        {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
-        {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer},
-        {.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
-    };
+    impl_->device = &device;
     return impl_->program.initialize(
         device,
-        ComputeProgramDesc{
+        ComputeKernelDesc{
             .spirv = compileResult.spirv,
-            .pushConstantSize = sizeof(BuildReGIRPush),
-            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+            .parameters = parameterAbi<BuildReGIRParams>(kBuildReGIRABI, ParameterTransport::InlinePush),
             .debugName = "BuildReGIR",
-            .requiresRayQuery = false,
         },
         log);
 }
@@ -188,11 +160,7 @@ Result<> ReGIRLightSelector::ensureGrid(
         return result ? makeError(Error::Failure) : result;
     }
 
-    if (impl_->buffer != nullptr && impl_->needsExplicitRetention) {
-        impl_->retiredBuffers.push_back(std::move(impl_->buffer));
-    }
     impl_->buffer = std::move(nextBuffer);
-    impl_->needsExplicitRetention = false;
     impl_->layout = nextLayout;
     impl_->state = ResourceState::Undefined;
     return {};
@@ -216,9 +184,7 @@ Result<> ReGIRLightSelector::build(
     }
     if (auto* frame = commandBuffer.frameContext()) {
         if (!frame->recording()) { return makeError(Error::InvalidArgument); }
-        frame->retain(impl_->buffer);
-    } else {
-        impl_->needsExplicitRetention = true;
+
     }
     commandBuffer.hostWriteBarrier();
 
@@ -231,16 +197,7 @@ Result<> ReGIRLightSelector::build(
     if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = {&toGeneral, 1}}); !commandResult) { return commandResult; }
     impl_->state = ResourceState::General;
 
-    TextureView* const pdfViews[] = {&localLightPdf};
-    const ComputeDispatchBinding bindings[] = {
-        {
-            .binding = 0,
-            .textureViews = {pdfViews, static_cast<uint32_t>(std::size(pdfViews))},
-        },
-        {.binding = 1, .buffer = impl_->buffer.get()},
-        {.binding = 50, .buffer = &punctualLights},
-    };
-    BuildReGIRPush push;
+    BuildReGIRPush push{};
     push.lightCount = parameters.lightCount;
     push.gridSize = impl_->layout.gridSize;
     push.lightsPerCell = impl_->layout.lightsPerCell;
@@ -253,16 +210,19 @@ Result<> ReGIRLightSelector::build(
     push.sceneCenterRadius[3] = parameters.sceneRadius;
     push.samplingJitter = parameters.samplingJitter;
 
-    Result<> result = impl_->program.dispatch(ComputeDispatchDesc{
-        .commandBuffer = &commandBuffer,
-        .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
-        .pushData = &push,
-        .pushDataSize = sizeof(push),
-        .groupCountX = static_cast<uint32_t>((uint64_t(impl_->layout.lightSlotCount) +
-            kReGIRBuildGroupSize - 1u) / kReGIRBuildGroupSize),
-        .groupCountY = 1,
-        .groupCountZ = 1,
-    });
+    auto registry = impl_->device->resourceRegistry();
+    if (!registry) { return makeError(registry.error()); }
+    ParameterWriter writer(*impl_->device, **registry, commandBuffer.frameContext());
+    const BuildReGIRParams params{
+        .localLightPdf = writer.sampledImage(&localLightPdf),
+        .output = writer.dataBuffer(impl_->buffer.get(), 16, 16),
+        .lights = writer.dataBuffer(&punctualLights, 64, 16),
+        .settings = push,
+    };
+    auto encoded = writer.encode(params, kBuildReGIRABI, ParameterTransport::InlinePush);
+    if (!encoded) { return makeError(encoded.error()); }
+    Result<> result = impl_->program.dispatch(commandBuffer, *encoded,
+        static_cast<uint32_t>((uint64_t(impl_->layout.lightSlotCount) + kReGIRBuildGroupSize - 1u) / kReGIRBuildGroupSize));
 
     BufferBarrierDesc toShaderRead{
         .buffer = impl_->buffer.get(),

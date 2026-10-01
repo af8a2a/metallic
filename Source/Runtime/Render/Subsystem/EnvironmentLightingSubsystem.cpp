@@ -1,5 +1,6 @@
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #define STB_IMAGE_STATIC
@@ -39,19 +40,6 @@ constexpr uint32_t kEnvironmentSHCoefficientCount = 9;
 constexpr uint32_t kEnvironmentSHThreadCount = 128;
 constexpr uint32_t kEnvironmentSHMaxDispatchWidth = 65535;
 constexpr uint64_t kEnvironmentSpecularBytes = 256ull * 128 * 8 * sizeof(std::array<float, 4>);
-
-struct EnvironmentLightingPrecomputePush {
-    uint32_t mode = 0;
-    uint32_t width = 1;
-    uint32_t height = 1;
-    uint32_t partialCount = 1;
-    uint32_t dispatchWidth = 1;
-    uint32_t procedural = 0;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
-};
-
-static_assert(sizeof(EnvironmentLightingPrecomputePush) == 32);
 
 } // namespace
 
@@ -124,7 +112,8 @@ struct EnvironmentLightingSubsystem::DecodeJob {
 };
 
 struct EnvironmentLightingSubsystem::GPUPrecompute {
-    ComputeProgram program;
+    ComputeKernel program;
+    Device* device = nullptr;
 
     Result<> initialize(Device& device, std::string& log)
     {
@@ -142,32 +131,14 @@ struct EnvironmentLightingSubsystem::GPUPrecompute {
             }
             return result;
         }
-        const std::array bindings{
-            ComputeProgramBindingDesc{
-                .binding = 0,
-                .kind = ComputeResourceBindingKind::SampledImage,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 1,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 2,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 3,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            },
-        };
+        this->device = &device;
         return program.initialize(
             device,
-            ComputeProgramDesc{
+            ComputeKernelDesc{
                 .spirv = compileResult.spirv,
-                .pushConstantSize = sizeof(EnvironmentLightingPrecomputePush),
-                .bindings = bindings,
+                .parameters = parameterAbi<EnvironmentLightingPrecomputeParams>(
+                    kEnvironmentLightingPrecomputeABI, ParameterTransport::InlinePush),
                 .debugName = "EnvironmentLightingPrecompute",
-                .requiresRayQuery = false,
             },
             log);
     }
@@ -188,15 +159,14 @@ struct EnvironmentLightingSubsystem::GPUPrecompute {
         const uint32_t dispatchWidth = std::min(partialCount, kEnvironmentSHMaxDispatchWidth);
         const uint32_t dispatchHeight =
             (partialCount + dispatchWidth - 1u) / dispatchWidth;
-        TextureView* const radianceViews[] = {&radianceView};
-        const std::array bindings{
-            ComputeDispatchBinding{
-                .binding = 0,
-                .textureViews = {radianceViews, static_cast<uint32_t>(std::size(radianceViews))},
-            },
-            ComputeDispatchBinding{.binding = 1, .buffer = &partials},
-            ComputeDispatchBinding{.binding = 2, .buffer = &coefficients},
-            ComputeDispatchBinding{.binding = 3, .buffer = &specular},
+        auto registry = device->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device, **registry, commandBuffer.frameContext());
+        EnvironmentLightingPrecomputeParams params{
+            .radiance = writer.sampledImage(&radianceView),
+            .partials = writer.dataBuffer(&partials, 16, 16),
+            .coefficients = writer.dataBuffer(&coefficients, 16, 16),
+            .specular = writer.dataBuffer(&specular, 16, 16),
         };
         EnvironmentLightingPrecomputePush push{
             .width = width,
@@ -205,15 +175,13 @@ struct EnvironmentLightingSubsystem::GPUPrecompute {
             .dispatchWidth = dispatchWidth,
             .procedural = procedural ? 1u : 0u,
         };
-        Result<> result = program.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &commandBuffer,
-            .bindings = bindings,
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = dispatchWidth,
-            .groupCountY = dispatchHeight,
-            .groupCountZ = 1,
-        });
+        auto dispatch = [&](uint32_t x, uint32_t y = 1) -> Result<> {
+            params.settings = push;
+            auto encoded = writer.encode(params, kEnvironmentLightingPrecomputeABI, ParameterTransport::InlinePush);
+            if (!encoded) { return makeError(encoded.error()); }
+            return program.dispatch(commandBuffer, *encoded, x, y);
+        };
+        Result<> result = dispatch(dispatchWidth, dispatchHeight);
         if (!result) {
             return result;
         }
@@ -225,24 +193,10 @@ struct EnvironmentLightingSubsystem::GPUPrecompute {
         };
         if (auto commandResult = commandBuffer.synchronize(BarrierDesc{.buffers = {&partialsBarrier, 1}}); !commandResult) { return commandResult; }
         push.mode = 1;
-        result = program.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &commandBuffer,
-            .bindings = bindings,
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = kEnvironmentSHCoefficientCount,
-            .groupCountY = 1,
-            .groupCountZ = 1,
-        });
+        result = dispatch(kEnvironmentSHCoefficientCount);
         if (!result) { return result; }
         push.mode = 2;
-        return program.dispatch({
-            .commandBuffer = &commandBuffer,
-            .bindings = bindings,
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = 256 * 128 * 8 / kEnvironmentSHThreadCount,
-        });
+        return dispatch(256 * 128 * 8 / kEnvironmentSHThreadCount);
     }
 };
 

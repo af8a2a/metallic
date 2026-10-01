@@ -160,7 +160,7 @@ public:
             REGIR_CHECK(wrappedLights.update(*device_, *commands_, samplingHost,
                 nullptr, *cancelledWrapperSettings));
             REGIR_CHECK(wrappedLights.buildSampling(*device_, *commands_, samplingHost,
-                *dummyEnvironmentView_, parameters, 1, kReservoirSlots, true, log_));
+                parameters, 1, kReservoirSlots, true, log_));
             auto* abandonedPdf = wrappedLights.lightPdfView();
             auto* abandonedGrid = wrappedLights.reGIRBuffer();
             REGIR_CHECK(abandonedPdf != nullptr && abandonedGrid != nullptr);
@@ -187,13 +187,21 @@ public:
             REGIR_CHECK(wrappedLights.update(*device_, *commands_, samplingHost,
                 nullptr, *cancelledWrapperSettings));
             REGIR_CHECK(wrappedLights.buildSampling(*device_, *commands_, samplingHost,
-                *dummyEnvironmentView_, parameters, 1, kReservoirSlots, true, log_));
+                parameters, 1, kReservoirSlots, true, log_));
             REGIR_CHECK(wrappedLights.lightPdfView() != abandonedPdf);
             REGIR_CHECK(wrappedLights.reGIRBuffer() != abandonedGrid);
         } else {
-            REGIR_CHECK(pdfCompute_.buildLocalLights(*commands_, *dummyEnvironmentView_, pdf_,
+            auto registry = device_->resourceRegistry();
+            REGIR_CHECK(registry);
+            const auto before = (*registry)->stats();
+            REGIR_CHECK(pdf_.mipView(pdf_.mipCount()) == nullptr);
+            REGIR_CHECK(pdfCompute_.buildLocalLights(*commands_, pdf_,
                 *lightBuffer, lightCount));
             REGIR_CHECK(selector_.build(*commands_, *pdf_.view(), *lightBuffer, parameters));
+            // Neither PDF mip reduction nor ReGIR uploads a parameter/handle table.
+            const auto after = (*registry)->stats();
+            REGIR_CHECK(after.parameterBytes == before.parameterBytes);
+            REGIR_CHECK(after.descriptorWrites - before.descriptorWrites <= pdf_.mipCount() + 1u);
         }
 
         std::unique_ptr<render::Buffer> syntheticGrid;

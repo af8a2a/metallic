@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "ShaderWarmupRequests.h"
 
@@ -125,7 +126,19 @@ int run(int argc, char** argv)
         return 2;
     }
 
-    // Keep progress readable without changing logging in the application.
+    // Restore application logging and console formatting, including failure paths.
+    struct OutputStateGuard {
+        spdlog::level::level_enum level = spdlog::get_level();
+        std::ios::fmtflags flags = std::cout.flags();
+        std::streamsize precision = std::cout.precision();
+
+        ~OutputStateGuard()
+        {
+            spdlog::set_level(level);
+            std::cout.flags(flags);
+            std::cout.precision(precision);
+        }
+    } outputStateGuard;
     spdlog::set_level(spdlog::level::warn);
     const auto start = std::chrono::steady_clock::now();
     size_t selected = 0;
@@ -203,7 +216,7 @@ int run(int argc, char** argv)
 
 } // namespace
 
-int main(int argc, char** argv)
+int metallic::render::runShaderWarmup(int argc, char** argv)
 {
     try {
         return run(argc, argv);
@@ -211,4 +224,20 @@ int main(int argc, char** argv)
         std::cerr << "Shader warmup failed: " << error.what() << '\n';
         return 1;
     }
+}
+
+int metallic::render::warmupShadersForStartup(bool skip)
+{
+    if (skip) {
+        return 0;
+    }
+    std::cout << "[Startup] Warming shader cache before application initialization" << std::endl;
+    char program[] = "MetallicShaderWarmup";
+    char* arguments[] = {program, nullptr};
+    const int result = runShaderWarmup(1, arguments);
+    if (result != 0) {
+        std::cerr << "[Startup] Shader warmup failed; application startup cancelled. "
+                     "Use --skip-shader-warmup to compile on demand.\n";
+    }
+    return result;
 }

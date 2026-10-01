@@ -1,25 +1,16 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/LightingKernelParameters.h"
+[[vk::push_constant]] ConstantBuffer<LightGridDebugParams> gParams;
+
+import ShaderCore;
 using Metallic;
 import Lighting;
 using Metallic.Lighting;
 
-#define gLightGridDebugParams getResource<StructuredBuffer<ClusterLightGridParams>>(0)
+#define gLightGridDebugParams gParams.grid.data
 
-#define gLightGridDebugCells getResource<StructuredBuffer<ClusterLightGridCell>>(1)
+#define gLightGridDebugCells gParams.cells.data
 
-#define gLightGridDebugOutput getResource<RWTexture2D<float4>>(2)
-
-struct LightGridDebugPush
-{
-    uint width;
-    uint height;
-    uint mode;
-    uint sliceIndex;
-    float viewDepth;
-    float heatmapMaxLights;
-    uint flags;
-    uint reserved;
-};
+#define gLightGridDebugOutput resolveDescriptor(gParams.output)
 
 static const uint kLightGridDebugShowGrid = 1u;
 static const uint kLightGridDebugShowLegend = 2u;
@@ -123,7 +114,7 @@ float3 lightGridDebugLegend(float3 color, uint2 pixel, LightGridDebugPush push)
 [numthreads(8, 8, 1)]
 void lightGridDebugMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    LightGridDebugPush push = getConstants<LightGridDebugPush>();
+    LightGridDebugPush push = gParams.settings;
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

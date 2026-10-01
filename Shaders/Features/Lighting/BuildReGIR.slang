@@ -1,4 +1,7 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/LightingKernelParameters.h"
+[[vk::push_constant]] ConstantBuffer<BuildReGIRParams> gParams;
+
+import ShaderCore;
 using Metallic;
 import Lighting;
 using Metallic.Lighting;
@@ -6,29 +9,12 @@ using Metallic.Lighting;
 // GPU construction of a grid ReGIR light selector. Each grid cell owns a
 // fixed-size set of RIS light slots, matching the selection flow used by RTXDI.
 
-#define gLocalLightPdf getResource<Texture2D<float>>(0)
+#define gLocalLightPdf resolveDescriptor(gParams.localLightPdf)
 
-#define gReGIRData getResource<RWStructuredBuffer<uint4>>(1)
+#define gReGIRData gParams.output.data
 
 static const uint kReGIRHeaderRecordCount = 3u;
 static const uint kReGIRMagic = 0x52454749u;
-
-struct BuildReGIRPush
-{
-    uint lightCount;
-    uint gridSize;
-    uint lightsPerCell;
-    uint buildSamples;
-    uint frameIndex;
-    uint padding0;
-    uint lightSlotCount;
-    uint padding1;
-    float4 sceneCenterRadius;
-    float samplingJitter;
-    uint padding2;
-    uint padding3;
-    uint padding4;
-};
 
 float randomFloat(inout uint state)
 {
@@ -115,7 +101,8 @@ bool sampleLocalLightPdf(inout uint seed, uint lightCount, out uint lightIndex, 
 void buildReGIRMain(
     uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    BuildReGIRPush push = getConstants<BuildReGIRPush>();
+    if (gParams.lights.length() == 0u) { return; }
+    BuildReGIRPush push = gParams.settings;
     uint lightSlot = dispatchThreadId.x;
     if (lightSlot >= push.lightSlotCount) {
         return;
@@ -150,14 +137,14 @@ void buildReGIRMain(
     uint selectedLight = 0xffffffffu;
     float selectedTarget = 0.0;
     float weightSum = 0.0;
-    uint lightCount = min(push.lightCount, punctualLightCount(getResource<StructuredBuffer<GPUPunctualLight>>(50)));
+    uint lightCount = min(push.lightCount, min(uint(gParams.lights.data[0].positionRange.x), gParams.lights.length() - 1u));
     for (uint sampleIndex = 0u; lightCount > 0u && sampleIndex < push.buildSamples; ++sampleIndex) {
         uint candidateLight;
         float sourcePdf;
         if (!sampleLocalLightPdf(seed, lightCount, candidateLight, sourcePdf)) {
             continue;
         }
-        GPUPunctualLight light = getResource<StructuredBuffer<GPUPunctualLight>>(50)[candidateLight + 1u];
+        GPUPunctualLight light = gParams.lights.data[candidateLight + 1u];
         float target = punctualLightTargetForVolume(light, cellCenter, cellRadius);
         float candidateWeight = target / (sourcePdf * float(push.buildSamples));
         if (!(candidateWeight > 0.0) || !isfinite(candidateWeight)) { continue; }

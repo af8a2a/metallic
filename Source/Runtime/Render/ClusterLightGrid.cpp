@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -34,16 +35,13 @@ Result<> compileClusterLightGridProgram(std::vector<uint32_t>& spirv, std::strin
     return {};
 }
 
-Result<> initializeClusterLightGridProgram(Device& device, ComputeProgram& program,
+Result<> initializeClusterLightGridProgram(Device& device, ComputeKernel& program,
     const std::vector<uint32_t>& spirv, std::string& log)
 {
-    const std::array<ComputeProgramBindingDesc, 5> bindings{{
-        {.binding = 0}, {.binding = 1}, {.binding = 2}, {.binding = 3}, {.binding = 4}}};
     return program.initialize(device, {
         .spirv = spirv,
-        .bindings = bindings,
+        .parameters = parameterAbi<ClusterLightGridBuildParams>(kClusterLightGridBuildABI, ParameterTransport::InlinePush),
         .debugName = "Cluster light grid",
-        .requiresRayQuery = false,
     }, log);
 }
 
@@ -170,8 +168,6 @@ bool ClusterLightGridSnapshot::valid() const
 
 struct ClusterLightGrid::Resources {
     std::array<std::shared_ptr<Buffer>, 5> buffers;
-    // A legacy command without a frame must not mutate a shared descriptor table.
-    std::shared_ptr<ComputeProgram> untrackedProgram;
     GPUCompletionPoint completion;
     bool cancelled = false;
 };
@@ -193,7 +189,7 @@ private:
 
 class ClusterLightGrid::ShaderReload final : public RenderSubsystemShaderReload {
 public:
-    ShaderReload(ClusterLightGrid& owner, ComputeProgram program, std::vector<uint32_t> spirv)
+    ShaderReload(ClusterLightGrid& owner, ComputeKernel program, std::vector<uint32_t> spirv)
         : owner_(owner), program_(std::move(program)), spirv_(std::move(spirv))
     {
     }
@@ -201,8 +197,8 @@ public:
     void commit() noexcept override
     {
         if (committed_) { return; }
-        // Dispatch retains the old ComputeProgram implementation in its tracked
-        // frame, so replacement needs no device-wide idle or buffer retirement.
+        // Prepared dispatch retains the old executable on both recording paths;
+        // replacement needs no device-wide idle or buffer retirement.
         owner_.program_ = std::move(program_);
         owner_.programSpirv_ = std::move(spirv_);
         owner_.snapshot_ = {};
@@ -211,7 +207,7 @@ public:
 
 private:
     ClusterLightGrid& owner_;
-    ComputeProgram program_;
+    ComputeKernel program_;
     std::vector<uint32_t> spirv_;
     bool committed_ = false;
 };
@@ -265,10 +261,8 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
         result = compileClusterLightGridProgram(programSpirv_, log);
         if (!result) { return result; }
     }
-    const auto untrackedProgram = frame == nullptr ? std::make_shared<ComputeProgram>() : nullptr;
-    ComputeProgram& dispatchProgram = untrackedProgram != nullptr ? *untrackedProgram : program_;
-    if (!dispatchProgram.valid()) {
-        result = initializeClusterLightGridProgram(device, dispatchProgram, programSpirv_, log);
+    if (!program_.valid()) {
+        result = initializeClusterLightGridProgram(device, program_, programSpirv_, log);
         if (!result) { return result; }
     }
     const uint64_t cellCount = uint64_t(params.grid[0]) * params.grid[1] * params.grid[2];
@@ -311,7 +305,6 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
             next->buffers[index]->unmap();
         }
     }
-    next->untrackedProgram = untrackedProgram;
     if (frame != nullptr) {
         next->completion = frame->completion();
         frame->retain(next);
@@ -334,19 +327,19 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         }}};
     if (auto commandResult = commands.synchronize({.buffers = toWrite}); !commandResult) { return commandResult; }
-    std::array<ComputeDispatchBinding, 5> bindings;
-    for (uint32_t index = 0; index < bindings.size(); ++index) {
-        // Bind the entire grow-only allocation. Logical counts in params bound
-        // all shader accesses, including after a viewport or light-count shrink.
-        bindings[index] = {.binding = index, .buffer = next->buffers[index].get()};
-    }
-    result = dispatchProgram.dispatch({
-        .commandBuffer = &commands,
-        .bindings = bindings,
-        .groupCountX = params.grid[0],
-        .groupCountY = params.grid[1],
-        .groupCountZ = params.grid[2],
-    });
+    auto registry = device.resourceRegistry();
+    if (!registry) { return makeError(registry.error()); }
+    ParameterWriter writer(device, **registry, frame);
+    const ClusterLightGridBuildParams arguments{
+        .grid = writer.dataBuffer(next->buffers[0].get(), sizeof(ClusterLightGridParams), alignof(ClusterLightGridParams)),
+        .lights = writer.dataBuffer(next->buffers[1].get(), sizeof(GPUPunctualLight), 16),
+        .candidates = writer.dataBuffer(next->buffers[2].get(), sizeof(uint32_t), alignof(uint32_t)),
+        .cells = writer.dataBuffer(next->buffers[3].get(), sizeof(ClusterLightGridCell), alignof(ClusterLightGridCell)),
+        .indices = writer.dataBuffer(next->buffers[4].get(), sizeof(uint32_t), alignof(uint32_t)),
+    };
+    auto encoded = writer.encode(arguments, kClusterLightGridBuildABI, ParameterTransport::InlinePush);
+    if (!encoded) { return makeError(encoded.error()); }
+    result = program_.dispatch(commands, *encoded, params.grid[0], params.grid[1], params.grid[2]);
     if (!result) {
         publication->cancel();
         log = "ClusterLightGrid compute dispatch failed";
@@ -402,7 +395,7 @@ Result<std::unique_ptr<RenderSubsystemShaderReload>> ClusterLightGrid::prepareSh
     std::vector<uint32_t> nextSpirv;
     Result<> result = compileClusterLightGridProgram(nextSpirv, log);
     if (!result) { return makeError(result.error()); }
-    ComputeProgram nextProgram;
+    ComputeKernel nextProgram;
     result = initializeClusterLightGridProgram(device, nextProgram, nextSpirv, log);
     if (!result) { return makeError(result.error()); }
     outReload = std::make_unique<ShaderReload>(*this, std::move(nextProgram), std::move(nextSpirv));

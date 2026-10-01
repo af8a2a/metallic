@@ -1636,7 +1636,7 @@ public:
             sampling.sceneCenter[2] = center.z;
             sampling.sceneRadius = bounds.valid ? std::max(bounds.radius(), 0.01f) : 1.0f;
             lightResult = lights_.buildSampling(*device_, context.commandBuffer(), *context.subsystems(),
-                *environment.radianceView, sampling, 16, 16, true, syncLog);
+                sampling, 16, 16, true, syncLog);
             if (!lightResult) {
                 spdlog::warn("[ScenePathTracePass] Physical light ReGIR build failed: {}", syncLog);
                 return lightResult;

@@ -72,6 +72,12 @@ FinalBlit、SliderDebug（包括 DLSS-NR overlay）和 AutoExposure 使用 inlin
 AutoExposure 的 Histogram、Reduce、Apply 复用同一份不可变参数；barrier 来自阶段读写声明，不能从 handle 推测访问。
 新增参数 ABI 时应验证字段偏移、GPU 读回、mapped/native 路径和生命周期；共享声明不等于自动完成布局验证。
 
+[LightingKernelParameters.h](../Source/Runtime/Render/Core/LightingKernelParameters.h) 提供 ClusterLightGrid、
+LightGridDebug、PrepareLightsPdf、BuildReGIR 和 EnvironmentLightingPrecompute 的共享 inline 参数。
+普通光照数据通过带范围的 `DataSpan<T>` 访问；PDF 每次归约直接传入源、目标 mip 的 storage handle，
+不再上传完整 mip 句柄数组或创建环境 PDF 的占位光源 buffer。无 frame 的录制同样通过参数包保留资源与 kernel。
+Lighting 库只导入 `ShaderCore`，不隐式引入任何参数根布局。
+
 `Core` 保留 `getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
 作为尚未迁移的 ComputeProgram / SDK 调用的兼容入口。它导入 `ParameterRoot`，通过根地址读取资源表和常量，
 因此不能和另一份 inline push 声明混用。数组通过 slot 的 `payload` 地址读取 registry 的句柄，

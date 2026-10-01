@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/ClusterLightGrid.h"
@@ -5,18 +6,6 @@
 
 namespace metallic::render::builtin_pass {
 namespace {
-
-struct LightGridDebugPush {
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t mode = 0;
-    uint32_t sliceIndex = 16;
-    float viewDepth = 10.0f;
-    float heatmapMaxLights = 32.0f;
-    uint32_t flags = 0;
-    uint32_t reserved = 0;
-};
-static_assert(sizeof(LightGridDebugPush) == 32);
 
 float numberProperty(const RenderGraphProperties& properties, const char* key,
     float fallback, float minimum, float maximum)
@@ -58,19 +47,6 @@ float3 vectorProperty(const RenderGraphProperties& properties, const char* key,
     }
     return float3(values[0], values[1], values[2]);
 }
-
-// Keep descriptors alive on the legacy, untracked command path as well. The
-// command owns this transaction until reset, not merely until queue submission.
-class DebugProgramLifetime final : public SubmissionTransaction {
-public:
-    explicit DebugProgramLifetime(std::shared_ptr<ComputeProgram> program)
-        : SubmissionTransaction([]() {}, []() {}), program_(std::move(program))
-    {
-    }
-
-private:
-    std::shared_ptr<ComputeProgram> program_;
-};
 
 class LightGridDebugPass final : public ComputePass {
 public:
@@ -224,16 +200,6 @@ public:
         const auto* grid = grids_[slot]->snapshot(gpuScene_);
         if (grid == nullptr) { return makeError(Error::Failure); }
 
-        ComputeProgram* program = &program_;
-        if (frame == nullptr) {
-            auto isolated = std::make_shared<ComputeProgram>();
-            result = initializeProgram(*isolated, log);
-            if (!result) { return result; }
-            result = context.commandBuffer().addSubmissionTransaction(
-                std::make_shared<DebugProgramLifetime>(isolated));
-            if (!result) { return result; }
-            program = isolated.get();
-        }
         const std::string mode = stringProperty(props, "visualization", "peak");
         const LightGridDebugPush push{
             .width = desc.width, .height = desc.height,
@@ -246,34 +212,27 @@ public:
                 (boolProperty(&props, "includeGlobalLights", false) ? 4u : 0u) |
                 (boolProperty(&props, "showCounts", false) ? 8u : 0u),
         };
-        const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = grid->parameters},
-            {.binding = 1, .buffer = grid->cells},
-            {.binding = 2, .textureView = color.view()},
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, frame);
+        const LightGridDebugParams params{
+            .grid = writer.dataBuffer(grid->parameters, sizeof(ClusterLightGridParams), alignof(ClusterLightGridParams)),
+            .cells = writer.dataBuffer(grid->cells, sizeof(ClusterLightGridCell), alignof(ClusterLightGridCell)),
+            .output = writer.storageImage(color.view()),
+            .settings = push,
         };
-        return program->dispatch({
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (desc.width + 7u) / 8u,
-            .groupCountY = (desc.height + 7u) / 8u,
-        });
+        auto encoded = writer.encode(params, kLightGridDebugABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        return program_.dispatch(context.commandBuffer(), *encoded, (desc.width + 7u) / 8u, (desc.height + 7u) / 8u);
     }
 
 private:
-    Result<> initializeProgram(ComputeProgram& program, std::string& log)
+    Result<> initializeProgram(ComputeKernel& program, std::string& log)
     {
-        const ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0}, {.binding = 1},
-            {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
-        };
         return program.initialize(*device_, {
             .spirv = spirv_,
-            .pushConstantSize = sizeof(LightGridDebugPush),
-            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+            .parameters = parameterAbi<LightGridDebugParams>(kLightGridDebugABI, ParameterTransport::InlinePush),
             .debugName = "LightGridDebugPass",
-            .requiresRayQuery = false,
         }, log);
     }
 
@@ -310,7 +269,7 @@ private:
     }
 
     Device* device_ = nullptr;
-    ComputeProgram program_;
+    ComputeKernel program_;
     std::vector<uint32_t> spirv_;
     GPUScene gpuScene_;
     GPUSceneViewId view_;

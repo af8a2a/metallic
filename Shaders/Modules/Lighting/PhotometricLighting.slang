@@ -1,7 +1,7 @@
 #language slang 2026
 implementing Lighting;
 
-import Core;
+import ShaderCore;
 using Metallic;
 
 namespace Metallic.Lighting

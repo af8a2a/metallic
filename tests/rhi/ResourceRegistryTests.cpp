@@ -3,6 +3,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PostProcessParameters.h"
+#include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -104,9 +105,10 @@ render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kerne
 
 // Inspect emitted layout, including fields unused by a particular entry point.
 // Sharing declarations alone cannot detect a CPU/Slang packing disagreement.
-class PostProcessParameterLayoutTest final : public RHITest {
+class PostProcessParameterLayoutTest : public RHITest {
 public:
     PostProcessParameterLayoutTest() { type = RHITestType::Resource; name = "post_process_parameter_spirv_layout"; }
+    bool lighting = false;
     RHITestResult run(RHITestContext&) override
     {
         using namespace render;
@@ -128,6 +130,17 @@ public:
                 FIELD(ColorGradingLUTParams, reach), FIELD(ColorGradingLUTParams, gamut), FIELD(ColorGradingLUTParams, gammaTable),
                 FIELD(ColorGradingLUTParams, sampler), FIELD(ColorGradingLUTParams, padding0), FIELD(ColorGradingLUTParams, padding1),
                 FIELD(ColorGradingLUTParams, display)}},
+            {"Metallic.ClusterLightGridBuildParams", {FIELD(ClusterLightGridBuildParams, grid), FIELD(ClusterLightGridBuildParams, lights),
+                FIELD(ClusterLightGridBuildParams, candidates), FIELD(ClusterLightGridBuildParams, cells), FIELD(ClusterLightGridBuildParams, indices)}},
+            {"Metallic.LightGridDebugParams", {FIELD(LightGridDebugParams, grid), FIELD(LightGridDebugParams, cells),
+                FIELD(LightGridDebugParams, output), FIELD(LightGridDebugParams, settings)}},
+            {"Metallic.PrepareLightsPdfParams", {FIELD(PrepareLightsPdfParams, environment), FIELD(PrepareLightsPdfParams, sourceMip),
+                FIELD(PrepareLightsPdfParams, destinationMip), FIELD(PrepareLightsPdfParams, lights), FIELD(PrepareLightsPdfParams, settings)}},
+            {"Metallic.BuildReGIRParams", {FIELD(BuildReGIRParams, localLightPdf), FIELD(BuildReGIRParams, output),
+                FIELD(BuildReGIRParams, lights), FIELD(BuildReGIRParams, padding0), FIELD(BuildReGIRParams, padding1), FIELD(BuildReGIRParams, settings)}},
+            {"Metallic.EnvironmentLightingPrecomputeParams", {FIELD(EnvironmentLightingPrecomputeParams, radiance),
+                FIELD(EnvironmentLightingPrecomputeParams, partials), FIELD(EnvironmentLightingPrecomputeParams, coefficients),
+                FIELD(EnvironmentLightingPrecomputeParams, specular), FIELD(EnvironmentLightingPrecomputeParams, settings)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -140,9 +153,15 @@ public:
             {"Features/PostProcess/AutoExposure", "autoExposureReduceMain", 2},
             {"Features/PostProcess/AutoExposure", "autoExposureApplyMain", 2},
             {"Features/PostProcess/ColorGradingLUT", "composeColorGradingLUT", 3},
+            {"Features/Lighting/ClusterLightGrid", "clusterLightGridMain", 4},
+            {"Features/Debug/LightGridDebug", "lightGridDebugMain", 5},
+            {"Features/Lighting/PrepareLightsPdf", "prepareLightsPdfMain", 6},
+            {"Features/Lighting/BuildReGIR", "buildReGIRMain", 7},
+            {"Features/Environment/EnvironmentLightingPrecompute", "environmentLightingPrecomputeMain", 8},
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
+                if ((program.layout >= 4) != lighting) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
                 std::string log;
                 auto shader = compileSlangShaderToSpirv({.moduleName = program.module, .entryPointName = program.entry,
@@ -183,15 +202,21 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with("PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(lighting ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
         }
-        return RHITestResult::pass("All post-process entries: mapped/native offsets and shared header cache dependency");
+        return RHITestResult::pass("Mapped/native offsets and shared header cache dependency");
     }
 };
 METALLIC_REGISTER_RHI_TEST(PostProcessParameterLayoutTest);
+
+class LightingParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    LightingParameterLayoutTest() { lighting = true; name = "lighting_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(LightingParameterLayoutTest);
 
 class RegistryIdentityTest final : public RHITest {
 public:

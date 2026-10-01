@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 
@@ -81,7 +81,7 @@ struct ClusterLightGridSnapshot {
 class ClusterLightGrid {
 public:
     // Tracked frames permit completed-allocation reuse. Untracked commands own
-    // immutable resources/programs until reset; callers must finish GPU work
+    // immutable resources/executable state until reset; callers must finish GPU work
     // before resetting the command pool, as required by the underlying RHI.
     Result<> record(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
         const GPUScene& scene, GPUSceneViewId view, uint32_t frameSlot,
@@ -98,9 +98,8 @@ private:
     struct Resources;
     class Publication;
     class ShaderReload;
-    ComputeProgram program_;
-    // Canonical committed bytecode is shared by tracked and isolated untracked
-    // programs; failed/discarded reloads must not change either recording path.
+    ComputeKernel program_;
+    // Canonical committed bytecode; failed/discarded reloads do not change the active kernel.
     std::vector<uint32_t> programSpirv_;
     std::shared_ptr<Resources> resources_;
     std::vector<std::shared_ptr<Resources>> resourcePool_;

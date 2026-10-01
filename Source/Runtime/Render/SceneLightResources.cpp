@@ -18,7 +18,7 @@ struct SceneLightResources::SamplingState {
 };
 
 Result<> SceneLightResources::buildSampling(Device& device, CommandBuffer& commands, RenderSubsystemHost& host,
-    TextureView& environment, const ReGIRBuildParameters& parameters,
+    const ReGIRBuildParameters& parameters,
     uint32_t gridSize, uint32_t lightsPerCell, bool buildGrid, std::string& log)
 {
     if (buffer_ == nullptr || parameters.lightCount != lightCount()) {
@@ -46,7 +46,7 @@ Result<> SceneLightResources::buildSampling(Device& device, CommandBuffer& comma
     Result<> transaction = host.deferSubmission(commands, []() {},
         [state = sampling_]() { state->cancelled = true; }).transform([](auto) {});
     if (!transaction) { return transaction; }
-    Result<> result = sampling_->compute.buildLocalLights(commands, environment, sampling_->pdf, *buffer_, lightCount());
+    Result<> result = sampling_->compute.buildLocalLights(commands, sampling_->pdf, *buffer_, lightCount());
     if (!result || !buildGrid) { return result; }
     return sampling_->grid.build(commands, *sampling_->pdf.view(), *buffer_, parameters);
 }

@@ -1,17 +1,20 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/LightingKernelParameters.h"
+[[vk::push_constant]] ConstantBuffer<ClusterLightGridBuildParams> gParams;
+
+import ShaderCore;
 using Metallic;
 import Lighting;
 using Metallic.Lighting;
 
-#define gClusterParams getResource<StructuredBuffer<ClusterLightGridParams>>(0)
+#define gClusterParams gParams.grid.data
 
-#define gClusterLights getResource<StructuredBuffer<ClusterLightData>>(1)
+#define gClusterLights gParams.lights.data
 
-#define gClusterCandidates getResource<StructuredBuffer<uint>>(2)
+#define gClusterCandidates gParams.candidates.data
 
-#define gClusterCells getResource<RWStructuredBuffer<ClusterLightGridCell>>(3)
+#define gClusterCells gParams.cells.data
 
-#define gClusterLightIndices getResource<RWStructuredBuffer<uint>>(4)
+#define gClusterLightIndices gParams.indices.data
 
 static const uint kClusterLightGridThreadCount = 64u;
 groupshared uint gClusterIntersectionCount;

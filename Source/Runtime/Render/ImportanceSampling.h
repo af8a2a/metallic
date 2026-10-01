@@ -44,8 +44,7 @@ public:
 
     bool valid() const;
     TextureView* view() const;
-    TextureView* const* mipViews() const;
-    uint32_t mipViewCount() const;
+    TextureView* mipView(uint32_t mipLevel) const;
     uint32_t sourceWidth() const;
     uint32_t sourceHeight() const;
     uint32_t textureWidth() const;
@@ -72,7 +71,6 @@ public:
     Result<> initialize(Device& device, std::string& log);
     Result<> buildLocalLights(
         CommandBuffer& commandBuffer,
-        TextureView& environmentMap,
         ImportancePdfTexture& localLightPdf,
         Buffer& punctualLights,
         uint32_t lightCount);

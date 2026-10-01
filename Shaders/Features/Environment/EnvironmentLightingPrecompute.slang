@@ -1,4 +1,7 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/LightingKernelParameters.h"
+[[vk::push_constant]] ConstantBuffer<EnvironmentLightingPrecomputeParams> gParams;
+
+import ShaderCore;
 using Metallic;
 import Lighting;
 using Metallic.Lighting;
@@ -11,24 +14,12 @@ static const uint kThreadCount = 128u;
 static const uint kCoefficientCount = SH::L2RGB::kCoefficientCount;
 static const float kPi = 3.14159265358979323846;
 
-#define gEnvironmentMap getResource<Texture2D<float4>>(0)
+#define gEnvironmentMap resolveDescriptor(gParams.radiance)
 
-#define gPartials getResource<RWStructuredBuffer<float4>>(1)
+#define gPartials gParams.partials.data
 
-#define gCoefficients getResource<RWStructuredBuffer<float4>>(2)
-#define gSpecular getResource<RWStructuredBuffer<float4>>(3)
-
-struct EnvironmentLightingPrecomputePush
-{
-    uint mode;
-    uint width;
-    uint height;
-    uint partialCount;
-    uint dispatchWidth;
-    uint procedural;
-    uint padding1;
-    uint padding2;
-};
+#define gCoefficients gParams.coefficients.data
+#define gSpecular gParams.specular.data
 
 groupshared float4 gShared[kCoefficientCount * kThreadCount];
 
@@ -152,7 +143,7 @@ void environmentLightingPrecomputeMain(
     uint3 groupId : SV_GroupID,
     uint groupThreadIndex : SV_GroupIndex)
 {
-    EnvironmentLightingPrecomputePush push = getConstants<EnvironmentLightingPrecomputePush>();
+    EnvironmentLightingPrecomputePush push = gParams.settings;
     if (push.mode == kIntegratePartials) {
         integratePartials(groupId, groupThreadIndex, push);
     } else if (push.mode == kFinalizeCoefficients) {
