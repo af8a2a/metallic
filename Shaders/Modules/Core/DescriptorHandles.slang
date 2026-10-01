@@ -1,5 +1,5 @@
 #language slang 2026
-implementing Core;
+implementing ShaderCore;
 
 // Vulkan acceleration-structure handles carry device addresses in both modes.
 // Slang's native uint64 ResourceHeapEXT load reads incorrect values on GB203.

@@ -307,6 +307,51 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(RenderGraphAccelerationStructureTest);
 
+class OptionalEmptyASPass final : public ComputePass {
+public:
+    RenderPassReflection reflect(const RenderGraphCompileContext&) const override
+    {
+        RenderPassReflection reflection;
+        reflection.addAccelerationStructureOutput("structure").buildWrite()
+            .setOptional(properties().value("optional", true));
+        return reflection;
+    }
+    Result<> execute(RenderGraphExecutionContext&) override { return {}; }
+};
+
+class OptionalEmptyASTest final : public RHITest {
+public:
+    OptionalEmptyASTest() { type = RHITestType::Command; name = "render_graph_optional_as_without_device_support"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        std::string log;
+        auto device = bench::createTestDevice(context, {.applicationName = "Optional AS without support",
+            .enableValidation = context.enableValidation});
+        GRAPH_AS_REQUIRE(device);
+        GRAPH_AS_CHECK(!(*device)->capabilities().rayTracingAccelerationStructure);
+        registerRenderGraphPassType("OptionalEmptyASPass", "Empty optional AS test",
+            [] { return std::make_unique<OptionalEmptyASPass>(); });
+        for (bool optional : {true, false}) {
+            RenderGraph graph;
+            graph.addNode("OptionalEmptyASPass", "Build", {{"optional", optional}});
+            graph.markOutput("Build.structure");
+            RenderGraphExecutor executor;
+            GRAPH_AS_REQUIRE(executor.compile(**device, graph, 1, 1, log));
+            for (uint32_t frame = 0; frame < 3; ++frame) {
+                auto result = executor.execute({.graphicsQueue = (*device)->getQueue(QueueType::Graphics)});
+                if (!optional) {
+                    GRAPH_AS_CHECK(hasError(result, Error::Unsupported));
+                    break;
+                }
+                GRAPH_AS_REQUIRE(result);
+                GRAPH_AS_REQUIRE(executor.waitForSubmittedWork());
+            }
+        }
+        return RHITestResult::pass("Empty optional AS does not create unsupported second-frame barriers; required AS is rejected");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(OptionalEmptyASTest);
+
 #undef GRAPH_AS_CHECK
 #undef GRAPH_AS_REQUIRE
 

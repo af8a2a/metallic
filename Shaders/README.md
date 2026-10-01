@@ -8,7 +8,8 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 
 | 目录 | 职责 |
 | --- | --- |
-| `Modules/Core.slang`、`Modules/Core/` | 统一 compute 资源 ABI、泛型资源访问、相机、顶点解码、SH、显示颜色 |
+| `Modules/ShaderCore.slang`、`Modules/Core/` | DescriptorHandle、DataSpan、相机、顶点解码、SH、显示颜色；不声明 push constant |
+| `Modules/Core.slang` | 旧 ComputeProgram 资源表兼容入口，重新导出 ShaderCore |
 | `Modules/Material.slang`、`Modules/Material/` | CPU/GPU 共用的材质与纹理数据布局 |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
@@ -56,11 +57,25 @@ __include "GPUDriven/GPUDrivenCullingCommon.slang";
 消费者直接导入自己使用的模块，不依赖其他模块的间接导入。
 当前固定的 Slang 2026.1.2 对结构体成员仍需显式标注 `public`，不要依赖新版本的成员默认可见性。
 
-`ParameterRoot` 是 Compute 根参数的唯一声明者；typed kernel 与 Core 资源表都只推送一个 64 位参数地址。
-Core 通过 `getComputeResources()` 从根参数读取资源表和常量地址，RHI 单独管理 heap header。多个导入路径不会声明第二份 push constant。
-`getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
-取代原来的 `METALLIC_RESOURCE`、`METALLIC_RESOURCE_ARRAY`、`METALLIC_CONSTANTS` 宏。
-数组通过 slot 的 `payload` 地址读取共享 registry 的实际句柄，再用 `nonuniform` 选择 descriptor；不要求连续 descriptor 分配。标量存于 slot 的 `handle` 字段。pass 可用本地别名描述槽位，但库不依赖消费者的宏。
+新 compute pass 使用 `ComputeKernel` + `ParameterWriter`，以具名 typed 参数承载资源。
+`ParameterTransport::InlinePush` 将参数块直接推送到 byte 0，不上传 root、slot table 或标量图像句柄数组；
+shader 导入 `ShaderCore` 并声明 `[[vk::push_constant]] ConstantBuffer<Params>`。
+`ParameterTransport::DeviceAddress` 用于较大的参数块；shader 额外导入 `ParameterRoot`，
+通过 `getParameters<Params>()` 读取一个 64 位根地址。后端检查实际 push 数据容量，不会静默截断。
+两种传输共用 registry、资源保留、帧代次检查和 prepared dispatch；ABI 包含传输方式，不能混用。
+CPU 通过 writer 获取 `ShaderSampledImage` / `ShaderStorageImage` / `ShaderSampler`，
+shader 使用对应 `DescriptorHandle<T>` 和 `resolveDescriptor()`；普通数据使用 `ShaderDataSpan` / `DataSpan<T>`。
+不要截断 64 位 handle：AS 仍保留完整地址语义。
+
+[PostProcessParameters.h](../Source/Runtime/Render/Core/PostProcessParameters.h) 共用 C++/Slang 字段声明与显式 padding：
+FinalBlit、SliderDebug（包括 DLSS-NR overlay）和 AutoExposure 使用 inline push，ColorGradingLUT 使用 BDA 参数块。
+AutoExposure 的 Histogram、Reduce、Apply 复用同一份不可变参数；barrier 来自阶段读写声明，不能从 handle 推测访问。
+新增参数 ABI 时应验证字段偏移、GPU 读回、mapped/native 路径和生命周期；共享声明不等于自动完成布局验证。
+
+`Core` 保留 `getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
+作为尚未迁移的 ComputeProgram / SDK 调用的兼容入口。它导入 `ParameterRoot`，通过根地址读取资源表和常量，
+因此不能和另一份 inline push 声明混用。数组通过 slot 的 `payload` 地址读取 registry 的句柄，
+再用 `nonuniform` 选择 descriptor，不要求连续分配。RHI 不在用户 push 数据前插入 heap header。
 
 Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `PunctualSamplingResources`；
 库内不再固定光源、ReGIR、PDF 的槽位。顶点位置读取同样显式接收 buffer；

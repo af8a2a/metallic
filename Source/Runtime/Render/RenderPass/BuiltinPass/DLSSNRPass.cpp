@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDLSSNR.h"
@@ -8,13 +10,6 @@
 
 namespace metallic::render::builtin_pass {
 namespace {
-
-struct SliderDebugPush {
-    float splitPosition;
-    uint32_t horizontal;
-    uint32_t swapSides;
-};
-static_assert(sizeof(SliderDebugPush) == 12);
 
 class DLSSNRPass final : public UnsafePass {
 public:
@@ -238,16 +233,10 @@ private:
         auto result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/SliderDebug",
             .entryPointName = "sliderDebugOverlayMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
-            {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
-        };
         return sliderProgram_.initialize(*device_, {
             .spirv = shader.spirv,
-            .pushConstantSize = sizeof(SliderDebugPush),
-            .bindings = {bindings, 2},
+            .parameters = parameterAbi<SliderDebugParams>(kSliderDebugABI, ParameterTransport::InlinePush),
             .debugName = "DLSSNRSliderDebug",
-            .requiresRayQuery = false,
         }, log);
     }
 
@@ -260,20 +249,17 @@ private:
             properties.value("orientation", "vertical") == "horizontal" ? 1u : 0u,
             properties.value("swapSides", false) ? 1u : 0u,
         };
-        auto& command = context.commandBuffer();
-        auto* source = input.view();
-        const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = {&source, 1}},
-            {.binding = 2, .textureView = output.view()},
-        };
-        return sliderProgram_.dispatch({
-            .commandBuffer = &command,
-            .bindings = {bindings, 2},
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-        });
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        SliderDebugParams params{};
+        params.sourceA = writer.sampledImage(input.view());
+        params.output = writer.storageImage(output.view());
+        params.display = push;
+        auto encoded = writer.encode(params, kSliderDebugABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        return sliderProgram_.dispatch(commands, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
     }
 
     static void copyColor(CommandBuffer& command, TextureHandle input, TextureHandle output)
@@ -328,7 +314,7 @@ private:
     }
 
     Device* device_ = nullptr;
-    ComputeProgram sliderProgram_;
+    ComputeKernel sliderProgram_;
     std::unique_ptr<vulkan::DLSSNRContext> runtime_;
     bool hasHistory_ = false;
     bool failed_ = false;

@@ -1,4 +1,4 @@
-import Core;
+import ShaderCore;
 using Metallic;
 
 // Histogram metering in physical luminance, before exposure and tone mapping.
@@ -6,35 +6,16 @@ using Metallic;
 static const uint kHistogramBins = 64u;
 static const uint kHistogramWeight = 256u;
 
-struct AutoExposurePush
-{
-    uint width;
-    uint height;
-    uint tileCount;
-    uint resetHistory;
-    float minEV100;
-    float maxEV100;
-    float compensation;
-    float manualEV100;
-    float lowPercent;
-    float highPercent;
-    float histogramMin;
-    float histogramMax;
-    float speedUp;
-    float speedDown;
-    float transitionDistance;
-    float deltaSeconds;
-    uint automatic;
-    float sourceExposure;
-    float artisticExposure;
-};
+#include "../../../Source/Runtime/Render/Core/PostProcessParameters.h"
 
-#define gSource getResource<Texture2D<float4>>(0)
-#define gHistogram getResource<RWStructuredBuffer<uint>>(1)
-#define gHistory getResource<RWStructuredBuffer<float4>>(2)
+[[vk::push_constant]] ConstantBuffer<AutoExposureParams> gParams;
+
+#define gSource resolveDescriptor(gParams.source)
+#define gHistogram gParams.histogram.data
+#define gHistory gParams.history.data
 // multiplier, adapted EV100, target EV100, metered luminance (cd/m^2).
-#define gExposure getResource<RWStructuredBuffer<float4>>(3)
-#define gOutput getResource<RWTexture2D<float4>>(4)
+#define gExposure gParams.exposure.data
+#define gOutput resolveDescriptor(gParams.output)
 
 groupshared uint sharedHistogram[kHistogramBins];
 groupshared float reducedHistogram[kHistogramBins];
@@ -52,7 +33,7 @@ float3 physicalColor(uint2 pixel, AutoExposurePush push)
 void autoExposureHistogramMain(uint3 pixel : SV_DispatchThreadID, uint index : SV_GroupIndex,
     uint3 group : SV_GroupID)
 {
-    AutoExposurePush push = getConstants<AutoExposurePush>();
+    AutoExposurePush push = gParams.display;
     if (index < kHistogramBins) { sharedHistogram[index] = 0u; }
     GroupMemoryBarrierWithGroupSync();
     if (pixel.x < push.width && pixel.y < push.height) {
@@ -99,7 +80,7 @@ float adaptEV100(float current, float target, AutoExposurePush push)
 [numthreads(64, 1, 1)]
 void autoExposureReduceMain(uint index : SV_GroupIndex)
 {
-    AutoExposurePush push = getConstants<AutoExposurePush>();
+    AutoExposurePush push = gParams.display;
     float count = 0.0;
     for (uint tile = 0u; tile < push.tileCount; ++tile) {
         count += float(gHistogram[tile * kHistogramBins + index]) / float(kHistogramWeight);
@@ -143,7 +124,7 @@ void autoExposureReduceMain(uint index : SV_GroupIndex)
 [numthreads(8, 8, 1)]
 void autoExposureApplyMain(uint3 pixel : SV_DispatchThreadID)
 {
-    AutoExposurePush push = getConstants<AutoExposurePush>();
+    AutoExposurePush push = gParams.display;
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float3 color = physicalColor(pixel.xy, push) * gExposure[0].x * push.artisticExposure;
     color = min(color, float3(1e30));

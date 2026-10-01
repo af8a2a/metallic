@@ -32,18 +32,21 @@ struct ShaderDataSpan {
 };
 static_assert(sizeof(ShaderDataSpan) == 16);
 
+enum class ParameterTransport : uint8_t { DeviceAddress, InlinePush };
+
 struct ParameterABI {
     uint64_t id = 0;
     uint32_t size = 0;
     uint32_t alignment = 0;
+    ParameterTransport transport = ParameterTransport::DeviceAddress;
     bool operator==(const ParameterABI&) const = default;
 };
 
 template<typename T>
-constexpr ParameterABI parameterAbi(uint64_t id)
+constexpr ParameterABI parameterAbi(uint64_t id, ParameterTransport transport = ParameterTransport::DeviceAddress)
 {
     static_assert(std::is_standard_layout_v<T> && std::is_trivially_copyable_v<T>);
-    return {id, sizeof(T), alignof(T)};
+    return {id, sizeof(T), alignof(T), transport};
 }
 
 namespace detail { struct RegistryState; struct ResourceLeaseState; struct ParameterPacket; struct ParameterChunk; }
@@ -65,6 +68,7 @@ public:
     bool valid() const { return packet_ != nullptr; }
     ParameterABI abi() const;
     uint64_t address() const;
+    std::span<const uint8_t> inlineData() const;
     const void* deviceIdentity() const;
     bool compatible(const CommandBuffer& commands, ParameterABI abi) const;
     // Also usable by raw bindless raster/compute paths: retain this immutable
@@ -149,9 +153,10 @@ public:
     Result<> status() const { return result_; }
 
     template<typename T>
-    [[nodiscard]] Result<EncodedParameters> encode(const T& params, uint64_t abiId)
+    [[nodiscard]] Result<EncodedParameters> encode(const T& params, uint64_t abiId,
+        ParameterTransport transport = ParameterTransport::DeviceAddress)
     {
-        return encodeBytes(&params, parameterAbi<T>(abiId));
+        return encodeBytes(&params, parameterAbi<T>(abiId, transport));
     }
 private:
     [[nodiscard]] Result<EncodedParameters> encodeBytes(const void* params, ParameterABI abi);

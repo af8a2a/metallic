@@ -1,0 +1,112 @@
+#pragma once
+
+// One field declaration for C++ and Slang. Explicit padding keeps nested vector
+// data aligned for both physical-storage parameters and inline push data.
+#ifdef __cplusplus
+#include "Runtime/Render/Core/ResourceRegistry.h"
+#include "Runtime/Render/Core/ColorGrading.h"
+#include <cstddef>
+namespace metallic::render {
+using PostUInt = uint32_t;
+using PostSampled2D = ShaderSampledImage;
+using PostSampled2DScalar = ShaderSampledImage;
+using PostSampled3D = ShaderSampledImage;
+using PostStorage2D = ShaderStorageImage;
+using PostStorage3D = ShaderStorageImage;
+using PostSampler = ShaderSampler;
+using PostUIntData = ShaderDataSpan;
+using PostFloat4Data = ShaderDataSpan;
+#else
+import ShaderCore;
+import ColorGrading;
+using Metallic;
+using Metallic.ColorGrading;
+namespace Metallic {
+typealias PostUInt = uint;
+typealias PostSampled2D = DescriptorHandle<Texture2D<float4>>;
+typealias PostSampled2DScalar = DescriptorHandle<Texture2D<float>>;
+typealias PostSampled3D = DescriptorHandle<Texture3D<float4>>;
+typealias PostStorage2D = DescriptorHandle<RWTexture2D<float4>>;
+typealias PostStorage3D = DescriptorHandle<RWTexture3D<float4>>;
+typealias PostSampler = DescriptorHandle<SamplerState>;
+typealias PostUIntData = DataSpan<uint>;
+typealias PostFloat4Data = DataSpan<float4>;
+#endif
+
+struct DisplayOutputPush {
+    PostUInt hdr, inputEncoding, calibration, sampledSrgb;
+    float paperWhiteNits, peakNits, exposure;
+    PostUInt toneCurve, hasLut;
+};
+
+struct FinalBlitParams {
+    PostStorage2D output;
+    PostSampled2D source;
+    PostSampled3D lut;
+    PostSampler lutSampler;
+    DisplayOutputPush display;
+    PostUInt padding;
+};
+
+struct SliderDebugPush {
+    float splitPosition;
+    PostUInt horizontal, swapSides;
+};
+
+struct SliderDebugParams {
+    PostSampled2D sourceA, sourceB;
+    PostStorage2D output;
+    SliderDebugPush display;
+    PostUInt padding;
+};
+
+struct AutoExposurePush {
+    PostUInt width, height, tileCount, resetHistory;
+    float minEV100, maxEV100, compensation, manualEV100;
+    float lowPercent, highPercent, histogramMin, histogramMax;
+    float speedUp, speedDown, transitionDistance, deltaSeconds;
+    PostUInt automatic;
+    float sourceExposure, artisticExposure;
+};
+
+struct AutoExposureParams {
+    PostSampled2D source;
+    PostStorage2D output;
+    PostUIntData histogram;
+    PostFloat4Data history, exposure;
+    AutoExposurePush display;
+    PostUInt padding;
+};
+
+struct GradingPush {
+    PostUInt transform, hdr;
+    float peak, paperWhite;
+    ColorGradingParameters grade;
+};
+
+#ifdef __cplusplus
+struct alignas(16) ColorGradingLUTParams {
+#else
+struct ColorGradingLUTParams {
+#endif
+    PostStorage3D output;
+    PostSampled2D custom0, custom1, custom2, custom3;
+    PostSampled2DScalar reach, gamut, gammaTable;
+    PostSampler sampler;
+    PostUInt padding0, padding1;
+    GradingPush display;
+};
+
+#ifdef __cplusplus
+inline constexpr uint64_t kFinalBlitABI = 0x46424c4954000001ull;
+inline constexpr uint64_t kSliderDebugABI = 0x534c494445000001ull;
+inline constexpr uint64_t kAutoExposureABI = 0x4558504f53000001ull;
+inline constexpr uint64_t kColorGradingLUTABI = 0x4752414445000001ull;
+static_assert(sizeof(FinalBlitParams) == 72 && offsetof(FinalBlitParams, display) == 32);
+static_assert(sizeof(SliderDebugParams) == 40 && offsetof(SliderDebugParams, display) == 24);
+static_assert(sizeof(AutoExposureParams) == 144 && offsetof(AutoExposureParams, display) == 64);
+static_assert(alignof(ColorGradingLUTParams) == 16);
+static_assert(sizeof(ColorGradingLUTParams) == 224 && offsetof(ColorGradingLUTParams, display) == 80);
+static_assert(offsetof(ColorGradingLUTParams, sampler) == 64 && offsetof(GradingPush, grade) == 16);
+#endif
+} // namespace metallic::render (C++) / Metallic (Slang)

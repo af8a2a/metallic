@@ -2,7 +2,9 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <unordered_map>
 
 namespace metallic::tests {
@@ -104,6 +106,44 @@ public:
         return RHITestResult::pass();
     }
 };
+
+// The real scene exercises typed presentation alongside legacy resource-table passes.
+// Keep this opt-in and bounded; do not substitute the much larger default scene.
+class MiniZorahFinalBlitTest final : public RHITest {
+public:
+    MiniZorahFinalBlitTest() { type = RHITestType::Rendering; name = "minizorah_typed_final_blit_frames"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        const char* enabled = std::getenv("METALLIC_TEST_MINIZORAH");
+        if (!enabled || std::string_view(enabled) != "1") { return RHITestResult::skip("Set METALLIC_TEST_MINIZORAH=1"); }
+        render::RenderSampleLoadResult sample;
+        std::string log;
+        if (!render::loadBuiltInRenderSample("gpu-driven-minizorah-vbuffer", sample, log)) {
+            return RHITestResult::fail(log);
+        }
+        render::RenderGraphPreviewRenderer preview;
+        auto result = preview.initialize(context.enableValidation, false, false);
+        if (!result) { return RHITestResult::fail(std::string("Preview initialization: ") + toString(result)); }
+        for (uint32_t frame = 0; frame < 12; ++frame) {
+            preview.setRecordingWorkerLimit(frame < 6 ? 1 : 4);
+            result = preview.render(sample.graph, 640, 360, "FinalBlit.color");
+            if (!result) {
+                return RHITestResult::fail("MiniZorah frame " + std::to_string(frame) + ": " + toString(result) + ": " + preview.lastLog());
+            }
+            const auto& pixels = preview.pixels();
+            if (pixels.size() != 640 * 360 || std::all_of(pixels.begin(), pixels.end(),
+                    [&](uint32_t pixel) { return pixel == pixels.front(); })) {
+                return RHITestResult::fail("MiniZorah final display is empty or uniform");
+            }
+        }
+        if (!saveRgba8Png(context.outputDirectory / "minizorah_typed_final_blit.png",
+                reinterpret_cast<const uint8_t*>(preview.pixels().data()), 640, 360, log)) {
+            return RHITestResult::fail(log);
+        }
+        return RHITestResult::pass("12 MiniZorah final-display frames with 1/4 recording workers; sampled-image inline parameters");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MiniZorahFinalBlitTest);
 
 class FinalBlitPixelsTest : public RHITest {
 public:

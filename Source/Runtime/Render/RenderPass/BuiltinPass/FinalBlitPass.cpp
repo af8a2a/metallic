@@ -1,6 +1,7 @@
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -83,17 +84,18 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         if (context.device == nullptr) {
             return makeError(Error::InvalidArgument);
         }
         displayOutput_ = context.displayOutput;
-        Result<> result = initializeProgram(*context.device, "finalBlitUvMain", false, false, uvProgram_, log);
+        Result<> result = initializeProgram(*context.device, "finalBlitUvMain", false, uvProgram_, log);
         if (!result) {
             return result;
         }
-        result = initializeProgram(*context.device, "finalBlitMain", true, false, blitProgram_, log);
+        result = initializeProgram(*context.device, "finalBlitMain", false, blitProgram_, log);
         if (!result) { return result; }
-        return initializeProgram(*context.device, "finalBlitMain", true, true, lutProgram_, log);
+        return initializeProgram(*context.device, "finalBlitMain", true, lutProgram_, log);
     }
 
     Result<> execute(RenderGraphExecutionContext& context) override
@@ -126,46 +128,35 @@ public:
         if (!hasLut && sampleSource && (toneCurve == "aces2" || toneCurve == "unreal")) {
             return makeError(Error::InvalidArgument); // Migrate grading to ColorGradingLUTPass.
         }
-        const Push push{isHDROutput(displayOutput_.mode) ? 1u : 0u,
+        const DisplayOutputPush push{isHDROutput(displayOutput_.mode) ? 1u : 0u,
             static_cast<uint32_t>(encoding), calibration ? 1u : 0u, sampledSrgb ? 1u : 0u,
             displayOutput_.paperWhiteNits, displayOutput_.peakNits, std::exp2(displayOutput_.exposureEV),
             toneCurve == "aces2" ? 4u : (toneCurve == "unreal" ? 3u : (toneCurve == "none" ? 2u : (toneCurve == "exponential" ? 1u : 0u))),
             hasLut ? 1u : 0u};
-        TextureView* sourceView = sampleSource ? source.view() : nullptr;
-        std::vector<ComputeDispatchBinding> bindings{
-            {.binding = 0, .textureView = color.view()},
-            {.binding = 1, .textureViews = {&sourceView, 1}},
-        };
-        if (!sampleSource) { bindings.pop_back(); }
-        TextureView* lutView = hasLut ? lut.view() : nullptr;
-        const SamplerDesc sampler{};
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        FinalBlitParams params{};
+        params.output = writer.storageImage(color.view());
+        params.display = push;
+        if (sampleSource) { params.source = writer.sampledImage(source.view()); }
         if (hasLut && sampleSource) {
-            bindings.push_back({.binding = 2, .textureViews = {&lutView, 1}});
-            bindings.push_back({.binding = 3, .sampler = &sampler});
+            params.lut = writer.sampledImage(lut.view());
+            params.lutSampler = writer.sampler(SamplerDesc{});
         }
-        ComputeProgram& program = sampleSource ? (hasLut ? lutProgram_ : blitProgram_) : uvProgram_;
-        return program.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = bindings,
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-        });
+        auto encoded = writer.encode(params, kFinalBlitABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        ComputeKernel& program = sampleSource ? (hasLut ? lutProgram_ : blitProgram_) : uvProgram_;
+        return program.dispatch(commands, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
     }
 
 private:
-    struct Push {
-        uint32_t hdr, inputEncoding, calibration, sampledSrgb;
-        float paperWhiteNits, peakNits, exposure;
-        uint32_t toneCurve;
-        uint32_t hasLut;
-    };
-    static_assert(sizeof(Push) == 36);
+    Device* device_ = nullptr;
 
     static Result<> initializeProgram(
-        Device& device, const char* entryPoint, bool sampleSource, bool withLut,
-        ComputeProgram& program, std::string& log)
+        Device& device, const char* entryPoint, bool withLut,
+        ComputeKernel& program, std::string& log)
     {
         if (program.valid()) {
             return {};
@@ -182,27 +173,16 @@ private:
             log += std::string("FinalBlit shader compilation failed: ") + shader.diagnostics;
             return result;
         }
-        std::vector<ComputeProgramBindingDesc> bindings{
-            {.binding = 0, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 1, .kind = ComputeResourceBindingKind::SampledImage},
-        };
-        if (!sampleSource) { bindings.pop_back(); }
-        if (withLut) {
-            bindings.push_back({.binding = 2, .kind = ComputeResourceBindingKind::SampledImage});
-            bindings.push_back({.binding = 3, .kind = ComputeResourceBindingKind::Sampler});
-        }
-        return program.initialize(device, ComputeProgramDesc{
+        return program.initialize(device, ComputeKernelDesc{
             .spirv = shader.spirv,
-            .pushConstantSize = sizeof(Push),
-            .bindings = bindings,
+            .parameters = parameterAbi<FinalBlitParams>(kFinalBlitABI, ParameterTransport::InlinePush),
             .debugName = entryPoint,
-            .requiresRayQuery = false,
         }, log);
     }
 
-    ComputeProgram uvProgram_;
-    ComputeProgram blitProgram_;
-    ComputeProgram lutProgram_;
+    ComputeKernel uvProgram_;
+    ComputeKernel blitProgram_;
+    ComputeKernel lutProgram_;
     DisplayOutputParameters displayOutput_;
 };
 

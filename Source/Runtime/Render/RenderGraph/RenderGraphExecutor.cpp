@@ -2170,6 +2170,14 @@ struct RenderGraphExecutor::Impl {
             for (const auto& field : node.reflection.fields()) {
                 auto* allocation = fieldResource(node, field);
                 if (!allocation) { continue; }
+                // An optional AS output has no physical accesses on devices
+                // without AS support. Do not carry a fictitious build write to
+                // the next frame and emit a stage the device cannot execute.
+                if (allocation->type == RenderGraphResourceType::AccelerationStructure &&
+                    !device->capabilities().rayTracingAccelerationStructure) {
+                    if (!field.optional) { return makeError(Error::Unsupported); }
+                    continue;
+                }
                 // Graph-owned slots are canonical allocation identities for this
                 // compile generation. Every input alias resolves to the same slot.
                 const auto [entry, inserted] = identities.try_emplace(allocation, resolved.size());

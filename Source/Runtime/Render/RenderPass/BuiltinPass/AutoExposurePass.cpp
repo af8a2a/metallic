@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -7,16 +9,6 @@
 
 namespace metallic::render::builtin_pass {
 namespace {
-
-struct AutoExposurePush {
-    uint32_t width, height, tileCount, resetHistory;
-    float minEV100, maxEV100, compensation, manualEV100;
-    float lowPercent, highPercent, histogramMin, histogramMax;
-    float speedUp, speedDown, transitionDistance, deltaSeconds;
-    uint32_t automatic;
-    float sourceExposure, artisticExposure;
-};
-static_assert(sizeof(AutoExposurePush) == 76);
 
 class AutoExposurePass final : public ComputePass {
 public:
@@ -57,14 +49,8 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         if (context.device == nullptr) { return makeError(Error::InvalidArgument); }
-        const ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
-            {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 2, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 3, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 4, .kind = ComputeResourceBindingKind::StorageImage},
-        };
         const char* entries[] = {"autoExposureHistogramMain", "autoExposureReduceMain", "autoExposureApplyMain"};
         for (size_t i = 0; i < programs_.size(); ++i) {
             if (programs_[i].valid()) { continue; }
@@ -74,10 +60,8 @@ public:
             if (!result) { log += shader.diagnostics; return result; }
             result = programs_[i].initialize(*context.device, {
                 .spirv = shader.spirv,
-                .pushConstantSize = sizeof(AutoExposurePush),
-                .bindings = {bindings, 5},
+                .parameters = parameterAbi<AutoExposureParams>(kAutoExposureABI, ParameterTransport::InlinePush),
                 .debugName = entries[i],
-                .requiresRayQuery = false,
             }, log);
             if (!result) { return result; }
         }
@@ -135,23 +119,20 @@ public:
         Result<> result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
             [] {}, [state = state_] { state->valid = false; }));
         if (!result) { return result; }
-        TextureView* sourceView = source.view();
-        const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = {&sourceView, 1}},
-            {.binding = 1, .buffer = histogram.buffer()},
-            {.binding = 2, .buffer = state_->history.get()},
-            {.binding = 3, .buffer = exposure.buffer()},
-            {.binding = 4, .textureView = color.view()},
-        };
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        AutoExposureParams params{};
+        params.source = writer.sampledImage(source.view());
+        params.output = writer.storageImage(color.view());
+        params.histogram = writer.dataBuffer(histogram.buffer(), 4, 4);
+        params.history = writer.dataBuffer(state_->history.get(), 16, 16);
+        params.exposure = writer.dataBuffer(exposure.buffer(), 16, 16);
+        params.display = push;
+        auto encoded = writer.encode(params, kAutoExposureABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
         const auto record = [&](size_t program, CommandBuffer& stageCommands, uint32_t x, uint32_t y) {
-            return programs_[program].dispatch({
-                .commandBuffer = &stageCommands,
-                .bindings = {bindings, 5},
-                .pushData = &push,
-                .pushDataSize = sizeof(push),
-                .groupCountX = x,
-                .groupCountY = y,
-            });
+            return programs_[program].dispatch(stageCommands, *encoded, x, y);
         };
         using Access = RenderGraphResourceAccess;
         const RenderGraphStageUse histogramUses[] = {
@@ -192,6 +173,7 @@ public:
     }
 
 private:
+    Device* device_ = nullptr;
     static float finiteProperty(const RenderGraphProperties& properties, const char* key,
         float fallback, float minimum, float maximum)
     {
@@ -205,7 +187,7 @@ private:
         std::unique_ptr<Buffer> history;
         bool valid = false;
     };
-    std::array<ComputeProgram, 3> programs_;
+    std::array<ComputeKernel, 3> programs_;
     std::shared_ptr<State> state_;
     std::chrono::steady_clock::time_point lastTime_{};
     uint64_t sceneIdentity_ = 0;

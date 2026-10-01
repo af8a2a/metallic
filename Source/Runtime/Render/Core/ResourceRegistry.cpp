@@ -60,6 +60,7 @@ struct ParameterPacket {
     GPUCompletionPoint completion;
     ParameterABI abi;
     uint64_t address = 0;
+    std::vector<uint8_t> inlineData;
 };
 
 } // namespace detail
@@ -126,6 +127,11 @@ ParameterABI EncodedParameters::abi() const
 uint64_t EncodedParameters::address() const
 {
     return packet_ ? packet_->address : 0;
+}
+
+std::span<const uint8_t> EncodedParameters::inlineData() const
+{
+    return packet_ ? std::span<const uint8_t>(packet_->inlineData) : std::span<const uint8_t>{};
 }
 
 const void* EncodedParameters::deviceIdentity() const
@@ -460,9 +466,19 @@ Result<EncodedParameters> ParameterWriter::encodeBytes(const void* params, Param
 {
     EncodedParameters out;
     if (!result_) { return makeError(result_.error()); }
-    if (!abi.id) { result_ = makeError(Error::InvalidArgument); return makeError(result_.error()); }
+    if (!abi.id || !params || !abi.size || !std::has_single_bit(abi.alignment) || abi.alignment > 4096 ||
+        (abi.transport != ParameterTransport::DeviceAddress && abi.transport != ParameterTransport::InlinePush) ||
+        (abi.transport == ParameterTransport::InlinePush && (abi.size & 3u)) ||
+        (frame_ && (!frame_->recording() || !completion_.sameSubmission(frame_->completion())))) {
+        result_ = makeError(Error::InvalidArgument); return makeError(result_.error());
+    }
     auto packet = std::make_shared<detail::ParameterPacket>();
-    result_ = upload(params, abi.size, abi.alignment, packet->address, packet->allocation);
+    if (abi.transport == ParameterTransport::InlinePush) {
+        const auto* bytes = static_cast<const uint8_t*>(params);
+        packet->inlineData.assign(bytes, bytes + abi.size);
+    } else {
+        result_ = upload(params, abi.size, abi.alignment, packet->address, packet->allocation);
+    }
     if (!result_) { return makeError(result_.error()); }
     packet->registry = registry_; packet->completion = completion_; packet->abi = abi;
     packet->resources = resources_; packet->arrays = arrays_;

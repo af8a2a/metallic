@@ -1,5 +1,5 @@
 #language slang 2026
-implementing Core;
+implementing ShaderCore;
 
 namespace Metallic
 {

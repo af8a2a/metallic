@@ -1,20 +1,11 @@
-import Core;
+import ShaderCore;
 import ColorGrading;
 using Metallic;
 using Metallic.ColorGrading;
 
-struct DisplayOutputPush
-{
-    uint hdr;
-    uint inputEncoding;
-    uint calibration;
-    uint sampledSrgb;
-    float paperWhiteNits;
-    float peakNits;
-    float exposure;
-    uint toneCurve;
-    uint hasLut;
-};
+#include "../../../Source/Runtime/Render/Core/PostProcessParameters.h"
+
+[[vk::push_constant]] ConstantBuffer<FinalBlitParams> gParams;
 
 float3 displayOutput(float3 color, DisplayOutputPush push)
 {
@@ -22,7 +13,7 @@ float3 displayOutput(float3 color, DisplayOutputPush push)
     if ((push.inputEncoding == 1u || push.inputEncoding == 3u) && push.hasLut != 0u) {
         color = float3(isfinite(color.x) ? max(color.x, 0.0) : 0.0,
             isfinite(color.y) ? max(color.y, 0.0) : 0.0, isfinite(color.z) ? max(color.z, 0.0) : 0.0);
-        return applyGradingLut(getResource<Texture3D<float4>>(2), getResource<SamplerState>(3), color * push.exposure);
+        return applyGradingLut(resolveDescriptor(gParams.lut), resolveDescriptor(gParams.lutSampler), color * push.exposure);
     }
 #endif
     if (push.hdr != 0u) {
@@ -42,9 +33,9 @@ float3 displayOutput(float3 color, DisplayOutputPush push)
     return push.sampledSrgb != 0u ? displayLinearToSrgb(color) : color;
 }
 
-#define gOutput getResource<RWTexture2D<float4>>(0)
+#define gOutput resolveDescriptor(gParams.output)
 
-#define gSource getResource<Texture2D<float4>>(1)
+#define gSource resolveDescriptor(gParams.source)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -57,7 +48,7 @@ void finalBlitUvMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         return;
     }
     float2 uv = (float2(pixel) + 0.5) / float2(width, height);
-    DisplayOutputPush push = getConstants<DisplayOutputPush>();
+    DisplayOutputPush push = gParams.display;
     float3 color;
     if (push.calibration != 0u) {
         float3 nits = displayCalibrationNits(uv);
@@ -94,5 +85,5 @@ void finalBlitMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     float3 c01 = gSource.Load(int3(clamp(origin + int2(0, 1), int2(0), maximum), 0)).rgb;
     float3 c11 = gSource.Load(int3(clamp(origin + int2(1, 1), int2(0), maximum), 0)).rgb;
     float3 color = lerp(lerp(c00, c10, weight.x), lerp(c01, c11, weight.x), weight.y);
-    gOutput[pixel] = float4(displayOutput(color, getConstants<DisplayOutputPush>()), 1.0);
+    gOutput[pixel] = float4(displayOutput(color, gParams.display), 1.0);
 }

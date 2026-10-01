@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/Core/ColorGrading.h"
@@ -39,6 +41,7 @@ public:
 
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         if (!context.device) {
             return makeError(Error::InvalidArgument);
         }
@@ -63,18 +66,10 @@ public:
             log += shader.diagnostics;
             return result;
         }
-        std::vector<ComputeProgramBindingDesc> bindings{
-            {.binding = 0, .kind = ComputeResourceBindingKind::StorageImage}};
-        for (uint32_t i = 1; i < 8; ++i) {
-            bindings.push_back({.binding = i, .kind = ComputeResourceBindingKind::SampledImage});
-        }
-        bindings.push_back({.binding = 8, .kind = ComputeResourceBindingKind::Sampler});
         return program_.initialize(*context.device,
                                    {.spirv = shader.spirv,
-                                    .pushConstantSize = sizeof(Push),
-                                    .bindings = bindings,
-                                    .debugName = "ColorGradingLUT",
-                                    .requiresRayQuery = false},
+                                    .parameters = parameterAbi<ColorGradingLUTParams>(kColorGradingLUTABI),
+                                    .debugName = "ColorGradingLUT"},
                                    log);
     }
 
@@ -84,33 +79,33 @@ public:
         if (!lut.valid() || !lut.view() || lut.desc().type != TextureType::Texture3D) {
             return makeError(Error::InvalidArgument);
         }
-        const Push push{transform_, isHDROutput(output_.mode) ? 1u : 0u,
+        const GradingPush push{transform_, isHDROutput(output_.mode) ? 1u : 0u,
                         isHDROutput(output_.mode) ? output_.peakNits : 100.0f, output_.paperWhiteNits,
                         colorGradingParameters(context.properties())};
         auto views = resources_.views();
-        const SamplerDesc sampler{};
-        std::vector<ComputeDispatchBinding> bindings{{.binding = 0, .textureView = lut.view()}};
-        for (uint32_t i = 0; i < views.size(); ++i) {
-            bindings.push_back({.binding = i + 1, .textureViews = {&views[i], 1}});
-        }
-        bindings.push_back({.binding = 8, .sampler = &sampler});
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(),
-                                  .bindings = bindings,
-                                  .pushData = &push,
-                                  .pushDataSize = sizeof(push),
-                                  .groupCountX = 16,
-                                  .groupCountY = 16,
-                                  .groupCountZ = 16});
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        ColorGradingLUTParams params{};
+        params.output = writer.storageImage(lut.view());
+        params.custom0 = writer.sampledImage(views[0]);
+        params.custom1 = writer.sampledImage(views[1]);
+        params.custom2 = writer.sampledImage(views[2]);
+        params.custom3 = writer.sampledImage(views[3]);
+        params.reach = writer.sampledImage(views[4]);
+        params.gamut = writer.sampledImage(views[5]);
+        params.gammaTable = writer.sampledImage(views[6]);
+        params.sampler = writer.sampler(SamplerDesc{});
+        params.display = push;
+        auto encoded = writer.encode(params, kColorGradingLUTABI);
+        if (!encoded) { return makeError(encoded.error()); }
+        return program_.dispatch(commands, *encoded, 16, 16, 16);
     }
 
 private:
-    struct Push {
-        uint32_t transform, hdr;
-        float peak, paperWhite;
-        ColorGradingParameters grade;
-    };
-    static_assert(sizeof(Push) == 144);
-    ComputeProgram program_;
+    Device* device_ = nullptr;
+    ComputeKernel program_;
     ColorGradingResources resources_;
     DisplayOutputParameters output_;
     uint32_t transform_ = 4;

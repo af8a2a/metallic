@@ -1,16 +1,14 @@
-import Core;
+import ShaderCore;
 using Metallic;
 
-struct SliderDebugPush {
-    float splitPosition;
-    uint horizontal;
-    uint swapSides;
-};
+#include "../../../Source/Runtime/Render/Core/PostProcessParameters.h"
 
-#define gPush getConstants<SliderDebugPush>()
-#define gSourceA getResource<Texture2D<float4>>(0)
-#define gSourceB getResource<Texture2D<float4>>(1)
-#define gOutput getResource<RWTexture2D<float4>>(2)
+[[vk::push_constant]] ConstantBuffer<SliderDebugParams> gParams;
+
+#define gPush gParams.display
+#define gSourceA resolveDescriptor(gParams.sourceA)
+#define gSourceB resolveDescriptor(gParams.sourceB)
+#define gOutput resolveDescriptor(gParams.output)
 
 bool sliderDebugUsesSourceA(uint2 pixel, uint width, uint height)
 {

@@ -308,7 +308,7 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
         const auto renderFrame = [&](const char* output = "GPUDriven.visibility") {
             const auto result = preview.render(graph, width, height, output);
             observer.debug.poll();
-            require(bool(result), preview.lastLog());
+            require(bool(result), std::string("Preview frame ") + std::to_string(frames) + ": " + toString(result) + ": " + preview.lastLog());
             ++frames;
             if (frames == 1) { report["firstRenderCompleteSeconds"] = seconds(); }
             if (superSponza) {

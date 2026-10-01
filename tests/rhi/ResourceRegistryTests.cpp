@@ -2,12 +2,14 @@
 #include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <array>
 #include <cstring>
 #include <thread>
+#include <map>
 
 namespace metallic::tests {
 namespace {
@@ -88,15 +90,108 @@ struct Drain {
 };
 
 render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kernel, std::string& log,
-    render::SlangDescriptorHeapMode mode = render::SlangDescriptorHeapMode::Default)
+    render::SlangDescriptorHeapMode mode = render::SlangDescriptorHeapMode::Default,
+    render::ParameterTransport transport = render::ParameterTransport::DeviceAddress)
 {
+    const render::SlangMacroDefine defines[] = {{"INLINE_PARAMETERS", transport == render::ParameterTransport::InlinePush ? "1" : "0"}};
     render::ShaderCompileResult shader;
     auto result = render::compileSlangShaderToSpirv({.moduleName = "RegistryProbe",
         .entryPointName = "registryProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-        .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+        .macroDefines = defines, .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     if (!result) { log = shader.diagnostics; return result; }
-    return kernel.initialize(device, {.spirv = shader.spirv, .parameters = render::parameterAbi<ProbeParams>(kABI)}, log);
+    return kernel.initialize(device, {.spirv = shader.spirv, .parameters = render::parameterAbi<ProbeParams>(kABI, transport)}, log);
 }
+
+// Inspect emitted layout, including fields unused by a particular entry point.
+// Sharing declarations alone cannot detect a CPU/Slang packing disagreement.
+class PostProcessParameterLayoutTest final : public RHITest {
+public:
+    PostProcessParameterLayoutTest() { type = RHITestType::Resource; name = "post_process_parameter_spirv_layout"; }
+    RHITestResult run(RHITestContext&) override
+    {
+        using namespace render;
+#define FIELD(Type, Member) uint32_t(offsetof(Type, Member))
+        struct Layout {
+            const char* name;
+            std::vector<uint32_t> offsets;
+        };
+        const Layout layouts[] = {
+            {"Metallic.FinalBlitParams", {FIELD(FinalBlitParams, output), FIELD(FinalBlitParams, source),
+                FIELD(FinalBlitParams, lut), FIELD(FinalBlitParams, lutSampler), FIELD(FinalBlitParams, display), FIELD(FinalBlitParams, padding)}},
+            {"Metallic.SliderDebugParams", {FIELD(SliderDebugParams, sourceA), FIELD(SliderDebugParams, sourceB),
+                FIELD(SliderDebugParams, output), FIELD(SliderDebugParams, display), FIELD(SliderDebugParams, padding)}},
+            {"Metallic.AutoExposureParams", {FIELD(AutoExposureParams, source), FIELD(AutoExposureParams, output),
+                FIELD(AutoExposureParams, histogram), FIELD(AutoExposureParams, history), FIELD(AutoExposureParams, exposure),
+                FIELD(AutoExposureParams, display), FIELD(AutoExposureParams, padding)}},
+            {"Metallic.ColorGradingLUTParams", {FIELD(ColorGradingLUTParams, output), FIELD(ColorGradingLUTParams, custom0),
+                FIELD(ColorGradingLUTParams, custom1), FIELD(ColorGradingLUTParams, custom2), FIELD(ColorGradingLUTParams, custom3),
+                FIELD(ColorGradingLUTParams, reach), FIELD(ColorGradingLUTParams, gamut), FIELD(ColorGradingLUTParams, gammaTable),
+                FIELD(ColorGradingLUTParams, sampler), FIELD(ColorGradingLUTParams, padding0), FIELD(ColorGradingLUTParams, padding1),
+                FIELD(ColorGradingLUTParams, display)}},
+        };
+#undef FIELD
+        struct Program { const char* module; const char* entry; uint32_t layout; };
+        const Program programs[] = {
+            {"Features/PostProcess/FinalBlit", "finalBlitMain", 0},
+            {"Features/PostProcess/FinalBlit", "finalBlitUvMain", 0},
+            {"Features/Debug/SliderDebug", "sliderDebugMain", 1},
+            {"Features/Debug/SliderDebug", "sliderDebugOverlayMain", 1},
+            {"Features/PostProcess/AutoExposure", "autoExposureHistogramMain", 2},
+            {"Features/PostProcess/AutoExposure", "autoExposureReduceMain", 2},
+            {"Features/PostProcess/AutoExposure", "autoExposureApplyMain", 2},
+            {"Features/PostProcess/ColorGradingLUT", "composeColorGradingLUT", 3},
+        };
+        for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
+            for (const auto& program : programs) {
+                const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
+                std::string log;
+                auto shader = compileSlangShaderToSpirv({.moduleName = program.module, .entryPointName = program.entry,
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = defines, .descriptorHeapMode = mode}, log);
+                if (!shader) { return RHITestResult::fail(log); }
+                const auto& layout = layouts[program.layout];
+                std::vector<uint32_t> ids;
+                std::map<uint32_t, std::map<uint32_t, uint32_t>> offsets;
+                const auto& words = shader->spirv;
+                for (size_t i = 5; i < words.size();) {
+                    const uint32_t count = words[i] >> 16, opcode = words[i] & 0xffff;
+                    REG_CHECK(count && count <= words.size() - i);
+                    if (opcode == 5 && count >= 3) { // OpName
+                        const char* bytes = reinterpret_cast<const char*>(&words[i + 2]);
+                        const size_t capacity = (count - 2) * sizeof(uint32_t);
+                        const void* terminator = std::memchr(bytes, 0, capacity);
+                        REG_CHECK(terminator);
+                        const std::string_view name(bytes, static_cast<const char*>(terminator) - bytes);
+                        if (name == layout.name || name.starts_with(std::string(layout.name) + "_")) {
+                            ids.push_back(words[i + 1]);
+                        }
+                    } else if (opcode == 72 && count == 5 && words[i + 3] == 35) { // OpMemberDecorate Offset
+                        offsets[words[i + 1]][words[i + 2]] = words[i + 4];
+                    }
+                    i += count;
+                }
+                bool matched = false;
+                for (const auto id : ids) {
+                    const auto& members = offsets[id];
+                    if (members.size() != layout.offsets.size()) { continue; }
+                    bool correct = true;
+                    for (uint32_t i = 0; i < layout.offsets.size(); ++i) {
+                        const auto member = members.find(i);
+                        correct &= member != members.end() && member->second == layout.offsets[i];
+                    }
+                    matched |= correct;
+                }
+                if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
+                bool sharedHeader = false;
+                for (const auto& dependency : shader->dependencies) {
+                    sharedHeader |= dependency.ends_with("PostProcessParameters.h");
+                }
+                REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
+            }
+        }
+        return RHITestResult::pass("All post-process entries: mapped/native offsets and shared header cache dependency");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(PostProcessParameterLayoutTest);
 
 class RegistryIdentityTest final : public RHITest {
 public:
@@ -190,14 +285,20 @@ public:
     }
 };
 
-class RegistrySubmissionTest final : public RHITest {
+class RegistrySubmissionTest : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"parameters.submission.lifetime.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
     }
 
-    RegistrySubmissionTest() { type = RHITestType::Command; name = "registry_typed_submission_lifetime"; }
+    explicit RegistrySubmissionTest(render::ParameterTransport transport = render::ParameterTransport::DeviceAddress)
+        : transport_(transport)
+    {
+        type = RHITestType::Command;
+        name = transport == render::ParameterTransport::InlinePush
+            ? "registry_inline_submission_lifetime" : "registry_typed_submission_lifetime";
+    }
     RHITestResult run(RHITestContext& context) override
     {
         bench::TestDevice device;
@@ -210,8 +311,8 @@ public:
         REG_CHECK(registry == sameRegistry);
         render::ComputeKernel firstKernel, secondKernel;
         std::string log;
-        REG_REQUIRE(makeKernel(*device, firstKernel, log));
-        REG_REQUIRE(makeKernel(*device, secondKernel, log));
+        REG_REQUIRE(makeKernel(*device, firstKernel, log, render::SlangDescriptorHeapMode::Default, transport_));
+        REG_REQUIRE(makeKernel(*device, secondKernel, log, render::SlangDescriptorHeapMode::Default, transport_));
         std::unique_ptr<render::Buffer> source, output;
         REG_REQUIRE(makeBuffer(*device, source, 11));
         REG_REQUIRE(makeBuffer(*device, output));
@@ -230,11 +331,15 @@ public:
             render::ParameterWriter writer(*device, first.frame, *registry);
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 100, 0};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI, transport_).transform([&](auto value) { encoded = std::move(value); }));
+            if (transport_ == render::ParameterTransport::InlinePush) {
+                REG_CHECK(encoded.address() == 0 && encoded.inlineData().size() == sizeof(params));
+                REG_CHECK(registry->stats().parameterBytes == 0 && registry->stats().parameterCapacity == 0);
+            }
             stale = encoded;
             REG_REQUIRE(firstKernel.dispatch(*first.commands, encoded, 1));
             params.add = 200; params.index = 1;
-            REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI, transport_).transform([&](auto value) { encoded = std::move(value); }));
             render::BufferBarrierDesc barrier{
                 .buffer = output.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
@@ -249,7 +354,7 @@ public:
             REG_CHECK(oversized.address() != stale.address());
             params.add = 999; // Encoded packets must not reference this mutable CPU struct.
             render::EncodedParameters wrong;
-            REG_REQUIRE(writer.encode(params, kABI + 1).transform([&](auto value) { wrong = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI + 1, transport_).transform([&](auto value) { wrong = std::move(value); }));
             REG_CHECK(render::hasError(firstKernel.dispatch(*first.commands, wrong, 1), render::Error::InvalidArgument));
         }
         source.reset();
@@ -264,8 +369,8 @@ public:
             render::ParameterWriter writer(*device, second.frame, *registry);
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 300, 2};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { encoded = std::move(value); }));
-            REG_CHECK(encoded.address() != stale.address());
+            REG_REQUIRE(writer.encode(params, kABI, transport_).transform([&](auto value) { encoded = std::move(value); }));
+            REG_CHECK(transport_ == render::ParameterTransport::InlinePush || encoded.address() != stale.address());
             REG_REQUIRE(secondKernel.dispatch(*second.commands, encoded, 1));
         }
         REG_REQUIRE(second.submit(tracker, *gate));
@@ -290,7 +395,7 @@ public:
         REG_CHECK(registry->stats().liveDescriptors == 2);
         const uint64_t capacity = registry->stats().parameterCapacity;
 
-        REG_REQUIRE(makeKernel(*device, firstKernel, log));
+        REG_REQUIRE(makeKernel(*device, firstKernel, log, render::SlangDescriptorHeapMode::Default, transport_));
         REG_REQUIRE(first.begin(2));
         std::weak_ptr<void> cancelledAllocation = source->retainAllocation();
         render::EncodedParameters cancelled;
@@ -298,7 +403,7 @@ public:
             render::ParameterWriter writer(*device, first.frame, *registry);
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 1, 0};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI, transport_).transform([&](auto value) { encoded = std::move(value); }));
             REG_REQUIRE(firstKernel.dispatch(*first.commands, encoded, 1));
             cancelled = encoded;
         }
@@ -316,10 +421,18 @@ public:
         REG_CHECK(registry->stats().liveDescriptors == 1);
         return RHITestResult::pass();
     }
+private:
+    render::ParameterTransport transport_;
+};
+
+class RegistryInlineSubmissionTest final : public RegistrySubmissionTest {
+public:
+    RegistryInlineSubmissionTest() : RegistrySubmissionTest(render::ParameterTransport::InlinePush) {}
 };
 
 METALLIC_REGISTER_RHI_TEST(RegistryIdentityTest);
 METALLIC_REGISTER_RHI_TEST(RegistrySubmissionTest);
+METALLIC_REGISTER_RHI_TEST(RegistryInlineSubmissionTest);
 
 class RegistryPipelinedParametersTest final : public RHITest {
 public:
@@ -1422,90 +1535,101 @@ public:
     KernelPreparedDispatchTest() { type = RHITestType::Rendering; name = "compute_kernel_prepared_standalone_batch"; }
     RHITestResult run(RHITestContext& context) override
     {
-        for (const auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
-            bench::TestDevice device;
-            REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Kernel prepared dispatch",
-                .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
-                .transform([&](auto value) { device = std::move(value); }));
-            auto registry = device->resourceRegistry();
-            REG_CHECK(registry);
-            auto& queue = *device->getQueue(render::QueueType::Graphics);
-            std::unique_ptr<render::Buffer> input, output, arguments;
-            REG_REQUIRE(makeBuffer(*device, input, 9));
-            REG_REQUIRE(makeBuffer(*device, output));
-            REG_REQUIRE(makeBuffer(*device, arguments));
-            auto* counts = static_cast<uint32_t*>(arguments->map());
-            REG_CHECK(counts);
-            for (uint32_t i = 0; i < 6; ++i) { counts[i] = 1; }
-            arguments->flush(); arguments->unmap();
-            std::weak_ptr<void> inputLife = input->retainAllocation(), argumentLife = arguments->retainAllocation();
-            Commands recording;
-            REG_REQUIRE(recording.initialize(*device, queue));
-            std::unique_ptr<render::Semaphore> gate;
-            REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
-            Drain drain{queue, *gate};
-            REG_REQUIRE(recording.commands->begin()); // Deliberately no frame.
-            render::PreparedComputeDispatch direct, batch, rejected;
-            {
-                render::ComputeKernel kernels[2];
-                std::string log;
-                for (auto& kernel : kernels) { REG_REQUIRE(makeKernel(*device, kernel, log, mode)); }
-                render::ParameterWriter writer(*device, **registry);
-                ProbeParams params{writer.buffer(input.get()), writer.buffer(output.get()), 1, 0};
-                auto first = writer.encode(params, kABI);
-                REG_CHECK(first);
-                REG_REQUIRE(kernels[0].prepareDispatch(*first, 1).transform([&](auto value) { direct = std::move(value); }));
-                REG_CHECK(!kernels[0].prepareDispatch(*first, 0));
-                auto wrongAbi = writer.encode(params, kABI + 1);
-                REG_CHECK(wrongAbi && !kernels[0].prepareDispatch(*wrongAbi, 1));
-                REG_CHECK(!kernels[0].prepareIndirectBatch({}));
-                render::ComputeIndirectParameters items[2];
-                for (uint32_t i = 0; i < 2; ++i) {
-                    params.add = i + 2; params.index = i + 1;
-                    REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { items[i].parameters = std::move(value); }));
-                    REG_REQUIRE(arguments->slice({12 * i, 12}).transform([&](auto value) { items[i].arguments = std::move(value); }));
-                    items[i].kernel = &kernels[i];
+        for (const auto transport : {render::ParameterTransport::DeviceAddress, render::ParameterTransport::InlinePush}) {
+            for (const auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
+                bench::TestDevice device;
+                REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Kernel prepared dispatch",
+                    .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+                    .transform([&](auto value) { device = std::move(value); }));
+                auto registry = device->resourceRegistry();
+                REG_CHECK(registry);
+                auto& queue = *device->getQueue(render::QueueType::Graphics);
+                std::unique_ptr<render::Buffer> input, output, arguments;
+                REG_REQUIRE(makeBuffer(*device, input, 9));
+                REG_REQUIRE(makeBuffer(*device, output));
+                REG_REQUIRE(makeBuffer(*device, arguments));
+                auto* counts = static_cast<uint32_t*>(arguments->map());
+                REG_CHECK(counts);
+                for (uint32_t i = 0; i < 6; ++i) { counts[i] = 1; }
+                arguments->flush(); arguments->unmap();
+                std::weak_ptr<void> inputLife = input->retainAllocation(), argumentLife = arguments->retainAllocation();
+                Commands recording;
+                REG_REQUIRE(recording.initialize(*device, queue));
+                std::unique_ptr<render::Semaphore> gate;
+                REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+                Drain drain{queue, *gate};
+                REG_REQUIRE(recording.commands->begin()); // Deliberately no frame.
+                render::PreparedComputeDispatch direct, batch, rejected;
+                {
+                    render::ComputeKernel kernels[2];
+                    std::string log;
+                    for (auto& kernel : kernels) { REG_REQUIRE(makeKernel(*device, kernel, log, mode, transport)); }
+                    render::ParameterWriter writer(*device, **registry);
+                    ProbeParams params{writer.buffer(input.get()), writer.buffer(output.get()), 1, 0};
+                    auto first = writer.encode(params, kABI, transport);
+                    REG_CHECK(first);
+                    REG_CHECK(first->inlineData().empty() == (transport == render::ParameterTransport::DeviceAddress));
+                    const auto before = (*registry)->stats().parameterBytes;
+                    const auto wrongTransport = transport == render::ParameterTransport::InlinePush
+                        ? render::ParameterTransport::DeviceAddress : render::ParameterTransport::InlinePush;
+                    auto mismatch = writer.encode(params, kABI, wrongTransport);
+                    REG_CHECK(mismatch && !kernels[0].prepareDispatch(*mismatch, 1));
+                    if (transport == render::ParameterTransport::DeviceAddress) {
+                        REG_CHECK((*registry)->stats().parameterBytes == before);
+                    }
+                    REG_REQUIRE(kernels[0].prepareDispatch(*first, 1).transform([&](auto value) { direct = std::move(value); }));
+                    REG_CHECK(!kernels[0].prepareDispatch(*first, 0));
+                    auto wrongAbi = writer.encode(params, kABI + 1, transport);
+                    REG_CHECK(wrongAbi && !kernels[0].prepareDispatch(*wrongAbi, 1));
+                    REG_CHECK(!kernels[0].prepareIndirectBatch({}));
+                    render::ComputeIndirectParameters items[2];
+                    for (uint32_t i = 0; i < 2; ++i) {
+                        params.add = i + 2; params.index = i + 1;
+                        REG_REQUIRE(writer.encode(params, kABI, transport).transform([&](auto value) { items[i].parameters = std::move(value); }));
+                        REG_REQUIRE(arguments->slice({12 * i, 12}).transform([&](auto value) { items[i].arguments = std::move(value); }));
+                        items[i].kernel = &kernels[i];
+                    }
+                    REG_REQUIRE(kernels[0].prepareIndirectBatch(items).transform([&](auto value) { batch = std::move(value); }));
+                    auto saved = items[1].arguments;
+                    items[1].arguments = {};
+                    REG_CHECK(!kernels[0].prepareIndirectBatch(items));
+                    items[1].arguments = saved;
+                    params.add = 999; params.index = 15;
+                    REG_REQUIRE(writer.encode(params, kABI, transport).transform([&](auto value) { items[0].parameters = std::move(value); }));
+                    render::RenderFrameContext frame;
+                    REG_REQUIRE(frame.begin(0));
+                    render::ParameterWriter scopedWriter(*device, frame, **registry);
+                    const ProbeParams scoped{scopedWriter.buffer(input.get()), scopedWriter.buffer(output.get()), 999, 15};
+                    REG_REQUIRE(scopedWriter.encode(scoped, kABI, transport).transform([&](auto value) { items[1].parameters = std::move(value); }));
+                    REG_REQUIRE(kernels[0].prepareIndirectBatch(items).transform([&](auto value) { rejected = std::move(value); }));
+                    frame.cancel();
                 }
-                REG_REQUIRE(kernels[0].prepareIndirectBatch(items).transform([&](auto value) { batch = std::move(value); }));
-                auto saved = items[1].arguments;
-                items[1].arguments = {};
-                REG_CHECK(!kernels[0].prepareIndirectBatch(items));
-                items[1].arguments = saved;
-                params.add = 999; params.index = 15;
-                REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { items[0].parameters = std::move(value); }));
-                render::RenderFrameContext frame;
-                REG_REQUIRE(frame.begin(0));
-                render::ParameterWriter scopedWriter(*device, frame, **registry);
-                const ProbeParams scoped{scopedWriter.buffer(input.get()), scopedWriter.buffer(output.get()), 999, 15};
-                REG_REQUIRE(scopedWriter.encode(scoped, kABI).transform([&](auto value) { items[1].parameters = std::move(value); }));
-                REG_REQUIRE(kernels[0].prepareIndirectBatch(items).transform([&](auto value) { rejected = std::move(value); }));
-                frame.cancel();
+                input.reset(); arguments.reset();
+                REG_CHECK(!inputLife.expired() && !argumentLife.expired());
+                // No prefix of a batch may execute when a later parameter packet is stale.
+                REG_CHECK(render::hasError(rejected.record(*recording.commands), render::Error::InvalidArgument));
+                rejected = {};
+                REG_REQUIRE(direct.record(*recording.commands));
+                REG_REQUIRE(batch.record(*recording.commands));
+                direct = {}; batch = {};
+                REG_REQUIRE(recording.commands->end());
+                render::CommandBuffer* submitted[] = {recording.commands.get()};
+                REG_REQUIRE(queue.submit({.commandBuffers = submitted}));
+                REG_REQUIRE(queue.waitIdle());
+                output->invalidate();
+                const auto* actual = static_cast<const uint32_t*>(output->map());
+                REG_CHECK(actual);
+                bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(actual, 16));
+                const bool correct = actual[0] == 10 && actual[1] == 11 && actual[2] == 12 && actual[15] == 0;
+                output->unmap();
+                REG_CHECK(correct);
+                REG_REQUIRE(recording.pool->reset());
+                REG_REQUIRE(recording.commands->begin()); // Reuse releases the submitted command snapshot.
+                REG_REQUIRE(recording.commands->end());
+                REG_CHECK(inputLife.expired() && argumentLife.expired());
             }
-            input.reset(); arguments.reset();
-            REG_CHECK(!inputLife.expired() && !argumentLife.expired());
-            // No prefix of a batch may execute when a later parameter packet is stale.
-            REG_CHECK(render::hasError(rejected.record(*recording.commands), render::Error::InvalidArgument));
-            rejected = {};
-            REG_REQUIRE(direct.record(*recording.commands));
-            REG_REQUIRE(batch.record(*recording.commands));
-            direct = {}; batch = {};
-            REG_REQUIRE(recording.commands->end());
-            render::CommandBuffer* submitted[] = {recording.commands.get()};
-            REG_REQUIRE(queue.submit({.commandBuffers = submitted}));
-            REG_REQUIRE(queue.waitIdle());
-            output->invalidate();
-            const auto* actual = static_cast<const uint32_t*>(output->map());
-            REG_CHECK(actual);
-            bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(actual, 16));
-            const bool correct = actual[0] == 10 && actual[1] == 11 && actual[2] == 12 && actual[15] == 0;
-            output->unmap();
-            REG_CHECK(correct);
-            REG_REQUIRE(recording.pool->reset());
-            REG_REQUIRE(recording.commands->begin()); // Reuse releases the submitted command snapshot.
-            REG_REQUIRE(recording.commands->end());
-            REG_CHECK(inputLife.expired() && argumentLife.expired());
         }
-        return RHITestResult::pass("Mapped/native: standalone storage, direct/batch execution, ABI checks, stale-tail rejection and retained allocations");
+        return RHITestResult::pass("BDA/inline, mapped/native: standalone storage, direct/batch execution, ABI checks, stale-tail rejection and retained allocations");
     }
 };
 METALLIC_REGISTER_RHI_TEST(KernelPreparedDispatchTest);
