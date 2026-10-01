@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/PathTraceStageParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNRCWrapper.h"
@@ -78,40 +80,6 @@ constexpr const char* toString(PathTracePermutation permutation)
         return "?";
     }
 }
-
-struct SceneSharcMaintenancePush {
-    float cameraPosition[4] = {};
-    float cameraPositionPrev[4] = {};
-    float sceneScale = 1.0f;
-    uint32_t entriesNum = 0;
-    uint32_t accumulationFrameNum = kSharcDefaultMaxAccumulatedFrames;
-    uint32_t staleFrameNumMax = kSharcDefaultStaleFrameNum;
-    uint32_t frameIndex = 0;
-};
-
-// The maintenance shader reads its parameters from the front of the shared
-// per-frame cache parameter buffer; keep the common prefix layout locked.
-static_assert(offsetof(SceneSharcMaintenancePush, cameraPosition) ==
-    offsetof(ScenePathTraceCacheParams, sharcCameraPosition));
-static_assert(offsetof(SceneSharcMaintenancePush, sceneScale) ==
-    offsetof(ScenePathTraceCacheParams, sharcSceneScale));
-static_assert(offsetof(SceneSharcMaintenancePush, entriesNum) ==
-    offsetof(ScenePathTraceCacheParams, sharcEntriesNum));
-static_assert(offsetof(SceneSharcMaintenancePush, accumulationFrameNum) ==
-    offsetof(ScenePathTraceCacheParams, sharcAccumulationFrameNum));
-static_assert(offsetof(SceneSharcMaintenancePush, staleFrameNumMax) ==
-    offsetof(ScenePathTraceCacheParams, sharcStaleFrameNumMax));
-static_assert(offsetof(SceneSharcMaintenancePush, frameIndex) ==
-    offsetof(ScenePathTraceCacheParams, frameIndex));
-
-struct ScenePathTraceTonemapPush {
-    uint32_t width = 1;
-    uint32_t height = 1;
-    float exposure = 1.0f;
-    uint32_t outputLinear = 0;
-    uint32_t hasHistory = 0;
-    uint32_t accumulationFrame = 0;
-};
 
 struct OpenPBRVec3 {
     float x;
@@ -1337,26 +1305,8 @@ public:
             }
 
             // SHaRC maintenance programs (clear + resolve).
-            const std::array<ComputeProgramBindingDesc, 4> maintenanceBindings{
-                ComputeProgramBindingDesc{
-                    .binding = 0,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 1,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 2,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 3,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                },
-            };
             auto compileMaintenance =
-                [&](const char* entryPointName, ComputeProgram& outProgram) -> Result<> {
+                [&](const char* entryPointName, ComputeKernel& outProgram) -> Result<> {
                 ShaderCompileResult maintenanceCompile;
                 Result<> maintenanceResult = compileSlangShaderToSpirv(SlangShaderDesc{
                     .moduleName = kSceneSharcMaintenanceShaderModuleName,
@@ -1384,12 +1334,10 @@ public:
                     std::string("ScenePathTracePass.") + entryPointName;
                 maintenanceResult = outProgram.initialize(
                     *context.device,
-                    ComputeProgramDesc{
+                    ComputeKernelDesc{
                         .spirv = maintenanceCompile.spirv,
-                        .pushConstantSize = sizeof(SceneSharcMaintenancePush),
-                        .bindings = maintenanceBindings,
+                        .parameters = parameterAbi<SharcMaintenanceParams>(kSharcMaintenanceABI, ParameterTransport::InlinePush),
                         .debugName = maintenanceDebugName.c_str(),
-                        .requiresRayQuery = false,
                     },
                     programLog);
                 if (!programLog.empty()) {
@@ -1475,20 +1423,6 @@ public:
             // Tonemap pass producing the final displayable color after the
             // NRC resolve has added the predicted radiance.
             if (!tonemapProgram_.valid()) {
-                const std::array<ComputeProgramBindingDesc, 3> tonemapBindings{
-                    ComputeProgramBindingDesc{
-                        .binding = 0,
-                        .kind = ComputeResourceBindingKind::StorageImage,
-                    },
-                    ComputeProgramBindingDesc{
-                        .binding = 1,
-                        .kind = ComputeResourceBindingKind::StorageImage,
-                    },
-                    ComputeProgramBindingDesc{
-                        .binding = 2,
-                        .kind = ComputeResourceBindingKind::StorageImage,
-                    },
-                };
                 ShaderCompileResult tonemapCompile;
                 Result<> tonemapResult = compileSlangShaderToSpirv(SlangShaderDesc{
                     .moduleName = kScenePathTraceTonemapShaderModuleName,
@@ -1512,12 +1446,10 @@ public:
                 std::string programLog;
                 tonemapResult = tonemapProgram_.initialize(
                     *context.device,
-                    ComputeProgramDesc{
+                    ComputeKernelDesc{
                         .spirv = tonemapCompile.spirv,
-                        .pushConstantSize = sizeof(ScenePathTraceTonemapPush),
-                        .bindings = tonemapBindings,
+                        .parameters = parameterAbi<PathTraceTonemapParams>(kPathTraceTonemapABI, ParameterTransport::InlinePush),
                         .debugName = "ScenePathTracePass.Tonemap",
-                        .requiresRayQuery = false,
                     },
                     programLog);
                 if (!programLog.empty()) {
@@ -2547,6 +2479,19 @@ private:
         params.sharcUpdateStride = uintProperty(
             context.properties(), "sharc.updateStride", kSharcDefaultUpdateStride, 1, 16);
 
+        params.sharcAccumulationFrameNum = uintProperty(
+            context.properties(),
+            "sharc.maxAccumulatedFrames",
+            kSharcDefaultMaxAccumulatedFrames,
+            1,
+            1024);
+        params.sharcStaleFrameNumMax = uintProperty(
+            context.properties(),
+            "sharc.staleFrameNum",
+            kSharcDefaultStaleFrameNum,
+            8,
+            1024);
+
         result = writeCacheParamsBuffer(commandBuffer, params);
         if (!result) {
             return result;
@@ -2559,23 +2504,13 @@ private:
         const uint32_t updateWidth = (push.width + stride - 1u) / stride;
         const uint32_t updateHeight = (push.height + stride - 1u) / stride;
         // SHaRC resolve: combine per-frame accumulation with previous data.
-        SceneSharcMaintenancePush resolvePush;
+        SceneSharcMaintenancePush resolvePush{};
         copyFloat4(push.eye, resolvePush.cameraPosition);
         copyFloat4(push.previousEye, resolvePush.cameraPositionPrev);
         resolvePush.sceneScale = params.sharcSceneScale;
         resolvePush.entriesNum = sharcEntryCount_;
-        resolvePush.accumulationFrameNum = uintProperty(
-            context.properties(),
-            "sharc.maxAccumulatedFrames",
-            kSharcDefaultMaxAccumulatedFrames,
-            1,
-            1024);
-        resolvePush.staleFrameNumMax = uintProperty(
-            context.properties(),
-            "sharc.staleFrameNum",
-            kSharcDefaultStaleFrameNum,
-            8,
-            1024);
+        resolvePush.accumulationFrameNum = params.sharcAccumulationFrameNum;
+        resolvePush.staleFrameNumMax = params.sharcStaleFrameNumMax;
         resolvePush.frameIndex = push.accumulationFrame;
         // SHaRC render/query at full resolution with early termination.
         std::vector<ComputeDispatchBinding> queryBindings = baseBindings;
@@ -2590,10 +2525,10 @@ private:
             if (!result) { return result; }
             const auto access = i == 0 ? RenderGraphResourceAccess::BufferShaderRead
                 : RenderGraphResourceAccess::BufferStorageReadWrite;
-            maintenanceUses.push_back({names[i], access});
+            if (i != 0) { maintenanceUses.push_back({names[i], access}); }
             resources.uses.push_back({names[i], access});
         }
-        SceneSharcMaintenancePush clearPush;
+        SceneSharcMaintenancePush clearPush{};
         clearPush.entriesNum = sharcEntryCount_;
         const uint32_t maintenanceGroups = (sharcEntryCount_ + kSharcMaintenanceBlockSize - 1u) / kSharcMaintenanceBlockSize;
         std::vector<RenderGraphStage> stages;
@@ -2639,25 +2574,22 @@ private:
 
     Result<> dispatchSharcMaintenance(
         CommandBuffer& commandBuffer,
-        ComputeProgram& program,
+        ComputeKernel& program,
         const SceneSharcMaintenancePush& maintenancePush,
         uint32_t groupCount)
     {
-        const std::array<ComputeDispatchBinding, 4> bindings{
-            ComputeDispatchBinding{.binding = 0, .buffer = sharcHashEntriesBuffer_.get()},
-            ComputeDispatchBinding{.binding = 1, .buffer = sharcAccumulationBuffer_.get()},
-            ComputeDispatchBinding{.binding = 2, .buffer = sharcResolvedBuffer_.get()},
-            ComputeDispatchBinding{.binding = 3, .buffer = cacheParamsBuffer_.get()},
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, commandBuffer.frameContext());
+        const SharcMaintenanceParams params{
+            .hashEntries = writer.buffer(sharcHashEntriesBuffer_.get()),
+            .accumulation = writer.buffer(sharcAccumulationBuffer_.get()),
+            .resolved = writer.buffer(sharcResolvedBuffer_.get()),
+            .settings = maintenancePush,
         };
-        return program.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &commandBuffer,
-            .bindings = bindings,
-            .pushData = &maintenancePush,
-            .pushDataSize = sizeof(maintenancePush),
-            .groupCountX = std::max(groupCount, 1u),
-            .groupCountY = 1,
-            .groupCountZ = 1,
-        });
+        auto encoded = writer.encode(params, kSharcMaintenanceABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        return program.dispatch(commandBuffer, *encoded, std::max(groupCount, 1u));
     }
 
     void appendSharcDispatchBindings(std::vector<ComputeDispatchBinding>& bindings) const
@@ -2852,11 +2784,17 @@ private:
             .hasHistory = push.hasHistory,
             .accumulationFrame = push.accumulationFrame,
         };
-        const std::array<ComputeDispatchBinding, 3> tonemapBindings{
-            ComputeDispatchBinding{.binding = 0, .textureView = historyCurrentView},
-            ComputeDispatchBinding{.binding = 1, .textureView = context.outputTexture("color").view()},
-            ComputeDispatchBinding{.binding = 2, .textureView = historyPreviousView},
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter tonemapWriter(*device_, **registry, commandBuffer.frameContext());
+        const PathTraceTonemapParams tonemapParams{
+            .source = tonemapWriter.storageImage(historyCurrentView),
+            .output = tonemapWriter.storageImage(context.outputTexture("color").view()),
+            .historyPrevious = tonemapWriter.storageImage(historyPreviousView),
+            .settings = tonemapPush,
         };
+        auto tonemapEncoded = tonemapWriter.encode(tonemapParams, kPathTraceTonemapABI, ParameterTransport::InlinePush);
+        if (!tonemapEncoded) { return makeError(tonemapEncoded.error()); }
         using Access = RenderGraphResourceAccess;
         auto resources = stageResources(context, push);
         result = importBuffer(resources, "cacheParams", cacheParamsBuffer_.get());
@@ -2916,15 +2854,8 @@ private:
             RenderGraphStage{"NRC resolve", resolveUses,
                 [&](CommandBuffer& commands) { return nrc_.resolve(commands, *historyCurrentView); }, RenderGraphPassKind::Unsafe},
             RenderGraphStage{"NRC tonemap", tonemapUses, [&](CommandBuffer& commands) {
-                return tonemapProgram_.dispatch({
-                    .commandBuffer = &commands,
-                    .bindings = tonemapBindings,
-                    .pushData = &tonemapPush,
-                    .pushDataSize = sizeof(tonemapPush),
-                    .groupCountX = (push.width + 7) / 8,
-                    .groupCountY = (push.height + 7) / 8,
-                    .groupCountZ = 1,
-                });
+                return tonemapProgram_.dispatch(commands, *tonemapEncoded,
+                    (push.width + 7u) / 8u, (push.height + 7u) / 8u);
             }}};
         const auto pending = nrcEndFramePending_;
         const auto discarded = nrcDiscarded_;
@@ -3329,9 +3260,9 @@ private:
     Queue* graphicsQueue_ = nullptr;
     OpenPBRLutResources openPBRLuts_;
     std::array<ComputeProgram, static_cast<size_t>(PathTracePermutation::Count)> programs_;
-    ComputeProgram sharcClearProgram_;
-    ComputeProgram sharcResolveProgram_;
-    ComputeProgram tonemapProgram_;
+    ComputeKernel sharcClearProgram_;
+    ComputeKernel sharcResolveProgram_;
+    ComputeKernel tonemapProgram_;
     std::string compiledShaderKey_;
     uint32_t cacheMode_ = kScenePathTraceCacheModeOff;
     struct CacheParamsAllocation {

@@ -83,6 +83,11 @@ RTXDI Confidence（160 字节）和 Composite（56 字节）的 inline 参数声
 Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册的具名图像句柄；
 历史纹理和 ping-pong 梯度的访问与同步仍由 RenderGraph 阶段声明负责。
 
+[PathTraceStageParameters.h](../Source/Runtime/Render/Core/PathTraceStageParameters.h) 提供 SHaRC clear/resolve（96 字节）
+和 NRC 输出累积/tonemap（48 字节）的共享 inline 参数。SHaRC SDK 需要 StructuredBuffer 对象进行原子操作，
+因此这三个缓存 buffer 使用具名 descriptor handle；维护阶段直接读取 settings，不再依赖 cacheParams 的公共前缀。
+主追踪及其 OpenPBR、NTC、VisibilityBuffer 共享资源表仍使用下述兼容入口。
+
 `Core` 保留 `getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
 作为尚未迁移的 ComputeProgram / SDK 调用的兼容入口。它导入 `ParameterRoot`，通过根地址读取资源表和常量，
 因此不能和另一份 inline push 声明混用。数组通过 slot 的 `payload` 地址读取 registry 的句柄，

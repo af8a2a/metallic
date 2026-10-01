@@ -1,4 +1,7 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/PathTraceStageParameters.h"
+[[vk::push_constant]] ConstantBuffer<PathTraceTonemapParams> gStage;
+
+import ShaderCore;
 using Metallic;
 
 // Tonemap pass used with the NRC query mode. The path tracer writes linear
@@ -6,27 +9,17 @@ using Metallic;
 // query radiance on top, and this pass applies the same Reinhard + gamma
 // curve the inline path uses when no external resolve is needed.
 
-struct ScenePathTraceTonemapPush
-{
-    uint width;
-    uint height;
-    float exposure;
-    uint outputLinear;
-    uint hasHistory;
-    uint accumulationFrame;
-};
+#define gSource resolveDescriptor(gStage.source)
 
-#define gSource getResource<RWTexture2D<float4>>(0)
+#define gOutput resolveDescriptor(gStage.output)
 
-#define gOutput getResource<RWTexture2D<float4>>(1)
-
-#define gHistoryPrevious getResource<RWTexture2D<float4>>(2)
+#define gHistoryPrevious resolveDescriptor(gStage.historyPrevious)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void scenePathTraceTonemapMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    ScenePathTraceTonemapPush push = getConstants<ScenePathTraceTonemapPush>();
+    ScenePathTraceTonemapPush push = gStage.settings;
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

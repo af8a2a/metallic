@@ -1,4 +1,7 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/PathTraceStageParameters.h"
+[[vk::push_constant]] ConstantBuffer<SharcMaintenanceParams> gStage;
+
+import ShaderCore;
 using Metallic;
 
 // SHaRC maintenance passes (reference: RTXGI v2 SDK SharcResolve.hlsl).
@@ -16,31 +19,18 @@ using Metallic;
 #define SHARC_MAINTENANCE_BLOCK_SIZE 256
 #endif
 
-struct SceneSharcMaintenanceParams
-{
-    float4 cameraPosition;
-    float4 cameraPositionPrev;
-    float sceneScale;
-    uint entriesNum;
-    uint accumulationFrameNum;
-    uint staleFrameNumMax;
-    uint frameIndex;
-};
+#define gHashEntries resolveDescriptor(gStage.hashEntries)
 
-#define gHashEntries getResource<RWStructuredBuffer<uint64_t>>(0)
+#define gAccumulation resolveDescriptor(gStage.accumulation)
 
-#define gAccumulation getResource<RWStructuredBuffer<SharcAccumulationData>>(1)
-
-#define gResolved getResource<RWStructuredBuffer<SharcPackedData>>(2)
-
-#define gParams getResource<StructuredBuffer<SceneSharcMaintenanceParams>>(3)
+#define gResolved resolveDescriptor(gStage.resolved)
 
 [shader("compute")]
 [numthreads(SHARC_MAINTENANCE_BLOCK_SIZE, 1, 1)]
 void sharcClearMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint entryIndex = dispatchThreadId.x;
-    SceneSharcMaintenanceParams params = gParams[0];
+    SceneSharcMaintenancePush params = gStage.settings;
     if (entryIndex >= params.entriesNum) {
         return;
     }
@@ -55,7 +45,7 @@ void sharcClearMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 void sharcResolveMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint entryIndex = dispatchThreadId.x;
-    SceneSharcMaintenanceParams params = gParams[0];
+    SceneSharcMaintenancePush params = gStage.settings;
 
     SharcParameters sharcParameters;
     sharcParameters.hashGridParameters.cameraPosition = params.cameraPosition.xyz;

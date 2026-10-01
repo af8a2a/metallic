@@ -5,6 +5,7 @@
 #include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/RTXDIPostProcessParameters.h"
+#include "Runtime/Render/Core/PathTraceStageParameters.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -153,6 +154,11 @@ public:
             {"Metallic.RTXDICompositeParams", {FIELD(RTXDICompositeParams, denoisedDiffuse), FIELD(RTXDICompositeParams, denoisedSpecular),
                 FIELD(RTXDICompositeParams, baseColorMetalness), FIELD(RTXDICompositeParams, emissive),
                 FIELD(RTXDICompositeParams, output), FIELD(RTXDICompositeParams, settings)}},
+            {"Metallic.SharcMaintenanceParams", {FIELD(SharcMaintenanceParams, hashEntries), FIELD(SharcMaintenanceParams, accumulation),
+                FIELD(SharcMaintenanceParams, resolved), FIELD(SharcMaintenanceParams, padding0), FIELD(SharcMaintenanceParams, padding1),
+                FIELD(SharcMaintenanceParams, settings)}},
+            {"Metallic.PathTraceTonemapParams", {FIELD(PathTraceTonemapParams, source), FIELD(PathTraceTonemapParams, output),
+                FIELD(PathTraceTonemapParams, historyPrevious), FIELD(PathTraceTonemapParams, settings)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -172,10 +178,13 @@ public:
             {"Features/Environment/EnvironmentLightingPrecompute", "environmentLightingPrecomputeMain", 8},
             {"Features/ReSTIR/RTXDIConfidence", "rtxdiConfidenceMain", 9},
             {"Features/ReSTIR/RTXDIComposite", "rtxdiCompositeMain", 10},
+            {"Features/PathTracing/SceneSharcMaintenance", "sharcClearMain", 11},
+            {"Features/PathTracing/SceneSharcMaintenance", "sharcResolveMain", 11},
+            {"Features/PostProcess/ScenePathTraceTonemap", "scenePathTraceTonemapMain", 12},
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                if ((program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
                 std::string log;
                 auto shader = compileSlangShaderToSpirv({.moduleName = program.module, .entryPointName = program.entry,
@@ -216,7 +225,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -237,6 +246,110 @@ public:
     RTXDIParameterLayoutTest() { category = 2; name = "rtxdi_parameter_spirv_layout"; }
 };
 METALLIC_REGISTER_RHI_TEST(RTXDIParameterLayoutTest);
+
+class PathTraceStageParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    PathTraceStageParameterLayoutTest() { category = 3; name = "path_trace_stage_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(PathTraceStageParameterLayoutTest);
+
+class SharcTypedMaintenanceTest final : public RHITest {
+public:
+    SharcTypedMaintenanceTest() { type = RHITestType::Resource; name = "sharc_typed_maintenance_bounds_and_eviction"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "SHaRC typed stages",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { device = std::move(value); }));
+        auto& queue = *device->getQueue(QueueType::Graphics);
+        auto registry = device->resourceRegistry();
+        REG_CHECK(registry);
+        QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(*device, queue));
+        // No legacy cacheParams buffer is provided. The inline entry count and
+        // stale threshold must control both kernels, including the tail lanes.
+        for (uint32_t testCase = 0; testCase < 3; ++testCase) {
+            const bool clear = testCase == 0;
+            ComputeKernel kernel;
+            std::string log;
+            auto shader = compileSlangShaderToSpirv({.moduleName = "Features/PathTracing/SceneSharcMaintenance",
+                .entryPointName = clear ? "sharcClearMain" : "sharcResolveMain",
+                .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, log);
+            if (!shader) { return RHITestResult::fail(log); }
+            REG_REQUIRE(kernel.initialize(*device, {.spirv = shader->spirv,
+                .parameters = parameterAbi<SharcMaintenanceParams>(kSharcMaintenanceABI, ParameterTransport::InlinePush)}, log));
+            std::array<std::unique_ptr<Buffer>, 3> buffers;
+            std::array<std::vector<uint32_t>, 3> initial;
+            for (uint32_t b = 0; b < 3; ++b) {
+                const uint32_t words = b == 0 ? 2 : 4;
+                initial[b].resize(32 * words, clear ? 0xffffffffu : 0u);
+                if (!clear) {
+                    for (uint32_t entry = 0; entry < 32; ++entry) {
+                        if (b == 0) { initial[b][entry * words] = 1; }
+                        // SharcPackedData.sampleData: seven stale frames.
+                        if (b == 2) { initial[b][entry * words + 2] = 7u << 16; }
+                    }
+                }
+                REG_REQUIRE(device->createBuffer({.size = initial[b].size() * sizeof(uint32_t),
+                    .structureStride = words * sizeof(uint32_t), .usage = BufferUsageBits::Storage,
+                    .memoryLocation = MemoryLocation::HostReadback})
+                    .transform([&](auto value) { buffers[b] = std::move(value); }));
+                void* mapped = buffers[b]->map();
+                REG_CHECK(mapped);
+                std::memcpy(mapped, initial[b].data(), initial[b].size() * sizeof(uint32_t));
+                buffers[b]->flush();
+                buffers[b]->unmap();
+            }
+            Commands recording;
+            REG_REQUIRE(recording.initialize(*device, queue));
+            REG_REQUIRE(recording.begin(testCase));
+            {
+                ParameterWriter writer(*device, **registry, &recording.frame);
+                SharcMaintenanceParams params{};
+                params.hashEntries = writer.buffer(buffers[0].get());
+                params.accumulation = writer.buffer(buffers[1].get());
+                params.resolved = writer.buffer(buffers[2].get());
+                params.settings.entriesNum = 17;
+                params.settings.sceneScale = 1.0f;
+                params.settings.accumulationFrameNum = 20;
+                params.settings.staleFrameNumMax = testCase == 1 ? 8 : 9;
+                auto encoded = writer.encode(params, kSharcMaintenanceABI, ParameterTransport::InlinePush);
+                REG_CHECK(encoded);
+                REG_REQUIRE(kernel.dispatch(*recording.commands, *encoded, 1));
+            }
+            const MemoryBarrierDesc hostRead{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+                {PipelineStageBits::Host, AccessBits::HostRead}};
+            REG_REQUIRE(recording.commands->synchronize({.memory = {&hostRead, 1}}));
+            std::unique_ptr<Semaphore> gate;
+            REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+            Drain drain{queue, *gate};
+            REG_REQUIRE(recording.submit(tracker, *gate));
+            kernel.clear(); // Submission owns the pipeline and immutable parameters.
+            REG_REQUIRE(gate->signal(1));
+            REG_REQUIRE(recording.frame.wait(5'000'000'000ull));
+            for (uint32_t b = 0; b < 3; ++b) {
+                const uint32_t words = b == 0 ? 2 : 4;
+                auto expected = initial[b];
+                for (uint32_t entry = 0; entry < 17; ++entry) {
+                    if (clear || testCase == 1) {
+                        for (uint32_t word = 0; word < words; ++word) { expected[entry * words + word] = 0; }
+                    } else if (b == 2) { expected[entry * words + 2] = (8u << 16) | 1u; }
+                }
+                buffers[b]->invalidate();
+                void* mapped = buffers[b]->map();
+                REG_CHECK(mapped);
+                const bool equal = std::memcmp(mapped, expected.data(), expected.size() * sizeof(uint32_t)) == 0;
+                buffers[b]->unmap();
+                REG_CHECK(equal);
+            }
+        }
+        REG_CHECK((*registry)->stats().parameterBytes == 0);
+        return RHITestResult::pass("Clear/resolve respect inline bounds; thresholds 8/9 evict/retain; no parameter buffer upload");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(SharcTypedMaintenanceTest);
 
 class RegistryIdentityTest final : public RHITest {
 public:
