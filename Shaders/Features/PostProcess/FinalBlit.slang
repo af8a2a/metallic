@@ -1,5 +1,7 @@
 import Core;
+import ColorGrading;
 using Metallic;
+using Metallic.ColorGrading;
 
 struct DisplayOutputPush
 {
@@ -11,10 +13,18 @@ struct DisplayOutputPush
     float peakNits;
     float exposure;
     uint toneCurve;
+    uint hasLut;
 };
 
 float3 displayOutput(float3 color, DisplayOutputPush push)
 {
+#if FINAL_USE_LUT
+    if ((push.inputEncoding == 1u || push.inputEncoding == 3u) && push.hasLut != 0u) {
+        color = float3(isfinite(color.x) ? max(color.x, 0.0) : 0.0,
+            isfinite(color.y) ? max(color.y, 0.0) : 0.0, isfinite(color.z) ? max(color.z, 0.0) : 0.0);
+        return applyGradingLut(getResource<Texture3D<float4>>(2), getResource<SamplerState>(3), color * push.exposure);
+    }
+#endif
     if (push.hdr != 0u) {
         if (push.inputEncoding == 2u) { return color; }
         if (push.inputEncoding == 0u) {

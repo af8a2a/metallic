@@ -35,6 +35,9 @@ void registerBuiltInRenderGraphPasses()
         "FinalBlitPass",
         "Present a color texture; show a UV gradient when no usable source is connected",
         []() { return builtin_pass::createFinalBlitPass(); });
+    registerRenderGraphPassType("ColorGradingLUTPass",
+        "Compose ACES 2.0, grading and custom LUTs into a scene-linear-input 3D display LUT",
+        []() { return builtin_pass::createColorGradingLUTPass(); });
     registerRenderGraphPassType("VisibilityBufferMaterialPass", "Resolve unified visibility using scalar materials without RTAS",
         []() { return builtin_pass::createVisibilityBufferMaterialPass(); });
     registerRenderGraphPassType(

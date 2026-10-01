@@ -9,6 +9,11 @@
             "id": 2,
             "src": "PathTrace.color",
             "dst": "AutoExposure.source"
+        },
+        {
+            "id": 3,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
         }
     ],
     "name": "RTXCRClairePonytail",
@@ -56,6 +61,18 @@
             },
             "properties": {},
             "type": "FinalBlitPass"
+        },
+        {
+            "id": 4,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 1040.0,
+                "y": 480.0
+            },
+            "properties": {
+                "toneCurve": "aces2"
+            }
         }
     ],
     "outputs": [],

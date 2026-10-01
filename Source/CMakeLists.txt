@@ -51,6 +51,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Debug/RenderDebugProviders.cpp
     Runtime/Render/Debug/GPUDebugProbe.cpp
     Runtime/Render/Core/ComputeProgram.cpp
+    Runtime/Render/Core/ColorGrading.cpp
+    Runtime/Render/Core/ACESTables.cpp
     Runtime/Render/Core/ComputeKernel.cpp
     Runtime/Render/Core/ResourceRegistry.cpp
     Runtime/Render/VisibilityHybridRasterizer.cpp
@@ -103,6 +105,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/LightGridDebugPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/CopyColorPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/FinalBlitPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/ColorGradingLUTPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferMaterialPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/AutoExposurePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SliderDebugPass.cpp

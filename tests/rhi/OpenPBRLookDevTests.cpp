@@ -101,5 +101,48 @@ public:
 };
 
 METALLIC_REGISTER_RHI_TEST(OpenPBRLookDevTest);
+
+class ColorGradingLookDevTest final : public RHITest {
+public:
+    ColorGradingLookDevTest() { type = RHITestType::Rendering; name = "color_grading_lookdev_capture"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        render::RenderSampleLoadResult sample;
+        std::string log;
+        if (!render::loadBuiltInRenderSample("openpbr-lookdev", sample, log)) { return RHITestResult::fail(log); }
+        scene::SceneDocument document;
+        if (!document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) {
+            return RHITestResult::fail(document.lastLoadResult().error);
+        }
+        render::RenderGraphPreviewRenderer preview;
+        preview.bindRuntimeScene(&document);
+        preview.setEnvironment(document.environment());
+        if (!preview.setLighting(document.lighting())) { return RHITestResult::fail("Invalid LookDev lighting"); }
+        auto result = preview.initialize(context.enableValidation, true);
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("Requires ray queries and bindless"); }
+        if (!result) { return RHITestResult::fail("Preview initialization failed"); }
+        const auto display = sample.graph.findNode("ColorGrading")->id;
+        for (const char* transform : {"unreal", "aces2"}) {
+            sample.graph.setNodeProperties(display, {{"toneCurve", transform}});
+            for (uint32_t frame = 0; frame < 64; ++frame) {
+                if (!preview.render(sample.graph, 384, 384, "FinalBlit.color")) {
+                    return RHITestResult::fail(preview.lastLog());
+                }
+            }
+            if (!saveRgba8Png(context.outputDirectory / (std::string("LookDev-") + transform + ".png"),
+                reinterpret_cast<const uint8_t*>(preview.pixels().data()), 384, 384, log)) {
+                return RHITestResult::fail(log);
+            }
+            uint64_t sum = 0;
+            for (uint32_t pixel : preview.pixels()) {
+                sum += (pixel & 255) + ((pixel >> 8) & 255) + ((pixel >> 16) & 255);
+            }
+            const double average = double(sum) / (384 * 384 * 3 * 255);
+            if (average < 0.02 || average > 0.98) { return RHITestResult::fail("LookDev capture is black or clipped"); }
+        }
+        return RHITestResult::pass("Captured UE Film and default ACES2 through the graph LUT at 256 spp with fixed LookDev lighting");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(ColorGradingLookDevTest);
 } // namespace
 } // namespace metallic::tests

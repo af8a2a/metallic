@@ -14,6 +14,11 @@
             "id": 3,
             "src": "RTAS.accelerationStructure",
             "dst": "PathTrace.accelerationStructure"
+        },
+        {
+            "id": 4,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
         }
     ],
     "name": "ScenePathTrace",
@@ -87,6 +92,18 @@
             },
             "properties": {},
             "type": "FinalBlitPass"
+        },
+        {
+            "id": 5,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 1055.0,
+                "y": 521.0
+            },
+            "properties": {
+                "toneCurve": "aces2"
+            }
         }
     ],
     "outputs": [],

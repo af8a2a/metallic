@@ -59,6 +59,11 @@
       "id": 12,
       "src": "PathTrace.depth",
       "dst": "DLSSNR.depth"
+    },
+    {
+      "id": 13,
+      "src": "ColorGrading.lut",
+      "dst": "FinalBlit.lut"
     }
   ],
   "name": "PathTracingSampleDLSSNR",
@@ -174,6 +179,18 @@
         "fallbackToInput": true,
         "depthInverted": true,
         "resetSerial": 0
+      }
+    },
+    {
+      "id": 6,
+      "name": "ColorGrading",
+      "type": "ColorGradingLUTPass",
+      "position": {
+        "x": 1620.0,
+        "y": 520.0
+      },
+      "properties": {
+        "toneCurve": "aces2"
       }
     }
   ],

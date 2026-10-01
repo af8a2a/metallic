@@ -9,6 +9,11 @@
             "id": 2,
             "src": "PathTrace.color",
             "dst": "AutoExposure.source"
+        },
+        {
+            "id": 3,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
         }
     ],
     "name": "ScenePathTrace",
@@ -71,6 +76,18 @@
             },
             "properties": {},
             "type": "FinalBlitPass"
+        },
+        {
+            "id": 4,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 1055.0,
+                "y": 521.0
+            },
+            "properties": {
+                "toneCurve": "aces2"
+            }
         }
     ],
     "outputs": [],

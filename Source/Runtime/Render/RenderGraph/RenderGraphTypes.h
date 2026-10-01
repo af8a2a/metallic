@@ -109,6 +109,8 @@ enum class RenderGraphRuntimeSettingType : uint8_t {
     Color4,
     Enum,
     ActionCounter,
+    Float4,
+    String,
 };
 
 struct RenderGraphRuntimeSettingOption {
@@ -156,6 +158,10 @@ struct RenderGraphField {
     bool matchOutputExtent = true;
     uint32_t width = 0;
     uint32_t height = 0;
+    // ResourceType::Texture2D is the legacy graph texture category. The native
+    // dimension is explicit so volume resources receive real Texture3D views.
+    TextureType textureType = TextureType::Texture2D;
+    uint32_t depth = 1;
     uint64_t size = 0;
     uint32_t structureStride = 0;
     MemoryLocation memoryLocation = MemoryLocation::Device;
@@ -165,6 +171,8 @@ struct RenderGraphField {
     bool operator==(const RenderGraphField&) const = default;
 
     RenderGraphField& texture2D(uint32_t newWidth = 0, uint32_t newHeight = 0);
+    // Depth zero is allowed on inputs to accept a producer's declared depth.
+    RenderGraphField& texture3D(uint32_t newWidth, uint32_t newHeight, uint32_t newDepth);
     RenderGraphField& buffer(uint64_t newSize, uint32_t newStructureStride = 0);
     RenderGraphField& accelerationStructure();
     RenderGraphField& accelerationStructureRead();

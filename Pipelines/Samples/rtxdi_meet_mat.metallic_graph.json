@@ -89,6 +89,11 @@
             "id": 19,
             "src": "Composite.color",
             "dst": "AutoExposure.source"
+        },
+        {
+            "id": 20,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
         }
     ],
     "name": "RtxdiRelaxSample",
@@ -241,10 +246,20 @@
                 "x": 1918.7313232421875,
                 "y": 233.73342895507812
             },
-            "properties": {
-                "toneCurve": "exponential"
-            },
+            "properties": {},
             "type": "FinalBlitPass"
+        },
+        {
+            "id": 7,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 1918.7313232421875,
+                "y": 473.7334289550781
+            },
+            "properties": {
+                "toneCurve": "aces2"
+            }
         }
     ],
     "outputs": [],

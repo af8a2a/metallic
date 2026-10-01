@@ -1585,6 +1585,26 @@ bool drawRuntimeSettingControl(
         }
         return false;
     }
+    case render::RenderGraphRuntimeSettingType::Float4: {
+        float values[4] = {};
+        floatArrayValueOr(currentValue, values, 4, setting.defaultValue);
+        if (ImGui::InputFloat4("##value", values, "%.4f")) {
+            outValue = {values[0], values[1], values[2], values[3]};
+            return true;
+        }
+        return false;
+    }
+    case render::RenderGraphRuntimeSettingType::String: {
+        const std::string value = currentValue.is_string() ? currentValue.get<std::string>() :
+            (setting.defaultValue.is_string() ? setting.defaultValue.get<std::string>() : std::string{});
+        std::array<char, 4096> text{};
+        std::copy_n(value.data(), std::min(value.size(), text.size() - 1), text.data());
+        if (ImGui::InputText("##value", text.data(), text.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
+            outValue = std::string(text.data());
+            return true;
+        }
+        return false;
+    }
     case render::RenderGraphRuntimeSettingType::Color4: {
         float values[4] = {};
         floatArrayValueOr(currentValue, values, 4, setting.defaultValue);
@@ -1857,7 +1877,8 @@ const char* renderGraphFormatName(render::Format format)
 std::string renderGraphFieldTag(const render::RenderGraphField& field)
 {
     std::string tag = "[";
-    tag += renderGraphResourceTypeName(field.resourceType);
+    tag += field.resourceType == render::RenderGraphResourceType::Texture2D &&
+        field.textureType == render::TextureType::Texture3D ? "Texture3D" : renderGraphResourceTypeName(field.resourceType);
     tag += "/";
     tag += renderGraphResourceAccessName(field.access);
     if (field.bindlessAccess != render::RenderGraphBindlessAccess::None) {
@@ -1877,7 +1898,8 @@ void setRenderGraphFieldTooltip(const render::RenderGraphField& field)
         return;
     }
 
-    std::string text = std::string(renderGraphResourceTypeName(field.resourceType)) +
+    std::string text = std::string(field.resourceType == render::RenderGraphResourceType::Texture2D &&
+        field.textureType == render::TextureType::Texture3D ? "Texture3D" : renderGraphResourceTypeName(field.resourceType)) +
         " / " +
         renderGraphResourceAccessName(field.access);
     if (field.bindlessAccess != render::RenderGraphBindlessAccess::None) {
@@ -1887,6 +1909,10 @@ void setRenderGraphFieldTooltip(const render::RenderGraphField& field)
     if (field.resourceType == render::RenderGraphResourceType::Texture2D) {
         text += "\nFormat: ";
         text += renderGraphFormatName(field.format);
+        if (field.textureType == render::TextureType::Texture3D) {
+            text += "\nVolume: " + std::to_string(field.width) + " x " +
+                std::to_string(field.height) + " x " + std::to_string(field.depth);
+        }
     } else if (field.resourceType == render::RenderGraphResourceType::Buffer) {
         text += "\nSize: ";
         text += std::to_string(field.size);
@@ -8088,6 +8114,10 @@ bool EditorApplication::bindViewportPreviewOutput(std::string_view outputName)
     render::RenderGraphResource* output = graphExecutor_->outputResource(outputName);
     if (output == nullptr || output->view == nullptr) {
         renderGraphStatus_ = std::string("RenderGraph preview output texture is not available: ") + std::string(outputName);
+        return false;
+    }
+    if (output->desc.type != render::TextureType::Texture2D) {
+        renderGraphStatus_ = "Volume resources cannot be shown in the 2D viewport; preview FinalBlit.color";
         return false;
     }
 

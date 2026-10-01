@@ -514,7 +514,8 @@ struct RenderGraphExecutor::Impl {
             debugGraph["resources"].push_back({{"id", name}, {"allocation", debugGeneration},
                 {"kind", resource.type == RenderGraphResourceType::AccelerationStructure ? "accelerationStructure" :
                     resource.buffer ? "buffer" : "texture"}, {"size", resource.bufferDesc.size}, {"stride", resource.bufferDesc.structureStride},
-                {"width", resource.desc.width}, {"height", resource.desc.height}, {"format", static_cast<uint32_t>(resource.desc.format)}});
+                {"width", resource.desc.width}, {"height", resource.desc.height}, {"depth", resource.desc.depth},
+                {"textureType", static_cast<uint32_t>(resource.desc.type)}, {"format", static_cast<uint32_t>(resource.desc.format)}});
         }
         debugSceneIdentity = runtimeScene ? std::array<uint64_t, 2>{runtimeScene->resourceIdentity(), runtimeScene->contentRevision()} : std::array<uint64_t, 2>{};
         debugObserver->compiled(debugGraph);
@@ -1525,12 +1526,12 @@ struct RenderGraphExecutor::Impl {
                     }
 
                     TextureDesc desc{
-                        .type = TextureType::Texture2D,
+                        .type = field.textureType,
                         .usage = usage,
                         .format = resolveFormat(field.format, defaultFormat),
                         .width = resolvedExtent->second.width,
                         .height = resolvedExtent->second.height,
-                        .depth = 1,
+                        .depth = field.depth,
                         .mipCount = 1,
                         .layerCount = 1,
                         .memoryLocation = MemoryLocation::Device,
@@ -4651,7 +4652,8 @@ Result<> RenderGraphPreviewRenderer::render(
         impl_->lastLog = std::string("RenderGraph preview output resource is missing '") + resolvedOutputName + "'";
         return makeError(Error::InvalidArgument);
     }
-    if (output->type != RenderGraphResourceType::Texture2D || output->texture == nullptr) {
+    if (output->type != RenderGraphResourceType::Texture2D || output->texture == nullptr ||
+        output->desc.type != TextureType::Texture2D) {
         impl_->lastLog = std::string("RenderGraph preview output is not a Texture2D '") + resolvedOutputName + "'";
         return makeError(Error::InvalidArgument);
     }

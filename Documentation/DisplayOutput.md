@@ -6,7 +6,9 @@ AutoExposure outputs exposed linear RGBA16F in every profile; it does not tone m
 or encode sRGB. Path tracing and RTXDI always output linear radiance. The old
 `outputLinear` switch no longer changes their behavior.
 
-The display boundary is FinalBlit followed by editor composition and presentation.
+The display boundary is ColorGradingLUTPass -> FinalBlit followed by editor composition
+and presentation. Scene pipelines default to ACES 2.0 baked into a native 64-cubed
+FP16 RenderGraph texture; FinalBlit samples it. See [color grading](ColorGrading.md).
 Changing the output profile does not select a different lighting/exposure format.
 Diagnostic textures (normals, IDs, material colors) retain explicit display encodings.
 Floating-point storage alone is not an encoding declaration: use `SceneLinear`,
@@ -31,7 +33,9 @@ exposure **0 EV**. Set peak to the intended mastering target (for example 600 or
 white level is opt-in. SDR's nominal 100-nit reference requires a calibrated
 display/OS configuration; an ordinary SDR swapchain does not enforce luminance.
 
-Exposed linear 1 maps to HDR paper white; the highlight shoulder approaches peak.
+With the legacy display transform, exposed linear 1 maps to HDR paper white;
+the highlight shoulder approaches peak. The optional Unreal/ACES transforms use
+their own absolute luminance mapping; see [color grading](ColorGrading.md).
 scRGB uses **1 = 80 nits**, so 203-nit white is 2.5375 and 1000 nits is 12.5.
 Both HDR profiles keep FinalBlit's output in absolute scRGB for composition.
 HDR10 composites UI in a per-swapchain-image FP16 target, converts linear Rec.709
@@ -41,9 +45,11 @@ When available, `VK_EXT_hdr_metadata` receives BT.2020/D65 mastering primaries a
 the selected peak. MaxCLL/MaxFALL remain unknown (zero), rather than fabricated.
 Detached ImGui windows currently use SDR previews.
 
-SDR tone curves (`reinhard`, `exponential`, `none`) now belong to **FinalBlitPass**.
-Repository graph assets have been migrated. For custom graphs, move `toneCurve`
-from AutoExposurePass to the downstream FinalBlitPass. SDR encoding uses the exact
+Display transforms (`aces2`, `unreal`, `reinhard`, `exponential`, `none`) belong to
+**ColorGradingLUTPass**. Repository scene graphs have been migrated. For custom
+graphs, connect its `lut` output to FinalBlit's `lut` input and move grading controls
+to the producer. Unconnected diagnostic graphs retain the simple FinalBlit path.
+SDR transform evaluation uses the exact
 sRGB transfer function. Display exposure is separate from physical scene exposure.
 DLSS-NR currently requires display-referred SDR input; its node preserves exposed
 linear HDR through a logged bypass in every profile. Disabling its fallback reports

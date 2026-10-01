@@ -44,6 +44,11 @@
             "id": 9,
             "src": "DLSSRR.color",
             "dst": "AutoExposure.source"
+        },
+        {
+            "id": 10,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
         }
     ],
     "name": "PathTracingSampleDLSSRR",
@@ -142,6 +147,18 @@
             },
             "properties": {},
             "type": "FinalBlitPass"
+        },
+        {
+            "id": 5,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 1260.0,
+                "y": 520.0
+            },
+            "properties": {
+                "toneCurve": "aces2"
+            }
         }
     ],
     "outputs": [],

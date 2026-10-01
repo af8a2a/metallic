@@ -156,6 +156,18 @@
                 "y": 250
             },
             "properties": {}
+        },
+        {
+            "id": 8,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 2120,
+                "y": 490
+            },
+            "properties": {
+                "toneCurve": "aces2"
+            }
         }
     ],
     "edges": [
@@ -248,6 +260,11 @@
             "id": 19,
             "src": "VBuffer.accelerationStructure",
             "dst": "Deferred.accelerationStructure"
+        },
+        {
+            "id": 20,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
         }
     ],
     "outputs": [],

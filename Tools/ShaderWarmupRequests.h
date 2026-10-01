@@ -46,7 +46,9 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
     add("Features/Lighting/PrepareLightsPdf", {"prepareLightsPdfMain"});
     add("Features/PostProcess/AutoExposure", {"autoExposureHistogramMain", "autoExposureReduceMain", "autoExposureApplyMain"});
     add("Features/PostProcess/EditorDisplay", {"editorDisplayVertex", "editorDisplayFragment"});
-    add("Features/PostProcess/FinalBlit", {"finalBlitUvMain", "finalBlitMain"});
+    add("Features/PostProcess/FinalBlit", {"finalBlitUvMain", "finalBlitMain"}, {}, {{"FINAL_USE_LUT", "0"}});
+    add("Features/PostProcess/FinalBlit", {"finalBlitMain"}, {}, {{"FINAL_USE_LUT", "1"}});
+    add("Features/PostProcess/ColorGradingLUT", {"composeColorGradingLUT"});
     add("Features/PostProcess/StreamlineDLSSSupport", {"streamlineDlssDepthVertexMain", "streamlineDlssDepthFragmentMain", "streamlineDlssAlphaMain"});
     add("Features/PostProcess/UpscalerGuideResolve", {"upscalerGuideResolveMain"});
     add("Features/ReSTIR/RTXDIComposite", {"rtxdiCompositeMain"});

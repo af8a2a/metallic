@@ -128,8 +128,18 @@
                 "x": 1520.0,
                 "y": 220.0
             },
+            "properties": {}
+        },
+        {
+            "id": 7,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 1520.0,
+                "y": 460.0
+            },
             "properties": {
-                "toneCurve": "none"
+                "toneCurve": "aces2"
             }
         }
     ],
@@ -173,6 +183,11 @@
             "id": 8,
             "src": "VBuffer.domain",
             "dst": "Deferred.domain"
+        },
+        {
+            "id": 9,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
         }
     ],
     "outputs": []

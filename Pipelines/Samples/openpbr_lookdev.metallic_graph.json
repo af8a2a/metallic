@@ -59,8 +59,18 @@
                 "x": 800.0,
                 "y": 120.0
             },
+            "properties": {}
+        },
+        {
+            "id": 4,
+            "name": "ColorGrading",
+            "type": "ColorGradingLUTPass",
+            "position": {
+                "x": 800.0,
+                "y": 360.0
+            },
             "properties": {
-                "toneCurve": "none"
+                "toneCurve": "aces2"
             }
         }
     ],
@@ -74,6 +84,11 @@
             "id": 2,
             "src": "AutoExposure.color",
             "dst": "FinalBlit.source"
+        },
+        {
+            "id": 3,
+            "src": "ColorGrading.lut",
+            "dst": "FinalBlit.lut"
         }
     ],
     "outputs": []

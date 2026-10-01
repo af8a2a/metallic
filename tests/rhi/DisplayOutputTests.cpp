@@ -2,8 +2,10 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanSurfaceFormat.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
+#include "Runtime/Render/Core/ColorGrading.h"
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 
@@ -109,9 +111,10 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const float level = context.properties().value("level", 1.0f);
+        const auto rgb = context.properties().value("rgb", std::array<float, 3>{level, level, level});
         const render::RenderingAttachmentDesc attachment{.view = context.outputTexture("color").view(),
             .state = render::ResourceState::ColorAttachment, .loadOp = render::LoadOp::Clear,
-            .storeOp = render::StoreOp::Store, .clearColor = {level, level, level, 1.0f}};
+            .storeOp = render::StoreOp::Store, .clearColor = {rgb[0], rgb[1], rgb[2], 1.0f}};
         if (auto commandResult = context.commandBuffer().beginRendering({
             .renderArea = {0, 0, context.width(), context.height()},
             .colorAttachments = {&attachment, 1},
@@ -228,8 +231,179 @@ public:
     }
 };
 
+class ColorGradingGPUTest final : public RHITest {
+public:
+    ColorGradingGPUTest() { type = RHITestType::Rendering; name = "color_grading_unreal_lut_aces2"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        std::atomic_uint validationErrors{};
+        std::unique_ptr<Device> device;
+        auto result = createDevice({.applicationName = "Color grading reference tests",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
+            .validationSink = {.callback = [](void* data, const ValidationMessage& message) noexcept {
+                if (message.messageIdName && std::strstr(message.messageIdName, "VUID-")) {
+                    ++*static_cast<std::atomic_uint*>(data);
+                }
+            }, .context = &validationErrors}, .enableAsyncCompute = true})
+            .transform([&](auto value) { device = std::move(value); });
+        if (hasError(result, Error::Unsupported)) { return RHITestResult::skip("Bindless device unavailable"); }
+        if (!result) { return RHITestResult::fail(resultToString(result)); }
+        registerRenderGraphPassType("DisplayReadback", "HDR readback", [] { return std::make_unique<DisplayReadbackPass>(); });
+        registerRenderGraphPassType("DisplaySource", "HDR source", [] { return std::make_unique<DisplaySourcePass>(); });
+        RenderGraph graph;
+        const auto source = graph.addNode("DisplaySource", "Source", {{"level", 0.18f}})->id;
+        const auto display = graph.addNode("ColorGradingLUTPass", "Grading",
+            {{"toneCurve", "unreal"}, {"inputEncoding", "linear"}, {"AsyncComputePreferred", true}})->id;
+        graph.addNode("FinalBlitPass", "Display", {{"inputEncoding", "linear"}});
+        graph.addEdge("Grading.lut", "Display.lut");
+        graph.addNode("DisplayReadback", "Readback");
+        graph.addEdge("Source.color", "Display.source");
+        graph.addEdge("Display.color", "Readback.color");
+        graph.markOutput("Readback.pixels");
+        RenderGraphExecutor executor;
+        RenderGraphCompileOptions options;
+        std::string log;
+        std::array<uint16_t, 8 * 8 * 4> pixels{};
+        const auto frame = [&](bool recompile = true) {
+            log.clear();
+            if ((recompile && !executor.compile(*device, graph, 8, 8, options, log)) ||
+                !executor.execute({.graphicsQueue = device->getQueue(QueueType::Graphics),
+                    .computeQueue = device->getQueue(QueueType::Compute)}) ||
+                !executor.waitForSubmittedWork()) { return false; }
+            auto* buffer = executor.outputResource("Readback.pixels")->buffer;
+            buffer->invalidate(); const void* data = buffer->map();
+            if (!data) { return false; }
+            std::memcpy(pixels.data(), data, sizeof(pixels)); buffer->unmap(); return true;
+        };
+        const auto channel = [&] { return int(reinterpret_cast<const uint8_t*>(pixels.data())[0]); };
+        if (!frame()) { return RHITestResult::fail("UE SDR compile/execute: " + log); }
+        const auto* cube = executor.outputResource("Grading.lut");
+        if (!cube || cube->desc.type != TextureType::Texture3D || cube->desc.depth != 64 ||
+            cube->desc.width != 64 || cube->desc.height != 64 || cube->desc.format != Format::RGBA16Sfloat) {
+            return RHITestResult::fail("Grading did not allocate a native 64-cubed FP16 graph texture");
+        }
+        const int neutral = channel();
+        // UE Film's InMatch=OutMatch=0.18 anchor; exact sRGB gives 118/255.
+        if (std::abs(neutral - 118) > 2) { return RHITestResult::fail("UE 18% gray Film anchor mismatch"); }
+        std::vector<uint8_t> lut(256 * 16 * 4);
+        const auto identityPath = context.outputDirectory / "UEIdentityLUT.png";
+        const auto inversePath = context.outputDirectory / "UEInverseLUT.png";
+        for (uint32_t b = 0; b < 16; ++b) { for (uint32_t g = 0; g < 16; ++g) { for (uint32_t r = 0; r < 16; ++r) {
+            const auto i = (g * 256 + b * 16 + r) * 4;
+            lut[i] = uint8_t(r * 17); lut[i + 1] = uint8_t(g * 17); lut[i + 2] = uint8_t(b * 17); lut[i + 3] = 255;
+        } } }
+        if (!saveRgba8Png(identityPath, lut.data(), 256, 16, log)) { return RHITestResult::fail(log); }
+        for (size_t i = 0; i < lut.size(); ++i) { if (i % 4 != 3) { lut[i] = 255 - lut[i]; } }
+        if (!saveRgba8Png(inversePath, lut.data(), 256, 16, log)) { return RHITestResult::fail(log); }
+        RenderGraphProperties properties{{"toneCurve", "unreal"}, {"inputEncoding", "linear"},
+            {"AsyncComputePreferred", true}, {"lut1", std::filesystem::absolute(identityPath).string()}};
+        graph.setNodeProperties(display, properties);
+        if (!frame() || std::abs(channel() - neutral) > 1) { return RHITestResult::fail("Neutral custom LUT changed UE Film output: " + log); }
+        properties["lut1"] = std::filesystem::absolute(inversePath).string();
+        graph.setNodeProperties(display, properties);
+        if (!frame() || std::abs(channel() - (255 - neutral)) > 2) { return RHITestResult::fail("UE unwrapped LUT sampling/transfer mismatch: " + log); }
+        graph.setNodeRuntimeProperty(display, "lut1Weight", 0.0f);
+        if (!executor.syncRuntimeProperties(graph) || !frame(false) || std::abs(channel() - neutral) > 1) {
+            return RHITestResult::fail("Live LUT weight did not update without recompiling the graph");
+        }
+        graph.setNodeRuntimeProperty(display, "lut1Weight", 1.0f);
+        if (!executor.syncRuntimeProperties(graph) || !frame(false) || std::abs(channel() - (255 - neutral)) > 2) {
+            return RHITestResult::fail("Live LUT weight restoration failed");
+        }
+        graph.setNodeRuntimeProperties(display, RenderGraphProperties::object());
+        properties["lut1Weight"] = 0.0f; graph.setNodeProperties(display, properties);
+        if (!frame() || std::abs(channel() - neutral) > 1) { return RHITestResult::fail("Zero LUT weight changed output"); }
+        properties["lut1Weight"] = 1.0f;
+        properties["lut2"] = std::filesystem::absolute(identityPath).string(); properties["lut2Weight"] = 1.0f;
+        graph.setNodeProperties(display, properties);
+        if (!frame() || std::abs(channel() - 128) > 1) { return RHITestResult::fail("LUT blend weights were not normalized"); }
+        properties.erase("lut2"); properties.erase("lut2Weight");
+        for (const auto rgb : {std::array<float,3>{0.5f,0.05f,0.01f}, {0.01f,0.5f,0.05f}, {0.05f,0.01f,0.5f}}) {
+            graph.setNodeProperties(source, {{"rgb", rgb}});
+            properties["lut1Weight"] = 0.0f;
+            graph.setNodeProperties(display, properties);
+            if (!frame()) { return RHITestResult::fail(log); }
+            const auto baseline = pixels;
+            properties["lut1Weight"] = 1.0f;
+            graph.setNodeProperties(display, properties);
+            if (!frame()) { return RHITestResult::fail(log); }
+            for (size_t c = 0; c < 3; ++c) {
+                if (std::abs(int(reinterpret_cast<const uint8_t*>(pixels.data())[c]) +
+                    int(reinterpret_cast<const uint8_t*>(baseline.data())[c]) - 255) > 2) {
+                    return RHITestResult::fail("Custom LUT RGB axes / blue-slice interpolation mismatch");
+                }
+            }
+        }
+        for (const char* transform : {"unreal", "aces2"}) {
+            properties["toneCurve"] = transform;
+            for (const auto mode : {DisplayOutputMode::SDR_sRGB, DisplayOutputMode::HDR_scRGB, DisplayOutputMode::HDR10_PQ}) {
+                options.displayOutput.mode = mode;
+                for (float peak : {600.0f, 1000.0f}) {
+                    options.displayOutput.peakNits = peak;
+                    graph.setNodeProperties(display, properties);
+                    graph.setNodeProperties(source, {{"level", 16.0f}});
+                    if (!frame()) { return RHITestResult::fail(std::string(transform) + " profile/peak: " + log); }
+                    if (isHDROutput(mode)) {
+                        const float value = halfToFloat(pixels[0]);
+                        if (!std::isfinite(value) || value <= 1 || value > peak / 80 + 0.1f) {
+                            return RHITestResult::fail(std::string(transform) + " lost HDR headroom or absolute peak");
+                        }
+                        const auto withLut = pixels;
+                        auto noLut = properties; noLut["lut1Weight"] = 0.0f;
+                        graph.setNodeProperties(display, noLut);
+                        if (!frame() || pixels != withLut) { return RHITestResult::fail("UE legacy custom LUT affected HDR output"); }
+                    }
+                }
+            }
+            properties["lut1Weight"] = 0.0f;
+            graph.setNodeProperties(display, properties);
+            graph.setNodeProperties(source, {{"level", 0.0f}});
+            if (!frame() || !std::isfinite(halfToFloat(pixels[0])) || halfToFloat(pixels[0]) > 0.001f) {
+                return RHITestResult::fail(std::string(transform) + " black produced NaN or a lifted floor");
+            }
+            if (!executor.reloadShaders(log) || !frame()) { return RHITestResult::fail("Grading shader reload: " + log); }
+            properties["lut1Weight"] = 1.0f;
+        }
+        options.displayOutput.mode = DisplayOutputMode::SDR_sRGB;
+        graph.setNodeProperties(source, {{"level", 0.18f}});
+        graph.setNodeProperties(display, RenderGraphProperties::object());
+        if (!frame()) { return RHITestResult::fail("Default ACES2: " + log); }
+        const auto defaultPixels = pixels;
+        graph.setNodeProperties(display, {{"toneCurve", "aces2"}});
+        if (!frame() || pixels != defaultPixels) { return RHITestResult::fail("Default grading is not ACES2"); }
+        const int defaultGray = channel();
+        graph.setNodeRuntimeProperty(display, "colorGain", {1.0f, 1.0f, 1.0f, 2.0f});
+        if (!executor.syncRuntimeProperties(graph) || !frame(false) || channel() <= defaultGray) {
+            return RHITestResult::fail("Live grading did not regenerate the graph LUT");
+        }
+        graph.setNodeRuntimeProperties(display, RenderGraphProperties::object());
+        options.displayOutput.exposureEV = 1.0f;
+        if (!frame()) { return RHITestResult::fail(log); }
+        const auto exposed = pixels;
+        options.displayOutput.exposureEV = 0.0f;
+        graph.setNodeProperties(source, {{"level", 0.36f}});
+        if (!frame() || exposed != pixels) { return RHITestResult::fail("Display exposure was applied twice or in the wrong LUT domain"); }
+        properties["lut1"] = "missing-color-grading-lut.png";
+        graph.setNodeProperties(display, properties);
+        if (executor.compile(*device, graph, 8, 8, options, log) || log.find("256x16") == std::string::npos) {
+            return RHITestResult::fail("Invalid LUT did not report a useful error");
+        }
+        for (const auto& edge : graph.edges()) {
+            if (edge.dstPass == "Display" && edge.dstField == "lut") { graph.removeEdge(edge.id); break; }
+        }
+        graph.addEdge("Source.color", "Display.lut");
+        if (graph.validate(log) || log.find("dimension/depth mismatch") == std::string::npos) {
+            return RHITestResult::fail("A 2D texture was accepted as a 3D LUT");
+        }
+        if (validationErrors != 0) { return RHITestResult::fail("Color grading emitted Vulkan VUID diagnostics"); }
+        return RHITestResult::pass("UE Film, custom LUT identity/inversion/weights, ACES2 and HDR profiles/peaks");
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(DisplaySurfaceFormatTest);
 METALLIC_REGISTER_RHI_TEST(DisplayOutputGPUTest);
+METALLIC_REGISTER_RHI_TEST(ColorGradingGPUTest);
 
 } // namespace
 } // namespace metallic::tests

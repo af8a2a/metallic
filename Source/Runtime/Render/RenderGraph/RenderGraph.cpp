@@ -165,6 +165,8 @@ using namespace detail;
 RenderGraphField& RenderGraphField::texture2D(uint32_t newWidth, uint32_t newHeight)
 {
     resourceType = RenderGraphResourceType::Texture2D;
+    textureType = TextureType::Texture2D;
+    depth = 1;
     width = newWidth;
     height = newHeight;
     if (!accessMatchesResourceType(access, resourceType) || access == RenderGraphResourceAccess::None) {
@@ -173,6 +175,15 @@ RenderGraphField& RenderGraphField::texture2D(uint32_t newWidth, uint32_t newHei
             : RenderGraphResourceAccess::TextureColorWrite;
     }
     applyAccessDefaults(*this);
+    return *this;
+}
+
+RenderGraphField& RenderGraphField::texture3D(uint32_t newWidth, uint32_t newHeight, uint32_t newDepth)
+{
+    texture2D(newWidth, newHeight);
+    textureType = TextureType::Texture3D;
+    depth = newDepth;
+    matchOutputExtent = false;
     return *this;
 }
 
@@ -1319,9 +1330,16 @@ bool RenderGraph::validate(std::string& log) const
         pass->setProperties(node.properties);
         RenderPassReflection reflection = pass->reflect(reflectContext);
         for (const RenderGraphField& field : reflection.fields()) {
+            if (field.resourceType == RenderGraphResourceType::Texture2D &&
+                ((field.textureType != TextureType::Texture2D && field.textureType != TextureType::Texture3D) ||
+                    (field.textureType == TextureType::Texture2D && field.depth != 1) ||
+                    (field.visibility == RenderGraphFieldVisibility::Output && field.depth == 0))) {
+                log = validationPrefix("invalid texture dimension/depth: " + node.name + "." + field.name);
+                return false;
+            }
             if (field.presentationOutput) {
                 if (field.visibility != RenderGraphFieldVisibility::Output ||
-                    field.resourceType != RenderGraphResourceType::Texture2D) {
+                    field.resourceType != RenderGraphResourceType::Texture2D || field.textureType != TextureType::Texture2D) {
                     log = validationPrefix("presentation requires a texture output");
                     return false;
                 }
@@ -1424,6 +1442,14 @@ bool RenderGraph::validate(std::string& log) const
                 "' -> '" +
                 makeRenderGraphFieldName(edge.dstPass, edge.dstField) +
                 "'");
+            return false;
+        }
+        if (srcField->resourceType == RenderGraphResourceType::Texture2D &&
+            (srcField->textureType != dstField->textureType ||
+                (dstField->depth != 0 && srcField->depth != dstField->depth))) {
+            log = validationPrefix("texture dimension/depth mismatch: " +
+                makeRenderGraphFieldName(edge.srcPass, edge.srcField) + " -> " +
+                makeRenderGraphFieldName(edge.dstPass, edge.dstField));
             return false;
         }
     }

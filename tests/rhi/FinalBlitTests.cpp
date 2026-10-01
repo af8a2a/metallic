@@ -327,6 +327,15 @@ private:
             graph.firstOutputName() != "FinalBlit.color") {
             return false;
         }
+        if (physical) {
+            const auto* grading = graph.findNode("ColorGrading");
+            if (!grading || grading->type != "ColorGradingLUTPass" ||
+                grading->properties.value("toneCurve", "aces2") != "aces2") { return false; }
+            if (std::none_of(graph.edges().begin(), graph.edges().end(), [](const auto& edge) {
+                return edge.srcPass == "ColorGrading" && edge.srcField == "lut" &&
+                    edge.dstPass == "FinalBlit" && edge.dstField == "lut";
+            })) { return false; }
+        }
         size_t connections = 0;
         for (const render::RenderGraphEdge& edge : graph.edges()) {
             if (edge.dstPass == final->name && edge.dstField == "source") {
