@@ -49,6 +49,31 @@ struct RenderGraphTextureMemoryStats {
     bool operator==(const RenderGraphTextureMemoryStats&) const = default;
 };
 
+using RenderGraphBufferAliasSlotMemoryStats = RenderGraphTextureAliasSlotMemoryStats;
+
+// All graph-owned buffers, including independent host readbacks. Only Device
+// buffers can alias. Native backing capacities are counted once per owner;
+// private imports, history, scene/SDK allocations and heap residency are excluded.
+struct RenderGraphBufferMemoryStats {
+    bool aliasingEnabled = false;
+    bool complete = false;
+    uint32_t bufferCount = 0;
+    uint32_t transientBufferCount = 0;
+    uint32_t pinnedBufferCount = 0;
+    uint32_t eligibleBufferCount = 0;
+    uint32_t aliasedBufferCount = 0;
+    uint32_t aliasSlotCount = 0;
+    uint32_t backingAllocationCount = 0;
+    uint32_t unknownBufferCount = 0;
+    uint64_t logicalBytes = 0;
+    uint64_t backingBytes = 0;
+    uint64_t savedBytes = 0;
+    uint64_t overheadBytes = 0;
+    // Incomplete comparisons never report savings or overhead.
+    std::vector<RenderGraphBufferAliasSlotMemoryStats> slots;
+    bool operator==(const RenderGraphBufferMemoryStats&) const = default;
+};
+
 struct RenderGraphExecutionQueueSnapshot {
     uint32_t id = 0;
     QueueType type = QueueType::Graphics;
@@ -150,6 +175,7 @@ struct RenderGraphExecutionSnapshot {
     std::vector<RenderGraphExecutionSegmentSnapshot> segments;
     std::vector<RenderGraphExecutionBatchSnapshot> batches;
     RenderGraphTextureMemoryStats textureMemory;
+    RenderGraphBufferMemoryStats bufferMemory;
 };
 
 } // namespace metallic::render

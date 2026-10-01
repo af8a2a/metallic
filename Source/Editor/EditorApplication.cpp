@@ -213,6 +213,56 @@ double accelerationStructureSavingsPercent(
             static_cast<double>(stats.originalBlasBytes);
 }
 
+template<class Stats>
+void drawGraphMemoryStats(
+    const Stats& stats, const char* kind, const char* resources,
+    uint32_t count, uint32_t transientCount, uint32_t pinnedCount,
+    uint32_t eligibleCount, uint32_t aliasedCount, uint32_t unknownCount)
+{
+    constexpr double kBytesPerMiB = 1024.0 * 1024.0;
+    ImGui::Text("Graph %s aliasing: %s", kind, stats.aliasingEnabled ? "Enabled" : "Disabled");
+    ImGui::Text("Without aliasing: %.2f MiB | Backing: %.2f MiB%s",
+        double(stats.logicalBytes) / kBytesPerMiB, double(stats.backingBytes) / kBytesPerMiB,
+        stats.complete ? "" : " (known capacity only)");
+    if (stats.complete) {
+        if (stats.overheadBytes) {
+            ImGui::Text("Backing overhead: %.2f MiB", double(stats.overheadBytes) / kBytesPerMiB);
+        } else {
+            const double savedPercent = stats.logicalBytes
+                ? 100.0 * double(stats.savedBytes) / double(stats.logicalBytes) : 0.0;
+            ImGui::Text("Saved: %.2f MiB (%.2f%%)", double(stats.savedBytes) / kBytesPerMiB, savedPercent);
+        }
+    } else {
+        ImGui::TextDisabled("Partial comparison: %u %s have unknown capacity.", unknownCount, resources);
+    }
+    ImGui::Text("%u %s | %u transient | %u pinned | %u eligible", count, resources,
+        transientCount, pinnedCount, eligibleCount);
+    ImGui::Text("%u aliased %s in %u shared slots | %u backing allocations", aliasedCount, resources,
+        stats.aliasSlotCount, stats.backingAllocationCount);
+    ImGui::TextDisabled("Graph-owned %s capacity. Slot details: Render Graph Editor / Execution / Memory.", kind);
+    ImGui::Separator();
+}
+
+template<class Stats>
+void logGraphMemoryStats(
+    const Stats& stats, const char* kind, const char* resources,
+    uint32_t count, uint32_t transientCount, uint32_t pinnedCount,
+    uint32_t eligibleCount, uint32_t aliasedCount, uint32_t unknownCount)
+{
+    ImGui::LogText("Graph %s aliasing: %s\n", kind, stats.aliasingEnabled ? "Enabled" : "Disabled");
+    ImGui::LogText("Graph %s capacity comparison: %s (%u unknown %s)\n",
+        kind, stats.complete ? "Complete" : "Partial", unknownCount, resources);
+    ImGui::LogText("Graph %s capacity without aliasing: %llu bytes\n",
+        kind, static_cast<unsigned long long>(stats.logicalBytes));
+    ImGui::LogText("Graph %s backing capacity: %llu bytes\n",
+        kind, static_cast<unsigned long long>(stats.backingBytes));
+    ImGui::LogText("Graph %s saved capacity: %llu bytes; overhead: %llu bytes\n",
+        kind, static_cast<unsigned long long>(stats.savedBytes), static_cast<unsigned long long>(stats.overheadBytes));
+    ImGui::LogText("Graph %s: %u total, %u transient, %u pinned, %u eligible, %u aliased in %u slots, %u backing allocations\n",
+        resources, count, transientCount, pinnedCount, eligibleCount, aliasedCount,
+        stats.aliasSlotCount, stats.backingAllocationCount);
+}
+
 void drawAccelerationStructureStats(
     const render::SceneAccelerationStructureStats& stats)
 {
@@ -4111,31 +4161,16 @@ void EditorApplication::drawStatisticsPanel()
         return;
     }
 
-    const bool hasTextureMemoryStats = graphExecutor_ != nullptr && graphExecutor_->compiled();
-    if (hasTextureMemoryStats) {
+    const bool hasGraphMemoryStats = graphExecutor_ != nullptr && graphExecutor_->compiled();
+    if (hasGraphMemoryStats) {
         const auto& textureMemory = graphExecutor_->textureMemoryStats();
-        constexpr double kBytesPerMiB = 1024.0 * 1024.0;
-        ImGui::Text("Graph texture aliasing: %s", textureMemory.aliasingEnabled ? "Enabled" : "Disabled");
-        ImGui::Text("Without aliasing: %.2f MiB | Backing: %.2f MiB%s",
-            double(textureMemory.logicalBytes) / kBytesPerMiB, double(textureMemory.backingBytes) / kBytesPerMiB,
-            textureMemory.complete ? "" : " (known capacity only)");
-        if (textureMemory.complete) {
-            if (textureMemory.overheadBytes) {
-                ImGui::Text("Backing overhead: %.2f MiB", double(textureMemory.overheadBytes) / kBytesPerMiB);
-            } else {
-                const double savedPercent = textureMemory.logicalBytes
-                    ? 100.0 * double(textureMemory.savedBytes) / double(textureMemory.logicalBytes) : 0.0;
-                ImGui::Text("Saved: %.2f MiB (%.2f%%)", double(textureMemory.savedBytes) / kBytesPerMiB, savedPercent);
-            }
-        } else {
-            ImGui::TextDisabled("Partial comparison: %u textures have unknown capacity.", textureMemory.unknownTextureCount);
-        }
-        ImGui::Text("%u textures | %u transient | %u pinned | %u eligible", textureMemory.textureCount,
-            textureMemory.transientTextureCount, textureMemory.pinnedTextureCount, textureMemory.eligibleTextureCount);
-        ImGui::Text("%u aliased textures in %u shared slots | %u backing allocations", textureMemory.aliasedTextureCount,
-            textureMemory.aliasSlotCount, textureMemory.backingAllocationCount);
-        ImGui::TextDisabled("Graph-owned texture capacity. Slot details: Render Graph Editor / Execution / Memory.");
-        ImGui::Separator();
+        drawGraphMemoryStats(textureMemory, "texture", "textures", textureMemory.textureCount,
+            textureMemory.transientTextureCount, textureMemory.pinnedTextureCount, textureMemory.eligibleTextureCount,
+            textureMemory.aliasedTextureCount, textureMemory.unknownTextureCount);
+        const auto& bufferMemory = graphExecutor_->bufferMemoryStats();
+        drawGraphMemoryStats(bufferMemory, "buffer", "buffers", bufferMemory.bufferCount,
+            bufferMemory.transientBufferCount, bufferMemory.pinnedBufferCount, bufferMemory.eligibleBufferCount,
+            bufferMemory.aliasedBufferCount, bufferMemory.unknownBufferCount);
     }
 
     const scene::Scene* statisticsScene = &scene_;
@@ -4233,22 +4268,15 @@ void EditorApplication::drawStatisticsPanel()
         ImGui::LogText("Lights: %zu\n", statisticsScene->lights().size());
         ImGui::LogText("Textures: %llu\n", static_cast<unsigned long long>(stats.textureCount));
         ImGui::LogText("Images: %llu\n", static_cast<unsigned long long>(stats.imageCount));
-        if (hasTextureMemoryStats) {
+        if (hasGraphMemoryStats) {
             const auto& textureMemory = graphExecutor_->textureMemoryStats();
-            ImGui::LogText("Graph texture aliasing: %s\n", textureMemory.aliasingEnabled ? "Enabled" : "Disabled");
-            ImGui::LogText("Graph texture capacity comparison: %s (%u unknown textures)\n",
-                textureMemory.complete ? "Complete" : "Partial", textureMemory.unknownTextureCount);
-            ImGui::LogText("Graph texture capacity without aliasing: %llu bytes\n",
-                static_cast<unsigned long long>(textureMemory.logicalBytes));
-            ImGui::LogText("Graph texture backing capacity: %llu bytes\n",
-                static_cast<unsigned long long>(textureMemory.backingBytes));
-            ImGui::LogText("Graph texture saved capacity: %llu bytes; overhead: %llu bytes\n",
-                static_cast<unsigned long long>(textureMemory.savedBytes),
-                static_cast<unsigned long long>(textureMemory.overheadBytes));
-            ImGui::LogText("Graph textures: %u total, %u transient, %u pinned, %u eligible, %u aliased in %u slots, %u backing allocations\n",
-                textureMemory.textureCount, textureMemory.transientTextureCount, textureMemory.pinnedTextureCount,
-                textureMemory.eligibleTextureCount, textureMemory.aliasedTextureCount, textureMemory.aliasSlotCount,
-                textureMemory.backingAllocationCount);
+            logGraphMemoryStats(textureMemory, "texture", "textures", textureMemory.textureCount,
+                textureMemory.transientTextureCount, textureMemory.pinnedTextureCount, textureMemory.eligibleTextureCount,
+                textureMemory.aliasedTextureCount, textureMemory.unknownTextureCount);
+            const auto& bufferMemory = graphExecutor_->bufferMemoryStats();
+            logGraphMemoryStats(bufferMemory, "buffer", "buffers", bufferMemory.bufferCount,
+                bufferMemory.transientBufferCount, bufferMemory.pinnedBufferCount, bufferMemory.eligibleBufferCount,
+                bufferMemory.aliasedBufferCount, bufferMemory.unknownBufferCount);
         }
         if (hasAccelerationStructureStats) {
             ImGui::LogText(
@@ -6816,6 +6844,8 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     compileOptions.enablePreviewOutputAccess = true;
     const char* textureAliasing = std::getenv("METALLIC_RENDER_GRAPH_TEXTURE_ALIASING");
     compileOptions.enableTextureAliasing = textureAliasing != nullptr && std::string_view(textureAliasing) == "1";
+    const char* bufferAliasing = std::getenv("METALLIC_RENDER_GRAPH_BUFFER_ALIASING");
+    compileOptions.enableBufferAliasing = bufferAliasing != nullptr && std::string_view(bufferAliasing) == "1";
     compileOptions.displayOutput = displayOutput_;
     render::Result<> result;
     {

@@ -34,6 +34,8 @@ struct RenderGraphCompileOptions {
     bool enablePreviewOutputAccess = false;
     // Opt-in; only audited transient textures with disjoint GPU lifetimes alias.
     bool enableTextureAliasing = false;
+    // Independent opt-in; host buffers and exported/persistent resources never alias.
+    bool enableBufferAliasing = false;
     DisplayOutputParameters displayOutput;
 };
 
@@ -72,6 +74,7 @@ struct RenderGraphExecutionStats {
     std::vector<std::string> submissionBlockingPasses;
     profiling::SchedulingMetrics scheduling;
     RenderGraphTextureMemoryStats textureMemory;
+    RenderGraphBufferMemoryStats bufferMemory;
 };
 
 class RenderGraphExecutor {
@@ -142,6 +145,7 @@ public:
     bool isExportedOutput(std::string_view fullName) const;
     // Available immediately after compile; no GPU wait or per-frame native query.
     const RenderGraphTextureMemoryStats& textureMemoryStats() const;
+    const RenderGraphBufferMemoryStats& bufferMemoryStats() const;
     const RenderGraphExecutionStats& executionStats() const;
     // Owner-thread control/query. Disabling capture preserves the last snapshot;
     // returned immutable values can outlive the executor and its GPU resources.

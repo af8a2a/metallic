@@ -2,7 +2,69 @@
 
 调研日期：2026-09-30。依据当前工作区源码（包含尚未提交的 RenderGraph/RHI 修改）、作者资料及 Vulkan/VMA 官方文档。
 
-首次调研后的实现更新：2026-10-01。首阶段已实现独立 `VkImage` 共享同一个别名槽位，并增加原生分配容量统计及 GPU 开关对比。下文保留调研时的架构分析，当前接口、测量范围与结果见下面的实现说明。
+首次调研后的实现更新：2026-10-01。已实现独立 `VkImage` 或独立 `VkBuffer` 共享同类型别名槽位，并增加原生分配容量统计及 GPU 开关对比。下文保留调研时的架构分析；其中“建议”“后置”描述原调研计划，当前接口、测量范围与结果见下面的实现说明。
+
+## Buffer aliasing 实现（2026-10-01）
+
+通过 `RenderGraphCompileOptions::enableBufferAliasing = true` 启用，默认关闭，与 texture 开关独立。编辑器和 `RenderGraphPreviewRenderer` 使用 `METALLIC_RENDER_GRAPH_BUFFER_ALIASING=1`。例如：
+
+```cpp
+reflection.addBufferOutput("data")
+    .buffer(byteSize, structureStride)
+    .storageWrite()
+    .transient(RenderGraphInitialization::FullOverwrite);
+```
+
+初始化承诺覆盖每次成功执行的全部 buffer 字节及完整 pass 使用范围。标记不会自动填充 buffer；部分写入、累积、history、graph 外逃逸的 BDA 或 SDK 长期引用不能使用此契约。现有 `RenderGraphBufferWritePass` 和 `RenderGraphBufferCopyPass` 的完整初始化声明已接入实际复用。
+
+- 两种资源共用 `RenderGraphResourceAliasPlan` 的 GPU 偏序算法，但分别规划、分配和统计。没有 image-buffer 混合别名、offset packing 或 pass 内 stage 别名。相邻 copy 的 source/destination 同时活跃，不共享 backing；非相邻且严格有序的资源可以共享。
+- RHI 的 `bufferAliasAllocationRequirements()`、`bufferAllocationSize()` 与 `createAliasedBuffers()` 使用最终 native descriptor。每个成员保留独立 `VkBuffer`、view、logical allocation ID，所有成员绑定槽位 offset 0；容量取最大 native size/alignment，memory type 取交集。BDA 可以相同，不能据此合并资源身份。
+- Address command 的 usage 标志描述该地址范围上的所有重叠 buffer。共享分配使用 `FULLY_BOUND | UNKNOWN_STORAGE_BUFFER_USAGE`，普通 buffer 保留按 usage 选择的标志；`copyBuffer()` 按共享 backing 检查物理范围，拒绝不同成员之间的重叠 copy。规则见 [Khronos Address Command Flags](https://docs.vulkan.org/refpages/latest/refpages/source/VkAddressCommandFlagBitsKHR.html)。
+- 首版支持 graph-owned Device buffer，含普通 storage、BDA、vertex/index/constant、indirect、transfer usage。HostUpload/HostReadback、AS build input/storage、memory decompression、专用 ray tracing/CLAS budget domain、强制 dedicated allocation、场景依赖和 prepared scene 输出保持独立。RHI 只允许 Other/FrameResources 且组内 budget domain 相同。
+- graph buffer 保留原 budget domain：普通 Device 输出为 Other，HostReadback 沿用 Upload。共享 owner 只 admission/记账/释放一次；view、slice 和录制命令持有成员及 backing，未改变普通分配的容量统计。共享分配使用 `DEDICATED_MEMORY_BIT | CAN_ALIAS_BIT`，带有 VMA allocator 的 BDA 内存分配标志。
+- 每帧激活槽位成员时，先编码物理 `MemoryBarrierDesc` 再执行完整初始化，并连接上一成员的所有末端使用及语义依赖。buffer 没有 image 布局转换；跨队列和跨帧沿用现有 completion waits。导出、预览、debug、取消录制及未提交外部录制的保护规则同时覆盖 texture 和 buffer。
+- `bufferMemoryStats()`、`executionStats().bufferMemory`、`executionSnapshot()->bufferMemory` 发布编译期 native 容量、候选数、共享槽位和节省。Statistics、Execution → Memory 及捕获 JSON 展示两种资源的独立汇总。buffer 汇总包括图拥有的独立 HostReadback，因此它是 graph buffer backing 容量，不能将整体百分比称为纯 VRAM 驻留收益；实际共享仅限 Device。
+
+实现见 [通用 planner](../Source/Runtime/Render/RenderGraph/RenderGraphResourceAliasPlan.cpp)、[executor](../Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp) 和 [Vulkan backend](../Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp)。原 texture planner 接口保留兼容包装。GPU 覆盖见 `tests/rhi/BufferAliasingTests.cpp`、`RenderGraphBufferAliasingTests.cpp`；纯 CPU 偏序规划继续使用已有 texture planner 测试覆盖共享算法。
+
+### Buffer 验证与实际收益
+
+复用 `build-scheduling-release` 的 Release/MSVC、Streamline ON、NRD OFF 配置，`MetallicRHITests` 与 `Metallic` 构建通过。35 项相关回归通过，覆盖共用 planner、access plan、stages、fork/join、取消录制、双 slot 录制、原有 buffer workflow、native memory info 和 viewer。13 项隔离别名 GPU 用例（6 项 buffer、7 项 texture）全部实际执行、通过，各 `validation.json` 均 `count=0`、`captureFailed=false`，没有 skip：
+
+```powershell
+.\build-scheduling-release\tests\MetallicRHITests.exe --tb-run --tb-suite sync `
+    '--tb-filter=*aliasing*' --tb-validation sync --tb-require-all `
+    --tb-layer-path C:\VulkanSDK\1.4.350.0\Bin `
+    --output-dir build-scheduling-release/buffer-alias/sync-final
+```
+
+在 RTX 5070 Ti / NVIDIA 616.92 上，四个 Device buffer（8、8、4、4 MiB）的连续 copy 链复用两个 8 MiB 槽位。大小来自 native requirements 与实际 backing；另有独立的 4 MiB HostReadback：
+
+| 测量范围 | 不复用容量 | 实际 backing | 节省 | 比例 |
+| --- | ---: | ---: | ---: | ---: |
+| 四个 Device buffer | 24 MiB | 16 MiB | **8 MiB** | **33.33%** |
+| 上述资源加 HostReadback | 28 MiB | 20 MiB | **8 MiB** | **28.57%** |
+
+graphics→graphics、compute→graphics、graphics→copy、compute→copy 四种队列组合各执行四帧，全 buffer 逐字节读回一致；本机 compute/copy 是独立队列。还验证了 resize 与关闭开关后重编译。真实内置 Slang writer→三次 bindless copy→HostReadback 图有四个独立 16 B Device buffer，各有独立 descriptor index，有效 BDA 可相同；Device 容量 64→32 B，含 HostReadback 为 80→48 B。它在 graphics/compute、1/4 recording workers、Joined/Pipelined 八种配置共执行 32 个连续 alias 帧，读回全部一致。
+
+native 用例验证混合 Storage/non-Storage usage、预算只计一次、view/slice/录制命令保活、跨成员重叠 copy 拒绝及同 backing 不重叠 copy。首次运行发现测试新增哨兵 fill 前少了 write→write 依赖，以及 scene 排除夹具没有合法场景；已补充物理 barrier 与真实解析的空 glTF 后重跑通过。原始失败证据保留在 `buffer-alias/sync/`，最终结果为 `sync-final/`，未过滤 validation 消息。Memory viewer 截图已检查，图汇总、两个槽位及 native 重叠范围与 JSON 一致。
+
+MiniZorah 使用同一构建、已有共享 SPIR-V cache、texture aliasing 固定开启，buffer 开关分别为 0/1，两次完整 180 帧、像素/guide、viewport resize、streaming budget 和 session retirement 检查均通过，生产 PNG 已检查。稳态 512×320 两次都有 6 个图拥有的 buffer、0 transient/eligible、0 shared slots，独立/实际容量都是 **3,441,136 B**，节省 **0 B**。受控图证明机制有效，不能把其比例外推到当前生产图或进程 VRAM；没有比较运行耗时或声明两次生产 PNG 逐像素相等。NRD 开启路径不属于本次验证。
+
+生产复现（关闭时将 `METALLIC_TEST_BUFFER_ALIASING` 改为 `0`，另用输出目录）：
+
+```powershell
+$env:METALLIC_TEST_MINIZORAH = '1'
+$env:METALLIC_TEST_TEXTURE_ALIASING = '1'
+$env:METALLIC_TEST_BUFFER_ALIASING = '1'
+$env:VK_LAYER_PATH = 'C:\VulkanSDK\1.4.350.0\Bin'
+$env:VK_IMPLICIT_LAYER_PATH = (Resolve-Path build-scheduling-release/empty-vulkan-layers).Path
+.\build-scheduling-release\tests\MetallicRHITests.exe `
+    '--gtest_filter=*minizorah_realtime_pipeline' --rhi-validation --rhi-realtime --rhi-async-compute `
+    --output-dir build-scheduling-release/buffer-alias/minizorah-1
+```
+
+证据在本地 `build-scheduling-release/buffer-alias/`：`sync-final/report.html`、各 case 的 validation/native JSON/readback 与 `buffer-alias-memory.png`，`minizorah-0/` 和 `minizorah-1/` 的完整统计及生产 PNG，`Comparison.json` 汇总实际容量与验证范围。生产统计文件保留原 `MiniZorahTextureMemory-AliasingOn.json` 名称，并增加独立 `bufferAliasingEnabled`、`bufferMemory` 字段；两个目录中的 texture 开关都是 On。生成证据不纳入源代码。
 
 ## 首阶段实现
 
@@ -17,7 +79,7 @@ reflection.addTextureOutput("color")
 `Clear` 和 `FullOverwrite` 都是 pass 的承诺：每次成功调用 `execute()`、所有 texel、整个初始图级使用边界（包含内部 stages）都会初始化。不满足该条件的字段必须保持 `Persistent` 或 `Unknown`。场景未就绪时 executor 可能跳过整个 pass，因此 scene-dependent 或带有 prepared scene 的输出即使声明 transient，也继续排除实际别名。2026-10-01 的逐 pass 审查范围见下节。
 
 - `RenderGraphTextureAliasPlan` 根据活动图的语义依赖计算严格 happens-before。它合并输入别名的全部使用，要求前一成员的所有使用都先于后一成员；独立分支、同一 pass 同时使用的资源不共享。
-- graph-owned Device Texture2D 的 native requirements 决定槽位容量、对齐和共同 memory type。强制 dedicated allocation、depth、外部资源及其他不支持的类型保持原分配。每个槽位绑定 offset 0，没有 offset packing 或 buffer aliasing。
+- graph-owned Device Texture2D 的 native requirements 决定槽位容量、对齐和共同 memory type。强制 dedicated allocation、depth、外部资源及其他不支持的类型保持原分配。每个槽位绑定 offset 0，没有 offset packing；buffer 的独立实现见前节。
 - RHI 的 `textureAliasAllocationRequirements()` 和 `createAliasedTextures()` 创建独立 image/view 与共享 backing owner。记账和释放各一次；command/view 的保留链继续保护 image 与 backing。
 - 每张别名 image 在每帧激活时从 `Undefined` 丢弃布局开始，先编码物理内存同步，再编码自己的布局切换。语义依赖和末端使用者接入现有 GPU submission/join 前驱，跨帧继续等待上一图执行及输出消费者。
 - `markOutput`、`extraOutputs`、presentation 字段及 debug observer 排除复用。`outputResource()` 仍提供元数据；只有 `isExportedOutput()` 为真才能在图外使用。`transitionOutput()` 拒绝已别名的 transient；预览切换会重新编译并将所选输出加入 `extraOutputs`。
@@ -38,7 +100,7 @@ reflection.addTextureOutput("color")
 | SliderDebug、RTXCRMaterialSample、LightGridDebug | color / FullOverwrite | 计算 shader 对每个范围内像素写出结果 |
 | FinalBlit | color / FullOverwrite | 有效输入和无输入的 UV fallback 都覆盖全屏；presentationOutput 继续固定分配 |
 | CopyColor、AutoExposure | color / FullOverwrite | 已有标记；完整 copy 或最终全屏 resolve，适应/history 独立 |
-| RenderGraphBufferWrite、RenderGraphBufferCopy | data / FullOverwrite | 固定长度 buffer 所有元素写入；仅声明生命周期，尚未实现 buffer aliasing |
+| RenderGraphBufferWrite、RenderGraphBufferCopy | data / FullOverwrite | 固定长度 buffer 所有元素写入；现在可由独立 buffer 开关参与别名 |
 | VisibilityBuffer | color、visibility、depth / Clear | 第一次 resident raster 清除附件，包括空几何；同帧后续 Load 保留当帧内容，HZB 历史另存；场景规则继续排除别名 |
 | VisibilityBuffer | domain / Clear，仅 tessellation 开启 | 开启时参与第一次附件 clear；关闭时 dummy 未初始化，保留 Persistent/Unknown |
 | GPUDrivenStreamAsset | color / Clear（raster）或 FullOverwrite（RTAS） | raster 初始化附件，RTAS 完整 shader 写入且无效 TLAS 返回错误；场景规则继续排除别名 |

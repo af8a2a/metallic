@@ -28,7 +28,7 @@ The horizontal axis is dependency depth, **not GPU time**. This view shows where
 
 ## Memory
 
-The view groups native resources by memory block and places each resource at its byte offset. Each resource has a process-wide generation ID, native required size, memory type, and heap. Shared backing owners have a separate ID and capacity; memory totals count each owner once while every distinct image remains visible. These are captured values, not owning references. Borrowed images with unavailable backing information remain unknown.
+The view groups native resources by memory block and places each resource at its byte offset. Each resource has a process-wide generation ID, native required size, memory type, and heap. Shared backing owners have a separate ID and capacity; memory totals count each owner once while every distinct image or buffer remains visible. These are captured values, not owning references. Borrowed resources with unavailable backing information remain unknown.
 
 Three cases have distinct meanings:
 
@@ -38,9 +38,9 @@ Three cases have distinct meanings:
 | Different allocation IDs, same block, disjoint ranges | Suballocation without physical aliasing |
 | Different allocation IDs, same block, overlapping ranges | Observed physical memory aliasing |
 
-Graph texture aliasing is opt-in through `RenderGraphCompileOptions::enableTextureAliasing`, or `METALLIC_RENDER_GRAPH_TEXTURE_ALIASING=1` in the editor/preview renderer. Eligible transient images can overlap one shared backing; pinned exports and persistent resources keep independent allocations. See [memory aliasing contracts](RenderGraphMemoryAliasing.md). “No physical memory aliasing observed” remains valid when disabled or when no safe pair exists. The chart's extent is the largest observed offset plus resource size, not total native block capacity. It includes graph resources and used declarative private imports visible to this execution, not the full device memory budget, other in-flight slots, or opaque SDK allocations. Memory searches select matching blocks and retain their neighboring allocations for range context.
+Graph texture aliasing is opt-in through `RenderGraphCompileOptions::enableTextureAliasing`, or `METALLIC_RENDER_GRAPH_TEXTURE_ALIASING=1` in the editor/preview renderer. Buffer aliasing has a separate `RenderGraphCompileOptions::enableBufferAliasing` flag and `METALLIC_RENDER_GRAPH_BUFFER_ALIASING=1` environment variable. Eligible transient resources of the same type can overlap one shared backing; pinned exports and persistent resources keep independent allocations. See [memory aliasing contracts](RenderGraphMemoryAliasing.md). “No physical memory aliasing observed” remains valid when disabled or when no safe pair exists. The chart's extent is the largest observed offset plus resource size, not total native block capacity. It includes graph resources and used declarative private imports visible to this execution, not the full device memory budget, other in-flight slots, or opaque SDK allocations. Memory searches select matching blocks and retain their neighboring allocations for range context.
 
-The **Statistics** panel and the Memory tab also report compile-generation **graph texture capacity**. The comparison uses native allocation requirements, including alignment, rather than `width × height × bytes per pixel`. Shared images retain distinct native resource IDs; each backing owner contributes once to the physical total. The summary reports MiB (`1 MiB = 1,048,576 bytes`), saved capacity, and its percentage of the independent allocation baseline. The shared-slot table lists its member images and the slot's net savings. A negative value in **Net saved** means backing overhead.
+The **Statistics** panel and the Memory tab also report compile-generation **graph texture capacity** and **graph buffer capacity** separately. The comparison uses native allocation requirements, including alignment, rather than texture dimensions or a buffer's requested byte size. Shared images and buffers retain distinct native resource IDs; each backing owner contributes once to its physical total. The summary reports MiB (`1 MiB = 1,048,576 bytes`), saved capacity, and its percentage of the independent allocation baseline. Each shared-slot table lists its member resources and the slot's net savings. A negative value in **Net saved** means backing overhead.
 
 The copied capture JSON stores this summary in `textureMemory`:
 
@@ -58,9 +58,22 @@ The copied capture JSON stores this summary in `textureMemory`:
 | `complete`, `unknownTextureCount` | Whether every texture's native capacity comparison is known, and the number with incomplete information. |
 | `slots` | Each shared slot's backing ID, member names, capacity comparison, savings, overhead, and `complete` flag. |
 
-If a capacity query is unavailable, known byte totals remain reportable but the comparison is marked partial. Aggregate or individual-slot savings and overhead are zero when that comparison is incomplete; zero then means unavailable, not measured zero savings. The UI hides the aggregate percentage and shows **N/A** for incomplete slot savings. A slot with complete information remains usable even if another texture makes the aggregate partial.
+The parallel `bufferMemory` object uses the same common fields and slot structure. Its type-specific fields are:
 
-These figures cover graph-owned texture allocations for the current compile generation. They exclude scene assets, graph buffers, private imports, pass/SDK-owned history, opaque subsystem allocations, and other in-flight resources. They measure allocation capacity; they do not measure total driver heap residency, process VRAM usage, or an end-to-end memory reduction. Resizing or rebuilding refreshes the measurements; frame execution copies the values without querying native memory requirements again. Frozen captures retain their original generation's values.
+| Field | Meaning |
+| --- | --- |
+| `bufferCount` | Active graph-owned buffer outputs after culling, counted once per native buffer. |
+| `transientBufferCount`, `pinnedBufferCount` | Declared transient outputs and exported or preview-pinned outputs. Available when aliasing is disabled. |
+| `eligibleBufferCount` | Native-qualified candidates when buffer aliasing is enabled, before dependency and slot compatibility tests. Zero when disabled. |
+| `aliasedBufferCount` | Distinct native buffers in actual shared backing slots. |
+| `unknownBufferCount` | Buffers whose native capacity comparison is incomplete. |
+| `logicalBytes` | Capacity required by independent native buffer allocations, including native alignment. |
+
+The `bufferMemory.backingBytes` total counts each actual graph-owned buffer backing once, including independent host readbacks; only Device buffers can alias. Its saved capacity and percentage follow the same comparison rules as textures. The per-resource JSON `logicalBytes` for a buffer still means `BufferDesc::size`, its requested payload size, and differs from the summary's independent native allocation capacity. Texture and buffer slots are planned and reported separately; these statistics do not imply image-buffer aliasing.
+
+If a capacity query is unavailable, known byte totals remain reportable but the comparison is marked partial. Aggregate or individual-slot savings and overhead are zero when that comparison is incomplete; zero then means unavailable, not measured zero savings. The UI hides the aggregate percentage and shows **N/A** for incomplete slot savings. A slot with complete information remains usable even if another resource makes the aggregate partial.
+
+Each summary covers graph-owned allocations of its resource type for the current compile generation. Both exclude scene assets, private imports, pass/SDK-owned history, acceleration structures, opaque subsystem allocations, and other in-flight resources. They measure allocation capacity; they do not measure total driver heap residency, process VRAM usage, or an end-to-end memory reduction. Resizing or rebuilding refreshes the measurements; frame execution copies the values without querying native memory requirements again. Frozen captures retain their original generation's values.
 
 ## Implementation and validation
 

@@ -148,7 +148,7 @@ struct RenderGraphField {
     bool presentationOutput = false;
     RenderGraphResourceLifetime lifetime = RenderGraphResourceLifetime::Persistent;
     // Clear/FullOverwrite covers every successful pass invocation's entire
-    // initial image use, including internal stages. A write alone is insufficient;
+    // initial resource use (all texels/bytes), including internal stages. A write alone is insufficient;
     // the executor separately excludes passes it can skip for scene readiness.
     RenderGraphInitialization initialization = RenderGraphInitialization::Unknown;
     DisplayColorEncoding colorEncoding = DisplayColorEncoding::sRGB;

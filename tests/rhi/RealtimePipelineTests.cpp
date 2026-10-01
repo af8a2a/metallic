@@ -687,6 +687,8 @@ public:
             const char* aliasSetting = std::getenv("METALLIC_TEST_TEXTURE_ALIASING");
             RenderGraphCompileOptions compileOptions;
             compileOptions.enableTextureAliasing = aliasSetting && std::string_view(aliasSetting) == "1";
+            const char* bufferAliasSetting = std::getenv("METALLIC_TEST_BUFFER_ALIASING");
+            compileOptions.enableBufferAliasing = bufferAliasSetting && std::string_view(bufferAliasSetting) == "1";
             nlohmann::json memorySamples = nlohmann::json::array();
             bool memoryCorrectnessVerified = false;
             const std::string memoryLabel = std::string(miniZorah_ ? "MiniZorah" : "Streamed") +
@@ -696,6 +698,10 @@ public:
                 require(stats.complete, "Production texture allocation statistics are incomplete");
                 require(stats.logicalBytes + stats.overheadBytes == stats.backingBytes + stats.savedBytes,
                     "Texture memory accounting does not balance");
+                const auto& buffers = executor.bufferMemoryStats();
+                require(buffers.complete, "Production buffer allocation statistics are incomplete");
+                require(buffers.logicalBytes + buffers.overheadBytes == buffers.backingBytes + buffers.savedBytes,
+                    "Buffer memory accounting does not balance");
                 const auto budget = context.device.memoryBudget();
                 const auto& frameResources = budget.domains[size_t(MemoryBudgetDomain::FrameResources)];
                 nlohmann::json domains = nlohmann::json::array();
@@ -735,6 +741,13 @@ public:
                         {"aliasedTextureCount", stats.aliasedTextureCount},
                         {"aliasSlotCount", stats.aliasSlotCount},
                         {"backingAllocationCount", stats.backingAllocationCount}, {"slots", std::move(slots)}}},
+                    {"bufferMemory", {{"aliasingEnabled", buffers.aliasingEnabled}, {"complete", buffers.complete},
+                        {"logicalBytes", buffers.logicalBytes}, {"backingBytes", buffers.backingBytes},
+                        {"savedBytes", buffers.savedBytes}, {"overheadBytes", buffers.overheadBytes},
+                        {"bufferCount", buffers.bufferCount}, {"transientBufferCount", buffers.transientBufferCount},
+                        {"eligibleBufferCount", buffers.eligibleBufferCount}, {"pinnedBufferCount", buffers.pinnedBufferCount},
+                        {"aliasedBufferCount", buffers.aliasedBufferCount}, {"aliasSlotCount", buffers.aliasSlotCount},
+                        {"backingAllocationCount", buffers.backingAllocationCount}, {"unknownBufferCount", buffers.unknownBufferCount}}},
                     {"deviceTelemetry", {{"frameResourceAllocationBytes", frameResources.allocationBytes},
                         {"frameResourceDeviceLocalBytes", frameResources.deviceLocalBytes},
                         {"frameResourceAllocationCount", frameResources.allocationCount},
@@ -744,13 +757,17 @@ public:
                 std::ofstream report(context.outputDirectory / (memoryLabel + ".json"));
                 report << nlohmann::json{{"schemaVersion", 1}, {"workload", name},
                     {"textureAliasingEnabled", compileOptions.enableTextureAliasing},
+                    {"bufferAliasingEnabled", compileOptions.enableBufferAliasing},
                     {"correctnessVerified", memoryCorrectnessVerified},
-                    {"scope", "Owned graph textures only; logicalBytes is the independent-image allocation counterfactual; backingBytes counts each physical backing once. Device telemetry also includes buffers, private resources, scene/SDK allocations and driver usage, and is not an alias savings metric."},
+                    {"scope", "Separate owned graph texture and buffer native capacities; buffer totals include independent host readbacks. logicalBytes is the independent allocation counterfactual; backingBytes counts each physical backing once. Device telemetry includes private resources, scene/SDK allocations and driver usage, and is not an alias savings metric."},
                     {"samples", memorySamples}}.dump(2) << '\n';
                 require(report.good(), "Could not save production texture memory statistics");
                 spdlog::info("[Texture memory] {} {} {}x{} logical={} backing={} saved={} overhead={} aliasTextures={} aliasSlots={} FrameResources={}",
                     memoryLabel, phase, width, height, stats.logicalBytes, stats.backingBytes, stats.savedBytes,
                     stats.overheadBytes, stats.aliasedTextureCount, stats.aliasSlotCount, frameResources.allocationBytes);
+                spdlog::info("[Buffer memory] {} {} aliasing={} count={} eligible={} aliased={} slots={} logical={} backing={} saved={}",
+                    memoryLabel, phase, buffers.aliasingEnabled, buffers.bufferCount, buffers.eligibleBufferCount,
+                    buffers.aliasedBufferCount, buffers.aliasSlotCount, buffers.logicalBytes, buffers.backingBytes, buffers.savedBytes);
             };
             const auto compileGraph = [&](std::string_view phase) {
                 const auto begin = std::chrono::steady_clock::now();

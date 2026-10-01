@@ -121,6 +121,69 @@ std::string bytesText(uint64_t bytes)
     return text;
 }
 
+template<class Stats>
+void drawAliasMemoryStats(
+    const Stats& stats, const char* kind, const char* resources,
+    uint32_t count, uint32_t transientCount, uint32_t pinnedCount,
+    uint32_t eligibleCount, uint32_t aliasedCount, uint32_t unknownCount,
+    const char* filter, float scale)
+{
+    const double savedPercent = stats.complete && stats.logicalBytes
+        ? 100.0 * double(stats.savedBytes) / double(stats.logicalBytes) : 0.0;
+    ImGui::Text("Graph %s aliasing: %s", kind, stats.aliasingEnabled ? "Enabled" : "Disabled");
+    ImGui::Text("Without aliasing: %s | Backing: %s%s", bytesText(stats.logicalBytes).c_str(),
+        bytesText(stats.backingBytes).c_str(), stats.complete ? "" : " (known capacity only)");
+    if (stats.complete) {
+        if (stats.overheadBytes) {
+            ImGui::Text("Backing overhead: %s", bytesText(stats.overheadBytes).c_str());
+        } else {
+            ImGui::Text("Saved: %s (%.2f%%)", bytesText(stats.savedBytes).c_str(), savedPercent);
+        }
+    } else {
+        ImGui::TextDisabled("Partial comparison: %u %s have unknown capacity; savings percentage unavailable.",
+            unknownCount, resources);
+    }
+    ImGui::Text("%u %s | %u transient | %u pinned | %u eligible", count, resources,
+        transientCount, pinnedCount, eligibleCount);
+    ImGui::Text("%u aliased %s in %u shared slots | %u backing allocations", aliasedCount, resources,
+        stats.aliasSlotCount, stats.backingAllocationCount);
+    ImGui::TextDisabled("Graph-owned %s capacity; excludes scene, private imports and opaque subsystem memory.", kind);
+    ImGui::PushID(kind);
+    const std::string slotLabel = std::string("Shared ") + kind + " slots";
+    if (!stats.slots.empty() && ImGui::TreeNodeEx(slotLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::BeginTable("AliasSlots", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Resources", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+            ImGui::TableSetupColumn("Backing ID", ImGuiTableColumnFlags_WidthFixed, 88 * scale);
+            ImGui::TableSetupColumn("Without alias", ImGuiTableColumnFlags_WidthFixed, 98 * scale);
+            ImGui::TableSetupColumn("Backing", ImGuiTableColumnFlags_WidthFixed, 88 * scale);
+            ImGui::TableSetupColumn("Net saved", ImGuiTableColumnFlags_WidthFixed, 88 * scale);
+            ImGui::TableHeadersRow();
+            for (const auto& slot : stats.slots) {
+                bool visible = filter[0] == '\0';
+                for (const auto& name : slot.resources) { visible |= matches(name, filter); }
+                if (!visible) { continue; }
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                for (const auto& name : slot.resources) { ImGui::TextWrapped("%s", name.c_str()); }
+                ImGui::TableNextColumn();
+                ImGui::Text("%llu", static_cast<unsigned long long>(slot.backingAllocationId));
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(bytesText(slot.logicalBytes).c_str());
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(bytesText(slot.backingBytes).c_str());
+                ImGui::TableNextColumn();
+                if (slot.complete) {
+                    ImGui::Text("%s%s", slot.overheadBytes ? "-" : "",
+                        bytesText(slot.overheadBytes ? slot.overheadBytes : slot.savedBytes).c_str());
+                } else { ImGui::TextDisabled("N/A"); }
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TreePop();
+    }
+    ImGui::PopID();
+    ImGui::Separator();
+}
+
 const Resource* findResource(const Snapshot& snapshot, uint64_t id)
 {
     const auto found = std::find_if(snapshot.resources.begin(), snapshot.resources.end(),
@@ -244,6 +307,23 @@ bool overlaps(const Resource& a, const Resource& b)
         a.memory.offsetBytes - b.memory.offsetBytes < b.memory.sizeBytes;
 }
 
+template<class Stats>
+RenderGraphProperties memoryStatsJson(const Stats& stats, const char* scope)
+{
+    using Json = RenderGraphProperties;
+    Json value{{"aliasingEnabled", stats.aliasingEnabled}, {"complete", stats.complete},
+        {"aliasSlotCount", stats.aliasSlotCount}, {"backingAllocationCount", stats.backingAllocationCount},
+        {"logicalBytes", stats.logicalBytes}, {"backingBytes", stats.backingBytes},
+        {"savedBytes", stats.savedBytes}, {"overheadBytes", stats.overheadBytes},
+        {"scope", scope}, {"slots", Json::array()}};
+    for (const auto& slot : stats.slots) {
+        value["slots"].push_back({{"backingAllocationId", slot.backingAllocationId}, {"complete", slot.complete},
+            {"logicalBytes", slot.logicalBytes}, {"backingBytes", slot.backingBytes},
+            {"savedBytes", slot.savedBytes}, {"overheadBytes", slot.overheadBytes}, {"resources", slot.resources}});
+    }
+    return value;
+}
+
 std::string captureJson(const Snapshot& snapshot)
 {
     using Json = RenderGraphProperties;
@@ -254,21 +334,23 @@ std::string captureJson(const Snapshot& snapshot)
         {"resources", Json::array()}, {"passes", Json::array()}, {"queues", Json::array()},
         {"segments", Json::array()}, {"batches", Json::array()}};
     const auto& textureMemory = snapshot.textureMemory;
-    value["textureMemory"] = {{"aliasingEnabled", textureMemory.aliasingEnabled},
-        {"complete", textureMemory.complete}, {"transientTextureCount", textureMemory.transientTextureCount},
-        {"pinnedTextureCount", textureMemory.pinnedTextureCount}, {"unknownTextureCount", textureMemory.unknownTextureCount},
-        {"textureCount", textureMemory.textureCount}, {"eligibleTextureCount", textureMemory.eligibleTextureCount},
-        {"aliasedTextureCount", textureMemory.aliasedTextureCount}, {"aliasSlotCount", textureMemory.aliasSlotCount},
-        {"backingAllocationCount", textureMemory.backingAllocationCount},
-        {"logicalBytes", textureMemory.logicalBytes}, {"backingBytes", textureMemory.backingBytes},
-        {"savedBytes", textureMemory.savedBytes}, {"overheadBytes", textureMemory.overheadBytes},
-        {"scope", "Graph-owned texture backing capacity; excludes scene, buffers and opaque subsystem memory"},
-        {"slots", Json::array()}};
-    for (const auto& slot : textureMemory.slots) {
-        value["textureMemory"]["slots"].push_back({{"backingAllocationId", slot.backingAllocationId}, {"complete", slot.complete},
-            {"logicalBytes", slot.logicalBytes}, {"backingBytes", slot.backingBytes},
-            {"savedBytes", slot.savedBytes}, {"overheadBytes", slot.overheadBytes}, {"resources", slot.resources}});
-    }
+    auto& textureValue = value["textureMemory"] = memoryStatsJson(textureMemory,
+        "Graph-owned texture backing capacity; excludes scene, buffers and opaque subsystem memory");
+    textureValue["textureCount"] = textureMemory.textureCount;
+    textureValue["transientTextureCount"] = textureMemory.transientTextureCount;
+    textureValue["pinnedTextureCount"] = textureMemory.pinnedTextureCount;
+    textureValue["eligibleTextureCount"] = textureMemory.eligibleTextureCount;
+    textureValue["aliasedTextureCount"] = textureMemory.aliasedTextureCount;
+    textureValue["unknownTextureCount"] = textureMemory.unknownTextureCount;
+    const auto& bufferMemory = snapshot.bufferMemory;
+    auto& bufferValue = value["bufferMemory"] = memoryStatsJson(bufferMemory,
+        "Graph-owned buffer backing capacity; excludes scene, textures and opaque subsystem memory");
+    bufferValue["bufferCount"] = bufferMemory.bufferCount;
+    bufferValue["transientBufferCount"] = bufferMemory.transientBufferCount;
+    bufferValue["pinnedBufferCount"] = bufferMemory.pinnedBufferCount;
+    bufferValue["eligibleBufferCount"] = bufferMemory.eligibleBufferCount;
+    bufferValue["aliasedBufferCount"] = bufferMemory.aliasedBufferCount;
+    bufferValue["unknownBufferCount"] = bufferMemory.unknownBufferCount;
     for (const auto& resource : snapshot.resources) {
         const auto& m = resource.memory;
         value["resources"].push_back({{"id", resource.id}, {"name", resource.name}, {"aliases", resource.aliases},
@@ -640,57 +722,13 @@ void RenderGraphExecutionViewer::drawQueues(float scale)
 void RenderGraphExecutionViewer::drawMemory(float scale)
 {
     const auto& textureMemory = snapshot_->textureMemory;
-    const double savedPercent = textureMemory.complete && textureMemory.logicalBytes
-        ? 100.0 * double(textureMemory.savedBytes) / double(textureMemory.logicalBytes) : 0.0;
-    ImGui::Text("Graph texture aliasing: %s", textureMemory.aliasingEnabled ? "Enabled" : "Disabled");
-    ImGui::Text("Without aliasing: %s | Backing: %s%s", bytesText(textureMemory.logicalBytes).c_str(),
-        bytesText(textureMemory.backingBytes).c_str(), textureMemory.complete ? "" : " (known capacity only)");
-    if (textureMemory.complete) {
-        if (textureMemory.overheadBytes) {
-            ImGui::Text("Backing overhead: %s", bytesText(textureMemory.overheadBytes).c_str());
-        } else {
-            ImGui::Text("Saved: %s (%.2f%%)", bytesText(textureMemory.savedBytes).c_str(), savedPercent);
-        }
-    } else {
-        ImGui::TextDisabled("Partial comparison: %u textures have unknown capacity; savings percentage unavailable.",
-            textureMemory.unknownTextureCount);
-    }
-    ImGui::Text("%u textures | %u transient | %u pinned | %u eligible", textureMemory.textureCount,
-        textureMemory.transientTextureCount, textureMemory.pinnedTextureCount, textureMemory.eligibleTextureCount);
-    ImGui::Text("%u aliased textures in %u shared slots | %u backing allocations", textureMemory.aliasedTextureCount,
-        textureMemory.aliasSlotCount, textureMemory.backingAllocationCount);
-    ImGui::TextDisabled("Graph-owned texture capacity; excludes scene, buffers and opaque subsystem memory.");
-    if (!textureMemory.slots.empty() && ImGui::TreeNodeEx("Shared texture slots", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (ImGui::BeginTable("TextureAliasSlots", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-            ImGuiTableFlags_SizingStretchProp)) {
-            ImGui::TableSetupColumn("Textures", ImGuiTableColumnFlags_WidthStretch, 2.0f);
-            ImGui::TableSetupColumn("Backing ID", ImGuiTableColumnFlags_WidthFixed, 88 * scale);
-            ImGui::TableSetupColumn("Without alias", ImGuiTableColumnFlags_WidthFixed, 98 * scale);
-            ImGui::TableSetupColumn("Backing", ImGuiTableColumnFlags_WidthFixed, 88 * scale);
-            ImGui::TableSetupColumn("Net saved", ImGuiTableColumnFlags_WidthFixed, 88 * scale);
-            ImGui::TableHeadersRow();
-            for (const auto& slot : textureMemory.slots) {
-                bool visible = resourceFilter_[0] == '\0';
-                for (const auto& name : slot.resources) { visible |= matches(name, resourceFilter_); }
-                if (!visible) { continue; }
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                for (const auto& name : slot.resources) { ImGui::TextWrapped("%s", name.c_str()); }
-                ImGui::TableNextColumn();
-                ImGui::Text("%llu", static_cast<unsigned long long>(slot.backingAllocationId));
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(bytesText(slot.logicalBytes).c_str());
-                ImGui::TableNextColumn(); ImGui::TextUnformatted(bytesText(slot.backingBytes).c_str());
-                ImGui::TableNextColumn();
-                if (slot.complete) {
-                    ImGui::Text("%s%s", slot.overheadBytes ? "-" : "",
-                        bytesText(slot.overheadBytes ? slot.overheadBytes : slot.savedBytes).c_str());
-                } else { ImGui::TextDisabled("N/A"); }
-            }
-            ImGui::EndTable();
-        }
-        ImGui::TreePop();
-    }
-    ImGui::Separator();
+    drawAliasMemoryStats(textureMemory, "texture", "textures", textureMemory.textureCount,
+        textureMemory.transientTextureCount, textureMemory.pinnedTextureCount, textureMemory.eligibleTextureCount,
+        textureMemory.aliasedTextureCount, textureMemory.unknownTextureCount, resourceFilter_, scale);
+    const auto& bufferMemory = snapshot_->bufferMemory;
+    drawAliasMemoryStats(bufferMemory, "buffer", "buffers", bufferMemory.bufferCount,
+        bufferMemory.transientBufferCount, bufferMemory.pinnedBufferCount, bufferMemory.eligibleBufferCount,
+        bufferMemory.aliasedBufferCount, bufferMemory.unknownBufferCount, resourceFilter_, scale);
     std::map<uint64_t, std::vector<const Resource*>> blocks;
     std::set<uint64_t> allocations;
     std::map<uint64_t, uint64_t> backingSizes;

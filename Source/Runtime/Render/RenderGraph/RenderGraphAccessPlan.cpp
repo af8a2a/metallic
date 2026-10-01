@@ -291,8 +291,8 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
             if (!retained) { return retained; }
         }
     }
-    // Complete the old physical occupant before the new image's discard layout
-    // transition. Separate calls avoid treating two image objects as one layout.
+    // Complete the previous physical occupant before the next resource's first
+    // access. Images additionally discard layouts; buffers need no transition.
     if (!aliasMemory.empty()) {
         auto result = commands.synchronize({.memory = aliasMemory});
         if (!result) { return result; }

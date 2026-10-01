@@ -535,6 +535,14 @@ struct BufferDesc {
     MemoryBudgetDomain memoryDomain = MemoryBudgetDomain::Other;
 };
 
+// Native requirements for the descriptor used by createAliasedBuffers().
+struct BufferAllocationRequirements {
+    uint64_t sizeBytes = 0;
+    uint64_t alignmentBytes = 0;
+    uint32_t memoryTypeBits = 0;
+    bool requiresDedicatedAllocation = false;
+};
+
 enum class BufferViewType : uint8_t {
     Constant,
     Structured,
@@ -1464,6 +1472,7 @@ struct RayTracingAccelerationStructureCompactionQueryPoolImpl;
 struct SemaphoreImpl;
 struct SwapchainSemaphoreImpl;
 struct BufferImpl;
+struct BufferAddressCommandAccess;
 struct BufferViewImpl;
 struct RayTracingAccelerationStructureImpl;
 struct TextureImpl;
@@ -1629,6 +1638,7 @@ private:
     uint64_t offset_ = 0;
     uint64_t size_ = 0;
     friend class Buffer;
+    friend struct detail::BufferAddressCommandAccess;
 };
 
 class Buffer {
@@ -1665,6 +1675,7 @@ private:
     friend class BufferView;
     friend class BindlessHeap;
     friend struct detail::DeviceImpl;
+    friend struct detail::BufferAddressCommandAccess;
     friend struct detail::VulkanNativeAccess;
 };
 
@@ -2269,6 +2280,15 @@ public:
     [[nodiscard]] Result<std::unique_ptr<Semaphore>> createSemaphore();
     [[nodiscard]] Result<std::unique_ptr<SwapchainSemaphore>> createSwapchainSemaphore();
     [[nodiscard]] Result<std::unique_ptr<Buffer>> createBuffer(const BufferDesc& desc);
+    [[nodiscard]] Result<uint64_t> bufferAllocationSize(const BufferDesc& desc);
+    [[nodiscard]] Result<BufferAllocationRequirements> bufferAliasAllocationRequirements(const BufferDesc& desc);
+    // Creates independent Device buffers at offset zero in one shared allocation,
+    // accounted once in their common memory domain. The caller must order alias
+    // uses and initialize every buffer after each handoff. Only Other and
+    // FrameResources domains are supported; host buffers and acceleration-
+    // structure/decompression usages are unsupported. Device must
+    // outlive buffers, views, and retained commands. Failure returns no partial group.
+    [[nodiscard]] Result<std::vector<std::unique_ptr<Buffer>>> createAliasedBuffers(std::span<const BufferDesc> descriptions);
     [[nodiscard]] Result<RayTracingAccelerationStructureProperties> queryRayTracingAccelerationStructureProperties() const;
     [[nodiscard]] Result<RayTracingAccelerationStructureBuildSizes> queryRayTracingAccelerationStructureBuildSizes(const RayTracingAccelerationStructureBuildInputs& inputs) const;
     [[nodiscard]] Result<std::unique_ptr<RayTracingAccelerationStructure>> createRayTracingAccelerationStructure(const RayTracingAccelerationStructureDesc& desc);

@@ -344,6 +344,8 @@ add_executable(MetallicRHITests
     rhi/RenderPassTransientTests.cpp
     rhi/TextureAliasingTests.cpp
     rhi/RenderGraphTextureAliasingTests.cpp
+    rhi/BufferAliasingTests.cpp
+    rhi/RenderGraphBufferAliasingTests.cpp
     rhi/RenderGraphAccelerationStructureTests.cpp
     rhi/SceneAccelerationStructurePassTests.cpp
     rhi/RenderGraphComputeStageTests.cpp

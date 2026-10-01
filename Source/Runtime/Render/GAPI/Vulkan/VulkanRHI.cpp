@@ -528,17 +528,15 @@ VkBufferUsageFlags2 toVkBufferUsage(BufferUsageBits usage)
     return flags != 0 ? flags : VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 }
 
-VkAddressCommandFlagsKHR addressCommandFlags(BufferUsageBits usage)
+VkAddressCommandFlagsKHR addressCommandFlags(BufferUsageBits usage, bool aliased)
 {
-    // VMA buffers are fully bound and do not alias other live allocations.
+    // Address flags describe every VkBuffer overlapping the physical range,
+    // not just the member targeted by this command. Shared allocations permit
+    // mixed Storage usage; UNKNOWN covers every occupant and retained member.
+    // Ordinary VMA buffers remain fully bound with their known storage usage.
     return VK_ADDRESS_COMMAND_FULLY_BOUND_BIT_KHR |
-        (hasFlag(usage, BufferUsageBits::Storage)
-            ? VK_ADDRESS_COMMAND_STORAGE_BUFFER_USAGE_BIT_KHR : 0);
-}
-
-VkAddressCommandFlagsKHR addressCommandFlags(const Buffer& buffer)
-{
-    return addressCommandFlags(buffer.desc().usage);
+        (aliased ? VK_ADDRESS_COMMAND_UNKNOWN_STORAGE_BUFFER_USAGE_BIT_KHR :
+            hasFlag(usage, BufferUsageBits::Storage) ? VK_ADDRESS_COMMAND_STORAGE_BUFFER_USAGE_BIT_KHR : 0);
 }
 
 VkImageUsageFlags toVkImageUsage(TextureUsageBits usage)
@@ -3109,6 +3107,16 @@ struct MemoryBudgetState {
     uint64_t reservedBytes = 0, deniedAllocations = 0;
 };
 
+struct AliasBufferAllocation {
+    DeviceImpl* device = nullptr;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    uint64_t allocationId = nextResourceAllocationId.fetch_add(1, std::memory_order_relaxed);
+    uint64_t sizeBytes = 0;
+    MemoryBudgetDomain memoryDomain = MemoryBudgetDomain::Other;
+    bool deviceLocal = false;
+    ~AliasBufferAllocation();
+};
+
 struct BufferImpl {
     DeviceImpl* device = nullptr;
     ResourceMemoryInfo memoryInfo{.allocationId = nextResourceAllocationId.fetch_add(1, std::memory_order_relaxed)};
@@ -3116,10 +3124,42 @@ struct BufferImpl {
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceAddress address = 0;
     VmaAllocation allocation = VK_NULL_HANDLE;
+    std::shared_ptr<AliasBufferAllocation> aliasAllocation;
     void* mapped = nullptr;
     uint64_t allocationBytes = 0;
     bool deviceLocal = false;
     ~BufferImpl();
+};
+
+struct BufferAddressCommandAccess {
+    static VkAddressCommandFlagsKHR flags(const Buffer& buffer)
+    {
+        return flags(buffer.impl_.get());
+    }
+
+    static VkAddressCommandFlagsKHR flags(const BufferSlice& slice)
+    {
+        return flags(slice.allocation_.get());
+    }
+
+    static bool overlap(const BufferSlice& source, const BufferSlice& destination)
+    {
+        const auto& before = source.allocation_;
+        const auto& after = destination.allocation_;
+        const bool sameBacking = before == after ||
+            (before && after && before->aliasAllocation && before->aliasAllocation == after->aliasAllocation);
+        // Alias members bind at the same backing offset; slice offsets are
+        // therefore also their physical offsets relative to that allocation.
+        return sameBacking && source.offset_ < destination.offset_ + destination.size_ &&
+            destination.offset_ < source.offset_ + source.size_;
+    }
+
+private:
+    static VkAddressCommandFlagsKHR flags(const BufferImpl* allocation)
+    {
+        return addressCommandFlags(allocation ? allocation->desc.usage : BufferUsageBits::None,
+            allocation && allocation->aliasAllocation);
+    }
 };
 
 struct MicromapIdentityIndexBuffer {
@@ -3155,7 +3195,7 @@ struct RayTracingAccelerationStructureImpl {
 
 struct BufferViewImpl {
     DeviceImpl* device = nullptr;
-    Buffer* buffer = nullptr;
+    std::shared_ptr<BufferImpl> buffer;
     BufferViewDesc desc;
     VkDescriptorType descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     VkDeviceAddress address = 0;
@@ -3520,10 +3560,24 @@ BufferImpl::~BufferImpl()
 {
     if (!device || buffer == VK_NULL_HANDLE) { return; }
     vulkan::forgetTraceObject(device->device, VK_OBJECT_TYPE_BUFFER, uint64_t(buffer));
+    // Alias members and temporary unbound buffers own only their native handle.
+    // The last retained member releases and accounts for the backing allocation.
+    if (aliasAllocation || allocation == VK_NULL_HANDLE) {
+        vkDestroyBuffer(device->device, buffer, nullptr);
+        return;
+    }
     std::lock_guard lock(device->memoryBudgetState->mutex);
     if (mapped) { vmaUnmapMemory(device->allocator, allocation); }
     vmaDestroyBuffer(device->allocator, buffer, allocation);
     device->trackMemoryLocked(desc.memoryDomain, allocationBytes, deviceLocal, false);
+}
+
+AliasBufferAllocation::~AliasBufferAllocation()
+{
+    if (!device || allocation == VK_NULL_HANDLE) { return; }
+    std::lock_guard lock(device->memoryBudgetState->mutex);
+    vmaFreeMemory(device->allocator, allocation);
+    device->trackMemoryLocked(memoryDomain, sizeBytes, deviceLocal, false);
 }
 
 AliasTextureAllocation::~AliasTextureAllocation()
@@ -6009,16 +6063,14 @@ Result<> CommandBuffer::copyBuffer(const BufferSlice& source, const BufferSlice&
         !destination.validate(deviceIdentity(), BufferUsageBits::TransferDestination) || source.size() != destination.size()) {
         return makeError(Error::InvalidArgument);
     }
-    if (source.allocationIdentity() == destination.allocationIdentity() &&
-        source.offset() < destination.offset() + destination.size() &&
-        destination.offset() < source.offset() + source.size()) { return makeError(Error::InvalidArgument); }
+    if (detail::BufferAddressCommandAccess::overlap(source, destination)) { return makeError(Error::InvalidArgument); }
     auto result = retainResource(source.retainAllocation());
     if (result) { result = retainResource(destination.retainAllocation()); }
     if (!result) { return result; }
     const VkDeviceMemoryCopyKHR copyRegion{
         .sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_COPY_KHR,
-        .srcRange = {source.deviceAddress(), source.size()}, .srcFlags = addressCommandFlags(source.allocationDesc().usage),
-        .dstRange = {destination.deviceAddress(), destination.size()}, .dstFlags = addressCommandFlags(destination.allocationDesc().usage),
+        .srcRange = {source.deviceAddress(), source.size()}, .srcFlags = detail::BufferAddressCommandAccess::flags(source),
+        .dstRange = {destination.deviceAddress(), destination.size()}, .dstFlags = detail::BufferAddressCommandAccess::flags(destination),
     };
     const VkCopyDeviceMemoryInfoKHR copyInfo{.sType = VK_STRUCTURE_TYPE_COPY_DEVICE_MEMORY_INFO_KHR,
         .regionCount = 1, .pRegions = &copyRegion};
@@ -6164,7 +6216,7 @@ void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
         .sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_IMAGE_COPY_KHR,
         .addressRange = {desc.buffer->deviceAddress() + desc.bufferOffset,
             desc.buffer->desc().size - desc.bufferOffset},
-        .addressFlags = addressCommandFlags(*desc.buffer),
+        .addressFlags = detail::BufferAddressCommandAccess::flags(*desc.buffer),
         .addressRowLength = bufferRowLength,
         .addressImageHeight = bufferImageHeight,
         .imageSubresource = {
@@ -6218,7 +6270,7 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
         .sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_IMAGE_COPY_KHR,
         .addressRange = {desc.buffer->deviceAddress() + desc.bufferOffset,
             desc.buffer->desc().size - desc.bufferOffset},
-        .addressFlags = addressCommandFlags(*desc.buffer),
+        .addressFlags = detail::BufferAddressCommandAccess::flags(*desc.buffer),
         .addressRowLength = bufferRowLength,
         .addressImageHeight = bufferImageHeight,
         .imageSubresource = {
@@ -6809,7 +6861,7 @@ void CommandBuffer::drawMeshTasksIndirect(Buffer& buffer, uint64_t offset)
     const VkDrawIndirect2InfoKHR info{
         .sType = VK_STRUCTURE_TYPE_DRAW_INDIRECT_2_INFO_KHR,
         .addressRange = {buffer.deviceAddress() + offset, sizeof(VkDrawMeshTasksIndirectCommandEXT), 0},
-        .addressFlags = addressCommandFlags(buffer),
+        .addressFlags = detail::BufferAddressCommandAccess::flags(buffer),
         .drawCount = 1,
     };
     if (vkCmdDrawMeshTasksIndirect2EXT != nullptr) {
@@ -6845,7 +6897,7 @@ Result<> CommandBuffer::dispatchIndirect(const BufferSlice& arguments)
     const VkDispatchIndirect2InfoKHR info{
         .sType = VK_STRUCTURE_TYPE_DISPATCH_INDIRECT_2_INFO_KHR,
         .addressRange = {arguments.deviceAddress(), sizeof(VkDispatchIndirectCommand)},
-        .addressFlags = addressCommandFlags(arguments.allocationDesc().usage),
+        .addressFlags = detail::BufferAddressCommandAccess::flags(arguments),
     };
     vkCmdDispatchIndirect2KHR(impl_->commandBuffer, &info);
     if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->dispatchCalls; }
@@ -9287,6 +9339,101 @@ Result<std::unique_ptr<SwapchainSemaphore>> Device::createSwapchainSemaphore()
     return std::unique_ptr<SwapchainSemaphore>(new SwapchainSemaphore(std::move(semaphoreImpl)));
 }
 
+namespace {
+
+BufferDesc effectiveBufferDesc(const BufferDesc& requestedDesc)
+{
+    auto desc = requestedDesc;
+    // Diagnostic snapshots copy the bound storage allocations in both paths.
+    const char* replay = std::getenv("METALLIC_WORK_CONTROL_REPLAY");
+    if (replay && std::strcmp(replay, "1") == 0 && hasFlag(desc.usage, BufferUsageBits::Storage)) {
+        desc.usage = desc.usage | BufferUsageBits::TransferSource;
+    }
+    return desc;
+}
+
+Result<VkBufferUsageFlags2> nativeBufferUsage(const detail::DeviceImpl& device, BufferUsageBits bufferUsage)
+{
+    const bool usesAccelerationStructure =
+        hasFlag(bufferUsage, BufferUsageBits::AccelerationStructureBuildInput) ||
+        hasFlag(bufferUsage, BufferUsageBits::AccelerationStructureStorage);
+    if (usesAccelerationStructure && !device.capabilities.rayTracingAccelerationStructure) {
+        return makeError(Error::Unsupported);
+    }
+    const bool requestsDeviceAddress = hasFlag(bufferUsage, BufferUsageBits::ShaderDeviceAddress) ||
+        usesAccelerationStructure;
+    if (requestsDeviceAddress && !device.bufferDeviceAddressEnabled) {
+        return makeError(Error::Unsupported);
+    }
+    if (hasFlag(bufferUsage, BufferUsageBits::MemoryDecompression) && !device.capabilities.memoryDecompression) {
+        return makeError(Error::Unsupported);
+    }
+    VkBufferUsageFlags2 usage = toVkBufferUsage(bufferUsage);
+    if (device.opacityMicromapExt) {
+        if (hasFlag(bufferUsage, BufferUsageBits::AccelerationStructureBuildInput)) {
+            usage |= VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT;
+        }
+        if (hasFlag(bufferUsage, BufferUsageBits::AccelerationStructureStorage)) {
+            usage |= VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT;
+        }
+    }
+    if (device.bufferDeviceAddressEnabled &&
+        (usage & (VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT)) != 0) {
+        usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    }
+    return usage;
+}
+
+VkBufferCreateInfo nativeBufferInfo(const BufferDesc& desc,
+    const VkBufferUsageFlags2CreateInfo& usage, const std::vector<uint32_t>& queueFamilies)
+{
+    return {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .pNext = &usage,
+        .size = desc.size,
+        .sharingMode = queueFamilies.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = queueFamilies.size() > 1 ? uint32_t(queueFamilies.size()) : 0,
+        .pQueueFamilyIndices = queueFamilies.size() > 1 ? queueFamilies.data() : nullptr,
+    };
+}
+
+Result<> validateAliasBufferDesc(const detail::DeviceImpl& device, const BufferDesc& desc)
+{
+    constexpr auto allowedUsage = BufferUsageBits::Vertex | BufferUsageBits::Index | BufferUsageBits::Constant |
+        BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination |
+        BufferUsageBits::ShaderDeviceAddress | BufferUsageBits::Indirect;
+    constexpr auto allowedQueues = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy;
+    if (!desc.size || desc.usage == BufferUsageBits::None || size_t(desc.memoryDomain) >= size_t(MemoryBudgetDomain::Count) ||
+        (uint32_t(desc.queueAccess) & ~uint32_t(allowedQueues)) != 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    constexpr auto allUsage = allowedUsage | BufferUsageBits::AccelerationStructureBuildInput |
+        BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::MemoryDecompression;
+    if ((uint32_t(desc.usage) & ~uint32_t(allUsage)) != 0) { return makeError(Error::InvalidArgument); }
+    // Acceleration-structure address graphs and decompression have additional
+    // retention contracts. Scratch domains are excluded even for Storage usage.
+    if (desc.memoryLocation != MemoryLocation::Device || (uint32_t(desc.usage) & ~uint32_t(allowedUsage)) != 0 ||
+        (desc.memoryDomain != MemoryBudgetDomain::Other && desc.memoryDomain != MemoryBudgetDomain::FrameResources)) {
+        return makeError(Error::Unsupported);
+    }
+    VkPhysicalDeviceMaintenance4Properties maintenance{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &maintenance};
+    vkGetPhysicalDeviceProperties2(device.physicalDevice, &properties);
+    if (desc.size > maintenance.maxBufferSize) { return makeError(Error::InvalidArgument); }
+    return {};
+}
+
+BufferAllocationRequirements aliasBufferRequirements(const VkMemoryRequirements& memory,
+    const VkMemoryDedicatedRequirements& dedicated)
+{
+    return {.sizeBytes = memory.size, .alignmentBytes = memory.alignment, .memoryTypeBits = memory.memoryTypeBits,
+        .requiresDedicatedAllocation = dedicated.requiresDedicatedAllocation != VK_FALSE};
+}
+
+} // namespace
+
 Result<std::unique_ptr<Buffer>> Device::createBuffer(const BufferDesc& requestedDesc)
 {
     return createBuffer(impl_.get(), requestedDesc);
@@ -9294,67 +9441,22 @@ Result<std::unique_ptr<Buffer>> Device::createBuffer(const BufferDesc& requested
 
 Result<std::unique_ptr<Buffer>> Device::createBuffer(detail::DeviceImpl* impl_, const BufferDesc& requestedDesc)
 {
-    auto desc = requestedDesc;
-    // Opt-in diagnostic snapshots need to copy the actual bound allocations,
-    // including host-upload frame slots. Ordinary buffer usage is unchanged.
-    const char* replay = std::getenv("METALLIC_WORK_CONTROL_REPLAY");
-    if (replay && std::strcmp(replay, "1") == 0 && hasFlag(desc.usage, BufferUsageBits::Storage)) {
-        desc.usage = desc.usage | BufferUsageBits::TransferSource;
-    }
+    auto desc = effectiveBufferDesc(requestedDesc);
     if (impl_ == nullptr || desc.size == 0) {
         return makeError(Error::InvalidArgument);
     }
     activateVolkDevice(impl_->device);
 
-    const bool usesAccelerationStructure =
-        hasFlag(desc.usage, BufferUsageBits::AccelerationStructureBuildInput) ||
-        hasFlag(desc.usage, BufferUsageBits::AccelerationStructureStorage);
-    if (usesAccelerationStructure && !impl_->capabilities.rayTracingAccelerationStructure) {
-        return makeError(Error::Unsupported);
-    }
-
-    const bool requestsDeviceAddress =
-        hasFlag(desc.usage, BufferUsageBits::ShaderDeviceAddress) ||
-        usesAccelerationStructure;
-    if (requestsDeviceAddress && !impl_->bufferDeviceAddressEnabled) {
-        return makeError(Error::Unsupported);
-    }
-
-    if (hasFlag(desc.usage, BufferUsageBits::MemoryDecompression) && !impl_->capabilities.memoryDecompression) {
-        return makeError(Error::Unsupported);
-    }
-    VkBufferUsageFlags2 usage = toVkBufferUsage(desc.usage);
-    if (impl_->opacityMicromapExt) {
-        if (hasFlag(desc.usage, BufferUsageBits::AccelerationStructureBuildInput)) {
-            usage |= VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT;
-        }
-        if (hasFlag(desc.usage, BufferUsageBits::AccelerationStructureStorage)) {
-            usage |= VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT;
-        }
-    }
-    if (impl_->bufferDeviceAddressEnabled &&
-        (usage & (VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-            VK_BUFFER_USAGE_TRANSFER_DST_BIT)) != 0) {
-        usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    }
+    const auto usageResult = nativeBufferUsage(*impl_, desc.usage);
+    if (!usageResult) { return std::unexpected(usageResult.error()); }
+    const auto usage = *usageResult;
 
     const std::vector<uint32_t> queueFamilies = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
     const VkBufferUsageFlags2CreateInfo usage2{
         .sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO,
         .usage = usage,
     };
-    VkBufferCreateInfo bufferInfo{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .pNext = &usage2,
-        .size = desc.size,
-        .usage = 0,
-        .sharingMode = queueFamilies.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
-        .queueFamilyIndexCount = queueFamilies.size() > 1
-            ? static_cast<uint32_t>(queueFamilies.size())
-            : 0,
-        .pQueueFamilyIndices = queueFamilies.size() > 1 ? queueFamilies.data() : nullptr,
-    };
+    const auto bufferInfo = nativeBufferInfo(desc, usage2, queueFamilies);
 
     VmaAllocationCreateInfo allocationInfo = allocationInfoForMemory(desc.memoryLocation);
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -9408,6 +9510,165 @@ Result<std::unique_ptr<Buffer>> Device::createBuffer(detail::DeviceImpl* impl_, 
     bufferImpl->deviceLocal = (impl_->memoryProperties.memoryHeaps[impl_->memoryProperties.memoryTypes[allocatedInfo.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
     impl_->trackMemoryLocked(domain, allocatedInfo.size, bufferImpl->deviceLocal, true);
     return std::unique_ptr<Buffer>(new Buffer(std::move(bufferImpl)));
+}
+
+Result<uint64_t> Device::bufferAllocationSize(const BufferDesc& requestedDesc)
+{
+    const auto desc = effectiveBufferDesc(requestedDesc);
+    constexpr auto allowedUsage = BufferUsageBits::Vertex | BufferUsageBits::Index | BufferUsageBits::Constant |
+        BufferUsageBits::Storage | BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination |
+        BufferUsageBits::ShaderDeviceAddress | BufferUsageBits::Indirect | BufferUsageBits::AccelerationStructureBuildInput |
+        BufferUsageBits::AccelerationStructureStorage | BufferUsageBits::MemoryDecompression;
+    constexpr auto allowedQueues = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy;
+    if (!impl_ || !desc.size || desc.usage == BufferUsageBits::None ||
+        (uint32_t(desc.usage) & ~uint32_t(allowedUsage)) != 0 ||
+        (uint32_t(desc.queueAccess) & ~uint32_t(allowedQueues)) != 0 ||
+        size_t(desc.memoryDomain) >= size_t(MemoryBudgetDomain::Count)) {
+        return makeError(Error::InvalidArgument);
+    }
+    activateVolkDevice(impl_->device);
+    VkPhysicalDeviceMaintenance4Properties maintenance{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_4_PROPERTIES};
+    VkPhysicalDeviceProperties2 properties{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &maintenance};
+    vkGetPhysicalDeviceProperties2(impl_->physicalDevice, &properties);
+    if (desc.size > maintenance.maxBufferSize) { return makeError(Error::InvalidArgument); }
+    const auto usage = nativeBufferUsage(*impl_, desc.usage);
+    if (!usage) { return std::unexpected(usage.error()); }
+    const auto families = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
+    const VkBufferUsageFlags2CreateInfo usage2{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO, .usage = *usage};
+    const auto info = nativeBufferInfo(desc, usage2, families);
+    VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+    const VkDeviceBufferMemoryRequirements request{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS, .pCreateInfo = &info};
+    vkGetDeviceBufferMemoryRequirements(impl_->device, &request, &requirements);
+    if (!requirements.memoryRequirements.size) { return makeError(Error::Unsupported); }
+    return requirements.memoryRequirements.size;
+}
+
+Result<BufferAllocationRequirements> Device::bufferAliasAllocationRequirements(const BufferDesc& requestedDesc)
+{
+    if (!impl_) { return makeError(Error::InvalidArgument); }
+    const auto desc = effectiveBufferDesc(requestedDesc);
+    const auto valid = validateAliasBufferDesc(*impl_, desc);
+    if (!valid) { return std::unexpected(valid.error()); }
+    activateVolkDevice(impl_->device);
+    const auto usage = nativeBufferUsage(*impl_, desc.usage);
+    if (!usage) { return std::unexpected(usage.error()); }
+    const auto families = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
+    const VkBufferUsageFlags2CreateInfo usage2{
+        .sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO, .usage = *usage};
+    const auto info = nativeBufferInfo(desc, usage2, families);
+    VkMemoryDedicatedRequirements dedicated{.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+    VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
+    const VkDeviceBufferMemoryRequirements request{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS, .pCreateInfo = &info};
+    vkGetDeviceBufferMemoryRequirements(impl_->device, &request, &requirements);
+    if (!requirements.memoryRequirements.size || !requirements.memoryRequirements.alignment ||
+        !requirements.memoryRequirements.memoryTypeBits) { return makeError(Error::Unsupported); }
+    return aliasBufferRequirements(requirements.memoryRequirements, dedicated);
+}
+
+Result<std::vector<std::unique_ptr<Buffer>>> Device::createAliasedBuffers(std::span<const BufferDesc> descriptions)
+{
+    if (!impl_ || descriptions.empty()) { return makeError(Error::InvalidArgument); }
+    activateVolkDevice(impl_->device);
+    const auto domain = descriptions.front().memoryDomain;
+    std::vector<std::unique_ptr<detail::BufferImpl>> buffers;
+    std::vector<BufferAllocationRequirements> bufferRequirements;
+    buffers.reserve(descriptions.size());
+    bufferRequirements.reserve(descriptions.size());
+    VkMemoryRequirements combined{.size = 0, .alignment = 1, .memoryTypeBits = UINT32_MAX};
+    std::vector<VkBufferUsageFlags2> bufferUsages;
+    bufferUsages.reserve(descriptions.size());
+    for (const auto& requestedDesc : descriptions) {
+        const auto desc = effectiveBufferDesc(requestedDesc);
+        const auto valid = validateAliasBufferDesc(*impl_, desc);
+        if (!valid) { return std::unexpected(valid.error()); }
+        if (desc.memoryDomain != domain) { return makeError(Error::InvalidArgument); }
+        const auto usage = nativeBufferUsage(*impl_, desc.usage);
+        if (!usage) { return std::unexpected(usage.error()); }
+        const auto families = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
+        const VkBufferUsageFlags2CreateInfo usage2{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_USAGE_FLAGS_2_CREATE_INFO, .usage = *usage};
+        const auto info = nativeBufferInfo(desc, usage2, families);
+        auto buffer = std::make_unique<detail::BufferImpl>();
+        buffer->device = impl_.get();
+        buffer->desc = desc;
+        const VkResult created = vkCreateBuffer(impl_->device, &info, nullptr, &buffer->buffer);
+        if (created != VK_SUCCESS) { return std::unexpected(resultFromVk(created).error()); }
+        VkMemoryDedicatedRequirements dedicated{.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+        VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
+        const VkBufferMemoryRequirementsInfo2 request{
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2, .buffer = buffer->buffer};
+        vkGetBufferMemoryRequirements2(impl_->device, &request, &requirements);
+        const auto& memory = requirements.memoryRequirements;
+        if (dedicated.requiresDedicatedAllocation || !memory.size || !memory.alignment || !memory.memoryTypeBits) {
+            return makeError(Error::Unsupported);
+        }
+        combined.size = std::max(combined.size, memory.size);
+        combined.alignment = std::max(combined.alignment, memory.alignment);
+        combined.memoryTypeBits &= memory.memoryTypeBits;
+        bufferRequirements.push_back(aliasBufferRequirements(memory, dedicated));
+        bufferUsages.push_back(*usage);
+        buffers.push_back(std::move(buffer));
+    }
+    if (!combined.memoryTypeBits) { return makeError(Error::Unsupported); }
+    auto backing = std::make_shared<detail::AliasBufferAllocation>();
+    backing->device = impl_.get();
+    backing->memoryDomain = domain;
+    VmaAllocationInfo allocated{};
+    {
+        std::unique_lock budgetLock(impl_->memoryBudgetState->mutex);
+        VmaAllocationCreateInfo allocationInfo{
+            .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT | VMA_ALLOCATION_CREATE_CAN_ALIAS_BIT,
+            .usage = VMA_MEMORY_USAGE_UNKNOWN,
+            .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            .preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            .memoryTypeBits = combined.memoryTypeBits,
+        };
+        uint32_t memoryType = 0;
+        VkResult result = vmaFindMemoryTypeIndex(impl_->allocator, combined.memoryTypeBits, &allocationInfo, &memoryType);
+        if (result != VK_SUCCESS) { return std::unexpected(resultFromVk(result).error()); }
+        if (!impl_->admitMemoryLocked(memoryType, combined.size, domain)) { return makeError(Error::OutOfMemory); }
+        allocationInfo.memoryTypeBits = 1u << memoryType;
+        if (impl_->memoryBudgetState->policy.enabled) { allocationInfo.flags |= VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT; }
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        // The allocator's BUFFER_DEVICE_ADDRESS flag also applies to raw memory
+        // allocations. CAN_ALIAS avoids dedicating the backing to one VkBuffer.
+        result = vmaAllocateMemory(impl_->allocator, &combined, &allocationInfo, &allocation, &allocated);
+        if (result != VK_SUCCESS) { return std::unexpected(resultFromVk(result).error()); }
+        backing->allocation = allocation;
+        backing->sizeBytes = allocated.size;
+        backing->deviceLocal = (impl_->memoryProperties.memoryHeaps[
+            impl_->memoryProperties.memoryTypes[allocated.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+        impl_->trackMemoryLocked(domain, backing->sizeBytes, backing->deviceLocal, true);
+    }
+    // Retain on every member before binding so rollback destroys all VkBuffers
+    // before the final owner frees the shared VkDeviceMemory.
+    for (auto& buffer : buffers) { buffer->aliasAllocation = backing; }
+    for (size_t index = 0; index < buffers.size(); ++index) {
+        auto& buffer = *buffers[index];
+        const auto& requirements = bufferRequirements[index];
+        if (allocated.size < requirements.sizeBytes || allocated.offset % requirements.alignmentBytes ||
+            !(requirements.memoryTypeBits & (1u << allocated.memoryType))) { return makeError(Error::Unsupported); }
+        const VkResult bound = vmaBindBufferMemory(impl_->allocator, backing->allocation, buffer.buffer);
+        if (bound != VK_SUCCESS) { return std::unexpected(resultFromVk(bound).error()); }
+        if ((bufferUsages[index] & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
+            const VkBufferDeviceAddressInfo addressInfo{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = buffer.buffer};
+            buffer.address = vkGetBufferDeviceAddress(impl_->device, &addressInfo);
+            if (!buffer.address) { return makeError(Error::Failure); }
+        }
+        buffer.memoryInfo = allocationMemoryInfo(allocated, impl_->memoryProperties, buffer.memoryInfo.allocationId);
+        buffer.memoryInfo.backingAllocationId = backing->allocationId;
+        buffer.memoryInfo.sizeBytes = requirements.sizeBytes;
+        buffer.allocationBytes = requirements.sizeBytes;
+        buffer.deviceLocal = backing->deviceLocal;
+    }
+    std::vector<std::unique_ptr<Buffer>> result;
+    result.reserve(buffers.size());
+    for (auto& buffer : buffers) { result.push_back(std::unique_ptr<Buffer>(new Buffer(std::move(buffer)))); }
+    return result;
 }
 
 Result<std::unique_ptr<BufferView>> Device::createBufferView(Buffer& buffer,
@@ -9465,7 +9726,7 @@ Result<std::unique_ptr<BufferView>> Device::createBufferView(Buffer& buffer,
 
     auto viewImpl = std::make_unique<detail::BufferViewImpl>();
     viewImpl->device = impl_.get();
-    viewImpl->buffer = &buffer;
+    viewImpl->buffer = buffer.impl_;
     viewImpl->desc = desc;
     viewImpl->desc.range.size = viewSize;
     viewImpl->desc.structureStride = structureStride;
