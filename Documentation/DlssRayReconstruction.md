@@ -59,14 +59,14 @@ Default/D/E presets, so its preset menu should not be copied as a version update
 
 ## Regression checks
 
-- `RhiRendering.dlss_motion_vector_reprojection` runs the actual shader helpers on
+- `RHIRendering.dlss_motion_vector_reprojection` runs the actual shader helpers on
   the GPU: 16 jitter offsets, perspective/orthographic projection, stationary and
   translated cameras, perspective rotation, sky motion, and invalid history.
-- `MetallicEditorDlssCameraSmoke` renders 16 moving RR frames through the editor's
+- `MetallicEditorDLSSCameraSmoke` renders 16 moving RR frames through the editor's
   viewport camera update path and checks camera synchronization, preserved reset
   counters, explicit Reset, and continued invalidation of ordinary accumulation.
   It requires a GPU/driver supporting DLSS-RR.
-- `RhiRendering.render_graph_pathtracing_guides_shader_compile` compiles both
+- `RHIRendering.render_graph_pathtracing_guides_shader_compile` compiles both
   guide shaders.
 
 These checks validate integration and reprojection inputs; they do not measure

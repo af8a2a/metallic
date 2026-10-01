@@ -46,10 +46,10 @@ python Tools/PrepareMiniZorahRuntime.py --page-mib 1024
 ## 验收方法
 
 ```powershell
-build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.streamasset_only_first_frame --rhi-validation --output-dir build-relwithdebinfo/minizorah-m2/bunny
+build-relwithdebinfo/tests/MetallicRHITests.exe --gtest_filter=RHIRendering.streamasset_only_first_frame --rhi-validation --output-dir build-relwithdebinfo/minizorah-m2/bunny
 $env:METALLIC_TEST_MINIZORAH='1'
-build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.minizorah_stream_first_frame --rhi-validation --output-dir build-relwithdebinfo/minizorah-m2/cold
-build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.minizorah_stream_first_frame --rhi-validation --output-dir build-relwithdebinfo/minizorah-m2/warm
+build-relwithdebinfo/tests/MetallicRHITests.exe --gtest_filter=RHIRendering.minizorah_stream_first_frame --rhi-validation --output-dir build-relwithdebinfo/minizorah-m2/cold
+build-relwithdebinfo/tests/MetallicRHITests.exe --gtest_filter=RHIRendering.minizorah_stream_first_frame --rhi-validation --output-dir build-relwithdebinfo/minizorah-m2/warm
 ```
 
 完整场景测试为显式 opt-in，日常 CI 使用同一路径的 Bunny 回归。测试通过真实 Vulkan 渲染与 GPU readback 验证，不操作主桌面窗口：
@@ -88,7 +88,7 @@ build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.mini
 
 [完整世界总览](../build-relwithdebinfo/minizorah-m2/cold/MiniZorah-far.png) · [近景](../build-relwithdebinfo/minizorah-m2/cold/MiniZorah-near.png) · [cold 原始报告](../build-relwithdebinfo/minizorah-m2/cold/MiniZorahFirstFrameReport.json) · [warm 原始报告](../build-relwithdebinfo/minizorah-m2/warm/MiniZorahFirstFrameReport.json)
 
-相关 9 项回归全部通过：GPUScene CPU 核心、source lease、global/view GPU buffers、取消提交恢复、无 Scene 的灯光 world、sample 加载、原 StreamAsset smoke、Bunny 纯流式首帧。[回归日志](../build-relwithdebinfo/minizorah-m2/regression.log)。`Metallic`、`MetallicGPUDrivenSample`、`MetallicRhiTests` 均编译通过；profile 与 manifest 生成结果一致，5 MiB 的不足根预算被拒绝。本轮未通过桌面 UI 启动编辑器，图像来自同一 sample/profile 的 headless Vulkan 路径。
+相关 9 项回归全部通过：GPUScene CPU 核心、source lease、global/view GPU buffers、取消提交恢复、无 Scene 的灯光 world、sample 加载、原 StreamAsset smoke、Bunny 纯流式首帧。[回归日志](../build-relwithdebinfo/minizorah-m2/regression.log)。`Metallic`、`MetallicGPUDrivenSample`、`MetallicRHITests` 均编译通过；profile 与 manifest 生成结果一致，5 MiB 的不足根预算被拒绝。本轮未通过桌面 UI 启动编辑器，图像来自同一 sample/profile 的 headless Vulkan 路径。
 
 ## M3 / M4 的明确边界
 

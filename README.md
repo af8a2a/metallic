@@ -225,7 +225,7 @@ build\Source\Debug\Metallic.exe --smoke-test
 | `gpu-driven-terrain-p0` | GPUDrivenSample / Terrain P0 | GPU Driven |
 | `gpu-driven-terrain-p1-unified` | GPUDrivenSample / Terrain P1 Unified | GPU Driven |
 
-生成的独立可执行文件：`Metallic`（编辑器）、`MetallicMaterialVisualizationSample`、`MetallicPathTracingSample`、`MetallicRtxdiSample`、`MetallicGPUDrivenSample`、`MetallicRtxcrSample`、`LookDev`、`metallicctl`。
+生成的独立可执行文件：`Metallic`（编辑器）、`MetallicMaterialVisualizationSample`、`MetallicPathTracingSample`、`MetallicRTXDISample`、`MetallicGPUDrivenSample`、`MetallicRTXCRSample`、`LookDev`、`metallicctl`。
 
 ## 内置 Render Pass
 
@@ -238,8 +238,8 @@ build\Source\Debug\Metallic.exe --smoke-test
 | 后处理 | `AutoExposurePass`、`SliderDebugPass`、`ScreenSpaceShadowPass` |
 | Ray Query | `SceneMaterialVisualizationPass`、`SceneRayQueryVisualizationPass` |
 | 路径追踪 | `ScenePathTracePass`（含可选 DLSS-RR guides） |
-| RTXDI | `SceneRtxdiPass`、`RtxdiConfidencePass`、`RtxdiCompositePass` |
-| 降噪 / 超分 | `NrdDenoisePass`、`StreamlineDlssRrPass`、`DlssNrPass` |
+| RTXDI | `SceneRTXDIPass`、`RTXDIConfidencePass`、`RTXDICompositePass` |
+| 降噪 / 超分 | `NRDDenoisePass`、`StreamlineDLSSRRPass`、`DLSSNRPass` |
 | GPU-driven | `VisibilityBufferPass`、`GPUDrivenStreamAssetPass` |
 | 调试 / 测试 | `LightGridDebugPass`、`RenderGraphBufferWritePass`、`RenderGraphBufferCopyPass` |
 
@@ -343,7 +343,7 @@ build\Source\Debug\Metallic.exe --smoke-test
 3. 需要独立入口时在 `Source/Samples/` 增加薄封装并配置 CMake；
 4. 至少覆盖图加载、目标节点存在性与 smoke test。
 
-**修改共享 RHI 接口**：`Rhi.h` 的改动需同时检查 Vulkan PImpl、RenderGraph 状态映射、Scene RTX、Streamer、编辑器 native bridge 与 `tests/rhi/`。RHI 对象保持 move-only 与 owner 控制生命周期。
+**修改共享 RHI 接口**：`RHI.h` 的改动需同时检查 Vulkan PImpl、RenderGraph 状态映射、Scene RTX、Streamer、编辑器 native bridge 与 `tests/rhi/`。RHI 对象保持 move-only 与 owner 控制生命周期。
 
 ## 代码风格
 

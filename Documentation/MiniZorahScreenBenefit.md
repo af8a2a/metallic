@@ -81,7 +81,7 @@ early 候选只展开可见实例。early 分类将上一帧 HZB 拒绝的 clust
 
 ## 验证与复现
 
-`Metallic`、`MetallicGPUDrivenSample`、`MetallicRhiTests` 的 RelWithDebInfo 构建成功。最终 34 项回归全部通过（253.289 秒），覆盖流式准入/上传/退避、219 组 GPU/reference cut、收益清零/收集、混合光栅、GPUScene、完整 MiniZorah VBuffer、resize/reload 和共享相机漫游；日志无 VUID 或 Vulkan validation error。已有 pipeline cache 写入警告仍可见，shader 编译不计入计时路线。
+`Metallic`、`MetallicGPUDrivenSample`、`MetallicRHITests` 的 RelWithDebInfo 构建成功。最终 34 项回归全部通过（253.289 秒），覆盖流式准入/上传/退避、219 组 GPU/reference cut、收益清零/收集、混合光栅、GPUScene、完整 MiniZorah VBuffer、resize/reload 和共享相机漫游；日志无 VUID 或 Vulkan validation error。已有 pipeline cache 写入警告仍可见，shader 编译不计入计时路线。
 
 新驻留测试验证共享页面收益取最大值、每字节收益、根页保护、NaN 和短反馈；GPU cut 测试以 NaN 污染逐页表，验证每帧清零、紧凑收集、未请求页面无残留和可见请求产生正收益。两档 60 秒路线均通过所有 12 个完整 cut、覆盖、相机和页池检查点。
 
@@ -90,8 +90,8 @@ $env:METALLIC_TEST_MINIZORAH = '1'
 $env:METALLIC_MINIZORAH_ROAM_SECONDS = '60' # 长测为 660
 $env:METALLIC_MINIZORAH_ROAM_MIB = '1024'   # 压力对照为 64
 $env:METALLIC_MINIZORAH_PAGE_PRIORITY = '1' # 旧顺序对照为 0
-& .\build-relwithdebinfo\tests\MetallicRhiTests.exe `
-  --gtest_filter=RhiRendering.minizorah_roaming --rhi-validation --rhi-async-compute `
+& .\build-relwithdebinfo\tests\MetallicRHITests.exe `
+  --gtest_filter=RHIRendering.minizorah_roaming --rhi-validation --rhi-async-compute `
   --output-dir E:/metallic/build-relwithdebinfo/minizorah-screen-benefit/reproduce
 ```
 

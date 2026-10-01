@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/TessellationPatterns.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -14,32 +14,32 @@
 namespace metallic::tests {
 namespace {
 
-class TessellationPatternTest final : public RhiTest {
+class TessellationPatternTest final : public RHITest {
 public:
-    TessellationPatternTest() { type = RhiTestType::Validation; name = "tessellation_pattern_coverage"; }
-    RhiTestResult run(RhiTestContext&) override
+    TessellationPatternTest() { type = RHITestType::Validation; name = "tessellation_pattern_coverage"; }
+    RHITestResult run(RHITestContext&) override
     {
         for (uint32_t a = 1; a <= 8; ++a) {
             for (uint32_t b = 1; b <= 8; ++b) {
                 for (uint32_t c = 1; c <= 8; ++c) {
                     const auto p = render::makeTessellationPattern({a, b, c});
-                    if (p.vertices.size() > 64 || p.triangles.size() > 128) { return RhiTestResult::fail("Patch output exceeded mesh limits"); }
+                    if (p.vertices.size() > 64 || p.triangles.size() > 128) { return RHITestResult::fail("Patch output exceeded mesh limits"); }
                     std::map<std::pair<uint32_t, uint32_t>, uint32_t> edges;
                     int64_t area = 0;
                     for (const auto& tri : p.triangles) {
                         for (auto v : tri) {
                             if (v >= p.vertices.size() || std::accumulate(p.vertices[v].begin(), p.vertices[v].end(), 0u) != 65535) {
-                                return RhiTestResult::fail("Invalid pattern index/domain");
+                                return RHITestResult::fail("Invalid pattern index/domain");
                             }
                         }
                         const auto& x = p.vertices[tri[0]]; const auto& y = p.vertices[tri[1]]; const auto& z = p.vertices[tri[2]];
                         int64_t triangleArea = (int64_t(y[1]) - x[1]) * (int64_t(z[2]) - x[2]) -
                             (int64_t(z[1]) - x[1]) * (int64_t(y[2]) - x[2]);
-                        if (triangleArea <= 0) { return RhiTestResult::fail("Degenerate or reversed pattern triangle"); }
+                        if (triangleArea <= 0) { return RHITestResult::fail("Degenerate or reversed pattern triangle"); }
                         area += triangleArea;
                         for (uint32_t e = 0; e < 3; ++e) { ++edges[std::minmax(tri[e], tri[(e + 1) % 3])]; }
                     }
-                    if (area != 65535ll * 65535ll) { return RhiTestResult::fail("Pattern does not cover the complete source triangle"); }
+                    if (area != 65535ll * 65535ll) { return RHITestResult::fail("Pattern does not cover the complete source triangle"); }
                     std::array<uint32_t, 3> boundary{};
                     for (const auto& [edge, uses] : edges) {
                         if (uses == 2) { continue; }
@@ -49,13 +49,13 @@ public:
                                 exterior = true; ++boundary[(zero + 1) % 3];
                             }
                         }
-                        if (uses != 1 || !exterior) { return RhiTestResult::fail("Non-manifold interior or open patch edge"); }
+                        if (uses != 1 || !exterior) { return RHITestResult::fail("Non-manifold interior or open patch edge"); }
                     }
-                    if (boundary != std::array<uint32_t, 3>{a, b, c}) { return RhiTestResult::fail("Independent edge rate changed"); }
+                    if (boundary != std::array<uint32_t, 3>{a, b, c}) { return RHITestResult::fail("Independent edge rate changed"); }
                 }
             }
         }
-        return RhiTestResult::pass("All 512 edge-rate patterns cover the domain exactly, have manifold interiors and bounded output");
+        return RHITestResult::pass("All 512 edge-rate patterns cover the domain exactly, have manifold interiors and bounded output");
     }
 };
 
@@ -199,27 +199,27 @@ bool writeTessFixture(const std::filesystem::path& path, bool baked, const std::
     return bool(binary);
 }
 
-class TessellationRenderTest : public RhiTest {
+class TessellationRenderTest : public RHITest {
     bool recursive_;
 public:
-    explicit TessellationRenderTest(bool recursive = false) : recursive_(recursive) { type = RhiTestType::Rendering; name = recursive ? "tessellation_recursive_render" : "tessellation_displacement_render"; }
-    RhiTestResult run(RhiTestContext& context) override
+    explicit TessellationRenderTest(bool recursive = false) : recursive_(recursive) { type = RHITestType::Rendering; name = recursive ? "tessellation_recursive_render" : "tessellation_displacement_render"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::filesystem::create_directories(context.outputDirectory);
         std::string log;
         const auto pixels = tessTestImage();
-        if (!saveRgba8Png(context.outputDirectory / "Height.png", pixels.data(), kHeightSize, kHeightSize, log)) { return RhiTestResult::fail(log); }
+        if (!saveRgba8Png(context.outputDirectory / "Height.png", pixels.data(), kHeightSize, kHeightSize, log)) { return RHITestResult::fail(log); }
         const auto source = std::filesystem::absolute(context.outputDirectory / "Displaced.gltf");
         const auto baked = std::filesystem::absolute(context.outputDirectory / "Baked.gltf");
-        if (!writeTessFixture(source, false, pixels) || !writeTessFixture(baked, true, pixels)) { return RhiTestResult::fail("Could not write fixture"); }
+        if (!writeTessFixture(source, false, pixels) || !writeTessFixture(baked, true, pixels)) { return RHITestResult::fail("Could not write fixture"); }
         const auto stream = std::filesystem::absolute(context.outputDirectory / "Displaced.meshstream.bin");
-        if (!scene::buildMeshletStreamAssetOffline({.sourcePath = source, .outputPath = stream}, log)) { return RhiTestResult::fail(log); }
+        if (!scene::buildMeshletStreamAssetOffline({.sourcePath = source, .outputPath = stream}, log)) { return RHITestResult::fail(log); }
         scene::SceneDocument document;
         render::RenderGraphPreviewRenderer preview;
         preview.bindRuntimeScene(&document);
         const auto initialized = preview.initialize(context.enableValidation, true);
-        if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders and bindless"); }
-        if (!initialized) { return RhiTestResult::fail(preview.lastLog()); }
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders and bindless"); }
+        if (!initialized) { return RHITestResult::fail(preview.lastLog()); }
         preview.setEnvironment({.enabled = false});
         render::RenderGraph graph;
         graph.addNode("VisibilityBufferPass", "VBuffer", {{"autoLod", false}, {"lodLevel", 0}, {"visualization", "coverage"},
@@ -241,7 +241,7 @@ public:
                     for (bool ortho : {false, true}) {
                         const auto referencePath = std::filesystem::absolute(context.outputDirectory /
                             (std::string("Baked") + std::to_string(splitDepth) + "_" + (ortho ? "Ortho" : "Perspective") + std::to_string(int(edgePixels)) + ".gltf"));
-                        if (!writeTessFixture(referencePath, true, pixels, edgePixels, ortho, splitDepth)) { return RhiTestResult::fail("Could not write adaptive reference"); }
+                        if (!writeTessFixture(referencePath, true, pixels, edgePixels, ortho, splitDepth)) { return RHITestResult::fail("Could not write adaptive reference"); }
                         graph.setNodeRuntimeProperty(vbuffer, "tessellationEdgePixels", edgePixels);
                         for (bool reversed : {false, true}) {
                             for (const char* debug : {"baseColor", "shadingNormal"}) {
@@ -267,10 +267,10 @@ public:
                                     }
                                     return true;
                                 };
-                                if (!renderScene(referencePath, false, false)) { return RhiTestResult::fail(log); }
+                                if (!renderScene(referencePath, false, false)) { return RHITestResult::fail(log); }
                                 const auto reference = preview.pixels();
                                 for (bool streaming : {false, true}) {
-                                    if (!renderScene(source, true, streaming)) { return RhiTestResult::fail(log); }
+                                    if (!renderScene(source, true, streaming)) { return RHITestResult::fail(log); }
                                     size_t covered = 0, outliers = 0; double error = 0;
                                     for (size_t i = 0; i < reference.size(); ++i) {
                                         covered += (reference[i] & 0xffffffu) != 0;
@@ -296,26 +296,26 @@ public:
                 }
             }
         }
-        if (!failures.empty()) { return RhiTestResult::fail(failures); }
+        if (!failures.empty()) { return RHITestResult::fail(failures); }
         // Changing a material must republish the immutable GPU table and bounds
         // without a graph reload, then restore exactly the same visible surface.
         const auto beforeEdit = preview.pixels();
         const auto originalMaterial = document.materials()[0];
         auto flatMaterial = originalMaterial; flatMaterial.displacementMagnitude = 0.0f;
         if (!document.setMaterialProperties(0, flatMaterial) || !preview.render(graph, 193, 157)) {
-            return RhiTestResult::fail("Live displacement edit failed: " + preview.lastLog());
+            return RHITestResult::fail("Live displacement edit failed: " + preview.lastLog());
         }
-        if (preview.pixels() == beforeEdit) { return RhiTestResult::fail("Live material edit did not reach rasterization"); }
+        if (preview.pixels() == beforeEdit) { return RHITestResult::fail("Live material edit did not reach rasterization"); }
         if (std::count_if(preview.pixels().begin(), preview.pixels().end(), [](uint32_t pixel) { return (pixel & 0xffffffu) != 0; }) < 3000) {
-            return RhiTestResult::fail("Live material edit discarded the resident stream cut");
+            return RHITestResult::fail("Live material edit discarded the resident stream cut");
         }
         if (!document.setMaterialProperties(0, originalMaterial) || !preview.render(graph, 193, 157)) {
-            return RhiTestResult::fail("Live displacement restore failed: " + preview.lastLog());
+            return RHITestResult::fail("Live displacement restore failed: " + preview.lastLog());
         }
         if (preview.pixels() != beforeEdit) {
             saveRgba8Png(context.outputDirectory / "BeforeMaterialEdit.png", reinterpret_cast<const uint8_t*>(beforeEdit.data()), 193, 157, log);
             saveRgba8Png(context.outputDirectory / "RestoredMaterial.png", reinterpret_cast<const uint8_t*>(preview.pixels().data()), 193, 157, log);
-            return RhiTestResult::fail("Live displacement restore changed the original image");
+            return RHITestResult::fail("Live displacement restore changed the original image");
         }
         if (recursive_) {
             // Keep the same scene, graph, stream cut and pipelines while editing
@@ -330,7 +330,7 @@ public:
                     graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxSplitDepth", 3);
                     graph.markDirty();
                     for (uint32_t i = 0; i < 8; ++i) {
-                        if (!preview.render(graph, 193, 157)) { return RhiTestResult::fail(preview.lastLog()); }
+                        if (!preview.render(graph, 193, 157)) { return RHITestResult::fail(preview.lastLog()); }
                     }
                     const uint64_t generation = preview.executionStats().graphGeneration;
                     const auto baseline = preview.pixels();
@@ -352,18 +352,18 @@ public:
                         const std::string label = std::string(streaming ? "Stream " : "Resident ") +
                             (prebin ? "binned " : "unbinned ") + edit.key + "=" + edit.value.dump();
                         if (!graph.setNodeRuntimeProperty(vbuffer, edit.key, edit.value) || graph.dirty()) {
-                            return RhiTestResult::fail(label + " requested a graph rebuild");
+                            return RHITestResult::fail(label + " requested a graph rebuild");
                         }
-                        if (!preview.render(graph, 193, 157)) { return RhiTestResult::fail(label + ": " + preview.lastLog()); }
+                        if (!preview.render(graph, 193, 157)) { return RHITestResult::fail(label + ": " + preview.lastLog()); }
                         if (preview.executionStats().graphGeneration != generation) {
-                            return RhiTestResult::fail(label + " recompiled the graph");
+                            return RHITestResult::fail(label + " recompiled the graph");
                         }
-                        if (preview.pixels() == previous) { return RhiTestResult::fail(label + " did not affect the next frame"); }
+                        if (preview.pixels() == previous) { return RHITestResult::fail(label + " did not affect the next frame"); }
                         if (edit.restoresBaseline && preview.pixels() != baseline) {
-                            return RhiTestResult::fail(label + " did not restore the original surface");
+                            return RHITestResult::fail(label + " did not restore the original surface");
                         }
                         if (std::count_if(preview.pixels().begin(), preview.pixels().end(), [](uint32_t pixel) { return (pixel & 0xffffffu) != 0; }) < 3000) {
-                            return RhiTestResult::fail(label + " lost surface coverage");
+                            return RHITestResult::fail(label + " lost surface coverage");
                         }
                         previous = preview.pixels();
                     }
@@ -372,57 +372,57 @@ public:
                     };
                     graph.setNodeRuntimeProperty(vbuffer, "shadedDebugColors", false);
                     graph.setNodeRuntimeProperty(vbuffer, "visualization", "triangle");
-                    if (!preview.render(graph, 193, 157, "VBuffer.color")) { return RhiTestResult::fail(preview.lastLog()); }
+                    if (!preview.render(graph, 193, 157, "VBuffer.color")) { return RHITestResult::fail(preview.lastLog()); }
                     const auto sourceColors = preview.pixels();
                     const auto debugGeneration = preview.executionStats().graphGeneration;
                     graph.setNodeRuntimeProperty(vbuffer, "visualization", "tessellatedTriangle");
                     if (graph.dirty() || !preview.render(graph, 193, 157, "VBuffer.color")) {
-                        return RhiTestResult::fail("Generated triangle visualization failed or requested a rebuild");
+                        return RHITestResult::fail("Generated triangle visualization failed or requested a rebuild");
                     }
                     const auto dicedColors = preview.pixels();
                     if (preview.executionStats().graphGeneration != debugGeneration ||
                         paletteSize(sourceColors) > 3 || paletteSize(dicedColors) < 64) {
-                        return RhiTestResult::fail("Generated triangle IDs were not distinguished from the two source triangles");
+                        return RHITestResult::fail("Generated triangle IDs were not distinguished from the two source triangles");
                     }
                     const auto capture = std::string("TessellatedTriangles") + (streaming ? "Stream" : "Resident") + (prebin ? "Binned" : "Unbinned") + ".png";
                     saveRgba8Png(context.outputDirectory / capture, reinterpret_cast<const uint8_t*>(dicedColors.data()), 193, 157, log);
                     if (!preview.render(graph, 193, 157, "VBuffer.color") || preview.pixels() != dicedColors) {
-                        return RhiTestResult::fail("Generated triangle colors changed on a stationary frame");
+                        return RHITestResult::fail("Generated triangle colors changed on a stationary frame");
                     }
                     // The debug MRT must not change visibility IDs, barycentrics,
                     // normals or the resulting deferred image.
                     if (!preview.render(graph, 193, 157) || preview.pixels() != baseline) {
-                        return RhiTestResult::fail("Generated triangle debug altered deferred shading");
+                        return RHITestResult::fail("Generated triangle debug altered deferred shading");
                     }
                     graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxSplitDepth", 0);
                     graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxFactor", 1);
                     if (!preview.render(graph, 193, 157, "VBuffer.color") || paletteSize(preview.pixels()) != 3) {
-                        return RhiTestResult::fail("Generated triangle colors did not follow the runtime split/dicing budget");
+                        return RHITestResult::fail("Generated triangle colors did not follow the runtime split/dicing budget");
                     }
                     graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxFactor", 4);
                     if (!preview.render(graph, 193, 157, "VBuffer.color") || paletteSize(preview.pixels()) <= 3) {
-                        return RhiTestResult::fail("Leaf dicing did not expose its individual triangle colors");
+                        return RHITestResult::fail("Leaf dicing did not expose its individual triangle colors");
                     }
                     saveRgba8Png(context.outputDirectory / ("Coarse" + capture), reinterpret_cast<const uint8_t*>(preview.pixels().data()), 193, 157, log);
                     graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxSplitDepth", 3);
                     graph.setNodeRuntimeProperty(vbuffer, "tessellationMaxFactor", 8);
                     graph.setNodeRuntimeProperty(vbuffer, "freezeCullingCamera", true);
                     if (!preview.render(graph, 193, 157, "VBuffer.color") || preview.pixels() != dicedColors) {
-                        return RhiTestResult::fail("Frozen culling raster contaminated generated triangle visualization");
+                        return RHITestResult::fail("Frozen culling raster contaminated generated triangle visualization");
                     }
                     graph.setNodeRuntimeProperty(vbuffer, "camera.center", nlohmann::json::array({0.15f, 0.0f, 0.0f}));
-                    if (!preview.render(graph, 193, 157, "VBuffer.color")) { return RhiTestResult::fail(preview.lastLog()); }
+                    if (!preview.render(graph, 193, 157, "VBuffer.color")) { return RHITestResult::fail(preview.lastLog()); }
                     const auto movedFrozen = preview.pixels();
                     graph.setNodeRuntimeProperty(vbuffer, "freezeCullingCamera", false);
                     if (!preview.render(graph, 193, 157, "VBuffer.color") || preview.pixels() != movedFrozen || movedFrozen == dicedColors) {
-                        return RhiTestResult::fail("Frozen culling left colors from the old camera in the moved viewport");
+                        return RHITestResult::fail("Frozen culling left colors from the old camera in the moved viewport");
                     }
                     graph.setNodeRuntimeProperty(vbuffer, "camera.center", nlohmann::json::array({0.0f, 0.0f, 0.0f}));
                     graph.setNodeRuntimeProperty(vbuffer, "visualization", "coverage");
                 }
             }
         }
-        return RhiTestResult::pass(std::to_string(cases) + " resident/stream displaced renders match baked geometry, UV and normals across projection/depth conventions");
+        return RHITestResult::pass(std::to_string(cases) + " resident/stream displaced renders match baked geometry, UV and normals across projection/depth conventions");
     }
 };
 

@@ -11,7 +11,7 @@
 namespace metallic::tests {
 namespace {
 using namespace render;
-#define CASE_REQUIRE(expression) do { const auto& checked = (expression); if (!checked) { return RhiTestResult::fail(std::string(#expression) + ": " + resultToString(checked)); } } while (false)
+#define CASE_REQUIRE(expression) do { const auto& checked = (expression); if (!checked) { return RHITestResult::fail(std::string(#expression) + ": " + resultToString(checked)); } } while (false)
 
 bool writeBuffer(Buffer& buffer, std::span<const std::byte> bytes)
 {
@@ -22,10 +22,10 @@ bool writeBuffer(Buffer& buffer, std::span<const std::byte> bytes)
     return true;
 }
 
-RhiTestResult compare(RhiTestContext& context, Buffer& buffer, std::span<const std::byte> expected, const std::string& prefix)
+RHITestResult compare(RHITestContext& context, Buffer& buffer, std::span<const std::byte> expected, const std::string& prefix)
 {
     const auto* mapped = static_cast<const std::byte*>(buffer.map());
-    if (!mapped) { return RhiTestResult::fail("readback mapping failed"); }
+    if (!mapped) { return RHITestResult::fail("readback mapping failed"); }
     buffer.invalidate();
     std::vector<std::byte> actual(mapped, mapped + expected.size());
     buffer.unmap();
@@ -41,27 +41,27 @@ RhiTestResult compare(RhiTestContext& context, Buffer& buffer, std::span<const s
         context.evidence->json(artifact + "-diff.json", {{"equal", equal}, {"bytes", actual.size()},
             {"firstMismatch", size_t(difference.first - actual.begin())}});
     }
-    return equal ? RhiTestResult::pass() : RhiTestResult::fail(prefix + " readback mismatch");
+    return equal ? RHITestResult::pass() : RHITestResult::fail(prefix + " readback mismatch");
 }
 
-class TextureSubresourceCopyTest final : public RhiTest {
+class TextureSubresourceCopyTest final : public RHITest {
 public:
-    TextureSubresourceCopyTest() { type = RhiTestType::Command; name = "texture_odd_mips_layers_volume_readback"; }
+    TextureSubresourceCopyTest() { type = RHITestType::Command; name = "texture_odd_mips_layers_volume_readback"; }
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"texture.copy.offset.padding.readback", "texture.copy.mip.layer.readback",
-            "texture.copy.volume.preserve.readback"}, bench::Layer::Rhi, "core", "core",
+            "texture.copy.volume.preserve.readback"}, bench::Layer::RHI, "core", "core",
             {"array-expected.bin", "array-actual.bin", "array-diff.json", "array-regions.json",
              "volume-expected.bin", "volume-actual.bin", "volume-diff.json", "volume-regions.json"});
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         for (bool volume : {false, true}) {
             const auto type = volume ? TextureType::Texture3D : TextureType::Texture2D;
             const uint32_t layers = volume ? 1 : 3, depth = volume ? 5 : 1;
             auto texture = context.device.createTexture({.type = type,
                 .usage = TextureUsageBits::TransferSource | TextureUsageBits::TransferDestination,
-                .format = Format::Rgba8Unorm, .width = 13, .height = 9, .depth = depth, .mipCount = 3, .layerCount = layers});
+                .format = Format::RGBA8Unorm, .width = 13, .height = 9, .depth = depth, .mipCount = 3, .layerCount = layers});
             CASE_REQUIRE(texture);
             struct Region { uint32_t mip, layer, width, height, depth, row, slice; uint64_t offset; };
             std::vector<Region> regions;
@@ -106,8 +106,8 @@ public:
                 .memoryLocation = MemoryLocation::HostReadback});
             CASE_REQUIRE(upload); CASE_REQUIRE(readback);
             std::vector<std::byte> sentinel(size, std::byte{0xa7});
-            if (!writeBuffer(**upload, source) || !writeBuffer(**readback, sentinel)) { return RhiTestResult::fail("upload mapping failed"); }
-            bench::GpuCommands recording(context.graphicsQueue);
+            if (!writeBuffer(**upload, source) || !writeBuffer(**readback, sentinel)) { return RHITestResult::fail("upload mapping failed"); }
+            bench::GPUCommands recording(context.graphicsQueue);
             CASE_REQUIRE(recording.initialize(context.device));
             auto& commands = *recording.commands;
             TextureBarrierDesc barrier{.texture = texture->get(), .oldLayout = TextureLayout::Undefined,
@@ -163,7 +163,7 @@ public:
                         if (encoded.at("range") != range ||
                             encoded.at("sourceFamily").get<uint32_t>() != VK_QUEUE_FAMILY_IGNORED ||
                             encoded.at("destinationFamily").get<uint32_t>() != VK_QUEUE_FAMILY_IGNORED) {
-                            return RhiTestResult::fail("encoded texture barrier changed mip/layer range or queue ownership");
+                            return RHITestResult::fail("encoded texture barrier changed mip/layer range or queue ownership");
                         }
                         initial |= encoded.at("oldLayout").get<int>() == VK_IMAGE_LAYOUT_UNDEFINED &&
                             encoded.at("newLayout").get<int>() == (unified ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) &&
@@ -184,27 +184,27 @@ public:
                     }
                 }
                 if (context.evidence) { context.evidence->json(prefix + "-trace-checks.json", {{"initialTransition", initial}, {"copyReadVisibility", toRead}}); }
-                if (!initial || !toRead) { return RhiTestResult::fail("encoded texture layout/visibility missing from trace"); }
+                if (!initial || !toRead) { return RHITestResult::fail("encoded texture layout/visibility missing from trace"); }
             }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(TextureSubresourceCopyTest);
 
-class GraphicsExecutionSwitchTest final : public RhiTest {
+class GraphicsExecutionSwitchTest final : public RHITest {
 public:
-    GraphicsExecutionSwitchTest() { type = RhiTestType::Rendering; name = "graphics_pipeline_shader_object_aba_readback"; }
+    GraphicsExecutionSwitchTest() { type = RHITestType::Rendering; name = "graphics_pipeline_shader_object_aba_readback"; }
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"graphics.pipeline.shaderObject.aba.readback", "graphics.viewport.scissor.readback", "graphics.stage.contract"},
-            bench::Layer::Rhi, "core", "core", {"aba-expected.bin", "aba-actual.bin", "aba-diff.json"});
+            bench::Layer::RHI, "core", "core", {"aba-expected.bin", "aba-actual.bin", "aba-diff.json"});
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         if (!hasError(context.device.createGraphicsPipeline({}), Error::InvalidArgument) ||
             !hasError(context.device.createGraphicsShaderObjectProgram({}), Error::InvalidArgument)) {
-            return RhiTestResult::fail("empty graphics stages did not return InvalidArgument");
+            return RHITestResult::fail("empty graphics stages did not return InvalidArgument");
         }
         std::array<std::unique_ptr<ShaderModule>, 3> modules;
         const char* entries[]{"vertexMain", "redMain", "greenMain"};
@@ -212,24 +212,24 @@ public:
             std::string log;
             auto shader = compileSlangShaderToSpirv({.moduleName = "TestbenchState", .entryPointName = entries[i],
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
-            if (!shader) { return RhiTestResult::fail(log); }
+            if (!shader) { return RHITestResult::fail(log); }
             auto module = context.device.createShaderModule({.spirv = shader->spirv});
             CASE_REQUIRE(module); modules[i] = std::move(*module);
         }
         auto pipeline = context.device.createGraphicsPipeline({.vertexShader = {modules[0].get()},
-            .fragmentShader = {modules[1].get()}, .colorFormat = Format::Rgba8Unorm});
+            .fragmentShader = {modules[1].get()}, .colorFormat = Format::RGBA8Unorm});
         auto shaders = context.device.createGraphicsShaderObjectProgram({.vertexShader = {modules[0].get()},
             .fragmentShader = {modules[2].get()}});
         CASE_REQUIRE(pipeline); CASE_REQUIRE(shaders);
         constexpr uint32_t width = 39, height = 11;
         auto texture = context.device.createTexture({.usage = TextureUsageBits::ColorAttachment | TextureUsageBits::TransferSource,
-            .format = Format::Rgba8Unorm, .width = width, .height = height});
+            .format = Format::RGBA8Unorm, .width = width, .height = height});
         CASE_REQUIRE(texture);
         auto view = context.device.createTextureView(**texture, {});
         auto readback = context.device.createBuffer({.size = width * height * 4, .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback});
         CASE_REQUIRE(view); CASE_REQUIRE(readback);
-        bench::GpuCommands recording(context.graphicsQueue);
+        bench::GPUCommands recording(context.graphicsQueue);
         CASE_REQUIRE(recording.initialize(context.device));
         auto& commands = *recording.commands;
         TextureBarrierDesc barrier{.texture = texture->get(), .oldLayout = TextureLayout::Undefined,
@@ -270,9 +270,9 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(GraphicsExecutionSwitchTest);
 
-class CopyTimestampReuseTest final : public RhiTest {
+class CopyTimestampReuseTest final : public RHITest {
 public:
-    CopyTimestampReuseTest() { type = RhiTestType::Command; name = "copy_timestamp_host_reset_reuse_readback"; }
+    CopyTimestampReuseTest() { type = RHITestType::Command; name = "copy_timestamp_host_reset_reuse_readback"; }
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::Metadata{.suite = "sync", .profile = "async",
@@ -282,10 +282,10 @@ public:
             .coverage = {"query.copyQueue.hostReset.readback", "query.partialReset.contract", "query.completedReuse.readback"},
             .artifacts = {"copy-queries.json", "query-copy-actual.bin", "query-copy-expected.bin", "query-copy-diff.json"}};
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         auto* queue = context.device.getQueue(QueueType::Copy);
-        if (!queue || !queue->timestampValidBits()) { return RhiTestResult::skip("copy timestamps unavailable"); }
+        if (!queue || !queue->timestampValidBits()) { return RHITestResult::skip("copy timestamps unavailable"); }
         auto queries = context.device.createTimestampQueryPool(*queue, {.queryCount = 2});
         auto upload = context.device.createBuffer({.size = 256, .usage = BufferUsageBits::TransferSource,
             .memoryLocation = MemoryLocation::HostUpload, .queueAccess = QueueAccessBits::Copy});
@@ -296,9 +296,9 @@ public:
         for (uint32_t iteration = 0; iteration < 6; ++iteration) {
             std::array<std::byte, 256> expected;
             for (uint32_t i = 0; i < expected.size(); ++i) { expected[i] = std::byte((iteration * 19 + i) & 255); }
-            if (!writeBuffer(**upload, expected)) { return RhiTestResult::fail("copy query upload failed"); }
+            if (!writeBuffer(**upload, expected)) { return RHITestResult::fail("copy query upload failed"); }
             CASE_REQUIRE((*queries)->reset(0, 2));
-            bench::GpuCommands recording(*queue);
+            bench::GPUCommands recording(*queue);
             CASE_REQUIRE(recording.initialize(context.device));
             CASE_REQUIRE(recording.commands->writeTimestamp(**queries, 0, PipelineStageBits::TopOfPipe));
             auto from = (*upload)->slice(), to = (*output)->slice();
@@ -310,16 +310,16 @@ public:
             CASE_REQUIRE((*queries)->readResults(0, values));
             const auto duration = (*queries)->durationMilliseconds(values[0].value, values[1].value);
             if (!values[0].available || !values[1].available || !std::isfinite(duration) || duration < 0) {
-                return RhiTestResult::fail("completed copy timestamps unavailable/invalid");
+                return RHITestResult::fail("completed copy timestamps unavailable/invalid");
             }
             if (!hasError((*queries)->reset(1, UINT32_MAX), Error::InvalidArgument) ||
                 !hasError((*queries)->reset(2, 1), Error::InvalidArgument)) {
-                return RhiTestResult::fail("query reset range was not rejected");
+                return RHITestResult::fail("query reset range was not rejected");
             }
             std::array<TimestampQueryResult, 2> unchanged{};
             CASE_REQUIRE((*queries)->readResults(0, unchanged));
             if (!unchanged[0].available || !unchanged[1].available || unchanged[0].value != values[0].value || unchanged[1].value != values[1].value) {
-                return RhiTestResult::fail("rejected reset changed completed query state");
+                return RHITestResult::fail("rejected reset changed completed query state");
             }
             CASE_REQUIRE((*queries)->reset(0, 1));
             CASE_REQUIRE((*queries)->readResults(0, unchanged));
@@ -327,26 +327,26 @@ public:
                 {"milliseconds", duration}, {"resetAvailable", unchanged[0].available}, {"retainedAvailable", unchanged[1].available}});
             if (context.evidence) { context.evidence->json("copy-queries.json", records); }
             if (unchanged[0].available || !unchanged[1].available || unchanged[1].value != values[1].value) {
-                return RhiTestResult::fail("partial reset changed the wrong query");
+                return RHITestResult::fail("partial reset changed the wrong query");
             }
             const auto result = compare(context, **output, expected, "query-copy");
             if (!result.passed) { return result; }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(CopyTimestampReuseTest);
 
-class NonuniformSampledBindingsTest final : public RhiTest {
+class NonuniformSampledBindingsTest final : public RHITest {
 public:
-    NonuniformSampledBindingsTest() { type = RhiTestType::Rendering; name = "binding_nonuniform_images_samplers_reuse"; }
+    NonuniformSampledBindingsTest() { type = RHITestType::Rendering; name = "binding_nonuniform_images_samplers_reuse"; }
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"binding.sampledImage.sampler.nonuniform.readback", "binding.completedReuse.readback"},
-            bench::Layer::Rhi, "binding", "binding", {"sample0-actual.bin", "sample0-expected.bin", "sample0-diff.json",
+            bench::Layer::RHI, "binding", "binding", {"sample0-actual.bin", "sample0-expected.bin", "sample0-diff.json",
                 "sample1-actual.bin", "sample1-expected.bin", "sample1-diff.json"});
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         struct Params { uint64_t images; ShaderSampler samplers[2]; ShaderBuffer output; };
         static_assert(sizeof(Params) == 32);
@@ -354,7 +354,7 @@ public:
         std::string log;
         auto shader = compileSlangShaderToSpirv({.moduleName = "TestbenchBindings", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log);
-        if (!shader) { return RhiTestResult::fail(log); }
+        if (!shader) { return RHITestResult::fail(log); }
         ComputeKernel kernel;
         CASE_REQUIRE(kernel.initialize(context.device, {.spirv = shader->spirv, .parameters = parameterAbi<Params>(abi)}, log));
         auto registry = context.device.resourceRegistry();
@@ -363,7 +363,7 @@ public:
         std::array<std::unique_ptr<TextureView>, 2> views;
         for (uint32_t i = 0; i < 2; ++i) {
             auto image = context.device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-                .format = Format::Rgba8Unorm});
+                .format = Format::RGBA8Unorm});
             CASE_REQUIRE(image); images[i] = std::move(*image);
             auto view = context.device.createTextureView(*images[i], {});
             CASE_REQUIRE(view); views[i] = std::move(*view);
@@ -380,8 +380,8 @@ public:
         for (uint32_t iteration = 0; iteration < 2; ++iteration) {
             std::array<std::byte, 33 * 16> sentinel;
             sentinel.fill(std::byte{0xa7});
-            if (!writeBuffer(**output, sentinel)) { return RhiTestResult::fail("binding sentinel map failed"); }
-            bench::GpuCommands recording(context.graphicsQueue);
+            if (!writeBuffer(**output, sentinel)) { return RHITestResult::fail("binding sentinel map failed"); }
+            bench::GPUCommands recording(context.graphicsQueue);
             CASE_REQUIRE(recording.initialize(context.device));
             auto& commands = *recording.commands;
             for (uint32_t i = 0; i < 2; ++i) {
@@ -409,7 +409,7 @@ public:
             const auto result = compare(context, **output, std::as_bytes(std::span(expected)), "sample" + std::to_string(iteration));
             if (!result.passed) { return result; }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(NonuniformSampledBindingsTest);

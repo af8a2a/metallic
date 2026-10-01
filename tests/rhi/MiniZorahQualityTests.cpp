@@ -1,5 +1,5 @@
-#include "RhiTest.h"
-#include "Runtime/Render/MeshletLod.h"
+#include "RHITest.h"
+#include "Runtime/Render/MeshletLOD.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
@@ -15,87 +15,87 @@ namespace {
 using namespace render;
 using Json = nlohmann::json;
 
-class MeshletRefinementBoundsTest final : public RhiTest {
+class MeshletRefinementBoundsTest final : public RHITest {
   public:
     MeshletRefinementBoundsTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "meshlet_lod_refinement_bounds";
     }
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         // A displaced parent must preserve the visible child it replaces.
-        std::vector<MeshletLodGroupRecord> groups{
+        std::vector<MeshletLODGroupRecord> groups{
             {.sphere = {0, 0, 0, 1}, .error = .1f},
             {.sphere = {100, 0, 0, 1}, .error = .2f},
-            {.sphere = {-100, 0, 0, 1}, .error = std::numeric_limits<float>::max(), .flags = kMeshletLodTerminalGroup}};
-        const std::vector<MeshletLodGroupRange> ranges{{0, 1}, {1, 1}, {2, 2}};
+            {.sphere = {-100, 0, 0, 1}, .error = std::numeric_limits<float>::max(), .flags = kMeshletLODTerminalGroup}};
+        const std::vector<MeshletLODGroupRange> ranges{{0, 1}, {1, 1}, {2, 2}};
         std::vector<uint32_t> refined{UINT32_MAX, 0, 0, 1};
-        std::vector<MeshletLodRefinementBounds> bounds;
+        std::vector<MeshletLODRefinementBounds> bounds;
         std::string reason;
         if (!buildMeshletLodRefinementBounds(groups, ranges, refined, bounds, reason)) {
-            return RhiTestResult::fail(reason);
+            return RHITestResult::fail(reason);
         }
-        GPUSceneGpuInstanceRecord instance{};
+        GPUSceneGPUInstanceRecord instance{};
         instance.worldMatrix = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
-        MeshletLodView view;
+        MeshletLODView view;
         view.eye = {0, 0, 10, .1f};
         view.forward = {0, 0, -1, 0};
         view.projection = {1080, .57735f, 100, 1.5f};
-        const auto visible = [&](const MeshletLodRefinementBounds& box) {
+        const auto visible = [&](const MeshletLODRefinementBounds& box) {
             return meshletLodBoundsVisible(box, instance, view, {0, 1, 0}, 1.f, 1000.f);
         };
         for (uint32_t group = 0; group < bounds.size(); ++group) {
             if (!visible(bounds[group]) || !std::isfinite(bounds[group].max[0]) || bounds[group].max[0] > 102.f ||
                 bounds[group].min[0] > -1.1f || bounds[group].max[0] < 1.1f) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "Visible shared child lost an ancestor or root sentinel inflated the bounds");
             }
         }
-        const MeshletLodRefinementBounds parentOnly{{98, -2, -2}, {102, 2, 2}};
+        const MeshletLODRefinementBounds parentOnly{{98, -2, -2}, {102, 2, 2}};
         if (visible(parentOnly) || !visible({})) {
-            return RhiTestResult::fail("Offscreen/disabled bound policy mismatch");
+            return RHITestResult::fail("Offscreen/disabled bound policy mismatch");
         }
         const float edge = 10.f * view.projection[1] * .25f * (1.f + 1.f / (view.projection[0] * .25f));
-        const MeshletLodRefinementBounds jitterEdge{{edge, 0, 0}, {edge, 0, 0}};
+        const MeshletLODRefinementBounds jitterEdge{{edge, 0, 0}, {edge, 0, 0}};
         if (!meshletLodBoundsVisible(jitterEdge, instance, view, {0, 1, 0}, .25f, 1000.f)) {
-            return RhiTestResult::fail("Portrait viewport lost the horizontal pixel guard");
+            return RHITestResult::fail("Portrait viewport lost the horizontal pixel guard");
         }
         instance.worldMatrix[12] = 100;
-        if (visible(bounds[0])) { return RhiTestResult::fail("Side-plane demand was not rejected"); }
+        if (visible(bounds[0])) { return RHITestResult::fail("Side-plane demand was not rejected"); }
         instance.worldMatrix[12] = 0;
         instance.worldMatrix[14] = 100;
-        if (visible(bounds[0])) { return RhiTestResult::fail("Behind-camera demand was not rejected"); }
+        if (visible(bounds[0])) { return RHITestResult::fail("Behind-camera demand was not rejected"); }
         instance.worldMatrix[14] = -2000;
-        if (visible(bounds[0])) { return RhiTestResult::fail("Far-plane demand was not rejected"); }
+        if (visible(bounds[0])) { return RHITestResult::fail("Far-plane demand was not rejected"); }
         instance.worldMatrix[14] = 10;
-        if (!visible(bounds[0])) { return RhiTestResult::fail("Near-plane intersection was lost"); }
+        if (!visible(bounds[0])) { return RHITestResult::fail("Near-plane intersection was lost"); }
         view.forward[3] = 1;
         instance.worldMatrix[14] = 0;
         instance.worldMatrix[12] = 50;
-        if (!visible(bounds[0])) { return RhiTestResult::fail("Orthographic edge intersection was lost"); }
+        if (!visible(bounds[0])) { return RHITestResult::fail("Orthographic edge intersection was lost"); }
         instance.worldMatrix[12] = 100;
-        if (visible(bounds[0])) { return RhiTestResult::fail("Orthographic offscreen demand was retained"); }
+        if (visible(bounds[0])) { return RHITestResult::fail("Orthographic offscreen demand was retained"); }
         instance.worldMatrix[4] = -100;
-        if (!visible(bounds[0])) { return RhiTestResult::fail("Sheared visible extent was lost"); }
+        if (!visible(bounds[0])) { return RHITestResult::fail("Sheared visible extent was lost"); }
         refined[1] = 2;
         if (buildMeshletLodRefinementBounds(groups, ranges, refined, bounds, reason) || !bounds.empty()) {
-            return RhiTestResult::fail("Invalid dependency order accepted");
+            return RHITestResult::fail("Invalid dependency order accepted");
         }
-        return RhiTestResult::pass("Shared descendants, root sentinel, side/near/far planes, orthographic/sheared "
+        return RHITestResult::pass("Shared descendants, root sentinel, side/near/far planes, orthographic/sheared "
                                    "bounds and invalid topology");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MeshletRefinementBoundsTest);
 
 struct QualityView {
-    MeshletLodView metric;
+    MeshletLODView metric;
     float3 right, up;
     float farPlane = 30000.f;
     float aspect = 1920.f / 1080.f;
 };
 
-bool qualitySphereVisible(const MeshletLodGroupRecord& group, const GPUSceneGpuInstanceRecord& instance,
+bool qualitySphereVisible(const MeshletLODGroupRecord& group, const GPUSceneGPUInstanceRecord& instance,
                           const QualityView& view)
 {
     const auto& m = instance.worldMatrix;
@@ -112,27 +112,27 @@ bool qualitySphereVisible(const MeshletLodGroupRecord& group, const GPUSceneGpuI
            std::abs(dot(delta, view.up)) <= z * ty + radius * std::sqrt(1 + ty * ty);
 }
 
-class MiniZorahQualityAuditTest final : public RhiTest {
+class MiniZorahQualityAuditTest final : public RHITest {
   public:
     MiniZorahQualityAuditTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "minizorah_quality_audit";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         const char* optIn = std::getenv("METALLIC_TEST_MINIZORAH");
         if (!optIn || std::string_view(optIn) != "1") {
-            return RhiTestResult::skip("Opt in with METALLIC_TEST_MINIZORAH=1");
+            return RHITestResult::skip("Opt in with METALLIC_TEST_MINIZORAH=1");
         }
         RenderSampleLoadResult sample;
         std::string log;
-        if (!loadBuiltInRenderSample("gpu-driven-minizorah-vbuffer", sample, log)) { return RhiTestResult::fail(log); }
+        if (!loadBuiltInRenderSample("gpu-driven-minizorah-vbuffer", sample, log)) { return RHITestResult::fail(log); }
         const auto path = sample.graph.findNode("GPUDriven")->properties.at("streamAssetPath").get<std::string>();
         scene::MeshletStreamAsset asset;
-        if (!asset.open(std::filesystem::path(PROJECT_SOURCE_DIR) / path, log)) { return RhiTestResult::fail(log); }
-        std::vector<MeshletLodGroupRecord> metrics(asset.groupCount());
-        std::vector<MeshletLodGroupRange> ranges(asset.groupCount());
+        if (!asset.open(std::filesystem::path(PROJECT_SOURCE_DIR) / path, log)) { return RHITestResult::fail(log); }
+        std::vector<MeshletLODGroupRecord> metrics(asset.groupCount());
+        std::vector<MeshletLODGroupRange> ranges(asset.groupCount());
         for (uint32_t i = 0; i < asset.groupCount(); ++i) {
             const auto& g = asset.groups()[i];
             std::copy_n(g.boundsCenterRadius, 4, metrics[i].sphere.begin());
@@ -141,9 +141,9 @@ class MiniZorahQualityAuditTest final : public RhiTest {
             metrics[i].level = g.lodLevel;
             ranges[i] = {g.clusterRefinedOffset, g.clusterCount};
         }
-        std::vector<MeshletLodRefinementBounds> bounds;
+        std::vector<MeshletLODRefinementBounds> bounds;
         if (!buildMeshletLodRefinementBounds(metrics, ranges, asset.refinedGroups(), bounds, log)) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
         const auto original = sample.graph.viewProperties().at("camera");
         Json report{{"targetPixelError", 1.5}, {"resolution", {1920, 1080}}, {"views", Json::array()}};
@@ -176,7 +176,7 @@ class MiniZorahQualityAuditTest final : public RhiTest {
             for (const auto& source : asset.instances()) {
                 if (!source.visible) { continue; }
                 const auto& primitive = asset.primitives()[source.primitiveIndex];
-                GPUSceneGpuInstanceRecord instance{};
+                GPUSceneGPUInstanceRecord instance{};
                 std::copy_n(source.worldMatrix, 16, instance.worldMatrix.begin());
                 std::vector<uint8_t> active(primitive.groupCount), inactiveParent(primitive.groupCount),
                     wanted(primitive.groupCount), visible(primitive.groupCount);
@@ -213,7 +213,7 @@ class MiniZorahQualityAuditTest final : public RhiTest {
                         culledPages[group.pageIndex] = 1;
                         ++culledGroups;
                     } else {
-                        MeshletLodRefinementBounds ownBounds;
+                        MeshletLODRefinementBounds ownBounds;
                         for (uint32_t axis = 0; axis < 3; ++axis) {
                             const double radius = double(metrics[id].sphere[3]) + metrics[id].error;
                             ownBounds.min[axis] =
@@ -287,12 +287,12 @@ class MiniZorahQualityAuditTest final : public RhiTest {
             std::printf("[MiniZorahQuality] %s\n", result.dump().c_str());
             std::fflush(stdout);
             if (lostVisibleDemand != 0 || visibleBlocked != 0 || bytes(culledPages) > (1ull << 30)) {
-                return RhiTestResult::fail("Visible demand lost or the ideal cut exceeded the 1 GiB quality budget");
+                return RHITestResult::fail("Visible demand lost or the ideal cut exceeded the 1 GiB quality budget");
             }
         }
         std::filesystem::create_directories(context.outputDirectory);
         std::ofstream(context.outputDirectory / "MiniZorahQualityAudit.json") << report.dump(2) << '\n';
-        return RhiTestResult::pass("Residency-independent demand and ancestor footprint audited");
+        return RHITestResult::pass("Residency-independent demand and ancestor footprint audited");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MiniZorahQualityAuditTest);

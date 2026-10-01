@@ -56,7 +56,7 @@ SW 总耗时降低约 65.4%，整帧均值降低约 24.9%（约 15.1 → 20.1 fp
 
 ## 验证与数据
 
-- `MetallicGPUDrivenSample`、`MetallicRhiTests` Release 构建成功。
+- `MetallicGPUDrivenSample`、`MetallicRHITests` Release 构建成功。
 - `render_view_shared_constants_history --rhi-validation`：通过。
 - `gpu_driven_temporal_occlusion_equivalence --rhi-validation`：30 个移动/jittered 视图与关闭遮蔽参考逐像素一致，包含切镜头、resize、正交和正反深度。
 - `gpu_scene_cpu_core --rhi-validation`：通过，包含场景、View、resize、freeze/cut 历史隔离。

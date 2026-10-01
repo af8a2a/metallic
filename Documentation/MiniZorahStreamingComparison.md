@@ -114,7 +114,7 @@ Metallic 的 `completionDrivenUploads` 当前默认 **true**，不是固定等�
 
 后续可先优化几何的 upload → GPU page-table patch → traversal 依赖，再考虑 CLAS GPU 分配/地址发布。两者都必须保留取消提交、帧在途地址安全和延迟回收协议，不能简单跳过 `isComplete()`。
 
-依据：参考 `src/scene_streaming.cpp:390,428,873,983,1226,1443`；Metallic `MeshletStreamResidency.cpp:405,1159,1190`、`MeshletStreamRuntime.cpp:2346`、`MeshletStreamCompactClasPool.cpp:125`；`Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:1205`；`Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp:301`。
+依据：参考 `src/scene_streaming.cpp:390,428,873,983,1226,1443`；Metallic `MeshletStreamResidency.cpp:405,1159,1190`、`MeshletStreamRuntime.cpp:2346`、`MeshletStreamCompactCLASPool.cpp:125`；`Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:1205`；`Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp:301`。
 
 ## 5. 请求量和画面变化还受误差公式、数据布局影响
 
@@ -126,7 +126,7 @@ Metallic 的仿射缩放上界也包含剪切等保守处理。不能直接照�
 
 历史 2026-09-13 数据布局审计显示，Metallic 全 LOD 解码 payload 为 56.340 GiB，参考保留位置的 group 数据为 44.106 GiB；Metallic 使用 16 字节位置，参考为 12 字节。它描述离线数据布局，不代表本次实际传输字节、当前工作集或总 VRAM。参考 RT 路径还可将构建所需位置放在临时空间，Metallic 的光栅主路径需要持续保留位置，显存数字不能直接等价比较。
 
-依据：`Shaders/Modules/GPUDriven/MeshletLodMetric.slang:9`；参考 `shaders/traversal.glsl:204`、`src/renderer.cpp:610`；`Source/Runtime/Scene/MeshletStreamAsset.cpp:4255`、`MeshletStreamPageLoader.cpp:20`；[历史内存布局审计](MiniZorahMemoryComparison.md)。
+依据：`Shaders/Modules/GPUDriven/MeshletLODMetric.slang:9`；参考 `shaders/traversal.glsl:204`、`src/renderer.cpp:610`；`Source/Runtime/Scene/MeshletStreamAsset.cpp:4255`、`MeshletStreamPageLoader.cpp:20`；[历史内存布局审计](MiniZorahMemoryComparison.md)。
 
 ## 6. 建议实施顺序和验证口径
 
@@ -139,7 +139,7 @@ Metallic 的仿射缩放上界也包含剪切等保守处理。不能直接照�
 
 性能验证应固定相机、输出尺寸和像素误差口径，先用灰色/LOD 显示观察几何，再加入阴影和最终光照；冷 OS 文件缓存、热文件缓存但空 GPU 驻留、暖驻留漫游分别测试。参考 RT 模式与 Metallic 光栅模式的原始用户体验应保留一组，同时另设尽量对齐显示条件的对照组。
 
-当前已有 `MeshletStreamLatency.h` 的 Feedback、Admission、IoQueue、Decode、ReadyToUpload、UploadToDrawable、DemandToDrawable 等分段统计，可先复用。还需要覆盖“细节在理论上已需要、但尚因父级门控没有发出请求”的时间，以及 CLAS ready 时间；仅测已经发出的请求会漏掉关键等待。
+当前已有 `MeshletStreamLatency.h` 的 Feedback、Admission、IOQueue、Decode、ReadyToUpload、UploadToDrawable、DemandToDrawable 等分段统计，可先复用。还需要覆盖“细节在理论上已需要、但尚因父级门控没有发出请求”的时间，以及 CLAS ready 时间；仅测已经发出的请求会漏掉关键等待。
 
 建议新增记录：首个完整基础覆盖时间、固定相机目标 cut 的覆盖收敛时间、每帧可见粗级 fallback 像素占比、几何身份/LOD 变化像素占比、上传字节、预取被抑制帧数、重复加载/驱逐、CPU/GPU 帧时 P95/P99。自动曝光、阴影、DLSS 历史都能引起颜色变化，不能只用最终 RGB 帧差当作流送比例。
 

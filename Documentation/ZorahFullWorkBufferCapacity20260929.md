@@ -52,8 +52,8 @@ GPU 展开前先计数。超过工作容量时，不写入部分候选，不执�
 
 ```powershell
 cmake --build build-release --target MetallicGPUDrivenSample -j 6
-cmake --build build-scheduling-release --target MetallicRhiTests -j 6
-.\build-scheduling-release\tests\MetallicRhiTests.exe --gtest_filter=RhiRendering.stream_cluster_candidates_stable_parallel:RhiRendering.stream_indexed_mesh_raster_equivalence:RhiRendering.stream_cluster_cull_classify_equivalence:RhiRendering.hybrid_cluster_stable_bins_and_indirect_limits:RhiRendering.tessellation_displacement_render --rhi-validation --output-dir build-scheduling-release/work-capacity-final
+cmake --build build-scheduling-release --target MetallicRHITests -j 6
+.\build-scheduling-release\tests\MetallicRHITests.exe --gtest_filter=RHIRendering.stream_cluster_candidates_stable_parallel:RHIRendering.stream_indexed_mesh_raster_equivalence:RHIRendering.stream_cluster_cull_classify_equivalence:RHIRendering.hybrid_cluster_stable_bins_and_indirect_limits:RHIRendering.tessellation_displacement_render --rhi-validation --output-dir build-scheduling-release/work-capacity-final
 ```
 
 5 项 GPU 回归通过，无跳过。包括 17 个候选展开用例（恰好满、超出一项、空/缩短列表、早晚阶段、超过 128 个块、尾部 poison 保护）、完整掩码恢复与 HW 间接参数；32 组 HW/超额回退/旧队列的深度和 32-bit 可见 ID 逐位对照；分类等价性、非流式稳定分桶、位移细分渲染。检查了输出的流式位移图像。普通 mesh 超额路径有逐像素回归；位移测试验证常规 stream/resident 路径，没有单独强制 tessellation 超额场景。

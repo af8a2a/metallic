@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$Replay,
     [Parameter(Mandatory=$true)][string]$OutputRoot,
-    [string]$Executable = "build-release/tests/MetallicRhiTests.exe",
+    [string]$Executable = "build-release/tests/MetallicRHITests.exe",
     [string[]]$Cases = @("m1", "m2", "quality"),
     [switch]$Realtime,
     [switch]$QualityWithoutValidation,
@@ -9,8 +9,8 @@ param(
     [ValidateSet('Default', 'Ordered', 'Distributed')][string]$DemandTraversal = 'Default',
     [ValidateRange(0, 4194240)][int]$DemandWorkers = 0,
     [string]$StreamAsset = "",
-    [ValidateSet('Default', 'On', 'Off')][string]$GpuDecompression = 'Default',
-    [ValidateRange(-1, 1073741824)][long]$GpuDecompressionMinBatchBytes = -1,
+    [ValidateSet('Default', 'On', 'Off')][string]$GPUDecompression = 'Default',
+    [ValidateRange(-1, 1073741824)][long]$GPUDecompressionMinBatchBytes = -1,
     [int]$TimeoutSeconds = 900
 )
 $ErrorActionPreference = "Stop"
@@ -48,8 +48,8 @@ $manifest = @{
     demandTraversal = $DemandTraversal
     demandWorkers = $DemandWorkers
     streamAsset = $StreamAsset
-    gpuDecompression = $GpuDecompression
-    gpuDecompressionMinBatchBytes = $GpuDecompressionMinBatchBytes
+    gpuDecompression = $GPUDecompression
+    gpuDecompressionMinBatchBytes = $GPUDecompressionMinBatchBytes
     qualityWithoutValidation = [bool]$QualityWithoutValidation
     start = (Get-Date).ToString('o')
 }
@@ -68,17 +68,17 @@ try {
         $env:METALLIC_MINIZORAH_DISTRIBUTED_DEMAND = if ($DemandTraversal -eq 'Default') { $null } elseif ($DemandTraversal -eq 'Ordered') { '0' } else { '1' }
         $env:METALLIC_MINIZORAH_DEMAND_WORKERS = if ($DemandWorkers -eq 0) { $null } else { [string]$DemandWorkers }
         $env:METALLIC_MINIZORAH_STREAM_ASSET = if ($StreamAsset) { [IO.Path]::GetFullPath($StreamAsset) } else { $null }
-        $env:METALLIC_MINIZORAH_GPU_DECOMPRESSION = if ($GpuDecompression -eq 'Default') { $null } elseif ($GpuDecompression -eq 'On') { '1' } else { '0' }
-        $env:METALLIC_MINIZORAH_GPU_MIN_BATCH_BYTES = if ($GpuDecompressionMinBatchBytes -lt 0) { $null } else { [string]$GpuDecompressionMinBatchBytes }
+        $env:METALLIC_MINIZORAH_GPU_DECOMPRESSION = if ($GPUDecompression -eq 'Default') { $null } elseif ($GPUDecompression -eq 'On') { '1' } else { '0' }
+        $env:METALLIC_MINIZORAH_GPU_MIN_BATCH_BYTES = if ($GPUDecompressionMinBatchBytes -lt 0) { $null } else { [string]$GPUDecompressionMinBatchBytes }
         $validation = if ($case -eq 'quality' -and -not $QualityWithoutValidation) { '--rhi-validation' } else { '--rhi-no-validation' }
         Write-Output "Starting Metallic $case on the reference camera replay"
         $monitor = Start-Process nvidia-smi.exe -ArgumentList @('--query-gpu=timestamp,name,driver_version,utilization.gpu,memory.used,clocks.gr,temperature.gpu,power.draw', '--format=csv', '-l', '1') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $casePath 'Gpu.csv') -RedirectStandardError (Join-Path $casePath 'Gpu.stderr.txt')
         $competitionMonitor = $null
         try {
             $competitionMonitor = Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass',
-                '-File', ('"' + (Join-Path $PSScriptRoot 'MeasureGpuCompetition.ps1') + '"')) -WindowStyle Hidden -PassThru `
+                '-File', ('"' + (Join-Path $PSScriptRoot 'MeasureGPUCompetition.ps1') + '"')) -WindowStyle Hidden -PassThru `
                 -RedirectStandardOutput (Join-Path $casePath 'GpuProcesses.csv') -RedirectStandardError (Join-Path $casePath 'GpuProcesses.stderr.txt')
-            $arguments = @('--gtest_filter=RhiRendering.minizorah_fixed_baseline', $validation, '--rhi-async-compute', '--output-dir', ('"'+$casePath+'"'))
+            $arguments = @('--gtest_filter=RHIRendering.minizorah_fixed_baseline', $validation, '--rhi-async-compute', '--output-dir', ('"'+$casePath+'"'))
             if ($Realtime) { $arguments += '--rhi-realtime' }
             $process = Start-Process -FilePath $exePath -WorkingDirectory $repo -WindowStyle Hidden -PassThru -ArgumentList $arguments -RedirectStandardOutput (Join-Path $casePath 'stdout.log') -RedirectStandardError (Join-Path $casePath 'stderr.log')
             $started = Get-Date
@@ -124,10 +124,10 @@ try {
             }
             $report = Get-Content -LiteralPath (Join-Path $casePath 'Baseline.json') -Raw | ConvertFrom-Json
             if ($report.status -ne 'passed') { throw "$case failed: $($report.error)" }
-            if ($GpuDecompression -ne 'Default' -and $report.finalStream.gpuDecompressionEnabled -ne ($GpuDecompression -eq 'On')) {
+            if ($GPUDecompression -ne 'Default' -and $report.finalStream.gpuDecompressionEnabled -ne ($GPUDecompression -eq 'On')) {
                 throw 'Actual GPU decompression capability did not match the requested benchmark mode'
             }
-            if ($GpuDecompressionMinBatchBytes -ge 0 -and $report.finalStream.gpuDecompressionMinBatchBytes -ne $GpuDecompressionMinBatchBytes) {
+            if ($GPUDecompressionMinBatchBytes -ge 0 -and $report.finalStream.gpuDecompressionMinBatchBytes -ne $GPUDecompressionMinBatchBytes) {
                 throw 'Actual GPU decompression batch policy did not match the requested threshold'
             }
             if ($DemandTraversal -ne 'Default' -and $report.finalStream.distributedPageDemand -ne ($DemandTraversal -eq 'Distributed')) {

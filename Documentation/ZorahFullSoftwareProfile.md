@@ -70,7 +70,7 @@ Release sample/RHI 构建通过；统计模式验证通过；正常模式的分�
 
 ```powershell
 $env:METALLIC_VK_PIPELINE_STATISTICS='1'
-build-release/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.stream_cluster_cull_classify_equivalence
+build-release/tests/MetallicRHITests.exe --gtest_filter=RHIRendering.stream_cluster_cull_classify_equivalence
 Remove-Item Env:METALLIC_VK_PIPELINE_STATISTICS
 python Tools/AnalyzeZorahFullSoftwareProfile.py Documentation/ZorahFullSoftwareProfileResult.json build-release/sw-pipeline-statistics-final.log build-release/full-sw-nsight-profile3 build-release/full-sw-nsight-profile4
 ```

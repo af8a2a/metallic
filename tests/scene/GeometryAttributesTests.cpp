@@ -30,7 +30,7 @@ RenderPrimitive mirroredQuad()
     return p;
 }
 
-TEST(GeometryAttributes, SplitsMirroredUvCornersAndPreservesAuthoredData)
+TEST(GeometryAttributes, SplitsMirroredUVCornersAndPreservesAuthoredData)
 {
     auto p = mirroredQuad();
     const auto original = p;
@@ -76,7 +76,7 @@ TEST(GeometryAttributes, RepairsZeroNormalsWithoutChangingValidAuthoredValues)
     EXPECT_FLOAT_EQ(p.normals[0].x, 0); EXPECT_FLOAT_EQ(p.normals[0].y, 1); EXPECT_FLOAT_EQ(p.normals[0].z, 0);
 }
 
-TEST(GeometryAttributes, CoarseLodsPreserveChartsAndUseUvError)
+TEST(GeometryAttributes, CoarseLodsPreserveChartsAndUseUVError)
 {
     RenderPrimitive p;
     constexpr uint32_t n = 24;
@@ -274,7 +274,7 @@ TEST(GeometryAttributes, ExactAttributeDuplicatesRecoverEquivalentCoarseRootCut)
     auto welded = attributedGrid(false);
     auto soup = attributedGrid(true);
     const auto originalWelded = welded, originalSoup = soup;
-    MeshletLodBuildStats weldedStats, soupStats;
+    MeshletLODBuildStats weldedStats, soupStats;
     ASSERT_TRUE(buildStreamMeshletsForPrimitive(welded, {.maxWorkers = 1, .lodStats = &weldedStats}));
     ASSERT_TRUE(buildStreamMeshletsForPrimitive(soup, {.maxWorkers = 1, .lodStats = &soupStats}));
     EXPECT_EQ(weldedStats.referencedSourceVertexCount, originalWelded.positions.size());
@@ -293,7 +293,7 @@ TEST(GeometryAttributes, ExactAttributeDuplicatesRecoverEquivalentCoarseRootCut)
     expectLodAttributePreservation(originalSoup, soup);
 }
 
-TEST(GeometryAttributes, ExactAttributeWeldingRetainsNormalUvAndTangentSeams)
+TEST(GeometryAttributes, ExactAttributeWeldingRetainsNormalUVAndTangentSeams)
 {
     for (uint32_t seam = 0; seam < 10; ++seam) {
         // Exact duplicate, normal, UV, tangent sign/direction/signed zero,
@@ -324,7 +324,7 @@ TEST(GeometryAttributes, ExactAttributeWeldingRetainsNormalUvAndTangentSeams)
         std::string reason;
         ASSERT_TRUE(validateGeometryAttributes(primitive, reason)) << reason;
         const auto original = primitive;
-        MeshletLodBuildStats stats;
+        MeshletLODBuildStats stats;
         ASSERT_TRUE(buildStreamMeshletsForPrimitive(primitive, {.maxWorkers = 1, .lodStats = &stats}));
         EXPECT_EQ(stats.sourceVertexCount, 7u);
         EXPECT_EQ(stats.referencedSourceVertexCount, 6u);
@@ -345,7 +345,7 @@ TEST(GeometryAttributes, TinyPerCornerNormalDifferencesAllowCoarseRootReduction)
         primitive.normals[vertex] = float3(0, jitter, std::sqrt(1.0f - jitter * jitter));
     }
     const auto original = primitive;
-    MeshletLodBuildStats stats;
+    MeshletLODBuildStats stats;
     ASSERT_TRUE(buildStreamMeshletsForPrimitive(primitive, {.maxWorkers = 1, .lodStats = &stats}));
     EXPECT_EQ(stats.uniqueAttributeVertexCount, original.positions.size());
     EXPECT_EQ(stats.referencedSourceVertexCount, original.positions.size());
@@ -375,7 +375,7 @@ TEST(GeometryAttributes, NormalMagnitudeDifferencesDoNotCreateHardSeams)
     std::string reason;
     ASSERT_TRUE(validateGeometryAttributes(primitive, reason)) << reason;
     const auto original = primitive;
-    MeshletLodBuildStats stats;
+    MeshletLODBuildStats stats;
     ASSERT_TRUE(buildStreamMeshletsForPrimitive(primitive, {.maxWorkers = 1, .lodStats = &stats}));
     EXPECT_EQ(stats.uniqueAttributeVertexCount, original.positions.size());
     EXPECT_EQ(stats.referencedSourceVertexCount, original.positions.size());
@@ -427,7 +427,7 @@ struct AttributeFixture {
     }
 };
 
-TEST(GeometryAttributes, CompactUploadPreservesGeometryUvAndDiskPayload)
+TEST(GeometryAttributes, CompactUploadPreservesGeometryUVAndDiskPayload)
 {
     for (auto compression : {MeshletStreamPayloadCompression::None,
             MeshletStreamPayloadCompression::ByteRle, MeshletStreamPayloadCompression::Reference}) {
@@ -670,7 +670,7 @@ TEST(GeometryAttributes, LegacyAttributedCookStillRequiresRecooking)
     EXPECT_NE(reason.find("cook revision"), std::string::npos) << reason;
 }
 
-TEST(GeometryAttributes, LegacyGpuInstancingRequiresRecookingEvenWithoutAttributes)
+TEST(GeometryAttributes, LegacyGPUInstancingRequiresRecookingEvenWithoutAttributes)
 {
     AttributeFixture fixture;
     usePositionOnly(fixture);
@@ -701,7 +701,7 @@ TEST(GeometryAttributes, RejectsBrokenAttributesInsteadOfDroppingThem)
     EXPECT_NE(reason.find("static attributes"), std::string::npos) << reason;
 }
 
-TEST(GeometryAttributes, SourceUvEditsInvalidateResidentCache)
+TEST(GeometryAttributes, SourceUVEditsInvalidateResidentCache)
 {
     AttributeFixture fixture;
     const auto path = fixture.save();

@@ -16,7 +16,7 @@ Production collection is currently one watch in a dedicated workload process, cl
 Build from the normal configured MSVC environment:
 
 ```powershell
-cmake --build build --target Metallic MetallicGPUDrivenSample MetallicCtl MetallicDebugTests MetallicRhiTests --config Debug
+cmake --build build --target Metallic MetallicGPUDrivenSample MetallicCtl MetallicDebugTests MetallicRHITests --config Debug
 ```
 
 `MetallicDebugCore` depends on C++ and the existing JSON library; its Windows
@@ -308,8 +308,8 @@ checkpoint calls skip all debug work.
 
 ```powershell
 ctest --test-dir build -C Debug -L debug --output-on-failure
-.\build\tests\MetallicRhiTests.exe --gtest_filter='*DebugControl*:*frame_*:*gpu_scene_*:*render_graph_multi_queue_submit*'
-.\build\tests\MetallicRhiTests.exe --filter render_graph_gpu_driven_mixed_producer_render
+.\build\tests\MetallicRHITests.exe --gtest_filter='*DebugControl*:*frame_*:*gpu_scene_*:*render_graph_multi_queue_submit*'
+.\build\tests\MetallicRHITests.exe --filter render_graph_gpu_driven_mixed_producer_render
 pwsh -File tests\debug\DebugControlE2E.ps1 -EnginePid 1234 -CaptureDirectory .tmp\new-e2e-evidence
 ```
 

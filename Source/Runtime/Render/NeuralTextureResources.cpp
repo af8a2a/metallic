@@ -532,7 +532,7 @@ Result<> NeuralTextureResources::prepare(
         result = device.createTexture(TextureDesc{
                 .type = TextureType::Texture2D,
                 .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-                .format = Format::Bgra4Unorm,
+                .format = Format::BGRA4Unorm,
                 .width = static_cast<uint32_t>(pending.desc.width),
                 .height = static_cast<uint32_t>(pending.desc.height),
                 .depth = 1,
@@ -548,7 +548,7 @@ Result<> NeuralTextureResources::prepare(
         }
         result = device.createTextureView(*set.texture,
             TextureViewDesc{
-                .format = Format::Bgra4Unorm,
+                .format = Format::BGRA4Unorm,
                 .range = {.baseMip = 0, .mipCount = static_cast<uint32_t>(pending.desc.mipLevels), .baseLayer = 0, .layerCount = static_cast<uint32_t>(pending.desc.arraySize)},
             }).transform([&](auto rhiValue) { set.view = std::move(rhiValue); });
         if (!result || set.view == nullptr) {

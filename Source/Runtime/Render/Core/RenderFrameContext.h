@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 
 #include <functional>
 #include <atomic>
@@ -58,13 +58,13 @@ struct CommandSubmissionRegistry {
 
 // Immutable identity during recording; a published point becomes waitable.
 // A frame point is published only after its submission window closes.
-class GpuCompletionPoint {
+class GPUCompletionPoint {
 public:
     bool valid() const { return state_ != nullptr; }
     bool isSubmitted() const;
     bool isCancelled() const;
     bool isComplete() const;
-    bool sameSubmission(const GpuCompletionPoint& other) const { return state_ == other.state_; }
+    bool sameSubmission(const GPUCompletionPoint& other) const { return state_ == other.state_; }
     uint64_t value() const;
     Result<> wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
     // Append/coalesce timeline waits. Keep this point alive until the waiting
@@ -93,7 +93,7 @@ public:
 
 private:
     RenderFrameContext* frame_ = nullptr;
-    GpuCompletionPoint generation_;
+    GPUCompletionPoint generation_;
     std::vector<CommandBuffer*> commands_;
     std::vector<std::shared_ptr<detail::CommandSubmissionState>> states_;
     friend class QueueSubmissionTracker;
@@ -104,9 +104,9 @@ private:
 class SubmissionReceipt {
 public:
     bool accepted() const { return completion_.isSubmitted(); }
-    const GpuCompletionPoint& completion() const { return completion_; }
+    const GPUCompletionPoint& completion() const { return completion_; }
 private:
-    GpuCompletionPoint completion_;
+    GPUCompletionPoint completion_;
     friend class QueueSubmissionTracker;
 };
 
@@ -140,19 +140,19 @@ public:
     bool hasAcceptedWork() const;
     FrameSubmissionMode submissionMode() const { return submissionMode_; }
     void retain(std::shared_ptr<void> resource);
-    Result<> addDependency(GpuCompletionPoint completion);
+    Result<> addDependency(GPUCompletionPoint completion);
     uint64_t frameIndex() const { return frameIndex_; }
     uint32_t slotIndex() const { return slotIndex_; }
-    const GpuCompletionPoint& completion() const { return completion_; }
+    const GPUCompletionPoint& completion() const { return completion_; }
 
 private:
     uint32_t slotIndex_ = 0;
     uint64_t frameIndex_ = 0;
-    GpuCompletionPoint completion_;
+    GPUCompletionPoint completion_;
     std::atomic<bool> recordingOpen_ = false;
     FrameSubmissionMode submissionMode_ = FrameSubmissionMode::Joined;
     std::vector<std::shared_ptr<void>> resources_;
-    std::vector<GpuCompletionPoint> dependencies_;
+    std::vector<GPUCompletionPoint> dependencies_;
     detail::CommandSubmissionRegistry recordings_;
     friend class CommandBuffer;
     friend class QueueSubmissionTracker;
@@ -174,7 +174,7 @@ public:
 private:
     std::atomic_flag ownership_ = ATOMIC_FLAG_INIT;
     Queue* queue_ = nullptr;
-    GpuCompletionPoint completion_;
+    GPUCompletionPoint completion_;
     std::unique_ptr<CommandPool> pool_;
     std::vector<std::unique_ptr<CommandBuffer>> commands_;
 };
@@ -196,7 +196,7 @@ public:
         const QueueSubmitDesc& synchronization,
         RenderFrameContext& frame);
     // Compatibility adapter: seals these commands and returns their GPU point.
-    [[nodiscard]] Result<GpuCompletionPoint> submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame);
+    [[nodiscard]] Result<GPUCompletionPoint> submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame);
     Result<> wait(uint64_t timeoutNanoseconds = UINT64_MAX) const;
     Result<> reset();
 
@@ -204,20 +204,20 @@ private:
     Queue* queue_ = nullptr;
     std::shared_ptr<Semaphore> timeline_;
     uint64_t nextValue_ = 1;
-    GpuCompletionPoint lastSubmission_;
+    GPUCompletionPoint lastSubmission_;
 };
 
 class DeferredReleaseQueue {
 public:
     ~DeferredReleaseQueue();
-    void retire(GpuCompletionPoint completion, std::shared_ptr<void> resource);
+    void retire(GPUCompletionPoint completion, std::shared_ptr<void> resource);
     void collect();
     Result<> drain();
     size_t size() const { return entries_.size(); }
 
 private:
     struct Entry {
-        GpuCompletionPoint completion;
+        GPUCompletionPoint completion;
         std::shared_ptr<void> resource;
     };
     std::vector<Entry> entries_;

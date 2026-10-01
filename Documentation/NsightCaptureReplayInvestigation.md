@@ -44,7 +44,7 @@ In `External/streamline/source/plugins/sl.reflex/reflexEntry.cpp`, Reflex adds
 the legacy extension whenever low latency is available, and also adds LL2 for
 the NVIDIA Turing-or-newer branch. The Vulkan compute implementation in
 `source/platforms/sl.chi/vulkan.cpp` prefers `CreateVkNvLowLatency2`, with
-`CreateNvLowLatencyVk` as a fallback. Metallic's device setup in `VulkanRhi.cpp`
+`CreateNvLowLatencyVk` as a fallback. Metallic's device setup in `VulkanRHI.cpp`
 supplies the present-id dependency; the Streamline interposer appends the
 Reflex extensions. Removing an entry only from Metallic's own extension vector
 would not remove a later interposer addition.
@@ -177,7 +177,7 @@ boundaries. The test waits for artifact completion before resizing or releasing
 scene resources. Reproduce from a configured RelWithDebInfo build:
 
 ```powershell
-./build-relwithdebinfo/tests/MetallicRhiTests.exe --rhi-no-validation --rhi-realtime --rhi-async-compute --rhi-aftermath --rhi-nsight-export --gtest_filter='*gpu_driven_sponza_realtime_pipeline' --output-dir .tmp/nsight-low-latency/explicit-sponza
+./build-relwithdebinfo/tests/MetallicRHITests.exe --rhi-no-validation --rhi-realtime --rhi-async-compute --rhi-aftermath --rhi-nsight-export --gtest_filter='*gpu_driven_sponza_realtime_pipeline' --output-dir .tmp/nsight-low-latency/explicit-sponza
 ```
 
 Use the capture path reported by that test with the unmodified replayer's
@@ -210,7 +210,7 @@ this is not a validation-clean engine run. The Sponza test still logs the
 previously recorded independent Streamline teardown mini-dump but exits zero.
 That plugin issue is not addressed by this OMM replay workaround.
 
-`Metallic.exe`, `MetallicGPUDrivenSample.exe`, and `MetallicRhiTests.exe` were
+`Metallic.exe`, `MetallicGPUDrivenSample.exe`, and `MetallicRHITests.exe` were
 rebuilt successfully (`build-explicit-indices.log`). The GPUDrivenSample binary
 was updated at 19:49:28 local time. Restart the rebuilt application and capture
 again; replacing the executable cannot change an existing capture's build data.

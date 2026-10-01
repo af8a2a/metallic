@@ -69,10 +69,10 @@ Use native Vulkan commands for synchronization not represented by RHI barriers.
 
 ## Verification
 
-Build `Metallic` and `MetallicRhiTests`, then run:
+Build `Metallic` and `MetallicRHITests`, then run:
 
 ```powershell
-build-dev/tests/MetallicRhiTests.exe --rhi-validation --gtest_filter=*DeviceGeneratedCommands*:*device_generated_commands*
+build-dev/tests/MetallicRHITests.exe --rhi-validation --gtest_filter=*DeviceGeneratedCommands*:*device_generated_commands*
 ```
 
 CPU tests cover invalid objects, PSO hash separation, and probe shader compilation.

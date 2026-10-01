@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 
 #include <chrono>
 #include <optional>
@@ -11,7 +11,7 @@ namespace metallic::tests::bench {
 
 enum class Capability { ShaderObject, TimestampQueries, Bindless, IndependentCopy, IndependentCompute, RayQuery, PositionFetch, OpacityMicromap,
     UnifiedLayouts, PartitionedAS, ClusterAS, GeneratedCommands, MemoryDecompression };
-enum class Layer { Rhi, Core, RenderGraph, Backend, Harness };
+enum class Layer { RHI, Core, RenderGraph, Backend, Harness };
 enum class Validation { Off, Core, Synchronization };
 
 struct Requirements {
@@ -35,7 +35,7 @@ struct Comparison {
 struct Metadata {
     std::string suite = "core";
     std::string profile = "core";
-    Layer layer = Layer::Rhi;
+    Layer layer = Layer::RHI;
     Requirements requirements;
     std::vector<std::string> coverage;
     std::chrono::milliseconds timeout{30000};

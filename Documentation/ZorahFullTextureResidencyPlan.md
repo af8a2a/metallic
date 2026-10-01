@@ -12,8 +12,8 @@ Full 纹理资源阶段 wall **21578.23 ms**；其中 image/view 创建累计 **
 
 源码另有两个影响边界：
 
-- Full 几何池按配置初始化分配 **3.5 GiB**，compact CLAS 外层 storage 按最大容量分配 **2 GiB**；加当前贴图已约 **6.87 GiB**，还没计 CLAS build/MOVE scratch、BLAS/TLAS、帧资源与其他分配。只减少贴图不能保证整场景一定不过预算。[几何池](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp:911)、[CLAS 池](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp:309)。
-- `allocationInfoForMemory(Device)` 设置 `VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT`，`createTexture()` 直接沿用，因此这些小 BC 纹理也强制独立分配。需测量 allocation/block 数、创建时间及实际 heap usage；不能把 image requirement 求和当作全部物理开销。[分配标志](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp:1142)、[纹理创建](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp:8988)。
+- Full 几何池按配置初始化分配 **3.5 GiB**，compact CLAS 外层 storage 按最大容量分配 **2 GiB**；加当前贴图已约 **6.87 GiB**，还没计 CLAS build/MOVE scratch、BLAS/TLAS、帧资源与其他分配。只减少贴图不能保证整场景一定不过预算。[几何池](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp:911)、[CLAS 池](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCompactCLASPool.cpp:309)。
+- `allocationInfoForMemory(Device)` 设置 `VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT`，`createTexture()` 直接沿用，因此这些小 BC 纹理也强制独立分配。需测量 allocation/block 数、创建时间及实际 heap usage；不能把 image requirement 求和当作全部物理开销。[分配标志](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp:1142)、[纹理创建](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp:8988)。
 
 ## vk_lod_clusters 可以借鉴什么
 

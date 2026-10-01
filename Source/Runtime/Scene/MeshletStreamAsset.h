@@ -27,7 +27,7 @@ inline constexpr uint32_t kMeshletStreamPayloadAttributeTangent = 1u << 4u;
 enum class MeshletStreamPayloadCompression : uint32_t {
     None = 0,
     ByteRle = 1,
-    GpuTiles = 2,
+    GPUTiles = 2,
     Reference = 3, // Per-cluster reference P/UV and shared normal/tangent encoding.
 };
 
@@ -86,7 +86,7 @@ struct MeshletStreamGeometryInfo {
     uint64_t payloadFileSize = 0;
 };
 
-struct MeshletStreamLodLevelInfo {
+struct MeshletStreamLODLevelInfo {
     uint32_t primitiveIndex = 0;
     uint32_t lodLevel = 0;
     uint32_t pageOffset = 0;
@@ -255,7 +255,7 @@ public:
     std::span<const MeshletStreamPrimitiveInfo> primitives() const;
     std::span<const MeshletStreamInstanceInfo> instances() const;
     std::span<const MeshletStreamGeometryInfo> geometries() const;
-    std::span<const MeshletStreamLodLevelInfo> lodLevels() const;
+    std::span<const MeshletStreamLODLevelInfo> lodLevels() const;
     std::span<const MeshletStreamGroupInfo> groups() const;
     // One global refined group index per cluster, independent of page residency.
     std::span<const uint32_t> refinedGroups() const;

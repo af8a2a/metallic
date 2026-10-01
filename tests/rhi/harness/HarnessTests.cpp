@@ -83,8 +83,8 @@ void recorderThreads()
 
 void filtering()
 {
-    EXPECT_TRUE(matchesFilter("RhiCommand.timestamp_query", "*timestamp*:*copy*"));
-    EXPECT_FALSE(matchesFilter("RhiCommand.timestamp_query", "*-*timestamp*"));
+    EXPECT_TRUE(matchesFilter("RHICommand.timestamp_query", "*timestamp*:*copy*"));
+    EXPECT_FALSE(matchesFilter("RHICommand.timestamp_query", "*-*timestamp*"));
     EXPECT_TRUE(matchesFilter("abc", "a?c"));
     EXPECT_FALSE(matchesFilter("abc", "a?"));
     EXPECT_TRUE(matchesFilter("abc", "-def"));
@@ -158,7 +158,7 @@ void resultProtocol()
     const auto process = runProcess(executablePath(), {"--tb-run", "--tb-suite", "contract", "--tb-filter", "*buffer_range_cpu_contract", "--output-dir",
         pathArgument(output)}, root / "process", std::chrono::seconds(30));
     ASSERT_EQ(process.exitCode, 0);
-    const auto directory = output / "core/RhiValidation.buffer_range_cpu_contract/0";
+    const auto directory = output / "core/RHIValidation.buffer_range_cpu_contract/0";
     const auto input = readJson(directory / "input.json");
     EXPECT_EQ(verifyChild(directory, input, {0, false}).at("status"), "Pass");
     EXPECT_EQ(verifyChild(directory, input, {1, false}).at("status"), "InfrastructureFailure");

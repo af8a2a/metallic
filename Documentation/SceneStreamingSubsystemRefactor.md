@@ -30,7 +30,7 @@
 
 ## 验证记录
 
-Release 构建目标：`MetallicGPUDrivenSample`、`MetallicRhiTests`。
+Release 构建目标：`MetallicGPUDrivenSample`、`MetallicRHITests`。
 
 验证层回归覆盖普通/流式材质、透射、阴影、场景绑定、同地址场景替换、材质代际、失败准备回滚、独立资产、描述符快照、图片、窗口缩放、帧提交事务、shader 热重载、MiniZorah 和流送会话回收。`SceneBindingTests` 增加了实际资源快照的身份/代际/共享断言；`RealtimePipelineTests` 增加了内部流送 shader 热重载及旧会话释放断言。
 

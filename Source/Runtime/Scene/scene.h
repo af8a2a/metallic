@@ -38,7 +38,7 @@ struct LoadResult {
     bool meshletCacheLoaded = false;
     bool meshletCacheSaved = false;
     std::filesystem::path meshletCachePath;
-    GltfInstanceExpansion gpuInstancing;
+    glTFInstanceExpansion gpuInstancing;
     // Original metadata-only glTF material descriptions, indexed by source material.
     // Preserves extensions not consumed by RenderMaterial yet; not a shading contract.
     std::vector<std::string> gltfMaterialDescriptions;
@@ -93,7 +93,7 @@ struct MeshletCluster {
     std::array<int8_t, 4> packedCone{0, 0, 127, 127};
 };
 
-struct MeshletLodGroup {
+struct MeshletLODGroup {
     uint32_t clusterOffset = 0;
     uint32_t clusterCount = 0;
     uint32_t lodLevel = 0;
@@ -103,7 +103,7 @@ struct MeshletLodGroup {
     float maxQuadricError = 0.0f;
 };
 
-struct MeshletLodLevel {
+struct MeshletLODLevel {
     uint32_t groupOffset = 0;
     uint32_t groupCount = 0;
     uint32_t clusterOffset = 0;
@@ -150,8 +150,8 @@ struct RenderPrimitive {
     std::vector<MeshletCluster> meshletClusters;
     std::vector<uint32_t> meshletVertices;
     std::vector<uint8_t> meshletTriangles;
-    std::vector<MeshletLodLevel> meshletLodLevels;
-    std::vector<MeshletLodGroup> meshletLodGroups;
+    std::vector<MeshletLODLevel> meshletLodLevels;
+    std::vector<MeshletLODGroup> meshletLodGroups;
     std::vector<MeshletCluster> meshletLodClusters;
     std::vector<uint32_t> meshletLodVertices;
     std::vector<uint8_t> meshletLodTriangles;
@@ -266,7 +266,7 @@ struct RenderMaterial {
 
 bool buildMeshletsForPrimitive(RenderPrimitive& primitive);
 
-struct MeshletLodAttributeDifferenceStats {
+struct MeshletLODAttributeDifferenceStats {
     static constexpr std::array<double, 5> kThresholds{1e-7, 1e-6, 1e-5, 1e-4, 1e-3};
     // Compare each noncanonical vertex with its exact-position remap vertex.
     uint64_t differentVertexCount = 0;
@@ -277,7 +277,7 @@ struct MeshletLodAttributeDifferenceStats {
     std::array<uint64_t, kThresholds.size()> atOrBelowThresholdCounts{};
 };
 
-struct MeshletLodDepthBuildStats {
+struct MeshletLODDepthBuildStats {
     uint32_t depth = 0;
     uint64_t inputGroupCount = 0;
     uint64_t inputClusterCount = 0;
@@ -294,7 +294,7 @@ struct MeshletLodDepthBuildStats {
     uint64_t noReductionGroupCount = 0;
 };
 
-struct MeshletLodBuildStats {
+struct MeshletLODBuildStats {
     uint64_t sourceVertexCount = 0;
     uint64_t sourceTriangleCount = 0;
     // Referenced source IDs before welding and exact attribute tuples after welding.
@@ -304,17 +304,17 @@ struct MeshletLodBuildStats {
     uint64_t remappedVertexCount = 0;
     // Actual noncanonical vertices with meshopt_SimplifyVertex_Protect set.
     uint64_t protectedVertexCount = 0;
-    MeshletLodAttributeDifferenceStats normalDifferences;
-    MeshletLodAttributeDifferenceStats uvDifferences;
+    MeshletLODAttributeDifferenceStats normalDifferences;
+    MeshletLODAttributeDifferenceStats uvDifferences;
     uint64_t tangentSignDifferentVertexCount = 0;
-    std::vector<MeshletLodDepthBuildStats> depths;
+    std::vector<MeshletLODDepthBuildStats> depths;
 };
 
 struct MeshletBuildOptions {
     // Zero preserves the normal importer worker limit. Does not change geometry.
     uint32_t maxWorkers = 0;
     // Optional diagnostics, reset per primitive build; do not share concurrent builds.
-    MeshletLodBuildStats* lodStats = nullptr;
+    MeshletLODBuildStats* lodStats = nullptr;
 };
 bool buildStreamMeshletsForPrimitive(RenderPrimitive& primitive, const MeshletBuildOptions& options = {});
 

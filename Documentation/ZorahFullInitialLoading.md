@@ -101,15 +101,15 @@
 
 ```powershell
 cmake --build build-release --target MetallicGPUDrivenSample -j 6
-cmake --build build-scheduling-release --target MetallicRhiTests -j 6
+cmake --build build-scheduling-release --target MetallicRHITests -j 6
 ```
 
 以下九项真实 Vulkan 测试全部通过，均开启 `--rhi-validation`，没有测试跳过或 `VUID-`：
 
-- `RhiRendering.stream_initial_loading`：独立根/CLAS/fallback 构建、未提交取消重试、GPU gate 前不发布就绪、正常页数和字节预算、reset/reload。初次运行的 refinement 断言误用了 `requestPage()` 返回值；改为检查分配和入队后重跑通过，见 [修正后的结果](../build-scheduling-release/initial-load-regression-fixed/rhi.json)。
-- `RhiCommand.streamer_meshlet_upload_completion`、`RhiCommand.streamer_ordered_publication_retry`、`RhiValidation.streamer_meshlet_upload_byte_budget`、`RhiResource.clas_compact_lifecycle`、`RhiRendering.render_graph_scene_binding_contract`、`RhiResource.render_graph_resize_reuses_compiled_passes`：见 [回归结果](../build-scheduling-release/initial-load-regression/rhi.json)，其中仅上述已修正的新测试首跑失败，其他六项通过。
-- `RhiRendering.minizorah_vbuffer`：根覆盖、19,144 个实例可见性、resize、释放及重新打开，见 [结果](../build-scheduling-release/initial-load-mini/rhi.json)。已查看输出图像。
-- `RhiRendering.zorah_full_first_frame`：`METALLIC_TEST_ZORAH_FULL=1`、`METALLIC_ZORAH_FULL_CYCLES=2`，两轮 Mini→Full 分别使用 asset/world 绑定，首帧就绪后各继续 120 帧，再检查材质、唯一 stream 所有者和释放，见 [完整报告](../build-scheduling-release/initial-load-full/ZorahFullFirstFrame.json)。已查看首帧和持续细化后的输出图像。
+- `RHIRendering.stream_initial_loading`：独立根/CLAS/fallback 构建、未提交取消重试、GPU gate 前不发布就绪、正常页数和字节预算、reset/reload。初次运行的 refinement 断言误用了 `requestPage()` 返回值；改为检查分配和入队后重跑通过，见 [修正后的结果](../build-scheduling-release/initial-load-regression-fixed/rhi.json)。
+- `RHICommand.streamer_meshlet_upload_completion`、`RHICommand.streamer_ordered_publication_retry`、`RHIValidation.streamer_meshlet_upload_byte_budget`、`RHIResource.clas_compact_lifecycle`、`RHIRendering.render_graph_scene_binding_contract`、`RHIResource.render_graph_resize_reuses_compiled_passes`：见 [回归结果](../build-scheduling-release/initial-load-regression/rhi.json)，其中仅上述已修正的新测试首跑失败，其他六项通过。
+- `RHIRendering.minizorah_vbuffer`：根覆盖、19,144 个实例可见性、resize、释放及重新打开，见 [结果](../build-scheduling-release/initial-load-mini/rhi.json)。已查看输出图像。
+- `RHIRendering.zorah_full_first_frame`：`METALLIC_TEST_ZORAH_FULL=1`、`METALLIC_ZORAH_FULL_CYCLES=2`，两轮 Mini→Full 分别使用 asset/world 绑定，首帧就绪后各继续 120 帧，再检查材质、唯一 stream 所有者和释放，见 [完整报告](../build-scheduling-release/initial-load-full/ZorahFullFirstFrame.json)。已查看首帧和持续细化后的输出图像。
 
 Full 验证首帧的 geometryUsedBytes=3,173,527,552、clasUsedBytes=1,499,483,008，均沿用原有预算。后续细化填满 3.5 GiB geometry budget，出现正常容量拒绝计数；page load failure 始终为零，根 readiness 不回退。两轮末尾本地 heap usage 快照分别为 9,039,536,128 / 9,396,051,968 字节；这不是整个进程的显存峰值，本轮没有连续采样峰值。测试前显存受其他应用占用时，原路径基准曾 OOM；用户释放显存后重新完成上述对照。
 

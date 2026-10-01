@@ -195,7 +195,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         previewStreamUintProperty(
             properties,
             "maxGpuPageRequests",
-            kMeshletStreamDefaultMaxGpuPageRequests),
+            kMeshletStreamDefaultMaxGPUPageRequests),
         1u);
     return MeshletStreamRuntimeDesc{
         .sourcePath = sourcePath,
@@ -268,7 +268,7 @@ MeshletStreamRuntimeDesc previewStreamRuntimeDesc(
         .maxClasBuildClusters = previewStreamUintProperty(properties, "maxClasBuildClusters", 0),
         .maxBlasClusterReferences = previewStreamUintProperty(properties, "maxBlasClusterReferences", 0),
         .maxBlasBytes = previewStreamUint64Property(properties, "maxBlasBytes", 512ull * 1024ull * 1024ull),
-        .maxBlasBuilds = previewStreamUintProperty(properties, "maxBlasBuilds", kMeshletStreamDefaultMaxBlasBuilds),
+        .maxBlasBuilds = previewStreamUintProperty(properties, "maxBlasBuilds", kMeshletStreamDefaultMaxBLASBuilds),
         .maxFallbackBlasBytes = previewStreamUint64Property(properties, "maxFallbackBlasBytes", 512ull * 1024ull * 1024ull),
         .screenSpacePagePriority = boolProperty(&properties, "screenSpacePagePriority", true),
         .viewDrivenPageDemand = boolProperty(&properties, "viewDrivenPageDemand", true),
@@ -292,7 +292,7 @@ MeshletStreamRuntimeDesc assetStreamRuntimeDesc(const RenderGraphProperties& pro
 {
     const std::filesystem::path scenePath = normalizedScenePath(properties.value("path", std::string(PROJECT_SOURCE_DIR "/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf")));
     const uint32_t maxGpuPageRequests = std::max<uint32_t>(
-        previewStreamUintProperty(properties, "maxGpuPageRequests", kMeshletStreamDefaultMaxGpuPageRequests),
+        previewStreamUintProperty(properties, "maxGpuPageRequests", kMeshletStreamDefaultMaxGPUPageRequests),
         1u);
     return MeshletStreamRuntimeDesc{
         .sourcePath = scenePath,
@@ -339,7 +339,7 @@ MeshletStreamRuntimeDesc assetStreamRuntimeDesc(const RenderGraphProperties& pro
         .maxBlasClusterReferences = previewStreamUintProperty(properties, "maxBlasClusterReferences", 0),
         .maxBlasBytes = previewStreamUint64Property(properties, "maxBlasBytes", 512ull * 1024ull * 1024ull),
         .maxBlasBuilds = std::max<uint32_t>(
-            previewStreamUintProperty(properties, "maxBlasBuilds", kMeshletStreamDefaultMaxBlasBuilds),
+            previewStreamUintProperty(properties, "maxBlasBuilds", kMeshletStreamDefaultMaxBLASBuilds),
             1u),
         .maxFallbackBlasBytes = previewStreamUint64Property(
             properties,

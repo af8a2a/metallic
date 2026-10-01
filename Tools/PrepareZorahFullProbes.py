@@ -227,7 +227,7 @@ def main():
         ("StoneUdim", [12], "Stone, authored tangent, normal map and explicit UDIM image", False),
         ("InstancingNoTangent", [49], "GPU instancing and normal map without authored tangent", False),
         ("MaskedLeaves", [1312], "MASK, double-sided grass and alpha cutoff", False),
-        ("TextureTransformBc4", [398], "Texture transform, BC4 specular and masked foliage", False),
+        ("TextureTransformBC4", [398], "Texture transform, BC4 specular and masked foliage", False),
         ("Glass", [334], "Transmission and IOR, source material 424", False),
         ("Blend", [294], "BLEND, source material 395", False),
         ("Unlit", [109], "Unlit sphere without normals, source material 1513", False),

@@ -1,5 +1,5 @@
-#include "RhiTest.h"
-#include "RenderGraphViewerTestUi.h"
+#include "RHITest.h"
+#include "RenderGraphViewerTestUI.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
@@ -28,13 +28,13 @@
 namespace metallic::tests {
 namespace {
 
-RhiTestResult realtimeFailure(std::string message)
+RHITestResult realtimeFailure(std::string message)
 {
     spdlog::error("Realtime regression: {}", message);
-    return RhiTestResult::fail(std::move(message));
+    return RHITestResult::fail(std::move(message));
 }
 
-void saveRealtimeExecutionCapture(render::RenderGraphExecutor& executor, const RhiTestContext& context,
+void saveRealtimeExecutionCapture(render::RenderGraphExecutor& executor, const RHITestContext& context,
     bool miniZorah)
 {
     using namespace render;
@@ -128,7 +128,7 @@ void saveRealtimeExecutionCapture(render::RenderGraphExecutor& executor, const R
     editor::RenderGraphExecutionViewer viewer;
     viewer.update(snapshot);
     viewer.setLive(false);
-    ViewerUiContext ui;
+    ViewerUIContext ui;
     using Tab = editor::RenderGraphExecutionViewer::Tab;
     for (const auto& [tab, name] : std::array{std::pair{Tab::Resources, "resources"},
             std::pair{Tab::Queues, "queues"}, std::pair{Tab::Memory, "memory"}}) {
@@ -174,10 +174,10 @@ private:
     render::ComputeProgram program_;
 };
 
-class EnvironmentPrefilterTest final : public RhiTest {
+class EnvironmentPrefilterTest final : public RHITest {
 public:
-    EnvironmentPrefilterTest() { type = RhiTestType::Rendering; name = "realtime_environment_prefilter_energy"; }
-    RhiTestResult run(RhiTestContext& context) override
+    EnvironmentPrefilterTest() { type = RHITestType::Rendering; name = "realtime_environment_prefilter_energy"; }
+    RHITestResult run(RHITestContext& context) override
     {
         const auto path = std::filesystem::absolute(context.outputDirectory / "RealtimeConstant.hdr");
         std::filesystem::create_directories(context.outputDirectory);
@@ -187,7 +187,7 @@ public:
         std::unique_ptr<render::Device> device;
         auto result = render::createDevice({.applicationName = "Environment prefilter energy",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("Requires bindless descriptors"); }
         if (!result) { return realtimeFailure("Prefilter device creation failed"); }
         render::RenderWorld world;
         world.setEnvironment({.enabled = true, .path = path});
@@ -220,7 +220,7 @@ public:
             }
         }
         buffer->unmap();
-        return valid ? RhiTestResult::pass("GGX preserves constant radiance at every roughness, poles and wrap seam")
+        return valid ? RHITestResult::pass("GGX preserves constant radiance at every roughness, poles and wrap seam")
             : realtimeFailure("GGX filtering changed constant environment energy");
     }
 };
@@ -230,8 +230,8 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addTextureInput("color").transferRead().format = render::Format::Rgba8Unorm;
-        reflection.addTextureInput("motion").sampledRead().format = render::Format::Rg16Sfloat;
+        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA8Unorm;
+        reflection.addTextureInput("motion").sampledRead().format = render::Format::RG16Sfloat;
         reflection.addTextureInput("depth").sampledRead().format = render::Format::R32Sfloat;
         reflection.addBufferOutput("pixels").buffer(uint64_t(context.width) * context.height * 4).transferWrite();
         reflection.addBufferOutput("guides").buffer(uint64_t(context.width) * context.height * 16, 16).storageReadWrite();
@@ -278,15 +278,15 @@ private:
     render::ComputeProgram program_;
 };
 
-class RealtimePipelineTest : public RhiTest {
+class RealtimePipelineTest : public RHITest {
 public:
     explicit RealtimePipelineTest(bool sponza = false) : sponza_(sponza)
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = sponza ? "gpu_driven_sponza_realtime_pipeline" : "realtime_clustered_dlss_pipeline";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderSampleLoadResult sample;
         std::string log;
@@ -296,8 +296,8 @@ public:
         }
         if (sponza_ && !render::setRenderSampleScenePath(sample, "Asset/Sponza/glTF/Sponza.gltf", log)) { return realtimeFailure(log); }
         for (const auto& node : sample.graph.nodes()) {
-            if (node.type.find("PathTrace") != std::string::npos || node.type.find("Nrd") != std::string::npos ||
-                node.type == "StreamlineDlssRrPass" || node.type == "SceneRealtimeLightingPass") {
+            if (node.type.find("PathTrace") != std::string::npos || node.type.find("NRD") != std::string::npos ||
+                node.type == "StreamlineDLSSRRPass" || node.type == "SceneRealtimeLightingPass") {
                 return realtimeFailure("Realtime pipeline contains a reference/path-tracing pass");
             }
         }
@@ -308,7 +308,7 @@ public:
         // Streamline owns process-wide Vulkan state: use one device for the test.
         auto* device = &context.device;
         if (!device->capabilities().streamlineDlssSr || !device->capabilities().meshShader) {
-            return RhiTestResult::skip("Requires --rhi-realtime and supported mesh shaders/DLSS-SR");
+            return RHITestResult::skip("Requires --rhi-realtime and supported mesh shaders/DLSS-SR");
         }
         const uint32_t initialValidationCount = context.validationMessageCount != nullptr
             ? context.validationMessageCount->load() : 0;
@@ -328,8 +328,8 @@ public:
             [] { return std::make_unique<RealtimeReadbackPass>(); });
         sample.graph.addNode("RealtimeReadbackPass", "Readback");
         sample.graph.addEdge("FinalBlit.color", "Readback.color");
-        sample.graph.addEdge("DlssSr.motionVectors", "Readback.motion");
-        sample.graph.addEdge("DlssSr.depth", "Readback.depth");
+        sample.graph.addEdge("DLSSSR.motionVectors", "Readback.motion");
+        sample.graph.addEdge("DLSSSR.depth", "Readback.depth");
         sample.graph.markOutput("Readback.pixels");
         sample.graph.markOutput("Readback.guides");
         render::RenderGraphExecutor executor;
@@ -339,7 +339,7 @@ public:
             // Keep the Sponza regression on GPUDrivenSample's default NR-off
             // configuration. The original realtime test covers optional NR.
             if (variant == 1 && !sponza_) {
-                sample.graph.setNodeRuntimeProperty(sample.graph.findNode("DlssNr")->id, "enabled", true);
+                sample.graph.setNodeRuntimeProperty(sample.graph.findNode("DLSSNR")->id, "enabled", true);
             }
             result = executor.compile(*device, sample.graph, width, height, log);
             if (!result) { return realtimeFailure(log); }
@@ -415,35 +415,35 @@ public:
             return realtimeFailure("Vulkan validation messages: " +
                 std::to_string(context.validationMessageCount->load() - initialValidationCount));
         }
-        return RhiTestResult::pass("Raster/LightGrid/SH/HDRI/auto exposure/SR, optional NR, camera jitter and odd-size resize");
+        return RHITestResult::pass("Raster/LightGrid/SH/HDRI/auto exposure/SR, optional NR, camera jitter and odd-size resize");
     }
 private:
     bool sponza_ = false;
 };
 
-class GpuDrivenSponzaRealtimePipelineTest final : public RealtimePipelineTest {
+class GPUDrivenSponzaRealtimePipelineTest final : public RealtimePipelineTest {
 public:
-    GpuDrivenSponzaRealtimePipelineTest() : RealtimePipelineTest(true) {}
+    GPUDrivenSponzaRealtimePipelineTest() : RealtimePipelineTest(true) {}
 };
 
 METALLIC_REGISTER_RHI_TEST(RealtimePipelineTest);
-METALLIC_REGISTER_RHI_TEST(GpuDrivenSponzaRealtimePipelineTest);
+METALLIC_REGISTER_RHI_TEST(GPUDrivenSponzaRealtimePipelineTest);
 METALLIC_REGISTER_RHI_TEST(EnvironmentPrefilterTest);
 
-class RealtimeShadowTest final : public RhiTest {
+class RealtimeShadowTest final : public RHITest {
 public:
-    RealtimeShadowTest() { type = RhiTestType::Rendering; name = "realtime_ray_traced_sigma_shadows"; }
+    RealtimeShadowTest() { type = RHITestType::Rendering; name = "realtime_ray_traced_sigma_shadows"; }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderSampleLoadResult sample;
         std::string log;
         if (!render::loadBuiltInRenderSample("realtime-lighting", sample, log) ||
-            !render::setRenderSampleScenePath(sample, "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf", log)) {
+            !render::setRenderSampleScenePath(sample, "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf", log)) {
             return realtimeFailure(log);
         }
-        sample.graph.removeNode(sample.graph.findNode("DlssSr")->id);
-        sample.graph.removeNode(sample.graph.findNode("DlssNr")->id);
+        sample.graph.removeNode(sample.graph.findNode("DLSSSR")->id);
+        sample.graph.removeNode(sample.graph.findNode("DLSSNR")->id);
         sample.graph.addEdge("Deferred.color", "AutoExposure.source");
         sample.graph.addEdge("AutoExposure.color", "FinalBlit.source");
         sample.graph.setViewProperties({{"camera", {{"eye", {0.0, 1.4, 3.65}}, {"center", {0.0, 0.8, 0.0}},
@@ -455,7 +455,7 @@ public:
         render::RenderGraphPreviewRenderer preview;
         preview.bindRuntimeScene(&scene);
         auto result = preview.initialize(context.enableValidation, true);
-        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders"); }
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders"); }
         if (!result) { return realtimeFailure("Initialize realtime shadow preview"); }
         preview.setEnvironment({.enabled = false});
         scene::LightingSettings lighting;
@@ -595,7 +595,7 @@ public:
             reinterpret_cast<const uint8_t*>(softLighting.data()), preview.width(), preview.height(), log)) {
             return realtimeFailure(log);
         }
-        return RhiTestResult::pass("Full TLAS + SIGMA, live light selection, legacy settings, resize and both resolve paths; "
+        return RHITestResult::pass("Full TLAS + SIGMA, live light selection, legacy settings, resize and both resolve paths; "
             "penumbra pixels at 0/1/8 degrees: " + std::to_string(softened[0]) + "/" +
             std::to_string(softened[1]) + "/" + std::to_string(softened[2]) +
             "; final lighting softened pixels: " + std::to_string(lightened));
@@ -604,26 +604,26 @@ public:
 
 METALLIC_REGISTER_RHI_TEST(RealtimeShadowTest);
 
-class StreamedRealtimeTest : public RhiTest {
+class StreamedRealtimeTest : public RHITest {
 public:
     explicit StreamedRealtimeTest(bool miniZorah = false) : miniZorah_(miniZorah)
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = miniZorah ? "minizorah_realtime_pipeline" : "streamed_realtime_pipeline";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         const auto require = [](bool condition, const std::string& message) {
             if (!condition) { throw std::runtime_error(message); }
         };
         if (miniZorah_ && std::getenv("METALLIC_TEST_MINIZORAH") == nullptr) {
-            return RhiTestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for the default full scene");
+            return RHITestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for the default full scene");
         }
         if (!context.device.capabilities().meshShader || !context.device.capabilities().clusterAccelerationStructure ||
             (miniZorah_ && !context.device.capabilities().streamlineDlssSr)) {
-            return RhiTestResult::skip("Requires --rhi-realtime with mesh shaders, CLAS and DLSS-SR");
+            return RHITestResult::skip("Requires --rhi-realtime with mesh shaders, CLAS and DLSS-SR");
         }
         try {
             std::string log;
@@ -654,8 +654,8 @@ public:
                 view["camera"]["eye"] = {center.x, center.y + radius * .3f, center.z + radius * 3};
                 view["camera"]["center"] = {center.x, center.y, center.z};
                 graph.setViewProperties(view);
-                graph.removeNode(graph.findNode("DlssSr")->id);
-                graph.removeNode(graph.findNode("DlssNr")->id);
+                graph.removeNode(graph.findNode("DLSSSR")->id);
+                graph.removeNode(graph.findNode("DLSSNR")->id);
                 graph.addEdge("Deferred.color", "AutoExposure.source");
                 graph.addEdge("AutoExposure.color", "FinalBlit.source");
                 graph.findNode("Shadows")->properties["sigmaDenoise"] = false;
@@ -665,8 +665,8 @@ public:
                 [] { return std::make_unique<RealtimeReadbackPass>(); });
             graph.addNode("RealtimeReadbackPass", "Readback");
             graph.addEdge("FinalBlit.color", "Readback.color");
-            graph.addEdge(miniZorah_ ? "DlssSr.motionVectors" : "Deferred.motionVectors", "Readback.motion");
-            graph.addEdge(miniZorah_ ? "DlssSr.depth" : "Deferred.deviceDepth", "Readback.depth");
+            graph.addEdge(miniZorah_ ? "DLSSSR.motionVectors" : "Deferred.motionVectors", "Readback.motion");
+            graph.addEdge(miniZorah_ ? "DLSSSR.depth" : "Deferred.deviceDepth", "Readback.depth");
             graph.markOutput("Readback.pixels"); graph.markOutput("Readback.guides");
             RenderWorld world;
             // The compact-cook fixture must produce lit geometry without an HDRI
@@ -814,7 +814,7 @@ public:
             for (uint32_t frame = 0; frame <= executor.subsystemHost()->frameSlotCount(); ++frame) { draw(); }
             streamer->collectReleasedStreams();
             require(streamer->streamCount() == 0, "Streamer retained an unused raster session after graph removal");
-            return RhiTestResult::pass("Stream-only materials, unified lighting/TLAS, guides, resize and Streamer retirement verified");
+            return RHITestResult::pass("Stream-only materials, unified lighting/TLAS, guides, resize and Streamer retirement verified");
         } catch (const std::exception& error) { return realtimeFailure(error.what()); }
     }
 private:

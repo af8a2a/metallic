@@ -1,5 +1,5 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -51,7 +51,7 @@ public:
                     .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { copy = std::move(rhiValue); })), "Cannot allocate identity snapshot");
             }
             if (color) {
-                checkDebug(resource.texture->desc().format == Format::Rgba8Unorm, "Unexpected debug color format");
+                checkDebug(resource.texture->desc().format == Format::RGBA8Unorm, "Unexpected debug color format");
                 TextureBarrierDesc barrier{
                     .texture = resource.texture,
                     .oldLayout = metallic::render::textureLayoutForResourceState(resource.state),
@@ -92,12 +92,12 @@ public:
     }
 };
 
-class MiniZorahDebugStabilityTest final : public RhiTest {
+class MiniZorahDebugStabilityTest final : public RHITest {
 public:
-    MiniZorahDebugStabilityTest() { type = RhiTestType::Rendering; name = "minizorah_debug_identity_stability"; }
-    RhiTestResult run(RhiTestContext& context) override
+    MiniZorahDebugStabilityTest() { type = RHITestType::Rendering; name = "minizorah_debug_identity_stability"; }
+    RHITestResult run(RHITestContext& context) override
     {
-        if (!std::getenv("METALLIC_TEST_MINIZORAH")) { return RhiTestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for the full cooked scene"); }
+        if (!std::getenv("METALLIC_TEST_MINIZORAH")) { return RHITestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for the full cooked scene"); }
         Json report{{"width", 1920}, {"height", 1080}, {"lodPixelError", 1.5}, {"poses", Json::array()}};
         const auto save = [&]() { std::ofstream(context.outputDirectory / "MiniZorahDebugStability.json") << report.dump(2) << '\n'; };
         try {
@@ -128,7 +128,7 @@ public:
                 }
             } readbackLifetime{preview, observer};
             const Result<> initialized = preview.initialize(context.enableValidation, false, false);
-            if (hasError(initialized, Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders and bindless heap"); }
+            if (hasError(initialized, Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders and bindless heap"); }
             checkDebug(bool(initialized), preview.lastLog());
             preview.bindRenderView(&view); preview.setDebugObserver(&observer);
             const auto renderFrame = [&](bool capture) {
@@ -158,8 +158,8 @@ public:
                     checkDebug(view.setCameraProperties(camera), "Invalid rotated camera");
                     for (uint32_t f = 0; f < 24; ++f) { renderFrame(false); }
                     renderFrame(true);
-                    const auto groups = observer.read<MeshletStreamGpuActiveGroup>("streaming.GPUDriven.activeGroups");
-                    const auto header = observer.read<MeshletStreamGpuActiveHeader>("streaming.GPUDriven.activeHeader").front();
+                    const auto groups = observer.read<MeshletStreamGPUActiveGroup>("streaming.GPUDriven.activeGroups");
+                    const auto header = observer.read<MeshletStreamGPUActiveHeader>("streaming.GPUDriven.activeHeader").front();
                     const auto records = observer.read<CompactStreamVisibleRecord>("streaming.GPUDriven.visibleClusters");
                     const auto colors = observer.read<uint32_t>("GPUDriven.color");
                     std::map<uint64_t, uint32_t> currentColors;
@@ -238,10 +238,10 @@ public:
             }
             report["status"] = "passed"; report["matchedColorSamples"] = totalCompared;
             report["remappedInstanceRecords"] = totalRemapped; report["colorMismatches"] = 0; save();
-            return RhiTestResult::pass("MiniZorah meshlet/triangle/LOD colors stable across yaw and temporary record relocation");
+            return RHITestResult::pass("MiniZorah meshlet/triangle/LOD colors stable across yaw and temporary record relocation");
         } catch (const std::exception& error) {
             report["status"] = "failed"; report["error"] = error.what(); save();
-            return RhiTestResult::fail(error.what());
+            return RHITestResult::fail(error.what());
         }
     }
 };

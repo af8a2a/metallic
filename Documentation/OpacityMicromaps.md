@@ -59,8 +59,8 @@ there is no need to replace the SDK to compile the engine.
 ## Validation
 
 ```powershell
-cmake --build build --target MetallicRhiTests --parallel 6
-build/tests/MetallicRhiTests.exe --filter opacity_micromap --rhi-validation
+cmake --build build --target MetallicRHITests --parallel 6
+build/tests/MetallicRHITests.exe --filter opacity_micromap --rhi-validation
 ```
 
 `opacity_micromap_bake` checks conservative states, subdivision packing,

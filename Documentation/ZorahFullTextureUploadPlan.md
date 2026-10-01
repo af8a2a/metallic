@@ -36,7 +36,7 @@ staging arena 每页 64 MiB，提交时整页转给 batch，完成后才回收�
 
 **临时解码内存与第二次拷贝。** 当前先解压到普通 vector，再 memcpy 到已分配的 staging。可以给 decoder 一个有容量的目标 span，按已校验的 mip offset 直接写入 staging；同时复用压缩输入 scratch。须实测 HostUpload 的 CPU 写入属性：直接解码到映射内存未必在所有设备上快于缓存内存解码加 memcpy，因此保留两种路径作 A/B。[Zstd API](https://github.com/facebook/zstd/blob/dev/lib/zstd.h)
 
-**每 mip 一条 copy，每批新建同步对象。** 当前 RHI `copyBufferToTexture()` 生成一个 region 的 `vkCmdCopyMemoryToImageKHR`。整场景约 44140 条纹理 copy；同一 image 的多 mip 可组成一次 multi-region copy，降到约 4418 条。每个独立 copy batch 还创建 upload/acquire 两套 pool+command buffer、一个 semaphore，分别提交 copy 与 graphics acquire。369 批意味着 738 次 queue submit，以及对应对象创建/销毁。它们均为结构性工作量，不是实测耗时占比。[当前 RHI](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp:5758)、[Vulkan copy 规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyMemoryToImageKHR.html)
+**每 mip 一条 copy，每批新建同步对象。** 当前 RHI `copyBufferToTexture()` 生成一个 region 的 `vkCmdCopyMemoryToImageKHR`。整场景约 44140 条纹理 copy；同一 image 的多 mip 可组成一次 multi-region copy，降到约 4418 条。每个独立 copy batch 还创建 upload/acquire 两套 pool+command buffer、一个 semaphore，分别提交 copy 与 graphics acquire。369 批意味着 738 次 queue submit，以及对应对象创建/销毁。它们均为结构性工作量，不是实测耗时占比。[当前 RHI](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp:5758)、[Vulkan copy 规范](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdCopyMemoryToImageKHR.html)
 
 **重复扫描已完成纹理。** pending bytes/regions 在计数和 flush 判定时扫描累积的 `materialTextures`，录制与 barrier 同样扫全表。改成 pending texture 索引列表和增量计数，录制只访问该批资源；失败/取消路径统一撤销 pending，避免重复上传或漏上传。
 

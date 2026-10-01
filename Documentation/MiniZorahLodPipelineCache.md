@@ -32,7 +32,7 @@ VBuffer 将原有 `.cache/pso/VisibilityBufferPass.pso` 的创建提前到流式
 
 新增 `stream_lod_pipeline_cache_persistence` 使用独立 bindless 设备和独立测试缓存，验证五条内部管线首次全部 miss，保存原生驱动数据、销毁缓存及 runtime 后全部 hit；随后不传缓存仍可初始化。缓存对象可先于 runtime 释放，runtime 不持有悬空缓存指针。既有 `pipeline_cache_persistence_and_shader_invalidation` 同时通过，覆盖管线状态/着色器变更及无效、不兼容缓存处理。
 
-`Metallic`、`MetallicRhiTests` 构建通过。2 项缓存回归及 14 项集成回归全部通过，后者包含 VBuffer、完整 MiniZorah 的独立 StreamAsset 首帧、GPU LOD/reference cut、双帧槽、resize 与 shader reload。独立入口实测首次为 5 次 miss，重建后 5 次 hit / 0 miss；CLAS 输入管线首次新增 2 个 PSO 也通过集成路径。具体记录与哈希见 [结构化结果](MiniZorahLodPipelineCacheResult.json)。
+`Metallic`、`MetallicRHITests` 构建通过。2 项缓存回归及 14 项集成回归全部通过，后者包含 VBuffer、完整 MiniZorah 的独立 StreamAsset 首帧、GPU LOD/reference cut、双帧槽、resize 与 shader reload。独立入口实测首次为 5 次 miss，重建后 5 次 hit / 0 miss；CLAS 输入管线首次新增 2 个 PSO 也通过集成路径。具体记录与哈希见 [结构化结果](MiniZorahLodPipelineCacheResult.json)。
 
 固定初始视角 10 秒质量检查通过，末次可见超标 refinement 为 0。稳定 `roam-5.png` 与前序 `minizorah-startup-stalls/quality-fixed-0/roam-5.png` 逐字节相同，SHA-256 为 `9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4`。本轮不重复上一轮上传缓冲修复的 60 秒性能验收，不将初始化收益解释为稳定漫游 GPU 吞吐提升。
 
@@ -47,7 +47,7 @@ $env:METALLIC_MINIZORAH_LOW_LATENCY='1'
 $env:METALLIC_MINIZORAH_COMPLETION_UPLOADS='1'
 $env:METALLIC_MINIZORAH_LATENCY_ONLY='1'
 $env:METALLIC_MINIZORAH_STARTUP_TRACE_FRAMES='128'
-build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/minizorah-lod-cache/repro
+build-relwithdebinfo/tests/MetallicRHITests.exe --gtest_filter=RHIRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/minizorah-lod-cache/repro
 ```
 
 从能够写入项目 `.cache/pso` 的环境运行两次，第二次使用不同输出目录。先核对第一轮无保存失败、第二轮 LOD hit 均为 true，再比较 `MiniZorahStartupTrace.json` 中的 `streamInit.activePipeline`、`streamInit.cooperativePipeline` 和 `preview.compile`。已有完整缓存时，两次都可能命中；无需清空用户缓存。

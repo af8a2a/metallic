@@ -21,7 +21,7 @@ struct GPUSceneSourceOverrideToken {
     auto operator<=>(const GPUSceneSourceOverrideToken&) const = default;
 };
 
-struct GPUSceneGpuUploadStats {
+struct GPUSceneGPUUploadStats {
     uint64_t fullUploadCount = 0;
     uint64_t instanceUploadCount = 0;
     uint64_t uploadedByteCount = 0;
@@ -59,7 +59,7 @@ struct GPUSceneComputeDispatchDesc {
     uint32_t groupCountZ = 1;
 };
 
-struct GPUSceneHzbRecordDesc {
+struct GPUSceneHZBRecordDesc {
     BindlessHeap* bindlessHeap = nullptr;
     ComputePipeline* pipeline = nullptr;
     std::span<const GPUSceneComputeDispatchDesc> dispatches;
@@ -73,14 +73,14 @@ struct GPUSceneHzbRecordDesc {
 // Non-owning snapshot of one {View, frame slot} GPU allocation. Buffer and
 // BufferView addresses remain stable until ensureViewGpuResources replaces
 // the allocation or destroyView retires it.
-struct GPUSceneViewGpuResourcesView {
+struct GPUSceneViewGPUResourcesView {
     GPUSceneViewId sourceView;
     GPUSceneViewDesc desc;
     uint32_t frameSlot = 0;
     GPUSceneBufferView instanceVisibilityStates;
     GPUSceneBufferView visibleInstanceIds;
     GPUSceneBufferView visibleInstanceCounter;
-    std::array<GPUSceneCullPhaseGpuView, kGPUSceneCullPhaseCount> phases;
+    std::array<GPUSceneCullPhaseGPUView, kGPUSceneCullPhaseCount> phases;
     std::array<GPUSceneBufferView, 2> hzbHistory;
     uint64_t allocationId = 0;
     bool frameSlotInitialized = false;
@@ -164,8 +164,8 @@ public:
     // Borrowed from the raster producer for consumers in this execution only.
     // View generation and frame identity prevent reuse after resize/scene switch.
     void publishVisibilityStream(GPUSceneViewId view, uint64_t frameIndex,
-        uint64_t sceneIdentity, MeshletStreamDeferredGpuResourcesView resources);
-    const MeshletStreamDeferredGpuResourcesView* visibilityStream(
+        uint64_t sceneIdentity, MeshletStreamDeferredGPUResourcesView resources);
+    const MeshletStreamDeferredGPUResourcesView* visibilityStream(
         GPUSceneViewId view, uint64_t frameIndex, uint64_t sceneIdentity) const;
     Result<> ensureViewGpuResources(
         GPUSceneViewId view,
@@ -174,7 +174,7 @@ public:
     bool viewGpuResources(
         GPUSceneViewId view,
         uint32_t frameSlot,
-        GPUSceneViewGpuResourcesView& resources) const;
+        GPUSceneViewGPUResourcesView& resources) const;
     Result<> recordInitialize(
         CommandBuffer& commandBuffer,
         GPUSceneViewId view,
@@ -233,7 +233,7 @@ public:
     bool setVisibleGpuResources(
         GPUSceneViewId view,
         uint32_t frameSlot,
-        GPUSceneVisibleGpuResources resources)
+        GPUSceneVisibleGPUResources resources)
     {
         return scene_.setVisibleGpuResources(view, frameSlot, std::move(resources));
     }
@@ -247,7 +247,7 @@ public:
         return scene_.setGlobalBufferViews(std::move(views));
     }
 
-    const GPUSceneGpuUploadStats& gpuUploadStats() const { return gpuUploadStats_; }
+    const GPUSceneGPUUploadStats& gpuUploadStats() const { return gpuUploadStats_; }
     const GPUSceneRasterDrawLayout& rasterDrawLayout() const
     {
         return rasterDrawLayout_;
@@ -272,7 +272,7 @@ public:
         CommandBuffer& commandBuffer,
         GPUSceneViewId view,
         uint32_t frameSlot,
-        const GPUSceneHzbRecordDesc& desc,
+        const GPUSceneHZBRecordDesc& desc,
         std::string& log);
     // Requires commandBuffer to belong to a recording RenderFrameContext.
     Result<> recordLightGrid(CommandBuffer& commandBuffer, GPUSceneViewId view,
@@ -280,10 +280,10 @@ public:
     const ClusterLightGridSnapshot* lightGrid(GPUSceneViewId view, uint32_t frameSlot) const;
 
 private:
-    struct GpuBufferResource;
-    struct GpuResources;
+    struct GPUBufferResource;
+    struct GPUResources;
     struct UploadResources;
-    struct ViewGpuResources;
+    struct ViewGPUResources;
 
     enum class PendingUpload : uint8_t {
         None,
@@ -301,7 +301,7 @@ private:
         const RenderSubsystemFrameContext& context,
         std::string& log);
     static uint64_t viewResourceKey(GPUSceneViewId view);
-    void retireViewGpuResources(std::shared_ptr<ViewGpuResources> resources);
+    void retireViewGpuResources(std::shared_ptr<ViewGPUResources> resources);
 
     Device* device_ = nullptr;
     RenderSubsystemHost* host_ = nullptr;
@@ -316,18 +316,18 @@ private:
     uint32_t frameSlotCount_ = 1;
     uint64_t sourceOverrideRevision_ = 0;
     uint64_t nextSourceOverrideToken_ = 1;
-    std::shared_ptr<GpuResources> gpuResources_;
+    std::shared_ptr<GPUResources> gpuResources_;
     std::shared_ptr<SubmissionTransaction> pendingPublication_;
-    std::unordered_map<uint64_t, std::shared_ptr<ViewGpuResources>> viewGpuResources_;
+    std::unordered_map<uint64_t, std::shared_ptr<ViewGPUResources>> viewGpuResources_;
     struct VisibilityStreamSnapshot {
         uint64_t frameIndex = 0;
         uint64_t sceneIdentity = 0;
-        MeshletStreamDeferredGpuResourcesView resources;
+        MeshletStreamDeferredGPUResourcesView resources;
     };
     std::unordered_map<uint64_t, VisibilityStreamSnapshot> visibilityStreams_;
     std::unordered_map<uint64_t, std::vector<std::shared_ptr<ClusterLightGrid>>> lightGrids_;
     uint64_t nextViewGpuResourceAllocationId_ = 1;
-    GPUSceneGpuUploadStats gpuUploadStats_;
+    GPUSceneGPUUploadStats gpuUploadStats_;
     GPUSceneRasterDrawLayout rasterDrawLayout_;
     PendingUpload pendingUpload_ = PendingUpload::Full;
     bool sourceDirty_ = true;

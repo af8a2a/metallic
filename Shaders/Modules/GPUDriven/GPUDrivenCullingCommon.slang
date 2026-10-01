@@ -4,10 +4,10 @@ implementing GPUDriven;
 namespace Metallic.GPUDriven
 {
 public static const uint kCullInstanceFrustum = 1u << 0u;
-public static const uint kCullInstanceHzb = 1u << 1u;
+public static const uint kCullInstanceHZB = 1u << 1u;
 public static const uint kCullMeshletFrustum = 1u << 2u;
 public static const uint kCullMeshletNormalCone = 1u << 3u;
-public static const uint kCullMeshletHzb = 1u << 4u;
+public static const uint kCullMeshletHZB = 1u << 4u;
 public static const uint kInstanceVisible = 1u << 0u;
 public static const uint kInstanceDoubleSided = 1u << 1u;
 public static const uint kInstanceAlphaMasked = 1u << 2u;
@@ -248,7 +248,7 @@ public bool meshletVisibleInOcclusionPhase(float3 center, float radius, uint ins
     GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
 {
     bool early = push.passIndex == 0u;
-    if ((params.cullingFlags & kCullMeshletHzb) == 0u) {
+    if ((params.cullingFlags & kCullMeshletHZB) == 0u) {
         return instanceState == (early ? 1u : 3u);
     }
     if (early ? instanceState != 1u : (instanceState != 1u && instanceState != 3u)) { return false; }

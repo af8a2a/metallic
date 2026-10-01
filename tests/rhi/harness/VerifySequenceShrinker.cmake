@@ -11,7 +11,7 @@ execute_process(COMMAND "${EXECUTABLE}" --tb-run --tb-suite sequence-fixtures --
 if(NOT code EQUAL 1)
     message(FATAL_ERROR "Expected oracle fault did not fail: ${code} ${stdout} ${stderr}")
 endif()
-set(original "${root}/original/core/RhiCommand.buffer_sequence_injected_oracle/0")
+set(original "${root}/original/core/RHICommand.buffer_sequence_injected_oracle/0")
 execute_process(COMMAND "${EXECUTABLE}" --tb-shrink "${original}" --output-dir "${root}/shrink"
     WORKING_DIRECTORY "${SOURCE}" RESULT_VARIABLE code OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr TIMEOUT 140)
 if(NOT code EQUAL 0)
@@ -28,7 +28,7 @@ execute_process(COMMAND "${EXECUTABLE}" --tb-replay "${root}/shrink/minimal" --o
     WORKING_DIRECTORY "${SOURCE}" RESULT_VARIABLE code OUTPUT_VARIABLE stdout ERROR_VARIABLE stderr TIMEOUT 45)
 file(READ "${root}/replay/results.json" replay)
 string(JSON status GET "${replay}" cases 0 status)
-file(READ "${root}/replay/core/RhiCommand.buffer_sequence_injected_oracle/0/sequence-diff.json" diff)
+file(READ "${root}/replay/core/RHICommand.buffer_sequence_injected_oracle/0/sequence-diff.json" diff)
 string(JSON signature GET "${diff}" signature)
 string(JSON expected GET "${report}" signature)
 if(NOT code EQUAL 1 OR NOT status STREQUAL "Fail" OR NOT signature STREQUAL expected)

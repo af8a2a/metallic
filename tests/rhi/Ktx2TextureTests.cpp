@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
@@ -139,7 +139,7 @@ std::filesystem::path makeScene(const std::filesystem::path& directory, bool pre
     return path;
 }
 
-std::array<float, 12> sampleTexture(RhiTestContext& context, ScenePathTraceResources& resources,
+std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResources& resources,
                                     uint32_t index, uint32_t mip, uint32_t flags)
 {
     ShaderCompileResult shader;
@@ -258,17 +258,17 @@ Json statsJson(const ScenePathTraceResources& resources)
     return report;
 }
 
-class KtxTextureResourcesTest final : public RhiTest {
+class KtxTextureResourcesTest final : public RHITest {
   public:
     KtxTextureResourcesTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "ktx2_texture_resources";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         if (!context.device.capabilities().bindlessDescriptorHeap) {
-            return RhiTestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
+            return RHITestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
         }
         const auto directory = context.outputDirectory / "ktx2";
         std::filesystem::create_directories(directory);
@@ -536,18 +536,18 @@ class KtxTextureResourcesTest final : public RhiTest {
         require(hasError(impossible, Error::OutOfMemory) && log.find("MASK quality floor") != std::string::npos &&
             !impossibleResources.valid(), "Insufficient budget silently reduced the MASK quality floor");
         std::ofstream(directory / "validation.json") << report.dump(2);
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             "BC4/5/7, swizzle, sRGB, NPOT/sub-block mips, Zstd, 300 logical textures and shared owners");
     }
 };
 
-class KtxTextureStreamingTest final : public RhiTest {
+class KtxTextureStreamingTest final : public RHITest {
 public:
-    KtxTextureStreamingTest() { type=RhiTestType::Rendering; name="ktx2_texture_streaming"; }
-    RhiTestResult run(RhiTestContext& context) override
+    KtxTextureStreamingTest() { type=RHITestType::Rendering; name="ktx2_texture_streaming"; }
+    RHITestResult run(RHITestContext& context) override
     {
         if (!context.device.capabilities().bindlessDescriptorHeap) {
-            return RhiTestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
+            return RHITestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
         }
         const auto directory = context.outputDirectory / "texture-streaming";
         std::filesystem::create_directories(directory);
@@ -587,7 +587,7 @@ public:
         require(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }),"stream test commands");
         require(tracker.initialize(context.device,context.graphicsQueue),"stream test tracker");
         uint64_t index = 0;
-        CpuProfileRecorder textureProfile;
+        CPUProfileRecorder textureProfile;
         bool sawTextureSchedule = false;
         const auto tick = [&](bool visible, bool cancel=false, bool frozen=false) {
             require(frame.wait(),"feedback wait");
@@ -673,23 +673,23 @@ public:
         { std::ofstream output(directory/"residency.json"); output << report.dump(2); }
         commands.reset(); require(frame.reset(),"final frame reset");
         resources.clear();
-        return RhiTestResult::pass("GPU demand refines only visible tails; cold physical replacement retires to base under budget, MASK/IDs stable");
+        return RHITestResult::pass("GPU demand refines only visible tails; cold physical replacement retires to base under budget, MASK/IDs stable");
     }
 };
 METALLIC_REGISTER_RHI_TEST(KtxTextureStreamingTest);
 
-class KtxTextureFeedbackSubmissionContractTest final : public RhiTest {
+class KtxTextureFeedbackSubmissionContractTest final : public RHITest {
 public:
     KtxTextureFeedbackSubmissionContractTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "ktx2_texture_feedback_submission_contract";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         if (!context.device.capabilities().bindlessDescriptorHeap) {
-            return RhiTestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
+            return RHITestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
         }
         const auto directory = context.outputDirectory / "texture-feedback-submission";
         std::filesystem::create_directories(directory);
@@ -796,18 +796,18 @@ public:
         for (auto& command : commands) { command.reset(); }
         require(frame.reset(), "feedback contract final reset");
         resources.clear();
-        return RhiTestResult::pass("Cancelled readback tail is ignored after an accepted prefix; independent consumers accumulate before graph-end copy");
+        return RHITestResult::pass("Cancelled readback tail is ignored after an accepted prefix; independent consumers accumulate before graph-end copy");
     }
 };
 METALLIC_REGISTER_RHI_TEST(KtxTextureFeedbackSubmissionContractTest);
 
-class KtxTextureStreamingSamplingStabilityTest final : public RhiTest {
+class KtxTextureStreamingSamplingStabilityTest final : public RHITest {
 public:
-    KtxTextureStreamingSamplingStabilityTest() { type = RhiTestType::Rendering; name = "ktx2_texture_streaming_sampling_stability"; }
-    RhiTestResult run(RhiTestContext& context) override
+    KtxTextureStreamingSamplingStabilityTest() { type = RHITestType::Rendering; name = "ktx2_texture_streaming_sampling_stability"; }
+    RHITestResult run(RHITestContext& context) override
     {
         if (!context.device.capabilities().bindlessDescriptorHeap) {
-            return RhiTestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
+            return RHITestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
         }
         const auto directory = context.outputDirectory / "texture-sampling-stability";
         std::filesystem::create_directories(directory);
@@ -944,25 +944,25 @@ public:
             "Sampling transition prevented cold physical retirement");
         commands.reset(); require(frame.reset(), "stability final frame reset");
         resources.clear();
-        return RhiTestResult::pass("Distinct BC4 mips: fixed-footprint continuity, gradual GPU refinement, uncapped demand, freeze/resume and cold retirement");
+        return RHITestResult::pass("Distinct BC4 mips: fixed-footprint continuity, gradual GPU refinement, uncapped demand, freeze/resume and cold retirement");
     }
 };
 METALLIC_REGISTER_RHI_TEST(KtxTextureStreamingSamplingStabilityTest);
 
-class ZorahTextureResourcesTest final : public RhiTest {
+class ZorahTextureResourcesTest final : public RHITest {
   public:
     ZorahTextureResourcesTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "zorah_texture_resources";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         if (!std::getenv("METALLIC_ZORAH_Z3_FULL")) {
-            return RhiTestResult::skip("Set METALLIC_ZORAH_Z3_FULL for Full texture-only upload");
+            return RHITestResult::skip("Set METALLIC_ZORAH_Z3_FULL for Full texture-only upload");
         }
         if (!context.device.capabilities().bindlessDescriptorHeap) {
-            return RhiTestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
+            return RHITestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
         }
         const std::filesystem::path path =
             PROJECT_SOURCE_DIR "/Asset/ZorahFull/zorah_textured_public.v1.gltf";
@@ -1076,20 +1076,20 @@ class ZorahTextureResourcesTest final : public RhiTest {
         std::ofstream output(context.outputDirectory / "zorah-textures.json");
         output << report.dump(2);
         require(bool(output), "Failed to write Full texture upload evidence");
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             "Full 4418 KTX2 tails uploaded under 2 GiB allocation budget; no geometry cook/render");
     }
 };
-class BcTextureUploadTest final : public RhiTest {
+class BCTextureUploadTest final : public RHITest {
   public:
-    BcTextureUploadTest()
+    BCTextureUploadTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "bc_texture_padded_upload";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
-        for (const auto format : {Format::Bc4Unorm, Format::Bc5Unorm, Format::Bc7Srgb}) {
+        for (const auto format : {Format::BC4Unorm, Format::BC5Unorm, Format::BC7sRGB}) {
             for (const uint32_t width : {7u, 1u}) {
                 const uint32_t height = width == 7 ? 5 : 1;
                 const uint32_t rowBytes = ((width + 3) / 4) * compressedBlockBytes(format);
@@ -1155,11 +1155,11 @@ class BcTextureUploadTest final : public RhiTest {
                     .before = {},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                 };
-                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite};
                 barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
-                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 commands->copyTextureToBuffer(
                     {.texture = texture.get(), .buffer = readback.get(), .width = width, .height = height});
                 require(commands->end(), "BC end");
@@ -1177,10 +1177,10 @@ class BcTextureUploadTest final : public RhiTest {
                 streamer->endFrame();
             }
         }
-        return RhiTestResult::pass("BC4/5/7 padded block rows, NPOT and one-texel tails round trip");
+        return RHITestResult::pass("BC4/5/7 padded block rows, NPOT and one-texel tails round trip");
     }
 };
-METALLIC_REGISTER_RHI_TEST(BcTextureUploadTest);
+METALLIC_REGISTER_RHI_TEST(BCTextureUploadTest);
 METALLIC_REGISTER_RHI_TEST(KtxTextureResourcesTest);
 METALLIC_REGISTER_RHI_TEST(ZorahTextureResourcesTest);
 } // namespace

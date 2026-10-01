@@ -668,8 +668,8 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
             uint punctualLightIndex;
             float punctualInverseSourcePdf;
-            if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GpuPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
-                PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GpuPunctualLight>>(50), punctualLightIndex, hit.position);
+            if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
+                PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), punctualLightIndex, hit.position);
                 float3 weight = max(openpbr_get_sum_of_diffuse_specular(
                     openpbr_eval(prepared, light.direction)), float3(0.0));
                 if (luminanceMax(weight * light.illuminance) > 0.0) {
@@ -845,7 +845,7 @@ void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     if (debugViewEnabled) {
         color = saturate(color);
     } else if (push.outputLinear == 0u) {
-        color *= lightingExposure(getResource<StructuredBuffer<GpuPunctualLight>>(50));
+        color *= lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50));
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
         color = saturate(color);

@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -19,7 +19,7 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addTextureOutput("color").storageReadWrite().format = render::Format::Rgba32Sfloat;
+        reflection.addTextureOutput("color").storageReadWrite().format = render::Format::RGBA32Sfloat;
         return reflection;
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
@@ -60,9 +60,9 @@ private:
 class AutoExposureReadbackPass final : public render::ComputePass {
 public:
     bool supportsFrameOverlap() const override { return true; }
-    render::CpuRecordingPolicy cpuRecordingPolicy() const override
+    render::CPURecordingPolicy cpuRecordingPolicy() const override
     {
-        return render::CpuRecordingPolicy::ParallelJoined;
+        return render::CPURecordingPolicy::ParallelJoined;
     }
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
     {
@@ -71,7 +71,7 @@ public:
         render::RenderPassReflection reflection;
         reflection.addBufferInput("exposure").buffer(16, 16).transferRead();
         reflection.addBufferInput("histogram").buffer(histogramBytes, 4).transferRead();
-        reflection.addTextureInput("color").transferRead().format = render::Format::Rgba8Unorm;
+        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA8Unorm;
         reflection.addBufferOutput("data")
             .buffer(16 + histogramBytes + uint64_t(context.width) * context.height * 4)
             .transferWrite().hostReadback();
@@ -107,14 +107,14 @@ public:
     }
 };
 
-class AutoExposureInternalStagesTest final : public RhiTest {
+class AutoExposureInternalStagesTest final : public RHITest {
 public:
     AutoExposureInternalStagesTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "auto_exposure_internal_stages_exports_and_cancel";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         constexpr uint32_t kWidth = 63, kHeight = 37;
         constexpr uint32_t kTilesX = (kWidth + 15) / 16, kTilesY = (kHeight + 15) / 16;
@@ -135,11 +135,11 @@ public:
                 }, &validationErrors}, .preferUnifiedImageLayouts = preferUnified})
                 .transform([&](auto value) { device = std::move(value); });
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip("requires bindless descriptors");
+                return RHITestResult::skip("requires bindless descriptors");
             }
-            if (!result) { return RhiTestResult::fail("internal-stage device creation failed"); }
+            if (!result) { return RHITestResult::fail("internal-stage device creation failed"); }
             auto* queue = device->getQueue(render::QueueType::Graphics);
-            if (queue == nullptr) { return RhiTestResult::fail("internal-stage device has no graphics queue"); }
+            if (queue == nullptr) { return RHITestResult::fail("internal-stage device has no graphics queue"); }
             for (uint32_t workers : {1u, 4u}) {
                 render::RenderWorld world;
                 scene::LightingSettings lighting;
@@ -148,7 +148,7 @@ public:
                 lighting.autoExposure.transitionDistance = 0;
                 lighting.autoExposure.speedUp = 3;
                 lighting.autoExposure.speedDown = 1;
-                if (!world.setLighting(lighting)) { return RhiTestResult::fail("lighting setup failed"); }
+                if (!world.setLighting(lighting)) { return RHITestResult::fail("lighting setup failed"); }
                 render::RenderGraph graph;
                 const auto sourceId = graph.addNode("AutoExposureFixturePass", "Source")->id;
                 graph.addNode("AutoExposurePass", "Exposure", {{"adaptationDeltaSeconds", 0.1f}, {"toneCurve", "none"}});
@@ -162,7 +162,7 @@ public:
                 executor.bindRenderWorld(&world);
                 std::string log;
                 if (!executor.compile(*device, graph, kWidth, kHeight, log)) {
-                    return RhiTestResult::fail("internal-stage graph compilation failed: " + log);
+                    return RHITestResult::fail("internal-stage graph compilation failed: " + log);
                 }
                 std::unique_ptr<render::CommandPool> pool;
                 std::unique_ptr<render::CommandBuffer> commands;
@@ -170,7 +170,7 @@ public:
                 if (!device->createCommandPool(*queue).transform([&](auto value) { pool = std::move(value); }) ||
                     !pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }) ||
                     !device->createFence(false).transform([&](auto value) { fence = std::move(value); })) {
-                    return RhiTestResult::fail("external recording setup failed");
+                    return RHITestResult::fail("external recording setup failed");
                 }
                 auto setLuminance = [&](float luminance) {
                     graph.findNode(sourceId)->runtimeProperties = {{"luminance", luminance}};
@@ -239,42 +239,42 @@ public:
                     const bool executed = (frame & 1u) != 0 ? submitExternal(false)
                         : executor.execute({.graphicsQueue = queue, .recordingWorkerLimit = workers}) &&
                             executor.waitForSubmittedWork();
-                    if (!executed) { return RhiTestResult::fail("mixed execution entry points failed"); }
+                    if (!executed) { return RHITestResult::fail("mixed execution entry points failed"); }
                     const std::string failure = checkOutput(luminance, frame * 0.3f);
-                    if (!failure.empty()) { return RhiTestResult::fail(failure); }
+                    if (!failure.empty()) { return RHITestResult::fail(failure); }
                 }
                 // Cancelling a recorded frame must invalidate its adaptation
                 // history without committing accesses that never reached the GPU.
                 setLuminance(0.18f);
-                if (!submitExternal(true)) { return RhiTestResult::fail("cancelled exposure recording failed"); }
+                if (!submitExternal(true)) { return RHITestResult::fail("cancelled exposure recording failed"); }
                 setLuminance(0.72f);
                 if (!executor.execute({.graphicsQueue = queue, .recordingWorkerLimit = workers}) ||
                     !executor.waitForSubmittedWork()) {
-                    return RhiTestResult::fail("exposure execution after cancellation failed");
+                    return RHITestResult::fail("exposure execution after cancellation failed");
                 }
                 const std::string failure = checkOutput(0.72f, 2.0f);
-                if (!failure.empty()) { return RhiTestResult::fail("cancelled history reset: " + failure); }
+                if (!failure.empty()) { return RHITestResult::fail("cancelled history reset: " + failure); }
             }
             if (validationErrors.load() != 0) {
-                return RhiTestResult::fail("Vulkan validation rejected AutoExposure internal-stage synchronization");
+                return RHITestResult::fail("Vulkan validation rejected AutoExposure internal-stage synchronization");
             }
         }
-        return RhiTestResult::pass("histogram/reduce/apply exports, temporal history, external cancellation, 1/4 workers and both layout policies");
+        return RHITestResult::pass("histogram/reduce/apply exports, temporal history, external cancellation, 1/4 workers and both layout policies");
     }
 };
 
-class AutoExposureGpuTest final : public RhiTest {
+class AutoExposureGPUTest final : public RHITest {
 public:
-    AutoExposureGpuTest() { type = RhiTestType::Rendering; name = "auto_exposure_histogram_adaptation"; }
-    RhiTestResult run(RhiTestContext& context) override
+    AutoExposureGPUTest() { type = RHITestType::Rendering; name = "auto_exposure_histogram_adaptation"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         auto deviceResult = render::createDevice({.applicationName = "Auto exposure GPU test",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(deviceResult, render::Error::Unsupported)) {
-            return RhiTestResult::skip("requires bindless descriptors");
+            return RHITestResult::skip("requires bindless descriptors");
         }
-        if (!deviceResult) { return RhiTestResult::fail("exposure test device creation failed"); }
+        if (!deviceResult) { return RHITestResult::fail("exposure test device creation failed"); }
         auto* queue = device->getQueue(render::QueueType::Graphics);
         render::registerRenderGraphPassType("AutoExposureFixturePass", "HDR test fixture",
             [] { return std::make_unique<AutoExposureFixturePass>(); });
@@ -292,7 +292,7 @@ public:
         render::RenderGraphExecutor executor;
         executor.bindRenderWorld(&world);
         std::string log;
-        if (!executor.compile(*device, graph, 63, 37, log)) { return RhiTestResult::fail(log); }
+        if (!executor.compile(*device, graph, 63, 37, log)) { return RHITestResult::fail(log); }
         std::array<float, 4> values{};
         int serial = 0;
         auto readExposure = [&] {
@@ -316,42 +316,42 @@ public:
         };
         auto near = [](float a, float b, float tolerance = 0.02f) { return std::abs(a - b) < tolerance; };
         if (!frame(0.18f) || !near(values[0], 1.0f) || !near(values[1], 0.0f)) {
-            return RhiTestResult::fail("18% gray did not meter to EV100=0");
+            return RHITestResult::fail("18% gray did not meter to EV100=0");
         }
         if (!frame(0.18f * 1024.0f, true) || !near(values[1], 10.0f)) {
-            return RhiTestResult::fail("physical luminance scale/first-frame exposure mismatch");
+            return RHITestResult::fail("physical luminance scale/first-frame exposure mismatch");
         }
         if (!frame(0.18f, true) || !frame(0.18f * 1024.0f) || !near(values[1], 0.3f)) {
-            return RhiTestResult::fail("Speed Up must move 3 stops/s toward a brighter scene");
+            return RHITestResult::fail("Speed Up must move 3 stops/s toward a brighter scene");
         }
         if (!frame(0.18f * 1024.0f, true) || !frame(0.18f) || !near(values[1], 9.9f)) {
-            return RhiTestResult::fail("Speed Down must move 1 stop/s toward a darker scene");
+            return RHITestResult::fail("Speed Down must move 1 stop/s toward a darker scene");
         }
-        if (!frame(0.18f, true) || !frame(0.36f)) { return RhiTestResult::fail("exponential step failed"); }
+        if (!frame(0.18f, true) || !frame(0.36f)) { return RHITestResult::fail("exponential step failed"); }
         const float exponential = values[1];
         if (exponential <= 0.0f || exponential >= 0.3f ||
             !frame(0.18f, true) || !frame(0.36f, false, 0, 0.05f) || !frame(0.36f, false, 0, 0.05f) ||
             !near(values[1], exponential, 0.001f)) {
-            return RhiTestResult::fail("exponential adaptation depends on frame rate or overshoots");
+            return RHITestResult::fail("exponential adaptation depends on frame rate or overshoots");
         }
         // Cross from the linear region into the exponential region in one step.
         if (!frame(0.18f, true) || !frame(0.18f * 4.0f, false, 0, 0.4f)) {
-            return RhiTestResult::fail("transition step failed");
+            return RHITestResult::fail("transition step failed");
         }
         const float crossing = values[1];
         if (!frame(0.18f, true) || !frame(0.18f * 4.0f, false, 0, 0.2f) ||
             !frame(0.18f * 4.0f, false, 0, 0.2f) || !near(values[1], crossing, 0.001f)) {
-            return RhiTestResult::fail("linear/exponential transition depends on frame rate");
+            return RHITestResult::fail("linear/exponential transition depends on frame rate");
         }
         settings.minEV100 = 2.0f;
         settings.maxEV100 = 4.0f;
         if (!frame(0.18f, true) || !near(values[1], 2.0f) ||
             !frame(10000.0f, true) || !near(values[1], 4.0f)) {
-            return RhiTestResult::fail("EV100 limits failed");
+            return RHITestResult::fail("EV100 limits failed");
         }
         settings.minEV100 = settings.maxEV100 = 3.0f;
         if (!frame(0.18f) || !near(values[0], 0.125f, 0.001f)) {
-            return RhiTestResult::fail("equal EV100 limits must force fixed exposure");
+            return RHITestResult::fail("equal EV100 limits must force fixed exposure");
         }
         settings.minEV100 = -10;
         settings.maxEV100 = 20;
@@ -359,52 +359,52 @@ public:
         lighting.exposureEV100 = 2;
         settings.compensation = 1;
         if (!frame(10000.0f) || !near(values[0], 0.5f, 0.001f)) {
-            return RhiTestResult::fail("manual EV100 or positive exposure compensation failed");
+            return RHITestResult::fail("manual EV100 or positive exposure compensation failed");
         }
         settings.enabled = true;
         settings.compensation = 0;
         settings.speedUp = settings.speedDown = 0;
         if (!frame(0.18f) || !frame(10000.0f) || !near(values[1], 0.0f)) {
-            return RhiTestResult::fail("mode switch reset or zero-speed hold failed");
+            return RHITestResult::fail("mode switch reset or zero-speed hold failed");
         }
         settings.lowPercent = 70;
         settings.highPercent = 90;
         if (!frame(1.0f, true) || !near(values[3], 1.0f) ||
             !frame(1.0f, true, 1) || !near(values[3], 1.0f) ||
             !frame(1.0f, true, 3) || !near(values[3], 1.0f)) {
-            return RhiTestResult::fail("percentile clipping did not reject bright outliers");
+            return RHITestResult::fail("percentile clipping did not reject bright outliers");
         }
         if (!frame(0.0f, true) || !near(values[2], -10.0f - std::log2(0.18f)) ||
             !frame(-1.0f, true) || !frame(1.0f, true, 2)) {
-            return RhiTestResult::fail("black, negative or NaN input produced invalid exposure");
+            return RHITestResult::fail("black, negative or NaN input produced invalid exposure");
         }
         if (!frame(1.0f) || !near(values[2], values[1])) {
-            return RhiTestResult::fail("empty startup meter must not seed adaptation history");
+            return RHITestResult::fail("empty startup meter must not seed adaptation history");
         }
         settings.lowPercent = 0;
         settings.highPercent = 100;
         settings.speedUp = 3;
         settings.speedDown = 1;
-        if (!frame(0.18f, true)) { return RhiTestResult::fail("overlap setup failed"); }
+        if (!frame(0.18f, true)) { return RHITestResult::fail("overlap setup failed"); }
         graph.findNode(sourceId)->runtimeProperties = {{"luminance", 0.18f * 1024.0f}};
         executor.syncRuntimeProperties(graph);
         for (int i = 0; i < 4; ++i) {
-            if (!executor.execute({.graphicsQueue = queue})) { return RhiTestResult::fail("overlapped frame failed"); }
+            if (!executor.execute({.graphicsQueue = queue})) { return RHITestResult::fail("overlapped frame failed"); }
         }
         if (!executor.waitForSubmittedWork() || !readExposure() || !near(values[1], 1.2f)) {
-            return RhiTestResult::fail("overlapping frames did not serialize exposure history on the GPU");
+            return RHITestResult::fail("overlapping frames did not serialize exposure history on the GPU");
         }
         if (!executor.compile(*device, graph, 1, 1, log) || !frame(0.18f * 1024.0f) || !near(values[1], 10.0f)) {
-            return RhiTestResult::fail("resize/single-pixel exposure history reset failed: " + log);
+            return RHITestResult::fail("resize/single-pixel exposure history reset failed: " + log);
         }
-        return RhiTestResult::pass("GPU gray calibration, percentiles, limits, compensation, adaptation, resets and finite output");
+        return RHITestResult::pass("GPU gray calibration, percentiles, limits, compensation, adaptation, resets and finite output");
     }
 };
 
-class AutoExposureSrgbTest final : public RhiTest {
+class AutoExposuresRGBTest final : public RHITest {
 public:
-    AutoExposureSrgbTest() { type = RhiTestType::Rendering; name = "auto_exposure_reference_srgb"; }
-    RhiTestResult run(RhiTestContext& context) override
+    AutoExposuresRGBTest() { type = RHITestType::Rendering; name = "auto_exposure_reference_srgb"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::registerRenderGraphPassType("AutoExposureFixturePass", "HDR test fixture",
             [] { return std::make_unique<AutoExposureFixturePass>(); });
@@ -422,13 +422,13 @@ public:
         preview.setLighting(lighting);
         const auto result = preview.initialize(context.enableValidation);
         if (render::hasError(result, render::Error::Unsupported)) {
-            return RhiTestResult::skip("sRGB test requires bindless descriptors");
+            return RHITestResult::skip("sRGB test requires bindless descriptors");
         }
-        if (!result) { return RhiTestResult::fail("sRGB renderer initialization failed"); }
+        if (!result) { return RHITestResult::fail("sRGB renderer initialization failed"); }
         for (float linear : {0.0f, 0.001f, 0.0031308f, 0.18f, 0.8f, 1.0f, 16.0f}) {
             graph.findNode(sourceId)->runtimeProperties = {{"luminance", linear * 2.0f}};
             if (!preview.render(graph, 17, 9, "Exposure.color")) {
-                return RhiTestResult::fail(preview.lastLog());
+                return RHITestResult::fail(preview.lastLog());
             }
             const float srgb = linear <= 0.0031308f ? linear * 12.92f
                 : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
@@ -436,17 +436,17 @@ public:
             for (uint32_t pixel : preview.pixels()) {
                 for (uint32_t shift : {0u, 8u, 16u}) {
                     if (std::abs(static_cast<int>((pixel >> shift) & 255u) - expected) > 1) {
-                        return RhiTestResult::fail("sRGB display applied an unexpected tone curve or exposure");
+                        return RHITestResult::fail("sRGB display applied an unexpected tone curve or exposure");
                     }
                 }
             }
         }
-        return RhiTestResult::pass("sRGB toe, middle gray, display white and clipping with manual exposure");
+        return RHITestResult::pass("sRGB toe, middle gray, display white and clipping with manual exposure");
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(AutoExposureGpuTest);
-METALLIC_REGISTER_RHI_TEST(AutoExposureSrgbTest);
+METALLIC_REGISTER_RHI_TEST(AutoExposureGPUTest);
+METALLIC_REGISTER_RHI_TEST(AutoExposuresRGBTest);
 METALLIC_REGISTER_RHI_TEST(AutoExposureInternalStagesTest);
 } // namespace
 } // namespace metallic::tests

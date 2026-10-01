@@ -59,7 +59,7 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
         result = device.createTexture(TextureDesc{
                 .type = TextureType::Texture2D,
                 .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-                .format = Format::Rgba8Unorm,
+                .format = Format::RGBA8Unorm,
                 .width = imageWidth_,
                 .height = imageHeight_,
                 .depth = 1,
@@ -75,7 +75,7 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
 
         result = device.createTextureView(*imageTexture_,
             TextureViewDesc{
-                .format = Format::Rgba8Unorm,
+                .format = Format::RGBA8Unorm,
                 .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { imageView_ = std::move(rhiValue); });
         if (!result || imageView_ == nullptr) {

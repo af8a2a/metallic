@@ -10,7 +10,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
 | `Modules/Lighting.slang`、`Modules/Lighting/` | 物理光照、光源选择、光照网格、环境过滤和阴影参数 |
 | `Interop/NeuralTextures.slang` | NTC 的唯一模块适配入口，封装 Generic/CoopVec 和无 NTC 的回退 |
-| `Interop/NrdEncoding.slang` | NRD 前端编码的唯一模块适配入口 |
+| `Interop/NRDEncoding.slang` | NRD 前端编码的唯一模块适配入口 |
 | `Interop/Denoising/NRD/` | 已适配的 NRD pass、bindings、配置和算法快照；保留程序内 HLSL 宏 |
 | `ThirdParty/RadianceCache/` | SHARC/NRC 头文件与许可证，保留原有 HLSL 包含方式 |
 | `Features/` | Shader programs：入口、pass 资源和流程相关代码；路径保持兼容现有 C++ 和管线资产 |
@@ -58,13 +58,13 @@ Core 通过 `getComputeResources()` 从根参数读取资源表和常量地址�
 取代原来的 `METALLIC_RESOURCE`、`METALLIC_RESOURCE_ARRAY`、`METALLIC_CONSTANTS` 宏。
 数组通过 slot 的 `payload` 地址读取共享 registry 的实际句柄，再用 `nonuniform` 选择 descriptor；不要求连续 descriptor 分配。标量存于 slot 的 `handle` 字段。pass 可用本地别名描述槽位，但库不依赖消费者的宏。
 
-Lighting 的算法显式接收 `StructuredBuffer<GpuPunctualLight>` 或 `PunctualSamplingResources`；
+Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `PunctualSamplingResources`；
 库内不再固定光源、ReGIR、PDF 的槽位。顶点位置读取同样显式接收 buffer；
 是否使用硬件 position fetch 由调用程序决定。着色法线、几何法线和 TBN 的求值顺序保持原有语义。
 
 ## SDK 兼容边界
 
-- 固定功能经 adapter module 导入。`NrdEncoding` 固定前端编码配置，`NeuralTextures`
+- 固定功能经 adapter module 导入。`NRDEncoding` 固定前端编码配置，`NeuralTextures`
   由编译 session 的 `METALLIC_HAS_NTC` / `METALLIC_NTC_COOPERATIVE_VECTOR` 选择实现。
 - `#define` 不跨 `import` 或 `__include` 传播。消费者局部定义不能改变已导入模块；
   SDK 全局排列使用 `SlangShaderDesc::macroDefines`，它们也参与缓存键。

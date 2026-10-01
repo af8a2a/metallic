@@ -46,7 +46,7 @@ swapchain attribution and PC-latency ping/flash instrumentation are not implemen
 
 ```powershell
 cmake -S . -B build-dev -DMETALLIC_BUILD_TESTS=ON
-cmake --build build-dev --target Metallic MetallicRhiTests
+cmake --build build-dev --target Metallic MetallicRHITests
 ctest --test-dir build-dev -L reflex --output-on-failure
 ```
 

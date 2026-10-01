@@ -270,13 +270,13 @@ def collect(args):
     }
     gaps = []
     if not gpus or collector.commands["gpu"]["exit_code"] != 0:
-        gaps.append({"code": "GpuIdentityUnavailable", "next_action": "Resolve the GPU/driver discovery failure before a hardware experiment."})
+        gaps.append({"code": "GPUIdentityUnavailable", "next_action": "Resolve the GPU/driver discovery failure before a hardware experiment."})
 
     if source_csv["state"] != "present":
         gaps.append({"code": "SourceCsvUnavailable", "artifact": "shader-source-csv", "state": source_csv["state"],
                      "next_action": "Recover the original matching its recorded SHA256, or produce a fresh Nsight source/IL export with its own manifest."})
     if capabilities["source_export_automation"]["status"] == "blocked":
-        gaps.append({"code": "UiBackendUnavailable", "backend": ui_backend,
+        gaps.append({"code": "UIBackendUnavailable", "backend": ui_backend,
                      "next_action": "Validate a permitted desktop backend, or continue offline import; child is optional."})
     if not discovered:
         gaps.append({"code": "DiscoveryFailed", "next_action": "Inspect raw doctor outputs."})

@@ -12,7 +12,7 @@
 
 ## 验证
 
-- Release `MetallicGPUDrivenSample.exe` 和 `MetallicRhiTests.exe` 构建通过。
+- Release `MetallicGPUDrivenSample.exe` 和 `MetallicRHITests.exe` 构建通过。
 - 新增 `render_graph_scene_switch_retirement`：两个队列提交帧持有旧场景 GPU buffer，连续替换三次，要求新 pass 分配前旧 owner 已释放。旧实现稳定失败，修复后通过。
 - 19 项定向回归通过，覆盖资源回收、图重编译、预算拒绝、上传生命周期、跨队列完成点、取消/DeviceLost 清理、历史依赖和 GPU 时间戳。
 - `frame_self_submit_two_slots` 的独立 copy 分支断言在修复版和仅撤回本次 frame reset 的对照版本均失败，属于现存限制，未修改该测试来掩盖失败。
@@ -37,7 +37,7 @@ $env:METALLIC_SMOKE_TEST_ZORAH_FULL_SWITCH = '1'
 ```powershell
 $env:METALLIC_TEST_ZORAH_FULL = '1'
 $env:METALLIC_ZORAH_FULL_CYCLES = '2'
-& E:/metallic/build-release/tests/MetallicRhiTests.exe --rhi-validation '--gtest_filter=*zorah_full_first_frame' --output-dir E:/metallic/build-release/full-switch-fix/full
+& E:/metallic/build-release/tests/MetallicRHITests.exe --rhi-validation '--gtest_filter=*zorah_full_first_frame' --output-dir E:/metallic/build-release/full-switch-fix/full
 ```
 
 ## 几何覆盖验收纠正

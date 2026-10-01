@@ -17,7 +17,7 @@
 
 ## 验证与计时
 
-Release sample、MeshletCook 与 `build-scheduling-release/MetallicRhiTests` 均构建通过。
+Release sample、MeshletCook 与 `build-scheduling-release/MetallicRHITests` 均构建通过。
 
 19 项 Streamer 回归通过，包括预算准入、延迟卸载、联合冷回收、页请求/补丁、上传完成和延迟统计。新增覆盖：
 

@@ -1,11 +1,11 @@
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
-#include "Runtime/Render/Profiling/CpuProfile.h"
-#include "Runtime/Render/Profiling/CpuPhaseTrace.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
+#include "Runtime/Render/Profiling/CPUPhaseTrace.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
-#include "Runtime/Render/RenderGraph/RenderGraphGpuLabels.h"
+#include "Runtime/Render/RenderGraph/RenderGraphGPULabels.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
@@ -101,29 +101,29 @@ uint32_t previewReadbackTexelByteSize(Format format)
     case Format::R8Uint:
     case Format::R8Sint:
         return 1;
-    case Format::Rg8Unorm:
-    case Format::Rg8Snorm:
-    case Format::Rg8Uint:
-    case Format::Rg8Sint:
-    case Format::Bgra4Unorm:
+    case Format::RG8Unorm:
+    case Format::RG8Snorm:
+    case Format::RG8Uint:
+    case Format::RG8Sint:
+    case Format::BGRA4Unorm:
     case Format::R16Unorm:
     case Format::R16Snorm:
     case Format::R16Uint:
     case Format::R16Sint:
     case Format::R16Sfloat:
         return 2;
-    case Format::Bgra8Unorm:
-    case Format::Bgra8Srgb:
-    case Format::Rgba8Unorm:
-    case Format::Rgba8Snorm:
-    case Format::Rgba8Srgb:
-    case Format::Rgba8Uint:
-    case Format::Rgba8Sint:
-    case Format::Rg16Unorm:
-    case Format::Rg16Snorm:
-    case Format::Rg16Uint:
-    case Format::Rg16Sint:
-    case Format::Rg16Sfloat:
+    case Format::BGRA8Unorm:
+    case Format::BGRA8sRGB:
+    case Format::RGBA8Unorm:
+    case Format::RGBA8Snorm:
+    case Format::RGBA8sRGB:
+    case Format::RGBA8Uint:
+    case Format::RGBA8Sint:
+    case Format::RG16Unorm:
+    case Format::RG16Snorm:
+    case Format::RG16Uint:
+    case Format::RG16Sint:
+    case Format::RG16Sfloat:
     case Format::R32Uint:
     case Format::R32Sint:
     case Format::R32Sfloat:
@@ -133,7 +133,7 @@ uint32_t previewReadbackTexelByteSize(Format format)
     case Format::E5B9G9R9UfloatPack32:
     case Format::D32Sfloat:
         return 4;
-    case Format::Rgba16Sfloat:
+    case Format::RGBA16Sfloat:
         return 8;
     default:
         return 0;
@@ -192,7 +192,7 @@ bool convertPreviewReadback(
         std::memcpy(destination.data(), source, pixelCount * texelByteSize);
         return true;
     }
-    if (format != Format::Rgba16Sfloat) {
+    if (format != Format::RGBA16Sfloat) {
         return false;
     }
 
@@ -305,7 +305,7 @@ struct RenderGraphExecutor::Impl {
         Queue* queue = nullptr;
         CommandBuffer* commandBuffer = nullptr;
         std::vector<size_t> predecessors;
-        GpuCompletionPoint completion;
+        GPUCompletionPoint completion;
         bool passWork = false;
     };
 
@@ -336,7 +336,7 @@ struct RenderGraphExecutor::Impl {
         std::unique_ptr<RenderGraphExecutionContext> context;
         RenderGraphNodeExecutionStat stats;
         std::vector<SceneStreamingProfile> streaming;
-        profiling::GpuProfileFrame profile;
+        profiling::GPUProfileFrame profile;
         TimerRef passTimer;
         std::vector<TimerRef> sectionTimers;
         TimestampQueryPool* queryPool = nullptr;
@@ -363,26 +363,26 @@ struct RenderGraphExecutor::Impl {
             timingValid = commands.writeTimestamp(*queryPool, firstQuery + timer.begin + 1, PipelineStageBits::BottomOfPipe).has_value();
         }
     };
-    struct GpuTimingSlot {
+    struct GPUTimingSlot {
         uint32_t firstQuery = 0;
         uint32_t queryCount = 0;
         bool pending = false;
-        GpuCompletionPoint completion;
+        GPUCompletionPoint completion;
         RenderGraphExecutionStats stats;
-        profiling::GpuProfileFrame profile;
+        profiling::GPUProfileFrame profile;
         std::array<uint32_t, 3> used{};
         TimerRef frameTimer;
         std::vector<TimerRef> nodeTimers;
         std::vector<std::vector<TimerRef>> sectionTimers;
     };
 
-    static constexpr uint32_t kGpuTimingSlotCount = 3;
+    static constexpr uint32_t kGPUTimingSlotCount = 3;
 
     Device* device = nullptr;
     std::unordered_map<std::string, MemoryBudgetReservation> firstFeatureReservations;
     uint32_t width = 0;
     uint32_t height = 0;
-    Format defaultFormat = Format::Rgba8Unorm;
+    Format defaultFormat = Format::RGBA8Unorm;
     DisplayOutputParameters displayOutput;
     HistoryResourceManager* historyResources = nullptr;
     const scene::Scene* runtimeScene = nullptr;
@@ -397,7 +397,7 @@ struct RenderGraphExecutor::Impl {
     ViewConstants frameView;
     ViewConstants previousView;
     bool hasPreviousView = false;
-    GpuCompletionPoint previousViewCompletion;
+    GPUCompletionPoint previousViewCompletion;
     RenderGraphProperties frameCameraProperties;
     std::vector<std::shared_ptr<Buffer>> viewBuffers;
     Buffer* frameViewBuffer = nullptr;
@@ -413,18 +413,18 @@ struct RenderGraphExecutor::Impl {
     std::array<std::unique_ptr<SubmissionSlot>, 2> submissionSlots{
         std::make_unique<SubmissionSlot>(0), std::make_unique<SubmissionSlot>(1)};
     std::unordered_map<Queue*, std::unique_ptr<QueueSubmissionTracker>> submissionTrackers;
-    GpuCompletionPoint lastSubmittedCompletion;
+    GPUCompletionPoint lastSubmittedCompletion;
     Queue* recordingQueue = nullptr;
     GraphAccessPlan accessPlan;
     std::vector<RenderGraphResource*> accessResources;
     std::vector<GraphAccessBinding> accessBindings;
     std::array<std::unique_ptr<TimestampQueryPool>, 3> gpuTimestampQueryPools;
-    std::array<GpuTimingSlot, kGpuTimingSlotCount> gpuTimingSlots;
+    std::array<GPUTimingSlot, kGPUTimingSlotCount> gpuTimingSlots;
     std::vector<RenderGraphExecutionStats> completedGpuExecutionStats;
-    GpuTimingSlot* activeGpuTimingSlot = nullptr;
+    GPUTimingSlot* activeGpuTimingSlot = nullptr;
     uint32_t nextGpuTimingSlot = 0;
     bool activeGpuTimingValid = false;
-    profiling::TracyGpuProfiler tracyGpuProfiler;
+    profiling::TracyGPUProfiler tracyGpuProfiler;
     RenderGraphExecutionStats lastExecutionStats;
     bool executionCaptureEnabled = false;
     std::string captureGraphName;
@@ -432,13 +432,13 @@ struct RenderGraphExecutor::Impl {
     mutable std::shared_ptr<const RenderGraphExecutionSnapshot> capturedExecution;
     std::vector<std::vector<RenderGraphExecutionResourceSnapshot>> capturedImports;
     std::vector<Queue*> captureQueues;
-    GpuCompletionPoint capturedCompletion;
+    GPUCompletionPoint capturedCompletion;
     std::shared_ptr<SubmissionTransaction> capturedExternalSubmission;
     uint32_t preparationWorkerLimit = 1, preparationBatchWorkload = 1;
     uint64_t executionFrameIndex = 0;
     uint64_t profilingGeneration = 0;
     inline static std::atomic_uint64_t nextProfilingGeneration{1};
-    std::vector<GpuCompletionPoint> externalCompletions;
+    std::vector<GPUCompletionPoint> externalCompletions;
     std::array<uint64_t, 5> recordedSceneStamp{};
     bool hasSubmittedWork = false;
     bool isCompiled = false;
@@ -562,7 +562,7 @@ struct RenderGraphExecutor::Impl {
         if (frame != nullptr) { frame->retain(viewBuffers[slot]); }
         previousView = frameView;
         hasPreviousView = frame != nullptr;
-        previousViewCompletion = frame != nullptr ? frame->completion() : GpuCompletionPoint{};
+        previousViewCompletion = frame != nullptr ? frame->completion() : GPUCompletionPoint{};
         return {};
     }
 
@@ -1520,7 +1520,7 @@ struct RenderGraphExecutor::Impl {
 
     Result<> waitForSubmittedWork(uint64_t timeoutNanoseconds)
     {
-        profiling::CpuPhase phase("drain.externalWait");
+        profiling::CPUPhase phase("drain.externalWait");
         const auto begin = std::chrono::steady_clock::now();
         auto remaining = [&]() {
             if (timeoutNanoseconds == UINT64_MAX) { return UINT64_MAX; }
@@ -1528,7 +1528,7 @@ struct RenderGraphExecutor::Impl {
                 std::chrono::steady_clock::now() - begin).count());
             return timeoutNanoseconds - std::min(timeoutNanoseconds, elapsed);
         };
-        for (const GpuCompletionPoint& completion : externalCompletions) {
+        for (const GPUCompletionPoint& completion : externalCompletions) {
             Result<> result = completion.wait(remaining());
             if (!result) { return result; }
         }
@@ -1585,21 +1585,21 @@ struct RenderGraphExecutor::Impl {
         if (executionList.empty() || !graphDevice.capabilities().timestampQueries) { return; }
         // Bounded dynamic scope space per queue, in addition to every pass and frame.
         const auto parallelNodes = std::count_if(executionList.begin(), executionList.end(), [](const auto& node) {
-            return node.pass->cpuRecordingPolicy() == CpuRecordingPolicy::ParallelJoined;
+            return node.pass->cpuRecordingPolicy() == CPURecordingPolicy::ParallelJoined;
         });
         // Parallel nodes own a bounded range for their 256 nested scopes. Only
         // actual intervals are resolved; unused reserved queries stay unwritten.
         const uint64_t perSlot = (executionList.size() + 1ull) * 2ull + 512ull * (parallelNodes + 1);
-        if (perSlot * kGpuTimingSlotCount > UINT32_MAX) { return; }
+        if (perSlot * kGPUTimingSlotCount > UINT32_MAX) { return; }
         constexpr std::array types{QueueType::Graphics, QueueType::Compute, QueueType::Copy};
         for (uint32_t i = 0; i < types.size(); ++i) {
             auto* queue = graphDevice.getQueue(types[i]);
             if (!queue || queue->timestampValidBits() == 0) { continue; }
             const auto result = graphDevice.createTimestampQueryPool(*queue,
-                {.queryCount = uint32_t(perSlot * kGpuTimingSlotCount)}).transform([&](auto rhiValue) { gpuTimestampQueryPools[i] = std::move(rhiValue); });
+                {.queryCount = uint32_t(perSlot * kGPUTimingSlotCount)}).transform([&](auto rhiValue) { gpuTimestampQueryPools[i] = std::move(rhiValue); });
             if (!result) { gpuTimestampQueryPools[i].reset(); }
         }
-        for (uint32_t i = 0; i < kGpuTimingSlotCount; ++i) {
+        for (uint32_t i = 0; i < kGPUTimingSlotCount; ++i) {
             gpuTimingSlots[i].firstQuery = i * uint32_t(perSlot);
             gpuTimingSlots[i].queryCount = uint32_t(perSlot);
         }
@@ -1633,7 +1633,7 @@ struct RenderGraphExecutor::Impl {
 
     Result<> resolveGpuTimings()
     {
-        std::array<GpuTimingSlot*, kGpuTimingSlotCount> ordered;
+        std::array<GPUTimingSlot*, kGPUTimingSlotCount> ordered;
         for (size_t i = 0; i < ordered.size(); ++i) { ordered[i] = &gpuTimingSlots[i]; }
         std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) { return a->stats.executionId < b->stats.executionId; });
         for (auto* entry : ordered) {
@@ -1685,13 +1685,13 @@ struct RenderGraphExecutor::Impl {
                 }
                 tracyGpuProfiler.publish(slot.profile, tracy, device->capabilities().timestampPeriodNanoseconds);
             }
-            if (auto* trace = profiling::CpuPhaseTrace::active;
-                trace && trace->gpuSpans.size() < profiling::CpuPhaseTrace::kMaxFrames && slot.frameTimer.queue == 0) {
-                GpuClockCalibration calibration;
-                const auto before = profiling::CpuPhaseTrace::Clock::now();
+            if (auto* trace = profiling::CPUPhaseTrace::active;
+                trace && trace->gpuSpans.size() < profiling::CPUPhaseTrace::kMaxFrames && slot.frameTimer.queue == 0) {
+                GPUClockCalibration calibration;
+                const auto before = profiling::CPUPhaseTrace::Clock::now();
                 const auto* queue = device->getQueue(QueueType::Graphics);
                 const auto calibrated = queue ? queue->calibrateTimestamps().transform([&](auto rhiValue) { calibration = std::move(rhiValue); }) : makeError(Error::Unsupported);
-                const auto after = profiling::CpuPhaseTrace::Clock::now();
+                const auto after = profiling::CPUPhaseTrace::Clock::now();
                 if (calibrated) {
                     trace->gpuSpans.push_back({slot.stats.executionId, values[0][slot.frameTimer.begin].value, values[0][slot.frameTimer.begin + 1].value,
                         calibration.gpuTimestamp, device->capabilities().timestampPeriodNanoseconds,
@@ -1716,8 +1716,8 @@ struct RenderGraphExecutor::Impl {
             !commands.frameContext()->completion().valid()) { return; }
         const auto resolved = resolveGpuTimings();
         if (!resolved) { return; }
-        for (uint32_t offset = 0; offset < kGpuTimingSlotCount; ++offset) {
-            const uint32_t index = (nextGpuTimingSlot + offset) % kGpuTimingSlotCount;
+        for (uint32_t offset = 0; offset < kGPUTimingSlotCount; ++offset) {
+            const uint32_t index = (nextGpuTimingSlot + offset) % kGPUTimingSlotCount;
             auto& slot = gpuTimingSlots[index];
             if (slot.pending) { continue; }
             slot.stats = {}; slot.profile = {}; slot.used = {};
@@ -1733,7 +1733,7 @@ struct RenderGraphExecutor::Impl {
             }
             slot.frameTimer = beginInterval(commands);
             if (auto* queue = device->getQueue(QueueType::Graphics)) { tracyGpuProfiler.beginFrame(*queue, slot.profile); }
-            nextGpuTimingSlot = (index + 1) % kGpuTimingSlotCount;
+            nextGpuTimingSlot = (index + 1) % kGPUTimingSlotCount;
             return;
         }
     }
@@ -1872,7 +1872,7 @@ struct RenderGraphExecutor::Impl {
     }
 
     void finishExecutionCapture(RenderGraphExecutionSnapshotStatus status, bool success,
-        GpuCompletionPoint completion = {})
+        GPUCompletionPoint completion = {})
     {
         if (!activeExecutionCapture) { return; }
         auto& capture = *activeExecutionCapture;
@@ -2151,7 +2151,7 @@ struct RenderGraphExecutor::Impl {
         METALLIC_TRACY_CPU_SCOPE(marker.c_str());
         const profiling::NsightProfileRange passMarker(profiling::NsightDomain::Render, marker.c_str(),
             profiling::NsightCategory::RenderPass, stats.id, profiling::nsightColorFromName(stats.type));
-        RenderGraphGpuLabels<CommandBuffer> labels(marker, debugLabelColorFromArgb(profiling::nsightColorFromName(stats.type)));
+        RenderGraphGPULabels<CommandBuffer> labels(marker, debugLabelColorFromArgb(profiling::nsightColorFromName(stats.type)));
         labels.resume(commands);
         tracyGpuProfiler.beginZone(recording.profile, marker);
         context.beginProfile_ = [&](CommandBuffer& buffer, std::string_view name, uint32_t parent) {
@@ -2236,7 +2236,7 @@ struct RenderGraphExecutor::Impl {
         // Timestamp scopes may span the graphics producer/join. Recreate balanced
         // label ranges on each branch so Nsight sees the work and its ancestry
         // on the queue that executes it.
-        RenderGraphGpuLabels<CommandBuffer> labels(markerName, debugLabelColorFromArgb(markerColor));
+        RenderGraphGPULabels<CommandBuffer> labels(markerName, debugLabelColorFromArgb(markerColor));
         labels.resume(commandBuffer);
         if (parallel) {
             context.parallelRecorder_ = [&](RenderGraphExecutionContext& current,
@@ -2455,7 +2455,7 @@ Result<> RenderGraphExecutor::compile(
     for (const auto& passName : activeGraph.executionOrder) {
         const auto* node = graph.findNode(passName);
         if (budgetResult && node && mergeRenderGraphProperties(node->properties, node->runtimeProperties).value("enabled", true) &&
-                (node->type == "StreamlineDlssSrPass" || node->type == "StreamlineDlssRrPass" || node->type == "DlssNrPass")) {
+                (node->type == "StreamlineDLSSSRPass" || node->type == "StreamlineDLSSRRPass" || node->type == "DLSSNRPass")) {
             budgetResult = device.reserveMemoryBudget(budgetPolicy.externalFeatureReserveBytes).transform([&](auto rhiValue) { featureReservations[node->name] = std::move(rhiValue); });
         }
     }
@@ -3029,7 +3029,7 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
         }
         impl_->finishExecutionCapture(debugScope.success ? RenderGraphExecutionSnapshotStatus::Recorded
             : RenderGraphExecutionSnapshotStatus::Failed, debugScope.success,
-            frameResources ? frameResources->completion() : GpuCompletionPoint{});
+            frameResources ? frameResources->completion() : GPUCompletionPoint{});
     }
     return graphResult ? postResult : graphResult;
 }
@@ -3165,9 +3165,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 {
     profiling::SchedulingMetrics scheduling;
     profiling::SchedulingCapture schedulingCapture(desc.schedulingDiagnostics || profiling::SchedulingCapture::requested() ? &scheduling : nullptr);
-    CpuProfileRecorder preparation;
-    CpuProfileScope preparationPhase(&preparation, "Refresh scene bindings");
-    profiling::CpuPhase phase("graph.refreshSceneBindings");
+    CPUProfileRecorder preparation;
+    CPUProfileScope preparationPhase(&preparation, "Refresh scene bindings");
+    profiling::CPUPhase phase("graph.refreshSceneBindings");
     DebugExecutionScope debugScope;
     if (!impl_->isCompiled || impl_->device == nullptr || impl_->executionList.empty()) {
         return makeError(Error::InvalidArgument);
@@ -3179,7 +3179,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
 
     phase.next("graph.preflight");
     preparationPhase.next("Preflight");
-    CpuProfileScope preflightDetail(&preparation, "Validate queue contracts");
+    CPUProfileScope preflightDetail(&preparation, "Validate queue contracts");
     // Preflight before beginning a slot or mutating subsystem/resource state.
     // Unreviewed passes retain the universal-queue execution contract.
     const auto selectedType = [](const Impl::CompiledNode& node) {
@@ -3303,9 +3303,9 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     // This bounds CPU recording to two slots without cloning persistent targets.
     result = impl_->lastSubmittedCompletion.appendWaits(initialWaits);
     if (!result) { slot.frame.cancel(); return result; }
-    slot.frame.retain(std::make_shared<GpuCompletionPoint>(impl_->lastSubmittedCompletion));
+    slot.frame.retain(std::make_shared<GPUCompletionPoint>(impl_->lastSubmittedCompletion));
     for (const auto& point : desc.waitCompletions) {
-        slot.frame.retain(std::make_shared<GpuCompletionPoint>(point));
+        slot.frame.retain(std::make_shared<GPUCompletionPoint>(point));
     }
     // Every queue segment waits for output readers before reusing shared targets.
     // Frame dependencies retain their timeline semaphores until GPU completion.
@@ -3765,7 +3765,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             if (!result) { return abort(result); }
         }
         const bool recordOnWorker = workerLimit > 1 &&
-            node.pass->cpuRecordingPolicy() == CpuRecordingPolicy::ParallelJoined &&
+            node.pass->cpuRecordingPolicy() == CPURecordingPolicy::ParallelJoined &&
             !node.preparedScene && node.sceneDependency.source == RenderGraphSceneSource::None &&
             node.pass->requiredSubsystems().empty() && !impl_->firstFeatureReservations.contains(node.name);
         RecordingBatch* batch = nullptr;
@@ -3895,7 +3895,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     return {};
 }
 
-GpuCompletionPoint RenderGraphExecutor::lastSubmittedCompletion() const
+GPUCompletionPoint RenderGraphExecutor::lastSubmittedCompletion() const
 {
     return impl_->lastSubmittedCompletion;
 }
@@ -4234,7 +4234,7 @@ Result<> RenderGraphPreviewRenderer::render(
     uint32_t newHeight,
     std::string_view outputName, bool readback)
 {
-    profiling::CpuPhase phase("preview.preflight");
+    profiling::CPUPhase phase("preview.preflight");
     if (impl_->device == nullptr ||
         impl_->graphicsQueue == nullptr ||
         impl_->commandPool == nullptr ||

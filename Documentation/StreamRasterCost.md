@@ -49,7 +49,7 @@ Replay SHA-256：`feb79872154850af32db25a54ba3d22b48b9a04a10f7f2e8dadaf19f98f2f2
 
 ## 正确性与验证
 
-- Release `MetallicRhiTests` 与 `MetallicGPUDrivenSample` 构建通过。
+- Release `MetallicRHITests` 与 `MetallicGPUDrivenSample` 构建通过。
 - `meshlet_lod_stream_gpu_matches_reference` 开启 Vulkan validation 通过：共享父级、511 groups、新增 8,191 groups 共 545 组 GPU/CPU 对比，包含线性/BVH/cooperative、视图需求、预取、连续驻留变化、稀疏状态清理与容量回退。大拓扑覆盖同一 LOD 层的多个叶子 tile。
 - `meshlet_lod_stream_scene_runtime_cut` 开启 validation 通过：真实 Bunny 的硬件、混合串行、仅 early 异步、两轮异步四种队列配置；对比完整 cut、有效 ID、深度、投影、两种 Z 和冻结相机，检查精确异步分支数量。
 - `meshlet_lod_stream_per_instance_budget`、`hybrid_raster_scene_equivalence`、`render_graph_gpu_driven_mixed_producer_render` 开启 validation 通过。混合生产者默认执行 resident early/late 与 stream early，共三个异步分支。
@@ -57,7 +57,7 @@ Replay SHA-256：`feb79872154850af32db25a54ba3d22b48b9a04a10f7f2e8dadaf19f98f2f2
 
 最终 cut 与基线全部字段一致：19,394 active groups、162,989 selected clusters，early 26,806 hardware / 19,172 software，late 200 hardware / 361 software，容量回退实例数为 0。最终几何驻留 150,612,224 字节、9,290 页。队列优化没有通过少绘制几何获得较低时间。
 
-专项测试日志：`.cache/stream-cost/final-tests.log`（四项通过，新夹具参数未修正时 oracle 失败）；修正后的完整 oracle 日志为 `oracle-final.log`，最终通过。Bunny 输出在 `final-tests/StreamMeshletLodSceneReport.json` 和同目录 PNG。新夹具曾沿用 511-group 的重置尺寸与粗 LOD 阈值，现已按叶子数量构造并缩放粗阈值，未放宽 CPU/GPU 一致性断言。
+专项测试日志：`.cache/stream-cost/final-tests.log`（四项通过，新夹具参数未修正时 oracle 失败）；修正后的完整 oracle 日志为 `oracle-final.log`，最终通过。Bunny 输出在 `final-tests/StreamMeshletLODSceneReport.json` 和同目录 PNG。新夹具曾沿用 511-group 的重置尺寸与粗 LOD 阈值，现已按叶子数量构造并缩放粗阈值，未放宽 CPU/GPU 一致性断言。
 
 完整实时回放关闭 Vulkan validation，专项测试开启。Streamline 在报告与测试结束标记写完后的进程退出可能停滞，脚本仅回收自身启动的进程，记录于 `Process.json`；退出清理不计入帧时间。
 

@@ -25,7 +25,7 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
     params.hzbMipCount = 6;
     params.hzbValid = 1;
     params.frameIndex = 1;
-    params.cullingFlags = kCullMeshletHzb;
+    params.cullingFlags = kCullMeshletHZB;
     GPUDrivenPreviewPush push = {};
     push.hzbBuffer0 = getComputeResources().resources[1].handle.x;
     push.hzbBuffer1 = getComputeResources().resources[2].handle.x;

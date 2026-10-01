@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Editor/EditorDisplayRenderer.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
@@ -9,20 +9,20 @@
 namespace metallic::tests {
 namespace {
 
-class EditorHdrCompositeTest final : public RhiTest {
+class EditorHDRCompositeTest final : public RHITest {
 public:
-    EditorHdrCompositeTest() { type = RhiTestType::Rendering; name = "hdr_editor_imgui_composite"; }
-    RhiTestResult run(RhiTestContext& context) override
+    EditorHDRCompositeTest() { type = RHITestType::Rendering; name = "hdr_editor_imgui_composite"; }
+    RHITestResult run(RHITestContext& context) override
     {
         auto& device = context.device;
         const auto native = render::vulkan::nativeDevice(device);
         const auto queue = render::vulkan::nativeQueue(context.graphicsQueue);
         ImGui::CreateContext();
-        struct UiScope {
+        struct UIScope {
             render::Device& device;
             EditorDisplayRenderer display;
             bool initialized = false;
-            ~UiScope()
+            ~UIScope()
             {
                 (void)device.waitIdle();
                 display.shutdown();
@@ -51,7 +51,7 @@ public:
             .colorAttachmentCount = 1, .pColorAttachmentFormats = &format};
         ui.initialized = ImGui_ImplVulkan_Init(&init);
         if (!ui.initialized || !ui.display.initialize(native.device, format, true, 203.0f)) {
-            return RhiTestResult::fail("HDR ImGui initialization failed");
+            return RHITestResult::fail("HDR ImGui initialization failed");
         }
         std::unique_ptr<render::Texture> output, source;
         std::unique_ptr<render::TextureView> outputView, sourceView;
@@ -61,14 +61,14 @@ public:
         std::unique_ptr<render::Fence> fence;
         const render::TextureDesc texture{.usage = render::TextureUsageBits::ColorAttachment |
                 render::TextureUsageBits::Sampled | render::TextureUsageBits::TransferSource,
-            .format = render::Format::Rgba16Sfloat, .width = 32, .height = 32};
+            .format = render::Format::RGBA16Sfloat, .width = 32, .height = 32};
         if (!device.createTexture(texture).transform([&](auto rhiValue) { output = std::move(rhiValue); }) || !device.createTexture(texture).transform([&](auto rhiValue) { source = std::move(rhiValue); }) ||
             !device.createTextureView(*output, {}).transform([&](auto rhiValue) { outputView = std::move(rhiValue); }) || !device.createTextureView(*source, {}).transform([&](auto rhiValue) { sourceView = std::move(rhiValue); }) ||
             !device.createBuffer({.size = 32 * 32 * 8, .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }) ||
             !device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }) || !pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }) ||
             !device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); }) || !commands->begin()) {
-            return RhiTestResult::fail("HDR ImGui fixture allocation failed");
+            return RHITestResult::fail("HDR ImGui fixture allocation failed");
         }
         render::TextureBarrierDesc barriers[] = {
             {
@@ -86,10 +86,10 @@ public:
                 .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             },
         };
-        if (auto commandResult = commands->synchronize({.textures = {barriers, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->synchronize({.textures = {barriers, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         render::RenderingAttachmentDesc attachment{.view = sourceView.get(), .state = render::ResourceState::ColorAttachment,
             .loadOp = render::LoadOp::Clear, .storeOp = render::StoreOp::Store, .clearColor = {12.5f, 5.0f, 1.0f, 1.0f}};
-        if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}}); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commands->endRendering();
         render::TextureBarrierDesc readable{
             .texture = source.get(),
@@ -98,7 +98,7 @@ public:
             .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
         };
-        if (auto commandResult = commands->synchronize({.textures = {&readable, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->synchronize({.textures = {&readable, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         const auto descriptor = ImGui_ImplVulkan_AddTexture(render::vulkan::nativeImageView(*sourceView), render::vulkan::nativeImageLayout(*sourceView, render::ResourceState::ShaderRead));
         ImGui_ImplVulkan_NewFrame();
         ImGui::NewFrame();
@@ -112,7 +112,7 @@ public:
         ImGui::Render();
         attachment.view = outputView.get();
         attachment.clearColor = {0, 0, 0, 1};
-        if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->beginRendering({.renderArea = {0, 0, 32, 32}, .colorAttachments = {&attachment, 1}}); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), render::vulkan::nativeCommandBuffer(*commands), ui.display.mainPipeline());
         commands->endRendering();
         render::TextureBarrierDesc toReadback{
@@ -122,16 +122,16 @@ public:
             .before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
         };
-        if (auto commandResult = commands->synchronize({.textures = {&toReadback, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->synchronize({.textures = {&toReadback, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commands->copyTextureToBuffer({.texture = output.get(), .buffer = readback.get(), .width = 32, .height = 32});
         render::CommandBuffer* command = commands.get();
         if (!commands->end() || !context.graphicsQueue.submit({
             .commandBuffers = {&command, 1},
             .signalFence = fence.get(),
-        }) || !fence->wait()) { return RhiTestResult::fail("HDR ImGui submit failed"); }
+        }) || !fence->wait()) { return RHITestResult::fail("HDR ImGui submit failed"); }
         readback->invalidate();
         const auto* pixels = static_cast<const uint16_t*>(readback->map());
-        if (!pixels) { return RhiTestResult::fail("HDR ImGui readback failed"); }
+        if (!pixels) { return RHITestResult::fail("HDR ImGui readback failed"); }
         auto channel = [&](uint32_t x, uint32_t y, uint32_t c) {
             const uint16_t v = pixels[(y * 32 + x) * 4 + c];
             return std::ldexp(float((v & 1023) + 1024), int((v >> 10) & 31) - 25);
@@ -143,12 +143,12 @@ public:
             near(channel(28, 28, 0), std::pow((128.0f / 255.0f + 0.055f) / 1.055f, 2.4f) * 203.0f / 80.0f);
         readback->unmap();
         ImGui_ImplVulkan_RemoveTexture(descriptor);
-        return correct ? RhiTestResult::pass("FP16 UI paper white, scRGB image and callback reset verified") :
-            RhiTestResult::fail("ImGui clipped HDR, applied gamma twice, or failed to restore UI brightness");
+        return correct ? RHITestResult::pass("FP16 UI paper white, scRGB image and callback reset verified") :
+            RHITestResult::fail("ImGui clipped HDR, applied gamma twice, or failed to restore UI brightness");
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(EditorHdrCompositeTest);
+METALLIC_REGISTER_RHI_TEST(EditorHDRCompositeTest);
 
 } // namespace
 } // namespace metallic::tests

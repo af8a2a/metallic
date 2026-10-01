@@ -3,7 +3,7 @@
 #include "Runtime/Scene/SceneLoader.h"
 #include "Runtime/Scene/ScenePicker.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
-#include "Runtime/Scene/UsdSceneImporter.h"
+#include "Runtime/Scene/USDSceneImporter.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "meshoptimizer.h"
 
@@ -1508,12 +1508,12 @@ void testFullSceneImport(const std::filesystem::path& directory)
     expect(primitive.meshletLodClusters.size() == 1, "primitive meshlet lod cluster count");
     expect(primitive.meshletLodVertices.size() == 3, "primitive meshlet lod vertex reference count");
     expect(primitive.meshletLodTriangles.size() == 3, "primitive meshlet lod triangle index count");
-    const metallic::scene::MeshletLodLevel& meshletLodLevel = primitive.meshletLodLevels.front();
+    const metallic::scene::MeshletLODLevel& meshletLodLevel = primitive.meshletLodLevels.front();
     expect(meshletLodLevel.groupOffset == 0, "meshlet lod level group offset");
     expect(meshletLodLevel.groupCount == 1, "meshlet lod level group count");
     expect(meshletLodLevel.clusterOffset == 0, "meshlet lod level cluster offset");
     expect(meshletLodLevel.clusterCount == 1, "meshlet lod level cluster count");
-    const metallic::scene::MeshletLodGroup& meshletLodGroup = primitive.meshletLodGroups.front();
+    const metallic::scene::MeshletLODGroup& meshletLodGroup = primitive.meshletLodGroups.front();
     expect(meshletLodGroup.clusterOffset == 0, "meshlet lod group cluster offset");
     expect(meshletLodGroup.clusterCount == 1, "meshlet lod group cluster count");
     expect(meshletLodGroup.lodLevel == 0, "meshlet lod group level");
@@ -2117,7 +2117,7 @@ void testMeshletLodPartition(const std::filesystem::path& directory)
     uint32_t expectedGroupOffset = 0;
     uint32_t expectedClusterOffset = 0;
     for (size_t levelIndex = 0; levelIndex < primitive.meshletLodLevels.size(); ++levelIndex) {
-        const metallic::scene::MeshletLodLevel& level = primitive.meshletLodLevels[levelIndex];
+        const metallic::scene::MeshletLODLevel& level = primitive.meshletLodLevels[levelIndex];
         EXPECT_EQ(level.groupOffset, expectedGroupOffset);
         EXPECT_EQ(level.clusterOffset, expectedClusterOffset);
         EXPECT_GT(level.groupCount, 0u);
@@ -2130,7 +2130,7 @@ void testMeshletLodPartition(const std::filesystem::path& directory)
     EXPECT_EQ(expectedClusterOffset, primitive.meshletLodClusters.size());
 
     for (size_t groupIndex = 0; groupIndex < primitive.meshletLodGroups.size(); ++groupIndex) {
-        const metallic::scene::MeshletLodGroup& group = primitive.meshletLodGroups[groupIndex];
+        const metallic::scene::MeshletLODGroup& group = primitive.meshletLodGroups[groupIndex];
         ASSERT_LT(group.lodLevel, primitive.meshletLodLevels.size());
         EXPECT_TRUE(group.bounds.valid);
         EXPECT_GT(group.boundingSphereRadius, 0.0f);
@@ -2138,7 +2138,7 @@ void testMeshletLodPartition(const std::filesystem::path& directory)
             static_cast<size_t>(group.clusterOffset) + group.clusterCount,
             primitive.meshletLodClusters.size());
 
-        const metallic::scene::MeshletLodLevel& level = primitive.meshletLodLevels[group.lodLevel];
+        const metallic::scene::MeshletLODLevel& level = primitive.meshletLodLevels[group.lodLevel];
         EXPECT_GE(groupIndex, level.groupOffset);
         EXPECT_LT(groupIndex, static_cast<size_t>(level.groupOffset) + level.groupCount);
 
@@ -2316,7 +2316,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     ASSERT_EQ(asset.geometryPagePayloadOffsets(0).size(), primitive.pageCount);
     uint32_t minLodPageCount = std::numeric_limits<uint32_t>::max();
     for (uint32_t lod = 0; lod < primitive.lodLevelCount; ++lod) {
-        const metallic::scene::MeshletStreamLodLevelInfo& level =
+        const metallic::scene::MeshletStreamLODLevelInfo& level =
             asset.lodLevels()[primitive.lodLevelOffset + lod];
         minLodPageCount = std::min(minLodPageCount, level.pageCount);
     }
@@ -2490,7 +2490,7 @@ void testMeshletStreamAsset(const std::filesystem::path& directory)
     ASSERT_GE(page.lodGroupIndex, primitive.groupOffset);
     const uint32_t sourceGroupIndex = page.lodGroupIndex - primitive.groupOffset;
     ASSERT_LT(sourceGroupIndex, sourcePrimitive.meshletLodGroups.size());
-    const metallic::scene::MeshletLodGroup& sourceGroup =
+    const metallic::scene::MeshletLODGroup& sourceGroup =
         sourcePrimitive.meshletLodGroups[sourceGroupIndex];
     ASSERT_EQ(sourceGroup.clusterCount, header.clusterCount);
     for (uint32_t clusterIndex = 0; clusterIndex < header.clusterCount; ++clusterIndex) {
@@ -4607,7 +4607,7 @@ public:
 
     void onGraphCompleted(const metallic::task::TaskGraphSnapshot& snapshot) override
     {
-        if (snapshot.name == "SceneCpuPayload") {
+        if (snapshot.name == "SceneCPUPayload") {
             std::lock_guard lock(mutex_);
             snapshot_ = snapshot;
             ready_.notify_all();
@@ -4828,7 +4828,7 @@ void testAsyncSceneLoad(const std::filesystem::path& directory)
 } // namespace
 
 #if defined(METALLIC_HAS_RTXCR_GEOMETRY) && METALLIC_HAS_RTXCR_GEOMETRY
-TEST(SceneImport, RtxcrClairePonytailDots)
+TEST(SceneImport, RTXCRClairePonytailDots)
 {
     const std::filesystem::path path =
         std::filesystem::path(PROJECT_SOURCE_DIR) /
@@ -4868,7 +4868,7 @@ TEST(SceneImport, FullScene)
     testFullSceneImport(prepareOutputDirectory());
 }
 
-TEST(SceneImport, UsdFeatures)
+TEST(SceneImport, USDFeatures)
 {
 #if !METALLIC_HAS_OPENUSD
     GTEST_SKIP() << "USD import is disabled in this build";
@@ -4877,13 +4877,13 @@ TEST(SceneImport, UsdFeatures)
 }
 
 #if !METALLIC_HAS_OPENUSD
-TEST(SceneImport, DisabledUsdReportsHowToEnableImport)
+TEST(SceneImport, DisabledUSDReportsHowToEnableImport)
 {
     using namespace metallic::scene::detail;
     for (const char* extension : {".usd", ".usda", ".usdc", ".usdz", ".USDZ"}) {
         const auto path = std::filesystem::path("scene").replace_extension(extension);
         EXPECT_TRUE(isUsdScenePath(path));
-        UsdImportedScene imported;
+        USDImportedScene imported;
         imported.nodes.emplace_back();
         EXPECT_FALSE(importUsdScene(path, imported));
         EXPECT_TRUE(imported.nodes.empty());
@@ -4939,7 +4939,7 @@ TEST(SceneImport, UsdzEmbeddedTexture)
         }));
 }
 
-TEST(SceneImport, SuperSponzaUsdSmoke)
+TEST(SceneImport, SuperSponzaUSDSmoke)
 {
 #if !METALLIC_HAS_OPENUSD
     GTEST_SKIP() << "USD import is disabled in this build";
@@ -4990,7 +4990,7 @@ TEST(SceneImport, SuperSponzaUsdSmoke)
     EXPECT_TRUE(scene.hasDeferredMeshlets());
 }
 
-TEST(SceneComposition, LoadsMultipleSourcesAndMaintainsGpuSnapshot)
+TEST(SceneComposition, LoadsMultipleSourcesAndMaintainsGPUSnapshot)
 {
     testCompositeSceneImport(prepareOutputDirectory());
 }
@@ -5005,7 +5005,7 @@ TEST(SceneImport, RejectsInvalidHierarchy)
     testInvalidSceneHierarchy(prepareOutputDirectory());
 }
 
-TEST(SceneImport, MeshletLodPartition)
+TEST(SceneImport, MeshletLODPartition)
 {
     testMeshletLodPartition(prepareOutputDirectory());
 }
@@ -5507,7 +5507,7 @@ TEST(SceneEditing, AutoExposureValidationAndLegacyLoading)
     }
 }
 
-TEST(SceneEditing, ImportedGltfLightsBecomeNativeVirtualLights)
+TEST(SceneEditing, ImportedglTFLightsBecomeNativeVirtualLights)
 {
     using namespace metallic::scene;
     const auto path = writeNativePunctualScene(prepareOutputDirectory() / "native_gltf_import");
@@ -5597,7 +5597,7 @@ TEST(SceneEditing, ImportedGltfLightsBecomeNativeVirtualLights)
     expectVec3(editedSpot->direction, float3(0, 0, -1), "translation preserves edited emission direction");
 }
 
-TEST(SceneEditing, ImportedGltfLightsPersistDeletionAndTransactionalLoads)
+TEST(SceneEditing, ImportedglTFLightsPersistDeletionAndTransactionalLoads)
 {
     using namespace metallic::scene;
     const auto directory = prepareOutputDirectory() / "native_gltf_roundtrip";
@@ -5715,7 +5715,7 @@ TEST(SceneEditing, ImportedGltfLightsPersistDeletionAndTransactionalLoads)
     EXPECT_TRUE(restored.lighting().lights.empty());
 }
 
-TEST(SceneEditing, ImportedGltfLightsUpgradeLegacyManualLighting)
+TEST(SceneEditing, ImportedglTFLightsUpgradeLegacyManualLighting)
 {
     using namespace metallic::scene;
     const auto path = writeNativePunctualScene(prepareOutputDirectory() / "native_gltf_legacy");
@@ -5746,7 +5746,7 @@ TEST(SceneEditing, ImportedGltfLightsUpgradeLegacyManualLighting)
     EXPECT_EQ(document.lighting().lights.size(), 5u);
 }
 
-TEST(SceneEditing, ImportedGltfLightsKeepCompositeSourceIdentities)
+TEST(SceneEditing, ImportedglTFLightsKeepCompositeSourceIdentities)
 {
     using namespace metallic::scene;
     const auto directory = prepareOutputDirectory() / "native_gltf_composite";
@@ -5811,7 +5811,7 @@ TEST(SceneEditing, ImportedGltfLightsKeepCompositeSourceIdentities)
     EXPECT_EQ(document.lighting().lights.size(), 7u);
 }
 
-TEST(SceneEditing, ImportedGltfLightsRejectStaleSettingsAndAtomicEdits)
+TEST(SceneEditing, ImportedglTFLightsRejectStaleSettingsAndAtomicEdits)
 {
     using namespace metallic::scene;
     const auto directory = prepareOutputDirectory() / "native_gltf_stale_settings";
@@ -5871,7 +5871,7 @@ TEST(SceneEditing, ImportedGltfLightsRejectStaleSettingsAndAtomicEdits)
     }
 }
 
-TEST(SceneEditing, ImportedGltfLightsKeepOrphansEditable)
+TEST(SceneEditing, ImportedglTFLightsKeepOrphansEditable)
 {
     using namespace metallic::scene;
     const auto path = writeNativePunctualScene(prepareOutputDirectory() / "native_gltf_orphan");
@@ -5939,7 +5939,7 @@ TEST(SceneEditing, CompositeDocumentValidation)
     testCompositeSceneDocumentValidation(prepareOutputDirectory());
 }
 
-TEST(SceneEditing, PickerBvh)
+TEST(SceneEditing, PickerBVH)
 {
     testScenePickerBvh(prepareOutputDirectory());
 }

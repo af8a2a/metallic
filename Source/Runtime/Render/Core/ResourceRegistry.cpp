@@ -21,7 +21,7 @@ struct RegistryEntry {
 
 struct ParameterChunk {
     std::unique_ptr<Buffer> buffer;
-    GpuCompletionPoint completion;
+    GPUCompletionPoint completion;
     uint64_t used = 0;
 };
 
@@ -57,8 +57,8 @@ struct ParameterPacket {
     std::shared_ptr<void> allocation;
     std::vector<std::shared_ptr<ResourceLeaseState>> resources;
     std::vector<std::shared_ptr<void>> arrays;
-    GpuCompletionPoint completion;
-    ParameterAbi abi;
+    GPUCompletionPoint completion;
+    ParameterABI abi;
     uint64_t address = 0;
 };
 
@@ -118,9 +118,9 @@ ShaderResourceKind ResourceLease::kind() const
     return state_ ? state_->entry->kind : ShaderResourceKind::Buffer;
 }
 
-ParameterAbi EncodedParameters::abi() const
+ParameterABI EncodedParameters::abi() const
 {
-    return packet_ ? packet_->abi : ParameterAbi{};
+    return packet_ ? packet_->abi : ParameterABI{};
 }
 
 uint64_t EncodedParameters::address() const
@@ -133,7 +133,7 @@ const void* EncodedParameters::deviceIdentity() const
     return packet_ ? packet_->registry->device : nullptr;
 }
 
-bool EncodedParameters::compatible(const CommandBuffer& commands, ParameterAbi abi) const
+bool EncodedParameters::compatible(const CommandBuffer& commands, ParameterABI abi) const
 {
     auto* frame = commands.frameContext();
     return packet_ && packet_->abi == abi && commands.recording() &&
@@ -306,7 +306,7 @@ ParameterWriter::ParameterWriter(Device& device, RenderFrameContext& frame, Reso
 }
 
 ParameterWriter::ParameterWriter(Device& device, ResourceRegistry& registry, RenderFrameContext* frame)
-    : device_(device), frame_(frame), completion_(frame ? frame->completion() : GpuCompletionPoint{}),
+    : device_(device), frame_(frame), completion_(frame ? frame->completion() : GPUCompletionPoint{}),
       registry_(registry.state_)
 {
     if (!registry_ || registry_->device != device.identity() || (frame && !frame->recording())) {
@@ -456,7 +456,7 @@ uint64_t ParameterWriter::data(const void* bytes, uint64_t size, uint64_t alignm
     return address;
 }
 
-Result<EncodedParameters> ParameterWriter::encodeBytes(const void* params, ParameterAbi abi)
+Result<EncodedParameters> ParameterWriter::encodeBytes(const void* params, ParameterABI abi)
 {
     EncodedParameters out;
     if (!result_) { return makeError(result_.error()); }

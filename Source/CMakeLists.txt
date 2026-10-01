@@ -49,13 +49,13 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Debug/ShaderTraceRuntime.cpp
     Runtime/Render/Debug/WorkControlShaderTrace.cpp
     Runtime/Render/Debug/RenderDebugProviders.cpp
-    Runtime/Render/Debug/GpuDebugProbe.cpp
+    Runtime/Render/Debug/GPUDebugProbe.cpp
     Runtime/Render/Core/ComputeProgram.cpp
     Runtime/Render/Core/ComputeKernel.cpp
     Runtime/Render/Core/ResourceRegistry.cpp
     Runtime/Render/VisibilityHybridRasterizer.cpp
-    Runtime/Render/MeshletLod.cpp
-    Runtime/Render/ResidentMeshletLod.cpp
+    Runtime/Render/MeshletLOD.cpp
+    Runtime/Render/ResidentMeshletLOD.cpp
     Runtime/Render/MaterialBinning.cpp
     Runtime/Render/ClusterLightGrid.cpp
     Runtime/Render/Core/RenderFrameContext.cpp
@@ -71,9 +71,9 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Subsystem/RenderSubsystem.cpp
     Runtime/Render/Subsystem/RenderWorld.cpp
     Runtime/Render/Core/RenderView.cpp
-    Runtime/Render/Streamer/MeshletStreamClas.cpp
-    Runtime/Render/Streamer/MeshletStreamClasPool.cpp
-    Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp
+    Runtime/Render/Streamer/MeshletStreamCLAS.cpp
+    Runtime/Render/Streamer/MeshletStreamCLASPool.cpp
+    Runtime/Render/Streamer/MeshletStreamCompactCLASPool.cpp
     Runtime/Render/Streamer/MeshletStreamInitialLoader.cpp
     Runtime/Render/Streamer/MeshletStreamPageLoader.cpp
     Runtime/Render/Streamer/MeshletStreamResidency.cpp
@@ -93,7 +93,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderGraph/RenderGraphExecutor.cpp
     Runtime/Render/Streamer/StreamingUploads.cpp
     Runtime/Render/Streamer/StreamerSubsystem.cpp
-    Runtime/Render/RenderGraph/NrdRuntime.cpp
+    Runtime/Render/RenderGraph/NRDRuntime.cpp
     Runtime/Render/ScreenSpaceShadows.cpp
     Runtime/Render/RenderPass/BuiltinRenderPasses.cpp
     Runtime/Render/RenderPass/BuiltinPass/BunnyWireframePass.cpp
@@ -108,19 +108,19 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/GPUDrivenStreamAssetPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ImageSamplePass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/NrdDenoisePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/NRDDenoisePass.cpp
     Runtime/Render/RenderPass/BuiltinPass/RenderGraphBufferPasses.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneMaterialShaderObjectPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneMaterialVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/ScenePathTracePass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/RtxdiConfidencePass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/RtxdiCompositePass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/RtxcrMaterialSamplePass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/SceneRtxdiPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/RTXDIConfidencePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/RTXDICompositePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/RTXCRMaterialSamplePass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/SceneRTXDIPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneRayQueryVisualizationPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/SceneAccelerationStructurePass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/StreamlineDlssRrPass.cpp
-    Runtime/Render/RenderPass/BuiltinPass/DlssNrPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/StreamlineDLSSRRPass.cpp
+    Runtime/Render/RenderPass/BuiltinPass/DLSSNRPass.cpp
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
     Runtime/Render/Streamer/ScenePathTraceResources.cpp
     Runtime/Render/Streamer/Ktx2Texture.cpp
@@ -132,13 +132,13 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/Profiling/TracyProfiler.cpp
     Runtime/Render/GAPI/Vulkan/VulkanSynchronization.cpp
     Runtime/Render/GAPI/Vulkan/VulkanTrace.cpp
-    Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp
     Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.cpp
     Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.cpp
-    Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanNRCWrapper.cpp
     Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.cpp
     Runtime/Render/GAPI/Vulkan/VulkanStreamline.cpp
-    Runtime/Render/GAPI/Vulkan/VulkanDlssNr.cpp
+    Runtime/Render/GAPI/Vulkan/VulkanDLSSNR.cpp
 )
 
 target_include_directories(MetallicRuntimeRender PUBLIC
@@ -200,11 +200,11 @@ endif()
 
 if(METALLIC_ENABLE_NRD)
     target_sources(MetallicRuntimeRender PRIVATE
-        Runtime/Render/Denoising/NrdPlan.cpp
-        Runtime/Render/Denoising/NrdReblur.cpp
-        Runtime/Render/Denoising/NrdRelax.cpp
-        Runtime/Render/Denoising/NrdReference.cpp
-        Runtime/Render/Denoising/NrdSigma.cpp
+        Runtime/Render/Denoising/NRDPlan.cpp
+        Runtime/Render/Denoising/NRDReblur.cpp
+        Runtime/Render/Denoising/NRDRelax.cpp
+        Runtime/Render/Denoising/NRDReference.cpp
+        Runtime/Render/Denoising/NRDSigma.cpp
     )
     target_link_libraries(MetallicRuntimeRender PRIVATE MathLib)
     target_include_directories(MetallicRuntimeRender PRIVATE "${CMAKE_SOURCE_DIR}")
@@ -264,10 +264,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 add_library(MetallicRuntimeScene STATIC
-    Runtime/Scene/GltfGpuInstancing.cpp
+    Runtime/Scene/glTFGPUInstancing.cpp
     Runtime/Scene/GeometryAttributes.cpp
     Runtime/Scene/MeshletStreamAsset.cpp
-    Runtime/Scene/MeshletStreamGpuCodec.cpp
+    Runtime/Scene/MeshletStreamGPUCodec.cpp
     Runtime/Scene/MeshletStreamReferenceCodec.cpp
     Runtime/Scene/MeshletBuildParallel.cpp
     Runtime/Scene/Scene.cpp
@@ -275,12 +275,12 @@ add_library(MetallicRuntimeScene STATIC
     Runtime/Scene/SceneGraph.cpp
     Runtime/Scene/SceneLoader.cpp
     Runtime/Scene/ScenePicker.cpp
-    Runtime/Scene/TinyGltfImpl.cpp
+    Runtime/Scene/TinyGLTFImpl.cpp
 )
 if(METALLIC_ENABLE_OPENUSD)
-    target_sources(MetallicRuntimeScene PRIVATE Runtime/Scene/UsdSceneImporter.cpp)
+    target_sources(MetallicRuntimeScene PRIVATE Runtime/Scene/USDSceneImporter.cpp)
 else()
-    target_sources(MetallicRuntimeScene PRIVATE Runtime/Scene/UsdSceneImporterStub.cpp)
+    target_sources(MetallicRuntimeScene PRIVATE Runtime/Scene/USDSceneImporterStub.cpp)
 endif()
 
 target_include_directories(MetallicRuntimeScene PUBLIC
@@ -378,7 +378,7 @@ set(METALLIC_EDITOR_SOURCES
     Editor/EditorStreamlineDebug.cpp
     Editor/EditorProfiler.cpp
     Editor/EditorRenderGraphViewer.cpp
-    Editor/NvmlMonitor.cpp
+    Editor/NVMLMonitor.cpp
 )
 
 add_executable(Metallic
@@ -517,11 +517,11 @@ add_executable(MetallicPathTracingSample
 )
 configure_metallic_editor_sample(MetallicPathTracingSample)
 
-add_executable(MetallicRtxdiSample
-    Samples/RtxdiSampleMain.cpp
+add_executable(MetallicRTXDISample
+    Samples/RTXDISampleMain.cpp
     ${METALLIC_EDITOR_SOURCES}
 )
-configure_metallic_editor_sample(MetallicRtxdiSample)
+configure_metallic_editor_sample(MetallicRTXDISample)
 
 add_executable(MetallicGPUDrivenSample
     Samples/GPUDrivenSampleMain.cpp
@@ -529,11 +529,11 @@ add_executable(MetallicGPUDrivenSample
 )
 configure_metallic_editor_sample(MetallicGPUDrivenSample)
 
-add_executable(MetallicRtxcrSample
-    Samples/RtxcrSampleMain.cpp
+add_executable(MetallicRTXCRSample
+    Samples/RTXCRSampleMain.cpp
     ${METALLIC_EDITOR_SOURCES}
 )
-configure_metallic_editor_sample(MetallicRtxcrSample)
+configure_metallic_editor_sample(MetallicRTXCRSample)
 
 # Manual diagnostics only; never a dependency of editor/sample/default builds.
 add_executable(MetallicShaderPrintfProbe EXCLUDE_FROM_ALL Tools/ShaderPrintfProbe.cpp)

@@ -1,6 +1,6 @@
 #include "Editor/EditorApplication.h"
 #include "Editor/NsightLaunchOptions.h"
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Scene/MeshletStreamAsset.h"
 

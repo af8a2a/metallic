@@ -37,11 +37,11 @@ RTX 5070 Ti，驱动 616.92。输出 1797×660、内部 1198×440、DLSS Quality
 
 缓存组三轮采样共 3652 帧，期间纹理升级计数分别增加 664 / 663 / 642，降级计数增加 82 / 92 / 76，覆盖持续换代情形。待回收纹理字节三轮最低均为 0，峰值均为 2,813,952 字节；结束分别为 0 / 89,600 / 0 字节。第二轮结束仍有少量在途退休资源，不能要求在连续上传中每一帧都清零；数据未表现为旧代持续累积。
 
-Release MetallicGPUDrivenSample 和 MetallicRhiTests 构建通过。7 项开启 Vulkan validation 的现有回归全部通过，无跳过、VUID 或验证错误：frame_sampled_image_cache、frame_descriptor_snapshots、ktx2_texture_streaming、material_binning_indirect_coverage、stream_material_shading、stream_material_transmission、stream_material_shadow。覆盖同代/换代、原始绑定失效、跨帧保活与释放、mip 流送、分桶以及材质渲染。Full 三轮运行未记录 error、VUID 或 DeviceLost。git diff --check 通过。
+Release MetallicGPUDrivenSample 和 MetallicRHITests 构建通过。7 项开启 Vulkan validation 的现有回归全部通过，无跳过、VUID 或验证错误：frame_sampled_image_cache、frame_descriptor_snapshots、ktx2_texture_streaming、material_binning_indirect_coverage、stream_material_shading、stream_material_transmission、stream_material_shadow。覆盖同代/换代、原始绑定失效、跨帧保活与释放、mip 流送、分桶以及材质渲染。Full 三轮运行未记录 error、VUID 或 DeviceLost。git diff --check 通过。
 
 ```powershell
-cmake --build build-release --target MetallicGPUDrivenSample MetallicRhiTests -j 6
-.\build-release\tests\MetallicRhiTests.exe --gtest_filter="*frame_sampled_image_cache*:*frame_descriptor_snapshots*:*ktx2_texture_streaming*:*material_binning_indirect_coverage*:*stream_material_shading*:*stream_material_transmission*:*stream_material_shadow*" --rhi-bindless --rhi-validation
+cmake --build build-release --target MetallicGPUDrivenSample MetallicRHITests -j 6
+.\build-release\tests\MetallicRHITests.exe --gtest_filter="*frame_sampled_image_cache*:*frame_descriptor_snapshots*:*ktx2_texture_streaming*:*material_binning_indirect_coverage*:*stream_material_shading*:*stream_material_transmission*:*stream_material_shadow*" --rhi-bindless --rhi-validation
 pwsh -NoProfile -File Tools/RunZorahFullRoam.ps1 -OutputRoot build-release/full-deferred-texture-cache-0923 -Runs 3 -DurationSeconds 30 -WarmupSeconds 10 -Width 1797 -Height 660 -TimeoutSeconds 900
 ```
 

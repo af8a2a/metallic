@@ -160,7 +160,7 @@ void addCaptureRelations(DebugValue& root)
                         link["clusterInRange"] = record.at("clusterIndex").get<uint64_t>() < group.at("value").at("clusterCount").get<uint64_t>();
                     }
                 }
-            } else if (layout == "MeshletStreamGpuActiveGroup") {
+            } else if (layout == "MeshletStreamGPUActiveGroup") {
                 link["page"] = gpuReference(root, prefix + "pageTable", record.at("pageIndex"));
                 link["header"] = gpuReference(root, prefix + "activeHeader", 0);
                 link["instance"] = cpuReference(scene, "instances", record.at("gpuSceneInstanceIndex"), "instanceCount");
@@ -172,7 +172,7 @@ void addCaptureRelations(DebugValue& root)
                 link["counter"] = gpuReference(root, prefix + "visibleInstanceCounter", 0);
                 link["recordValidity"] = link["counter"]["status"] == "Captured"
                     ? (offset + i < link["counter"]["value"].get<uint64_t>() ? "Live" : "OutsideLiveRange") : "MissingDependency";
-            } else if (layout == "StreamRequestBufferHeader" || layout == "MeshletStreamGpuActiveHeader") {
+            } else if (layout == "StreamRequestBufferHeader" || layout == "MeshletStreamGPUActiveHeader") {
                 const auto check = [&](const char* count, const char* capacity) {
                     if (record.at(count).get<uint64_t>() > record.at(capacity).get<uint64_t>()) {
                         root["diagnostics"].push_back({{"code", "CounterExceedsCapacity"}, {"resource", id}, {"index", offset + i},

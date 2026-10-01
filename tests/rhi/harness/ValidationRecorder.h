@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Evidence.h"
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include <atomic>
 #include <mutex>
 

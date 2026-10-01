@@ -34,7 +34,7 @@ heap 数据通常至多每 100 ms 强制刷新，VMA 也会随分配活动更新
 
 ## 实测验证
 
-Release `MetallicGPUDrivenSample`、`MetallicRhiTests` 编译成功。开启 Vulkan validation 的核心 18 项回归通过，覆盖预算拒绝与恢复、资源保留和移动析构、图编译/resize/失败重试、buffer bindless、跨队列上传、BC mip、KTX 取消/错误路径、完整 Full 纹理加载。日志见 [regression.log](../build-release/gpu-memory-budget/regression.log)。
+Release `MetallicGPUDrivenSample`、`MetallicRHITests` 编译成功。开启 Vulkan validation 的核心 18 项回归通过，覆盖预算拒绝与恢复、资源保留和移动析构、图编译/resize/失败重试、buffer bindless、跨队列上传、BC mip、KTX 取消/错误路径、完整 Full 纹理加载。日志见 [regression.log](../build-release/gpu-memory-budget/regression.log)。
 
 同一 Full 元数据、4418 张 KTX2，使用真实 GPU 上传和末尾逻辑纹理描述符采样。以下只验证纹理路径，不加载全量几何，不代表 Full 实时图/DLSS 首帧验收。
 
@@ -55,7 +55,7 @@ Release `MetallicGPUDrivenSample`、`MetallicRhiTests` 编译成功。开启 Vul
 ```powershell
 $env:METALLIC_ZORAH_Z3_FULL = '1'
 $env:METALLIC_TEST_TEXTURE_SHARED_MIB = '512' # 或 768
-& build-release/tests/MetallicRhiTests.exe --rhi-bindless --rhi-validation `
+& build-release/tests/MetallicRHITests.exe --rhi-bindless --rhi-validation `
   '--gtest_filter=*zorah_texture_resources' `
   --output-dir E:/metallic/build-release/gpu-memory-budget/recheck
 ```

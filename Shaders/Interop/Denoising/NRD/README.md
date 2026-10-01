@@ -11,13 +11,13 @@ RTXDI shaders. The shared math routines come from `External/MathLib`.
 
 ## Ownership and dispatch
 
-- `Source/Runtime/Render/Denoising/NrdReblur.cpp`, `NrdRelax.cpp`, and
-  `NrdReference.cpp` and `NrdSigma.cpp` contain the adapted, readable pass recipes and shader
+- `Source/Runtime/Render/Denoising/NRDReblur.cpp`, `NRDRelax.cpp`, and
+  `NRDReference.cpp` and `NRDSigma.cpp` contain the adapted, readable pass recipes and shader
   constant calculations. Their upstream CPU implementations are reference
   material; no NRD SDK API, library, instance, or embedded shader is loaded.
-- `NrdPlan.cpp` owns internal texture descriptions, transient reuse, history
+- `NRDPlan.cpp` owns internal texture descriptions, transient reuse, history
   ping-pong, camera transforms, pass selection, and dispatch dimensions.
-- `Source/Runtime/Render/RenderGraph/NrdRuntime.cpp` allocates textures through
+- `Source/Runtime/Render/RenderGraph/NRDRuntime.cpp` allocates textures through
   the RHI, transitions them between passes, uploads constants with `Streamer`,
   and calls `CommandBuffer::dispatch` directly.
 - Each distinct texture view/access receives a Metallic descriptor handle once
@@ -37,7 +37,7 @@ RTXDI shaders. The shared math routines come from `External/MathLib`.
   explicitly use column-major matrices to match their CPU representation.
   Shader-side addresses are pointers, so this path does not require shader Int64.
 
-`NrdDenoisePass` serializes its temporal instance across frames. Graph mode changes,
+`NRDDenoisePass` serializes its temporal instance across frames. Graph mode changes,
 reset, resize, and discarded recordings invalidate history. REFERENCE diffuse and
 specular have separate frame counters. `timeDeltaSeconds` is converted to the
 milliseconds expected by the denoising equations. REBLUR additionally requires the
@@ -55,8 +55,8 @@ initialized `External/nrd` checkout.
 With tests enabled:
 
 ```powershell
-cmake --build build-full --target MetallicNrdTests --parallel 6
-ctest --test-dir build-full -R '^MetallicNrdTests$' --output-on-failure
+cmake --build build-full --target MetallicNRDTests --parallel 6
+ctest --test-dir build-full -R '^MetallicNRDTests$' --output-on-failure
 ```
 
 The focused suite compiles every supported permutation, checks that descriptor
@@ -69,7 +69,7 @@ reset, odd image dimensions, resize, confidence toggles, and discarded recording
 Initialize `External/nrd` only when updating the snapshot, then run:
 
 ```powershell
-python scripts/VendorNrd.py
+python scripts/VendorNRD.py
 ```
 
 Review the CPU recipes and settings against the same upstream revision, update

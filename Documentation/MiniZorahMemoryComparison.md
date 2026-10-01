@@ -64,7 +64,7 @@ Metallic 查询最大 128 vertices / 128 triangles CLAS 的空间，将返回值
 
 没有读取两边同一批 clusters 的 GPU 实际 CLAS 尺寸，因此不能声称“改紧凑分配必然减少 25 倍”。目前只能确定固定最坏尺寸槽位存在，以及两边没有使用相同的分配/精度条件。
 
-依据：[最坏尺寸槽位](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamClasPool.cpp:239)、[按槽位分配](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamClasPool.cpp:537)、[参考实际尺寸输出](E:/vk_lod_clusters/src/scene_streaming.cpp:1343)、[GPU 按组累计实际尺寸](E:/vk_lod_clusters/shaders/stream_allocator_load_groups.comp.glsl:185)、[场景精度配置](E:/metallic/Asset/MiniZorah/zorah_main_public.v2.cfg:7)。
+依据：[最坏尺寸槽位](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCLASPool.cpp:239)、[按槽位分配](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCLASPool.cpp:537)、[参考实际尺寸输出](E:/vk_lod_clusters/src/scene_streaming.cpp:1343)、[GPU 按组累计实际尺寸](E:/vk_lod_clusters/shaders/stream_allocator_load_groups.comp.glsl:185)、[场景精度配置](E:/metallic/Asset/MiniZorah/zorah_main_public.v2.cfg:7)。
 
 ## 4. 保留的驻留集合不同，图表会随漫游历史累积
 

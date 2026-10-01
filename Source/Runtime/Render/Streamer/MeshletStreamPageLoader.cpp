@@ -27,7 +27,7 @@ struct MeshletStreamPageLoader::Impl : std::enable_shared_from_this<MeshletStrea
                 const std::span<const uint8_t> storedPayload = asset->pagePayload(pageIndex);
                 std::vector<uint8_t> decodeStorage;
                 std::span<const uint8_t> devicePayload;
-                if (gpuDecompression && allowGpuDecompression && page.compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GpuTiles)) {
+                if (gpuDecompression && allowGpuDecompression && page.compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GPUTiles)) {
                     if (scene::inspectMeshletStreamGpuPage(page, storedPayload, result.gpuPage, result.failureReason)) {
                         result.payload.assign(storedPayload.begin(), storedPayload.end());
                         result.gpuEncoded = true;

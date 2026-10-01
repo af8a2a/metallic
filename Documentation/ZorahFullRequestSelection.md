@@ -14,15 +14,15 @@
 
 ## 正确性验证
 
-Release MetallicGPUDrivenSample / MetallicRhiTests 构建通过。
+Release MetallicGPUDrivenSample / MetallicRHITests 构建通过。
 
 20 项相关测试通过，验证日志没有 FAILED、SKIPPED、VUID、Validation Error 或 error。覆盖原有优先级、预取、延迟反馈、最新批次、冷回收、碎片、小页补位、预算抑制、上传完成、取消/有序发布及 CLAS/BLAS 生命周期。
 
 新增 streamer_meshlet_request_selection：与完整排序的独立优先级 oracle 对照；prefetch/demand 重复及 max benefit；无效 ID；容量仅容纳三个候选时只进行三次成功分配和一次预算失败，不对剩余条目继续堆弹出/准入；重复批次无新增准入调用；下一帧重新检查容量；多轮输入顺序变化与 reset 不复用旧索引。
 
 ```powershell
-cmake --build build-release --target MetallicGPUDrivenSample MetallicRhiTests -j 6
-.\build-release\tests\MetallicRhiTests.exe --gtest_filter="*streamer_meshlet*:*streamer_joint_cold_reclaim:*streamer_ordered_publication_retry:*stream_clas_runtime_lifecycle:*stream_clas_eviction_reupload:*stream_blas_cut_cache" --output-dir build-release/request-selection-tests
+cmake --build build-release --target MetallicGPUDrivenSample MetallicRHITests -j 6
+.\build-release\tests\MetallicRHITests.exe --gtest_filter="*streamer_meshlet*:*streamer_joint_cold_reclaim:*streamer_ordered_publication_retry:*stream_clas_runtime_lifecycle:*stream_clas_eviction_reupload:*stream_blas_cut_cache" --output-dir build-release/request-selection-tests
 ```
 
 构建日志：build-release/request-selection-build.log；回归日志：build-release/request-selection-tests.log。

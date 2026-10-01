@@ -1,5 +1,5 @@
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/NativeDescriptorHeapSpirv.h"
+#include "Runtime/Render/Core/NativeDescriptorHeapSPIRV.h"
 
 #include <slang-com-ptr.h>
 #include <slang-tag-version.h>
@@ -50,7 +50,7 @@ constexpr uint32_t kMaxShaderDependencyPathSize = 32768;
 constexpr uint64_t kMaxShaderCacheFileSize = 512ull * 1024ull * 1024ull;
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
-constexpr uint32_t kSpirvMagic = 0x07230203u;
+constexpr uint32_t kSPIRVMagic = 0x07230203u;
 constexpr auto kShaderDependencyHashInterval = std::chrono::milliseconds(500);
 constexpr auto kShaderDependencyScanInterval = std::chrono::milliseconds(50);
 
@@ -659,7 +659,7 @@ bool loadCachedShader(
             offset,
             outSpirv.data(),
             static_cast<size_t>(header.spirvByteSize)) ||
-        offset != payload.size() || outSpirv[0] != kSpirvMagic) {
+        offset != payload.size() || outSpirv[0] != kSPIRVMagic) {
         outSpirv.clear();
         return false;
     }
@@ -737,7 +737,7 @@ bool saveCachedShader(
     std::span<const uint32_t> spirv)
 {
     if (dependencies.empty() || dependencies.size() > kMaxShaderDependencyCount ||
-        spirv.size() < 5 || spirv[0] != kSpirvMagic ||
+        spirv.size() < 5 || spirv[0] != kSPIRVMagic ||
         spirv.size_bytes() > kMaxShaderCacheFileSize) {
         return false;
     }

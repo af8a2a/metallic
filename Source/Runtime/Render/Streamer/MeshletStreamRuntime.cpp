@@ -1,12 +1,12 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
-#include "Runtime/Render/MeshletLod.h"
-#include "Runtime/Render/Profiling/CpuPhaseTrace.h"
+#include "Runtime/Render/MeshletLOD.h"
+#include "Runtime/Render/Profiling/CPUPhaseTrace.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 
-#include "Runtime/Render/Streamer/MeshletStreamClas.h"
+#include "Runtime/Render/Streamer/MeshletStreamCLAS.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
@@ -542,7 +542,7 @@ class MeshletStreamRuntime::ActiveBuildPass {
 public:
     Result<> initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
     {
-        profiling::CpuPhase phase("streamInit.activeShader");
+        profiling::CPUPhase phase("streamInit.activeShader");
         Result<> result = createSlangShaderModule(
             device,
             kMeshletStreamShaderModuleName,
@@ -666,14 +666,14 @@ private:
     std::unique_ptr<ComputePipeline> demandPipeline_;
 };
 
-class MeshletStreamRuntime::BlasInputPass {
+class MeshletStreamRuntime::BLASInputPass {
 public:
     Result<> initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
     {
         Result<> result = createSlangShaderModule(
             device,
             kMeshletStreamShaderModuleName,
-            kMeshletStreamBlasInputEntryPoint,
+            kMeshletStreamBLASInputEntryPoint,
             blasInputShader_,
             log);
         if (!result) {
@@ -757,14 +757,14 @@ private:
     std::unique_ptr<ComputePipeline> blasInputPipeline_;
 };
 
-class MeshletStreamRuntime::TlasInputPass {
+class MeshletStreamRuntime::TLASInputPass {
 public:
     Result<> initialize(Device& device, std::string& log, PipelineCache* pipelineCache)
     {
         Result<> result = createSlangShaderModule(
             device,
             kMeshletStreamShaderModuleName,
-            kMeshletStreamTlasInputEntryPoint,
+            kMeshletStreamTLASInputEntryPoint,
             tlasInputShader_,
             log);
         if (!result) {
@@ -826,7 +826,7 @@ MeshletStreamRuntime::~MeshletStreamRuntime()
 Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRuntimeDesc& desc, std::string& log,
     PipelineCache* pipelineCache)
 {
-    profiling::CpuPhase phase("streamInit.reset");
+    profiling::CPUPhase phase("streamInit.reset");
     reset();
     log.clear();
 
@@ -1050,10 +1050,10 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             return makeError(Error::InvalidArgument);
         }
         maxClasBuildClusters_ = static_cast<uint32_t>(buildClusters);
-        clasPool_ = std::make_unique<MeshletStreamClasPool>();
+        clasPool_ = std::make_unique<MeshletStreamCLASPool>();
         result = clasPool_->initialize(
             device,
-            MeshletStreamClasPoolDesc{
+            MeshletStreamCLASPoolDesc{
                 .asset = &asset_,
                 .maxStorageBytes = desc.maxClasBytes,
                 .maxBuildClusters = static_cast<uint32_t>(buildClusters),
@@ -1156,8 +1156,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = static_cast<uint64_t>(maxActiveGroups_) * sizeof(MeshletStreamGpuActiveGroup),
-            .structureStride = sizeof(MeshletStreamGpuActiveGroup),
+            .size = static_cast<uint64_t>(maxActiveGroups_) * sizeof(MeshletStreamGPUActiveGroup),
+            .structureStride = sizeof(MeshletStreamGPUActiveGroup),
             .usage = debugReadbackEnabled_ ? BufferUsageBits::Storage | BufferUsageBits::TransferSource : BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
         },
@@ -1171,8 +1171,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = sizeof(MeshletStreamGpuActiveHeader),
-            .structureStride = sizeof(MeshletStreamGpuActiveHeader),
+            .size = sizeof(MeshletStreamGPUActiveHeader),
+            .structureStride = sizeof(MeshletStreamGPUActiveHeader),
             .usage = debugReadbackEnabled_ ? BufferUsageBits::Storage | BufferUsageBits::TransferSource : BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
         },
@@ -1186,8 +1186,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = kMeshletStreamDrawIndirectCommandCount * sizeof(MeshletStreamGpuDrawIndirect),
-            .structureStride = sizeof(MeshletStreamGpuDrawIndirect),
+            .size = kMeshletStreamDrawIndirectCommandCount * sizeof(MeshletStreamGPUDrawIndirect),
+            .structureStride = sizeof(MeshletStreamGPUDrawIndirect),
             .usage = BufferUsageBits::Storage | BufferUsageBits::Indirect,
             .memoryLocation = MemoryLocation::Device,
         },
@@ -1201,8 +1201,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = sizeof(MeshletStreamGpuTraversalHeader),
-            .structureStride = sizeof(MeshletStreamGpuTraversalHeader),
+            .size = sizeof(MeshletStreamGPUTraversalHeader),
+            .structureStride = sizeof(MeshletStreamGPUTraversalHeader),
             .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
         },
@@ -1216,8 +1216,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = static_cast<uint64_t>(traversalWorkCapacity_) * sizeof(MeshletStreamGpuTraversalWorkItem),
-            .structureStride = sizeof(MeshletStreamGpuTraversalWorkItem),
+            .size = static_cast<uint64_t>(traversalWorkCapacity_) * sizeof(MeshletStreamGPUTraversalWorkItem),
+            .structureStride = sizeof(MeshletStreamGPUTraversalWorkItem),
             .usage = BufferUsageBits::Storage,
             .memoryLocation = MemoryLocation::Device,
         },
@@ -1239,9 +1239,9 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         result = createNamedBuffer(
             device,
             BufferDesc{
-                .size = sizeof(MeshletStreamGpuBlasHeader) +
+                .size = sizeof(MeshletStreamGPUBLASHeader) +
                     (uint64_t(maxActiveGroups_) + (uint64_t(asset_.instanceCount()) + 63u) / 64u) * 16u,
-                .structureStride = sizeof(MeshletStreamGpuBlasHeader),
+                .structureStride = sizeof(MeshletStreamGPUBLASHeader),
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource |
                     BufferUsageBits::Indirect |
                     BufferUsageBits::AccelerationStructureBuildInput |
@@ -1332,11 +1332,11 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         if (blasSizes.accelerationStructureSize > UINT32_MAX) { return makeError(Error::OutOfMemory); }
         spdlog::info("[MeshletStreamRuntime] BLAS instance reuse={} storageBytes={} referenceCapacity={} buildCapacity={}",
             blasInstanceReuse_, blasSizes.accelerationStructureSize, blasClusterReferenceCapacity_, blasBuildCapacity_);
-        result = createAndPopulateHostStorageBuffer<MeshletStreamGpuInstanceBlas>(
+        result = createAndPopulateHostStorageBuffer<MeshletStreamGPUInstanceBLAS>(
             device, asset_.instanceCount(), instanceBlasBuffer_, log,
             "MeshletStreamRuntime instance BLAS inputs",
-            [](MeshletStreamGpuInstanceBlas& instanceBlas, size_t) {
-                instanceBlas = MeshletStreamGpuInstanceBlas{};
+            [](MeshletStreamGPUInstanceBLAS& instanceBlas, size_t) {
+                instanceBlas = MeshletStreamGPUInstanceBLAS{};
             });
         if (!result) { return result; }
         instanceBlasBufferState_ = ResourceState::Undefined;
@@ -1345,9 +1345,9 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             device,
             BufferDesc{
                 .size = std::max<uint64_t>(
-                    static_cast<uint64_t>(blasBuildCapacity_) * sizeof(MeshletStreamGpuBlasBuildInfo),
-                    sizeof(MeshletStreamGpuBlasBuildInfo)),
-                .structureStride = sizeof(MeshletStreamGpuBlasBuildInfo),
+                    static_cast<uint64_t>(blasBuildCapacity_) * sizeof(MeshletStreamGPUBLASBuildInfo),
+                    sizeof(MeshletStreamGPUBLASBuildInfo)),
+                .structureStride = sizeof(MeshletStreamGPUBLASBuildInfo),
                 .usage = BufferUsageBits::Storage |
                     BufferUsageBits::AccelerationStructureBuildInput |
                     BufferUsageBits::ShaderDeviceAddress,
@@ -1517,7 +1517,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
                 log = "MeshletStreamRuntime total fallback CLAS reference count overflowed";
                 return makeError(Error::InvalidArgument);
             }
-            fallbackBlasPrimitives_.push_back(FallbackBlasPrimitive{
+            fallbackBlasPrimitives_.push_back(FallbackBLASPrimitive{
                 .primitiveIndex = primitiveIndex,
                 .referenceCount = clusterCount,
                 .referenceOffset = totalFallbackReferences,
@@ -1608,7 +1608,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         };
         const uint64_t fallbackPrimitiveCount = fallbackBlasPrimitives_.size();
         const uint64_t fallbackBuildInfoBytes =
-            fallbackPrimitiveCount * sizeof(MeshletStreamGpuBlasBuildInfo);
+            fallbackPrimitiveCount * sizeof(MeshletStreamGPUBLASBuildInfo);
         const uint64_t fallbackDestinationBytes = fallbackPrimitiveCount * sizeof(uint64_t);
         const uint64_t primitiveAddressBytes =
             static_cast<uint64_t>(asset_.primitiveCount()) * sizeof(uint64_t);
@@ -1620,7 +1620,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         if (!result) {
             return result;
         }
-        auto* fallbackBuildInfos = static_cast<MeshletStreamGpuBlasBuildInfo*>(
+        auto* fallbackBuildInfos = static_cast<MeshletStreamGPUBLASBuildInfo*>(
             fallbackBlasBuildInfoBuffer_->map());
         if (fallbackBuildInfos == nullptr) {
             log = "MeshletStreamRuntime fallback BLAS build info buffer map failed";
@@ -1629,10 +1629,10 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         for (size_t fallbackIndex = 0;
              fallbackIndex < fallbackBlasPrimitives_.size();
              ++fallbackIndex) {
-            const FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
+            const FallbackBLASPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
             const uint64_t referenceAddress = fallbackReferenceAddress +
                 fallback.referenceOffset * sizeof(uint64_t);
-            fallbackBuildInfos[fallbackIndex] = MeshletStreamGpuBlasBuildInfo{
+            fallbackBuildInfos[fallbackIndex] = MeshletStreamGPUBLASBuildInfo{
                 .clusterReferencesCount = fallback.referenceCount,
                 .clusterReferencesStride = sizeof(uint64_t),
                 .clusterReferencesAddressLow = static_cast<uint32_t>(referenceAddress),
@@ -1697,8 +1697,8 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
             device,
             BufferDesc{
                 .size = static_cast<uint64_t>(asset_.instanceCount()) *
-                    sizeof(RayTracingGpuInstance),
-                .structureStride = sizeof(RayTracingGpuInstance),
+                    sizeof(RayTracingGPUInstance),
+                .structureStride = sizeof(RayTracingGPUInstance),
                 .usage = BufferUsageBits::Storage |
                     BufferUsageBits::AccelerationStructureBuildInput |
                     BufferUsageBits::ShaderDeviceAddress,
@@ -1792,7 +1792,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     result = createNamedBuffer(
         device,
         BufferDesc{
-            .size = requestReadbackByteSize + kMeshletStreamDemandStatsWords * sizeof(uint32_t) + sizeof(MeshletStreamGpuBlasHeader),
+            .size = requestReadbackByteSize + kMeshletStreamDemandStatsWords * sizeof(uint32_t) + sizeof(MeshletStreamGPUBLASHeader),
             .usage = BufferUsageBits::TransferDestination,
             .memoryLocation = MemoryLocation::HostReadback,
         },
@@ -1831,7 +1831,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     }
     result = createHostStorageBuffer(
         device,
-        sizeof(MeshletStreamGpuParams),
+        sizeof(MeshletStreamGPUParams),
         paramsBuffer_,
         log,
         "MeshletStreamRuntime params");
@@ -1858,7 +1858,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     visibleClusterBufferState_ = ResourceState::Undefined;
     result = createHostStorageBuffer(
         device,
-        sizeof(MeshletStreamGpuRasterBindings),
+        sizeof(MeshletStreamGPURasterBindings),
         rasterBindingsBuffer_,
         log,
         "MeshletStreamRuntime raster bindings");
@@ -1925,7 +1925,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
     if (!result) {
         return result;
     }
-    result = updateRasterBindings(MeshletStreamGpuRasterBindings{});
+    result = updateRasterBindings(MeshletStreamGPURasterBindings{});
     if (!result) {
         return result;
     }
@@ -2106,12 +2106,12 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         return result;
     }
     if (desc.enableClusterRtx) {
-        blasInputPass_ = std::make_unique<BlasInputPass>();
+        blasInputPass_ = std::make_unique<BLASInputPass>();
         result = blasInputPass_->initialize(device, log, pipelineCache);
         if (!result) {
             return result;
         }
-        tlasInputPass_ = std::make_unique<TlasInputPass>();
+        tlasInputPass_ = std::make_unique<TLASInputPass>();
         result = tlasInputPass_->initialize(device, log, pipelineCache);
         if (!result) {
             return result;
@@ -2522,19 +2522,19 @@ RayTracingAccelerationStructure* MeshletStreamRuntime::accelerationStructure() c
     return tlasBuilt_ ? tlas_.get() : nullptr;
 }
 
-void MeshletStreamRuntime::prepareMaintenance(CpuProfileRecorder* profiler, bool allowLegacyReadback)
+void MeshletStreamRuntime::prepareMaintenance(CPUProfileRecorder* profiler, bool allowLegacyReadback)
 {
     if (immutableMetadataReady() && immutableMetadataUpload_) { immutableMetadataUpload_->staging.reset(); }
     if (maintenancePrepared_ || rasterSnapshotFrozen_ || !ready()) { return; }
     maintenancePrepared_ = true;
     if (!sceneReadinessCache_->value.ready) { sceneReadinessCache_->valid = false; }
-    CpuProfileScope profile(profiler, "Residency completion");
+    CPUProfileScope profile(profiler, "Residency completion");
     residency_.beginFrame(profiler);
     profile.next("GPU request feedback");
     consumeGpuRequestReadback(profiler, allowLegacyReadback);
     profile.next("Joint cold page reclaim");
     if (coldPageRetentionFrames_ != 0) {
-        const auto clas = clasPool_ ? clasPool_->stats() : MeshletStreamClasPoolStats{};
+        const auto clas = clasPool_ ? clasPool_->stats() : MeshletStreamCLASPoolStats{};
         residency_.reclaimColdPages({.clasUsedBytes = clas.usedStorageBytes, .clasCapacityBytes = clas.storageBudgetBytes,
             .clasRetiringBytes = clas.retiringStorageBytes, .retentionFrames = coldPageRetentionFrames_,
             .maxPages = adaptivePageRetention_ ? 1024u : 256u,
@@ -2621,7 +2621,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
 
     beginFrameCpuProfile_.reset();
     auto* profiler = &beginFrameCpuProfile_;
-    CpuProfileScope profile(profiler, "Residency completion");
+    CPUProfileScope profile(profiler, "Residency completion");
     ++frameIndex_;
     const uint32_t uploadSlot = frameIndex_ % uint32_t(frameUploads_.size());
     auto& nextUpload = frameUploads_[uploadSlot];
@@ -2641,7 +2641,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         swapUpload(nextUpload);
         currentUploadSlot_ = uploadSlot;
     }
-    nextUpload.completion = commandBuffer.frameContext() ? commandBuffer.frameContext()->completion() : GpuCompletionPoint{};
+    nextUpload.completion = commandBuffer.frameContext() ? commandBuffer.frameContext()->completion() : GPUCompletionPoint{};
     if (rasterSnapshotFrozen_) {
         // Rotate host-write frame slots, but do not publish completions, consume
         // requests, reclaim pages or enqueue new geometry/CLAS work.
@@ -2658,11 +2658,11 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         clasPool_->retirePages(residency_.newlyUnloadedPages());
     }
     MeshletStreamResidencyManager::UploadObserver prepareClas;
-    MeshletStreamResidencyManager::GpuUploadObserver prepareGpuClas;
+    MeshletStreamResidencyManager::GPUUploadObserver prepareGpuClas;
     std::string planError;
     if (clasPool_) {
         prepareClas = [&](uint32_t page, std::span<const uint8_t> payload) {
-            MeshletStreamClasPagePlan plan;
+            MeshletStreamCLASPagePlan plan;
             std::string reason;
             if (!buildMeshletStreamClasPagePlan(asset_.pages()[page], payload, page,
                     page * asset_.maxPageClusters(), plan, reason)) {
@@ -2673,8 +2673,8 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         };
     }
     if (clasPool_) {
-        prepareGpuClas = [&](uint32_t page, const scene::MeshletStreamGpuPage& payload) {
-            MeshletStreamClasPagePlan plan;
+        prepareGpuClas = [&](uint32_t page, const scene::MeshletStreamGPUPage& payload) {
+            MeshletStreamCLASPagePlan plan;
             std::string reason;
             if (!buildMeshletStreamClasGpuPagePlan(payload, page,
                     page * asset_.maxPageClusters(), plan, reason)) {
@@ -2867,7 +2867,7 @@ Result<> MeshletStreamRuntime::cmdBuildPendingClas(CommandBuffer& commandBuffer,
     if (!clasPool_) { return {}; }
     Result<> result;
     if (checkpoint) { checkpoint("BeforeStreamClasBuild"); }
-    std::vector<MeshletStreamClasPageBuild> clasBuilds;
+    std::vector<MeshletStreamCLASPageBuild> clasBuilds;
     uint32_t clusterCount = 0;
     const size_t pendingCount = pendingClasPages_.size();
     // Visit only queued pages, with a bounded batch. No resident-set scan or I/O.
@@ -2994,12 +2994,12 @@ MeshletStreamUserPush MeshletStreamRuntime::userPush() const
 }
 
 Result<> MeshletStreamRuntime::updateRasterBindings(
-    const MeshletStreamGpuRasterBindings& bindings)
+    const MeshletStreamGPURasterBindings& bindings)
 {
     if (rasterBindingsBuffer_ == nullptr || !visibleClusterHandle_.valid()) {
         return makeError(Error::InvalidArgument);
     }
-    MeshletStreamGpuRasterBindings resolved = bindings;
+    MeshletStreamGPURasterBindings resolved = bindings;
     resolved.visibleClusterBuffer = visibleClusterHandle_.shaderIndex();
     return updateHostBuffer(*rasterBindingsBuffer_, &resolved, sizeof(resolved));
 }
@@ -3039,9 +3039,9 @@ Result<> MeshletStreamRuntime::cmdPrepareDeferred(CommandBuffer& commandBuffer)
     return {};
 }
 
-MeshletStreamDeferredGpuResourcesView MeshletStreamRuntime::deferredGpuResources() const
+MeshletStreamDeferredGPUResourcesView MeshletStreamRuntime::deferredGpuResources() const
 {
-    return MeshletStreamDeferredGpuResourcesView{
+    return MeshletStreamDeferredGPUResourcesView{
         .instanceBuffer = instanceBuffer_.get(),
         .pageBuffer = pageBuffer_.get(),
         .activeGroupBuffer = activeGroupBuffer_.get(),
@@ -3111,12 +3111,12 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
     }
 
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
-    if (instances.size() * sizeof(MeshletStreamGpuInstance) != instanceBuffer_->desc().size) {
+    if (instances.size() * sizeof(MeshletStreamGPUInstance) != instanceBuffer_->desc().size) {
         log = "MeshletStreamRuntime instance layout changed.";
         return makeError(Error::InvalidArgument);
     }
 
-    std::vector<MeshletStreamGpuInstance> gpuInstances(instances.size());
+    std::vector<MeshletStreamGPUInstance> gpuInstances(instances.size());
     scene::Bounds updatedBounds;
     for (size_t index = 0; index < instances.size(); ++index) {
         const scene::MeshletStreamInstanceInfo& instance = instances[index];
@@ -3127,8 +3127,8 @@ Result<> MeshletStreamRuntime::syncRuntimeScene(
             return makeError(Error::InvalidArgument);
         }
         const scene::RenderNode& renderNode = scene.renderNodes()[runtimeRenderNodeIndex];
-        MeshletStreamGpuInstance& gpuInstance = gpuInstances[index];
-        gpuInstance = MeshletStreamGpuInstance{};
+        MeshletStreamGPUInstance& gpuInstance = gpuInstances[index];
+        gpuInstance = MeshletStreamGPUInstance{};
         gpuInstance.primitiveIndex = instance.primitiveIndex;
         // The cook owns shared geometry; the runtime node owns the binding.
         // Composed scenes rebase material indices independently of the cache.
@@ -3194,7 +3194,7 @@ Result<> MeshletStreamRuntime::syncGPUSceneInstanceMapping(std::span<const uint3
     if (mapped == nullptr) {
         return makeError(Error::Failure);
     }
-    auto* gpuInstances = static_cast<MeshletStreamGpuInstance*>(mapped);
+    auto* gpuInstances = static_cast<MeshletStreamGPUInstance*>(mapped);
     for (size_t index = 0; index < mapping.size(); ++index) {
         gpuInstances[index].gpuSceneInstanceIndex = mapping[index];
     }
@@ -3207,7 +3207,7 @@ Result<> MeshletStreamRuntime::syncGPUSceneInstanceMapping(std::span<const uint3
 void MeshletStreamRuntime::cmdDrawMeshTasks(CommandBuffer& commandBuffer, bool tessellation) const
 {
     if (ready() && drawTaskCount() > 0 && prepareImmutableMetadataRead(commandBuffer)) {
-        commandBuffer.drawMeshTasksIndirect(*drawIndirectBuffer_, tessellation ? sizeof(MeshletStreamGpuDrawIndirect) : 0u);
+        commandBuffer.drawMeshTasksIndirect(*drawIndirectBuffer_, tessellation ? sizeof(MeshletStreamGPUDrawIndirect) : 0u);
     }
 }
 
@@ -3245,15 +3245,15 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
     const std::span<const scene::MeshletStreamPrimitiveInfo> primitives = asset_.primitives();
     const std::span<const scene::MeshletStreamInstanceInfo> instances = asset_.instances();
     gpuSceneInstanceMapping_.assign(instances.size(), kMeshletStreamInvalidClusterIndex);
-    Result<> result = createAndPopulateHostStorageBuffer<MeshletStreamGpuInstance>(
+    Result<> result = createAndPopulateHostStorageBuffer<MeshletStreamGPUInstance>(
         device,
         instances.size(),
         instanceBuffer_,
         log,
         "MeshletStreamRuntime instances",
-        [this, primitives, instances](MeshletStreamGpuInstance& gpuInstance, size_t index) {
+        [this, primitives, instances](MeshletStreamGPUInstance& gpuInstance, size_t index) {
             const scene::MeshletStreamInstanceInfo& instance = instances[index];
-            gpuInstance = MeshletStreamGpuInstance{};
+            gpuInstance = MeshletStreamGPUInstance{};
             gpuInstance.primitiveIndex = instance.primitiveIndex;
             gpuInstance.materialIndex = instance.materialIndex;
             gpuInstance.visible = instance.visible;
@@ -3284,16 +3284,16 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
         return result;
     }
 
-    const std::span<const scene::MeshletStreamLodLevelInfo> lodLevels = asset_.lodLevels();
-    result = createAndPopulateHostStorageBuffer<MeshletStreamGpuLodLevel>(
+    const std::span<const scene::MeshletStreamLODLevelInfo> lodLevels = asset_.lodLevels();
+    result = createAndPopulateHostStorageBuffer<MeshletStreamGPULODLevel>(
         device,
         lodLevels.size(),
         lodLevelBuffer_,
         log,
         "MeshletStreamRuntime LOD levels",
-        [lodLevels](MeshletStreamGpuLodLevel& gpuLod, size_t index) {
-            const scene::MeshletStreamLodLevelInfo& lod = lodLevels[index];
-            gpuLod = MeshletStreamGpuLodLevel{
+        [lodLevels](MeshletStreamGPULODLevel& gpuLod, size_t index) {
+            const scene::MeshletStreamLODLevelInfo& lod = lodLevels[index];
+            gpuLod = MeshletStreamGPULODLevel{
                 .pageOffset = lod.pageOffset,
                 .pageCount = lod.pageCount,
                 .lodLevel = lod.lodLevel,
@@ -3333,8 +3333,8 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
     // The BVH is derived from resident v8/v9 metadata once; geometry payloads
     // and the on-disk asset format stay independent of selection acceleration.
     std::vector<uint32_t> bvhOffsets(primitives.size()), bvhCounts(primitives.size()), tileOffsets(primitives.size());
-    std::vector<MeshletLodGroupRecord> lodGroups;
-    std::vector<MeshletLodBvhNode> bvh;
+    std::vector<MeshletLODGroupRecord> lodGroups;
+    std::vector<MeshletLODBVHNode> bvh;
     std::vector<std::vector<uint32_t>> demandRoots(primitives.size());
     for (size_t index = 0; index < primitives.size(); ++index) {
         const auto& primitive = primitives[index];
@@ -3351,7 +3351,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
             log = "MeshletStreamRuntime LOD BVH: " + log;
             return makeError(Error::InvalidArgument);
         }
-        constexpr size_t kNodeWords = sizeof(MeshletLodBvhNode) / sizeof(uint32_t);
+        constexpr size_t kNodeWords = sizeof(MeshletLODBVHNode) / sizeof(uint32_t);
         const uint64_t wordCount = bvh.size() * uint64_t(kNodeWords);
         if (topology.size() + wordCount > UINT32_MAX) {
             log = "MeshletStreamRuntime LOD BVH exceeds 32-bit addressing";
@@ -3361,7 +3361,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
         bvhCounts[index] = static_cast<uint32_t>(bvh.size());
         topology.resize(topology.size() + static_cast<size_t>(wordCount));
         if (!bvh.empty()) {
-            std::memcpy(topology.data() + bvhOffsets[index], bvh.data(), bvh.size() * sizeof(MeshletLodBvhNode));
+            std::memcpy(topology.data() + bvhOffsets[index], bvh.data(), bvh.size() * sizeof(MeshletLODBVHNode));
         }
         if (!buildMeshletLodTiles(lodGroups, bvh, log)) { return makeError(Error::InvalidArgument); }
         demandRoots[index] = buildMeshletLodDemandRoots(bvh);
@@ -3377,11 +3377,11 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
         const auto tileParents = buildMeshletLodTileParents(bvh);
         topology.insert(topology.end(), tileParents.begin(), tileParents.end());
     }
-    result = createAndPopulateHostStorageBuffer<MeshletStreamGpuPrimitive>(
+    result = createAndPopulateHostStorageBuffer<MeshletStreamGPUPrimitive>(
         device, primitives.size(), primitiveBuffer_, log, "MeshletStreamRuntime primitives",
-        [primitives, &bvhOffsets, &bvhCounts, &tileOffsets](MeshletStreamGpuPrimitive& gpuPrimitive, size_t index) {
+        [primitives, &bvhOffsets, &bvhCounts, &tileOffsets](MeshletStreamGPUPrimitive& gpuPrimitive, size_t index) {
             const auto& primitive = primitives[index];
-            gpuPrimitive = MeshletStreamGpuPrimitive{
+            gpuPrimitive = MeshletStreamGPUPrimitive{
                 .lodLevelOffset = primitive.lodLevelOffset,
                 .lodLevelCount = primitive.lodLevelCount,
                 .pageOffset = primitive.pageOffset,
@@ -3481,10 +3481,10 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
     }
 
     const std::span<const scene::MeshletStreamGroupInfo> groups = asset_.groups();
-    std::vector<MeshletLodRefinementBounds> refinementBounds;
+    std::vector<MeshletLODRefinementBounds> refinementBounds;
     if (viewDrivenPageDemand_) {
-        std::vector<MeshletLodGroupRecord> metrics(groups.size());
-        std::vector<MeshletLodGroupRange> ranges(groups.size());
+        std::vector<MeshletLODGroupRecord> metrics(groups.size());
+        std::vector<MeshletLODGroupRange> ranges(groups.size());
         for (size_t i = 0; i < groups.size(); ++i) {
             std::copy_n(groups[i].boundsCenterRadius, 4, metrics[i].sphere.begin());
             metrics[i].error = groups[i].maxQuadricError;
@@ -3495,7 +3495,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
             return makeError(Error::InvalidArgument);
         }
     }
-    result = createAndPopulateImmutableStorageBuffer<MeshletStreamGpuGroup>(
+    result = createAndPopulateImmutableStorageBuffer<MeshletStreamGPUGroup>(
         device,
         deviceImmutableMetadata_,
         groups.size(),
@@ -3503,9 +3503,9 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
         immutableMetadataUpload_ ? &immutableMetadataUpload_->groups : nullptr,
         log,
         "MeshletStreamRuntime groups",
-        [groups, &parents, &parentOffsets, &refinementBounds](MeshletStreamGpuGroup& gpuGroup, size_t index) {
+        [groups, &parents, &parentOffsets, &refinementBounds](MeshletStreamGPUGroup& gpuGroup, size_t index) {
             const scene::MeshletStreamGroupInfo& group = groups[index];
-            gpuGroup = MeshletStreamGpuGroup{
+            gpuGroup = MeshletStreamGPUGroup{
                 .primitiveIndex = group.primitiveIndex,
                 .pageIndex = group.pageIndex,
                 .lodLevel = group.lodLevel,
@@ -3515,7 +3515,7 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
                 .flags = group.flags,
                 .parentOffset = parentOffsets[index],
                 .parentCount = static_cast<uint32_t>(parents[index].size()),
-                .refinementBounds = refinementBounds.empty() ? MeshletLodRefinementBounds{} : refinementBounds[index],
+                .refinementBounds = refinementBounds.empty() ? MeshletLODRefinementBounds{} : refinementBounds[index],
             };
             std::copy(
                 std::begin(group.boundsCenterRadius),
@@ -3527,15 +3527,15 @@ Result<> MeshletStreamRuntime::initializeSceneMetadataBuffers(Device& device, st
     }
 
     const std::span<const scene::MeshletStreamNodeInfo> nodes = asset_.nodes();
-    result = createAndPopulateHostStorageBuffer<MeshletStreamGpuNode>(
+    result = createAndPopulateHostStorageBuffer<MeshletStreamGPUNode>(
         device,
         nodes.size(),
         nodeBuffer_,
         log,
         "MeshletStreamRuntime hierarchy nodes",
-        [nodes](MeshletStreamGpuNode& gpuNode, size_t index) {
+        [nodes](MeshletStreamGPUNode& gpuNode, size_t index) {
             const scene::MeshletStreamNodeInfo& node = nodes[index];
-            gpuNode = MeshletStreamGpuNode{
+            gpuNode = MeshletStreamGPUNode{
                 .primitiveIndex = node.primitiveIndex,
                 .childOffset = node.childOffset,
                 .childCount = node.childCount,
@@ -3677,9 +3677,9 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
     }
     if (auto commandResult = transitionBuffer(commandBuffer, *requestBuffer_, requestBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
     {
-        auto sourceSlice = requestBuffer_.get()->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader)});
+        auto sourceSlice = requestBuffer_.get()->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGPUBLASHeader)});
         if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-        auto destinationSlice = readback->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader)});
+        auto destinationSlice = readback->slice({0, readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGPUBLASHeader)});
         if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
         if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
     }
@@ -3690,7 +3690,7 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
         {
             auto sourceSlice = demandBuffer_.get()->slice({0, kMeshletStreamDemandStatsWords * sizeof(uint32_t)});
             if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = readback->slice({readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGpuBlasHeader), kMeshletStreamDemandStatsWords * sizeof(uint32_t)});
+            auto destinationSlice = readback->slice({readback->desc().size - kMeshletStreamDemandStatsWords * sizeof(uint32_t) - sizeof(MeshletStreamGPUBLASHeader), kMeshletStreamDemandStatsWords * sizeof(uint32_t)});
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
@@ -3698,9 +3698,9 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
     if (clusterRtxEnabled_ && blasHeaderBuffer_) {
         if (auto commandResult = transitionBuffer(commandBuffer, *blasHeaderBuffer_, blasHeaderBufferState_, ResourceState::TransferSource); !commandResult) { return commandResult; }
         {
-            auto sourceSlice = blasHeaderBuffer_.get()->slice({0, sizeof(MeshletStreamGpuBlasHeader)});
+            auto sourceSlice = blasHeaderBuffer_.get()->slice({0, sizeof(MeshletStreamGPUBLASHeader)});
             if (!sourceSlice) { return std::unexpected(sourceSlice.error()); }
-            auto destinationSlice = readback->slice({readback->desc().size - sizeof(MeshletStreamGpuBlasHeader), sizeof(MeshletStreamGpuBlasHeader)});
+            auto destinationSlice = readback->slice({readback->desc().size - sizeof(MeshletStreamGPUBLASHeader), sizeof(MeshletStreamGPUBLASHeader)});
             if (!destinationSlice) { return std::unexpected(destinationSlice.error()); }
             if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
@@ -3711,7 +3711,7 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
 
 Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& frame)
 {
-    MeshletStreamGpuParams params;
+    MeshletStreamGPUParams params;
     const uint32_t width = std::max(frame.width, 1u);
     const uint32_t height = std::max(frame.height, 1u);
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
@@ -3753,7 +3753,7 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.sceneLodLevelCount = asset_.lodLevelCount();
     params.scenePageCount = asset_.pageCount();
     params.selectedLodLevel = frame.enableGpuLodSelection
-        ? kMeshletStreamNoDebugLodOverride
+        ? kMeshletStreamNoDebugLODOverride
         : frame.selectedLodLevel;
     params.enableGpuLodSelection = frame.enableGpuLodSelection ? 1u : 0u;
     params.lodPixelError = meshletLodRenderPixelThreshold(
@@ -3809,7 +3809,7 @@ Result<> MeshletStreamRuntime::updateParamsBuffer(const MeshletStreamFrameDesc& 
     params.renderClipOrtho[1] = finiteOr(renderCamera.zfar, 1000.0f);
     params.renderClipOrtho[2] = std::max(finiteOr(renderCamera.orthoHeight, 10.0f), 0.0001f);
     params.renderClipOrtho[3] = renderCamera.reversedZ ? 1.0f : 0.0f;
-    const MeshletStreamGpuParams& previous = previousFrameParamsValid_
+    const MeshletStreamGPUParams& previous = previousFrameParamsValid_
         ? previousFrameParams_
         : params;
     std::copy_n(previous.eye, 4u, params.previousEye);
@@ -3912,7 +3912,7 @@ Result<> MeshletStreamRuntime::buildActiveTable(CommandBuffer& commandBuffer, co
     if (initializeState) {
         // Device allocations have undefined contents. Initialize once before
         // sparse clearing; subsequent frames touch only formerly active IDs.
-        const Result<> result = dispatchPhase(kMeshletStreamActiveBuildInitializeLodStatePhase,
+        const Result<> result = dispatchPhase(kMeshletStreamActiveBuildInitializeLODStatePhase,
             static_cast<uint32_t>(lodStateBuffer_->desc().size / sizeof(uint32_t)));
         if (!result) { return result; }
     }
@@ -4006,7 +4006,7 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
 
     if (checkpoint) { checkpoint("BeforeBlasReset"); }
     Result<> result = dispatchPhase(
-        kMeshletStreamBlasInputResetPhase,
+        kMeshletStreamBLASInputResetPhase,
         std::max(asset_.instanceCount(), 1u));
     if (!result) {
         return result;
@@ -4018,7 +4018,7 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
     if (!result) { return result; }
     *blasCacheInitialized_ = true;
     if (checkpoint) { checkpoint("BeforeBlasCount"); }
-    result = dispatchPhase(kMeshletStreamBlasInputCountPhase, maxActiveGroups_);
+    result = dispatchPhase(kMeshletStreamBLASInputCountPhase, maxActiveGroups_);
     if (!result) {
         return result;
     }
@@ -4028,13 +4028,13 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
     result = dispatchPhase(4u, maxActiveGroups_);
     if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeBlasPrefix"); }
-    result = dispatchPhase(kMeshletStreamBlasInputPrefixPhase, std::max(asset_.instanceCount(), 1u));
+    result = dispatchPhase(kMeshletStreamBLASInputPrefixPhase, std::max(asset_.instanceCount(), 1u));
     if (!result) { return result; }
-    result = dispatchPhase(kMeshletStreamBlasInputBlockPrefixPhase, 1u);
+    result = dispatchPhase(kMeshletStreamBLASInputBlockPrefixPhase, 1u);
     if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeBlasSetup"); }
     result = dispatchPhase(
-        kMeshletStreamBlasInputSetupPhase,
+        kMeshletStreamBLASInputSetupPhase,
         std::max(asset_.instanceCount(), 1u));
     if (!result) {
         return result;
@@ -4047,7 +4047,7 @@ Result<> MeshletStreamRuntime::buildBlasInputs(CommandBuffer& commandBuffer, con
     result = dispatchPhase(10u, std::max(asset_.instanceCount(), 1u));
     if (!result) { return result; }
     if (checkpoint) { checkpoint("BeforeBlasInsert"); }
-    result = dispatchPhase(kMeshletStreamBlasInputInsertPhase, maxActiveGroups_);
+    result = dispatchPhase(kMeshletStreamBLASInputInsertPhase, maxActiveGroups_);
     if (!result) { return result; }
     result = dispatchPhase(11u, maxActiveGroups_);
     if (!result) { return result; }
@@ -4077,11 +4077,11 @@ Result<> MeshletStreamRuntime::cmdBuildBlas(CommandBuffer& commandBuffer)
             .maxTotalClusterCount = blasClusterReferenceCapacity_,
             .maxAccelerationStructureCount = blasBuildCapacity_,
             .buildInfoBuffer = blasBuildInfoBuffer_.get(),
-            .buildInfoStride = sizeof(MeshletStreamGpuBlasBuildInfo),
+            .buildInfoStride = sizeof(MeshletStreamGPUBLASBuildInfo),
             .buildInfoSize = blasBuildInfoBuffer_->desc().size,
             .buildInfoCountBuffer = blasHeaderBuffer_.get(),
             .buildInfoCountBufferOffset = offsetof(
-                MeshletStreamGpuBlasHeader,
+                MeshletStreamGPUBLASHeader,
                 blasBuildCount),
             .destinationStorageBuffer = blasStorageBuffer_.get(),
             .destinationAddressBuffer = blasAddressBuffer_.get(),
@@ -4110,7 +4110,7 @@ Result<> MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer
     for (uint32_t fallbackIndex = 0;
          fallbackIndex < fallbackBlasPrimitives_.size();
          ++fallbackIndex) {
-        const FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
+        const FallbackBLASPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
         if (fallback.recorded()) {
             continue;
         }
@@ -4145,7 +4145,7 @@ Result<> MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer
     const uint64_t fallbackStorageAddress =
         fallbackBlasStorageBuffer_->deviceAddress();
     for (uint32_t fallbackIndex : readyFallbackIndices) {
-        const FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
+        const FallbackBLASPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
         const uint32_t primitiveIndex = fallback.primitiveIndex;
         const uint64_t referenceOffset = fallback.referenceOffset;
         uint64_t writeOffset = referenceOffset;
@@ -4183,7 +4183,7 @@ Result<> MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer
     if (!tracked) { return tracked; }
     sceneReadinessCache_->valid = false;
     for (uint32_t fallbackIndex : readyFallbackIndices) {
-        FallbackBlasPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
+        FallbackBLASPrimitive& fallback = fallbackBlasPrimitives_[fallbackIndex];
         const uint32_t clusterCount = fallback.referenceCount;
         const Result<> result = commandBuffer.buildClusterAccelerationStructureBottomLevels(
             ClusterAccelerationStructureBottomLevelBuildDesc{
@@ -4195,9 +4195,9 @@ Result<> MeshletStreamRuntime::cmdBuildFallbackBlas(CommandBuffer& commandBuffer
                 .buildInfoBuffer = fallbackBlasBuildInfoBuffer_.get(),
                 .buildInfoBufferOffset =
                     static_cast<uint64_t>(fallbackIndex) *
-                    sizeof(MeshletStreamGpuBlasBuildInfo),
-                .buildInfoStride = sizeof(MeshletStreamGpuBlasBuildInfo),
-                .buildInfoSize = sizeof(MeshletStreamGpuBlasBuildInfo),
+                    sizeof(MeshletStreamGPUBLASBuildInfo),
+                .buildInfoStride = sizeof(MeshletStreamGPUBLASBuildInfo),
+                .buildInfoSize = sizeof(MeshletStreamGPUBLASBuildInfo),
                 .destinationAddressBuffer = fallbackBlasDestinationBuffer_.get(),
                 .destinationAddressBufferOffset =
                     static_cast<uint64_t>(fallbackIndex) * sizeof(uint64_t),
@@ -4269,7 +4269,7 @@ Result<> MeshletStreamRuntime::transitionPageBufferForTraversal(CommandBuffer& c
     return {};
 }
 
-void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profiler, bool allowLegacyReadback)
+void MeshletStreamRuntime::consumeGpuRequestReadback(CPUProfileRecorder* profiler, bool allowLegacyReadback)
 {
     RequestReadback* latest = nullptr;
     for (auto& candidate : requestReadbacks_) {
@@ -4280,7 +4280,7 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profile
     Buffer* readback = latest ? latest->buffer.get() :
         (allowLegacyReadback && requestReadbackValid_ ? requestReadbackBuffer_.get() : nullptr);
     if (!readback) { return; }
-    CpuProfileScope profile(profiler, "Map feedback");
+    CPUProfileScope profile(profiler, "Map feedback");
     readback->invalidate();
     const void* mapped = readback->map();
     if (mapped == nullptr) {
@@ -4293,12 +4293,12 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profile
     const auto* header = static_cast<const StreamRequestBufferHeader*>(mapped);
     if (distributedPageDemand_ || lodTransitionTelemetry_) {
         std::memcpy(recentDemandStats_.data(), static_cast<const uint8_t*>(mapped) +
-            readback->desc().size - sizeof(recentDemandStats_) - sizeof(MeshletStreamGpuBlasHeader), sizeof(recentDemandStats_));
+            readback->desc().size - sizeof(recentDemandStats_) - sizeof(MeshletStreamGPUBLASHeader), sizeof(recentDemandStats_));
         recentDemandGroupTests_ = recentDemandStats_[18];
     }
     if (clusterRtxEnabled_) {
         std::memcpy(&recentBlasHeader_, static_cast<const uint8_t*>(mapped) +
-            readback->desc().size - sizeof(MeshletStreamGpuBlasHeader), sizeof(recentBlasHeader_));
+            readback->desc().size - sizeof(MeshletStreamGPUBLASHeader), sizeof(recentBlasHeader_));
     }
     recentGpuRequestCount_ = header->loadCounter;
     recentPrefetchGpuRequests_ = header->prefetchRequestCounter;
@@ -4322,7 +4322,7 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CpuProfileRecorder* profile
     profile.next("Consume requests");
     // Empty feedback is meaningful: every enumerated resident page was used.
     {
-        (void)residency_.consumeGpuRequests(StreamGpuRequestBatch{
+        (void)residency_.consumeGpuRequests(StreamGPURequestBatch{
             .loadPageIds = std::span<const uint32_t>(loadPageIds, loadCount),
             .unloadPageIds = std::span<const uint32_t>(unloadPageIds, unloadCount),
             .loadRequestCounter = header->loadCounter,
@@ -4377,10 +4377,10 @@ void MeshletStreamRuntime::appendDebugBindings(std::vector<DebugResourceBinding>
             uint64_t(maxGpuPageRequests_) * 4);
     }
     add("pageTable", pageTableBuffer_.get(), pageTableState_, "StreamPageTableEntry");
-    add("activeHeader", activeHeaderBuffer_.get(), activeHeaderBufferState_, "MeshletStreamGpuActiveHeader");
-    add("blasHeader", blasHeaderBuffer_.get(), blasHeaderBufferState_, "MeshletStreamGpuBlasHeader", 0,
-        sizeof(MeshletStreamGpuBlasHeader));
-    add("activeGroups", activeGroupBuffer_.get(), activeGroupBufferState_, "MeshletStreamGpuActiveGroup");
+    add("activeHeader", activeHeaderBuffer_.get(), activeHeaderBufferState_, "MeshletStreamGPUActiveHeader");
+    add("blasHeader", blasHeaderBuffer_.get(), blasHeaderBufferState_, "MeshletStreamGPUBLASHeader", 0,
+        sizeof(MeshletStreamGPUBLASHeader));
+    add("activeGroups", activeGroupBuffer_.get(), activeGroupBufferState_, "MeshletStreamGPUActiveGroup");
     add("lodState", lodStateBuffer_.get(), lodStateBufferState_, "u32");
     if (distributedPageDemand_ || lodTransitionTelemetry_) { add("demandStats", demandBuffer_.get(), demandBufferState_, "u32", 0, kMeshletStreamDemandStatsWords * sizeof(uint32_t)); }
     add("visibleClusters", visibleClusterBuffer_.get(), visibleClusterBufferState_, "CompactStreamVisibleRecord");

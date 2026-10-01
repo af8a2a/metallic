@@ -172,12 +172,12 @@ void expectLodEqual(const RenderPrimitive& a, const RenderPrimitive& b)
     }
 }
 
-TEST(MeshletBuildParallel, OneAndFourWorkersProduceIdenticalLodData)
+TEST(MeshletBuildParallel, OneAndFourWorkersProduceIdenticalLODData)
 {
     for (const auto settings : {std::array{false, false}, std::array{true, false}, std::array{true, true}}) {
         const RenderPrimitive source = makeGrid(settings[0], settings[1]);
         RenderPrimitive serial = source, parallel = source, repeated = source;
-        MeshletLodBuildStats serialStats, parallelStats;
+        MeshletLODBuildStats serialStats, parallelStats;
         ASSERT_TRUE(buildStreamMeshletsForPrimitive(serial, {.maxWorkers = 1, .lodStats = &serialStats}));
         ASSERT_TRUE(buildStreamMeshletsForPrimitive(parallel, {.maxWorkers = 4, .lodStats = &parallelStats}));
         ASSERT_TRUE(buildStreamMeshletsForPrimitive(repeated, {.maxWorkers = 4}));

@@ -275,7 +275,7 @@ int serve(const std::filesystem::path& directory, const std::string& mode, uint3
 {
     if (mode == "ordinary") { throw std::runtime_error("P1 service requires heap-mapped or heap-native"); }
     if (!SDL_Init(SDL_INIT_VIDEO)) { throw std::runtime_error(SDL_GetError()); }
-    struct SdlCleanup { ~SdlCleanup() { SDL_Quit(); } } sdl;
+    struct SDLCleanup { ~SDLCleanup() { SDL_Quit(); } } sdl;
     Json baseline;
     auto smoke = std::make_unique<vk::ShaderPrintf>();
     std::filesystem::create_directory(directory / "backend-smoke");

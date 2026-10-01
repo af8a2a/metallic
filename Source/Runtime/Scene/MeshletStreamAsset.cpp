@@ -2,8 +2,8 @@
 #include <spdlog/spdlog.h>
 #include "Runtime/Scene/GeometryAttributes.h"
 #include "Runtime/Scene/GeometryEncoding.h"
-#include "Runtime/Scene/GltfGpuInstancing.h"
-#include "Runtime/Scene/MeshletStreamGpuCodec.h"
+#include "Runtime/Scene/glTFGPUInstancing.h"
+#include "Runtime/Scene/MeshletStreamGPUCodec.h"
 #include "Runtime/Scene/MeshletStreamReferenceCodec.h"
 
 #include "json.hpp"
@@ -56,11 +56,11 @@ constexpr uint64_t kPageSlotAlignment = 256;
 constexpr uint32_t kMeshletClusterMaxVertices = 128;
 constexpr uint32_t kMeshletClusterMinTriangles = 32;
 constexpr uint32_t kMeshletClusterMaxTriangles = 128;
-constexpr uint32_t kMeshletLodGroupSize = 32;
+constexpr uint32_t kMeshletLODGroupSize = 32;
 constexpr uint32_t kMeshletStreamNodeWidth = 8;
 constexpr float kMeshletClusterFillWeight = 0.5f;
-constexpr float kMeshletLodErrorMergePrevious = 1.5f;
-constexpr float kMeshletLodErrorMergeAdditive = 0.0f;
+constexpr float kMeshletLODErrorMergePrevious = 1.5f;
+constexpr float kMeshletLODErrorMergeAdditive = 0.0f;
 constexpr const char* kExtensionNodeVisibility = "KHR_node_visibility";
 
 struct MeshletStreamFileHeader {
@@ -162,7 +162,7 @@ static_assert(std::is_trivially_copyable_v<MeshoptDecodeCacheHeader>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPrimitiveInfo>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamInstanceInfo>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamGeometryInfo>);
-static_assert(std::is_trivially_copyable_v<MeshletStreamLodLevelInfo>);
+static_assert(std::is_trivially_copyable_v<MeshletStreamLODLevelInfo>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamGroupInfo>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamNodeInfo>);
 static_assert(std::is_trivially_copyable_v<MeshletStreamPageInfo>);
@@ -195,10 +195,10 @@ bool meshletStreamBuildParamsMatch(const MeshletStreamFileHeader& header)
         header.maxVertices == kMeshletClusterMaxVertices &&
         header.minTriangles == kMeshletClusterMinTriangles &&
         header.maxTriangles == kMeshletClusterMaxTriangles &&
-        header.lodGroupSize == kMeshletLodGroupSize &&
+        header.lodGroupSize == kMeshletLODGroupSize &&
         header.fillWeight == kMeshletClusterFillWeight &&
-        header.lodErrorMergePrevious == kMeshletLodErrorMergePrevious &&
-        header.lodErrorMergeAdditive == kMeshletLodErrorMergeAdditive;
+        header.lodErrorMergePrevious == kMeshletLODErrorMergePrevious &&
+        header.lodErrorMergeAdditive == kMeshletLODErrorMergeAdditive;
 }
 
 bool meshletStreamPartialBuildParamsMatch(const MeshletStreamPartialFileHeader& header)
@@ -208,10 +208,10 @@ bool meshletStreamPartialBuildParamsMatch(const MeshletStreamPartialFileHeader& 
         header.maxVertices == kMeshletClusterMaxVertices &&
         header.minTriangles == kMeshletClusterMinTriangles &&
         header.maxTriangles == kMeshletClusterMaxTriangles &&
-        header.lodGroupSize == kMeshletLodGroupSize &&
+        header.lodGroupSize == kMeshletLODGroupSize &&
         header.fillWeight == kMeshletClusterFillWeight &&
-        header.lodErrorMergePrevious == kMeshletLodErrorMergePrevious &&
-        header.lodErrorMergeAdditive == kMeshletLodErrorMergeAdditive;
+        header.lodErrorMergePrevious == kMeshletLODErrorMergePrevious &&
+        header.lodErrorMergeAdditive == kMeshletLODErrorMergeAdditive;
 }
 
 uint64_t alignUp(uint64_t value, uint64_t alignment)
@@ -335,7 +335,7 @@ bool meshletStreamCompressionSupported(uint32_t compressionMode)
 {
     return compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::None) ||
         compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::ByteRle) ||
-        compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::GpuTiles) ||
+        compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::GPUTiles) ||
         compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::Reference);
 }
 
@@ -1050,7 +1050,7 @@ bool validateStreamTopology(
     uint64_t expectedClusterOffset = 0;
     for (uint32_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
         const MeshletStreamGroupInfo& group = groups[groupIndex];
-        if (group.clusterCount == 0 || group.clusterCount > kMeshletLodGroupSize ||
+        if (group.clusterCount == 0 || group.clusterCount > kMeshletLODGroupSize ||
             group.clusterRefinedOffset != expectedClusterOffset ||
             group.clusterRefinedOffset > refinedGroups.size() ||
             group.clusterCount > refinedGroups.size() - group.clusterRefinedOffset) {
@@ -1119,7 +1119,7 @@ struct MeshletStreamBuildState {
     std::vector<MeshletStreamPrimitiveInfo> primitives;
     std::vector<MeshletStreamInstanceInfo> instances;
     std::vector<MeshletStreamGeometryInfo> geometries;
-    std::vector<MeshletStreamLodLevelInfo> lodLevels;
+    std::vector<MeshletStreamLODLevelInfo> lodLevels;
     std::vector<MeshletStreamGroupInfo> groups;
     std::vector<uint32_t> refinedGroups;
     std::vector<MeshletStreamNodeInfo> nodes;
@@ -1160,10 +1160,10 @@ MeshletStreamFileHeader makeStreamFileHeader(
     header.maxVertices = kMeshletClusterMaxVertices;
     header.minTriangles = kMeshletClusterMinTriangles;
     header.maxTriangles = kMeshletClusterMaxTriangles;
-    header.lodGroupSize = kMeshletLodGroupSize;
+    header.lodGroupSize = kMeshletLODGroupSize;
     header.fillWeight = kMeshletClusterFillWeight;
-    header.lodErrorMergePrevious = kMeshletLodErrorMergePrevious;
-    header.lodErrorMergeAdditive = kMeshletLodErrorMergeAdditive;
+    header.lodErrorMergePrevious = kMeshletLODErrorMergePrevious;
+    header.lodErrorMergeAdditive = kMeshletLODErrorMergeAdditive;
     return header;
 }
 
@@ -1354,7 +1354,7 @@ MeshletStreamNodeInfo makeStreamInteriorNode(
 bool buildStreamLodNodeTree(
     MeshletStreamBuildState& state,
     const MeshletStreamPrimitiveInfo& primitive,
-    const MeshletStreamLodLevelInfo& lod,
+    const MeshletStreamLODLevelInfo& lod,
     MeshletStreamNodeInfo& outRoot,
     std::string& reason)
 {
@@ -1441,7 +1441,7 @@ bool appendStreamPrimitiveHierarchy(
     state.nodes.resize(state.nodes.size() + 1u + primitive.lodLevelCount);
     const uint32_t lodRootOffset = primitive.nodeOffset + 1u;
     for (uint32_t lodChild = 0; lodChild < primitive.lodLevelCount; ++lodChild) {
-        const MeshletStreamLodLevelInfo& lod = state.lodLevels[primitive.lodLevelOffset + lodChild];
+        const MeshletStreamLODLevelInfo& lod = state.lodLevels[primitive.lodLevelOffset + lodChild];
         MeshletStreamNodeInfo root;
         if (!buildStreamLodNodeTree(state, primitive, lod, root, reason)) {
             return false;
@@ -1499,14 +1499,14 @@ bool appendStreamPrimitivePages(
     if (hasLodGroups) {
         uint32_t bestFallbackPageCount = std::numeric_limits<uint32_t>::max();
         for (uint32_t lodLevelIndex = 0; lodLevelIndex < primitive.meshletLodLevels.size(); ++lodLevelIndex) {
-            const MeshletLodLevel& sourceLevel = primitive.meshletLodLevels[lodLevelIndex];
+            const MeshletLODLevel& sourceLevel = primitive.meshletLodLevels[lodLevelIndex];
             if (sourceLevel.groupOffset > primitive.meshletLodGroups.size() ||
                 sourceLevel.groupCount > primitive.meshletLodGroups.size() - sourceLevel.groupOffset) {
                 reason = "primitive meshlet LOD level has invalid group range";
                 return false;
             }
 
-            MeshletStreamLodLevelInfo lodInfo;
+            MeshletStreamLODLevelInfo lodInfo;
             lodInfo.primitiveIndex = primitiveIndex;
             lodInfo.lodLevel = lodLevelIndex;
             lodInfo.pageOffset = static_cast<uint32_t>(state.pages.size());
@@ -1515,9 +1515,9 @@ bool appendStreamPrimitivePages(
 
             for (uint32_t groupChild = 0; groupChild < sourceLevel.groupCount; ++groupChild) {
                 const uint32_t groupIndex = sourceLevel.groupOffset + groupChild;
-                const MeshletLodGroup& group = primitive.meshletLodGroups[groupIndex];
+                const MeshletLODGroup& group = primitive.meshletLodGroups[groupIndex];
                 if (group.clusterCount == 0 ||
-                    group.clusterCount > kMeshletLodGroupSize ||
+                    group.clusterCount > kMeshletLODGroupSize ||
                     group.clusterOffset > primitive.meshletLodClusters.size() ||
                     group.clusterCount > primitive.meshletLodClusters.size() - group.clusterOffset) {
                     reason = "primitive meshlet LOD group has an invalid cluster range";
@@ -1618,14 +1618,14 @@ bool appendStreamPrimitivePages(
             state.lodLevels.push_back(lodInfo);
         }
     } else {
-        MeshletStreamLodLevelInfo lodInfo;
+        MeshletStreamLODLevelInfo lodInfo;
         lodInfo.primitiveIndex = primitiveIndex;
         lodInfo.lodLevel = 0;
         lodInfo.pageOffset = static_cast<uint32_t>(state.pages.size());
 
         for (uint32_t firstCluster = 0; firstCluster < primitive.meshletClusters.size();) {
             const uint32_t clusterCount = std::min<uint32_t>(
-                kMeshletLodGroupSize,
+                kMeshletLODGroupSize,
                 static_cast<uint32_t>(primitive.meshletClusters.size()) - firstCluster);
             const uint32_t pageIndex = static_cast<uint32_t>(state.pages.size());
             PagePayloadBuildInput pageInput{
@@ -1935,7 +1935,7 @@ Bounds boundsFromPositionsForStreamBuilder(std::span<const float3> positions)
     return bounds;
 }
 
-struct StreamGltfSource {
+struct StreamglTFSource {
     struct MeshoptCompression {
         int32_t buffer = -1;
         uint64_t byteOffset = 0;
@@ -1983,7 +1983,7 @@ bool addWithin(uint64_t lhs, uint64_t rhs, uint64_t limit, uint64_t& result)
 }
 
 std::filesystem::path meshoptDecodedBufferViewPathForStreamBuilder(
-    const StreamGltfSource& source,
+    const StreamglTFSource& source,
     size_t bufferViewIndex)
 {
     return source.meshoptDecodeCacheDirectory /
@@ -1997,7 +1997,7 @@ void removeMeshoptDecodeCacheForStreamBuilder(const std::filesystem::path& outpu
 }
 
 bool prepareMeshoptDecodeCacheForStreamBuilder(
-    StreamGltfSource& source,
+    StreamglTFSource& source,
     const std::filesystem::path& outputPath,
     uint64_t sourceDependencyFingerprint,
     std::string& reason)
@@ -2005,7 +2005,7 @@ bool prepareMeshoptDecodeCacheForStreamBuilder(
     if (std::none_of(
             source.meshoptCompressions.begin(),
             source.meshoptCompressions.end(),
-            [](const StreamGltfSource::MeshoptCompression& compression) {
+            [](const StreamglTFSource::MeshoptCompression& compression) {
                 return compression.valid();
             })) {
         return true;
@@ -2094,7 +2094,7 @@ bool prepareMeshoptDecodeCacheForStreamBuilder(
 }
 
 bool validMeshoptCompressionForStreamBuilder(
-    const StreamGltfSource::MeshoptCompression& compression,
+    const StreamglTFSource::MeshoptCompression& compression,
     uint64_t decodedByteLength)
 {
     if (compression.stride == 0 ||
@@ -2134,7 +2134,7 @@ bool validMeshoptCompressionForStreamBuilder(
 }
 
 bool decodeMeshoptBufferViewForStreamBuilder(
-    const StreamGltfSource& source,
+    const StreamglTFSource& source,
     size_t bufferViewIndex,
     std::string& reason)
 {
@@ -2143,7 +2143,7 @@ bool decodeMeshoptBufferViewForStreamBuilder(
         reason = "streamasset builder meshopt bufferView metadata is missing";
         return false;
     }
-    const StreamGltfSource::MeshoptCompression& compression =
+    const StreamglTFSource::MeshoptCompression& compression =
         source.meshoptCompressions[bufferViewIndex];
     const uint64_t decodedByteLength = bufferViewIndex < source.model.bufferViews.size()
         ? source.model.bufferViews[bufferViewIndex].byteLength
@@ -2286,7 +2286,7 @@ bool decodeMeshoptBufferViewForStreamBuilder(
 }
 
 bool readAccessorRangeForStreamBuilder(
-    const StreamGltfSource& source,
+    const StreamglTFSource& source,
     const tinygltf::Accessor& accessor,
     size_t elementByteSize,
     std::vector<uint8_t>& outBytes,
@@ -2542,7 +2542,7 @@ float readAccessorFloatComponentForStreamBuilder(
 }
 
 std::vector<float4> readFloat4AccessorForStreamBuilder(
-    const StreamGltfSource& source,
+    const StreamglTFSource& source,
     const tinygltf::Accessor& accessor,
     std::string& reason)
 {
@@ -2578,7 +2578,7 @@ std::vector<float4> readFloat4AccessorForStreamBuilder(
 }
 
 std::vector<float3> readFloat3AccessorForStreamBuilder(
-    const StreamGltfSource& source,
+    const StreamglTFSource& source,
     const tinygltf::Accessor& accessor,
     std::string& reason)
 {
@@ -2613,7 +2613,7 @@ std::vector<float3> readFloat3AccessorForStreamBuilder(
 }
 
 std::vector<float2> readFloat2AccessorForStreamBuilder(
-    const StreamGltfSource& source,
+    const StreamglTFSource& source,
     const tinygltf::Accessor& accessor,
     std::string& reason)
 {
@@ -2647,7 +2647,7 @@ std::vector<float2> readFloat2AccessorForStreamBuilder(
 }
 
 std::vector<uint32_t> readIndexAccessorForStreamBuilder(
-    const StreamGltfSource& source,
+    const StreamglTFSource& source,
     const tinygltf::Accessor& accessor,
     std::string& reason)
 {
@@ -2928,7 +2928,7 @@ bool loadSourceDependencyUris(
 
 bool loadExternalGltfMetadataForStreamAssetBuilder(
     const std::filesystem::path& sourcePath,
-    StreamGltfSource& source,
+    StreamglTFSource& source,
     bool& applicable,
     std::string& reason)
 {
@@ -2972,7 +2972,7 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
         source = {};
         source.directory = sourcePath.parent_path();
         source.rangeReadExternalBuffers = true;
-        GltfInstanceExpansion expansion;
+        glTFInstanceExpansion expansion;
         if (!detail::expandGltfGpuInstances(root, source.directory, expansion, reason)) { return false; }
         tinygltf::Model& model = source.model;
         model.defaultScene = root.value("scene", -1);
@@ -3042,7 +3042,7 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
             view.byteLength = viewJson.value("byteLength", size_t{0});
             view.byteStride = viewJson.value("byteStride", size_t{0});
             view.target = viewJson.value("target", 0);
-            StreamGltfSource::MeshoptCompression meshoptCompression;
+            StreamglTFSource::MeshoptCompression meshoptCompression;
             const auto extensions = viewJson.find("extensions");
             if (extensions != viewJson.end() && extensions->is_object()) {
                 const auto meshopt = extensions->find("EXT_meshopt_compression");
@@ -3090,7 +3090,7 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
                 return false;
             }
 
-            const StreamGltfSource::MeshoptCompression& compression =
+            const StreamglTFSource::MeshoptCompression& compression =
                 source.meshoptCompressions[viewIndex];
             if (model.buffers[static_cast<size_t>(view.buffer)].uri.empty() &&
                 !compression.valid()) {
@@ -3229,7 +3229,7 @@ bool loadExternalGltfMetadataForStreamAssetBuilder(
 
 bool loadGltfModelForStreamAssetBuilder(
     const std::filesystem::path& sourcePath,
-    StreamGltfSource& source,
+    StreamglTFSource& source,
     std::string& reason)
 {
     if (lowerExtensionForStreamBuilder(sourcePath) == ".gltf") {
@@ -3316,7 +3316,7 @@ bool loadGltfModelForStreamAssetBuilder(
 }
 
 bool loadRenderPrimitiveForStreamAssetBuilder(
-    const StreamGltfSource& source,
+    const StreamglTFSource& source,
     int32_t meshIndex,
     int32_t primitiveIndex,
     RenderPrimitive& outPrimitive,
@@ -3505,10 +3505,10 @@ MeshletStreamPartialFileHeader makePartialBuildHeader(
     header.maxVertices = kMeshletClusterMaxVertices;
     header.minTriangles = kMeshletClusterMinTriangles;
     header.maxTriangles = kMeshletClusterMaxTriangles;
-    header.lodGroupSize = kMeshletLodGroupSize;
+    header.lodGroupSize = kMeshletLODGroupSize;
     header.fillWeight = kMeshletClusterFillWeight;
-    header.lodErrorMergePrevious = kMeshletLodErrorMergePrevious;
-    header.lodErrorMergeAdditive = kMeshletLodErrorMergeAdditive;
+    header.lodErrorMergePrevious = kMeshletLODErrorMergePrevious;
+    header.lodErrorMergeAdditive = kMeshletLODErrorMergeAdditive;
     return header;
 }
 
@@ -3685,7 +3685,7 @@ bool partialBuildStateRangesValid(
         if (group.primitiveIndex >= state.primitives.size() ||
             group.pageIndex >= state.pages.size() ||
             group.clusterCount == 0 ||
-            group.clusterCount > kMeshletLodGroupSize ||
+            group.clusterCount > kMeshletLODGroupSize ||
             !validStreamGroupMetric(group)) {
             return false;
         }
@@ -3900,7 +3900,7 @@ bool loadPartialBuildState(
     uint64_t requiredPartialFileSize = sizeof(MeshletStreamPartialFileHeader);
     if (!addArrayByteSize(partialHeader.primitiveCount, sizeof(MeshletStreamPrimitiveInfo), requiredPartialFileSize) ||
         !addArrayByteSize(partialHeader.geometryCount, sizeof(MeshletStreamGeometryInfo), requiredPartialFileSize) ||
-        !addArrayByteSize(partialHeader.lodLevelCount, sizeof(MeshletStreamLodLevelInfo), requiredPartialFileSize) ||
+        !addArrayByteSize(partialHeader.lodLevelCount, sizeof(MeshletStreamLODLevelInfo), requiredPartialFileSize) ||
         !addArrayByteSize(partialHeader.groupCount, sizeof(MeshletStreamGroupInfo), requiredPartialFileSize) ||
         !addArrayByteSize(partialHeader.reservedClusterRefCount, sizeof(uint32_t), requiredPartialFileSize) ||
         !addArrayByteSize(partialHeader.nodeCount, sizeof(MeshletStreamNodeInfo), requiredPartialFileSize) ||
@@ -3948,7 +3948,7 @@ bool loadPartialBuildState(
 bool buildStreamAssetGeometryPayloadsFromGltf(
     std::ostream& stream,
     MeshletStreamBuildState& state,
-    const StreamGltfSource& source,
+    const StreamglTFSource& source,
     MeshletStreamPayloadCompression compressionMode,
     std::unordered_map<uint64_t, uint32_t>& primitiveMap,
     MeshletStreamPartialBuildContext* partialContext,
@@ -4093,7 +4093,7 @@ bool buildStreamAssetGeometryPayloadsFromGltf(
 
 bool appendStreamAssetInstancesFromGltf(
     MeshletStreamBuildState& state,
-    const StreamGltfSource& source,
+    const StreamglTFSource& source,
     int32_t sceneIndex,
     const std::unordered_map<uint64_t, uint32_t>& primitiveMap,
     std::string& reason)
@@ -4190,7 +4190,7 @@ struct MeshletStreamAsset::Impl {
     std::span<const MeshletStreamPrimitiveInfo> primitives;
     std::span<const MeshletStreamInstanceInfo> instances;
     std::span<const MeshletStreamGeometryInfo> geometries;
-    std::span<const MeshletStreamLodLevelInfo> lodLevels;
+    std::span<const MeshletStreamLODLevelInfo> lodLevels;
     std::vector<MeshletStreamGroupInfo> ownedGroups;
     std::vector<uint32_t> legacyRefinedGroups;
     std::vector<uint32_t> terminalGroups;
@@ -4310,7 +4310,7 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
     if (!rangeWithin<MeshletStreamPrimitiveInfo>(impl->dataSize, impl->header.primitiveOffset, impl->header.primitiveCount) ||
         !rangeWithin<MeshletStreamInstanceInfo>(impl->dataSize, impl->header.instanceOffset, impl->header.instanceCount) ||
         !rangeWithin<MeshletStreamGeometryInfo>(impl->dataSize, impl->header.geometryOffset, impl->header.geometryCount) ||
-        !rangeWithin<MeshletStreamLodLevelInfo>(impl->dataSize, impl->header.lodLevelOffset, impl->header.lodLevelCount) ||
+        !rangeWithin<MeshletStreamLODLevelInfo>(impl->dataSize, impl->header.lodLevelOffset, impl->header.lodLevelCount) ||
         (impl->header.version == kMeshletStreamLegacyVersion
             ? !rangeWithin<MeshletStreamLegacyGroupInfo>(impl->dataSize, impl->header.groupInfoOffset, impl->header.groupCount)
             : (!rangeWithin<MeshletStreamGroupInfo>(impl->dataSize, impl->header.groupInfoOffset, impl->header.groupCount) ||
@@ -4329,7 +4329,7 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
     impl->primitives = makeSpan<MeshletStreamPrimitiveInfo>(impl->data, impl->header.primitiveOffset, impl->header.primitiveCount);
     impl->instances = makeSpan<MeshletStreamInstanceInfo>(impl->data, impl->header.instanceOffset, impl->header.instanceCount);
     impl->geometries = makeSpan<MeshletStreamGeometryInfo>(impl->data, impl->header.geometryOffset, impl->header.geometryCount);
-    impl->lodLevels = makeSpan<MeshletStreamLodLevelInfo>(impl->data, impl->header.lodLevelOffset, impl->header.lodLevelCount);
+    impl->lodLevels = makeSpan<MeshletStreamLODLevelInfo>(impl->data, impl->header.lodLevelOffset, impl->header.lodLevelCount);
     impl->ownedGroups.resize(impl->header.groupCount);
     if (impl->header.version == kMeshletStreamLegacyVersion) {
         const auto legacyGroups = makeSpan<MeshletStreamLegacyGroupInfo>(
@@ -4437,7 +4437,7 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
     }
 
     for (uint32_t lodIndex = 0; lodIndex < impl->lodLevels.size(); ++lodIndex) {
-        const MeshletStreamLodLevelInfo& lod = impl->lodLevels[lodIndex];
+        const MeshletStreamLODLevelInfo& lod = impl->lodLevels[lodIndex];
         if (lod.primitiveIndex >= impl->primitives.size() ||
             lod.pageCount == 0 ||
             lod.pageOffset > impl->pages.size() ||
@@ -4459,7 +4459,7 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
         if (group.primitiveIndex >= impl->primitives.size() ||
             group.pageIndex >= impl->pages.size() ||
             group.clusterCount == 0 ||
-            group.clusterCount > kMeshletLodGroupSize ||
+            group.clusterCount > kMeshletLODGroupSize ||
             !validStreamGroupMetric(group)) {
             reason = "streamasset group directory contains invalid ranges";
             return false;
@@ -4495,7 +4495,7 @@ bool MeshletStreamAsset::open(const std::filesystem::path& path, std::string& re
             page.payloadSize == 0 ||
             page.payloadSize > std::numeric_limits<uint32_t>::max() ||
             !meshletStreamCompressionSupported(page.compressionMode) ||
-            (page.compressionMode == uint32_t(MeshletStreamPayloadCompression::GpuTiles) &&
+            (page.compressionMode == uint32_t(MeshletStreamPayloadCompression::GPUTiles) &&
                 (impl->header.version < 10 || !(page.payloadFlags & kMeshletStreamPayloadCompactPositions))) ||
             (page.compressionMode == static_cast<uint32_t>(MeshletStreamPayloadCompression::None) &&
                 page.payloadSize != page.uncompressedSize) ||
@@ -4719,9 +4719,9 @@ std::span<const MeshletStreamGeometryInfo> MeshletStreamAsset::geometries() cons
     return valid() ? impl_->geometries : std::span<const MeshletStreamGeometryInfo>{};
 }
 
-std::span<const MeshletStreamLodLevelInfo> MeshletStreamAsset::lodLevels() const
+std::span<const MeshletStreamLODLevelInfo> MeshletStreamAsset::lodLevels() const
 {
-    return valid() ? impl_->lodLevels : std::span<const MeshletStreamLodLevelInfo>{};
+    return valid() ? impl_->lodLevels : std::span<const MeshletStreamLODLevelInfo>{};
 }
 
 std::span<const MeshletStreamGroupInfo> MeshletStreamAsset::groups() const
@@ -4791,7 +4791,7 @@ bool MeshletStreamAsset::compactShadingForDevice(std::string& reason)
     if (!valid()) { reason = "Compact shading requires an open asset"; return false; }
     constexpr uint32_t flags = kMeshletStreamPayloadAttributeNormal | kMeshletStreamPayloadAttributeTangent;
     for (const auto& page : impl_->pages) {
-        if ((page.attributeFlags & flags) && page.compressionMode == uint32_t(MeshletStreamPayloadCompression::GpuTiles)) {
+        if ((page.attributeFlags & flags) && page.compressionMode == uint32_t(MeshletStreamPayloadCompression::GPUTiles)) {
             reason = "Compact shading requires a raw/ByteRle cook; GPU tile layouts cannot be resized during upload";
             return false;
         }
@@ -4940,7 +4940,7 @@ bool decodeMeshletStreamPayloadForDevice(
         return false;
     }
 
-    if (page.compressionMode == uint32_t(MeshletStreamPayloadCompression::GpuTiles)) {
+    if (page.compressionMode == uint32_t(MeshletStreamPayloadCompression::GPUTiles)) {
         if (!decodeMeshletStreamGpuPage(page, storedPayload, scratchPayload, reason) ||
             !validateDevicePayloadClusters(scratchPayload, page, reason)) { return false; }
         outDevicePayload = scratchPayload;
@@ -5066,7 +5066,7 @@ bool buildMeshletStreamAsset(const MeshletStreamAssetBuildDesc& desc, std::strin
         return false;
     }
 
-    StreamGltfSource referenceSource;
+    StreamglTFSource referenceSource;
     std::string referenceSourceReason;
     const bool hasReferenceSource = desc.compressionMode == MeshletStreamPayloadCompression::Reference &&
         loadGltfModelForStreamAssetBuilder(desc.sourcePath, referenceSource, referenceSourceReason);
@@ -5187,7 +5187,7 @@ bool buildMeshletStreamAssetOffline(const MeshletStreamAssetOfflineBuildDesc& de
         return false;
     }
 
-    StreamGltfSource source;
+    StreamglTFSource source;
     if (!loadGltfModelForStreamAssetBuilder(desc.sourcePath, source, reason)) {
         return false;
     }
@@ -5404,7 +5404,7 @@ bool transcodeMeshletStreamAsset(const std::filesystem::path& sourcePath,
             page.payloadSize = encoded.stored.size();
             page.uncompressedSize = encoded.decodedSize;
             page.payloadFlags |= kMeshletStreamPayloadCompactPositions;
-            page.compressionMode = uint32_t(MeshletStreamPayloadCompression::GpuTiles);
+            page.compressionMode = uint32_t(MeshletStreamPayloadCompression::GPUTiles);
             header.maxPagePayloadBytes = std::max(header.maxPagePayloadBytes, encoded.decodedSize);
             offsets.push_back(page.payloadOffset);
             output.write(reinterpret_cast<const char*>(encoded.stored.data()), encoded.stored.size());
@@ -5427,7 +5427,7 @@ bool transcodeMeshletStreamAsset(const std::filesystem::path& sourcePath,
     };
     if (!copyTable(original.primitiveOffset, uint64_t(header.primitiveCount) * sizeof(MeshletStreamPrimitiveInfo), header.primitiveOffset) ||
         !copyTable(original.instanceOffset, uint64_t(header.instanceCount) * sizeof(MeshletStreamInstanceInfo), header.instanceOffset) ||
-        !copyTable(original.lodLevelOffset, uint64_t(header.lodLevelCount) * sizeof(MeshletStreamLodLevelInfo), header.lodLevelOffset) ||
+        !copyTable(original.lodLevelOffset, uint64_t(header.lodLevelCount) * sizeof(MeshletStreamLODLevelInfo), header.lodLevelOffset) ||
         !copyTable(original.groupInfoOffset, uint64_t(header.groupCount) * sizeof(MeshletStreamGroupInfo), header.groupInfoOffset) ||
         !copyTable(original.reservedClusterRefOffset, uint64_t(header.reservedClusterRefCount) * sizeof(uint32_t), header.reservedClusterRefOffset) ||
         !copyTable(original.nodeInfoOffset, uint64_t(header.nodeCount) * sizeof(MeshletStreamNodeInfo), header.nodeInfoOffset) ||
@@ -5471,7 +5471,7 @@ bool validateMeshletStreamAttributes(const MeshletStreamAsset& asset,
 {
     results.clear();
     if (!asset.valid()) { reason = "Invalid asset for attribute validation"; return false; }
-    StreamGltfSource source;
+    StreamglTFSource source;
     if (!loadGltfModelForStreamAssetBuilder(sourcePath, source, reason)) { return false; }
     std::vector<std::pair<int32_t, int32_t>> sourcePrimitives;
     for (size_t m = 0; m < source.model.meshes.size(); ++m) {

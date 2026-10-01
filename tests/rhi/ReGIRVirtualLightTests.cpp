@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/ImportanceSampling.h"
@@ -21,7 +21,7 @@ namespace {
 #define REGIR_CHECK(condition) \
     do { \
         if (!(condition)) { \
-            return RhiTestResult::fail(std::string("ReGIR virtual lights: ") + #condition + "; " + log_); \
+            return RHITestResult::fail(std::string("ReGIR virtual lights: ") + #condition + "; " + log_); \
         } \
     } while (false)
 
@@ -48,7 +48,7 @@ struct ReGIRProbeResult {
     float rootWeight = 0;
 };
 
-float cpuLightPower(const render::GpuPunctualLight& light)
+float cpuLightPower(const render::GPUPunctualLight& light)
 {
     const float luminance = light.colorIntensity[3] * (light.colorIntensity[0] * 0.2126f +
         light.colorIntensity[1] * 0.7152f + light.colorIntensity[2] * 0.0722f);
@@ -66,12 +66,12 @@ public:
         if (queue_ != nullptr) { (void)queue_->waitIdle(); }
     }
 
-    RhiTestResult initialize(bool validation)
+    RHITestResult initialize(bool validation)
     {
         const auto result = render::createDevice({.applicationName = "ReGIR virtual-light tests",
             .enableValidation = validation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) {
-            return RhiTestResult::skip("ReGIR tests require bindless compute support");
+            return RHITestResult::skip("ReGIR tests require bindless compute support");
         }
         REGIR_CHECK(result);
         queue_ = device_->getQueue(render::QueueType::Graphics);
@@ -89,7 +89,7 @@ public:
         const auto compiled = render::compileSlangShaderToSpirv({.moduleName = "ReGIRVirtualLightProbe",
             .entryPointName = "reGIRVirtualLightProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
-        if (!compiled) { return RhiTestResult::fail(shader.diagnostics); }
+        if (!compiled) { return RHITestResult::fail(shader.diagnostics); }
         const std::array<render::ComputeProgramBindingDesc, 4> bindings{{
             {.binding = 0}, {.binding = 50}, {.binding = 52},
             {.binding = 53, .kind = render::ComputeResourceBindingKind::SampledImage},
@@ -100,12 +100,12 @@ public:
             .bindings = bindings,
             .requiresRayQuery = false,
         }, log_));
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 
     // Every call replaces the physical-light upload and rebuilds both GPU
     // distributions, matching the edit/deletion path used by the render passes.
-    RhiTestResult run(const std::vector<render::GpuPunctualLight>& lights,
+    RHITestResult run(const std::vector<render::GPUPunctualLight>& lights,
         const std::array<float, 3>& position, ReGIRProbeResult& output,
         bool halfEmptyReservoir = false, bool invalidGridHeader = false,
         const scene::LightingSettings* cancelledWrapperSettings = nullptr)
@@ -130,12 +130,12 @@ public:
             REGIR_CHECK(commands_->begin());
         }
         std::unique_ptr<render::Buffer> lightBuffer;
-        REGIR_CHECK(device_->createBuffer({.size = lights.size() * sizeof(render::GpuPunctualLight),
+        REGIR_CHECK(device_->createBuffer({.size = lights.size() * sizeof(render::GPUPunctualLight),
             .usage = render::BufferUsageBits::Storage,
             .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { lightBuffer = std::move(rhiValue); }));
         void* mapped = lightBuffer->map();
         REGIR_CHECK(mapped != nullptr);
-        std::memcpy(mapped, lights.data(), lights.size() * sizeof(render::GpuPunctualLight));
+        std::memcpy(mapped, lights.data(), lights.size() * sizeof(render::GPUPunctualLight));
         lightBuffer->flush();
         lightBuffer->unmap();
         commands_->hostWriteBarrier();
@@ -147,7 +147,7 @@ public:
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
             };
-            if (auto commandResult = commands_->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands_->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         }
         const auto lightCount = static_cast<uint32_t>(lights.size() - 1);
         render::ReGIRBuildParameters parameters;
@@ -182,7 +182,7 @@ public:
                     .before = {},
                     .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
                 };
-                if (auto commandResult = commands_->synchronize({.textures = {&retryBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands_->synchronize({.textures = {&retryBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             }
             REGIR_CHECK(wrappedLights.update(*device_, *commands_, samplingHost,
                 nullptr, *cancelledWrapperSettings));
@@ -234,7 +234,7 @@ public:
             .before = {},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
         };
-        if (auto commandResult = commands_->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands_->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         render::TextureView* pdfViews[] = {
             cancelledWrapperSettings != nullptr ? wrappedLights.lightPdfView() : pdf_.view()};
         const std::array<render::ComputeDispatchBinding, 4> bindings{{
@@ -268,13 +268,13 @@ public:
         };
         if (auto commandResult = commands_->synchronize({
             .buffers = transferBarriers,
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
             auto sourceSlice = probe.get()->slice({0, outputBytes});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = readback.get()->slice({0, outputBytes});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         REGIR_CHECK(commands_->end());
         render::CommandBuffer* submissions[] = {commands_.get()};
@@ -318,7 +318,7 @@ public:
             REGIR_CHECK(std::abs(output.power[i] - expected) <= tolerance);
             REGIR_CHECK(std::abs(output.pdfWeight[i] - expected) <= tolerance);
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 
 private:
@@ -355,36 +355,36 @@ scene::LightingSettings mixedVirtualLights()
     return settings;
 }
 
-std::vector<render::GpuPunctualLight> withInactiveSlot(const scene::LightingSettings& settings)
+std::vector<render::GPUPunctualLight> withInactiveSlot(const scene::LightingSettings& settings)
 {
     auto records = render::buildPunctualLightRecords(nullptr, settings);
-    records.insert(records.begin() + 1, render::GpuPunctualLight{});
+    records.insert(records.begin() + 1, render::GPUPunctualLight{});
     records[0].positionRange[0] = static_cast<float>(records.size() - 1);
     return records;
 }
 
-RhiTestResult expectEstimator(const ReGIRProbeResult& result, const char* phase, double tolerance = 0.12)
+RHITestResult expectEstimator(const ReGIRProbeResult& result, const char* phase, double tolerance = 0.12)
 {
     for (size_t channel = 0; channel < 3; ++channel) {
         if (std::abs(result.mean[channel] - result.exact[channel]) >
             std::max(0.00001, std::abs(double(result.exact[channel])) * tolerance)) {
-            return RhiTestResult::fail(std::string(phase) + " channel " + std::to_string(channel) +
+            return RHITestResult::fail(std::string(phase) + " channel " + std::to_string(channel) +
                 ": estimate=" + std::to_string(result.mean[channel]) +
                 ", exact=" + std::to_string(result.exact[channel]));
         }
     }
-    return RhiTestResult::pass();
+    return RHITestResult::pass();
 }
 
-class ReGIRVirtualLightGpuTest final : public RhiTest {
+class ReGIRVirtualLightGPUTest final : public RHITest {
 public:
-    ReGIRVirtualLightGpuTest()
+    ReGIRVirtualLightGPUTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "regir_virtual_lights_gpu_power_edit_delete";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         ReGIRProbeHarness harness;
         auto status = harness.initialize(context.enableValidation);
@@ -398,7 +398,7 @@ public:
         if (inside.selected[0] != 0 || inside.selected[1] == 0 || inside.selected[2] == 0 ||
             inside.selected[3] == 0 || std::abs(inside.exact[0] - 1.0f / 3.0f) > 0.0001f ||
             std::abs(inside.exact[1] - 1.0f / 3.0f) > 0.0001f || inside.exact[2] != 1.0f) {
-            return RhiTestResult::fail("ReGIR omitted a physical light type or sampled an inactive source slot");
+            return RHITestResult::fail("ReGIR omitted a physical light type or sampled an inactive source slot");
         }
         ReGIRProbeResult outside;
         status = harness.run(withInactiveSlot(settings), {0, 0, 1.25f}, outside);
@@ -414,7 +414,7 @@ public:
         if (!status.passed) { return status; }
         if (std::abs(edited.exact[0] - 2.0f * inside.exact[0]) > 0.0001f || edited.exact[1] != 0.0f ||
             std::abs(edited.power[1] - 2.0f * inside.power[1]) > 0.0001f) {
-            return RhiTestResult::fail("point intensity or spot orientation did not refresh GPU sampling");
+            return RHITestResult::fail("point intensity or spot orientation did not refresh GPU sampling");
         }
         settings.lights.erase(settings.lights.begin());
         settings.lights[0].enabled = false;
@@ -425,7 +425,7 @@ public:
         if (!status.passed) { return status; }
         if (removed.exact[0] != 0.0f || removed.exact[1] != 0.0f || removed.exact[2] != 1.0f ||
             removed.selected[1] != kProbeSampleCount) {
-            return RhiTestResult::fail("removed light remained in a reused ReGIR/PDF resource");
+            return RHITestResult::fail("removed light remained in a reused ReGIR/PDF resource");
         }
         settings.lights.clear();
         ReGIRProbeResult empty;
@@ -433,27 +433,27 @@ public:
         if (!status.passed) { return status; }
         if (empty.nullSamples != kProbeSampleCount || empty.rootWeight != 0.0f ||
             empty.mean != std::array<double, 3>{}) {
-            return RhiTestResult::fail("zero-light build retained stale ReGIR candidates or PDF mass");
+            return RHITestResult::fail("zero-light build retained stale ReGIR candidates or PDF mass");
         }
         // A non-empty source table can also carry no emitted power.
         status = harness.run(withInactiveSlot(settings), {0, 0, 0}, empty);
         if (!status.passed) { return status; }
         if (empty.mean != std::array<double, 3>{} || empty.rootWeight != 0.0f) {
-            return RhiTestResult::fail("all-zero source table produced illumination");
+            return RHITestResult::fail("all-zero source table produced illumination");
         }
-        return RhiTestResult::pass("GPU point/spot/directional power, ReGIR and global-PDF estimates, inactive slots and edits/deletion");
+        return RHITestResult::pass("GPU point/spot/directional power, ReGIR and global-PDF estimates, inactive slots and edits/deletion");
     }
 };
 
-class ReGIRNullReservoirGpuTest final : public RhiTest {
+class ReGIRNullReservoirGPUTest final : public RHITest {
 public:
-    ReGIRNullReservoirGpuTest()
+    ReGIRNullReservoirGPUTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "regir_virtual_lights_null_reservoir_mass";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         ReGIRProbeHarness harness;
         auto status = harness.initialize(context.enableValidation);
@@ -468,7 +468,7 @@ public:
         if (!status.passed) { return status; }
         if (probe.nullSamples < kProbeSampleCount * 45 / 100 ||
             probe.nullSamples > kProbeSampleCount * 55 / 100) {
-            return RhiTestResult::fail("empty ReGIR slot must remain a null sample, not retry the global PDF");
+            return RHITestResult::fail("empty ReGIR slot must remain a null sample, not retry the global PDF");
         }
         for (const bool invalidHeader : {false, true}) {
             status = harness.run(records, invalidHeader ? std::array<float, 3>{0, 0, 0}
@@ -477,22 +477,22 @@ public:
             status = expectEstimator(probe, "global fallback", 0.00001);
             if (!status.passed) { return status; }
             if (probe.nullSamples != 0 || probe.selected[0] != kProbeSampleCount) {
-                return RhiTestResult::fail("outside/invalid grid did not fall back to the live physical-light PDF");
+                return RHITestResult::fail("outside/invalid grid did not fall back to the live physical-light PDF");
             }
         }
-        return RhiTestResult::pass("null RIS probability mass is retained; outside/invalid grid uses global PDF");
+        return RHITestResult::pass("null RIS probability mass is retained; outside/invalid grid uses global PDF");
     }
 };
 
-class ReGIRCancelledSamplingRetryTest final : public RhiTest {
+class ReGIRCancelledSamplingRetryTest final : public RHITest {
 public:
     ReGIRCancelledSamplingRetryTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "regir_virtual_lights_cancelled_sampling_retry";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         ReGIRProbeHarness harness;
         auto status = harness.initialize(context.enableValidation);
@@ -507,9 +507,9 @@ public:
         if (probe.selected[0] == 0 || probe.selected[1] == 0 || probe.selected[2] == 0 ||
             std::abs(probe.exact[0] - 1.0f / 3.0f) > 0.0001f ||
             std::abs(probe.exact[1] - 1.0f / 3.0f) > 0.0001f || probe.exact[2] != 1.0f) {
-            return RhiTestResult::fail("cancelled sampling retry lost live physical-light power");
+            return RHITestResult::fail("cancelled sampling retry lost live physical-light power");
         }
-        return RhiTestResult::pass("unsubmitted first build cancelled; replacement PDF/ReGIR retry read back correctly");
+        return RHITestResult::pass("unsubmitted first build cancelled; replacement PDF/ReGIR retry read back correctly");
     }
 };
 
@@ -523,14 +523,14 @@ std::array<uint64_t, 3> rgbEnergy(const std::vector<uint32_t>& pixels)
     return energy;
 }
 
-RhiTestResult renderVirtualLightLifecycle(RhiTestContext& context, const char* renderer)
+RHITestResult renderVirtualLightLifecycle(RHITestContext& context, const char* renderer)
 {
     render::RenderGraphPreviewRenderer preview;
     auto result = preview.initialize(context.enableValidation, true);
     if (render::hasError(result, render::Error::Unsupported)) {
-        return RhiTestResult::skip("virtual-light transport tests require ray query");
+        return RHITestResult::skip("virtual-light transport tests require ray query");
     }
-    if (!result) { return RhiTestResult::fail("virtual-light preview initialization failed"); }
+    if (!result) { return RHITestResult::fail("virtual-light preview initialization failed"); }
     preview.setEnvironment({.enabled = false, .visible = false});
     const bool rtxdi = std::string_view(renderer) == "rtxdi";
     render::RenderGraphProperties properties{
@@ -542,20 +542,20 @@ RhiTestResult renderVirtualLightLifecycle(RhiTestContext& context, const char* r
         {"camera", {{"eye", {0.0, 0.25, 3.0}}, {"center", {0.0, 0.15, 0.0}}}},
     };
     render::RenderGraph graph;
-    graph.addNode(rtxdi ? "SceneRtxdiPass" : "ScenePathTracePass", "Lighting", properties);
+    graph.addNode(rtxdi ? "SceneRTXDIPass" : "ScenePathTracePass", "Lighting", properties);
     graph.markOutput("Lighting.color");
-    auto renderFrames = [&]() -> RhiTestResult {
+    auto renderFrames = [&]() -> RHITestResult {
         // The second frame consumes temporal reservoirs / accumulated history.
         for (uint32_t frame = 0; frame < 2; ++frame) {
             const auto rendered = preview.render(graph, 64, 64);
             if (!rendered) {
                 if (render::hasError(rendered, render::Error::Unsupported)) {
-                    return RhiTestResult::skip(preview.lastLog());
+                    return RHITestResult::skip(preview.lastLog());
                 }
-                return RhiTestResult::fail(std::string(renderer) + ": " + preview.lastLog());
+                return RHITestResult::fail(std::string(renderer) + ": " + preview.lastLog());
             }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     };
     auto status = renderFrames();
     if (!status.passed) { return status; }
@@ -569,21 +569,21 @@ RhiTestResult renderVirtualLightLifecycle(RhiTestContext& context, const char* r
     light.properties.intensity = 1000;
     light.properties.color = float3(1, 0, 0);
     light.direction = float3(0.0f, -0.2f, -1.0f);
-    if (!preview.setLighting(settings)) { return RhiTestResult::fail("invalid directional fixture"); }
+    if (!preview.setLighting(settings)) { return RHITestResult::fail("invalid directional fixture"); }
     status = renderFrames();
     if (!status.passed) { return status; }
     auto litEnergy = rgbEnergy(preview.pixels());
     if (litEnergy[0] < darkEnergy[0] + 1024 || litEnergy[1] > darkEnergy[1] + 1024 ||
         litEnergy[2] > darkEnergy[2] + 1024) {
-        return RhiTestResult::fail(std::string(renderer) + " did not transport the red scene directional light");
+        return RHITestResult::fail(std::string(renderer) + " did not transport the red scene directional light");
     }
     light.properties.color = float3(0, 0, 1);
-    if (!preview.setLighting(settings)) { return RhiTestResult::fail("invalid color edit fixture"); }
+    if (!preview.setLighting(settings)) { return RHITestResult::fail("invalid color edit fixture"); }
     status = renderFrames();
     if (!status.passed) { return status; }
     litEnergy = rgbEnergy(preview.pixels());
     if (litEnergy[2] < darkEnergy[2] + 1024 || litEnergy[0] > darkEnergy[0] + 1024) {
-        return RhiTestResult::fail(std::string(renderer) + " retained stale red-light history after a blue edit");
+        return RHITestResult::fail(std::string(renderer) + " retained stale red-light history after a blue edit");
     }
     for (const char* localType : {"point", "spot"}) {
         light.properties.type = localType;
@@ -593,76 +593,76 @@ RhiTestResult renderVirtualLightLifecycle(RhiTestContext& context, const char* r
         light.properties.color = float3(0, 1, 0);
         light.position = float3(0.0f, 0.25f, 3.0f);
         light.direction = float3(0, 0, -1);
-        if (!preview.setLighting(settings)) { return RhiTestResult::fail("invalid local-light fixture"); }
+        if (!preview.setLighting(settings)) { return RHITestResult::fail("invalid local-light fixture"); }
         status = renderFrames();
         if (!status.passed) { return status; }
         litEnergy = rgbEnergy(preview.pixels());
         if (litEnergy[1] < darkEnergy[1] + 1024 || litEnergy[0] > darkEnergy[0] + 1024 ||
             litEnergy[2] > darkEnergy[2] + 1024) {
-            return RhiTestResult::fail(std::string(renderer) + " did not transport the green scene " + localType);
+            return RHITestResult::fail(std::string(renderer) + " did not transport the green scene " + localType);
         }
     }
     std::string outputMessage;
     if (!saveRgba8Png(context.outputDirectory / (std::string("regir-virtual-") + renderer + ".png"),
             reinterpret_cast<const uint8_t*>(preview.pixels().data()), 64, 64, outputMessage)) {
-        return RhiTestResult::fail(outputMessage);
+        return RHITestResult::fail(outputMessage);
     }
     settings.lights.clear();
     settings.exposureEV100 = 0;
-    if (!preview.setLighting(settings)) { return RhiTestResult::fail("could not delete virtual lights"); }
+    if (!preview.setLighting(settings)) { return RHITestResult::fail("could not delete virtual lights"); }
     status = renderFrames();
     if (!status.passed) { return status; }
     if (preview.pixels() != dark) {
-        return RhiTestResult::fail(std::string(renderer) + " retained illumination after deleting all virtual lights");
+        return RHITestResult::fail(std::string(renderer) + " retained illumination after deleting all virtual lights");
     }
-    return RhiTestResult::pass(std::string(renderer) + ": directional/point/spot RGB transport and edit/delete history invalidation");
+    return RHITestResult::pass(std::string(renderer) + ": directional/point/spot RGB transport and edit/delete history invalidation");
 }
 
-class ReGIRStandardPathTraceLightsTest final : public RhiTest {
+class ReGIRStandardPathTraceLightsTest final : public RHITest {
 public:
     ReGIRStandardPathTraceLightsTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "regir_virtual_lights_standard_path_trace_render";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         return renderVirtualLightLifecycle(context, "standard");
     }
 };
 
-class ReGIROpenPBRPathTraceLightsTest final : public RhiTest {
+class ReGIROpenPBRPathTraceLightsTest final : public RHITest {
 public:
     ReGIROpenPBRPathTraceLightsTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "regir_virtual_lights_openpbr_path_trace_render";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         return renderVirtualLightLifecycle(context, "openpbr");
     }
 };
 
-class ReGIRRtxdiVirtualLightsTest final : public RhiTest {
+class ReGIRRTXDIVirtualLightsTest final : public RHITest {
 public:
-    ReGIRRtxdiVirtualLightsTest()
+    ReGIRRTXDIVirtualLightsTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "regir_virtual_lights_rtxdi_temporal_render";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         return renderVirtualLightLifecycle(context, "rtxdi");
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(ReGIRVirtualLightGpuTest);
-METALLIC_REGISTER_RHI_TEST(ReGIRNullReservoirGpuTest);
+METALLIC_REGISTER_RHI_TEST(ReGIRVirtualLightGPUTest);
+METALLIC_REGISTER_RHI_TEST(ReGIRNullReservoirGPUTest);
 METALLIC_REGISTER_RHI_TEST(ReGIRCancelledSamplingRetryTest);
 METALLIC_REGISTER_RHI_TEST(ReGIRStandardPathTraceLightsTest);
 METALLIC_REGISTER_RHI_TEST(ReGIROpenPBRPathTraceLightsTest);
-METALLIC_REGISTER_RHI_TEST(ReGIRRtxdiVirtualLightsTest);
+METALLIC_REGISTER_RHI_TEST(ReGIRRTXDIVirtualLightsTest);
 
 #undef REGIR_CHECK
 

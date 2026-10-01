@@ -691,7 +691,7 @@ SceneLoadHandle SceneLoader::request(
                 state->progress.currentItem.clear();
             }
 
-            task::TaskGraph decodeGraph("SceneCpuPayload");
+            task::TaskGraph decodeGraph("SceneCPUPayload");
             auto builtPrimitiveCount = std::make_shared<std::atomic_size_t>(0);
             std::vector<task::TaskNodeHandle> geometryTasks;
             if (candidate->hasDeferredMeshlets()) {
@@ -931,7 +931,7 @@ const char* sceneLoadPhaseName(SceneLoadPhase phase)
     case SceneLoadPhase::Parsing: return "Parsing";
     case SceneLoadPhase::Geometry: return "Geometry";
     case SceneLoadPhase::Images: return "Images";
-    case SceneLoadPhase::GpuUpload: return "GPU Upload";
+    case SceneLoadPhase::GPUUpload: return "GPU Upload";
     case SceneLoadPhase::AccelerationStructures: return "Acceleration Structures";
     case SceneLoadPhase::Finalizing: return "Finalizing";
     case SceneLoadPhase::Completed: return "Completed";

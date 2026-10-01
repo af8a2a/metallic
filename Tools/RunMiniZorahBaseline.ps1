@@ -1,6 +1,6 @@
 param(
     [string]$OutputRoot = "build-release/minizorah-baseline/runs",
-    [string]$Executable = "build-release/tests/MetallicRhiTests.exe",
+    [string]$Executable = "build-release/tests/MetallicRHITests.exe",
     [ValidateSet("warmup", "a1", "b1", "b2", "a2", "quality-a", "quality-b")]
     [string[]]$Cases = @("warmup", "a1", "b1", "b2", "a2", "quality-a", "quality-b")
 )
@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
 $outputPath = [IO.Path]::GetFullPath((Join-Path $repo $OutputRoot))
 $exePath = [IO.Path]::GetFullPath((Join-Path $repo $Executable))
-if (-not (Test-Path -LiteralPath $exePath)) { throw "Build MetallicRhiTests first: $exePath" }
+if (-not (Test-Path -LiteralPath $exePath)) { throw "Build MetallicRHITests first: $exePath" }
 if (Test-Path -LiteralPath (Join-Path $outputPath "Manifest.json")) {
     throw "Choose a new OutputRoot; refusing to overwrite an existing baseline manifest"
 }
@@ -33,7 +33,7 @@ $runManifest.hostInfo = @{
     logicalProcessors = [Environment]::ProcessorCount
     osVersion = [Environment]::OSVersion.Version.ToString()
 }
-foreach ($relative in @("tests/rhi/MiniZorahRoamingTests.cpp", "Pipelines/Samples/gpu_driven_minizorah_vbuffer.metallic_graph.json", "Source/Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp", "Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang", "Tools/RunMiniZorahBaseline.ps1", "Tools/AnalyzeMiniZorahBaseline.py")) {
+foreach ($relative in @("tests/rhi/MiniZorahRoamingTests.cpp", "Pipelines/Samples/gpu_driven_minizorah_vbuffer.metallic_graph.json", "Source/Runtime/Render/Streamer/MeshletStreamCompactCLASPool.cpp", "Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang", "Tools/RunMiniZorahBaseline.ps1", "Tools/AnalyzeMiniZorahBaseline.py")) {
     $runManifest.sourceHashes += @{ path = $relative; sha256 = (Get-FileHash -LiteralPath (Join-Path $repo $relative) -Algorithm SHA256).Hash }
 }
 $runManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $outputPath "Manifest.json") -Encoding UTF8
@@ -46,11 +46,11 @@ try {
         $env:METALLIC_MINIZORAH_BENCH_CLAS = if ($case -in @("a1", "a2", "quality-a")) { "0" } else { "1" }
         $env:METALLIC_MINIZORAH_BENCH_QUALITY = if ($case.StartsWith("quality")) { "1" } else { "0" }
         $env:METALLIC_MINIZORAH_BENCH_FRAMES = if ($case -eq "warmup") { "600" } else { "8400" }
-        & nvidia-smi "--query-gpu=$gpuFields" --format=csv | Set-Content -LiteralPath (Join-Path $casePath "GpuBefore.csv")
-        $monitor = Start-Process -FilePath "nvidia-smi.exe" -ArgumentList @("--query-gpu=$gpuFields", "--format=csv", "-l", "1") -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $casePath "GpuDuring.csv") -RedirectStandardError (Join-Path $casePath "GpuMonitor.stderr.txt")
+        & nvidia-smi "--query-gpu=$gpuFields" --format=csv | Set-Content -LiteralPath (Join-Path $casePath "GPUBefore.csv")
+        $monitor = Start-Process -FilePath "nvidia-smi.exe" -ArgumentList @("--query-gpu=$gpuFields", "--format=csv", "-l", "1") -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $casePath "GPUDuring.csv") -RedirectStandardError (Join-Path $casePath "GPUMonitor.stderr.txt")
         try {
             $validation = if ($case.StartsWith("quality") -or $case -eq "warmup") { "--rhi-validation" } else { "--rhi-no-validation" }
-            $arguments = @("--gtest_filter=RhiRendering.minizorah_fixed_baseline", $validation, "--rhi-async-compute", "--output-dir", ('"' + $casePath + '"'))
+            $arguments = @("--gtest_filter=RHIRendering.minizorah_fixed_baseline", $validation, "--rhi-async-compute", "--output-dir", ('"' + $casePath + '"'))
             $started = Get-Date
             Write-Output "Starting $case (CLAS=$env:METALLIC_MINIZORAH_BENCH_CLAS, quality=$env:METALLIC_MINIZORAH_BENCH_QUALITY)"
             $process = Start-Process -FilePath $exePath -WorkingDirectory $repo -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $casePath "stdout.log") -RedirectStandardError (Join-Path $casePath "stderr.log")
@@ -66,7 +66,7 @@ try {
             Write-Output "$case passed: $($result.frameCount) frames, $([math]::Round($result.runWallSeconds, 2)) seconds"
         } finally {
             if (-not $monitor.HasExited) { Stop-Process -Id $monitor.Id -Force }
-            & nvidia-smi "--query-gpu=$gpuFields" --format=csv | Set-Content -LiteralPath (Join-Path $casePath "GpuAfter.csv")
+            & nvidia-smi "--query-gpu=$gpuFields" --format=csv | Set-Content -LiteralPath (Join-Path $casePath "GPUAfter.csv")
         }
     }
     if ((Get-FileHash -LiteralPath $exePath -Algorithm SHA256).Hash -ne $runManifest.executableSha256) {

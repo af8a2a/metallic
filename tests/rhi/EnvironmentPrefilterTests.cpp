@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
@@ -66,17 +66,17 @@ private:
     render::ComputeProgram program_;
 };
 
-class EnvironmentPrefilterImpulseTest final : public RhiTest {
+class EnvironmentPrefilterImpulseTest final : public RHITest {
 public:
-    EnvironmentPrefilterImpulseTest() { type = RhiTestType::Rendering; name = "environment_prefilter_hdr_impulse"; }
-    RhiTestResult run(RhiTestContext& context) override
+    EnvironmentPrefilterImpulseTest() { type = RHITestType::Rendering; name = "environment_prefilter_hdr_impulse"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::filesystem::create_directories(context.outputDirectory);
         std::unique_ptr<render::Device> device;
         auto result = render::createDevice({.applicationName = "HDR prefilter regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires native bindless resources"); }
-        if (!result) { return RhiTestResult::fail("Create prefilter device"); }
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("Requires native bindless resources"); }
+        if (!result) { return RHITestResult::fail("Create prefilter device"); }
         render::registerRenderGraphPassType("EnvironmentPrefilterFieldProbe", "HDR prefilter field",
             [] { return std::make_unique<EnvironmentPrefilterFieldProbe>(); });
         std::string failure, log;
@@ -88,7 +88,7 @@ public:
             if (fixture < 2) {
                 std::vector<float> pixels(uint64_t(width) * height * 3, 1.0f);
                 for (uint32_t channel = 0; channel < 3; ++channel) { pixels[(brightY * width + brightX) * 3 + channel] = bright; }
-                if (!stbi_write_hdr(path.string().c_str(), width, height, 3, pixels.data())) { return RhiTestResult::fail("Write HDR fixture"); }
+                if (!stbi_write_hdr(path.string().c_str(), width, height, 3, pixels.data())) { return RHITestResult::fail("Write HDR fixture"); }
             } else { path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/ABeautifulGame/environment.hdr"; }
             render::RenderWorld world;
             world.setEnvironment({.enabled = true, .path = path});
@@ -97,19 +97,19 @@ public:
             graph.markOutput("Probe.field");
             render::RenderGraphExecutor executor;
             executor.bindRenderWorld(&world);
-            if (!executor.compile(*device, graph, 1, 1, log)) { return RhiTestResult::fail(log); }
+            if (!executor.compile(*device, graph, 1, 1, log)) { return RHITestResult::fail(log); }
             bool ready = false;
             for (uint32_t frame = 0; frame < 200 && !ready; ++frame) {
                 if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
-                    !executor.waitForSubmittedWork()) { return RhiTestResult::fail("Prefilter dispatch"); }
+                    !executor.waitForSubmittedWork()) { return RHITestResult::fail("Prefilter dispatch"); }
                 ready = executor.subsystemHost()->get<render::EnvironmentLightingSubsystem>()->snapshot().mapAvailable;
                 if (!ready) { std::this_thread::sleep_for(std::chrono::milliseconds(2)); }
             }
-            if (!ready) { return RhiTestResult::fail("Environment publication timeout"); }
+            if (!ready) { return RHITestResult::fail("Environment publication timeout"); }
             auto* buffer = executor.outputResource("Probe.field")->buffer;
             buffer->invalidate();
             const auto* pixels = static_cast<const std::array<float, 4>*>(buffer->map());
-            if (pixels == nullptr) { return RhiTestResult::fail("Prefilter readback"); }
+            if (pixels == nullptr) { return RHITestResult::fail("Prefilter readback"); }
             const char* name = fixture == 0 ? "Needle" : fixture == 1 ? "Pole" : "Forest";
             std::ofstream output(context.outputDirectory / (std::string(name) + ".f32"), std::ios::binary);
             output.write(reinterpret_cast<const char*>(pixels), (kTexels + 2ull) * 16);
@@ -157,19 +157,19 @@ public:
             }
             buffer->unmap();
         }
-        return failure.empty() ? RhiTestResult::pass("HDR impulse peak bound, NPOT polar mip energy and forest field readback")
-            : RhiTestResult::fail(failure);
+        return failure.empty() ? RHITestResult::pass("HDR impulse peak bound, NPOT polar mip energy and forest field readback")
+            : RHITestResult::fail(failure);
     }
 };
 
-class EnvironmentPrefilterCaptureViewTest final : public RhiTest {
+class EnvironmentPrefilterCaptureViewTest final : public RHITest {
 public:
-    EnvironmentPrefilterCaptureViewTest() { type = RhiTestType::Rendering; name = "environment_prefilter_capture_view"; }
-    RhiTestResult run(RhiTestContext& context) override
+    EnvironmentPrefilterCaptureViewTest() { type = RHITestType::Rendering; name = "environment_prefilter_capture_view"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderSampleLoadResult sample;
         std::string log;
-        if (!render::loadBuiltInRenderSample("realtime-lighting", sample, log)) { return RhiTestResult::fail(log); }
+        if (!render::loadBuiltInRenderSample("realtime-lighting", sample, log)) { return RHITestResult::fail(log); }
         // The camera recovered from LookDev_2026_09_11_12_23_50.ngfx-capture.
         auto view = sample.graph.viewProperties();
         view["camera"] = {{"eye", {-0.8574517965, 1.6639534235, 1.8709540367}},
@@ -177,28 +177,28 @@ public:
             {"fovDegrees", 45}, {"znear", 0.0016666661}, {"zfar", 166.6666107}, {"reversedZ", true}};
         view["temporalJitter"] = false;
         sample.graph.setViewProperties(view);
-        auto* sr = sample.graph.findNode("DlssSr");
-        auto* nr = sample.graph.findNode("DlssNr");
-        if (sr == nullptr || nr == nullptr) { return RhiTestResult::fail("Missing realtime sample reconstruction nodes"); }
+        auto* sr = sample.graph.findNode("DLSSSR");
+        auto* nr = sample.graph.findNode("DLSSNR");
+        if (sr == nullptr || nr == nullptr) { return RHITestResult::fail("Missing realtime sample reconstruction nodes"); }
         const auto srId = sr->id, nrId = nr->id;
         sample.graph.removeNode(srId);
         sample.graph.removeNode(nrId);
         sample.graph.addEdge("Deferred.color", "AutoExposure.source");
         sample.graph.addEdge("AutoExposure.color", "FinalBlit.source");
         scene::SceneDocument scene;
-        if (!scene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) { return RhiTestResult::fail(scene.lastLoadResult().error); }
+        if (!scene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) { return RHITestResult::fail(scene.lastLoadResult().error); }
         render::RenderGraphPreviewRenderer preview;
         preview.bindRuntimeScene(&scene);
         auto result = preview.initialize(context.enableValidation, true);
-        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires raster mesh shaders and ray queries"); }
-        if (!result) { return RhiTestResult::fail("Initialize capture view"); }
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("Requires raster mesh shaders and ray queries"); }
+        if (!result) { return RHITestResult::fail("Initialize capture view"); }
         preview.setEnvironment({.enabled = true, .path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/ABeautifulGame/environment.hdr"});
         for (uint32_t frame = 0; frame < 32; ++frame) {
-            if (!preview.render(sample.graph, 1198, 438)) { return RhiTestResult::fail(preview.lastLog()); }
+            if (!preview.render(sample.graph, 1198, 438)) { return RHITestResult::fail(preview.lastLog()); }
         }
         if (!saveRgba8Png(context.outputDirectory / "CaptureView.png", reinterpret_cast<const uint8_t*>(preview.pixels().data()),
-                preview.width(), preview.height(), log)) { return RhiTestResult::fail(log); }
-        return RhiTestResult::pass("Captured camera renders through deferred lighting without SR or NR");
+                preview.width(), preview.height(), log)) { return RHITestResult::fail(log); }
+        return RHITestResult::pass("Captured camera renders through deferred lighting without SR or NR");
     }
 };
 

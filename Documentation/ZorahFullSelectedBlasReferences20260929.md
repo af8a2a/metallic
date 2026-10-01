@@ -28,17 +28,17 @@ BLAS header 从 32 B 扩展到 64 B，cut cache 起点从第 2 个 uint4 调整�
 
 ```powershell
 cmake --build build-release --target MetallicGPUDrivenSample -j 6
-cmake --build build-scheduling-release --target MetallicRhiTests -j 6
+cmake --build build-scheduling-release --target MetallicRHITests -j 6
 ```
 
 以下 **6 项 GPU 测试通过，无跳过**，均启用验证层：
 
-- `RhiRendering.stream_blas_selected_allocation`：新增测试直接执行生产 shader，137 个实例跨 3 个线程组，初始实例容量全零；覆盖稀疏 mask、部分尾组、反向实例映射、精确容量、引用/构建槽/单 BLAS 超限和未就绪 CLAS。逐项核对连续区间、完整回退、实际引用内容、地址低位进位、间接参数和尾部未被写入。
-- `RhiRendering.stream_blas_cut_cache`：稳定 cut 复用、LOD 改变、取消录制和 CLAS 退休后的失效。
-- `RhiRendering.minizorah_clas_in_flight`。
-- `RhiRendering.stream_clas_runtime_lifecycle`。
-- `RhiRendering.stream_clas_eviction_reupload`。
-- `RhiRendering.zorah_full_first_frame`：一次 MiniZorah→Full 切换、完整准备、后续渲染及材质分桶检查。
+- `RHIRendering.stream_blas_selected_allocation`：新增测试直接执行生产 shader，137 个实例跨 3 个线程组，初始实例容量全零；覆盖稀疏 mask、部分尾组、反向实例映射、精确容量、引用/构建槽/单 BLAS 超限和未就绪 CLAS。逐项核对连续区间、完整回退、实际引用内容、地址低位进位、间接参数和尾部未被写入。
+- `RHIRendering.stream_blas_cut_cache`：稳定 cut 复用、LOD 改变、取消录制和 CLAS 退休后的失效。
+- `RHIRendering.minizorah_clas_in_flight`。
+- `RHIRendering.stream_clas_runtime_lifecycle`。
+- `RHIRendering.stream_clas_eviction_reupload`。
+- `RHIRendering.zorah_full_first_frame`：一次 MiniZorah→Full 切换、完整准备、后续渲染及材质分桶检查。
 
 日志未发现 Vulkan validation error、VUID 或 DeviceLost。检查了 Full settled/base-color 输出，建筑、人物、植被和材质覆盖正常；保留既有单样本噪声。这是 960×540 原生、DLSS 关闭的测试图，不代表编辑器 DLSS 漫游的逐像素或长期稳定性证明。
 

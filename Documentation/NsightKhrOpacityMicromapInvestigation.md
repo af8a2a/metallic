@@ -65,7 +65,7 @@ older than 1.4.357.
 ### Workaround verification
 
 Final RelWithDebInfo builds of `Metallic`, `MetallicGPUDrivenSample`, and
-`MetallicRhiTests` succeeded on 2026-09-12. The headless regression processes
+`MetallicRHITests` succeeded on 2026-09-12. The headless regression processes
 produced these results with the installed Nsight Graphics 2026.3.1:
 
 | Configuration | Tests passed | Local report |
@@ -187,7 +187,7 @@ it does not establish the behavior of other Nsight versions or every KHR OMM API
 
 ## Reproduction
 
-The existing `RhiRendering.opacity_micromap_ray_query` test reproduces the editor's
+The existing `RHIRendering.opacity_micromap_ray_query` test reproduces the editor's
 scene-resource preparation path using two alpha-masked triangles. It first runs
 without OMM, then builds real KHR OMM and checks ray visibility across five
 material variants. Its test devices do not enable Streamline or Aftermath.
@@ -207,14 +207,14 @@ Build the diagnostic from an x64 Visual Studio developer shell:
 
 ```powershell
 cmake --preset metallic-relwithdebinfo -DMETALLIC_BUILD_TESTS=ON
-cmake --build build-relwithdebinfo --target MetallicRhiTests --parallel 6
+cmake --build build-relwithdebinfo --target MetallicRHITests --parallel 6
 ```
 
 Run the control and injected cases in separate processes:
 
 ```powershell
-./build-relwithdebinfo/tests/MetallicRhiTests.exe --rhi-no-validation --gtest_filter='*opacity_micromap_ray_query*' --output-dir .tmp/rtas-relwithdebinfo/rel-baseline
-./build-relwithdebinfo/tests/MetallicRhiTests.exe --rhi-no-validation --rhi-nsight-capture --gtest_filter='*opacity_micromap_ray_query*' --output-dir .tmp/rtas-relwithdebinfo/rel-injected
+./build-relwithdebinfo/tests/MetallicRHITests.exe --rhi-no-validation --gtest_filter='*opacity_micromap_ray_query*' --output-dir .tmp/rtas-relwithdebinfo/rel-baseline
+./build-relwithdebinfo/tests/MetallicRHITests.exe --rhi-no-validation --rhi-nsight-capture --gtest_filter='*opacity_micromap_ray_query*' --output-dir .tmp/rtas-relwithdebinfo/rel-injected
 ```
 
 For debugger inspection, also pass `--gtest_catch_exceptions=0`. The tests use
@@ -276,7 +276,7 @@ micromapData.sType      = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_MICR
 micromapData.usageCountsCount = 1
 ```
 
-The stack leads directly through `VulkanRhi.cpp:6267`,
+The stack leads directly through `VulkanRHI.cpp:6267`,
 `SceneAccelerationStructure.cpp:915`, and
 `ScenePathTraceResources::pumpPrepareAsync`, matching the reported editor stack.
 The scene builder is recording the micromap build at this point; its ordinary
@@ -376,7 +376,7 @@ Source locations establishing the sample's actual choices:
 - `E:/vk_mini_samples/samples/mm_opacity/mm_process.cpp:255`: records `vkCmdBuildMicromapsEXT`.
 - `E:/vk_mini_samples/samples/mm_opacity/mm_opacity.cpp:467`: attaches EXT OMM to triangle geometry.
 
-Corresponding Metallic code is in `VulkanRhi.cpp`: extension selection at line
+Corresponding Metallic code is in `VulkanRHI.cpp`: extension selection at line
 2286, KHR micromap geometry construction at line 543, the OMM build at line 6267,
 and address-based OMM creation at line 7372.
 

@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -23,14 +23,14 @@ void requireFull(bool condition, const std::string& message)
     if (!condition) { throw std::runtime_error(message); }
 }
 
-class ZorahFullFirstFrameTest final : public RhiTest {
+class ZorahFullFirstFrameTest final : public RHITest {
 public:
-    ZorahFullFirstFrameTest() { type = RhiTestType::Rendering; name = "zorah_full_first_frame"; }
+    ZorahFullFirstFrameTest() { type = RHITestType::Rendering; name = "zorah_full_first_frame"; }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         if (!std::getenv("METALLIC_TEST_ZORAH_FULL")) {
-            return RhiTestResult::skip("Set METALLIC_TEST_ZORAH_FULL=1 after the complete Z5 cook");
+            return RHITestResult::skip("Set METALLIC_TEST_ZORAH_FULL=1 after the complete Z5 cook");
         }
         const auto directory = std::filesystem::absolute(context.outputDirectory);
         std::filesystem::create_directories(directory);
@@ -59,8 +59,8 @@ public:
             graph.markOutput("VBuffer.color");
             // Headless evidence uses native resolution. The interactive sample
             // retains DLSS-SR; its timing is not compared to this readback run.
-            graph.removeNode(graph.findNode("DlssSr")->id);
-            graph.removeNode(graph.findNode("DlssNr")->id);
+            graph.removeNode(graph.findNode("DLSSSR")->id);
+            graph.removeNode(graph.findNode("DLSSNR")->id);
             graph.addEdge("Deferred.color", "AutoExposure.source");
             graph.addEdge("AutoExposure.color", "FinalBlit.source");
             auto view = graph.viewProperties(); view["temporalJitter"] = false; graph.setViewProperties(view);
@@ -99,8 +99,8 @@ public:
                     // Explicit Full-only validation does not require an unrelated MiniZorah cook.
                     RenderSampleLoadResult mini;
                     requireFull(loadBuiltInRenderSample(kDefaultGPUDrivenSampleId, mini, log), log);
-                    mini.graph.removeNode(mini.graph.findNode("DlssSr")->id);
-                    mini.graph.removeNode(mini.graph.findNode("DlssNr")->id);
+                    mini.graph.removeNode(mini.graph.findNode("DLSSSR")->id);
+                    mini.graph.removeNode(mini.graph.findNode("DLSSNR")->id);
                     mini.graph.addEdge("Deferred.color", "AutoExposure.source");
                     mini.graph.addEdge("AutoExposure.color", "FinalBlit.source");
                     preview.bindRuntimeScene(nullptr);
@@ -293,10 +293,10 @@ public:
                 report["runs"].push_back(run); report.erase("currentRun"); save();
             }
             report["status"]="passed"; save();
-            return RhiTestResult::pass("Full source instances, budgeted texture tails with MASK floor, bounded first frame and repeated release/load");
+            return RHITestResult::pass("Full source instances, budgeted texture tails with MASK floor, bounded first frame and repeated release/load");
         } catch (const std::exception& error) {
             report["status"]="failed"; report["error"]=error.what(); save();
-            return RhiTestResult::fail(error.what());
+            return RHITestResult::fail(error.what());
         }
     }
 };

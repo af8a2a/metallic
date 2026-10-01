@@ -8,7 +8,7 @@ class RenderGraphBufferWritePass final : public ComputePass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
-    CpuRecordingPolicy cpuRecordingPolicy() const override { return CpuRecordingPolicy::ParallelJoined; }
+    CPURecordingPolicy cpuRecordingPolicy() const override { return CPURecordingPolicy::ParallelJoined; }
     bool supportsPipelinedSubmission() const override { return true; }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
@@ -83,7 +83,7 @@ class RenderGraphBufferCopyPass final : public ComputePass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
-    CpuRecordingPolicy cpuRecordingPolicy() const override { return CpuRecordingPolicy::ParallelJoined; }
+    CPURecordingPolicy cpuRecordingPolicy() const override { return CPURecordingPolicy::ParallelJoined; }
     bool supportsPipelinedSubmission() const override { return true; }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {

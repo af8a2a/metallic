@@ -4,7 +4,7 @@
 
 ## 结论
 
-三项失败都来自 `VisibilityBufferPass::createPipelines` 创建 `streamClusterRasterMain` 的同一调用：`VulkanRhi.cpp` 内 `vkCreateComputePipelines` 进入 `nvoglv64.dll + 0x1202596`，抛出首次 CPU 访问异常 `0xc0000005`。
+三项失败都来自 `VisibilityBufferPass::createPipelines` 创建 `streamClusterRasterMain` 的同一调用：`VulkanRHI.cpp` 内 `vkCreateComputePipelines` 进入 `nvoglv64.dll + 0x1202596`，抛出首次 CPU 访问异常 `0xc0000005`。
 
 已用 8 行 Slang 将相同驱动异常缩小到：**同一个 native shader 中，32 位和 64 位整数原子操作同时通过 KHR untyped StorageBuffer pointers 访问**。原始 Slang typed-pointer 模块可创建管线；应用 `normalizeNativeDescriptorHeapSpirv` 后崩溃。最小复现访问地址为 `0x14`，与完整用例的模块偏移一致。
 
@@ -84,7 +84,7 @@ void main(uint3 tid : SV_DispatchThreadID, uniform Push push) {
 
 ```powershell
 $env:METALLIC_SLANG_DESCRIPTOR_MODE = 'native'
-& .\build\tests\MetallicRhiTests.exe --rhi-validation '--gtest_filter=*tessellation_displacement_render'
+& .\build\tests\MetallicRHITests.exe --rhi-validation '--gtest_filter=*tessellation_displacement_render'
 # 独立探针已构建时：normalize/on 可稳定复现，raw/on 可创建管线。
 & .\.cache\native-failure-rerun\PipelineCompileProbe.exe .cache/native-failure-rerun/mix-atomic32-atomic64.spv normalize on
 ```

@@ -34,7 +34,7 @@ public:
             .accelerationStructureRead().setOptional();
         reflection.addTextureOutput("color", "glTF material diagnostic visualization")
             .storageWrite()
-            .format = Format::Rgba8Unorm;
+            .format = Format::RGBA8Unorm;
         return reflection;
     }
 
@@ -445,7 +445,7 @@ private:
             mode == "nrd normal roughness" ||
             mode == "normalRoughness" ||
             mode == "normal roughness") {
-            return kSceneMaterialVisualizationModeNrdNormalRoughness;
+            return kSceneMaterialVisualizationModeNRDNormalRoughness;
         }
         if (mode == "normalDeviation" || mode == "normal deviation") {
             return kSceneMaterialVisualizationModeNormalDeviation;

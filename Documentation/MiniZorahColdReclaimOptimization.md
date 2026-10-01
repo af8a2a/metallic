@@ -28,7 +28,7 @@
 | 候选分区/排序 | 0.1100 / 0.1099 | 0.0014 / 0.0011 |
 | 冷页筛选/调度 | 0.1977 / 0.1105 | 0.0053 / 0.0045 |
 
-其中 unused 集合准备与插入合计均值从 0.1244 ms 降到 0.0092 ms。[耗时对比图](E:/metallic/build-release/stream-cold-opt/analysis/CpuComparison.png) 的横条是两轮均值，刻度是各轮均值。CPU elapsed time 包含抢占和调度影响，两轮之间存在波动，不能将单个数值视为固定性能。
+其中 unused 集合准备与插入合计均值从 0.1244 ms 降到 0.0092 ms。[耗时对比图](E:/metallic/build-release/stream-cold-opt/analysis/CPUComparison.png) 的横条是两轮均值，刻度是各轮均值。CPU elapsed time 包含抢占和调度影响，两轮之间存在波动，不能将单个数值视为固定性能。
 
 forward_2 每帧工作量：
 

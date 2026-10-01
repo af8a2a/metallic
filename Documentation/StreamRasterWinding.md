@@ -26,10 +26,10 @@ of 547,740 pixels (0.096%, primarily triangle-edge ownership).
 ## Regression checks
 
 ```powershell
-cmake --build build-release --target MetallicRhiTests MetallicGPUDrivenSample -j 8
-build-release/tests/MetallicRhiTests.exe --rhi-no-validation --filter stream_reflected_winding
+cmake --build build-release --target MetallicRHITests MetallicGPUDrivenSample -j 8
+build-release/tests/MetallicRHITests.exe --rhi-no-validation --filter stream_reflected_winding
 $env:METALLIC_TEST_MINIZORAH='1'
-build-release/tests/MetallicRhiTests.exe --rhi-no-validation --filter minizorah_ground_coverage
+build-release/tests/MetallicRHITests.exe --rhi-no-validation --filter minizorah_ground_coverage
 ```
 
 The small fixture pairs ordinary and reflected single-sided triangles. It checks

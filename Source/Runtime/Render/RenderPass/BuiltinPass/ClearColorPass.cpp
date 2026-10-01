@@ -8,13 +8,13 @@ class ClearColorPass final : public RasterPass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
-    CpuRecordingPolicy cpuRecordingPolicy() const override { return CpuRecordingPolicy::ParallelJoined; }
+    CPURecordingPolicy cpuRecordingPolicy() const override { return CPURecordingPolicy::ParallelJoined; }
     bool supportsPipelinedSubmission() const override { return true; }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "Cleared color target")
-            .format = Format::Rgba8Unorm;
+            .format = Format::RGBA8Unorm;
         return reflection;
     }
 

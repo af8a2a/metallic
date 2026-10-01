@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/Fixtures.h"
 
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -20,15 +20,15 @@ namespace {
 
 #define FETCH_REQUIRE(expression) do { \
     const render::Result<> result = (expression); \
-    if (!result) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(result) + " " + log); } \
+    if (!result) { return RHITestResult::fail(std::string(#expression) + ": " + toString(result) + " " + log); } \
 } while (false)
 
-class SceneRayTracingPositionFetchTest : public RhiTest {
+class SceneRayTracingPositionFetchTest : public RHITest {
 public:
     explicit SceneRayTracingPositionFetchTest(bool authoredTangents = false, bool native = false)
         : authoredTangents_(authoredTangents), native_(native)
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = native ? "scene_ray_tracing_position_fetch_native" :
             (authoredTangents ? "scene_ray_tracing_position_fetch_authored_tangents" : "scene_ray_tracing_position_fetch");
     }
@@ -39,7 +39,7 @@ public:
             "ray-query", {"ray-query-position", "positionFetch", bench::Capability::PositionFetch, 0.0001}, native_);
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         const auto directory = context.outputDirectory / name;
         std::filesystem::create_directories(directory);
@@ -96,14 +96,14 @@ public:
                 .enableRayTracingPositionFetch = positionFetch,
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
             if (!setup && render::hasError(setup, render::Error::Unsupported)) {
-                return RhiTestResult::skip("ray query/descriptor heap unavailable");
+                return RHITestResult::skip("ray query/descriptor heap unavailable");
             }
             FETCH_REQUIRE(setup);
             if (!device->capabilities().rayQuery || !device->capabilities().bindlessDescriptorHeap) {
-                return RhiTestResult::skip("ray query/descriptor heap unavailable");
+                return RHITestResult::skip("ray query/descriptor heap unavailable");
             }
             if (positionFetch && !device->capabilities().rayTracingPositionFetch) {
-                return RhiTestResult::skip("fallback passed; position fetch unavailable on this device");
+                return RHITestResult::skip("fallback passed; position fetch unavailable on this device");
             }
             if (!positionFetch) {
                 render::RayTracingAccelerationStructureBuildSizes sizes;
@@ -112,13 +112,13 @@ public:
                 }).transform([&](auto rhiValue) { sizes = std::move(rhiValue); });
                 if (device->capabilities().rayTracingPositionFetch ||
                     !render::hasError(unavailable, render::Error::Unsupported)) {
-                    return RhiTestResult::fail("disabled position fetch accepted a data-access BLAS");
+                    return RHITestResult::fail("disabled position fetch accepted a data-access BLAS");
                 }
             }
             auto* queue = device->getQueue(render::QueueType::Graphics);
-            if (queue == nullptr) { return RhiTestResult::fail("graphics queue unavailable"); }
+            if (queue == nullptr) { return RHITestResult::fail("graphics queue unavailable"); }
             scene::Scene scene;
-            if (!scene.load(path)) { return RhiTestResult::fail(scene.lastLoadResult().error); }
+            if (!scene.load(path)) { return RHITestResult::fail(scene.lastLoadResult().error); }
             render::ScenePathTraceResources resources;
             FETCH_REQUIRE(resources.beginPrepareAsync(*device, *queue, {{"path", path.string()}}, scene, log));
             bool complete = false;
@@ -128,21 +128,21 @@ public:
                 FETCH_REQUIRE(resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { complete = std::move(value); }));
                 if (!complete) { std::this_thread::yield(); }
             }
-            if (!complete || !resources.valid()) { return RhiTestResult::fail("scene preparation timed out: " + log); }
+            if (!complete || !resources.valid()) { return RHITestResult::fail("scene preparation timed out: " + log); }
             if (resources.accelerationStructure().stats().compactedBlasBytes == 0) {
-                return RhiTestResult::fail("fixture did not exercise BLAS compaction");
+                return RHITestResult::fail("fixture did not exercise BLAS compaction");
             }
             render::RayTracingAccelerationStructureProperties accelerationProperties;
             FETCH_REQUIRE(device->queryRayTracingAccelerationStructureProperties().transform([&](auto rhiValue) { accelerationProperties = std::move(rhiValue); }));
             if (resources.accelerationStructure().stats().geometryBytes != accelerationProperties.instanceRecordSize) {
-                return RhiTestResult::fail("BLAS build-only vertex/index buffers remained resident");
+                return RHITestResult::fail("BLAS build-only vertex/index buffers remained resident");
             }
             if (resources.shadingVertexBuffer()->desc().structureStride != 16 ||
                 resources.shadingVertexBuffer()->desc().size != 4 * 16 ||
                 (resources.fallbackPositionBuffer() == nullptr) != positionFetch ||
                 (!positionFetch && (resources.fallbackPositionBuffer()->desc().structureStride != 12 ||
                     resources.fallbackPositionBuffer()->desc().size != 4 * 12))) {
-                return RhiTestResult::fail("compact shading/fallback position buffer layout mismatch");
+                return RHITestResult::fail("compact shading/fallback position buffer layout mismatch");
             }
 
             const char* capabilities[] = {"spvRayQueryKHR", "spvRayQueryPositionFetchKHR"};
@@ -176,7 +176,7 @@ public:
                 .bindings = {layout.data(), static_cast<uint32_t>(std::size(layout))},
             }, log);
             if (native_ && render::hasError(initialized, render::Error::Unsupported)) {
-                return RhiTestResult::skip("native descriptor heaps require KHR untyped pointers");
+                return RHITestResult::skip("native descriptor heaps require KHR untyped pointers");
             }
             FETCH_REQUIRE(initialized);
             std::unique_ptr<render::Buffer> output;
@@ -208,7 +208,7 @@ public:
                 if (step != 0) {
                     auto moved = scene.nodes()[0].localMatrix;
                     moved.a03 += translationX;
-                    if (!scene.setNodeLocalMatrix(0, moved)) { return RhiTestResult::fail("instance edit failed"); }
+                    if (!scene.setNodeLocalMatrix(0, moved)) { return RHITestResult::fail("instance edit failed"); }
                     FETCH_REQUIRE(resources.syncRuntimeScene(&scene, log));
                 }
                 FETCH_REQUIRE(frame.begin(step));
@@ -244,7 +244,7 @@ public:
                 FETCH_REQUIRE(frame.wait(10'000'000'000ull));
                 std::array<float, 96> actual{};
                 const void* mapped = output->map();
-                if (mapped == nullptr) { return RhiTestResult::fail("probe readback map failed"); }
+                if (mapped == nullptr) { return RHITestResult::fail("probe readback map failed"); }
                 output->invalidate();
                 std::memcpy(actual.data(), mapped, sizeof(actual));
                 output->unmap();
@@ -261,18 +261,18 @@ public:
                         !near(hit[8], 0.0f) || !near(hit[9], -0.8f) || !near(hit[10], 0.6f) ||
                         !near(hit[11], 1.0f) || !near(hit[19], right ? 1.0f : 0.0f) ||
                         !near(hit[20], right ? 0.75f : 0.25f) || !near(hit[21], right ? 0.75f : 0.25f)) {
-                        return RhiTestResult::fail("incorrect transformed hit/UV/normal at ray " + std::to_string(ray) + " values=" + std::to_string(hit[0]) + "," + std::to_string(hit[1]) + "," + std::to_string(hit[2]) + "," + std::to_string(hit[3]) + "; " + std::to_string(hit[4]) + "," + std::to_string(hit[5]) + "," + std::to_string(hit[6]) + "," + std::to_string(hit[7]));
+                        return RHITestResult::fail("incorrect transformed hit/UV/normal at ray " + std::to_string(ray) + " values=" + std::to_string(hit[0]) + "," + std::to_string(hit[1]) + "," + std::to_string(hit[2]) + "," + std::to_string(hit[3]) + "; " + std::to_string(hit[4]) + "," + std::to_string(hit[5]) + "," + std::to_string(hit[6]) + "," + std::to_string(hit[7]));
                     }
                     if (authoredTangents_ && (!near(hit[12], 1.0f) || !near(hit[15], -1.0f) ||
                         !near(hit[17], -0.6f) || !near(hit[18], -0.8f))) {
-                        return RhiTestResult::fail("authored tangent handedness or back-face TBN changed");
+                        return RHITestResult::fail("authored tangent handedness or back-face TBN changed");
                     }
                 }
-                if (!near(actual[3 * 24 + 11], 0.0f)) { return RhiTestResult::fail("miss ray reported a hit"); }
+                if (!near(actual[3 * 24 + 11], 0.0f)) { return RHITestResult::fail("miss ray reported a hit"); }
                 if (!positionFetch) { baseline[step] = actual; }
                 for (size_t value = 0; value < actual.size(); ++value) {
                     if (!context.evidence && !near(actual[value], baseline[step][value])) {
-                        return RhiTestResult::fail("position fetch changed a hit attribute at float " + std::to_string(value) +
+                        return RHITestResult::fail("position fetch changed a hit attribute at float " + std::to_string(value) +
                             ": fetch=" + std::to_string(actual[value]) + ", fallback=" + std::to_string(baseline[step][value]));
                     }
                 }
@@ -281,8 +281,8 @@ public:
         bench::comparisonEvidence(context, {{"mesh", bench::fileHash(directory / "mesh.bin")},
             {"scene", bench::fileHash(path)}, {"authoredTangents", authoredTangents_}, {"native", native_}, {"steps", 2}}, observations,
             context.deviceDesc && context.deviceDesc->enableRayTracingPositionFetch);
-        if (context.evidence) { return RhiTestResult::pass("analytic transformed hits and refit passed; pair comparison is performed by parent"); }
-        return RhiTestResult::pass("fetch/fallback agree after BLAS compaction and TLAS refit, including UVs and back-face TBN");
+        if (context.evidence) { return RHITestResult::pass("analytic transformed hits and refit passed; pair comparison is performed by parent"); }
+        return RHITestResult::pass("fetch/fallback agree after BLAS compaction and TLAS refit, including UVs and back-face TBN");
     }
 
 private:
@@ -305,21 +305,21 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(ScenePositionFetchNativeTest);
 
-class SceneShadingVertexPackingTest final : public RhiTest {
+class SceneShadingVertexPackingTest final : public RHITest {
 public:
     SceneShadingVertexPackingTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "scene_shading_vertex_packing";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::string log;
         std::unique_ptr<render::Device> device;
         FETCH_REQUIRE(render::createDevice({.applicationName = "Compact scene vertices",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
-        if (!device->capabilities().bindlessDescriptorHeap) { return RhiTestResult::skip("descriptor heap unavailable"); }
+        if (!device->capabilities().bindlessDescriptorHeap) { return RHITestResult::skip("descriptor heap unavailable"); }
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::vector<std::array<float, 3>> directions{
             {0, 0, 0}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1},
@@ -346,7 +346,7 @@ public:
         FETCH_REQUIRE(device->createBuffer({.size = actual.size() * sizeof(actual[0]), .structureStride = 16,
             .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { output = std::move(rhiValue); }));
         void* mapped = input->map();
-        if (mapped == nullptr) { return RhiTestResult::fail("packing input map failed"); }
+        if (mapped == nullptr) { return RHITestResult::fail("packing input map failed"); }
         std::memcpy(mapped, vertices.data(), vertices.size() * sizeof(vertices[0]));
         input->flush(); input->unmap();
         render::ShaderCompileResult shader;
@@ -393,7 +393,7 @@ public:
         FETCH_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
         FETCH_REQUIRE(frame.wait(10'000'000'000ull));
         mapped = output->map();
-        if (mapped == nullptr) { return RhiTestResult::fail("packing readback map failed"); }
+        if (mapped == nullptr) { return RHITestResult::fail("packing readback map failed"); }
         output->invalidate();
         std::memcpy(actual.data(), mapped, actual.size() * sizeof(actual[0]));
         output->unmap();
@@ -406,17 +406,17 @@ public:
                 const float tangentError = std::abs(actual[index][4 + component] - tangent[component]);
                 if (!std::isfinite(normalError) || normalError > 0.00015f ||
                     !std::isfinite(tangentError) || tangentError > 0.0003f) {
-                    return RhiTestResult::fail("CPU packing / GPU decoding direction mismatch at vertex " + std::to_string(index));
+                    return RHITestResult::fail("CPU packing / GPU decoding direction mismatch at vertex " + std::to_string(index));
                 }
                 maximumNormalError = std::max(maximumNormalError, normalError);
                 maximumTangentError = std::max(maximumTangentError, tangentError);
             }
             if (actual[index][7] != (index % 2 == 0 ? -1.0f : 1.0f) ||
                 std::memcmp(actual[index].data() + 8, vertices[index].texcoord, sizeof(vertices[index].texcoord)) != 0) {
-                return RhiTestResult::fail("tangent sign or full-precision UV changed during packing");
+                return RHITestResult::fail("tangent sign or full-precision UV changed during packing");
             }
         }
-        return RhiTestResult::pass("519 directions: maximum component error normal=" + std::to_string(maximumNormalError) +
+        return RHITestResult::pass("519 directions: maximum component error normal=" + std::to_string(maximumNormalError) +
             ", tangent=" + std::to_string(maximumTangentError) + "; zero vectors, handedness and float32 UV preserved");
     }
 };

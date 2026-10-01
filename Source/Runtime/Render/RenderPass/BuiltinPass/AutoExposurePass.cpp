@@ -34,9 +34,9 @@ public:
         source.format = Format::Unknown;
         auto& color = reflection.addTextureOutput("color", "Exposed color; HDR display mapping occurs in FinalBlit");
         color.storageWrite();
-        const bool hdr = context.displayOutput.mode == DisplayOutputMode::HdrScRgb;
-        color.format = hdr ? Format::Rgba16Sfloat : Format::Rgba8Unorm;
-        color.colorEncoding = hdr ? DisplayColorEncoding::ExposedLinear : DisplayColorEncoding::Srgb;
+        const bool hdr = context.displayOutput.mode == DisplayOutputMode::HDRscRGB;
+        color.format = hdr ? Format::RGBA16Sfloat : Format::RGBA8Unorm;
+        color.colorEncoding = hdr ? DisplayColorEncoding::ExposedLinear : DisplayColorEncoding::sRGB;
         reflection.addBufferOutput("histogram", "64-bin luminance histogram per 16x16 tile")
             .buffer(uint64_t((context.width + 15) / 16) * ((context.height + 15) / 16) * 64 * 4, 4)
             .storageReadWrite();
@@ -101,9 +101,9 @@ public:
             return makeError(Error::InvalidArgument);
         }
         switch (source.desc().format) {
-        case Format::Rgba16Sfloat:
-        case Format::Rgba32Sfloat:
-        case Format::Rg32Sfloat:
+        case Format::RGBA16Sfloat:
+        case Format::RGBA32Sfloat:
+        case Format::RG32Sfloat:
         case Format::R32Sfloat:
         case Format::B10G11R11UfloatPack32:
             break;
@@ -133,7 +133,7 @@ public:
             settings.enabled ? 1u : 0u, toneCurve == "none" ? 2u : (toneCurve == "exponential" ? 1u : 0u),
             finiteProperty(context.properties(), "sourceExposure", 1.0f, 0.000001f, 65536.0f),
             finiteProperty(context.properties(), "artisticExposure", 1.0f, 0.001f, 16.0f),
-            color.desc().format == Format::Rgba16Sfloat ? 1u : 0u,
+            color.desc().format == Format::RGBA16Sfloat ? 1u : 0u,
         };
         auto& commands = context.commandBuffer();
         if (auto* frame = commands.frameContext()) { frame->retain(state_); }

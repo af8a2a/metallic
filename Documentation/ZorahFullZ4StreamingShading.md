@@ -23,11 +23,11 @@ File/Open 切换新场景默认查找 `<源文件>.meshstream.bin`，例如 `Sto
 在 MSVC 开发环境中：
 
 ```powershell
-cmake --build build-release --target MetallicRhiTests MetallicSceneTests MetallicGPUDrivenSample -j 4
+cmake --build build-release --target MetallicRHITests MetallicSceneTests MetallicGPUDrivenSample -j 4
 $env:METALLIC_ZORAH_Z4_PROBES='E:/metallic/build-release/zorah-z2/probes/probes.json'
 New-Item -ItemType Directory -Force build-release/zorah-z4/probes | Out-Null
-build-release/tests/MetallicRhiTests.exe `
-  --gtest_filter=RhiRendering.stream_material_shading:RhiRendering.stream_material_transmission:RhiRendering.stream_material_shadow:RhiRendering.zorah_stream_material_probes `
+build-release/tests/MetallicRHITests.exe `
+  --gtest_filter=RHIRendering.stream_material_shading:RHIRendering.stream_material_transmission:RHIRendering.stream_material_shadow:RHIRendering.zorah_stream_material_probes `
   --output-dir build-release/zorah-z4/probes `
   --gtest_output=json:build-release/zorah-z4/results.json
 ```
@@ -58,7 +58,7 @@ Unlit 探针缺少源 NORMAL；常驻导入生成平滑法线，流式无 normal
 | StoneUdim | 0.003222 |
 | InstancingNoTangent | 0.004805 |
 | MaskedLeaves | 0.083717 |
-| TextureTransformBc4 | 0.256380 |
+| TextureTransformBC4 | 0.256380 |
 | Glass | 0.005601 |
 | Blend | 0 |
 | Unlit | 0.000486 |

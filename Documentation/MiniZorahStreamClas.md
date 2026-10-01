@@ -51,7 +51,7 @@ RTX 5070 Ti，1920×1080，1.5 px，180 帧（前 60 帧固定，后 120 帧转�
 
 1 GiB 的试跑在约 18.6 万 cluster 处耗尽，留下 1,052 页积压。2 GiB 预留在本机同时运行的后台 GPU 工作下出现较大帧时间波动，因此最终收紧为满足该轨迹需求的 1.5 GiB；更长漫游仍应观察池容量和积压。
 
-三个目标 Metallic、MetallicGPUDrivenSample、MetallicRhiTests 构建成功。最终功能组 9/9 通过：Profiler 历史/排序、上传完成/取消、压缩页驻留上传、MiniZorah 180 帧、独立 StreamAsset RTX 回归、CLAS 页计划、CLAS 池构建/退役/重新激活、低构建预算运行时。
+三个目标 Metallic、MetallicGPUDrivenSample、MetallicRHITests 构建成功。最终功能组 9/9 通过：Profiler 历史/排序、上传完成/取消、压缩页驻留上传、MiniZorah 180 帧、独立 StreamAsset RTX 回归、CLAS 页计划、CLAS 池构建/退役/重新激活、低构建预算运行时。
 
 运行时专项测试共 420 帧，每帧预算仅一页最大 cluster 数，验证逐层加载产生的积压收敛、稳定视角不重复构建、转出转回持续复用、无 BLAS/TLAS 分配路径。CLAS 池专项测试显式覆盖退役后重新激活与延迟释放；几何缓存卸载另由既有 eviction / batched unload 测试覆盖。
 
@@ -61,7 +61,7 @@ RTX 5070 Ti，1920×1080，1.5 px，180 帧（前 60 帧固定，后 120 帧转�
 
 ```powershell
 $env:METALLIC_TEST_MINIZORAH='1'
-.\build-relwithdebinfo\tests\MetallicRhiTests.exe '--gtest_filter=*minizorah_profiler_streaming:*stream_clas_runtime_lifecycle:*meshlet_stream_clas_pool_build' --rhi-validation --rhi-async-compute --output-dir E:\metallic\build-relwithdebinfo\stream-clas\verify
+.\build-relwithdebinfo\tests\MetallicRHITests.exe '--gtest_filter=*minizorah_profiler_streaming:*stream_clas_runtime_lifecycle:*meshlet_stream_clas_pool_build' --rhi-validation --rhi-async-compute --output-dir E:\metallic\build-relwithdebinfo\stream-clas\verify
 ```
 
 设置 `METALLIC_TEST_CLAS_OFF=1` 可运行同一 MiniZorah 测试的关闭 CLAS 对照；正常验证保持此变量未设置。
@@ -78,7 +78,7 @@ $env:METALLIC_TEST_MINIZORAH='1'
 - 新增 `stream_clas_eviction_reupload` 回归，以 64 KiB CLAS 池和受控的卸载/重载时序复现。修复前在运行时第 54 帧、页面 45 确定性返回 Failure；修复后完成 420 帧、31 次卸载与重载。相关上传、CLAS 池和运行时测试合计 5/5 通过。
 - MiniZorah 压力轨迹完成 2,400 帧，1920×1080、1.5 px、异步 Compute。几何池缩至 128 MiB、CLAS 池缩至 64 MiB，持续移动及大角度转向；累计淘汰 246,621 页次、上传 253,495 页次，CLAS 因容量推迟累计 868,552 页次（包含同一页跨帧重试）。未退出，日志无 Vulkan validation 错误。
 - 默认 1 GiB 几何池 / 1.5 GiB CLAS 池的 180 帧验证通过，待构建队列收敛至零。缩小缓存仅用于压力测试，样例默认预算没有修改。
-- `build-relwithdebinfo` 的 Metallic、MetallicGPUDrivenSample、MetallicRhiTests，以及用户使用的 `build-release` 的 Metallic、MetallicGPUDrivenSample 均重新构建成功。
+- `build-relwithdebinfo` 的 Metallic、MetallicGPUDrivenSample、MetallicRHITests，以及用户使用的 `build-release` 的 Metallic、MetallicGPUDrivenSample 均重新构建成功。
 
 [修复前日志](E:/metallic/build-relwithdebinfo/clas-crash/before.log) · [回归日志](E:/metallic/build-relwithdebinfo/clas-crash/after.log) · [压力测试数据](E:/metallic/build-relwithdebinfo/clas-crash/stress/MiniZorahProfiler.json) · [默认配置验证](E:/metallic/build-relwithdebinfo/clas-crash/default/MiniZorahProfiler.json)
 
@@ -87,7 +87,7 @@ $env:METALLIC_TEST_MINIZORAH='1'
 ```powershell
 $env:METALLIC_TEST_MINIZORAH='1'
 $env:METALLIC_TEST_CLAS_ROAM_STRESS='1'
-.\build-relwithdebinfo\tests\MetallicRhiTests.exe '--gtest_filter=*minizorah_profiler_streaming' --rhi-validation --rhi-async-compute --output-dir E:\metallic\build-relwithdebinfo\clas-crash\stress
+.\build-relwithdebinfo\tests\MetallicRHITests.exe '--gtest_filter=*minizorah_profiler_streaming' --rhi-validation --rhi-async-compute --output-dir E:\metallic\build-relwithdebinfo\clas-crash\stress
 ```
 
 普通 180 帧验证需移除 `METALLIC_TEST_CLAS_ROAM_STRESS`。以上覆盖确定性生命周期回归及自动漫游轨迹，不是对任意显存压力下长期运行的保证。

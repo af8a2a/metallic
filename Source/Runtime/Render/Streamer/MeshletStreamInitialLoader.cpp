@@ -9,7 +9,7 @@ namespace metallic::render {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-constexpr uint64_t kGpuWaitTimeoutNanoseconds = 30'000'000'000ull;
+constexpr uint64_t kGPUWaitTimeoutNanoseconds = 30'000'000'000ull;
 
 double elapsedMilliseconds(Clock::time_point start)
 {
@@ -79,7 +79,7 @@ Result<> MeshletStreamInitialLoader::pump(MeshletStreamRuntime& runtime,
     const AccumulatedTimer pumpTimer{stats_.pumpMilliseconds};
     auto readiness = runtime.sceneReadiness();
     if (metadataOnly ? runtime.immutableMetadataReady() : readiness.ready) {
-        const auto result = frame_.wait(kGpuWaitTimeoutNanoseconds);
+        const auto result = frame_.wait(kGPUWaitTimeoutNanoseconds);
         if (!result) {
             log = std::string("Initial geometry loader handoff wait failed (30 s timeout): ") + resultToString(result);
             return result;
@@ -95,7 +95,7 @@ Result<> MeshletStreamInitialLoader::pump(MeshletStreamRuntime& runtime,
         return result;
     };
     do {
-        auto result = frame_.begin(++frameIndex_, kGpuWaitTimeoutNanoseconds);
+        auto result = frame_.begin(++frameIndex_, kGPUWaitTimeoutNanoseconds);
         if (!result) { return fail(result, "frame begin (30 s timeout)"); }
         result = commandPool_->reset();
         if (!result) { return fail(result, "command pool reset"); }
@@ -110,7 +110,7 @@ Result<> MeshletStreamInitialLoader::pump(MeshletStreamRuntime& runtime,
         });
         if (!result) { return fail(result, "root resource recording"); }
         const auto residency = runtime.residency().stats();
-        const auto clas = runtime.clasPool() ? runtime.clasPool()->stats() : MeshletStreamClasPoolStats{};
+        const auto clas = runtime.clasPool() ? runtime.clasPool()->stats() : MeshletStreamCLASPoolStats{};
         uploads_.endFrame();
         result = commands_->end();
         if (!result) { return fail(result, "command buffer end"); }
@@ -124,7 +124,7 @@ Result<> MeshletStreamInitialLoader::pump(MeshletStreamRuntime& runtime,
         stats_.uploadBytes += residency.frameUploadBytes;
         {
             const AccumulatedTimer waitTimer{stats_.gpuWaitMilliseconds};
-            result = frame_.wait(kGpuWaitTimeoutNanoseconds);
+            result = frame_.wait(kGPUWaitTimeoutNanoseconds);
         }
         if (!result) { return fail(result, "GPU completion wait (30 s timeout)"); }
 

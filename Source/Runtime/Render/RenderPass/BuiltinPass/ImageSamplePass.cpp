@@ -17,7 +17,7 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "Fullscreen sampled image")
-            .format = Format::Rgba8Unorm;
+            .format = Format::RGBA8Unorm;
         return reflection;
     }
 
@@ -77,7 +77,7 @@ public:
         result = context.device->createGraphicsPipeline(GraphicsPipelineDesc{
             .vertexShader = {vertexShader_.get()},
             .fragmentShader = {fragmentShader_.get()},
-            .colorFormat = Format::Rgba8Unorm,
+            .colorFormat = Format::RGBA8Unorm,
             .topology = PrimitiveTopology::TriangleList,
             .usesBindlessHeap = true,
         }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });

@@ -61,7 +61,7 @@ void emitEnd(uint8_t context, uint16_t query, int64_t cpuTime, uint64_t thread)
 
 } // namespace
 
-void TracyGpuProfiler::beginFrame(Queue& queue, GpuProfileFrame& frame)
+void TracyGPUProfiler::beginFrame(Queue& queue, GPUProfileFrame& frame)
 {
     frame = {};
     if (!captureActive() || exhausted_) { return; }
@@ -73,7 +73,7 @@ void TracyGpuProfiler::beginFrame(Queue& queue, GpuProfileFrame& frame)
     frame.cpuBegin = frame.calibrationCpuTime;
 }
 
-void TracyGpuProfiler::beginZone(GpuProfileFrame& frame, std::string_view name,
+void TracyGPUProfiler::beginZone(GPUProfileFrame& frame, std::string_view name,
     std::source_location location)
 {
     if (frame.active) {
@@ -81,17 +81,17 @@ void TracyGpuProfiler::beginZone(GpuProfileFrame& frame, std::string_view name,
     }
 }
 
-void TracyGpuProfiler::endZone(GpuProfileFrame& frame)
+void TracyGPUProfiler::endZone(GPUProfileFrame& frame)
 {
     if (frame.active && !frame.zones.empty()) { frame.zones.back().cpuEnd = tracy::Profiler::GetTime(); }
 }
 
-void TracyGpuProfiler::endFrame(GpuProfileFrame& frame)
+void TracyGPUProfiler::endFrame(GPUProfileFrame& frame)
 {
     if (frame.active) { frame.cpuEnd = tracy::Profiler::GetTime(); }
 }
 
-void TracyGpuProfiler::publish(const GpuProfileFrame& frame,
+void TracyGPUProfiler::publish(const GPUProfileFrame& frame,
     std::span<const TimestampQueryResult> timestamps, double timestampPeriodNanoseconds)
 {
     if (!frame.active || !captureActive() || frame.connection != connectionId() || exhausted_ ||
@@ -174,10 +174,10 @@ void TracyGpuProfiler::publish(const GpuProfileFrame& frame,
 
 #else
 namespace metallic::render::profiling {
-void TracyGpuProfiler::beginFrame(Queue&, GpuProfileFrame&) {}
-void TracyGpuProfiler::beginZone(GpuProfileFrame&, std::string_view, std::source_location) {}
-void TracyGpuProfiler::endZone(GpuProfileFrame&) {}
-void TracyGpuProfiler::endFrame(GpuProfileFrame&) {}
-void TracyGpuProfiler::publish(const GpuProfileFrame&, std::span<const TimestampQueryResult>, double) {}
+void TracyGPUProfiler::beginFrame(Queue&, GPUProfileFrame&) {}
+void TracyGPUProfiler::beginZone(GPUProfileFrame&, std::string_view, std::source_location) {}
+void TracyGPUProfiler::endZone(GPUProfileFrame&) {}
+void TracyGPUProfiler::endFrame(GPUProfileFrame&) {}
+void TracyGPUProfiler::publish(const GPUProfileFrame&, std::span<const TimestampQueryResult>, double) {}
 } // namespace metallic::render::profiling
 #endif

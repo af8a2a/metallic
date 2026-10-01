@@ -123,6 +123,6 @@ Focused validation:
 
 ```powershell
 cmake -S . -B build-dev -DMETALLIC_BUILD_TESTS=ON
-cmake --build build-dev --target MetallicRhiTests
-build-dev/tests/MetallicRhiTests.exe --gtest_filter=*gpu_clock_calibration*:*gpu_profiling*:*timestamp_query*
+cmake --build build-dev --target MetallicRHITests
+build-dev/tests/MetallicRHITests.exe --gtest_filter=*gpu_clock_calibration*:*gpu_profiling*:*timestamp_query*
 ```

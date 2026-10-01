@@ -64,16 +64,16 @@ TLAS lease 只持有 TLAS 分配，不会自动发现其引用的 BLAS/场景资
 ## 回归入口
 
 ```powershell
-build/tests/MetallicRhiTests.exe --rhi-validation '--gtest_filter=*registry_*:*material_binning*'
+build/tests/MetallicRHITests.exe --rhi-validation '--gtest_filter=*registry_*:*material_binning*'
 $env:METALLIC_SLANG_DESCRIPTOR_MODE = 'native'
-build/tests/MetallicRhiTests.exe --rhi-validation '--gtest_filter=*registry_*:*material_binning*'
+build/tests/MetallicRHITests.exe --rhi-validation '--gtest_filter=*registry_*:*material_binning*'
 ```
 
 新用例覆盖容量耗尽与安全复用、相同 view 去重、错误 registry、跨 kernel 复用、GPU 参数不可变性、参数区增长、双帧重叠、wrapper/pipeline 提前销毁、图像 handle 数组、取消以及多队列部分提交。
 
 扩大回归时 `frame_self_submit_two_slots` 在 `independent copy branch was blocked by the graphics branch` 处失败。以 HEAD `470982feae846325d065296a4b737f4363e30f52` 的原始代码构建同条件对照，复现相同失败；不是本批新增回归。原始日志为 `.cache/rhi-registry/two-slot-baseline.log`，原始代码构建日志为 `baseline-build.log`。对照结束后已逐字节恢复本批修改并重新构建。
 
-2026-09-26 最终验证：`MetallicRhiTests` 与 `Metallic` Debug 完整构建通过；排除上述已确认基线失败后，Mapped 的 28 项定向/既有回归全部通过，Native 的 6 项 registry/材质分桶测试全部通过，无 Vulkan VUID 告警。日志在 `.cache/rhi-registry/final-mapped.log` 与 `final-native.log`。未做编辑器交互、DLSS 场景切换或帧时间 A/B 测量。
+2026-09-26 最终验证：`MetallicRHITests` 与 `Metallic` Debug 完整构建通过；排除上述已确认基线失败后，Mapped 的 28 项定向/既有回归全部通过，Native 的 6 项 registry/材质分桶测试全部通过，无 Vulkan VUID 告警。日志在 `.cache/rhi-registry/final-mapped.log` 与 `final-native.log`。未做编辑器交互、DLSS 场景切换或帧时间 A/B 测量。
 
 ## 第二批兼容 ABI 与刷新契约
 
@@ -87,7 +87,7 @@ Raster 捕获实际使用的 leases，NRD 捕获 packet 和 kernel 实现。场�
 
 ### 第二批验证（2026-09-26）
 
-构建配置：`build-full`，Debug，SOURCE dependencies，NRD/tests 开启，OpenUSD/NTC 关闭。`Metallic`、`MetallicRhiTests`、`MetallicNrdTests` 构建和 `git diff --check` 均通过。
+构建配置：`build-full`，Debug，SOURCE dependencies，NRD/tests 开启，OpenUSD/NTC 关闭。`Metallic`、`MetallicRHITests`、`MetallicNRDTests` 构建和 `git diff --check` 均通过。
 
 | 验证 | 结果 | 本地日志 |
 | --- | --- | --- |
@@ -135,7 +135,7 @@ Slang 的 `.data` 是普通 GPU 指针，`.length()` 在 stride 与 `sizeof(T)` 
 
 ### 第三批验证（2026-09-26）
 
-配置沿用第二批 `build-full`；最终 `Metallic`、`MetallicRhiTests`、`MetallicNrdTests` Debug 构建通过。结果日志均在 `.cache/registry-stage3/`：
+配置沿用第二批 `build-full`；最终 `Metallic`、`MetallicRHITests`、`MetallicNRDTests` Debug 构建通过。结果日志均在 `.cache/registry-stage3/`：
 
 | 验证 | 结果 | 日志 |
 | --- | --- | --- |
@@ -187,7 +187,7 @@ Shader objects 使用明确的 `RasterExecutionState`（cull/front-face、depth 
 本机实际启用了 unified layout：三张测试目标的 image transition 从 optimal 策略的 6 次降为 GENERAL 策略的 3 次，其余三个依赖为 memory barrier；两种策略的完整像素结果一致。原始证据在 `.cache/registry-stage4/core-mapped.xml`。这些是功能/命令数量证据，不是帧时间收益。
 
 
-沿用 `build-full` Debug 配置，`Metallic`、`MetallicRhiTests`、`MetallicNrdTests` 构建通过。主要回归通过 `VK_LAYER_SETTINGS_PATH=.cache/registry-stage4/sync-validation` 加载 `khronos_validation.validate_sync = true`，同时启用常规 Vulkan validation。
+沿用 `build-full` Debug 配置，`Metallic`、`MetallicRHITests`、`MetallicNRDTests` 构建通过。主要回归通过 `VK_LAYER_SETTINGS_PATH=.cache/registry-stage4/sync-validation` 加载 `khronos_validation.validate_sync = true`，同时启用常规 Vulkan validation。
 
 | 验证 | 结果 | `.cache/registry-stage4/` 日志 |
 | --- | --- | --- |

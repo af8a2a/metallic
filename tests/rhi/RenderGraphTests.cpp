@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -50,22 +50,22 @@ constexpr const char* kShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
 constexpr const char* kBindlessSmokeShaderModuleName = "Features/SmokeTests/BindlessSmoke";
 constexpr const char* kBindlessSmokeVertexEntryPoint = "bindlessSmokeVertexMain";
 constexpr const char* kBindlessSmokeFragmentEntryPoint = "bindlessSmokeFragmentMain";
-constexpr uint32_t kSpirvMagic = 0x07230203u;
-constexpr uint32_t kSpirvVersion16 = 0x00010600u;
-constexpr uint16_t kSpirvOpExtension = 10u;
-constexpr uint16_t kSpirvOpExtInstImport = 11u;
-constexpr uint16_t kSpirvOpCapability = 17u;
-constexpr uint16_t kSpirvOpRayQueryGetIntersectionTriangleVertexPositionsKhr = 5340u;
-constexpr uint32_t kSpirvRayQueryPositionFetchKhr = 5391u;
-constexpr uint16_t kSpirvOpRayQueryGetIntersectionClusterIdNv = 5345u;
-constexpr uint32_t kSpirvRayTracingClusterAccelerationStructureNv = 5437u;
+constexpr uint32_t kSPIRVMagic = 0x07230203u;
+constexpr uint32_t kSPIRVVersion16 = 0x00010600u;
+constexpr uint16_t kSPIRVOpExtension = 10u;
+constexpr uint16_t kSPIRVOpExtInstImport = 11u;
+constexpr uint16_t kSPIRVOpCapability = 17u;
+constexpr uint16_t kSPIRVOpRayQueryGetIntersectionTriangleVertexPositionsKhr = 5340u;
+constexpr uint32_t kSPIRVRayQueryPositionFetchKhr = 5391u;
+constexpr uint16_t kSPIRVOpRayQueryGetIntersectionClusterIdNv = 5345u;
+constexpr uint32_t kSPIRVRayTracingClusterAccelerationStructureNv = 5437u;
 
 // Native DescriptorHandle shaders expose only Slang's unbounded heap arrays.
 // A scalar/fixed-array descriptor here would silently restore a per-pass Vulkan
 // binding, even if its binding number happened to match a heap's number.
 bool hasNativeComputeResourceInterface(const std::vector<uint32_t>& words)
 {
-    if (words.size() < 5 || words[0] != kSpirvMagic) { return false; }
+    if (words.size() < 5 || words[0] != kSPIRVMagic) { return false; }
     bool heapCapability = false, heapBuiltin = false, deviceAddresses = false;
     uint32_t pushBlocks = 0;
     for (size_t offset = 5; offset < words.size();) {
@@ -154,7 +154,7 @@ bool spirvContainsCapability(const std::vector<uint32_t>& spirv, uint32_t expect
         if (wordCount == 0 || wordIndex + wordCount > spirv.size()) {
             return false;
         }
-        if (opcode == kSpirvOpCapability && wordCount >= 2 && spirv[wordIndex + 1] == expectedCapability) {
+        if (opcode == kSPIRVOpCapability && wordCount >= 2 && spirv[wordIndex + 1] == expectedCapability) {
             return true;
         }
         wordIndex += wordCount;
@@ -171,7 +171,7 @@ bool spirvContainsExtension(const std::vector<uint32_t>& spirv, std::string_view
         if (wordCount == 0 || wordIndex + wordCount > spirv.size()) {
             return false;
         }
-        if (opcode == kSpirvOpExtension && wordCount >= 2) {
+        if (opcode == kSPIRVOpExtension && wordCount >= 2) {
             const char* begin = reinterpret_cast<const char*>(spirv.data() + wordIndex + 1);
             const char* limit = begin + static_cast<size_t>(wordCount - 1) * sizeof(uint32_t);
             const char* end = std::find(begin, limit, '\0');
@@ -195,7 +195,7 @@ bool spirvContainsExtendedInstructionSet(
         if (wordCount == 0 || wordIndex + wordCount > spirv.size()) {
             return false;
         }
-        if (opcode == kSpirvOpExtInstImport && wordCount >= 3) {
+        if (opcode == kSPIRVOpExtInstImport && wordCount >= 3) {
             const char* begin = reinterpret_cast<const char*>(spirv.data() + wordIndex + 2);
             const char* limit = begin + static_cast<size_t>(wordCount - 2) * sizeof(uint32_t);
             const char* end = std::find(begin, limit, '\0');
@@ -382,7 +382,7 @@ public:
         render::RenderPassReflection reflection;
         reflection.addBindlessSampledInput("source", "Source bindless sampled texture");
         reflection.addOutput("color", "Bindless sampled output")
-            .format = render::Format::Rgba8Unorm;
+            .format = render::Format::RGBA8Unorm;
         return reflection;
     }
 
@@ -414,7 +414,7 @@ public:
         result = context.device->createGraphicsPipeline(render::GraphicsPipelineDesc{
             .vertexShader = {vertexShader_.get()},
             .fragmentShader = {fragmentShader_.get()},
-            .colorFormat = render::Format::Rgba8Unorm,
+            .colorFormat = render::Format::RGBA8Unorm,
             .topology = render::PrimitiveTopology::TriangleList,
             .usesBindlessHeap = true,
         }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
@@ -591,8 +591,8 @@ public:
             .texture2D(outputWidth, outputHeight)
             .storageReadWrite()
             .format = outputRgba16
-                ? render::Format::Rgba16Sfloat
-                : render::Format::Rgba8Unorm;
+                ? render::Format::RGBA16Sfloat
+                : render::Format::RGBA8Unorm;
         return reflection;
     }
 
@@ -629,11 +629,11 @@ public:
         render::RenderPassReflection reflection;
         reflection.addTextureInput("input", "Implicit-sized texture extent relay input")
             .storageReadWrite()
-            .format = render::Format::Rgba8Unorm;
+            .format = render::Format::RGBA8Unorm;
         reflection.addTextureOutput("color", "Texture extent relay output")
             .texture2D(outputWidth, outputHeight)
             .storageReadWrite()
-            .format = render::Format::Rgba8Unorm;
+            .format = render::Format::RGBA8Unorm;
         return reflection;
     }
 
@@ -674,10 +674,10 @@ public:
         reflection.addTextureInput("input", "Explicit-sized texture extent consumer input")
             .texture2D(inputWidth, inputHeight)
             .storageReadWrite()
-            .format = render::Format::Rgba8Unorm;
+            .format = render::Format::RGBA8Unorm;
         reflection.addTextureOutput("color", "Default-sized texture extent consumer output")
             .storageReadWrite()
-            .format = render::Format::Rgba8Unorm;
+            .format = render::Format::RGBA8Unorm;
         return reflection;
     }
 
@@ -1095,7 +1095,7 @@ bool writeAlphaMaskScene(
     }
 
     gltf << R"json({
-  "asset": { "version": "2.0", "generator": "MetallicRhiTests" },
+  "asset": { "version": "2.0", "generator": "MetallicRHITests" },
   "scene": 0,
   "scenes": [{ "nodes": [0] }],
   "nodes": [{ "mesh": 0, "name": "Alpha Mask Stack" }],
@@ -1244,7 +1244,7 @@ bool writeTransmissionTextureScene(
     }
 
     gltf << R"json({
-  "asset": { "version": "2.0", "generator": "MetallicRhiTests" },
+  "asset": { "version": "2.0", "generator": "MetallicRHITests" },
   "extensionsUsed": [
     "KHR_materials_transmission",
     "KHR_materials_volume",
@@ -1324,15 +1324,15 @@ bool writeTransmissionTextureScene(
     return true;
 }
 
-class RenderGraphReflectionApiTest : public RhiTest {
+class RenderGraphReflectionAPITest : public RHITest {
 public:
-    RenderGraphReflectionApiTest()
+    RenderGraphReflectionAPITest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_reflection_api";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderPassReflection reflection;
         render::RenderGraphField& texture = reflection.addTextureInput("source", "Texture source")
@@ -1340,7 +1340,7 @@ public:
             .sampledRead()
             .bindlessSampledImage()
             .setOptional();
-        texture.format = render::Format::Rgba8Unorm;
+        texture.format = render::Format::RGBA8Unorm;
 
         render::RenderGraphField& buffer = reflection.addBufferOutput("data", "Buffer output")
             .buffer(64, 8)
@@ -1358,7 +1358,7 @@ public:
         const render::RenderGraphField* foundDepth =
             reflection.findField("depth", render::RenderGraphFieldVisibility::Output);
         if (foundTexture == nullptr || foundBuffer == nullptr || foundDepth == nullptr) {
-            return RhiTestResult::fail("reflection did not preserve fields");
+            return RHITestResult::fail("reflection did not preserve fields");
         }
         if (foundTexture->resourceType != render::RenderGraphResourceType::Texture2D ||
             foundTexture->access != render::RenderGraphResourceAccess::TextureSampleRead ||
@@ -1366,7 +1366,7 @@ public:
             foundTexture->width != 32 ||
             foundTexture->height != 16 ||
             !foundTexture->optional) {
-            return RhiTestResult::fail("texture field metadata was not preserved");
+            return RHITestResult::fail("texture field metadata was not preserved");
         }
         if (foundBuffer->resourceType != render::RenderGraphResourceType::Buffer ||
             foundBuffer->access != render::RenderGraphResourceAccess::BufferStorageReadWrite ||
@@ -1374,29 +1374,29 @@ public:
             foundBuffer->size != 64 ||
             foundBuffer->structureStride != 8 ||
             foundBuffer->memoryLocation != render::MemoryLocation::HostReadback) {
-            return RhiTestResult::fail("buffer field metadata was not preserved");
+            return RHITestResult::fail("buffer field metadata was not preserved");
         }
         if (foundDepth->resourceType != render::RenderGraphResourceType::Texture2D ||
             foundDepth->access != render::RenderGraphResourceAccess::TextureDepthStencilWrite ||
             foundDepth->format != render::Format::D32Sfloat ||
             foundDepth->usage != render::TextureUsageBits::DepthStencilAttachment ||
             foundDepth->state != render::ResourceState::DepthStencilAttachment) {
-            return RhiTestResult::fail("depth field metadata was not preserved");
+            return RHITestResult::fail("depth field metadata was not preserved");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphPassKindTest : public RhiTest {
+class RenderGraphPassKindTest : public RHITest {
 public:
     RenderGraphPassKindTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_pass_kind";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const std::unique_ptr<render::RenderGraphPass> triangle =
             render::createRenderGraphPass("TriangleRasterPass");
@@ -1407,11 +1407,11 @@ public:
         const std::unique_ptr<render::RenderGraphPass> pathTrace =
             render::createRenderGraphPass("ScenePathTracePass");
         const std::unique_ptr<render::RenderGraphPass> rtxdi =
-            render::createRenderGraphPass("SceneRtxdiPass");
+            render::createRenderGraphPass("SceneRTXDIPass");
         const std::unique_ptr<render::RenderGraphPass> rtxdiConfidence =
-            render::createRenderGraphPass("RtxdiConfidencePass");
+            render::createRenderGraphPass("RTXDIConfidencePass");
         const std::unique_ptr<render::RenderGraphPass> rtxdiComposite =
-            render::createRenderGraphPass("RtxdiCompositePass");
+            render::createRenderGraphPass("RTXDICompositePass");
         const std::unique_ptr<render::RenderGraphPass> materialVisualization =
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenPreview =
@@ -1419,11 +1419,11 @@ public:
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenStreamAsset =
             render::createRenderGraphPass("GPUDrivenStreamAssetPass");
         const std::unique_ptr<render::RenderGraphPass> nrdDenoise =
-            render::createRenderGraphPass("NrdDenoisePass");
+            render::createRenderGraphPass("NRDDenoisePass");
         const std::unique_ptr<render::RenderGraphPass> streamlineDlssSr =
-            render::createRenderGraphPass("StreamlineDlssSrPass");
+            render::createRenderGraphPass("StreamlineDLSSSRPass");
         const std::unique_ptr<render::RenderGraphPass> streamlineDlssRr =
-            render::createRenderGraphPass("StreamlineDlssRrPass");
+            render::createRenderGraphPass("StreamlineDLSSRRPass");
 
         if (triangle == nullptr ||
             copy == nullptr ||
@@ -1438,59 +1438,59 @@ public:
             nrdDenoise == nullptr ||
             streamlineDlssSr == nullptr ||
             streamlineDlssRr == nullptr) {
-            return RhiTestResult::fail("failed to create built-in render graph passes");
+            return RHITestResult::fail("failed to create built-in render graph passes");
         }
         if (triangle->kind() != render::RenderGraphPassKind::Raster ||
             triangle->queueType() != render::QueueType::Graphics) {
-            return RhiTestResult::fail("TriangleRasterPass is not classified as Raster/Graphics");
+            return RHITestResult::fail("TriangleRasterPass is not classified as Raster/Graphics");
         }
         if (copy->kind() != render::RenderGraphPassKind::Unsafe ||
             copy->queueType() != render::QueueType::Copy) {
-            return RhiTestResult::fail("CopyColorPass is not classified as Unsafe/Copy");
+            return RHITestResult::fail("CopyColorPass is not classified as Unsafe/Copy");
         }
         if (bufferWrite->kind() != render::RenderGraphPassKind::Compute ||
             bufferWrite->queueType() != render::QueueType::Compute) {
-            return RhiTestResult::fail("RenderGraphBufferWritePass is not classified as Compute/Compute");
+            return RHITestResult::fail("RenderGraphBufferWritePass is not classified as Compute/Compute");
         }
         if (pathTrace->kind() != render::RenderGraphPassKind::Compute ||
             pathTrace->queueType() != render::QueueType::Compute) {
-            return RhiTestResult::fail("ScenePathTracePass is not classified as Compute/Compute");
+            return RHITestResult::fail("ScenePathTracePass is not classified as Compute/Compute");
         }
         if (rtxdi->kind() != render::RenderGraphPassKind::Compute ||
             rtxdi->queueType() != render::QueueType::Compute) {
-            return RhiTestResult::fail("SceneRtxdiPass is not classified as Compute/Compute");
+            return RHITestResult::fail("SceneRTXDIPass is not classified as Compute/Compute");
         }
         if (rtxdiConfidence->kind() != render::RenderGraphPassKind::Compute ||
             rtxdiConfidence->queueType() != render::QueueType::Compute) {
-            return RhiTestResult::fail("RtxdiConfidencePass is not classified as Compute/Compute");
+            return RHITestResult::fail("RTXDIConfidencePass is not classified as Compute/Compute");
         }
         if (rtxdiComposite->kind() != render::RenderGraphPassKind::Compute ||
             rtxdiComposite->queueType() != render::QueueType::Compute) {
-            return RhiTestResult::fail("RtxdiCompositePass is not classified as Compute/Compute");
+            return RHITestResult::fail("RTXDICompositePass is not classified as Compute/Compute");
         }
         if (materialVisualization->kind() != render::RenderGraphPassKind::Compute ||
             materialVisualization->queueType() != render::QueueType::Compute) {
-            return RhiTestResult::fail("SceneMaterialVisualizationPass is not classified as Compute/Compute");
+            return RHITestResult::fail("SceneMaterialVisualizationPass is not classified as Compute/Compute");
         }
         if (gpuDrivenPreview->kind() != render::RenderGraphPassKind::Unsafe ||
             gpuDrivenPreview->queueType() != render::QueueType::Graphics) {
-            return RhiTestResult::fail("VisibilityBufferPass is not classified as Unsafe/Graphics");
+            return RHITestResult::fail("VisibilityBufferPass is not classified as Unsafe/Graphics");
         }
         if (gpuDrivenStreamAsset->kind() != render::RenderGraphPassKind::Unsafe ||
             gpuDrivenStreamAsset->queueType() != render::QueueType::Graphics) {
-            return RhiTestResult::fail("GPUDrivenStreamAssetPass is not classified as Unsafe/Graphics");
+            return RHITestResult::fail("GPUDrivenStreamAssetPass is not classified as Unsafe/Graphics");
         }
         if (nrdDenoise->kind() != render::RenderGraphPassKind::Compute ||
             nrdDenoise->queueType() != render::QueueType::Compute) {
-            return RhiTestResult::fail("NrdDenoisePass is not classified as Compute/Compute");
+            return RHITestResult::fail("NRDDenoisePass is not classified as Compute/Compute");
         }
         if (streamlineDlssRr->kind() != render::RenderGraphPassKind::Unsafe ||
             streamlineDlssRr->queueType() != render::QueueType::Graphics) {
-            return RhiTestResult::fail("StreamlineDlssRrPass is not classified as Unsafe/Graphics");
+            return RHITestResult::fail("StreamlineDLSSRRPass is not classified as Unsafe/Graphics");
         }
         if (streamlineDlssSr->kind() != render::RenderGraphPassKind::Unsafe ||
             streamlineDlssSr->queueType() != render::QueueType::Graphics) {
-            return RhiTestResult::fail("StreamlineDlssSrPass is not classified as Unsafe/Graphics");
+            return RHITestResult::fail("StreamlineDLSSSRPass is not classified as Unsafe/Graphics");
         }
 
         bool foundTriangle = false;
@@ -1519,13 +1519,13 @@ public:
             } else if (passInfo.type == "ScenePathTracePass") {
                 foundPathTrace = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
-            } else if (passInfo.type == "SceneRtxdiPass") {
+            } else if (passInfo.type == "SceneRTXDIPass") {
                 foundRtxdi = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
-            } else if (passInfo.type == "RtxdiConfidencePass") {
+            } else if (passInfo.type == "RTXDIConfidencePass") {
                 foundRtxdiConfidence = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
-            } else if (passInfo.type == "RtxdiCompositePass") {
+            } else if (passInfo.type == "RTXDICompositePass") {
                 foundRtxdiComposite = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
             } else if (passInfo.type == "SceneMaterialVisualizationPass") {
@@ -1537,13 +1537,13 @@ public:
             } else if (passInfo.type == "GPUDrivenStreamAssetPass") {
                 foundGPUDrivenStreamAsset = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
                     passInfo.queueType == render::QueueType::Graphics;
-            } else if (passInfo.type == "NrdDenoisePass") {
+            } else if (passInfo.type == "NRDDenoisePass") {
                 foundNrdDenoise = passInfo.kind == render::RenderGraphPassKind::Compute &&
                     passInfo.queueType == render::QueueType::Compute;
-            } else if (passInfo.type == "StreamlineDlssRrPass") {
+            } else if (passInfo.type == "StreamlineDLSSRRPass") {
                 foundStreamlineDlssRr = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
                     passInfo.queueType == render::QueueType::Graphics;
-            } else if (passInfo.type == "StreamlineDlssSrPass") {
+            } else if (passInfo.type == "StreamlineDLSSSRPass") {
                 foundStreamlineDlssSr = passInfo.kind == render::RenderGraphPassKind::Unsafe &&
                     passInfo.queueType == render::QueueType::Graphics;
             }
@@ -1561,31 +1561,31 @@ public:
             !foundNrdDenoise ||
             !foundStreamlineDlssSr ||
             !foundStreamlineDlssRr) {
-            return RhiTestResult::fail("RenderGraphPassInfo did not preserve pass kind metadata");
+            return RHITestResult::fail("RenderGraphPassInfo did not preserve pass kind metadata");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphDlssRrMotionVectorContractTest : public RhiTest {
+class RenderGraphDLSSRRMotionVectorContractTest : public RHITest {
 public:
-    RenderGraphDlssRrMotionVectorContractTest()
+    RenderGraphDLSSRRMotionVectorContractTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "render_graph_dlss_rr_motion_vector_contract";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         std::unique_ptr<render::RenderGraphPass> pathTrace =
             render::createRenderGraphPass("ScenePathTracePass");
         std::unique_ptr<render::RenderGraphPass> streamlineDlssSr =
-            render::createRenderGraphPass("StreamlineDlssSrPass");
+            render::createRenderGraphPass("StreamlineDLSSSRPass");
         std::unique_ptr<render::RenderGraphPass> streamlineDlssRr =
-            render::createRenderGraphPass("StreamlineDlssRrPass");
+            render::createRenderGraphPass("StreamlineDLSSRRPass");
         if (pathTrace == nullptr || streamlineDlssSr == nullptr || streamlineDlssRr == nullptr) {
-            return RhiTestResult::fail("failed to create Streamline DLSS motion-vector passes");
+            return RHITestResult::fail("failed to create Streamline DLSS motion-vector passes");
         }
 
         render::RenderGraphProperties pathTraceProperties = render::RenderGraphProperties::object();
@@ -1600,7 +1600,7 @@ public:
             for (const auto& field : reflection->fields()) {
                 if (field.visibility == render::RenderGraphFieldVisibility::Input &&
                     !render::hasFlag(field.usage, render::TextureUsageBits::Sampled)) {
-                    return RhiTestResult::fail("NGX inputs must allow sampling and shader-read layouts");
+                    return RHITestResult::fail("NGX inputs must allow sampling and shader-read layouts");
                 }
             }
         }
@@ -1620,30 +1620,30 @@ public:
             "depth",
             render::RenderGraphFieldVisibility::Input);
         if (pathTraceMotionVectors == nullptr ||
-            pathTraceMotionVectors->format != render::Format::Rg16Sfloat) {
-            return RhiTestResult::fail(
-                "ScenePathTracePass motionVectors output must use Rg16Sfloat");
+            pathTraceMotionVectors->format != render::Format::RG16Sfloat) {
+            return RHITestResult::fail(
+                "ScenePathTracePass motionVectors output must use RG16Sfloat");
         }
         if (streamlineMotionVectors == nullptr ||
-            streamlineMotionVectors->format != render::Format::Rg16Sfloat) {
-            return RhiTestResult::fail(
-                "StreamlineDlssRrPass motionVectors input must use Rg16Sfloat");
+            streamlineMotionVectors->format != render::Format::RG16Sfloat) {
+            return RHITestResult::fail(
+                "StreamlineDLSSRRPass motionVectors input must use RG16Sfloat");
         }
         if (streamlineSrMotionVectors == nullptr ||
-            streamlineSrMotionVectors->format != render::Format::Rg16Sfloat) {
-            return RhiTestResult::fail(
-                "StreamlineDlssSrPass motionVectors input must use Rg16Sfloat");
+            streamlineSrMotionVectors->format != render::Format::RG16Sfloat) {
+            return RHITestResult::fail(
+                "StreamlineDLSSSRPass motionVectors input must use RG16Sfloat");
         }
         if (pathTraceDepth == nullptr ||
             pathTraceDepth->format != render::Format::R32Sfloat ||
             streamlineSrDepth == nullptr ||
             streamlineSrDepth->format != render::Format::R32Sfloat ||
             !render::hasFlag(streamlineSrDepth->usage, render::TextureUsageBits::Sampled)) {
-            return RhiTestResult::fail(
-                "ScenePathTracePass and StreamlineDlssSrPass must share sampled R32Sfloat depth staging data");
+            return RHITestResult::fail(
+                "ScenePathTracePass and StreamlineDLSSSRPass must share sampled R32Sfloat depth staging data");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
@@ -1679,22 +1679,22 @@ bool hasBoolRuntimeSetting(
         requireHistoryInvalidation);
 }
 
-class RenderGraphRuntimeSettingsDeclarationTest : public RhiTest {
+class RenderGraphRuntimeSettingsDeclarationTest : public RHITest {
 public:
     RenderGraphRuntimeSettingsDeclarationTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_runtime_settings_declarations";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const std::unique_ptr<render::RenderGraphPass> pathTrace =
             render::createRenderGraphPass("ScenePathTracePass");
         const std::unique_ptr<render::RenderGraphPass> rtxdi =
-            render::createRenderGraphPass("SceneRtxdiPass");
+            render::createRenderGraphPass("SceneRTXDIPass");
         const std::unique_ptr<render::RenderGraphPass> nrdDenoise =
-            render::createRenderGraphPass("NrdDenoisePass");
+            render::createRenderGraphPass("NRDDenoisePass");
         const std::unique_ptr<render::RenderGraphPass> materialVisualization =
             render::createRenderGraphPass("SceneMaterialVisualizationPass");
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenPreview =
@@ -1702,9 +1702,9 @@ public:
         const std::unique_ptr<render::RenderGraphPass> gpuDrivenStreamAsset =
             render::createRenderGraphPass("GPUDrivenStreamAssetPass");
         const std::unique_ptr<render::RenderGraphPass> streamlineDlssSr =
-            render::createRenderGraphPass("StreamlineDlssSrPass");
+            render::createRenderGraphPass("StreamlineDLSSSRPass");
         const std::unique_ptr<render::RenderGraphPass> streamlineDlssRr =
-            render::createRenderGraphPass("StreamlineDlssRrPass");
+            render::createRenderGraphPass("StreamlineDLSSRRPass");
         if (pathTrace == nullptr ||
             rtxdi == nullptr ||
             nrdDenoise == nullptr ||
@@ -1713,17 +1713,17 @@ public:
             gpuDrivenStreamAsset == nullptr ||
             streamlineDlssSr == nullptr ||
             streamlineDlssRr == nullptr) {
-            return RhiTestResult::fail("failed to create passes for runtime settings declaration test");
+            return RHITestResult::fail("failed to create passes for runtime settings declaration test");
         }
         if (!hasBoolRuntimeSetting(*pathTrace, "flipBitangent")) {
-            return RhiTestResult::fail("ScenePathTracePass missing Bool runtime setting flipBitangent");
+            return RHITestResult::fail("ScenePathTracePass missing Bool runtime setting flipBitangent");
         }
         if (!hasRuntimeSetting(
                 *pathTrace,
                 "debugView",
                 render::RenderGraphRuntimeSettingType::Enum,
                 true)) {
-            return RhiTestResult::fail("ScenePathTracePass missing history-invalidating debugView enum");
+            return RHITestResult::fail("ScenePathTracePass missing history-invalidating debugView enum");
         }
         for (const char* key : {
                  "debugDisableNormalMap",
@@ -1736,7 +1736,7 @@ public:
                  "debugDisableTransmission",
              }) {
             if (!hasBoolRuntimeSetting(*pathTrace, key, true)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("ScenePathTracePass missing history-invalidating debug Bool setting ") + key);
             }
         }
@@ -1744,39 +1744,39 @@ public:
             !hasBoolRuntimeSetting(*rtxdi, "spatialReuse") ||
             !hasBoolRuntimeSetting(*rtxdi, "initialVisibility") ||
             !hasBoolRuntimeSetting(*rtxdi, "animateLights")) {
-            return RhiTestResult::fail("SceneRtxdiPass missing ReSTIR DI Bool runtime settings");
+            return RHITestResult::fail("SceneRTXDIPass missing ReSTIR DI Bool runtime settings");
         }
         if (!hasBoolRuntimeSetting(*nrdDenoise, "relaxAntiFirefly")) {
-            return RhiTestResult::fail("NrdDenoisePass missing RELAX runtime settings");
+            return RHITestResult::fail("NRDDenoisePass missing RELAX runtime settings");
         }
         if (!hasBoolRuntimeSetting(*nrdDenoise, "relaxConfidenceInputs")) {
-            return RhiTestResult::fail("NrdDenoisePass missing RELAX confidence setting");
+            return RHITestResult::fail("NRDDenoisePass missing RELAX confidence setting");
         }
         if (!hasBoolRuntimeSetting(*materialVisualization, "flipBitangent")) {
-            return RhiTestResult::fail("SceneMaterialVisualizationPass missing Bool runtime setting flipBitangent");
+            return RHITestResult::fail("SceneMaterialVisualizationPass missing Bool runtime setting flipBitangent");
         }
         if (!hasRuntimeSetting(*gpuDrivenPreview, "visualization",
                 render::RenderGraphRuntimeSettingType::Enum, false, false)) {
-            return RhiTestResult::fail("VisibilityBufferPass must expose runtime-only visualization");
+            return RHITestResult::fail("VisibilityBufferPass must expose runtime-only visualization");
         }
         const auto visibilitySubsystems = gpuDrivenPreview->requiredSubsystems();
         if (std::find(visibilitySubsystems.begin(), visibilitySubsystems.end(),
                 render::EnvironmentLightingSubsystem::kSubsystemId) != visibilitySubsystems.end()) {
-            return RhiTestResult::fail("VisibilityBufferPass must not require environment lighting");
+            return RHITestResult::fail("VisibilityBufferPass must not require environment lighting");
         }
         if (!hasBoolRuntimeSetting(*gpuDrivenPreview, "instanceFrustumCull") ||
             !hasBoolRuntimeSetting(*gpuDrivenPreview, "instanceHzbCull") ||
             !hasBoolRuntimeSetting(*gpuDrivenPreview, "meshletFrustumCull") ||
             !hasBoolRuntimeSetting(*gpuDrivenPreview, "meshletNormalConeCull") ||
             !hasBoolRuntimeSetting(*gpuDrivenPreview, "freezeCullingCamera")) {
-            return RhiTestResult::fail("VisibilityBufferPass missing visibility culling runtime settings");
+            return RHITestResult::fail("VisibilityBufferPass missing visibility culling runtime settings");
         }
         for (const auto* pass : {gpuDrivenPreview.get(), gpuDrivenStreamAsset.get()}) {
             if (!hasBoolRuntimeSetting(*pass, "autoLod") ||
                 !hasRuntimeSetting(*pass, "lodPixelError", render::RenderGraphRuntimeSettingType::Float, false, false) ||
                 !hasRuntimeSetting(*pass, "lodBias", render::RenderGraphRuntimeSettingType::Float, false, false) ||
                 !hasRuntimeSetting(*pass, "lodLevel", render::RenderGraphRuntimeSettingType::Int, false, false)) {
-                return RhiTestResult::fail("Resident and stream passes must expose the shared runtime-only LOD controls");
+                return RHITestResult::fail("Resident and stream passes must expose the shared runtime-only LOD controls");
             }
         }
         if (!hasRuntimeSetting(
@@ -1785,8 +1785,8 @@ public:
                 render::RenderGraphRuntimeSettingType::Enum,
                 true,
                 true)) {
-            return RhiTestResult::fail(
-                "StreamlineDlssSrPass mode must invalidate history and rebuild the graph");
+            return RHITestResult::fail(
+                "StreamlineDLSSSRPass mode must invalidate history and rebuild the graph");
         }
         if (!hasRuntimeSetting(
                 *streamlineDlssRr,
@@ -1794,163 +1794,163 @@ public:
                 render::RenderGraphRuntimeSettingType::Enum,
                 true,
                 true)) {
-            return RhiTestResult::fail(
-                "StreamlineDlssRrPass mode must invalidate history and rebuild the graph");
+            return RHITestResult::fail(
+                "StreamlineDLSSRRPass mode must invalidate history and rebuild the graph");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphRuntimeRebuildDirtyTest : public RhiTest {
+class RenderGraphRuntimeRebuildDirtyTest : public RHITest {
 public:
     RenderGraphRuntimeRebuildDirtyTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "render_graph_runtime_rebuild_dirty";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderGraphProperties staticProperties = render::RenderGraphProperties::object();
         staticProperties["mode"] = "Balanced";
 
         render::RenderGraph graph;
         render::RenderGraphNode* node = graph.addNode(
-            "StreamlineDlssRrPass",
-            "DlssRr",
+            "StreamlineDLSSRRPass",
+            "DLSSRR",
             std::move(staticProperties));
         if (node == nullptr) {
-            return RhiTestResult::fail("failed to create Streamline DLSS-RR runtime dirty test node");
+            return RHITestResult::fail("failed to create Streamline DLSS-RR runtime dirty test node");
         }
 
         graph.clearDirty();
         if (!graph.setNodeRuntimeProperty(node->id, "camera.fovDegrees", 55.0f)) {
-            return RhiTestResult::fail("failed to set ordinary DLSS-RR runtime property");
+            return RHITestResult::fail("failed to set ordinary DLSS-RR runtime property");
         }
         if (graph.dirty()) {
-            return RhiTestResult::fail("ordinary DLSS-RR runtime property unexpectedly dirtied graph");
+            return RHITestResult::fail("ordinary DLSS-RR runtime property unexpectedly dirtied graph");
         }
 
         if (!graph.setNodeRuntimeProperty(node->id, "mode", "Balanced")) {
-            return RhiTestResult::fail("failed to set same-effective DLSS-RR runtime mode");
+            return RHITestResult::fail("failed to set same-effective DLSS-RR runtime mode");
         }
         if (graph.dirty()) {
-            return RhiTestResult::fail("same-effective DLSS-RR runtime mode unexpectedly dirtied graph");
+            return RHITestResult::fail("same-effective DLSS-RR runtime mode unexpectedly dirtied graph");
         }
 
         if (!graph.setNodeRuntimeProperty(node->id, "mode", "Quality")) {
-            return RhiTestResult::fail("failed to set DLSS-RR runtime mode through single-property API");
+            return RHITestResult::fail("failed to set DLSS-RR runtime mode through single-property API");
         }
         if (!graph.dirty()) {
-            return RhiTestResult::fail("single-property DLSS-RR mode change did not dirty graph");
+            return RHITestResult::fail("single-property DLSS-RR mode change did not dirty graph");
         }
 
         graph.clearDirty();
         if (!graph.setNodeRuntimeProperty(node->id, "mode", "Quality")) {
-            return RhiTestResult::fail("failed to repeat DLSS-RR runtime mode through single-property API");
+            return RHITestResult::fail("failed to repeat DLSS-RR runtime mode through single-property API");
         }
         if (graph.dirty()) {
-            return RhiTestResult::fail("repeating the same DLSS-RR runtime mode dirtied graph");
+            return RHITestResult::fail("repeating the same DLSS-RR runtime mode dirtied graph");
         }
 
         render::RenderGraphProperties runtimeProperties = node->runtimeProperties;
         runtimeProperties["mode"] = "Performance";
         if (!graph.setNodeRuntimeProperties(node->id, runtimeProperties)) {
-            return RhiTestResult::fail("failed to set DLSS-RR runtime mode through bulk API");
+            return RHITestResult::fail("failed to set DLSS-RR runtime mode through bulk API");
         }
         if (!graph.dirty()) {
-            return RhiTestResult::fail("bulk DLSS-RR mode change did not dirty graph");
+            return RHITestResult::fail("bulk DLSS-RR mode change did not dirty graph");
         }
 
         graph.clearDirty();
         if (!graph.setNodeRuntimeProperties(node->id, runtimeProperties)) {
-            return RhiTestResult::fail("failed to repeat DLSS-RR runtime properties through bulk API");
+            return RHITestResult::fail("failed to repeat DLSS-RR runtime properties through bulk API");
         }
         if (graph.dirty()) {
-            return RhiTestResult::fail("repeating same-effective bulk runtime properties dirtied graph");
+            return RHITestResult::fail("repeating same-effective bulk runtime properties dirtied graph");
         }
 
         runtimeProperties.erase("mode");
         if (!graph.setNodeRuntimeProperties(node->id, std::move(runtimeProperties))) {
-            return RhiTestResult::fail("failed to remove DLSS-RR runtime mode overlay");
+            return RHITestResult::fail("failed to remove DLSS-RR runtime mode overlay");
         }
         if (!graph.dirty()) {
-            return RhiTestResult::fail("removing DLSS-RR mode overlay did not dirty graph");
+            return RHITestResult::fail("removing DLSS-RR mode overlay did not dirty graph");
         }
 
         graph.clearDirty();
         render::RenderGraphProperties overlayWithoutMode = node->runtimeProperties;
         if (!graph.setNodeRuntimeProperties(node->id, std::move(overlayWithoutMode))) {
-            return RhiTestResult::fail("failed to repeat DLSS-RR runtime properties without mode overlay");
+            return RHITestResult::fail("failed to repeat DLSS-RR runtime properties without mode overlay");
         }
         if (graph.dirty()) {
-            return RhiTestResult::fail("same-effective removed DLSS-RR mode overlay dirtied graph");
+            return RHITestResult::fail("same-effective removed DLSS-RR mode overlay dirtied graph");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphSerializationTest : public RhiTest {
+class RenderGraphSerializationTest : public RHITest {
 public:
     RenderGraphSerializationTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_json_roundtrip";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraph graph = render::RenderGraph::createDefaultTriangleGraph();
         render::RenderGraphNode* node = graph.findNode("Triangle");
         if (node == nullptr) {
-            return RhiTestResult::fail("default graph did not create Triangle node");
+            return RHITestResult::fail("default graph did not create Triangle node");
         }
         graph.setNodePosition(node->id, 123.0f, 456.0f);
         graph.clearDirty();
         if (!graph.setNodeRuntimeProperty(node->id, "runtimeOnlySentinel", 42) ||
             !graph.setNodeRuntimeProperty(node->id, "camera.eye", {1.0f, 2.0f, 3.0f})) {
-            return RhiTestResult::fail("setNodeRuntimeProperty failed");
+            return RHITestResult::fail("setNodeRuntimeProperty failed");
         }
         if (graph.dirty()) {
-            return RhiTestResult::fail("runtime property update unexpectedly marked graph dirty");
+            return RHITestResult::fail("runtime property update unexpectedly marked graph dirty");
         }
         if (!node->runtimeProperties.is_object() ||
             !node->runtimeProperties.contains("camera") ||
             !node->runtimeProperties["camera"].contains("eye")) {
-            return RhiTestResult::fail("nested runtime property was not stored as an overlay object");
+            return RHITestResult::fail("nested runtime property was not stored as an overlay object");
         }
 
         const std::string json = render::serializeRenderGraphToString(graph);
         if (json.find("runtimeOnlySentinel") != std::string::npos ||
             json.find("runtimeProperties") != std::string::npos) {
-            return RhiTestResult::fail("runtime properties leaked into serialized graph JSON");
+            return RHITestResult::fail("runtime properties leaked into serialized graph JSON");
         }
         render::RenderGraph loaded;
         std::string message;
         if (!render::deserializeRenderGraphFromString(json, loaded, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
         if (loaded.nodes().size() != 1 || loaded.edges().size() != 0 || loaded.outputs().size() != 1) {
-            return RhiTestResult::fail("round-trip changed graph topology");
+            return RHITestResult::fail("round-trip changed graph topology");
         }
         const render::RenderGraphNode* loadedNode = loaded.findNode("Triangle");
         if (loadedNode == nullptr ||
             loadedNode->type != "TriangleRasterPass" ||
             loadedNode->uiX != 123.0f ||
             loadedNode->uiY != 456.0f) {
-            return RhiTestResult::fail("round-trip changed node data");
+            return RHITestResult::fail("round-trip changed node data");
         }
         if (loaded.firstOutputName() != "Triangle.color") {
-            return RhiTestResult::fail("round-trip changed marked output");
+            return RHITestResult::fail("round-trip changed marked output");
         }
 
         if (!loadedNode->runtimeProperties.empty()) {
-            return RhiTestResult::fail("round-trip restored runtime overlay from JSON");
+            return RHITestResult::fail("round-trip restored runtime overlay from JSON");
         }
         if (!graph.setNodeProperties(node->id, node->properties) || !graph.dirty()) {
-            return RhiTestResult::fail("static property update did not mark graph dirty");
+            return RHITestResult::fail("static property update did not mark graph dirty");
         }
 
         const std::string legacyJson = R"json({
@@ -1967,50 +1967,50 @@ public:
                 },
                 {
                     "id": 2,
-                    "name": "DlssRr",
-                    "type": "StreamlineDlssRrPass",
+                    "name": "DLSSRR",
+                    "type": "StreamlineDLSSRRPass",
                     "properties": {}
                 }
             ],
             "edges": [
-                {"src": "PathTrace.color", "dst": "DlssRr.inputColor"},
-                {"src": "PathTrace.albedo", "dst": "DlssRr.albedo"},
-                {"src": "PathTrace.specularAlbedo", "dst": "DlssRr.specularAlbedo"},
-                {"src": "PathTrace.normalRoughness", "dst": "DlssRr.normalRoughness"},
-                {"src": "PathTrace.motionVectors", "dst": "DlssRr.motionVectors"},
-                {"src": "PathTrace.linearDepth", "dst": "DlssRr.linearDepth"},
-                {"src": "PathTrace.specularHitDistance", "dst": "DlssRr.specularHitDistance"}
+                {"src": "PathTrace.color", "dst": "DLSSRR.inputColor"},
+                {"src": "PathTrace.albedo", "dst": "DLSSRR.albedo"},
+                {"src": "PathTrace.specularAlbedo", "dst": "DLSSRR.specularAlbedo"},
+                {"src": "PathTrace.normalRoughness", "dst": "DLSSRR.normalRoughness"},
+                {"src": "PathTrace.motionVectors", "dst": "DLSSRR.motionVectors"},
+                {"src": "PathTrace.linearDepth", "dst": "DLSSRR.linearDepth"},
+                {"src": "PathTrace.specularHitDistance", "dst": "DLSSRR.specularHitDistance"}
             ],
             "outputs": [
-                "DlssRr.color"
+                "DLSSRR.color"
             ]
         })json";
         render::RenderGraph legacyLoaded;
         if (!render::deserializeRenderGraphFromString(legacyJson, legacyLoaded, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         std::unordered_set<uint32_t> legacyEdgeIds;
         for (const render::RenderGraphEdge& edge : legacyLoaded.edges()) {
             if (edge.id == 0u || !legacyEdgeIds.insert(edge.id).second) {
-                return RhiTestResult::fail("legacy graph edges did not receive unique ids");
+                return RHITestResult::fail("legacy graph edges did not receive unique ids");
             }
         }
         if (legacyEdgeIds.size() != 7u) {
-            return RhiTestResult::fail("legacy graph changed edge count");
+            return RHITestResult::fail("legacy graph changed edge count");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class VisibilityBufferPassLegacyGraphTest : public RhiTest {
+class VisibilityBufferPassLegacyGraphTest : public RHITest {
 public:
     VisibilityBufferPassLegacyGraphTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_visibility_buffer_pass_legacy_json";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const std::string legacyJson = R"json({
             "version": 1,
@@ -2028,7 +2028,7 @@ public:
         render::RenderGraph graph;
         std::string message;
         if (!render::deserializeRenderGraphFromString(legacyJson, graph, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         const render::RenderGraphNode* node = graph.findNode("GPUDriven");
         if (node == nullptr || node->id != 7u ||
@@ -2038,30 +2038,126 @@ public:
             !node->properties.value("freezeCullingCamera", false) ||
             graph.outputs().size() != 3u ||
             graph.firstOutputName() != "GPUDriven.color") {
-            return RhiTestResult::fail("legacy visibility graph migration changed node data or output connections");
+            return RHITestResult::fail("legacy visibility graph migration changed node data or output connections");
         }
         const std::string serialized = render::serializeRenderGraphToString(graph);
         if (serialized.find("GPUDrivenPreviewPass") != std::string::npos ||
             serialized.find("VisibilityBufferPass") == std::string::npos) {
-            return RhiTestResult::fail("migrated visibility graph did not serialize the canonical pass name");
+            return RHITestResult::fail("migrated visibility graph did not serialize the canonical pass name");
         }
         render::RenderGraph reloaded;
         if (!render::deserializeRenderGraphFromString(serialized, reloaded, message) ||
             reloaded.findNode("GPUDriven") == nullptr ||
             reloaded.findNode("GPUDriven")->type != "VisibilityBufferPass") {
-            return RhiTestResult::fail("canonical visibility graph did not round-trip: " + message);
+            return RHITestResult::fail("canonical visibility graph did not round-trip: " + message);
         }
         bool foundCanonical = false;
         for (const render::RenderGraphPassInfo& info : render::listRenderGraphPassTypes()) {
             if (info.type == "GPUDrivenPreviewPass") {
-                return RhiTestResult::fail("legacy visibility pass is still exposed in the editor registry");
+                return RHITestResult::fail("legacy visibility pass is still exposed in the editor registry");
             }
             foundCanonical = foundCanonical || info.type == "VisibilityBufferPass";
         }
         if (!foundCanonical || render::createRenderGraphPass("VisibilityBufferPass") == nullptr) {
-            return RhiTestResult::fail("VisibilityBufferPass is not registered");
+            return RHITestResult::fail("VisibilityBufferPass is not registered");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
+    }
+};
+
+class RenderGraphLegacyAcronymPassNamesTest : public RHITest {
+public:
+    RenderGraphLegacyAcronymPassNamesTest()
+    {
+        type = RHITestType::Rendering;
+        name = "render_graph_legacy_acronym_pass_names_json";
+    }
+
+    RHITestResult run(RHITestContext&) override
+    {
+        constexpr std::array aliases{
+            std::pair{"SceneRtxdiPass", "SceneRTXDIPass"},
+            std::pair{"RtxdiConfidencePass", "RTXDIConfidencePass"},
+            std::pair{"RtxdiCompositePass", "RTXDICompositePass"},
+            std::pair{"RtxcrMaterialSamplePass", "RTXCRMaterialSamplePass"},
+            std::pair{"NrdDenoisePass", "NRDDenoisePass"},
+            std::pair{"StreamlineDlssSrPass", "StreamlineDLSSSRPass"},
+            std::pair{"StreamlineDlssRrPass", "StreamlineDLSSRRPass"},
+            std::pair{"DlssNrPass", "DLSSNRPass"},
+        };
+        constexpr std::array sampleGraphs{
+            "rtxdi_meet_mat.metallic_graph.json",
+            "pathtracing_abeautiful_game_openpbr_dlss_sr.metallic_graph.json",
+            "pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json",
+            "pathtracing_abeautiful_game_openpbr_dlss_nr.metallic_graph.json",
+        };
+        std::array<bool, aliases.size()> covered{};
+        for (size_t sampleIndex = 0; sampleIndex < sampleGraphs.size(); ++sampleIndex) {
+            render::RenderGraph canonical;
+            std::string message;
+            const auto path = std::filesystem::path(PROJECT_SOURCE_DIR) /
+                "Pipelines/Samples" / sampleGraphs[sampleIndex];
+            if (!render::loadRenderGraphFromFile(path, canonical, message)) {
+                return RHITestResult::fail("canonical sample graph did not load: " + message);
+            }
+            if (sampleIndex == 0) {
+                // A node name may contain the old type verbatim. Only its type
+                // should migrate; marked outputs still refer to its saved name.
+                if (canonical.addNode("RTXCRMaterialSamplePass", "RtxcrMaterialSamplePass",
+                        render::RenderGraphProperties{{"view", "chiang"}}, 12.0f, 34.0f) == nullptr ||
+                    !canonical.markOutput("RtxcrMaterialSamplePass.color")) {
+                    return RHITestResult::fail("failed to add the RTXCR legacy-name fixture");
+                }
+            }
+            nlohmann::json expected = nlohmann::json::parse(render::serializeRenderGraphToString(canonical));
+            expected["view"]["savedTypeSentinel"] = "SceneRtxdiPass";
+            nlohmann::json legacy = expected;
+            for (size_t nodeIndex = 0; nodeIndex < expected["nodes"].size(); ++nodeIndex) {
+                auto& node = expected["nodes"][nodeIndex];
+                for (size_t aliasIndex = 0; aliasIndex < aliases.size(); ++aliasIndex) {
+                    const auto& [oldType, currentType] = aliases[aliasIndex];
+                    if (node["type"] != currentType) {
+                        continue;
+                    }
+                    covered[aliasIndex] = true;
+                    node["properties"]["savedTypeSentinel"] = {
+                        {"type", oldType}, {"values", {1, 2, 3}},
+                    };
+                    legacy["nodes"][nodeIndex] = node;
+                    legacy["nodes"][nodeIndex]["type"] = oldType;
+                    break;
+                }
+            }
+            render::RenderGraph migrated;
+            if (!render::deserializeRenderGraphFromString(legacy.dump(), migrated, message)) {
+                return RHITestResult::fail("legacy acronym pass graph did not load: " + message);
+            }
+            const std::string serialized = render::serializeRenderGraphToString(migrated);
+            if (nlohmann::json::parse(serialized) != expected) {
+                return RHITestResult::fail(
+                    "legacy pass migration changed graph data beyond the saved node types");
+            }
+            render::RenderGraph reloaded;
+            if (!render::deserializeRenderGraphFromString(serialized, reloaded, message) ||
+                nlohmann::json::parse(render::serializeRenderGraphToString(reloaded)) != expected) {
+                return RHITestResult::fail("canonical acronym pass graph did not round-trip: " + message);
+            }
+        }
+        if (std::find(covered.begin(), covered.end(), false) != covered.end()) {
+            return RHITestResult::fail("legacy graph fixtures did not cover every renamed pass type");
+        }
+        const auto registeredTypes = render::listRenderGraphPassTypes();
+        for (const auto& [oldType, currentType] : aliases) {
+            if (std::any_of(registeredTypes.begin(), registeredTypes.end(), [&](const auto& info) {
+                    return info.type == oldType;
+                }) || render::createRenderGraphPass(oldType) != nullptr) {
+                return RHITestResult::fail("legacy acronym pass type is exposed in the editor registry");
+            }
+            if (render::createRenderGraphPass(currentType) == nullptr) {
+                return RHITestResult::fail("canonical acronym pass type is not registered");
+            }
+        }
+        return RHITestResult::pass();
     }
 };
 
@@ -2091,26 +2187,26 @@ private:
     std::string previewOutput_;
 };
 
-class GPUDrivenSceneCatalogTest : public RhiTest {
+class GPUDrivenSceneCatalogTest : public RHITest {
 public:
     GPUDrivenSceneCatalogTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "gpu_driven_scene_catalog";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const auto scenes = render::listGPUDrivenSceneSamples();
         if (scenes.size() != 2 || scenes[0].name != "MiniZorah" || scenes[1].name != "ZorahFull") {
-            return RhiTestResult::fail("GPUDriven scene selector must expose MiniZorah and ZorahFull only");
+            return RHITestResult::fail("GPUDriven scene selector must expose MiniZorah and ZorahFull only");
         }
         for (const auto& scene : scenes) {
             for (const auto& path : {std::filesystem::path(scene.scenePath),
                      std::filesystem::path(PROJECT_SOURCE_DIR) / scene.scenePath}) {
                 const char* id = render::gpuDrivenSceneSampleIdForPath(path);
                 if (!id || scene.id != id) {
-                    return RhiTestResult::fail("Relative/absolute File Open path selected the wrong scene preset");
+                    return RHITestResult::fail("Relative/absolute File Open path selected the wrong scene preset");
                 }
             }
 #if defined(_WIN32)
@@ -2118,13 +2214,13 @@ public:
                 std::filesystem::path(scene.scenePath).lexically_relative("Asset");
             const char* caseId = render::gpuDrivenSceneSampleIdForPath(caseVariant);
             if (!caseId || scene.id != caseId) {
-                return RhiTestResult::fail("Windows scene path matching must ignore filename case");
+                return RHITestResult::fail("Windows scene path matching must ignore filename case");
             }
 #endif
             render::RenderSampleLoadResult loaded;
             std::string message;
             if (!render::loadBuiltInRenderSample(scene.id, loaded, message)) {
-                return RhiTestResult::fail(message);
+                return RHITestResult::fail(message);
             }
             const auto* vbuffer = loaded.graph.findNode("VBuffer");
             if (!vbuffer || loaded.desc.loadSceneInEditor ||
@@ -2132,7 +2228,7 @@ public:
                 !vbuffer->properties.value("streamAssetOnly", false) ||
                 vbuffer->properties.value("autoBuildStreamAsset", true) ||
                 !loaded.graph.viewProperties().contains("camera")) {
-                return RhiTestResult::fail("Scene preset must select metadata streaming, its own source and camera");
+                return RHITestResult::fail("Scene preset must select metadata streaming, its own source and camera");
             }
             const bool full = scene.id == render::kGPUDrivenZorahFullSampleId;
             if (vbuffer->properties.value("maxResidentBytes", uint64_t(0)) !=
@@ -2143,39 +2239,39 @@ public:
                 vbuffer->properties.value("streamAssetPath", "") !=
                     (full ? "Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin" :
                             "Asset/MeshletCache/MiniZorahCook/MiniZorah.meshstream.bin")) {
-                return RhiTestResult::fail("Scene switch must load the matching cook, attribute layout and budgets");
+                return RHITestResult::fail("Scene switch must load the matching cook, attribute layout and budgets");
             }
         }
         if (render::gpuDrivenSceneSampleIdForPath({}) ||
             render::gpuDrivenSceneSampleIdForPath("Asset/Other/zorah_main_public.v2.gltf") ||
             render::gpuDrivenSceneSampleIdForPath("Asset/meet_mat.glb") ||
             render::isGPUDrivenSceneSample("gpu-driven-visibility-buffer")) {
-            return RhiTestResult::fail("Unsupported scenes and matching basenames must not enter GPUDrivenSample");
+            return RHITestResult::fail("Unsupported scenes and matching basenames must not enter GPUDrivenSample");
         }
         const auto allSamples = render::listBuiltInRenderSamples();
         if (std::none_of(allSamples.begin(), allSamples.end(), [](const auto& sample) {
                 return sample.id == render::kGPUDrivenVisibilitySampleId;
             })) {
-            return RhiTestResult::fail("The generic editor must retain diagnostic samples");
+            return RHITestResult::fail("The generic editor must retain diagnostic samples");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderSampleLoadTest : public RhiTest {
+class RenderSampleLoadTest : public RHITest {
 public:
     RenderSampleLoadTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_sample_load";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderSampleLoadResult sample;
         std::string message;
         if (!render::loadBuiltInRenderSample("pathtracing-meet-mat", sample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
         if (sample.desc.id != "pathtracing-meet-mat" ||
@@ -2184,27 +2280,27 @@ public:
             sample.desc.scenePath != "Asset/meet_mat.glb" ||
             sample.desc.graphPath != "Pipelines/Samples/pathtracing_meet_mat.metallic_graph.json" ||
             sample.desc.previewOutput != "FinalBlit.color") {
-            return RhiTestResult::fail("built-in Sample metadata did not load as expected");
+            return RHITestResult::fail("built-in Sample metadata did not load as expected");
         }
 
         const render::RenderGraphNode* pathTrace = sample.graph.findNode("PathTrace");
         if (pathTrace == nullptr ||
             !pathTrace->properties.is_object() ||
             pathTrace->properties.value("path", "") != sample.desc.scenePath) {
-            return RhiTestResult::fail("Sample did not apply scene path to target node");
+            return RHITestResult::fail("Sample did not apply scene path to target node");
         }
 
         std::string validationLog;
         if (!sample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (sample.graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("Sample graph first output changed");
+            return RHITestResult::fail("Sample graph first output changed");
         }
 
         render::RenderSampleLoadResult pathTracingSample;
         if (!render::loadBuiltInRenderSample("pathtracing-sample", pathTracingSample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (pathTracingSample.desc.id != "pathtracing-sample" ||
             pathTracingSample.desc.name != "PathTracingSample" ||
@@ -2214,25 +2310,25 @@ public:
             !pathTracingSample.desc.environment.has_value() ||
             pathTracingSample.desc.environment->path != "Asset/ABeautifulGame/environment.hdr" ||
             pathTracingSample.desc.previewOutput != "FinalBlit.color") {
-            return RhiTestResult::fail("OpenPBR PathTracingSample metadata did not load as expected");
+            return RHITestResult::fail("OpenPBR PathTracingSample metadata did not load as expected");
         }
         const render::RenderGraphNode* openPBRPathTrace = pathTracingSample.graph.findNode("PathTrace");
         if (openPBRPathTrace == nullptr ||
             !openPBRPathTrace->properties.is_object() ||
             openPBRPathTrace->properties.value("path", "") != pathTracingSample.desc.scenePath ||
             openPBRPathTrace->properties.value("bsdf", "") != "openpbr") {
-            return RhiTestResult::fail("OpenPBR PathTracingSample did not apply pass defaults");
+            return RHITestResult::fail("OpenPBR PathTracingSample did not apply pass defaults");
         }
         if (!pathTracingSample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (pathTracingSample.graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("OpenPBR PathTracingSample graph first output changed");
+            return RHITestResult::fail("OpenPBR PathTracingSample graph first output changed");
         }
 
         render::RenderSampleLoadResult rtxdiSample;
         if (!render::loadBuiltInRenderSample("rtxdi-sample", rtxdiSample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (rtxdiSample.desc.id != "rtxdi-sample" ||
             rtxdiSample.desc.name != "RTXDI / ReSTIR DI" ||
@@ -2242,9 +2338,9 @@ public:
             !rtxdiSample.desc.environment.has_value() ||
             rtxdiSample.desc.environment->path != "Asset/ABeautifulGame/environment.hdr" ||
             rtxdiSample.desc.previewOutput != "FinalBlit.color") {
-            return RhiTestResult::fail("RTXDI Sample metadata did not load as expected");
+            return RHITestResult::fail("RTXDI Sample metadata did not load as expected");
         }
-        const render::RenderGraphNode* rtxdi = rtxdiSample.graph.findNode("Rtxdi");
+        const render::RenderGraphNode* rtxdi = rtxdiSample.graph.findNode("RTXDI");
         const render::RenderGraphNode* confidence = rtxdiSample.graph.findNode("Confidence");
         const render::RenderGraphNode* relax = rtxdiSample.graph.findNode("Relax");
         const render::RenderGraphNode* composite = rtxdiSample.graph.findNode("Composite");
@@ -2252,10 +2348,10 @@ public:
             confidence == nullptr ||
             relax == nullptr ||
             composite == nullptr ||
-            rtxdi->type != "SceneRtxdiPass" ||
-            confidence->type != "RtxdiConfidencePass" ||
-            relax->type != "NrdDenoisePass" ||
-            composite->type != "RtxdiCompositePass" ||
+            rtxdi->type != "SceneRTXDIPass" ||
+            confidence->type != "RTXDIConfidencePass" ||
+            relax->type != "NRDDenoisePass" ||
+            composite->type != "RTXDICompositePass" ||
             !rtxdi->properties.is_object() ||
             rtxdi->properties.value("path", "") != rtxdiSample.desc.scenePath ||
             rtxdi->properties.value("lightCount", 0) != 256 ||
@@ -2274,18 +2370,18 @@ public:
             relax->properties.value("denoiser", "") != "RELAX" ||
             !relax->properties.value("relaxConfidenceInputs", false) ||
             !relax->properties.value("relaxAntiFirefly", false)) {
-            return RhiTestResult::fail("RTXDI Sample did not apply ReSTIR DI and RELAX defaults");
+            return RHITestResult::fail("RTXDI Sample did not apply ReSTIR DI and RELAX defaults");
         }
         if (!rtxdiSample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (rtxdiSample.graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("RTXDI Sample graph first output changed");
+            return RHITestResult::fail("RTXDI Sample graph first output changed");
         }
 
         render::RenderSampleLoadResult rtxcrSample;
         if (!render::loadBuiltInRenderSample("rtxcr-material-sample", rtxcrSample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (rtxcrSample.desc.id != "rtxcr-material-sample" ||
             rtxcrSample.desc.name != "RTXCR Claire Ponytail" ||
@@ -2295,7 +2391,7 @@ public:
                 "Pipelines/Samples/rtxcr_material_showcase.metallic_graph.json" ||
             rtxcrSample.desc.scenePath.find("ponyTail_15vtx.gltf") == std::string::npos ||
             rtxcrSample.desc.previewOutput != "FinalBlit.color") {
-            return RhiTestResult::fail("RTXCR Sample metadata did not load as expected");
+            return RHITestResult::fail("RTXCR Sample metadata did not load as expected");
         }
         const render::RenderGraphNode* rtxcr = rtxcrSample.graph.findNode("PathTrace");
         if (rtxcr == nullptr ||
@@ -2305,18 +2401,18 @@ public:
             rtxcr->properties.value("maxDepth", 0) != 4 ||
             rtxcr->properties.value("path", "").find("ponyTail_15vtx.gltf") ==
                 std::string::npos) {
-            return RhiTestResult::fail("RTXCR Sample did not preserve Claire groom defaults");
+            return RHITestResult::fail("RTXCR Sample did not preserve Claire groom defaults");
         }
         if (!rtxcrSample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (rtxcrSample.graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("RTXCR Sample graph first output changed");
+            return RHITestResult::fail("RTXCR Sample graph first output changed");
         }
 
         render::RenderSampleLoadResult dlssSrSample;
         if (!render::loadBuiltInRenderSample("pathtracing-sample-dlss-sr", dlssSrSample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (dlssSrSample.desc.id != "pathtracing-sample-dlss-sr" ||
             dlssSrSample.desc.name != "PathTracingSample / DLSS-SR" ||
@@ -2325,28 +2421,28 @@ public:
             dlssSrSample.desc.graphPath != "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_sr.metallic_graph.json" ||
             dlssSrSample.desc.previewOutput != "FinalBlit.color" ||
             !dlssSrSample.desc.requiresStreamline) {
-            return RhiTestResult::fail("DLSS-SR PathTracingSample metadata did not load as expected");
+            return RHITestResult::fail("DLSS-SR PathTracingSample metadata did not load as expected");
         }
         const render::RenderGraphNode* dlssSrPathTrace = dlssSrSample.graph.findNode("PathTrace");
-        const render::RenderGraphNode* dlssSrPass = dlssSrSample.graph.findNode("DlssSr");
+        const render::RenderGraphNode* dlssSrPass = dlssSrSample.graph.findNode("DLSSSR");
         if (dlssSrPathTrace == nullptr ||
             dlssSrPass == nullptr ||
             !dlssSrPathTrace->properties.is_object() ||
             dlssSrPathTrace->properties.value("path", "") != dlssSrSample.desc.scenePath ||
             !dlssSrPathTrace->properties.value("exportDenoiserGuides", false) ||
-            dlssSrPass->type != "StreamlineDlssSrPass") {
-            return RhiTestResult::fail("DLSS-SR PathTracingSample did not apply expected graph defaults");
+            dlssSrPass->type != "StreamlineDLSSSRPass") {
+            return RHITestResult::fail("DLSS-SR PathTracingSample did not apply expected graph defaults");
         }
         if (!dlssSrSample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (dlssSrSample.graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("DLSS-SR PathTracingSample graph first output changed");
+            return RHITestResult::fail("DLSS-SR PathTracingSample graph first output changed");
         }
 
         render::RenderSampleLoadResult dlssRrSample;
         if (!render::loadBuiltInRenderSample("pathtracing-sample-dlss-rr", dlssRrSample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (dlssRrSample.desc.id != "pathtracing-sample-dlss-rr" ||
             dlssRrSample.desc.name != "PathTracingSample / DLSS-RR" ||
@@ -2355,28 +2451,28 @@ public:
             dlssRrSample.desc.graphPath != "Pipelines/Samples/pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json" ||
             dlssRrSample.desc.previewOutput != "FinalBlit.color" ||
             !dlssRrSample.desc.requiresStreamline) {
-            return RhiTestResult::fail("DLSS-RR PathTracingSample metadata did not load as expected");
+            return RHITestResult::fail("DLSS-RR PathTracingSample metadata did not load as expected");
         }
         const render::RenderGraphNode* dlssRrPathTrace = dlssRrSample.graph.findNode("PathTrace");
-        const render::RenderGraphNode* dlssRrPass = dlssRrSample.graph.findNode("DlssRr");
+        const render::RenderGraphNode* dlssRrPass = dlssRrSample.graph.findNode("DLSSRR");
         if (dlssRrPathTrace == nullptr ||
             dlssRrPass == nullptr ||
             !dlssRrPathTrace->properties.is_object() ||
             dlssRrPathTrace->properties.value("path", "") != dlssRrSample.desc.scenePath ||
             !dlssRrPathTrace->properties.value("exportDenoiserGuides", false) ||
-            dlssRrPass->type != "StreamlineDlssRrPass") {
-            return RhiTestResult::fail("DLSS-RR PathTracingSample did not apply expected graph defaults");
+            dlssRrPass->type != "StreamlineDLSSRRPass") {
+            return RHITestResult::fail("DLSS-RR PathTracingSample did not apply expected graph defaults");
         }
         if (!dlssRrSample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (dlssRrSample.graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("DLSS-RR PathTracingSample graph first output changed");
+            return RHITestResult::fail("DLSS-RR PathTracingSample graph first output changed");
         }
 
         render::RenderSampleLoadResult materialSample;
         if (!render::loadBuiltInRenderSample("material-visualization-abeautiful-game", materialSample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (materialSample.desc.id != "material-visualization-abeautiful-game" ||
             materialSample.desc.name != "Material Visualization / ABeautifulGame" ||
@@ -2384,25 +2480,25 @@ public:
             materialSample.desc.scenePath != "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf" ||
             materialSample.desc.graphPath != "Pipelines/Samples/material_visualization_abeautiful_game.metallic_graph.json" ||
             materialSample.desc.previewOutput != "FinalBlit.color") {
-            return RhiTestResult::fail("material visualization Sample metadata did not load as expected");
+            return RHITestResult::fail("material visualization Sample metadata did not load as expected");
         }
         const render::RenderGraphNode* materialViz = materialSample.graph.findNode("MaterialViz");
         if (materialViz == nullptr ||
             !materialViz->properties.is_object() ||
             materialViz->properties.value("path", "") != materialSample.desc.scenePath ||
             materialViz->properties.value("mode", "") != "material") {
-            return RhiTestResult::fail("material visualization Sample did not apply scene path and defaults");
+            return RHITestResult::fail("material visualization Sample did not apply scene path and defaults");
         }
         if (!materialSample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (materialSample.graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("material visualization Sample graph first output changed");
+            return RHITestResult::fail("material visualization Sample graph first output changed");
         }
 
         render::RenderSampleLoadResult gpuDrivenSample;
         if (!render::loadBuiltInRenderSample(render::kDefaultGPUDrivenSampleId, gpuDrivenSample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (gpuDrivenSample.desc.id != "gpu-driven-sample" ||
             gpuDrivenSample.desc.name != "GPUDrivenSample" ||
@@ -2413,7 +2509,7 @@ public:
             !gpuDrivenSample.desc.environment.has_value() ||
             gpuDrivenSample.desc.previewOutput != "FinalBlit.color" ||
             !gpuDrivenSample.desc.requiresStreamline) {
-            return RhiTestResult::fail("GPUDrivenSample metadata did not load as expected");
+            return RHITestResult::fail("GPUDrivenSample metadata did not load as expected");
         }
         const render::RenderGraphNode* gpuDriven = gpuDrivenSample.graph.findNode("VBuffer");
         const render::RenderGraphNode* gpuDrivenDeferred = gpuDrivenSample.graph.findNode("Deferred");
@@ -2434,33 +2530,33 @@ public:
             gpuDrivenSample.graph.findNode("Shadows")->type != "RayTracedShadowPass" ||
             !gpuDrivenSample.graph.findNode("Shadows")->properties.value("sigmaDenoise", false) ||
             !gpuDrivenSample.graph.viewProperties().contains("camera")) {
-            return RhiTestResult::fail("GPUDrivenSample did not apply pass defaults");
+            return RHITestResult::fail("GPUDrivenSample did not apply pass defaults");
         }
         for (const char* type : {"RayTracedShadowPass", "ScreenSpaceShadowPass"}) {
             auto shadow = render::createRenderGraphPass(type);
-            if (shadow == nullptr) { return RhiTestResult::fail("Ray-traced shadow node or legacy alias unavailable"); }
+            if (shadow == nullptr) { return RHITestResult::fail("Ray-traced shadow node or legacy alias unavailable"); }
             const auto controls = shadow->runtimeSettings();
             bool enabledControl = false;
             for (const auto& control : controls) {
                 enabledControl |= control.key == "rayTracedShadows";
                 if (control.key == "shadowSteps" || control.key == "shadowThickness" ||
                     control.key == "shadowDistance" || control.key == "preserveGeometryShadows") {
-                    return RhiTestResult::fail("Obsolete screen-space shadow control still exposed");
+                    return RHITestResult::fail("Obsolete screen-space shadow control still exposed");
                 }
             }
-            if (!enabledControl) { return RhiTestResult::fail("Ray-traced shadow enable control missing"); }
+            if (!enabledControl) { return RHITestResult::fail("Ray-traced shadow enable control missing"); }
         }
         if (!gpuDrivenSample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (gpuDrivenSample.graph.firstOutputName() != "FinalBlit.color" ||
             !gpuDrivenSample.graph.outputs().empty()) {
-            return RhiTestResult::fail("GPUDrivenSample graph first output changed");
+            return RHITestResult::fail("GPUDrivenSample graph first output changed");
         }
         if (!render::setRenderSampleScenePath(gpuDrivenSample, "Asset/meet_mat.glb", message) ||
             gpuDrivenSample.graph.findNode("VBuffer")->properties.value("path", "") != "Asset/meet_mat.glb" ||
             gpuDrivenSample.graph.findNode("Deferred")->properties.value("path", "") != "Asset/meet_mat.glb") {
-            return RhiTestResult::fail("GPUDrivenSample scene override did not reach visibility and lighting");
+            return RHITestResult::fail("GPUDrivenSample scene override did not reach visibility and lighting");
         }
         render::RenderSampleLoadResult gpuDrivenVisibilitySample;
         if (!render::loadBuiltInRenderSample(render::kGPUDrivenVisibilitySampleId, gpuDrivenVisibilitySample, message) ||
@@ -2470,7 +2566,7 @@ public:
             gpuDrivenVisibilitySample.graph.findNode("GPUDriven") == nullptr ||
             gpuDrivenVisibilitySample.graph.findNode("GPUDriven")->type != "VisibilityBufferPass" ||
             !gpuDrivenVisibilitySample.graph.validate(validationLog)) {
-            return RhiTestResult::fail("GPUDrivenSample visibility diagnostics did not retain their standalone graph");
+            return RHITestResult::fail("GPUDrivenSample visibility diagnostics did not retain their standalone graph");
         }
         bool requiresStreamline = true;
         if (!render::queryBuiltInRenderSampleStreamlineRequirement(
@@ -2492,12 +2588,12 @@ public:
             render::queryBuiltInRenderSampleStreamlineRequirement(
                 "unknown-sample",
                 requiresStreamline)) {
-            return RhiTestResult::fail("built-in Sample Streamline requirements are inconsistent");
+            return RHITestResult::fail("built-in Sample Streamline requirements are inconsistent");
         }
 
         render::RenderSampleLoadResult gpuDrivenStreamAssetSample;
         if (!render::loadBuiltInRenderSample("gpu-driven-streamasset", gpuDrivenStreamAssetSample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (gpuDrivenStreamAssetSample.desc.id != "gpu-driven-streamasset" ||
             gpuDrivenStreamAssetSample.desc.name != "GPUDrivenSample / StreamAsset" ||
@@ -2507,7 +2603,7 @@ public:
             gpuDrivenStreamAssetSample.desc.graphPath !=
                 "Pipelines/Samples/gpu_driven_sponza_streamasset.metallic_graph.json" ||
             gpuDrivenStreamAssetSample.desc.previewOutput != "FinalBlit.color") {
-            return RhiTestResult::fail("GPUDriven StreamAsset sample metadata did not load as expected");
+            return RHITestResult::fail("GPUDriven StreamAsset sample metadata did not load as expected");
         }
         const render::RenderGraphNode* gpuDrivenStreamAsset =
             gpuDrivenStreamAssetSample.graph.findNode("GPUDriven");
@@ -2519,13 +2615,13 @@ public:
             !gpuDrivenStreamAsset->properties.value("enableGpuLodSelection", false) ||
             gpuDrivenStreamAsset->properties.value("debugColorMode", "") != "page" ||
             gpuDrivenStreamAsset->properties.value("selectedLodLevel", -1) != 0) {
-            return RhiTestResult::fail("GPUDriven StreamAsset sample did not preserve streamasset defaults");
+            return RHITestResult::fail("GPUDriven StreamAsset sample did not preserve streamasset defaults");
         }
         if (!gpuDrivenStreamAssetSample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (gpuDrivenStreamAssetSample.graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("GPUDriven StreamAsset graph first output changed");
+            return RHITestResult::fail("GPUDriven StreamAsset graph first output changed");
         }
         if (!render::setRenderSampleScenePath(
                 gpuDrivenStreamAssetSample,
@@ -2535,12 +2631,12 @@ public:
             gpuDrivenStreamAsset->properties.value("path", "") !=
                 "Asset/Zorah/zorah_main_public.v2.gltf" ||
             gpuDrivenStreamAssetSample.graph.dirty()) {
-            return RhiTestResult::fail("GPUDriven StreamAsset scene override failed");
+            return RHITestResult::fail("GPUDriven StreamAsset scene override failed");
         }
 
         render::RenderSampleLoadResult gpuDrivenTerrainP0Sample;
         if (!render::loadBuiltInRenderSample("gpu-driven-terrain-p0", gpuDrivenTerrainP0Sample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (gpuDrivenTerrainP0Sample.desc.id != "gpu-driven-terrain-p0" ||
             gpuDrivenTerrainP0Sample.desc.name != "GPUDrivenSample / Terrain P0" ||
@@ -2551,7 +2647,7 @@ public:
             gpuDrivenTerrainP0Sample.desc.graphPath !=
                 "Pipelines/Samples/gpu_driven_terrain_p0_streamasset.metallic_graph.json" ||
             gpuDrivenTerrainP0Sample.desc.previewOutput != "FinalBlit.color") {
-            return RhiTestResult::fail("GPUDriven Terrain P0 sample metadata did not load as expected");
+            return RHITestResult::fail("GPUDriven Terrain P0 sample metadata did not load as expected");
         }
         const render::RenderGraphNode* gpuDrivenTerrainP0 =
             gpuDrivenTerrainP0Sample.graph.findNode("GPUDriven");
@@ -2566,13 +2662,13 @@ public:
             gpuDrivenTerrainP0->properties.value("debugColorMode", "") != "lod" ||
             !gpuDrivenTerrainP0->properties.contains("camera") ||
             !gpuDrivenTerrainP0->properties["camera"].is_object()) {
-            return RhiTestResult::fail("GPUDriven Terrain P0 sample did not preserve terrain defaults");
+            return RHITestResult::fail("GPUDriven Terrain P0 sample did not preserve terrain defaults");
         }
         if (!gpuDrivenTerrainP0Sample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (gpuDrivenTerrainP0Sample.graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("GPUDriven Terrain P0 graph first output changed");
+            return RHITestResult::fail("GPUDriven Terrain P0 graph first output changed");
         }
 
         render::RenderSampleLoadResult gpuDrivenTerrainP1Sample;
@@ -2580,7 +2676,7 @@ public:
                 "gpu-driven-terrain-p1-unified",
                 gpuDrivenTerrainP1Sample,
                 message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (gpuDrivenTerrainP1Sample.desc.id != "gpu-driven-terrain-p1-unified" ||
             gpuDrivenTerrainP1Sample.desc.name != "GPUDrivenSample / Terrain P1 Unified" ||
@@ -2592,7 +2688,7 @@ public:
                 "Pipelines/Samples/gpu_driven_terrain_p1_unified.metallic_graph.json" ||
             gpuDrivenTerrainP1Sample.desc.environment.has_value() ||
             gpuDrivenTerrainP1Sample.desc.previewOutput != "FinalBlit.color") {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUDriven Terrain P1 unified sample metadata did not load as expected");
         }
         const render::RenderGraphNode* gpuDrivenTerrainP1 =
@@ -2610,19 +2706,19 @@ public:
             gpuDrivenTerrainP1->properties.value("visualization", "") != "meshlet" ||
             !gpuDrivenTerrainP1->properties.contains("camera") ||
             !gpuDrivenTerrainP1->properties["camera"].is_object()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUDriven Terrain P1 unified sample did not preserve unified raster defaults");
         }
         if (!gpuDrivenTerrainP1Sample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (gpuDrivenTerrainP1Sample.graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("GPUDriven Terrain P1 unified graph first output changed");
+            return RHITestResult::fail("GPUDriven Terrain P1 unified graph first output changed");
         }
 
         render::RenderSampleLoadResult gpuDrivenRtasSample;
         if (!render::loadBuiltInRenderSample("gpu-driven-rtas-visualization", gpuDrivenRtasSample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (gpuDrivenRtasSample.desc.id != "gpu-driven-rtas-visualization" ||
             gpuDrivenRtasSample.desc.name != "GPUDrivenSample / RTAS Visualization" ||
@@ -2634,7 +2730,7 @@ public:
             !gpuDrivenRtasSample.desc.environment.has_value() ||
             gpuDrivenRtasSample.desc.environment->path != "Asset/ABeautifulGame/environment.hdr" ||
             gpuDrivenRtasSample.desc.previewOutput != "FinalBlit.color") {
-            return RhiTestResult::fail("GPUDriven RTAS visualization sample metadata did not load as expected");
+            return RHITestResult::fail("GPUDriven RTAS visualization sample metadata did not load as expected");
         }
         const render::RenderGraphNode* gpuDrivenRtas = gpuDrivenRtasSample.graph.findNode("GPUDriven");
         if (gpuDrivenRtas == nullptr ||
@@ -2644,13 +2740,13 @@ public:
             !gpuDrivenRtas->properties.value("enableClusterRtx", false) ||
             !gpuDrivenRtas->properties.value("rtasVisualization", false) ||
             gpuDrivenRtas->properties.value("rtasGranularity", "") != "cluster-id") {
-            return RhiTestResult::fail("GPUDriven RTAS visualization sample did not apply defaults");
+            return RHITestResult::fail("GPUDriven RTAS visualization sample did not apply defaults");
         }
         if (!gpuDrivenRtasSample.graph.validate(validationLog)) {
-            return RhiTestResult::fail(validationLog);
+            return RHITestResult::fail(validationLog);
         }
         if (gpuDrivenRtasSample.graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("GPUDriven RTAS visualization graph first output changed");
+            return RHITestResult::fail("GPUDriven RTAS visualization graph first output changed");
         }
 
         bool listedPathTrace = false;
@@ -2691,21 +2787,21 @@ public:
             !listedGPUDrivenTerrainP1 ||
             !listedGPUDrivenRtasVisualization ||
             !listedRtxcr) {
-            return RhiTestResult::fail("built-in Sample list did not contain expected samples");
+            return RHITestResult::fail("built-in Sample list did not contain expected samples");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderSampleFallbackAndValidationTest : public RhiTest {
+class RenderSampleFallbackAndValidationTest : public RHITest {
 public:
     RenderSampleFallbackAndValidationTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_sample_fallback_and_validation";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const TestPathTraceSample fallback(
             "test-fallback-preview",
@@ -2715,14 +2811,14 @@ public:
         render::RenderSampleLoadResult sample;
         std::string message;
         if (!render::loadRenderSample(fallback, sample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         if (sample.desc.previewOutput != "FinalBlit.color") {
-            return RhiTestResult::fail("Sample loader did not fallback to first graph output");
+            return RHITestResult::fail("Sample loader did not fallback to first graph output");
         }
         const render::RenderGraphNode* node = sample.graph.findNode("PathTrace");
         if (node == nullptr || node->properties.value("path", "") != "Asset/StandfordBunny/scene.gltf") {
-            return RhiTestResult::fail("Sample loader did not override target scene path");
+            return RHITestResult::fail("Sample loader did not override target scene path");
         }
 
         for (const char* output : {"FinalBlit.color", "PathTrace.color"}) {
@@ -2730,30 +2826,30 @@ public:
                 "test-explicit-preview", "Asset/meet_mat.glb", output);
             if (!render::loadRenderSample(explicitPreview, sample, message) ||
                 sample.desc.previewOutput != output || !sample.graph.outputs().empty()) {
-                return RhiTestResult::fail("Sample loader rejected an unmarked texture preview: " + message);
+                return RHITestResult::fail("Sample loader rejected an unmarked texture preview: " + message);
             }
         }
         for (const char* output : {"Missing.color", "PathTrace.missing", "FinalBlit.source"}) {
             const TestPathTraceSample invalid("test-invalid-preview", "Asset/meet_mat.glb", output);
             if (render::loadRenderSample(invalid, sample, message)) {
-                return RhiTestResult::fail("Sample loader accepted invalid previewOutput");
+                return RHITestResult::fail("Sample loader accepted invalid previewOutput");
             }
             if (message.find("previewOutput") == std::string::npos) {
-                return RhiTestResult::fail("Sample loader did not report previewOutput failure");
+                return RHITestResult::fail("Sample loader did not report previewOutput failure");
             }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
-class RenderGraphValidationTest : public RhiTest {
+class RenderGraphValidationTest : public RHITest {
 public:
     RenderGraphValidationTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_validation";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerTestPass();
 
@@ -2761,13 +2857,13 @@ public:
         render::RenderGraph missingOutput;
         missingOutput.addNode("TriangleRasterPass", "Triangle");
         if (missingOutput.validate(log)) {
-            return RhiTestResult::fail("graph without outputs validated successfully");
+            return RHITestResult::fail("graph without outputs validated successfully");
         }
 
         render::RenderGraph badEndpoint = render::RenderGraph::createDefaultTriangleGraph();
         badEndpoint.addEdge("Triangle.color", "Triangle.missing");
         if (badEndpoint.validate(log)) {
-            return RhiTestResult::fail("graph with invalid edge endpoint validated successfully");
+            return RHITestResult::fail("graph with invalid edge endpoint validated successfully");
         }
 
         render::RenderGraph cyclic;
@@ -2777,7 +2873,7 @@ public:
         cyclic.addEdge("B.color", "A.input");
         cyclic.markOutput("A.color");
         if (cyclic.validate(log)) {
-            return RhiTestResult::fail("cyclic graph validated successfully");
+            return RHITestResult::fail("cyclic graph validated successfully");
         }
 
         render::RenderGraph textureToBuffer;
@@ -2786,7 +2882,7 @@ public:
         textureToBuffer.addEdge("Triangle.color", "BufferRead.data");
         textureToBuffer.markOutput("Triangle.color");
         if (textureToBuffer.validate(log)) {
-            return RhiTestResult::fail("texture-to-buffer edge validated successfully");
+            return RHITestResult::fail("texture-to-buffer edge validated successfully");
         }
 
         render::RenderGraph bufferToTexture;
@@ -2795,171 +2891,171 @@ public:
         bufferToTexture.addEdge("BufferWrite.data", "TextureRead.input");
         bufferToTexture.markOutput("TextureRead.color");
         if (bufferToTexture.validate(log)) {
-            return RhiTestResult::fail("buffer-to-texture edge validated successfully");
+            return RHITestResult::fail("buffer-to-texture edge validated successfully");
         }
 
         render::RenderGraph missingBufferInput;
         missingBufferInput.addNode("RenderGraphBufferCopyPass", "Copy");
         missingBufferInput.markOutput("Copy.data");
         if (missingBufferInput.validate(log)) {
-            return RhiTestResult::fail("graph with missing required buffer input validated successfully");
+            return RHITestResult::fail("graph with missing required buffer input validated successfully");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphPreviewTest : public RhiTest {
+class RenderGraphPreviewTest : public RHITest {
 public:
     RenderGraphPreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_triangle_preview";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         render::RenderGraph graph = render::RenderGraph::createDefaultTriangleGraph();
         result = preview.render(graph, 128, 96);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphPreviewRenderer::render returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderGraphPreviewRenderer::render returned ") + toString(result));
         }
         if (countBrightPixels(preview.pixels()) < 128) {
-            return RhiTestResult::fail("default triangle graph produced too few bright pixels");
+            return RHITestResult::fail("default triangle graph produced too few bright pixels");
         }
 
         graph.markDirty();
         result = preview.render(graph, 64, 64);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphPreviewRenderer::render resize returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderGraphPreviewRenderer::render resize returned ") + toString(result));
         }
         if (preview.width() != 64 || preview.height() != 64) {
-            return RhiTestResult::fail("preview resize did not update output dimensions");
+            return RHITestResult::fail("preview resize did not update output dimensions");
         }
         if (countBrightPixels(preview.pixels()) < 64) {
-            return RhiTestResult::fail("resized default triangle graph produced too few bright pixels");
+            return RHITestResult::fail("resized default triangle graph produced too few bright pixels");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphBunnyWireframePreviewTest : public RhiTest {
+class RenderGraphBunnyWireframePreviewTest : public RHITest {
 public:
     RenderGraphBunnyWireframePreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_bunny_wireframe_preview";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         render::RenderGraph graph = render::RenderGraph::createDefaultBunnyGraph();
         result = preview.render(graph, 256, 256);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("Bunny wireframe preview is unsupported on this device: ") + preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("Bunny wireframe preview render returned ") + toString(result) + ": " + preview.lastLog());
         }
 
         const uint32_t brightPixels = countBrightPixels(preview.pixels());
         if (brightPixels < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("Bunny wireframe preview produced too few bright pixels: ") +
                 std::to_string(brightPixels));
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphBunnyCameraSyncTest : public RhiTest {
+class RenderGraphBunnyCameraSyncTest : public RHITest {
 public:
     RenderGraphBunnyCameraSyncTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_bunny_camera_sync";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         render::RenderGraph graph = render::RenderGraph::createDefaultBunnyGraph();
         result = preview.render(graph, 256, 256);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("Bunny wireframe preview is unsupported on this device: ") + preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("initial Bunny wireframe preview returned ") + toString(result) + ": " + preview.lastLog());
         }
         if (graph.dirty()) {
-            return RhiTestResult::fail("preview render did not clear graph dirty state");
+            return RHITestResult::fail("preview render did not clear graph dirty state");
         }
 
         render::RenderGraphNode* bunnyNode = graph.findNode("Bunny");
         if (bunnyNode == nullptr) {
-            return RhiTestResult::fail("default Bunny graph did not create Bunny node");
+            return RHITestResult::fail("default Bunny graph did not create Bunny node");
         }
 
         if (!graph.setNodeRuntimeProperty(bunnyNode->id, "camera.fovDegrees", 35.0f) ||
             !graph.setNodeRuntimeProperty(bunnyNode->id, "camera.eye", {-0.0168404f, 0.110154f, 0.34f})) {
-            return RhiTestResult::fail("runtime camera property update failed");
+            return RHITestResult::fail("runtime camera property update failed");
         }
         if (graph.dirty()) {
-            return RhiTestResult::fail("runtime camera property update unexpectedly marked graph dirty");
+            return RHITestResult::fail("runtime camera property update unexpectedly marked graph dirty");
         }
         result = preview.render(graph, 256, 256);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("camera-synced Bunny preview returned ") + toString(result) + ": " + preview.lastLog());
         }
         const uint32_t brightPixels = countBrightPixels(preview.pixels());
         if (brightPixels < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("camera-synced Bunny preview produced too few bright pixels: ") +
                 std::to_string(brightPixels));
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphSceneRayQueryVisualizationPreviewTest : public RhiTest {
+class RenderGraphSceneRayQueryVisualizationPreviewTest : public RHITest {
 public:
     RenderGraphSceneRayQueryVisualizationPreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_scene_rayquery_visualization_preview";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false, true);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         render::RenderGraphProperties properties{
@@ -2984,10 +3080,10 @@ public:
         result = preview.render(graph, 256, 256);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("SceneRayQueryVisualizationPass is unsupported on this device: ") + preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("SceneRayQueryVisualizationPass render returned ") +
                 toString(result) +
                 ": " +
@@ -2996,7 +3092,7 @@ public:
 
         uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RayQuery instance visualization produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
@@ -3004,12 +3100,12 @@ public:
         properties["granularity"] = "primitive";
         render::RenderGraphNode* node = graph.findNode("RayQuery");
         if (node == nullptr || !graph.setNodeProperties(node->id, properties)) {
-            return RhiTestResult::fail("failed to switch RayQuery visualization to primitive granularity");
+            return RHITestResult::fail("failed to switch RayQuery visualization to primitive granularity");
         }
 
         result = preview.render(graph, 256, 256);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RayQuery primitive visualization render returned ") +
                 toString(result) +
                 ": " +
@@ -3018,7 +3114,7 @@ public:
 
         visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RayQuery primitive visualization produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
@@ -3027,7 +3123,7 @@ public:
         properties["granularity"] = "cluster-id";
         node = graph.findNode("RayQuery");
         if (node == nullptr || !graph.setNodeProperties(node->id, properties)) {
-            return RhiTestResult::fail("failed to switch RayQuery visualization to cluster-id granularity");
+            return RHITestResult::fail("failed to switch RayQuery visualization to cluster-id granularity");
         }
 
         result = preview.render(graph, 256, 256);
@@ -3035,7 +3131,7 @@ public:
             if (render::hasError(result, render::Error::Unsupported)) {
                 resultMessage = std::string("cluster-id visualization unsupported: ") + preview.lastLog() + "; ";
             } else {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("RayQuery cluster-id visualization render returned ") +
                     toString(result) +
                     ": " +
@@ -3044,7 +3140,7 @@ public:
         } else {
             visiblePixelCount = countVisiblePixels(preview.pixels());
             if (visiblePixelCount < 512) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("RayQuery cluster-id visualization produced too few visible pixels: ") +
                     std::to_string(visiblePixelCount));
             }
@@ -3055,33 +3151,33 @@ public:
         const std::filesystem::path outputPath =
             context.outputDirectory / "render_graph_scene_rayquery_visualization_preview.png";
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), outputMessage)) {
-            return RhiTestResult::fail(outputMessage);
+            return RHITestResult::fail(outputMessage);
         }
 
-        return RhiTestResult::pass(resultMessage + "wrote " + outputPath.string());
+        return RHITestResult::pass(resultMessage + "wrote " + outputPath.string());
     }
 };
 
-class RenderGraphSceneMaterialVisualizationPreviewTest : public RhiTest {
+class RenderGraphSceneMaterialVisualizationPreviewTest : public RHITest {
 public:
     RenderGraphSceneMaterialVisualizationPreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_scene_material_visualization_preview";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderSampleLoadResult sample;
         std::string message;
         if (!render::loadBuiltInRenderSample("material-visualization-abeautiful-game", sample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false, true);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         const std::array<const char*, 13> modes{
@@ -3105,27 +3201,27 @@ public:
         for (const char* mode : modes) {
             render::RenderGraphNode* materialViz = sample.graph.findNode("MaterialViz");
             if (materialViz == nullptr || !materialViz->properties.is_object()) {
-                return RhiTestResult::fail("material visualization Sample graph is missing MaterialViz properties");
+                return RHITestResult::fail("material visualization Sample graph is missing MaterialViz properties");
             }
             if (!sample.graph.setNodeRuntimeProperty(materialViz->id, "mode", mode)) {
-                return RhiTestResult::fail(std::string("failed to set runtime material visualization mode ") + mode);
+                return RHITestResult::fail(std::string("failed to set runtime material visualization mode ") + mode);
             }
             if (sample.graph.dirty()) {
-                return RhiTestResult::fail(std::string("runtime material visualization mode dirtied graph: ") + mode);
+                return RHITestResult::fail(std::string("runtime material visualization mode dirtied graph: ") + mode);
             }
 
             result = preview.render(sample.graph, 160, 160, sample.desc.previewOutput);
             if (sample.graph.firstOutputName() != graphOutputBefore ||
                 sample.graph.outputs().size() != graphOutputCountBefore) {
-                return RhiTestResult::fail("preview output render modified graph outputs");
+                return RHITestResult::fail("preview output render modified graph outputs");
             }
             if (!result) {
                 if (render::hasError(result, render::Error::Unsupported)) {
-                    return RhiTestResult::skip(
+                    return RHITestResult::skip(
                         std::string("SceneMaterialVisualizationPass is unsupported on this device: ") +
                         preview.lastLog());
                 }
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("SceneMaterialVisualizationPass render returned ") +
                     toString(result) +
                     " for mode " +
@@ -3137,7 +3233,7 @@ public:
             const std::string modeName(mode);
             const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
             if (modeName != "metallic" && visiblePixelCount < 512) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("material visualization mode produced too few visible pixels: ") +
                     mode +
                     " visible=" +
@@ -3146,7 +3242,7 @@ public:
             if (modeName == "material") {
                 const uint32_t distinctColorBins = countDistinctVisibleColorBins(preview.pixels());
                 if (distinctColorBins < 4) {
-                    return RhiTestResult::fail(
+                    return RHITestResult::fail(
                         std::string("material visualization expected multiple material colors, got bins=") +
                         std::to_string(distinctColorBins));
                 }
@@ -3157,27 +3253,27 @@ public:
                 context.outputDirectory /
                 (std::string("render_graph_scene_material_visualization_") + mode + ".png");
             if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
-                return RhiTestResult::fail(message);
+                return RHITestResult::fail(message);
             }
         }
 
-        return RhiTestResult::pass("wrote scene material visualization previews");
+        return RHITestResult::pass("wrote scene material visualization previews");
     }
 };
-class RenderGraphScenePathTracePreviewTest : public RhiTest {
+class RenderGraphScenePathTracePreviewTest : public RHITest {
 public:
     RenderGraphScenePathTracePreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_scene_path_trace_preview";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false, true);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         render::RenderGraphProperties properties{
@@ -3204,10 +3300,10 @@ public:
         result = preview.render(graph, 192, 192);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("ScenePathTracePass is unsupported on this device: ") + preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("ScenePathTracePass render returned ") +
                 toString(result) +
                 ": " +
@@ -3216,14 +3312,14 @@ public:
 
         uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("ScenePathTracePass produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
 
         result = preview.render(graph, 192, 192);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("ScenePathTracePass accumulated render returned ") +
                 toString(result) +
                 ": " +
@@ -3232,7 +3328,7 @@ public:
 
         visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("ScenePathTracePass accumulated frame produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
@@ -3242,10 +3338,10 @@ public:
         const std::filesystem::path outputPath =
             context.outputDirectory / "render_graph_scene_path_trace_preview.png";
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), outputMessage)) {
-            return RhiTestResult::fail(outputMessage);
+            return RHITestResult::fail(outputMessage);
         }
 
-        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+        return RHITestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
 
@@ -3254,7 +3350,7 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addTextureInput("color").transferRead().format = render::Format::Rgba8Unorm;
+        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA8Unorm;
         reflection.addBufferOutput("data").buffer(uint64_t(context.width) * context.height * 4)
             .transferWrite().hostReadback();
         return reflection;
@@ -3267,7 +3363,7 @@ public:
     }
 };
 
-RhiTestResult runPathTraceCacheStages(RhiTestContext& context, bool nrc)
+RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
 {
     constexpr uint32_t kWidth = 64, kHeight = 48;
     const char* mode = nrc ? "nrc" : "sharc";
@@ -3283,12 +3379,12 @@ RhiTestResult runPathTraceCacheStages(RhiTestContext& context, bool nrc)
         }, &validationErrors}, .preferUnifiedImageLayouts = false})
         .transform([&](auto value) { device = std::move(value); });
     if (render::hasError(result, render::Error::Unsupported)) {
-        return RhiTestResult::skip("cache stages require ray query and bindless resources");
+        return RHITestResult::skip("cache stages require ray query and bindless resources");
     }
-    if (!result) { return RhiTestResult::fail("cache-stage device creation failed"); }
-    const auto outcome = [&]() -> RhiTestResult {
+    if (!result) { return RHITestResult::fail("cache-stage device creation failed"); }
+    const auto outcome = [&]() -> RHITestResult {
         auto* queue = device->getQueue(render::QueueType::Graphics);
-        if (!queue) { return RhiTestResult::fail("cache-stage graphics queue missing"); }
+        if (!queue) { return RHITestResult::fail("cache-stage graphics queue missing"); }
         render::registerRenderGraphPassType("PathTraceCacheReadbackPass", "Cache-stage pixel consumer",
             [] { return std::make_unique<PathTraceCacheReadbackPass>(); });
         render::RenderGraph graph;
@@ -3310,16 +3406,16 @@ RhiTestResult runPathTraceCacheStages(RhiTestContext& context, bool nrc)
         light.properties.intensityUnit = scene::LightUnit::Lux;
         light.properties.intensity = 1000;
         light.direction = float3(0.0f, -0.2f, -1.0f);
-        if (!world.setLighting(lighting)) { return RhiTestResult::fail("cache-stage lighting setup failed"); }
+        if (!world.setLighting(lighting)) { return RHITestResult::fail("cache-stage lighting setup failed"); }
         render::HistoryResourceManager history;
         render::RenderGraphExecutor executor;
         executor.bindRenderWorld(&world);
         std::string log;
         if (!history.initialize(*device) || !executor.compile(*device, graph, kWidth, kHeight, log)) {
-            return RhiTestResult::fail(std::string(mode) + " cache graph compile: " + log);
+            return RHITestResult::fail(std::string(mode) + " cache graph compile: " + log);
         }
         if (log.find("cache disabled") != std::string::npos) {
-            return RhiTestResult::fail(std::string(mode) + " test silently disabled its cache: " + log);
+            return RHITestResult::fail(std::string(mode) + " test silently disabled its cache: " + log);
         }
         const std::string historyName = std::string("ScenePathTracePass.PathTrace.accumulation") + (nrc ? ".hdr" : "");
         const auto hasStage = [&](std::string_view stage) {
@@ -3357,82 +3453,82 @@ RhiTestResult runPathTraceCacheStages(RhiTestContext& context, bool nrc)
                 .submissionMode = render::FrameSubmissionMode::Joined});
             if (!result) {
                 if (nrc && render::hasError(result, render::Error::Unsupported)) {
-                    return RhiTestResult::skip("NRC SDK/runtime unsupported on this device");
+                    return RHITestResult::skip("NRC SDK/runtime unsupported on this device");
                 }
-                return RhiTestResult::fail(std::string(mode) + " cache frame " + std::to_string(frame) + ": " + toString(result));
+                return RHITestResult::fail(std::string(mode) + " cache frame " + std::to_string(frame) + ": " + toString(result));
             }
-            if (!executor.waitForSubmittedWork(5'000'000'000ull)) { return RhiTestResult::fail("cache frame did not complete"); }
+            if (!executor.waitForSubmittedWork(5'000'000'000ull)) { return RHITestResult::fail("cache frame did not complete"); }
             const auto failure = checkFrame();
-            if (!failure.empty()) { return RhiTestResult::fail(std::string(mode) + ": " + failure); }
-            if (!nrc && frame == 0 && !hasStage("SHaRC clear")) { return RhiTestResult::fail("first cache frame omitted SHaRC clear"); }
+            if (!failure.empty()) { return RHITestResult::fail(std::string(mode) + ": " + failure); }
+            if (!nrc && frame == 0 && !hasStage("SHaRC clear")) { return RHITestResult::fail("first cache frame omitted SHaRC clear"); }
         }
         std::unique_ptr<render::CommandPool> pool;
         std::unique_ptr<render::CommandBuffer> commands;
         if (!device->createCommandPool(*queue).transform([&](auto value) { pool = std::move(value); }) ||
             !pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); })) {
-            return RhiTestResult::fail("cache cancellation command setup failed");
+            return RHITestResult::fail("cache cancellation command setup failed");
         }
         history.beginFrame(2);
         const auto beforeCurrent = history.texture(historyName, render::HistorySlot::Current).state;
         const auto beforePrevious = history.texture(historyName, render::HistorySlot::Previous).state;
         if (!commands->begin() || !executor.execute(*commands, &history) || !commands->end() || !pool->reset()) {
-            return RhiTestResult::fail(std::string(mode) + " could not cancel recorded cache stages");
+            return RHITestResult::fail(std::string(mode) + " could not cancel recorded cache stages");
         }
         const auto cancelledCurrent = history.texture(historyName, render::HistorySlot::Current);
         const auto cancelledPrevious = history.texture(historyName, render::HistorySlot::Previous);
         if (cancelledCurrent.valid || cancelledPrevious.valid || cancelledCurrent.state != beforeCurrent ||
             cancelledPrevious.state != beforePrevious) {
-            return RhiTestResult::fail("cancelled cache frame retained contents or changed accepted history layouts");
+            return RHITestResult::fail("cancelled cache frame retained contents or changed accepted history layouts");
         }
         if (!executor.execute({.graphicsQueue = queue, .historyResources = &history, .recordingWorkerLimit = 1,
                 .submissionMode = render::FrameSubmissionMode::Joined}) || !executor.waitForSubmittedWork(5'000'000'000ull)) {
-            return RhiTestResult::fail(std::string(mode) + " cache retry after cancellation failed");
+            return RHITestResult::fail(std::string(mode) + " cache retry after cancellation failed");
         }
         const auto failure = checkFrame();
-        if (!failure.empty()) { return RhiTestResult::fail(std::string(mode) + " cancelled retry: " + failure); }
-        if (!nrc && !hasStage("SHaRC clear")) { return RhiTestResult::fail("cancelled SHaRC cache was not reset on retry"); }
-        return RhiTestResult::pass(std::string(mode) + ": 64x48, two accepted frames, cancel and retry with history/pixel checks");
+        if (!failure.empty()) { return RHITestResult::fail(std::string(mode) + " cancelled retry: " + failure); }
+        if (!nrc && !hasStage("SHaRC clear")) { return RHITestResult::fail("cancelled SHaRC cache was not reset on retry"); }
+        return RHITestResult::pass(std::string(mode) + ": 64x48, two accepted frames, cancel and retry with history/pixel checks");
     }();
     // Include executor, SDK context and device destruction in validation.
     device.reset();
     if (validationErrors != 0) {
-        return RhiTestResult::fail(std::string(mode) + " cache lifecycle emitted " +
+        return RHITestResult::fail(std::string(mode) + " cache lifecycle emitted " +
             std::to_string(validationErrors.load()) + " Vulkan validation errors: " + outcome.message);
     }
     return outcome;
 }
 
-class RenderGraphSharcStagesTest final : public RhiTest {
+class RenderGraphSharcStagesTest final : public RHITest {
 public:
-    RenderGraphSharcStagesTest() { type = RhiTestType::Rendering; name = "render_graph_sharc_stages_history_and_cancel"; }
-    RhiTestResult run(RhiTestContext& context) override { return runPathTraceCacheStages(context, false); }
+    RenderGraphSharcStagesTest() { type = RHITestType::Rendering; name = "render_graph_sharc_stages_history_and_cancel"; }
+    RHITestResult run(RHITestContext& context) override { return runPathTraceCacheStages(context, false); }
 };
 
-class RenderGraphNrcStagesTest final : public RhiTest {
+class RenderGraphNRCStagesTest final : public RHITest {
 public:
-    RenderGraphNrcStagesTest() { type = RhiTestType::Rendering; name = "render_graph_nrc_stages_history_and_cancel"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RenderGraphNRCStagesTest() { type = RHITestType::Rendering; name = "render_graph_nrc_stages_history_and_cancel"; }
+    RHITestResult run(RHITestContext& context) override
     {
 #if METALLIC_HAS_NRC
         const char* enabled = std::getenv("METALLIC_TEST_NRC_CACHE");
-        if (!enabled || std::string_view(enabled) != "1") { return RhiTestResult::skip("set METALLIC_TEST_NRC_CACHE=1 for NRC SDK cache stages"); }
+        if (!enabled || std::string_view(enabled) != "1") { return RHITestResult::skip("set METALLIC_TEST_NRC_CACHE=1 for NRC SDK cache stages"); }
         return runPathTraceCacheStages(context, true);
 #else
         (void)context;
-        return RhiTestResult::skip("built without the NRC SDK");
+        return RHITestResult::skip("built without the NRC SDK");
 #endif
     }
 };
 
-class SlangShaderDiskCacheTest : public RhiTest {
+class SlangShaderDiskCacheTest : public RHITest {
 public:
     SlangShaderDiskCacheTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "slang_shader_disk_cache_and_source_invalidation";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         struct ShaderDebugModeGuard {
             render::SlangShaderDebugMode previousMode = render::slangShaderDebugMode();
@@ -3460,7 +3556,7 @@ public:
         std::error_code fileError;
         std::filesystem::remove_all(testRoot, fileError);
         if (fileError) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "failed to clear shader cache test directory: " + fileError.message());
         }
         const std::filesystem::path sourceDirectory = testRoot / "source";
@@ -3471,12 +3567,12 @@ public:
             sourceDirectory / "Libraries/Math/ShaderCacheValue.slang";
         std::filesystem::create_directories(sourcePath.parent_path(), fileError);
         if (fileError) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "failed to create shader cache test directory: " + fileError.message());
         }
         std::filesystem::create_directories(dependencyPath.parent_path(), fileError);
         if (fileError) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "failed to create shader library test directory: " + fileError.message());
         }
         const std::string normalizedSourcePath =
@@ -3501,7 +3597,7 @@ public:
             return static_cast<bool>(stream);
         };
         if (!writeShader() || !writeDependency(1u)) {
-            return RhiTestResult::fail("failed to write initial shader cache test source");
+            return RHITestResult::fail("failed to write initial shader cache test source");
         }
 
         const std::string sourceDirectoryString = sourceDirectory.string();
@@ -3520,7 +3616,7 @@ public:
         render::ShaderCompileResult firstCompile;
         render::Result<> result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, firstCompile.diagnostics).transform([&](auto value) { firstCompile = std::move(value); });
         if (!result || firstCompile.spirv.empty() || cacheHit) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("initial shader cache compile returned ") +
                 toString(result) +
                 ": " +
@@ -3534,7 +3630,7 @@ public:
                 firstCompile.dependencies.begin(),
                 firstCompile.dependencies.end(),
                 normalizedDependencyPath) == firstCompile.dependencies.end()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "initial shader compile did not publish its module and include dependencies");
         }
 
@@ -3543,54 +3639,54 @@ public:
         result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedCompile.diagnostics).transform([&](auto value) { cachedCompile = std::move(value); });
         if (!result || !cacheHit ||
             cachedCompile.spirv != firstCompile.spirv) {
-            return RhiTestResult::fail("unchanged shader source did not hit the SPIR-V disk cache");
+            return RHITestResult::fail("unchanged shader source did not hit the SPIR-V disk cache");
         }
         if (cachedCompile.dependencies != firstCompile.dependencies) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "cached shader compile did not restore the complete dependency list");
         }
         if (!render::pollSlangShaderChanges(0).empty()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "cached shader dependency registration reported an unchanged file");
         }
 
         if (!writeDependency(123456u)) {
-            return RhiTestResult::fail("failed to update shader cache dependency source");
+            return RHITestResult::fail("failed to update shader cache dependency source");
         }
         const std::vector<std::string> changedDependencies =
             render::pollSlangShaderChanges(0);
         if (changedDependencies.size() != 1 ||
             changedDependencies.front() != normalizedDependencyPath) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "included shader edit was not reported as the only hot-reload dependency change");
         }
         if (!render::pollSlangShaderChanges(0).empty()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "included shader edit ignored the default retry interval");
         }
         const std::vector<std::string> retriedDependencies =
             render::pollSlangShaderChanges(0, 0);
         if (retriedDependencies != changedDependencies) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "unacknowledged shader edit was not reported again after its retry interval");
         }
         render::acknowledgeSlangShaderChanges();
         if (!render::pollSlangShaderChanges(0, 0).empty()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "acknowledged shader edit remained pending");
         }
         render::ShaderCompileResult changedCompile;
         result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, changedCompile.diagnostics).transform([&](auto value) { changedCompile = std::move(value); });
         if (!result || changedCompile.spirv.empty() || cacheHit ||
             changedCompile.spirv == firstCompile.spirv) {
-            return RhiTestResult::fail("changed shader dependency did not invalidate the SPIR-V cache");
+            return RHITestResult::fail("changed shader dependency did not invalidate the SPIR-V cache");
         }
 
         render::ShaderCompileResult changedCachedCompile;
         result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, changedCachedCompile.diagnostics).transform([&](auto value) { changedCachedCompile = std::move(value); });
         if (!result || !cacheHit ||
             changedCachedCompile.spirv != changedCompile.spirv) {
-            return RhiTestResult::fail("rebuilt shader did not become the new disk cache entry");
+            return RHITestResult::fail("rebuilt shader did not become the new disk cache entry");
         }
 
         render::setSlangShaderDebugMode(render::SlangShaderDebugMode::CaptureSymbols);
@@ -3599,13 +3695,13 @@ public:
         if (!result || symbolCompile.spirv.empty() || cacheHit ||
             !spirvContainsCaptureDebugInfo(
                 symbolCompile.spirv, "ShaderCacheTest.slang", "shaderCacheMain")) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "capture-symbol shader must embed source, function and line debug information");
         }
         render::ShaderCompileResult cachedSymbolCompile;
         result = render::compileSlangShaderToSpirv(shaderDesc, cacheOptions, cachedSymbolCompile.diagnostics).transform([&](auto value) { cachedSymbolCompile = std::move(value); });
         if (!result || !cacheHit || cachedSymbolCompile.spirv != symbolCompile.spirv) {
-            return RhiTestResult::fail("capture-symbol shader did not use its isolated cache entry");
+            return RHITestResult::fail("capture-symbol shader did not use its isolated cache entry");
         }
 
         render::setSlangShaderDebugMode(render::SlangShaderDebugMode::ShaderDebug);
@@ -3615,7 +3711,7 @@ public:
             !spirvContainsExtendedInstructionSet(
                 unoptimizedDebugCompile.spirv,
                 "NonSemantic.Shader.DebugInfo.100")) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "unoptimized shader-debug compile did not emit NonSemantic debug information");
         }
 
@@ -3627,7 +3723,7 @@ public:
                 : 0u;
         }
         if (cacheFileCount != 3) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "shader cache did not isolate normal, capture-symbol, and shader-debug modes");
         }
 
@@ -3635,23 +3731,23 @@ public:
         const uintmax_t originalDependencySize =
             std::filesystem::file_size(dependencyPath, stampError);
         if (stampError) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "failed to read shader dependency size before content-only edit");
         }
         const std::filesystem::file_time_type originalDependencyWriteTime =
             std::filesystem::last_write_time(dependencyPath, stampError);
         if (stampError) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "failed to read shader dependency timestamp before content-only edit");
         }
         if (!writeDependency(654321u)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "failed to rewrite shader dependency with same-size content");
         }
         const uintmax_t rewrittenDependencySize =
             std::filesystem::file_size(dependencyPath, stampError);
         if (stampError || rewrittenDependencySize != originalDependencySize) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "shader dependency content-only edit did not preserve its file size");
         }
         std::filesystem::last_write_time(
@@ -3659,40 +3755,40 @@ public:
             originalDependencyWriteTime,
             stampError);
         if (stampError) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "failed to restore shader dependency timestamp after content-only edit");
         }
         const std::vector<std::string> contentOnlyChanges =
             render::pollSlangShaderChanges(0);
         if (contentOnlyChanges.size() != 1 ||
             contentOnlyChanges.front() != normalizedDependencyPath) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "same-size shader edit with restored timestamp was not detected");
         }
         render::acknowledgeSlangShaderChanges();
 
         render::resetSlangShaderHotReloadTracking();
         if (!writeDependency(765432u)) {
-            return RhiTestResult::fail("failed to update dependency after resetting hot-reload tracking");
+            return RHITestResult::fail("failed to update dependency after resetting hot-reload tracking");
         }
         if (!render::pollSlangShaderChanges(0).empty()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "resetSlangShaderHotReloadTracking did not clear registered dependencies");
         }
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             "validated dependency polling, SPIR-V cache invalidation, and isolated source-line/full debug modes");
     }
 };
 
-class RenderGraphOpenPBRPathTracingShaderCompileTest : public RhiTest {
+class RenderGraphOpenPBRPathTracingShaderCompileTest : public RHITest {
 public:
     RenderGraphOpenPBRPathTracingShaderCompileTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_openpbr_pathtracing_shader_compile";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::ShaderCompileResult compileResult;
         const char* capabilities[] = {"spvRayQueryKHR"};
@@ -3704,30 +3800,30 @@ public:
             .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
         }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("OpenPBR RayQuery path tracing shader compile returned ") +
                 toString(result) +
                 ": " +
                 compileResult.diagnostics);
         }
         if (!hasNativeComputeResourceInterface(compileResult.spirv)) {
-            return RhiTestResult::fail("OpenPBR shader must use native heap arrays and address-based compute resources");
+            return RHITestResult::fail("OpenPBR shader must use native heap arrays and address-based compute resources");
         }
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             std::string("compiled OpenPBR RayQuery path tracing shader, words=") +
             std::to_string(compileResult.spirv.size()));
     }
 };
 
-class GPUDrivenPreviewGeometryDedupPlanTest : public RhiTest {
+class GPUDrivenPreviewGeometryDedupPlanTest : public RHITest {
 public:
     GPUDrivenPreviewGeometryDedupPlanTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "gpu_driven_preview_geometry_dedup_plan";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         scene::RenderPrimitive shared;
         shared.meshIndex = 7;
@@ -3765,23 +3861,23 @@ public:
         if (plan.geometryCount != 3u ||
             plan.conflictingPayloadCount != 1u ||
             !std::equal(plan.geometryIndices.begin(), plan.geometryIndices.end(), expected.begin())) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "shared geometry was not deduplicated or conflicting payload fallback was lost");
         }
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             "two instances share one geometry payload; conflicting and distinct keys remain separate");
     }
 };
 
-class RenderGraphGPUDrivenPreviewShaderCompileTest : public RhiTest {
+class RenderGraphGPUDrivenPreviewShaderCompileTest : public RHITest {
 public:
     RenderGraphGPUDrivenPreviewShaderCompileTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_gpu_driven_preview_shader_compile";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::ShaderCompileResult amplificationCompile;
         const char* capabilities[] = {
@@ -3795,14 +3891,14 @@ public:
             .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
         }, amplificationCompile.diagnostics).transform([&](auto value) { amplificationCompile = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBuffer amplification shader compile returned ") +
                 toString(result) +
                 ": " +
                 amplificationCompile.diagnostics);
         }
         if (amplificationCompile.spirv.empty()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "VisibilityBuffer amplification shader produced empty SPIR-V");
         }
 
@@ -3823,14 +3919,14 @@ public:
             .macroDefines = {&atomicFallbackDefine, 1u},
         }, atomicFallbackCompile.diagnostics).transform([&](auto value) { atomicFallbackCompile = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBuffer atomic amplification fallback compile returned ") +
                 toString(result) +
                 ": " +
                 atomicFallbackCompile.diagnostics);
         }
         if (atomicFallbackCompile.spirv.empty()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "VisibilityBuffer atomic amplification fallback produced empty SPIR-V");
         }
 
@@ -3842,14 +3938,14 @@ public:
             .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
         }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBuffer mesh shader compile returned ") +
                 toString(result) +
                 ": " +
                 meshCompile.diagnostics);
         }
         if (meshCompile.spirv.empty()) {
-            return RhiTestResult::fail("VisibilityBuffer mesh shader produced empty SPIR-V");
+            return RHITestResult::fail("VisibilityBuffer mesh shader produced empty SPIR-V");
         }
 
         const render::SlangMacroDefine maskedMeshDefine{
@@ -3865,7 +3961,7 @@ public:
             .macroDefines = {&maskedMeshDefine, 1u},
         }, maskedMeshCompile.diagnostics).transform([&](auto value) { maskedMeshCompile = std::move(value); });
         if (!result || maskedMeshCompile.spirv.empty()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "VisibilityBuffer masked mesh compile failed: " +
                 maskedMeshCompile.diagnostics);
         }
@@ -3895,7 +3991,7 @@ public:
         };
         if (countLocations(meshCompile.spirv) != 0u ||
             countLocations(maskedMeshCompile.spirv) != 2u) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "VisibilityBuffer mesh interfaces must be position-only for opaque and UV/material for masked");
         }
 
@@ -3906,14 +4002,14 @@ public:
                 .searchPath = kShaderSearchPath,
             }, fragmentCompile.diagnostics).transform([&](auto value) { fragmentCompile = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBuffer fragment shader compile returned ") +
                 toString(result) +
                 ": " +
                 fragmentCompile.diagnostics);
         }
         if (fragmentCompile.spirv.empty()) {
-            return RhiTestResult::fail("VisibilityBuffer fragment shader produced empty SPIR-V");
+            return RHITestResult::fail("VisibilityBuffer fragment shader produced empty SPIR-V");
         }
 
         struct ShaderEntry {
@@ -3938,7 +4034,7 @@ public:
                     .searchPath = kShaderSearchPath,
                 }, compile.diagnostics).transform([&](auto value) { compile = std::move(value); });
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("VisibilityBuffer shader compile returned ") +
                     toString(result) +
                     " for " +
@@ -3947,13 +4043,13 @@ public:
                     compile.diagnostics);
             }
             if (compile.spirv.empty()) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("VisibilityBuffer shader produced empty SPIR-V for ") + entryPoint);
             }
             additionalWordCount += compile.spirv.size();
         }
 
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             std::string("compiled VisibilityBuffer shaders, amplification words=") +
             std::to_string(amplificationCompile.spirv.size()) +
             ", mesh words=" +
@@ -3965,15 +4061,15 @@ public:
     }
 };
 
-class RenderGraphGPUDrivenStreamAssetShaderCompileTest : public RhiTest {
+class RenderGraphGPUDrivenStreamAssetShaderCompileTest : public RHITest {
 public:
     RenderGraphGPUDrivenStreamAssetShaderCompileTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_gpu_driven_streamasset_shader_compile";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::ShaderCompileResult meshCompile;
         const char* capabilities[] = {"spvMeshShadingEXT"};
@@ -3984,14 +4080,14 @@ public:
             .capabilities = {capabilities, static_cast<uint32_t>(std::size(capabilities))},
         }, meshCompile.diagnostics).transform([&](auto value) { meshCompile = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("GPUDrivenStreamAsset mesh shader compile returned ") +
                 toString(result) +
                 ": " +
                 meshCompile.diagnostics);
         }
         if (meshCompile.spirv.empty()) {
-            return RhiTestResult::fail("GPUDrivenStreamAsset mesh shader produced empty SPIR-V");
+            return RHITestResult::fail("GPUDrivenStreamAsset mesh shader produced empty SPIR-V");
         }
 
         render::ShaderCompileResult fragmentCompile;
@@ -4001,14 +4097,14 @@ public:
                 .searchPath = kShaderSearchPath,
             }, fragmentCompile.diagnostics).transform([&](auto value) { fragmentCompile = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("GPUDrivenStreamAsset fragment shader compile returned ") +
                 toString(result) +
                 ": " +
                 fragmentCompile.diagnostics);
         }
         if (fragmentCompile.spirv.empty()) {
-            return RhiTestResult::fail("GPUDrivenStreamAsset fragment shader produced empty SPIR-V");
+            return RHITestResult::fail("GPUDrivenStreamAsset fragment shader produced empty SPIR-V");
         }
 
         constexpr std::array<const char*, 6> kRasterEntryPoints{
@@ -4017,7 +4113,7 @@ public:
             render::kMeshletStreamCompositeFragmentEntryPoint,
             render::kMeshletStreamCullResetEntryPoint,
             render::kMeshletStreamInstanceCullEntryPoint,
-            render::kMeshletStreamHzbEntryPoint,
+            render::kMeshletStreamHZBEntryPoint,
         };
         for (const char* entryPoint : kRasterEntryPoints) {
             render::ShaderCompileResult rasterCompile;
@@ -4027,7 +4123,7 @@ public:
                     .searchPath = kShaderSearchPath,
                 }, rasterCompile.diagnostics).transform([&](auto value) { rasterCompile = std::move(value); });
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("GPUDrivenStreamAsset shader compile returned ") +
                     toString(result) +
                     " for " +
@@ -4036,7 +4132,7 @@ public:
                     rasterCompile.diagnostics);
             }
             if (rasterCompile.spirv.empty()) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("GPUDrivenStreamAsset shader produced empty SPIR-V for ") +
                     entryPoint);
             }
@@ -4049,14 +4145,14 @@ public:
                 .searchPath = kShaderSearchPath,
             }, updateCompile.diagnostics).transform([&](auto value) { updateCompile = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("GPUDrivenStreamAsset update shader compile returned ") +
                 toString(result) +
                 ": " +
                 updateCompile.diagnostics);
         }
         if (updateCompile.spirv.empty()) {
-            return RhiTestResult::fail("GPUDrivenStreamAsset update shader produced empty SPIR-V");
+            return RHITestResult::fail("GPUDrivenStreamAsset update shader produced empty SPIR-V");
         }
 
         render::ShaderCompileResult traversalCompile;
@@ -4066,14 +4162,14 @@ public:
                 .searchPath = kShaderSearchPath,
             }, traversalCompile.diagnostics).transform([&](auto value) { traversalCompile = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("GPUDrivenStreamAsset traversal shader compile returned ") +
                 toString(result) +
                 ": " +
                 traversalCompile.diagnostics);
         }
         if (traversalCompile.spirv.empty()) {
-            return RhiTestResult::fail("GPUDrivenStreamAsset traversal shader produced empty SPIR-V");
+            return RHITestResult::fail("GPUDrivenStreamAsset traversal shader produced empty SPIR-V");
         }
 
         render::ShaderCompileResult activeBuildCompile;
@@ -4083,29 +4179,29 @@ public:
                 .searchPath = kShaderSearchPath,
             }, activeBuildCompile.diagnostics).transform([&](auto value) { activeBuildCompile = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("GPUDrivenStreamAsset active build shader compile returned ") +
                 toString(result) +
                 ": " +
                 activeBuildCompile.diagnostics);
         }
         if (activeBuildCompile.spirv.empty()) {
-            return RhiTestResult::fail("GPUDrivenStreamAsset active build shader produced empty SPIR-V");
+            return RHITestResult::fail("GPUDrivenStreamAsset active build shader produced empty SPIR-V");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphGPUDrivenStreamAssetTraversalDemandTest : public RhiTest {
+class RenderGraphGPUDrivenStreamAssetTraversalDemandTest : public RHITest {
 public:
     RenderGraphGPUDrivenStreamAssetTraversalDemandTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "render_graph_gpu_driven_streamasset_traversal_demand";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         constexpr uint32_t kMaxLoadRequests = 8;
         constexpr uint32_t kMaxUnloadRequests = 8;
@@ -4123,12 +4219,12 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
         if (!device->capabilities().bindlessDescriptorHeap) {
-            return RhiTestResult::skip("DeviceCapabilities::bindlessDescriptorHeap is false");
+            return RHITestResult::skip("DeviceCapabilities::bindlessDescriptorHeap is false");
         }
 
         render::Queue* queue = device->getQueue(render::QueueType::Compute);
@@ -4136,23 +4232,23 @@ public:
             queue = device->getQueue(render::QueueType::Graphics);
         }
         if (queue == nullptr) {
-            return RhiTestResult::skip("traversal demand test device has no compute-capable queue");
+            return RHITestResult::skip("traversal demand test device has no compute-capable queue");
         }
 
         auto createBuffer = [&device](
             const render::BufferDesc& desc,
             const char* label,
-            std::unique_ptr<render::Buffer>& outBuffer) -> RhiTestResult {
+            std::unique_ptr<render::Buffer>& outBuffer) -> RHITestResult {
             render::Result<> bufferResult = device->createBuffer(desc).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
             if (!bufferResult || outBuffer == nullptr) {
-                return RhiTestResult::fail(std::string("createBuffer(") + label + ") returned " + toString(bufferResult));
+                return RHITestResult::fail(std::string("createBuffer(") + label + ") returned " + toString(bufferResult));
             }
-            return RhiTestResult::pass();
+            return RHITestResult::pass();
         };
 
         constexpr uint32_t kActiveGroupCapacity = 8;
-        const std::array<render::MeshletStreamGpuInstance, 2> instances = [] {
-            std::array<render::MeshletStreamGpuInstance, 2> values{};
+        const std::array<render::MeshletStreamGPUInstance, 2> instances = [] {
+            std::array<render::MeshletStreamGPUInstance, 2> values{};
             for (uint32_t index = 0; index < values.size(); ++index) {
                 values[index].primitiveIndex = index;
                 values[index].materialIndex = index + 10u;
@@ -4166,8 +4262,8 @@ public:
             }
             return values;
         }();
-        const std::array<render::MeshletStreamGpuPrimitive, 2> primitives = {{
-            render::MeshletStreamGpuPrimitive{
+        const std::array<render::MeshletStreamGPUPrimitive, 2> primitives = {{
+            render::MeshletStreamGPUPrimitive{
                 .lodLevelOffset = 0,
                 .lodLevelCount = 1,
                 .pageOffset = 0,
@@ -4181,7 +4277,7 @@ public:
                 .nodeOffset = 0,
                 .nodeCount = 5,
             },
-            render::MeshletStreamGpuPrimitive{
+            render::MeshletStreamGPUPrimitive{
                 .lodLevelOffset = 1,
                 .lodLevelCount = 1,
                 .pageOffset = 3,
@@ -4196,8 +4292,8 @@ public:
                 .nodeCount = 3,
             },
         }};
-        const std::array<render::MeshletStreamGpuLodLevel, 2> lodLevels = {{
-            render::MeshletStreamGpuLodLevel{
+        const std::array<render::MeshletStreamGPULODLevel, 2> lodLevels = {{
+            render::MeshletStreamGPULODLevel{
                 .pageOffset = 0,
                 .pageCount = 2,
                 .lodLevel = 0,
@@ -4205,7 +4301,7 @@ public:
                 .minBoundingSphereRadius = 1.0f,
                 .minMaxQuadricError = 0.0f,
             },
-            render::MeshletStreamGpuLodLevel{
+            render::MeshletStreamGPULODLevel{
                 .pageOffset = 3,
                 .pageCount = 1,
                 .lodLevel = 0,
@@ -4215,7 +4311,7 @@ public:
             },
         }};
         constexpr uint32_t kScenePageCount = 6;
-        std::array<render::MeshletStreamGpuGroup, 5> groups{};
+        std::array<render::MeshletStreamGPUGroup, 5> groups{};
         const std::array<uint32_t, 5> groupPages{0, 1, 2, 3, 4};
         const std::array<uint32_t, 5> groupPrimitives{0, 0, 0, 1, 1};
         const std::array<uint32_t, 5> groupLods{0, 0, 1, 0, 1};
@@ -4231,7 +4327,7 @@ public:
                 ? 1.0f
                 : std::numeric_limits<float>::max();
         }
-        std::array<render::MeshletStreamGpuNode, 8> nodes{};
+        std::array<render::MeshletStreamGPUNode, 8> nodes{};
         nodes[0].primitiveIndex = 0;
         nodes[0].childOffset = 1;
         nodes[0].childCount = 2;
@@ -4267,14 +4363,14 @@ public:
         nodes[7].groupIndex = 4;
         nodes[7].lodLevel = 1;
         nodes[7].maxQuadricError = std::numeric_limits<float>::max();
-        for (render::MeshletStreamGpuNode& node : nodes) {
+        for (render::MeshletStreamGPUNode& node : nodes) {
             const uint32_t groupIndex = node.groupIndex;
             node.boundsCenterRadius[2] = groupIndex < groups.size()
                 ? groups[groupIndex].boundsCenterRadius[2]
                 : 5.5f;
             node.boundsCenterRadius[3] = 1.0f;
         }
-        render::MeshletStreamGpuParams params;
+        render::MeshletStreamGPUParams params;
         params.viewport[2] = 96.0f;
         params.viewport[3] = 1.0471975512f;
         params.frameIndex = kFrameIndex;
@@ -4284,7 +4380,7 @@ public:
         params.scenePrimitiveCount = static_cast<uint32_t>(primitives.size());
         params.sceneLodLevelCount = static_cast<uint32_t>(lodLevels.size());
         params.scenePageCount = kScenePageCount;
-        params.selectedLodLevel = render::kMeshletStreamNoDebugLodOverride;
+        params.selectedLodLevel = render::kMeshletStreamNoDebugLODOverride;
         params.enableGpuLodSelection = 1;
         params.enableGpuUnloadRequests = 1;
         params.sceneGroupCount = static_cast<uint32_t>(groups.size());
@@ -4369,7 +4465,7 @@ public:
         requestHeader->frameIndex = kFrameIndex;
 
         std::unique_ptr<render::Buffer> instanceBuffer;
-        RhiTestResult testResult = createBuffer(
+        RHITestResult testResult = createBuffer(
             render::BufferDesc{
                 .size = sizeof(instances),
                 .usage = render::BufferUsageBits::Storage,
@@ -4522,8 +4618,8 @@ public:
         std::unique_ptr<render::Buffer> activeGroupBuffer;
         testResult = createBuffer(
             render::BufferDesc{
-                .size = static_cast<uint64_t>(kActiveGroupCapacity) * sizeof(render::MeshletStreamGpuActiveGroup),
-                .structureStride = sizeof(render::MeshletStreamGpuActiveGroup),
+                .size = static_cast<uint64_t>(kActiveGroupCapacity) * sizeof(render::MeshletStreamGPUActiveGroup),
+                .structureStride = sizeof(render::MeshletStreamGPUActiveGroup),
                 .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource,
                 .memoryLocation = render::MemoryLocation::Device,
             },
@@ -4535,8 +4631,8 @@ public:
         std::unique_ptr<render::Buffer> activeHeaderBuffer;
         testResult = createBuffer(
             render::BufferDesc{
-                .size = sizeof(render::MeshletStreamGpuActiveHeader),
-                .structureStride = sizeof(render::MeshletStreamGpuActiveHeader),
+                .size = sizeof(render::MeshletStreamGPUActiveHeader),
+                .structureStride = sizeof(render::MeshletStreamGPUActiveHeader),
                 .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource,
                 .memoryLocation = render::MemoryLocation::Device,
             },
@@ -4548,8 +4644,8 @@ public:
         std::unique_ptr<render::Buffer> drawIndirectBuffer;
         testResult = createBuffer(
             render::BufferDesc{
-                .size = render::kMeshletStreamDrawIndirectCommandCount * sizeof(render::MeshletStreamGpuDrawIndirect),
-                .structureStride = sizeof(render::MeshletStreamGpuDrawIndirect),
+                .size = render::kMeshletStreamDrawIndirectCommandCount * sizeof(render::MeshletStreamGPUDrawIndirect),
+                .structureStride = sizeof(render::MeshletStreamGPUDrawIndirect),
                 .usage = render::BufferUsageBits::Storage |
                     render::BufferUsageBits::Indirect |
                     render::BufferUsageBits::TransferSource,
@@ -4563,8 +4659,8 @@ public:
         std::unique_ptr<render::Buffer> traversalHeaderBuffer;
         testResult = createBuffer(
             render::BufferDesc{
-                .size = sizeof(render::MeshletStreamGpuTraversalHeader),
-                .structureStride = sizeof(render::MeshletStreamGpuTraversalHeader),
+                .size = sizeof(render::MeshletStreamGPUTraversalHeader),
+                .structureStride = sizeof(render::MeshletStreamGPUTraversalHeader),
                 .usage = render::BufferUsageBits::Storage | render::BufferUsageBits::TransferSource,
                 .memoryLocation = render::MemoryLocation::Device,
             },
@@ -4577,8 +4673,8 @@ public:
         testResult = createBuffer(
             render::BufferDesc{
                 .size = static_cast<uint64_t>(kTraversalWorkCapacity) *
-                    sizeof(render::MeshletStreamGpuTraversalWorkItem),
-                .structureStride = sizeof(render::MeshletStreamGpuTraversalWorkItem),
+                    sizeof(render::MeshletStreamGPUTraversalWorkItem),
+                .structureStride = sizeof(render::MeshletStreamGPUTraversalWorkItem),
                 .usage = render::BufferUsageBits::Storage,
                 .memoryLocation = render::MemoryLocation::Device,
             },
@@ -4614,7 +4710,7 @@ public:
         std::unique_ptr<render::Buffer> drawIndirectReadbackBuffer;
         testResult = createBuffer(
             render::BufferDesc{
-                .size = render::kMeshletStreamDrawIndirectCommandCount * sizeof(render::MeshletStreamGpuDrawIndirect),
+                .size = render::kMeshletStreamDrawIndirectCommandCount * sizeof(render::MeshletStreamGPUDrawIndirect),
                 .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback,
             },
@@ -4626,7 +4722,7 @@ public:
         std::unique_ptr<render::Buffer> traversalHeaderReadbackBuffer;
         testResult = createBuffer(
             render::BufferDesc{
-                .size = sizeof(render::MeshletStreamGpuTraversalHeader),
+                .size = sizeof(render::MeshletStreamGPUTraversalHeader),
                 .usage = render::BufferUsageBits::TransferDestination,
                 .memoryLocation = render::MemoryLocation::HostReadback,
             },
@@ -4662,46 +4758,46 @@ public:
 
         result = writeHostBuffer(*instanceBuffer, instances.data(), sizeof(instances));
         if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(instances) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeHostBuffer(instances) returned ") + toString(result));
         }
         result = writeHostBuffer(*primitiveBuffer, primitives.data(), sizeof(primitives));
         if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(primitives) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeHostBuffer(primitives) returned ") + toString(result));
         }
         result = writeHostBuffer(*lodLevelBuffer, lodLevels.data(), sizeof(lodLevels));
         if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(lod levels) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeHostBuffer(lod levels) returned ") + toString(result));
         }
         result = writeHostBuffer(*groupBuffer, groups.data(), sizeof(groups));
         if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(groups) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeHostBuffer(groups) returned ") + toString(result));
         }
         result = writeHostBuffer(
             *pageBuffer,
             pageWords.data(),
             static_cast<uint64_t>(pageWords.size()) * sizeof(uint32_t));
         if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(stream pages) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeHostBuffer(stream pages) returned ") + toString(result));
         }
         result = writeHostBuffer(*nodeBuffer, nodes.data(), sizeof(nodes));
         if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(hierarchy nodes) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeHostBuffer(hierarchy nodes) returned ") + toString(result));
         }
         result = writeHostBuffer(*paramsBuffer, &params, sizeof(params));
         if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(params) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeHostBuffer(params) returned ") + toString(result));
         }
         result = writeHostBuffer(*pageTableUploadBuffer, pageTable.data(), sizeof(pageTable));
         if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(page table upload) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeHostBuffer(page table upload) returned ") + toString(result));
         }
         result = writeHostBuffer(*requestUploadBuffer, requestInit.data(), kRequestByteSize);
         if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(request upload) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeHostBuffer(request upload) returned ") + toString(result));
         }
         result = writeHostBuffer(*residentPageBuffer, residentPageIds.data(), sizeof(residentPageIds));
         if (!result) {
-            return RhiTestResult::fail(std::string("writeHostBuffer(resident pages) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeHostBuffer(resident pages) returned ") + toString(result));
         }
 
         std::unique_ptr<render::BindlessHeap> bindlessHeap;
@@ -4711,22 +4807,22 @@ public:
                 .maxBuffers = 15,
             }).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
         if (!result || bindlessHeap == nullptr) {
-            return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
         }
 
         auto allocateStorageBuffer = [&bindlessHeap](
             render::Buffer& buffer,
             const char* label,
-            render::BindlessHandle& outHandle) -> RhiTestResult {
+            render::BindlessHandle& outHandle) -> RHITestResult {
             render::Result<> bindlessResult = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { outHandle = std::move(rhiValue); });
             if (!bindlessResult || !outHandle.valid()) {
-                return RhiTestResult::fail(std::string("allocateBuffer(") + label + ") returned " + toString(bindlessResult));
+                return RHITestResult::fail(std::string("allocateBuffer(") + label + ") returned " + toString(bindlessResult));
             }
             bindlessResult = bindlessHeap->writeStorageBuffer(outHandle, buffer);
             if (!bindlessResult) {
-                return RhiTestResult::fail(std::string("writeStorageBuffer(") + label + ") returned " + toString(bindlessResult));
+                return RHITestResult::fail(std::string("writeStorageBuffer(") + label + ") returned " + toString(bindlessResult));
             }
-            return RhiTestResult::pass();
+            return RHITestResult::pass();
         };
 
         render::BindlessHandle instanceHandle;
@@ -4812,7 +4908,7 @@ public:
                 .searchPath = kShaderSearchPath,
             }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("compileSlangShaderToSpirv(traversal) returned ") +
                 toString(result) +
                 ": " +
@@ -4823,7 +4919,7 @@ public:
             .spirv = compileResult.spirv,
         }).transform([&](auto rhiValue) { traversalShader = std::move(rhiValue); });
         if (!result || traversalShader == nullptr) {
-            return RhiTestResult::fail(std::string("createShaderModule(traversal) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createShaderModule(traversal) returned ") + toString(result));
         }
 
         std::unique_ptr<render::ComputePipeline> pipeline;
@@ -4833,7 +4929,7 @@ public:
             .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
         }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
-            return RhiTestResult::fail(std::string("createComputePipeline(traversal) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createComputePipeline(traversal) returned ") + toString(result));
         }
 
         render::ShaderCompileResult activeBuildCompileResult;
@@ -4843,7 +4939,7 @@ public:
                 .searchPath = kShaderSearchPath,
             }, activeBuildCompileResult.diagnostics).transform([&](auto value) { activeBuildCompileResult = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("compileSlangShaderToSpirv(active build) returned ") +
                 toString(result) +
                 ": " +
@@ -4854,7 +4950,7 @@ public:
             .spirv = activeBuildCompileResult.spirv,
         }).transform([&](auto rhiValue) { activeBuildShader = std::move(rhiValue); });
         if (!result || activeBuildShader == nullptr) {
-            return RhiTestResult::fail(std::string("createShaderModule(active build) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createShaderModule(active build) returned ") + toString(result));
         }
 
         std::unique_ptr<render::ComputePipeline> activeBuildPipeline;
@@ -4864,28 +4960,28 @@ public:
             .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
         }).transform([&](auto rhiValue) { activeBuildPipeline = std::move(rhiValue); });
         if (!result || activeBuildPipeline == nullptr) {
-            return RhiTestResult::fail(std::string("createComputePipeline(active build) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createComputePipeline(active build) returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
         result = device->createCommandPool(*queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
         std::unique_ptr<render::Fence> fence;
         result = device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
-            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
+            return RHITestResult::fail(std::string("createFence returned ") + toString(result));
         }
 
         result = commandBuffer->begin();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
         std::array<render::BufferBarrierDesc, 2> uploadBarriers = {{
             render::BufferBarrierDesc{
@@ -4903,20 +4999,20 @@ public:
         }};
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = uploadBarriers,
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
             auto sourceSlice = pageTableUploadBuffer.get()->slice({0, pageTableBuffer->desc().size});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = pageTableBuffer.get()->slice({0, pageTableBuffer->desc().size});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
             auto sourceSlice = requestUploadBuffer.get()->slice({0, requestBuffer->desc().size});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = requestBuffer.get()->slice({0, requestBuffer->desc().size});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         std::array<render::BufferBarrierDesc, 2> generalBarriers = {{
             render::BufferBarrierDesc{
@@ -4934,7 +5030,7 @@ public:
         }};
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = generalBarriers,
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         commandBuffer->bindBindlessHeap(*bindlessHeap);
         render::MeshletStreamUserPush push{
@@ -5002,9 +5098,9 @@ public:
         }};
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activeBuildBarriers,
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
-        if (auto commandResult = commandBuffer->bindExecution((activeBuildPipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->bindExecution((activeBuildPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         push.activeBuildPhase = render::kMeshletStreamActiveBuildResetPhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
@@ -5055,7 +5151,7 @@ public:
         }};
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         push.activeBuildPhase = render::kMeshletStreamActiveBuildSeedPhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -5063,22 +5159,22 @@ public:
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         push.activeBuildPhase = render::kMeshletStreamActiveBuildRunPhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         push.activeBuildPhase = render::kMeshletStreamActiveBuildFinalizePhase;
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->dispatch(1, 1, 1);
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         push.traversalPhase = render::kMeshletStreamTraversalUnloadPhase;
         push.activeBuildPhase = static_cast<uint32_t>(residentPageIds.size());
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -5124,52 +5220,52 @@ public:
         }};
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = readbackBarriers,
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
             auto sourceSlice = pageTableBuffer.get()->slice({0, pageTableBuffer->desc().size});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = pageTableReadbackBuffer.get()->slice({0, pageTableBuffer->desc().size});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
             auto sourceSlice = requestBuffer.get()->slice({0, requestBuffer->desc().size});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = requestReadbackBuffer.get()->slice({0, requestBuffer->desc().size});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
             auto sourceSlice = activeGroupBuffer.get()->slice({0, activeGroupBuffer->desc().size});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = activeGroupReadbackBuffer.get()->slice({0, activeGroupBuffer->desc().size});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
             auto sourceSlice = activeHeaderBuffer.get()->slice({0, activeHeaderBuffer->desc().size});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = activeHeaderReadbackBuffer.get()->slice({0, activeHeaderBuffer->desc().size});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
             auto sourceSlice = drawIndirectBuffer.get()->slice({0, drawIndirectBuffer->desc().size});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = drawIndirectReadbackBuffer.get()->slice({0, drawIndirectBuffer->desc().size});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
             auto sourceSlice = traversalHeaderBuffer.get()->slice({0, traversalHeaderBuffer->desc().size});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = traversalHeaderReadbackBuffer.get()->slice({0, traversalHeaderBuffer->desc().size});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
@@ -5178,20 +5274,20 @@ public:
             .signalFence = fence.get(),
         });
         if (!result) {
-            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+            return RHITestResult::fail(std::string("Queue::submit returned ") + toString(result));
         }
         result = fence->wait(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+            return RHITestResult::fail(std::string("Fence::wait returned ") + toString(result));
         }
 
         std::array<render::StreamPageTableEntry, 6> pageTableResult{};
         if (!readHostBuffer(*pageTableReadbackBuffer, pageTableResult.data(), sizeof(pageTableResult))) {
-            return RhiTestResult::fail("page table readback buffer did not map");
+            return RHITestResult::fail("page table readback buffer did not map");
         }
         std::vector<uint8_t> requestResult(static_cast<size_t>(kRequestByteSize), 0);
         if (!readHostBuffer(*requestReadbackBuffer, requestResult.data(), kRequestByteSize)) {
-            return RhiTestResult::fail("request readback buffer did not map");
+            return RHITestResult::fail("request readback buffer did not map");
         }
         const auto* actualHeader =
             reinterpret_cast<const render::StreamRequestBufferHeader*>(requestResult.data());
@@ -5204,7 +5300,7 @@ public:
             actualHeader->invalidPageCounter != 0 ||
             actualPageIds[0] != 0 ||
             actualPageIds[kMaxLoadRequests] != 5) {
-            return RhiTestResult::fail("traversal demand shader did not emit expected load/unload requests");
+            return RHITestResult::fail("traversal demand shader did not emit expected load/unload requests");
         }
         if (pageTableResult[0].lastRequestFrame != kFrameIndex ||
             pageTableResult[1].lastRequestFrame != kFrameIndex ||
@@ -5212,40 +5308,40 @@ public:
             pageTableResult[3].lastRequestFrame != kFrameIndex ||
             pageTableResult[4].lastRequestFrame != kFrameIndex ||
             pageTableResult[5].lastRequestFrame == kFrameIndex) {
-            return RhiTestResult::fail("traversal demand shader did not mark selected pages conservatively");
+            return RHITestResult::fail("traversal demand shader did not mark selected pages conservatively");
         }
-        render::MeshletStreamGpuTraversalHeader traversalHeaderResult;
+        render::MeshletStreamGPUTraversalHeader traversalHeaderResult;
         if (!readHostBuffer(
                 *traversalHeaderReadbackBuffer,
                 &traversalHeaderResult,
                 sizeof(traversalHeaderResult))) {
-            return RhiTestResult::fail("traversal header readback buffer did not map");
+            return RHITestResult::fail("traversal header readback buffer did not map");
         }
         if (traversalHeaderResult.writeCounter != nodes.size() ||
             traversalHeaderResult.readCounter < traversalHeaderResult.writeCounter ||
             traversalHeaderResult.taskCounter != 0 ||
             traversalHeaderResult.overflowCount != 0 ||
             traversalHeaderResult.frameIndex != kFrameIndex) {
-            return RhiTestResult::fail("persistent traversal queue did not drain as expected");
+            return RHITestResult::fail("persistent traversal queue did not drain as expected");
         }
-        render::MeshletStreamGpuActiveHeader activeHeaderResult;
+        render::MeshletStreamGPUActiveHeader activeHeaderResult;
         if (!readHostBuffer(*activeHeaderReadbackBuffer, &activeHeaderResult, sizeof(activeHeaderResult))) {
-            return RhiTestResult::fail("active header readback buffer did not map");
+            return RHITestResult::fail("active header readback buffer did not map");
         }
-        std::array<render::MeshletStreamGpuActiveGroup, kActiveGroupCapacity> activeGroupsResult{};
+        std::array<render::MeshletStreamGPUActiveGroup, kActiveGroupCapacity> activeGroupsResult{};
         if (!readHostBuffer(*activeGroupReadbackBuffer, activeGroupsResult.data(), sizeof(activeGroupsResult))) {
-            return RhiTestResult::fail("active group readback buffer did not map");
+            return RHITestResult::fail("active group readback buffer did not map");
         }
         if (activeHeaderResult.activeGroupCount != 3 ||
             activeHeaderResult.activeGroupCapacity != kActiveGroupCapacity ||
             activeHeaderResult.maxActiveGroupClusters != params.maxActiveGroupClusters ||
             activeHeaderResult.overflowCount != 0 ||
             activeHeaderResult.frameIndex != kFrameIndex) {
-            return RhiTestResult::fail("active table header was not built as expected");
+            return RHITestResult::fail("active table header was not built as expected");
         }
-        render::MeshletStreamGpuDrawIndirect drawIndirectResult;
+        render::MeshletStreamGPUDrawIndirect drawIndirectResult;
         if (!readHostBuffer(*drawIndirectReadbackBuffer, &drawIndirectResult, sizeof(drawIndirectResult))) {
-            return RhiTestResult::fail("draw indirect readback buffer did not map");
+            return RHITestResult::fail("draw indirect readback buffer did not map");
         }
         if (drawIndirectResult.groupCountX !=
                 activeHeaderResult.activeGroupCount *
@@ -5253,14 +5349,14 @@ public:
                     render::kMeshletStreamTriangleChunkCount ||
             drawIndirectResult.groupCountY != 1 ||
             drawIndirectResult.groupCountZ != 1) {
-            return RhiTestResult::fail("active table did not generate the expected indirect mesh task command");
+            return RHITestResult::fail("active table did not generate the expected indirect mesh task command");
         }
 
         bool foundResidentFinePage0 = false;
         bool foundFallbackPage = false;
         bool foundResidentFinePage = false;
         for (uint32_t index = 0; index < activeHeaderResult.activeGroupCount; ++index) {
-            const render::MeshletStreamGpuActiveGroup& group = activeGroupsResult[index];
+            const render::MeshletStreamGPUActiveGroup& group = activeGroupsResult[index];
             if (group.pageIndex == 1 &&
                 group.clusterCount == groupClusterCounts[1] &&
                 group.materialIndex == instances[0].materialIndex &&
@@ -5287,35 +5383,35 @@ public:
             }
         }
         if (!foundResidentFinePage0 || !foundFallbackPage || !foundResidentFinePage) {
-            return RhiTestResult::fail("active table did not compact group-level fine and fallback selections");
+            return RHITestResult::fail("active table did not compact group-level fine and fallback selections");
         }
 
         (void)device->waitIdle();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphRtxdiPreviewTest : public RhiTest {
+class RenderGraphRTXDIPreviewTest : public RHITest {
 public:
-    RenderGraphRtxdiPreviewTest()
+    RenderGraphRTXDIPreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_rtxdi_preview";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(true, true);
         if (!result) {
-            return RhiTestResult::skip(
+            return RHITestResult::skip(
                 std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         render::RenderSampleLoadResult sample;
         std::string message;
         if (!render::loadBuiltInRenderSample("rtxdi-sample", sample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         preview.setEnvironment(sampleEnvironmentSettings(sample.desc));
         constexpr uint32_t kRelaxFrameCount = 8;
@@ -5323,10 +5419,10 @@ public:
             result = preview.render(sample.graph, 256, 256, sample.desc.previewOutput);
             if (!result) {
                 if (frame == 0 && render::hasError(result, render::Error::Unsupported)) {
-                    return RhiTestResult::skip(
+                    return RHITestResult::skip(
                         std::string("RTXDI/RELAX graph is unsupported on this device: ") + preview.lastLog());
                 }
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("RTXDI/RELAX frame ") +
                     std::to_string(frame) +
                     " returned " +
@@ -5338,7 +5434,7 @@ public:
 
         const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 128) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RTXDI/RELAX graph produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
@@ -5346,12 +5442,12 @@ public:
         const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
         const std::filesystem::path outputPath = context.outputDirectory / "render_graph_rtxdi_preview.png";
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
         result = preview.render(sample.graph, 256, 256, "Confidence.diffuseConfidence");
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RTXDI diffuse confidence readback returned ") +
                 toString(result) +
                 ": " +
@@ -5367,40 +5463,40 @@ public:
             maximumConfidence = std::max(maximumConfidence, confidenceBytes[pixelIndex]);
         }
         if (maximumConfidence == 0 || minimumConfidence == maximumConfidence) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "RTXDI diffuse confidence output is empty or constant");
         }
-        return RhiTestResult::pass("wrote RTXDI RELAX preview");
+        return RHITestResult::pass("wrote RTXDI RELAX preview");
     }
 };
 
 #if defined(METALLIC_HAS_RTXCR) && METALLIC_HAS_RTXCR
-class RenderGraphRtxcrMaterialShaderCompileTest : public RhiTest {
+class RenderGraphRTXCRMaterialShaderCompileTest : public RHITest {
 public:
-    RenderGraphRtxcrMaterialShaderCompileTest()
+    RenderGraphRTXCRMaterialShaderCompileTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_rtxcr_material_shader_compile";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const char* additionalSearchPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
         render::ShaderCompileResult compileResult;
         render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-            .moduleName = "Features/Samples/RtxcrMaterialSample",
+            .moduleName = "Features/Samples/RTXCRMaterialSample",
             .entryPointName = "rtxcrMaterialSampleMain",
             .searchPath = kShaderSearchPath,
             .additionalSearchPaths = {additionalSearchPaths, static_cast<uint32_t>(std::size(additionalSearchPaths))},
         }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result || compileResult.spirv.empty()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RTXCR material shader compile returned ") +
                 toString(result) +
                 ": " +
                 compileResult.diagnostics);
         }
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             std::string("compiled RTXCR material shader, words=") +
             std::to_string(compileResult.spirv.size()));
     }
@@ -5408,33 +5504,33 @@ public:
 
 #if defined(METALLIC_HAS_RTXCR_GEOMETRY) && METALLIC_HAS_RTXCR_GEOMETRY && \
     defined(METALLIC_HAS_RTXCR_ASSETS) && METALLIC_HAS_RTXCR_ASSETS
-class RenderGraphRtxcrMaterialPreviewTest : public RhiTest {
+class RenderGraphRTXCRMaterialPreviewTest : public RHITest {
 public:
-    RenderGraphRtxcrMaterialPreviewTest()
+    RenderGraphRTXCRMaterialPreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_rtxcr_material_preview";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderSampleLoadResult sample;
         std::string message;
         if (!render::loadBuiltInRenderSample("rtxcr-material-sample", sample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
         render::RenderGraphPreviewRenderer preview;
         preview.setEnvironment(sampleEnvironmentSettings(sample.desc));
         render::Result<> result = preview.initialize(false, true);
         if (!result) {
-            return RhiTestResult::skip(
+            return RHITestResult::skip(
                 std::string("RenderGraphPreviewRenderer::initialize returned ") +
                 toString(result));
         }
         result = preview.render(sample.graph, 768, 432, sample.desc.previewOutput);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RTXCR material preview returned ") +
                 toString(result) +
                 ": " +
@@ -5444,7 +5540,7 @@ public:
         // old >120 bright-pixel check no longer matches the sample graph.
         const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 1024) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RTXCR material preview produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
@@ -5453,23 +5549,23 @@ public:
         const std::filesystem::path outputPath =
             context.outputDirectory / "render_graph_rtxcr_material_preview.png";
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
-        return RhiTestResult::pass("wrote " + outputPath.string());
+        return RHITestResult::pass("wrote " + outputPath.string());
     }
 };
 #endif
 #endif
 
-class RenderGraphRtxdiShaderCompileTest : public RhiTest {
+class RenderGraphRTXDIShaderCompileTest : public RHITest {
 public:
-    RenderGraphRtxdiShaderCompileTest()
+    RenderGraphRTXDIShaderCompileTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_rtxdi_shader_compile";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const char* capabilities[] = {"spvRayQueryKHR"};
         const struct ShaderEntry {
@@ -5479,9 +5575,9 @@ public:
         } entries[] = {
             {"Features/Lighting/BuildReGIR", "buildReGIRMain", false},
             {"Features/Lighting/PrepareLightsPdf", "prepareLightsPdfMain", false},
-            {"Features/ReSTIR/SceneRtxdi", "sceneRtxdiMain", true},
-            {"Features/ReSTIR/RtxdiConfidence", "rtxdiConfidenceMain", false},
-            {"Features/ReSTIR/RtxdiComposite", "rtxdiCompositeMain", false},
+            {"Features/ReSTIR/SceneRTXDI", "sceneRtxdiMain", true},
+            {"Features/ReSTIR/RTXDIConfidence", "rtxdiConfidenceMain", false},
+            {"Features/ReSTIR/RTXDIComposite", "rtxdiCompositeMain", false},
         };
         for (const ShaderEntry& entry : entries) {
             render::ShaderCompileResult compileResult;
@@ -5495,29 +5591,29 @@ public:
                 .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
             }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("RTXDI shader compile returned ") +
                     toString(result) +
                     ": " +
                     compileResult.diagnostics);
             }
             if (!hasNativeComputeResourceInterface(compileResult.spirv)) {
-                return RhiTestResult::fail(std::string(entry.moduleName) + " retained a fixed descriptor binding or invalid compute resource ABI");
+                return RHITestResult::fail(std::string(entry.moduleName) + " retained a fixed descriptor binding or invalid compute resource ABI");
             }
         }
-        return RhiTestResult::pass("compiled RTXDI ReSTIR DI and RELAX composite shaders");
+        return RHITestResult::pass("compiled RTXDI ReSTIR DI and RELAX composite shaders");
     }
 };
 
-class RenderGraphPathTracingGuidesShaderCompileTest : public RhiTest {
+class RenderGraphPathTracingGuidesShaderCompileTest : public RHITest {
 public:
     RenderGraphPathTracingGuidesShaderCompileTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_pathtracing_guides_shader_compile";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const char* capabilities[] = {"spvRayQueryKHR", "spvRayQueryPositionFetchKHR"};
         const struct ShaderEntry {
@@ -5527,7 +5623,7 @@ public:
             {"Features/PathTracing/ScenePathTraceGuides", "scenePathTraceGuidesMain"},
             {"Features/PathTracing/OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain"},
             {"Features/Debug/SceneMaterialVisualize", "sceneMaterialVisualizeMain"},
-            {"Features/ReSTIR/SceneRtxdi", "sceneRtxdiMain"},
+            {"Features/ReSTIR/SceneRTXDI", "sceneRtxdiMain"},
         };
 
         for (uint32_t positionFetch : {0u, 1u}) {
@@ -5545,38 +5641,38 @@ public:
                     .descriptorHeapMode = render::SlangDescriptorHeapMode::Native,
                 }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
                 if (!result || compileResult.spirv.empty()) {
-                    return RhiTestResult::fail(
+                    return RHITestResult::fail(
                         std::string("Path tracing guide shader compile failed for ") +
                         entry.moduleName + "." + entry.entryPointName + ": " +
                         toString(result) + " " + compileResult.diagnostics);
                 }
                 if (!hasNativeComputeResourceInterface(compileResult.spirv)) {
-                    return RhiTestResult::fail(std::string(entry.moduleName) + " must use native compute resources in both position-fetch variants");
+                    return RHITestResult::fail(std::string(entry.moduleName) + " must use native compute resources in both position-fetch variants");
                 }
                 if (spirvContainsOpcode(compileResult.spirv,
-                        kSpirvOpRayQueryGetIntersectionTriangleVertexPositionsKhr) != (positionFetch != 0) ||
+                        kSPIRVOpRayQueryGetIntersectionTriangleVertexPositionsKhr) != (positionFetch != 0) ||
                     spirvContainsCapability(compileResult.spirv,
-                        kSpirvRayQueryPositionFetchKhr) != (positionFetch != 0) ||
+                        kSPIRVRayQueryPositionFetchKhr) != (positionFetch != 0) ||
                     spirvContainsExtension(compileResult.spirv,
                         "SPV_KHR_ray_tracing_position_fetch") != (positionFetch != 0)) {
-                    return RhiTestResult::fail("guide shader position-fetch instruction/capability mismatch");
+                    return RHITestResult::fail("guide shader position-fetch instruction/capability mismatch");
                 }
             }
         }
 
-        return RhiTestResult::pass("compiled Standard/OpenPBR guides, material visualization and RTXDI with position fetch enabled and disabled");
+        return RHITestResult::pass("compiled Standard/OpenPBR guides, material visualization and RTXDI with position fetch enabled and disabled");
     }
 };
 
-class RenderGraphStreamlineDlssSupportShaderCompileTest : public RhiTest {
+class RenderGraphStreamlineDLSSSupportShaderCompileTest : public RHITest {
 public:
-    RenderGraphStreamlineDlssSupportShaderCompileTest()
+    RenderGraphStreamlineDLSSSupportShaderCompileTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_streamline_dlss_support_shader_compile";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const char* entryPoints[] = {
             "streamlineDlssDepthVertexMain",
@@ -5586,12 +5682,12 @@ public:
         for (const char* entryPoint : entryPoints) {
             render::ShaderCompileResult compileResult;
             render::Result<> result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                    .moduleName = "Features/PostProcess/StreamlineDlssSupport",
+                    .moduleName = "Features/PostProcess/StreamlineDLSSSupport",
                     .entryPointName = entryPoint,
                     .searchPath = kShaderSearchPath,
                 }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("Streamline DLSS support shader compile returned ") +
                     toString(result) +
                     " for " +
@@ -5600,24 +5696,24 @@ public:
                     compileResult.diagnostics);
             }
             if (compileResult.spirv.empty()) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("Streamline DLSS support shader produced empty SPIR-V for ") +
                     entryPoint);
             }
         }
-        return RhiTestResult::pass("compiled DLSS depth export and alpha resolve shaders");
+        return RHITestResult::pass("compiled DLSS depth export and alpha resolve shaders");
     }
 };
 
-class RenderGraphSceneRayQueryClusterShaderCompileTest : public RhiTest {
+class RenderGraphSceneRayQueryClusterShaderCompileTest : public RHITest {
 public:
     RenderGraphSceneRayQueryClusterShaderCompileTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_scene_rayquery_cluster_shader_compile";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const char* capabilities[] = {
             "spvRayQueryKHR",
@@ -5639,58 +5735,58 @@ public:
             .macroDefines = {macros, static_cast<uint32_t>(std::size(macros))},
         }, compileResult.diagnostics).transform([&](auto value) { compileResult = std::move(value); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("Cluster ray-query shader compile returned ") +
                 toString(result) +
                 ": " +
                 compileResult.diagnostics);
         }
         if (compileResult.spirv.size() < 5 ||
-            compileResult.spirv[0] != kSpirvMagic ||
-            compileResult.spirv[1] != kSpirvVersion16) {
-            return RhiTestResult::fail("Cluster ray-query shader did not produce a SPIR-V 1.6 module");
+            compileResult.spirv[0] != kSPIRVMagic ||
+            compileResult.spirv[1] != kSPIRVVersion16) {
+            return RHITestResult::fail("Cluster ray-query shader did not produce a SPIR-V 1.6 module");
         }
         if (!spirvContainsCapability(
                 compileResult.spirv,
-                kSpirvRayTracingClusterAccelerationStructureNv)) {
-            return RhiTestResult::fail(
+                kSPIRVRayTracingClusterAccelerationStructureNv)) {
+            return RHITestResult::fail(
                 "Cluster ray-query shader omitted RayTracingClusterAccelerationStructureNV");
         }
         if (!spirvContainsExtension(
                 compileResult.spirv,
                 "SPV_NV_cluster_acceleration_structure")) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "Cluster ray-query shader omitted SPV_NV_cluster_acceleration_structure");
         }
         if (!spirvContainsOpcode(
                 compileResult.spirv,
-                kSpirvOpRayQueryGetIntersectionClusterIdNv)) {
-            return RhiTestResult::fail(
+                kSPIRVOpRayQueryGetIntersectionClusterIdNv)) {
+            return RHITestResult::fail(
                 "Cluster ray-query shader omitted OpRayQueryGetIntersectionClusterIdNV");
         }
-        return RhiTestResult::pass("compiled SPIR-V 1.6 cluster ray-query shader");
+        return RHITestResult::pass("compiled SPIR-V 1.6 cluster ray-query shader");
     }
 };
 
-class RenderGraphOpenPBRPathTracingSamplePreviewTest : public RhiTest {
+class RenderGraphOpenPBRPathTracingSamplePreviewTest : public RHITest {
 public:
     RenderGraphOpenPBRPathTracingSamplePreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_openpbr_pathtracing_sample_preview";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderSampleLoadResult sample;
         std::string message;
         if (!render::loadBuiltInRenderSample("pathtracing-sample", sample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
         render::RenderGraphNode* pathTrace = sample.graph.findNode("PathTrace");
         if (pathTrace == nullptr) {
-            return RhiTestResult::fail("OpenPBR PathTracingSample is missing PathTrace node");
+            return RHITestResult::fail("OpenPBR PathTracingSample is missing PathTrace node");
         }
         // User-reported close view whose glass sphere exposes a horizontal band.
         if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "maxDepth", 12) ||
@@ -5698,24 +5794,24 @@ public:
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "accumulate", false) ||
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.eye", {-0.008599f, 0.073623f, 0.058931f}) ||
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.center", {-1.384997f, -0.182991f, 2.025709f})) {
-            return RhiTestResult::fail("failed to set OpenPBR PathTracingSample preview runtime properties");
+            return RHITestResult::fail("failed to set OpenPBR PathTracingSample preview runtime properties");
         }
 
         render::RenderGraphPreviewRenderer preview;
         preview.setEnvironment(sampleEnvironmentSettings(sample.desc));
         render::Result<> result = preview.initialize(false, true);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         result = preview.render(sample.graph, 576, 300, sample.desc.previewOutput);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("OpenPBR PathTracingSample is unsupported on this device: ") +
                     preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("OpenPBR PathTracingSample render returned ") +
                 toString(result) +
                 ": " +
@@ -5724,14 +5820,14 @@ public:
         if (preview.lastLog().find("environment map does not exist") != std::string::npos ||
             preview.lastLog().find("failed to decode environment map") != std::string::npos ||
             preview.lastLog().find("decoded environment map is too large") != std::string::npos) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("OpenPBR PathTracingSample did not load the HDRI environment: ") +
                 preview.lastLog());
         }
 
         const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 64) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("OpenPBR PathTracingSample produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
@@ -5740,55 +5836,55 @@ public:
         const std::filesystem::path outputPath =
             context.outputDirectory / "render_graph_openpbr_pathtracing_sample_preview.png";
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
-        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+        return RHITestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
 
-class RenderGraphOpenPBRPathTracingDebugViewsTest : public RhiTest {
+class RenderGraphOpenPBRPathTracingDebugViewsTest : public RHITest {
 public:
     RenderGraphOpenPBRPathTracingDebugViewsTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_openpbr_pathtracing_debug_views";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderSampleLoadResult sample;
         std::string message;
         if (!render::loadBuiltInRenderSample("pathtracing-sample", sample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
         render::RenderGraphNode* pathTrace = sample.graph.findNode("PathTrace");
         if (pathTrace == nullptr) {
-            return RhiTestResult::fail("OpenPBR PathTracingSample is missing PathTrace node");
+            return RHITestResult::fail("OpenPBR PathTracingSample is missing PathTrace node");
         }
         if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "maxDepth", 12) ||
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "samples", 2) ||
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "accumulate", false) ||
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.eye", {-0.001590f, 0.072671f, 0.069807f}) ||
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "camera.center", {-2.046089f, 0.350581f, 1.323329f})) {
-            return RhiTestResult::fail("failed to set OpenPBR debug-view camera properties");
+            return RHITestResult::fail("failed to set OpenPBR debug-view camera properties");
         }
 
         render::RenderGraphPreviewRenderer preview;
         preview.setEnvironment(sampleEnvironmentSettings(sample.desc));
         render::Result<> result = preview.initialize(false, true);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
         // Debug views are display-referred. Histogram auto-exposure remeters
         // each view and makes otherwise-identical diagnostics incomparable.
         render::RenderGraphNode* autoExposure = sample.graph.findNode("AutoExposure");
         if (autoExposure == nullptr || !sample.graph.removeNode(autoExposure->id)) {
-            return RhiTestResult::fail("failed to remove AutoExposure from OpenPBR debug views");
+            return RHITestResult::fail("failed to remove AutoExposure from OpenPBR debug views");
         }
         if (sample.graph.addEdge("PathTrace.color", "FinalBlit.source") == nullptr) {
-            return RhiTestResult::fail("failed to connect PathTrace.color to FinalBlit for OpenPBR debug views");
+            return RHITestResult::fail("failed to connect PathTrace.color to FinalBlit for OpenPBR debug views");
         }
 
         struct DebugCase {
@@ -5845,26 +5941,26 @@ public:
         for (const DebugCase& debugCase : cases) {
             for (const char* flag : debugFlags) {
                 if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, flag, false)) {
-                    return RhiTestResult::fail(std::string("failed to clear OpenPBR debug flag ") + flag);
+                    return RHITestResult::fail(std::string("failed to clear OpenPBR debug flag ") + flag);
                 }
             }
             if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "debugView", debugCase.view) ||
                 (debugCase.enabledFlag != nullptr &&
                  !sample.graph.setNodeRuntimeProperty(pathTrace->id, debugCase.enabledFlag, true))) {
-                return RhiTestResult::fail(std::string("failed to set OpenPBR debug case ") + debugCase.name);
+                return RHITestResult::fail(std::string("failed to set OpenPBR debug case ") + debugCase.name);
             }
             if (sample.graph.dirty()) {
-                return RhiTestResult::fail(std::string("OpenPBR debug case dirtied graph: ") + debugCase.name);
+                return RHITestResult::fail(std::string("OpenPBR debug case dirtied graph: ") + debugCase.name);
             }
 
             result = preview.render(sample.graph, 576, 300, sample.desc.previewOutput);
             if (!result) {
                 if (render::hasError(result, render::Error::Unsupported)) {
-                    return RhiTestResult::skip(
+                    return RHITestResult::skip(
                         std::string("OpenPBR debug views are unsupported on this device: ") +
                         preview.lastLog());
                 }
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("OpenPBR debug case render returned ") +
                     toString(result) +
                     " for " +
@@ -5873,7 +5969,7 @@ public:
                     preview.lastLog());
             }
             if (countVisiblePixels(preview.pixels()) < 512) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("OpenPBR debug case produced too few visible pixels: ") +
                     debugCase.name);
             }
@@ -5909,22 +6005,22 @@ public:
                 context.outputDirectory /
                 (std::string("render_graph_openpbr_debug_") + debugCase.name + ".png");
             if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
-                return RhiTestResult::fail(message);
+                return RHITestResult::fail(message);
             }
         }
 
         for (const char* flag : debugFlags) {
             if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, flag, false)) {
-                return RhiTestResult::fail(std::string("failed to clear OpenPBR stability flag ") + flag);
+                return RHITestResult::fail(std::string("failed to clear OpenPBR stability flag ") + flag);
             }
         }
         if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "accumulate", true) ||
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "debugView", "shadowTransmittance")) {
-            return RhiTestResult::fail("failed to configure accumulated OpenPBR debug stability check");
+            return RHITestResult::fail("failed to configure accumulated OpenPBR debug stability check");
         }
         result = preview.render(sample.graph, 576, 300, sample.desc.previewOutput);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("first accumulated OpenPBR debug render returned ") +
                 toString(result) +
                 ": " +
@@ -5933,7 +6029,7 @@ public:
         const std::vector<uint32_t> firstStableDebugPixels = preview.pixels();
         result = preview.render(sample.graph, 576, 300, sample.desc.previewOutput);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("second accumulated OpenPBR debug render returned ") +
                 toString(result) +
                 ": " +
@@ -5942,7 +6038,7 @@ public:
         const uint64_t accumulatedDebugDifference =
             sumAbsoluteRgbDifference(firstStableDebugPixels, preview.pixels());
         if (accumulatedDebugDifference != 0) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "OpenPBR debug view changed while accumulation was enabled: difference=" +
                 std::to_string(accumulatedDebugDifference));
         }
@@ -5960,27 +6056,27 @@ public:
             shadowUnoccludedPixels.size() != debugPixelCount ||
             firstStableDebugPixels.size() != debugPixelCount ||
             preview.pixels().size() != debugPixelCount) {
-            return RhiTestResult::fail("OpenPBR captured debug views have unexpected dimensions");
+            return RHITestResult::fail("OpenPBR captured debug views have unexpected dimensions");
         }
 
         constexpr uint64_t kNormalDebugDifferenceTolerance = 1024;
         const uint64_t normalBypassDifference =
             sumAbsoluteRgbDifference(shadingNormalPixels, mappedNoNormalMapPixels);
         if (normalBypassDifference > kNormalDebugDifferenceTolerance) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "OpenPBR disable-normal-map view did not match shading normals: difference=" +
                 std::to_string(normalBypassDifference));
         }
         const uint64_t geometryOverrideDifference =
             sumAbsoluteRgbDifference(geometryNormalPixels, mappedForceGeometryPixels);
         if (geometryOverrideDifference > kNormalDebugDifferenceTolerance) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "OpenPBR force-geometry-normal view did not match geometry normals: difference=" +
                 std::to_string(geometryOverrideDifference));
         }
         if (sumAbsoluteRgbDifference(shadowTransmittancePixels, shadowOpaquePixels) < 1024 ||
             sumAbsoluteRgbDifference(shadowTransmittancePixels, shadowUnoccludedPixels) < 1024) {
-            return RhiTestResult::fail("OpenPBR shadow debug modes did not produce distinct visibility results");
+            return RHITestResult::fail("OpenPBR shadow debug modes did not produce distinct visibility results");
         }
 
         std::unordered_set<uint32_t> geometryNormalBins;
@@ -6012,49 +6108,49 @@ public:
             }
         }
         if (surfacePixelCount < 1024) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "OpenPBR primary glass sphere debug ROI contains too few surface pixels: pixels=" +
                 std::to_string(surfacePixelCount));
         }
         if (geometryNormalBins.size() < 8) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "OpenPBR geometry normals collapsed across the glass sphere: bins=" +
                 std::to_string(geometryNormalBins.size()));
         }
         if (backFacePixelCount != 0) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "OpenPBR primary glass sphere contains false back faces: pixels=" +
                 std::to_string(backFacePixelCount));
         }
 
-        return RhiTestResult::pass("wrote OpenPBR path-tracing debug views");
+        return RHITestResult::pass("wrote OpenPBR path-tracing debug views");
     }
 };
 
-class RenderGraphOpenPBRPathTracingEnvironmentRotationTest : public RhiTest {
+class RenderGraphOpenPBRPathTracingEnvironmentRotationTest : public RHITest {
 public:
     RenderGraphOpenPBRPathTracingEnvironmentRotationTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_openpbr_pathtracing_environment_rotation";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderSampleLoadResult sample;
         std::string message;
         if (!render::loadBuiltInRenderSample("pathtracing-sample", sample, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
         render::RenderGraphNode* pathTrace = sample.graph.findNode("PathTrace");
         if (pathTrace == nullptr) {
-            return RhiTestResult::fail("OpenPBR PathTracingSample is missing PathTrace node");
+            return RHITestResult::fail("OpenPBR PathTracingSample is missing PathTrace node");
         }
         if (!sample.graph.setNodeRuntimeProperty(pathTrace->id, "maxDepth", 4) ||
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "samples", 1) ||
             !sample.graph.setNodeRuntimeProperty(pathTrace->id, "accumulate", false)) {
-            return RhiTestResult::fail("failed to set OpenPBR environment rotation test runtime properties");
+            return RHITestResult::fail("failed to set OpenPBR environment rotation test runtime properties");
         }
 
         render::RenderGraphPreviewRenderer preview;
@@ -6063,16 +6159,16 @@ public:
         preview.setEnvironment(environment);
         render::Result<> result = preview.initialize(false, true);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         result = preview.render(sample.graph, 96, 96, sample.desc.previewOutput);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("OpenPBR PathTracingSample is unsupported on this device: ") + preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("initial OpenPBR rotation render returned ") +
                 toString(result) +
                 ": " +
@@ -6084,7 +6180,7 @@ public:
         preview.setEnvironment(environment);
         result = preview.render(sample.graph, 96, 96, sample.desc.previewOutput);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("rotated OpenPBR environment render returned ") +
                 toString(result) +
                 ": " +
@@ -6092,29 +6188,29 @@ public:
         }
         const uint64_t difference = sumAbsoluteRgbDifference(rotation0Pixels, preview.pixels());
         if (difference < 4096) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("environment rotation did not materially affect path tracing output, diff=") +
                 std::to_string(difference));
         }
 
-        return RhiTestResult::pass(std::string("environment rotation diff=") + std::to_string(difference));
+        return RHITestResult::pass(std::string("environment rotation diff=") + std::to_string(difference));
     }
 };
 
-class RenderGraphScenePathTraceMaterialTexturesPreviewTest : public RhiTest {
+class RenderGraphScenePathTraceMaterialTexturesPreviewTest : public RHITest {
 public:
     RenderGraphScenePathTraceMaterialTexturesPreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_scene_path_trace_material_textures_preview";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false, true);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         render::RenderGraphProperties properties{
@@ -6131,10 +6227,10 @@ public:
         result = preview.render(graph, 128, 128);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("ScenePathTracePass is unsupported on this device: ") + preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("ScenePathTracePass textured material render returned ") +
                 toString(result) +
                 ": " +
@@ -6143,7 +6239,7 @@ public:
 
         const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("ScenePathTracePass textured material preview produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
@@ -6153,33 +6249,33 @@ public:
         const std::filesystem::path outputPath =
             context.outputDirectory / "render_graph_scene_path_trace_material_textures_preview.png";
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), outputMessage)) {
-            return RhiTestResult::fail(outputMessage);
+            return RHITestResult::fail(outputMessage);
         }
 
-        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+        return RHITestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
 
-class RenderGraphScenePathTraceTransmissionTexturesPreviewTest : public RhiTest {
+class RenderGraphScenePathTraceTransmissionTexturesPreviewTest : public RHITest {
 public:
     RenderGraphScenePathTraceTransmissionTexturesPreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_scene_path_trace_transmission_textures_preview";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::filesystem::path scenePath;
         std::string message;
         if (!writeTransmissionTextureScene(context.outputDirectory / "transmission-texture-scene", scenePath, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false, true);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         render::RenderGraphProperties properties{
@@ -6205,10 +6301,10 @@ public:
         result = preview.render(graph, 96, 96);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("ScenePathTracePass is unsupported on this device: ") + preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("ScenePathTracePass transmission texture render returned ") +
                 toString(result) +
                 ": " +
@@ -6225,7 +6321,7 @@ public:
             }
         }
         if (redPixelCount < 1024) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("transmission texture preview expected visible red diffuse pixels, got red=") +
                 std::to_string(redPixelCount));
         }
@@ -6234,33 +6330,33 @@ public:
         const std::filesystem::path outputPath =
             context.outputDirectory / "render_graph_scene_path_trace_transmission_textures_preview.png";
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
-        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+        return RHITestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
 
-class RenderGraphScenePathTraceAlphaMaskPreviewTest : public RhiTest {
+class RenderGraphScenePathTraceAlphaMaskPreviewTest : public RHITest {
 public:
     RenderGraphScenePathTraceAlphaMaskPreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_scene_path_trace_alpha_mask_preview";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::filesystem::path scenePath;
         std::string message;
         if (!writeAlphaMaskScene(context.outputDirectory / "alpha-mask-scene", scenePath, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false, true);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         render::RenderGraphProperties properties{
@@ -6286,10 +6382,10 @@ public:
         result = preview.render(graph, 96, 96);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("ScenePathTracePass is unsupported on this device: ") + preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("ScenePathTracePass alpha mask render returned ") +
                 toString(result) +
                 ": " +
@@ -6310,7 +6406,7 @@ public:
             }
         }
         if (redPixelCount < 1024 || bluePixelCount < 1024) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("alpha mask preview expected red masked pixels and blue revealed pixels, got red=") +
                 std::to_string(redPixelCount) +
                 " blue=" +
@@ -6321,21 +6417,21 @@ public:
         const std::filesystem::path outputPath =
             context.outputDirectory / "render_graph_scene_path_trace_alpha_mask_preview.png";
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
-        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+        return RHITestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
 
-class RenderGraphSceneSwitchRetirementTest : public RhiTest {
+class RenderGraphSceneSwitchRetirementTest : public RHITest {
 public:
     RenderGraphSceneSwitchRetirementTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "render_graph_scene_switch_retirement";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerTestPass();
         render::RenderGraph graph;
@@ -6347,33 +6443,33 @@ public:
                 graph.setNodeProperties(node->id, {{"scene", scene}});
                 std::string log;
                 auto result = executor.compile(context.device, graph, 32, 32, log);
-                if (!result) { return RhiTestResult::fail(log); }
+                if (!result) { return RHITestResult::fail(log); }
                 // Leave both queued slots populated. Compile must wait and release
                 // these owners before the next scene's compile allocates anything.
                 for (uint32_t frame = 0; frame < 2; ++frame) {
                     result = executor.execute(render::RenderGraphSubmitDesc{
                         .graphicsQueue = context.device.getQueue(render::QueueType::Graphics),
                     });
-                    if (!result) { return RhiTestResult::fail(toString(result)); }
+                    if (!result) { return RHITestResult::fail(toString(result)); }
                 }
             }
         }
         if (!testRetainedSceneBuffer.expired()) {
-            return RhiTestResult::fail("Submitted scene owner survived executor destruction");
+            return RHITestResult::fail("Submitted scene owner survived executor destruction");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphResizeReusesCompiledPassesTest : public RhiTest {
+class RenderGraphResizeReusesCompiledPassesTest : public RHITest {
 public:
     RenderGraphResizeReusesCompiledPassesTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "render_graph_resize_reuses_compiled_passes";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerTestPass();
 
@@ -6393,7 +6489,7 @@ public:
         graph.setName("ResizeReuse");
         render::RenderGraphNode* node = graph.addNode("TestResizeCompilePass", "Resize");
         if (node == nullptr) {
-            return RhiTestResult::fail("failed to add resize test pass node");
+            return RHITestResult::fail("failed to add resize test pass node");
         }
         graph.markOutput("Resize.color");
 
@@ -6404,80 +6500,80 @@ public:
         std::string log;
         render::Result<> result = executor.compile(context.device, graph, 64, 48, log);
         if (!result) {
-            return RhiTestResult::fail(std::string("initial RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+            return RHITestResult::fail(std::string("initial RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
         }
         if (compileCount != 1) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("expected one pass compile after initial compile, got ") +
                 std::to_string(compileCount));
         }
 
         const render::RenderGraphResource* output = executor.outputResource("Resize.color");
         if (output == nullptr || output->desc.width != 64 || output->desc.height != 48) {
-            return RhiTestResult::fail("initial resize test output dimensions are invalid");
+            return RHITestResult::fail("initial resize test output dimensions are invalid");
         }
 
         result = executor.compile(context.device, graph, 128, 96, log);
         if (!result) {
-            return RhiTestResult::fail(std::string("resize RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+            return RHITestResult::fail(std::string("resize RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
         }
         if (compileCount != 1) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("resize recompiled pass PSO path; compile count is ") +
                 std::to_string(compileCount));
         }
 
         output = executor.outputResource("Resize.color");
         if (output == nullptr || output->desc.width != 128 || output->desc.height != 96) {
-            return RhiTestResult::fail("resized graph output dimensions were not rebuilt");
+            return RHITestResult::fail("resized graph output dimensions were not rebuilt");
         }
 
         render::RenderGraphProperties properties = render::RenderGraphProperties::object();
         properties["variant"] = 1;
         if (!graph.setNodeProperties(node->id, std::move(properties))) {
-            return RhiTestResult::fail("failed to update resize test pass static properties");
+            return RHITestResult::fail("failed to update resize test pass static properties");
         }
 
         result = executor.compile(context.device, graph, 128, 96, log);
         if (!result) {
-            return RhiTestResult::fail(std::string("static property RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+            return RHITestResult::fail(std::string("static property RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
         }
         if (compileCount != 2) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("static property change did not force full pass compile; compile count is ") +
                 std::to_string(compileCount));
         }
 
         if (context.device.memoryBudget().reservedBytes != initialBudget.reservedBytes) {
-            return RhiTestResult::fail("Compile/resize leaked graph budget reservations");
+            return RHITestResult::fail("Compile/resize leaked graph budget reservations");
         }
         policy.graphReserveBytes = UINT64_MAX;
         context.device.setMemoryBudgetPolicy(policy);
         result = executor.compile(context.device, graph, 128, 96, log);
         if (!render::hasError(result, render::Error::OutOfMemory) ||
                 context.device.memoryBudget().reservedBytes != initialBudget.reservedBytes) {
-            return RhiTestResult::fail("Failed graph budget preflight did not release reservations");
+            return RHITestResult::fail("Failed graph budget preflight did not release reservations");
         }
         policy.graphReserveBytes = 8ull * 1024 * 1024;
         context.device.setMemoryBudgetPolicy(policy);
         result = executor.compile(context.device, graph, 128, 96, log);
         if (!result || context.device.memoryBudget().reservedBytes != initialBudget.reservedBytes) {
-            return RhiTestResult::fail("Graph could not recover after budget preflight failure: " + log);
+            return RHITestResult::fail("Graph could not recover after budget preflight failure: " + log);
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphPreviewActualOutputExtentTest : public RhiTest {
+class RenderGraphPreviewActualOutputExtentTest : public RHITest {
 public:
     RenderGraphPreviewActualOutputExtentTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_preview_actual_output_extent";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         registerTestPass();
 
@@ -6498,13 +6594,13 @@ public:
             properties);
         if (producer == nullptr ||
             !graph.markOutput("Producer.color")) {
-            return RhiTestResult::fail("failed to construct actual-output-extent preview graph");
+            return RHITestResult::fail("failed to construct actual-output-extent preview graph");
         }
 
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false);
         if (!result) {
-            return RhiTestResult::skip(
+            return RHITestResult::skip(
                 std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
@@ -6514,7 +6610,7 @@ public:
             kRequestedHeight,
             "Producer.color");
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("actual-output-extent preview render returned ") +
                 toString(result) +
                 ": " +
@@ -6522,7 +6618,7 @@ public:
         }
 
         if (preview.width() != kOutputWidth || preview.height() != kOutputHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("preview reported ") +
                 std::to_string(preview.width()) +
                 "x" +
@@ -6533,7 +6629,7 @@ public:
         constexpr size_t kExpectedPixelCount =
             static_cast<size_t>(kOutputWidth) * static_cast<size_t>(kOutputHeight);
         if (preview.pixels().size() != kExpectedPixelCount) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("preview pixel count was ") +
                 std::to_string(preview.pixels().size()) +
                 " instead of " +
@@ -6542,7 +6638,7 @@ public:
 
         properties["outputRgba16"] = true;
         if (!graph.setNodeProperties(producer->id, std::move(properties))) {
-            return RhiTestResult::fail("failed to switch preview output to RGBA16F");
+            return RHITestResult::fail("failed to switch preview output to RGBA16F");
         }
         result = preview.render(
             graph,
@@ -6550,7 +6646,7 @@ public:
             kRequestedHeight,
             "Producer.color");
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RGBA16F actual-output-extent preview returned ") +
                 toString(result) +
                 ": " +
@@ -6559,22 +6655,22 @@ public:
         if (preview.width() != kOutputWidth ||
             preview.height() != kOutputHeight ||
             preview.pixels().size() != kExpectedPixelCount) {
-            return RhiTestResult::fail("RGBA16F preview did not preserve the actual output extent");
+            return RHITestResult::fail("RGBA16F preview did not preserve the actual output extent");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphTextureExtentConstraintPropagationTest : public RhiTest {
+class RenderGraphTextureExtentConstraintPropagationTest : public RHITest {
 public:
     RenderGraphTextureExtentConstraintPropagationTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "render_graph_texture_extent_constraint_propagation";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerTestPass();
 
@@ -6597,10 +6693,10 @@ public:
             consumer == nullptr ||
             !graph.addEdge("Producer.color", "Consumer.input") ||
             !graph.markOutput("Consumer.color")) {
-            return RhiTestResult::fail("failed to construct texture extent propagation graph");
+            return RHITestResult::fail("failed to construct texture extent propagation graph");
         }
         if (!graph.setNodeRuntimeProperties(consumer->id, consumerProperties)) {
-            return RhiTestResult::fail("failed to set runtime texture extent constraints");
+            return RHITestResult::fail("failed to set runtime texture extent constraints");
         }
 
         render::RenderGraphExecutor executor;
@@ -6612,7 +6708,7 @@ public:
             kGraphHeight,
             log);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RenderGraphExecutor::compile returned ") +
                 toString(result) + ": " + log);
         }
@@ -6622,13 +6718,13 @@ public:
         if (producerOutput == nullptr ||
             producerOutput->desc.width != kProducerWidth ||
             producerOutput->desc.height != kProducerHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "explicit consumer input extent did not propagate to the producer resource");
         }
         if (consumerOutput == nullptr ||
             consumerOutput->desc.width != kGraphWidth ||
             consumerOutput->desc.height != kGraphHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "default consumer output did not preserve the global graph extent");
         }
 
@@ -6637,12 +6733,12 @@ public:
             .graphicsQueue = &context.graphicsQueue,
         });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RenderGraphExecutor::execute returned ") + toString(result));
         }
         result = executor.waitForSubmittedWork(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RenderGraphExecutor::waitForSubmittedWork returned ") +
                 toString(result));
         }
@@ -6652,7 +6748,7 @@ public:
             state.producerContextHeight != kProducerHeight ||
             state.producerOutputWidth != kProducerWidth ||
             state.producerOutputHeight != kProducerHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "producer execution context did not use the propagated texture extent");
         }
         if (state.consumerContextWidth != kGraphWidth ||
@@ -6661,18 +6757,18 @@ public:
             state.consumerInputHeight != kProducerHeight ||
             state.consumerOutputWidth != kGraphWidth ||
             state.consumerOutputHeight != kGraphHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "consumer execution context or resources did not preserve split input/output extents");
         }
 
         consumerProperties["inputWidth"] = kUpdatedProducerWidth;
         consumerProperties["inputHeight"] = kUpdatedProducerHeight;
         if (!graph.setNodeRuntimeProperties(consumer->id, std::move(consumerProperties))) {
-            return RhiTestResult::fail("failed to update runtime texture extent constraints");
+            return RHITestResult::fail("failed to update runtime texture extent constraints");
         }
         result = executor.compile(context.device, graph, kGraphWidth, kGraphHeight, log);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("runtime extent RenderGraphExecutor::compile returned ") +
                 toString(result) + ": " + log);
         }
@@ -6680,7 +6776,7 @@ public:
         if (producerOutput == nullptr ||
             producerOutput->desc.width != kUpdatedProducerWidth ||
             producerOutput->desc.height != kUpdatedProducerHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "updated runtime input extent did not rebuild the producer resource");
         }
 
@@ -6689,12 +6785,12 @@ public:
             .graphicsQueue = &context.graphicsQueue,
         });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("updated extent RenderGraphExecutor::execute returned ") + toString(result));
         }
         result = executor.waitForSubmittedWork(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("updated extent waitForSubmittedWork returned ") + toString(result));
         }
         const TestTextureExtentExecutionState& updatedState = testTextureExtentExecutionState();
@@ -6704,24 +6800,24 @@ public:
             updatedState.consumerContextHeight != kGraphHeight ||
             updatedState.consumerInputWidth != kUpdatedProducerWidth ||
             updatedState.consumerInputHeight != kUpdatedProducerHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "runtime extent rebuild did not update producer/consumer execution dimensions");
         }
 
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             "propagated and rebuilt runtime input extents while preserving 320x180 output");
     }
 };
 
-class RenderGraphTextureExtentConstraintConflictTest : public RhiTest {
+class RenderGraphTextureExtentConstraintConflictTest : public RHITest {
 public:
     RenderGraphTextureExtentConstraintConflictTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "render_graph_texture_extent_constraint_conflict";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerTestPass();
 
@@ -6749,7 +6845,7 @@ public:
             !graph.addEdge("Producer.color", "SecondConsumer.input") ||
             !graph.markOutput("FirstConsumer.color") ||
             !graph.markOutput("SecondConsumer.color")) {
-            return RhiTestResult::fail("failed to construct conflicting texture extent graph");
+            return RHITestResult::fail("failed to construct conflicting texture extent graph");
         }
 
         render::RenderGraphExecutor executor;
@@ -6758,24 +6854,24 @@ public:
         if (result ||
             !render::hasError(result, render::Error::InvalidArgument) ||
             executor.compiled()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "RenderGraph compile accepted conflicting explicit consumer input extents: " + log);
         }
 
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             "rejected conflicting 80x45 and 64x36 constraints on one producer output");
     }
 };
 
-class RenderGraphTextureExtentConstraintMultihopPropagationTest : public RhiTest {
+class RenderGraphTextureExtentConstraintMultihopPropagationTest : public RHITest {
 public:
     RenderGraphTextureExtentConstraintMultihopPropagationTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "render_graph_texture_extent_constraint_multihop_propagation";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerTestPass();
 
@@ -6800,7 +6896,7 @@ public:
             !graph.addEdge("Producer.color", "Relay.input") ||
             !graph.addEdge("Relay.color", "Consumer.input") ||
             !graph.markOutput("Consumer.color")) {
-            return RhiTestResult::fail("failed to construct multihop texture extent graph");
+            return RHITestResult::fail("failed to construct multihop texture extent graph");
         }
 
         render::RenderGraphExecutor executor;
@@ -6812,7 +6908,7 @@ public:
             kGraphHeight,
             log);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RenderGraphExecutor::compile returned ") +
                 toString(result) + ": " + log);
         }
@@ -6828,13 +6924,13 @@ public:
             relayOutput == nullptr ||
             relayOutput->desc.width != kConstrainedWidth ||
             relayOutput->desc.height != kConstrainedHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "explicit downstream input extent did not propagate through the relay resources");
         }
         if (consumerOutput == nullptr ||
             consumerOutput->desc.width != kGraphWidth ||
             consumerOutput->desc.height != kGraphHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "multihop consumer output did not preserve the global graph extent");
         }
 
@@ -6843,12 +6939,12 @@ public:
             .graphicsQueue = &context.graphicsQueue,
         });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RenderGraphExecutor::execute returned ") + toString(result));
         }
         result = executor.waitForSubmittedWork(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RenderGraphExecutor::waitForSubmittedWork returned ") +
                 toString(result));
         }
@@ -6858,7 +6954,7 @@ public:
             state.producerContextHeight != kConstrainedHeight ||
             state.producerOutputWidth != kConstrainedWidth ||
             state.producerOutputHeight != kConstrainedHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "multihop producer resource or execution context has the wrong extent");
         }
         if (state.relayContextWidth != kConstrainedWidth ||
@@ -6867,7 +6963,7 @@ public:
             state.relayInputHeight != kConstrainedHeight ||
             state.relayOutputWidth != kConstrainedWidth ||
             state.relayOutputHeight != kConstrainedHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "relay input, output, or execution context did not inherit the multihop constraint");
         }
         if (state.consumerContextWidth != kGraphWidth ||
@@ -6876,30 +6972,30 @@ public:
             state.consumerInputHeight != kConstrainedHeight ||
             state.consumerOutputWidth != kGraphWidth ||
             state.consumerOutputHeight != kGraphHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "multihop consumer did not preserve split input/output execution extents");
         }
         if (state.producerDisplayWidth != kGraphWidth || state.producerDisplayHeight != kGraphHeight ||
             state.relayDisplayWidth != kGraphWidth || state.relayDisplayHeight != kGraphHeight ||
             state.consumerDisplayWidth != kGraphWidth || state.consumerDisplayHeight != kGraphHeight) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "Local and shared-view passes did not retain the graph display extent independently of internal texture sizes");
         }
 
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             "propagated 80x45 through an implicit relay while preserving 320x180 output and display extent across local/shared views");
     }
 };
 
-class RenderGraphTextureExtentConstraintRelayConflictTest : public RhiTest {
+class RenderGraphTextureExtentConstraintRelayConflictTest : public RHITest {
 public:
     RenderGraphTextureExtentConstraintRelayConflictTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "render_graph_texture_extent_constraint_relay_conflict";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerTestPass();
 
@@ -6921,7 +7017,7 @@ public:
             graph.addNode("TestTextureExtentRelayPass", "Relay", relayProperties) == nullptr ||
             !graph.addEdge("Producer.color", "Relay.input") ||
             !graph.markOutput("Relay.color")) {
-            return RhiTestResult::fail("failed to construct conflicting relay extent graph");
+            return RHITestResult::fail("failed to construct conflicting relay extent graph");
         }
 
         render::RenderGraphExecutor executor;
@@ -6930,25 +7026,25 @@ public:
         if (result ||
             !render::hasError(result, render::Error::InvalidArgument) ||
             executor.compiled()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "RenderGraph compile accepted an implicit relay input that conflicts with its output: " +
                 log);
         }
 
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             "rejected explicit 80x45 producer feeding implicit input of a 320x180 relay");
     }
 };
 
-class RenderGraphShaderReloadTransactionTest : public RhiTest {
+class RenderGraphShaderReloadTransactionTest : public RHITest {
 public:
     RenderGraphShaderReloadTransactionTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "render_graph_shader_reload_transaction";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerTestPass();
 
@@ -6974,36 +7070,36 @@ public:
         graph.setName("ShaderReloadTransaction");
         graph.addNode("TestShaderReloadPass", "Reload");
         if (!graph.markOutput("Reload.color")) {
-            return RhiTestResult::fail("failed to mark shader reload test output");
+            return RHITestResult::fail("failed to mark shader reload test output");
         }
 
         render::RenderGraphExecutor executor;
         std::string log;
         render::Result<> result = executor.compile(context.device, graph, 32, 24, log);
         if (!result || !executor.compiled()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("initial shader reload graph compile returned ") +
                 toString(result) + ": " + log);
         }
         const render::RenderGraphResource* output = executor.outputResource("Reload.color");
         if (output == nullptr || output->desc.width != 32 || output->desc.height != 24) {
-            return RhiTestResult::fail("initial shader reload output resource is invalid");
+            return RHITestResult::fail("initial shader reload output resource is invalid");
         }
         const uint32_t initialInstanceId = state.lastSuccessfulCompileInstanceId;
         if (initialInstanceId == 0) {
-            return RhiTestResult::fail("initial shader reload pass did not compile");
+            return RHITestResult::fail("initial shader reload pass did not compile");
         }
 
         result = executor.reloadShaders(log);
         const uint32_t reloadedInstanceId = state.lastSuccessfulCompileInstanceId;
         if (!result || !executor.compiled() || reloadedInstanceId == initialInstanceId ||
             !wasDestroyed(initialInstanceId)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("successful shader reload did not transactionally replace the pass: ") +
                 toString(result) + ": " + log);
         }
         if (executor.outputResource("Reload.color") != output) {
-            return RhiTestResult::fail("successful shader reload replaced graph resources");
+            return RHITestResult::fail("successful shader reload replaced graph resources");
         }
 
         state.failCompile = true;
@@ -7012,12 +7108,12 @@ public:
         if (result || !render::hasError(result, render::Error::Failure) ||
             state.compileCount != compileCountBeforeFailure + 1 ||
             state.lastSuccessfulCompileInstanceId != reloadedInstanceId) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "failed shader reload did not preserve the last successful pass state: " + log);
         }
         if (!executor.compiled() || executor.outputResource("Reload.color") != output ||
             wasDestroyed(reloadedInstanceId)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "failed shader reload invalidated the compiled graph or its output resource");
         }
 
@@ -7028,35 +7124,35 @@ public:
         if (result || !render::hasError(result, render::Error::InvalidArgument) ||
             state.compileCount != compileCountBeforeContractChange ||
             log.find("contract changed") == std::string::npos) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "shader reload did not reject a changed render-graph reflection contract: " + log);
         }
         if (!executor.compiled() || executor.outputResource("Reload.color") != output ||
             state.lastSuccessfulCompileInstanceId != reloadedInstanceId ||
             wasDestroyed(reloadedInstanceId)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "reflection rejection invalidated the last successful shader pass");
         }
 
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             "validated successful replacement and last-good preservation across shader reload failures");
     }
 };
 
-class RenderGraphCopyColorWorkflowTest : public RhiTest {
+class RenderGraphCopyColorWorkflowTest : public RHITest {
 public:
     RenderGraphCopyColorWorkflowTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_copy_color_workflow";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         render::RenderGraph graph;
@@ -7068,37 +7164,37 @@ public:
 
         result = preview.render(graph, 128, 96);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphPreviewRenderer::render returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderGraphPreviewRenderer::render returned ") + toString(result));
         }
         if (countBrightPixels(preview.pixels()) < 128) {
-            return RhiTestResult::fail("copy color graph produced too few bright pixels");
+            return RHITestResult::fail("copy color graph produced too few bright pixels");
         }
 
         graph.markDirty();
         result = preview.render(graph, 80, 80);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphPreviewRenderer::render resize returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderGraphPreviewRenderer::render resize returned ") + toString(result));
         }
         if (preview.width() != 80 || preview.height() != 80) {
-            return RhiTestResult::fail("copy color graph resize did not update output dimensions");
+            return RHITestResult::fail("copy color graph resize did not update output dimensions");
         }
         if (countBrightPixels(preview.pixels()) < 80) {
-            return RhiTestResult::fail("resized copy color graph produced too few bright pixels");
+            return RHITestResult::fail("resized copy color graph produced too few bright pixels");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphBindlessTextureWorkflowTest : public RhiTest {
+class RenderGraphBindlessTextureWorkflowTest : public RHITest {
 public:
     RenderGraphBindlessTextureWorkflowTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_bindless_texture_workflow";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerTestPass();
 
@@ -7114,14 +7210,14 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
 
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail("bindless test device has no graphics queue");
+            return RHITestResult::fail("bindless test device has no graphics queue");
         }
 
         render::RenderGraphProperties sourceProperties = render::RenderGraphProperties::object();
@@ -7139,21 +7235,21 @@ public:
         result = executor.compile(*device, graph, kWidth, kHeight, log);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(log);
+                return RHITestResult::skip(log);
             }
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+            return RHITestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
         result = device->createCommandPool(*graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> readbackBuffer;
@@ -7163,37 +7259,37 @@ public:
                 .memoryLocation = render::MemoryLocation::HostReadback,
             }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
         if (!result || readbackBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
 
         render::RenderFrameContext frame;
         render::QueueSubmissionTracker submissions;
         result = submissions.initialize(*device, *graphicsQueue);
         if (!result) {
-            return RhiTestResult::fail(std::string("QueueSubmissionTracker::initialize returned ") + toString(result));
+            return RHITestResult::fail(std::string("QueueSubmissionTracker::initialize returned ") + toString(result));
         }
         result = frame.begin(0);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderFrameContext::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderFrameContext::begin returned ") + toString(result));
         }
         result = commandBuffer->begin(&frame);
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
 
         result = executor.execute(*commandBuffer);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::execute returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderGraphExecutor::execute returned ") + toString(result));
         }
 
         render::RenderGraphResource* output = executor.outputResource("Sample.color");
         if (output == nullptr || output->texture == nullptr) {
-            return RhiTestResult::fail("bindless graph output resource is missing");
+            return RHITestResult::fail("bindless graph output resource is missing");
         }
 
         result = executor.transitionOutput(*commandBuffer, "Sample.color", render::ResourceState::TransferSource);
         if (!result) {
-            return RhiTestResult::fail(std::string("transitionOutput returned ") + toString(result));
+            return RHITestResult::fail(std::string("transitionOutput returned ") + toString(result));
         }
         commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
             .texture = output->texture,
@@ -7207,34 +7303,34 @@ public:
 
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         render::RecordedBatch batch;
         result = batch.seal(frame, commandBuffers);
         if (!result) {
-            return RhiTestResult::fail(std::string("RecordedBatch::seal returned ") + toString(result));
+            return RHITestResult::fail(std::string("RecordedBatch::seal returned ") + toString(result));
         }
         render::SubmissionReceipt receipt;
         result = submissions.submitBatch(batch, {}, frame).transform([&](auto value) { receipt = std::move(value); });
         if (!result || !receipt.accepted()) {
-            return RhiTestResult::fail(std::string("QueueSubmissionTracker::submitBatch returned ") + toString(result));
+            return RHITestResult::fail(std::string("QueueSubmissionTracker::submitBatch returned ") + toString(result));
         }
         result = frame.finishSubmission();
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderFrameContext::finishSubmission returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderFrameContext::finishSubmission returned ") + toString(result));
         }
         result = frame.wait(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderFrameContext::wait returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderFrameContext::wait returned ") + toString(result));
         }
 
         if (device->capabilities().timestampQueries) {
             std::vector<render::RenderGraphExecutionStats> completedGpuStats;
             result = executor.collectCompletedGpuExecutionStats().transform([&](auto value) { completedGpuStats = std::move(value); });
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("collectCompletedGpuExecutionStats returned ") + toString(result));
             }
             if (completedGpuStats.size() != 1 ||
@@ -7246,14 +7342,14 @@ public:
                     [](const render::RenderGraphNodeExecutionStat& stat) {
                         return stat.gpuTimingAvailable;
                     })) {
-                return RhiTestResult::fail("RenderGraph pass GPU timestamps were incomplete");
+                return RHITestResult::fail("RenderGraph pass GPU timestamps were incomplete");
             }
         }
 
         readbackBuffer->invalidate();
         void* mapped = readbackBuffer->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("readback buffer did not map");
+            return RHITestResult::fail("readback buffer did not map");
         }
 
         std::vector<uint8_t> pixels(static_cast<size_t>(kReadbackByteSize));
@@ -7272,7 +7368,7 @@ public:
         }
 
         if (matchedPixelCount < (kWidth * kHeight) / 2) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("bindless graph sampled too few source pixels: ") +
                 std::to_string(matchedPixelCount));
         }
@@ -7280,23 +7376,23 @@ public:
         std::string outputMessage;
         const std::filesystem::path outputPath = context.outputDirectory / "render_graph_bindless_texture_workflow.png";
         if (!saveRgba8Png(outputPath, pixels.data(), kWidth, kHeight, outputMessage)) {
-            return RhiTestResult::fail(outputMessage);
+            return RHITestResult::fail(outputMessage);
         }
 
         (void)device->waitIdle();
-        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+        return RHITestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
 
-class RenderGraphBufferWorkflowTest : public RhiTest {
+class RenderGraphBufferWorkflowTest : public RHITest {
 public:
     RenderGraphBufferWorkflowTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_buffer_workflow";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         constexpr uint64_t kByteSize = 16;
         constexpr std::array<uint32_t, 4> kExpectedWords = {
@@ -7314,17 +7410,17 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
         if (!device->capabilities().bindlessDescriptorHeap) {
-            return RhiTestResult::skip("DeviceCapabilities::bindlessDescriptorHeap is false");
+            return RHITestResult::skip("DeviceCapabilities::bindlessDescriptorHeap is false");
         }
 
         render::Queue* computeQueue = device->getQueue(render::QueueType::Compute);
         if (computeQueue == nullptr) {
-            return RhiTestResult::skip("buffer workflow device has no compute queue");
+            return RHITestResult::skip("buffer workflow device has no compute queue");
         }
 
         render::RenderGraph graph;
@@ -7339,21 +7435,21 @@ public:
         result = executor.compile(*device, graph, 1, 1, log);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(log);
+                return RHITestResult::skip(log);
             }
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+            return RHITestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
         }
 
         result = executor.execute(render::RenderGraphSubmitDesc{
             .computeQueue = computeQueue,
         });
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::execute returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderGraphExecutor::execute returned ") + toString(result));
         }
 
         result = executor.waitForSubmittedWork(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::waitForSubmittedWork returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderGraphExecutor::waitForSubmittedWork returned ") + toString(result));
         }
 
         render::RenderGraphResource* output = executor.outputResource("Copy.data");
@@ -7362,13 +7458,13 @@ public:
             output->buffer == nullptr ||
             output->bufferDesc.memoryLocation != render::MemoryLocation::HostReadback ||
             output->bufferDesc.size != kByteSize) {
-            return RhiTestResult::fail("buffer graph output resource is invalid");
+            return RHITestResult::fail("buffer graph output resource is invalid");
         }
 
         output->buffer->invalidate();
         void* mapped = output->buffer->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("buffer graph output did not map");
+            return RHITestResult::fail("buffer graph output did not map");
         }
 
         std::array<uint32_t, 4> actualWords{};
@@ -7376,23 +7472,23 @@ public:
         output->buffer->unmap();
 
         if (actualWords != kExpectedWords) {
-            return RhiTestResult::fail("buffer graph output bytes did not match expected pattern");
+            return RHITestResult::fail("buffer graph output bytes did not match expected pattern");
         }
 
         (void)device->waitIdle();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphMultiQueueSubmitTest : public RhiTest {
+class RenderGraphMultiQueueSubmitTest : public RHITest {
 public:
     RenderGraphMultiQueueSubmitTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_multi_queue_submit";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         constexpr uint64_t kByteSize = 16;
         constexpr std::array<uint32_t, 4> kExpectedWords = {
@@ -7410,21 +7506,21 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
         if (!device->capabilities().bindlessDescriptorHeap) {
-            return RhiTestResult::skip("DeviceCapabilities::bindlessDescriptorHeap is false");
+            return RHITestResult::skip("DeviceCapabilities::bindlessDescriptorHeap is false");
         }
 
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         render::Queue* computeQueue = device->getQueue(render::QueueType::Compute);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail("multi queue submit device has no graphics queue");
+            return RHITestResult::fail("multi queue submit device has no graphics queue");
         }
         if (computeQueue == nullptr) {
-            return RhiTestResult::skip("multi queue submit device has no compute queue");
+            return RHITestResult::skip("multi queue submit device has no compute queue");
         }
 
         render::RenderGraph graph;
@@ -7439,9 +7535,9 @@ public:
         result = executor.compile(*device, graph, 32, 32, log);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(log);
+                return RHITestResult::skip(log);
             }
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+            return RHITestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
         }
 
         result = executor.execute(render::RenderGraphSubmitDesc{
@@ -7449,12 +7545,12 @@ public:
             .computeQueue = computeQueue,
         });
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::execute(RenderGraphSubmitDesc) returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderGraphExecutor::execute(RenderGraphSubmitDesc) returned ") + toString(result));
         }
 
         result = executor.waitForSubmittedWork(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::waitForSubmittedWork returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderGraphExecutor::waitForSubmittedWork returned ") + toString(result));
         }
 
         render::RenderGraphResource* output = executor.outputResource("Write.data");
@@ -7463,13 +7559,13 @@ public:
             output->buffer == nullptr ||
             output->bufferDesc.memoryLocation != render::MemoryLocation::HostReadback ||
             output->bufferDesc.size != kByteSize) {
-            return RhiTestResult::fail("multi queue buffer output resource is invalid");
+            return RHITestResult::fail("multi queue buffer output resource is invalid");
         }
 
         output->buffer->invalidate();
         void* mapped = output->buffer->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("multi queue buffer graph output did not map");
+            return RHITestResult::fail("multi queue buffer graph output did not map");
         }
 
         std::array<uint32_t, 4> actualWords{};
@@ -7477,27 +7573,27 @@ public:
         output->buffer->unmap();
 
         if (actualWords != kExpectedWords) {
-            return RhiTestResult::fail("multi queue buffer graph output bytes did not match expected pattern");
+            return RHITestResult::fail("multi queue buffer graph output bytes did not match expected pattern");
         }
 
         (void)device->waitIdle();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphTextureFeedbackEpilogueTest final : public RhiTest {
+class RenderGraphTextureFeedbackEpilogueTest final : public RHITest {
 public:
     RenderGraphTextureFeedbackEpilogueTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_texture_feedback_epilogue";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         if (!context.device.capabilities().bindlessDescriptorHeap) {
-            return RhiTestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
+            return RHITestResult::skip("Requires --rhi-bindless, --rhi-realtime or --rhi-streamline");
         }
         registerTestPass();
         const auto directory = std::filesystem::absolute(context.outputDirectory / "graph-texture-feedback");
@@ -7552,14 +7648,14 @@ public:
             fineProperties["wantedMip"] = 0;
             graph.addNode("TestTextureFeedbackPass", "Fine", fineProperties);
             if (!graph.addEdge("Coarse.token", "Fine.previous") || !graph.markOutput("Fine.token")) {
-                return RhiTestResult::fail("Could not construct shared-feedback graph");
+                return RHITestResult::fail("Could not construct shared-feedback graph");
             }
             RenderGraphExecutor executor;
             std::string log;
             auto result = executor.compile(context.device, graph, 16, 16, log);
-            if (!result) { return RhiTestResult::fail("Texture feedback graph compile: " + log); }
+            if (!result) { return RHITestResult::fail("Texture feedback graph compile: " + log); }
             if (executor.subsystemHost()->get<GPUSceneSubsystem>() != nullptr) {
-                return RhiTestResult::fail("Feedback regression must exercise a streamer-only graph");
+                return RHITestResult::fail("Feedback regression must exercise a streamer-only graph");
             }
             QueueSubmissionTracker submissions;
             RenderFrameContext frame;
@@ -7569,7 +7665,7 @@ public:
                 result = submissions.initialize(context.device, context.graphicsQueue);
                 if (result) { result = context.device.createCommandPool(context.graphicsQueue).transform([&](auto value) { pool = std::move(value); }); }
                 if (result) { result = pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }); }
-                if (!result) { return RhiTestResult::fail("Texture feedback command resources: " + std::string(resultToString(result))); }
+                if (!result) { return RHITestResult::fail("Texture feedback command resources: " + std::string(resultToString(result))); }
             }
             struct Drain {
                 Queue& queue;
@@ -7593,13 +7689,13 @@ public:
                     result = executor.execute(RenderGraphSubmitDesc{.graphicsQueue = &context.graphicsQueue});
                     if (result) { result = executor.waitForSubmittedWork(5'000'000'000ull); }
                 }
-                if (!result) { return RhiTestResult::fail("Texture feedback graph execute: " + std::string(resultToString(result))); }
+                if (!result) { return RHITestResult::fail("Texture feedback graph execute: " + std::string(resultToString(result))); }
                 resources = testTextureFeedbackState().resources.lock();
                 if (!resources || !testTextureFeedbackState().sharedFeedback || resources->materialTextureFirstMips().size() != 1) {
-                    return RhiTestResult::fail("Consumers did not share one streamed texture feedback generation");
+                    return RHITestResult::fail("Consumers did not share one streamed texture feedback generation");
                 }
                 if (iteration == 0 && resources->materialTextureFirstMips()[0] != 2) {
-                    return RhiTestResult::fail("Texture fixture did not start at its coarse tail");
+                    return RHITestResult::fail("Texture fixture did not start at its coarse tail");
                 }
                 refined = resources->materialTextureFirstMips()[0] == 0;
                 if (!refined) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
@@ -7607,7 +7703,7 @@ public:
             // Streaming publishes one mip at a time, so mip 2 -> 0 requires
             // two accepted physical tail replacements.
             if (!refined || resources->textureStats().feedbackFrames == 0 || resources->textureStats().upgrades != 2) {
-                return RhiTestResult::fail(std::string(externalCommands ? "External-command" : "Graph-submitted") +
+                return RHITestResult::fail(std::string(externalCommands ? "External-command" : "Graph-submitted") +
                     " epilogue did not consume the later pass's fine-mip demand: mip=" +
                     std::to_string(resources->materialTextureFirstMips()[0]) + " feedbackFrames=" +
                     std::to_string(resources->textureStats().feedbackFrames) + " upgrades=" +
@@ -7615,24 +7711,24 @@ public:
             }
         }
         testTextureFeedbackState() = {};
-        return RhiTestResult::pass("Streamer-only graph joins shared Device feedback consumers and asynchronously refines through both executor entry points");
+        return RHITestResult::pass("Streamer-only graph joins shared Device feedback consumers and asynchronously refines through both executor entry points");
     }
 };
 
-class RenderGraphImageSamplePassPreviewTest : public RhiTest {
+class RenderGraphImageSamplePassPreviewTest : public RHITest {
 public:
     RenderGraphImageSamplePassPreviewTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_image_sample_pass_preview";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(false);
         if (!result) {
-            return RhiTestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
+            return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
 
         render::RenderGraph graph;
@@ -7643,14 +7739,14 @@ public:
         result = preview.render(graph, 160, 120);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(preview.lastLog());
+                return RHITestResult::skip(preview.lastLog());
             }
-            return RhiTestResult::fail(std::string("RenderGraphPreviewRenderer::render returned ") + toString(result) + ": " + preview.lastLog());
+            return RHITestResult::fail(std::string("RenderGraphPreviewRenderer::render returned ") + toString(result) + ": " + preview.lastLog());
         }
 
         const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 160 * 120 / 2) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("image sample pass produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
@@ -7659,22 +7755,22 @@ public:
         const std::filesystem::path outputPath = context.outputDirectory / "render_graph_image_sample_pass_preview.png";
         const auto* bytes = reinterpret_cast<const uint8_t*>(preview.pixels().data());
         if (!saveRgba8Png(outputPath, bytes, preview.width(), preview.height(), outputMessage)) {
-            return RhiTestResult::fail(outputMessage);
+            return RHITestResult::fail(outputMessage);
         }
 
-        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+        return RHITestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
 
-class RenderGraphMaterialShaderObjectPassSmokeTest : public RhiTest {
+class RenderGraphMaterialShaderObjectPassSmokeTest : public RHITest {
 public:
     RenderGraphMaterialShaderObjectPassSmokeTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_material_shader_object_pass_smoke";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> result = render::createDevice(render::DeviceDesc{
@@ -7685,9 +7781,9 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
 
         render::RenderGraph graph;
@@ -7709,36 +7805,36 @@ public:
             device->capabilities().bindlessDescriptorHeap;
         if (!hasRequiredCapabilities) {
             if (!render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("expected Unsupported without shader-object capabilities, got ") +
                     toString(result) +
                     ": " +
                     log);
             }
-            return RhiTestResult::pass("SceneMaterialShaderObjectPass reported Unsupported without required capabilities");
+            return RHITestResult::pass("SceneMaterialShaderObjectPass reported Unsupported without required capabilities");
         }
 
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RenderGraphExecutor::compile returned ") +
                 toString(result) +
                 ": " +
                 log);
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphVisibilityBufferPassSmokeTest : public RhiTest {
+class RenderGraphVisibilityBufferPassSmokeTest : public RHITest {
 public:
     RenderGraphVisibilityBufferPassSmokeTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_gpu_driven_preview_pass_smoke";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> result = render::createDevice(render::DeviceDesc{
@@ -7755,9 +7851,9 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
 
         render::RenderGraph graph;
@@ -7781,36 +7877,36 @@ public:
             device->capabilities().bindlessDescriptorHeap;
         if (!hasRequiredCapabilities) {
             if (!render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("expected Unsupported without task/mesh/geometry shader capabilities, got ") +
                     toString(result) +
                     ": " +
                     log);
             }
-            return RhiTestResult::pass("VisibilityBufferPass reported Unsupported without required capabilities");
+            return RHITestResult::pass("VisibilityBufferPass reported Unsupported without required capabilities");
         }
 
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RenderGraphExecutor::compile returned ") +
                 toString(result) +
                 ": " +
                 log);
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphGPUDrivenStreamAssetPassSmokeTest : public RhiTest {
+class RenderGraphGPUDrivenStreamAssetPassSmokeTest : public RHITest {
 public:
     RenderGraphGPUDrivenStreamAssetPassSmokeTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_gpu_driven_streamasset_pass_smoke";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         constexpr uint32_t kWidth = 128;
         constexpr uint32_t kHeight = 96;
@@ -7828,13 +7924,13 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail("GPUDrivenStreamAssetPass smoke device has no graphics queue");
+            return RHITestResult::fail("GPUDrivenStreamAssetPass smoke device has no graphics queue");
         }
 
         const std::filesystem::path streamAssetPath =
@@ -7843,7 +7939,7 @@ public:
             std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
         scene::Scene runtimeScene;
         if (!runtimeScene.load(sourcePath)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUDrivenStreamAssetPass smoke scene load failed: " +
                 runtimeScene.lastLoadResult().error);
         }
@@ -7854,7 +7950,7 @@ public:
                     .outputPath = streamAssetPath,
                 },
                 buildReason)) {
-            return RhiTestResult::fail("buildMeshletStreamAssetOffline failed: " + buildReason);
+            return RHITestResult::fail("buildMeshletStreamAssetOffline failed: " + buildReason);
         }
 
         render::RenderGraph graph;
@@ -7892,17 +7988,17 @@ public:
             device->capabilities().clusterAccelerationStructure;
         if (!hasRequiredCapabilities) {
             if (!render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("expected Unsupported without mesh shader capabilities, got ") +
                     toString(result) +
                     ": " +
                     log);
             }
-            return RhiTestResult::pass("GPUDrivenStreamAssetPass reported Unsupported without required capabilities");
+            return RHITestResult::pass("GPUDrivenStreamAssetPass reported Unsupported without required capabilities");
         }
 
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RenderGraphExecutor::compile returned ") +
                 toString(result) +
                 ": " +
@@ -7915,7 +8011,7 @@ public:
                 .graphicsQueue = graphicsQueue,
             });
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("RenderGraphExecutor::execute frame ") +
                     std::to_string(frame) +
                     " returned " +
@@ -7923,7 +8019,7 @@ public:
             }
             result = executor.waitForSubmittedWork(5'000'000'000ull);
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("RenderGraphExecutor::waitForSubmittedWork frame ") +
                     std::to_string(frame) +
                     " returned " +
@@ -7934,19 +8030,19 @@ public:
         std::unique_ptr<render::CommandPool> commandPool;
         result = device->createCommandPool(*graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
 
         std::unique_ptr<render::Fence> fence;
         result = device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
-            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
+            return RHITestResult::fail(std::string("createFence returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> readbackBuffer;
@@ -7956,7 +8052,7 @@ public:
                 .memoryLocation = render::MemoryLocation::HostReadback,
             }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
         if (!result || readbackBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
 
         render::RenderFrameContext readbackFrame;
@@ -7965,21 +8061,21 @@ public:
         if (result) { result = readbackFrame.begin(kStreamingWarmupFrameCount); }
         if (result) { result = commandBuffer->begin(&readbackFrame); }
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
         result = executor.execute(*commandBuffer);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::execute(readback) returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderGraphExecutor::execute(readback) returned ") + toString(result));
         }
 
         render::RenderGraphResource* output = executor.outputResource("GPUDriven.color");
         if (output == nullptr || output->texture == nullptr) {
-            return RhiTestResult::fail("GPUDrivenStreamAssetPass smoke output resource is missing");
+            return RHITestResult::fail("GPUDrivenStreamAssetPass smoke output resource is missing");
         }
 
         result = executor.transitionOutput(*commandBuffer, "GPUDriven.color", render::ResourceState::TransferSource);
         if (!result) {
-            return RhiTestResult::fail(std::string("transitionOutput returned ") + toString(result));
+            return RHITestResult::fail(std::string("transitionOutput returned ") + toString(result));
         }
         commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
             .texture = output->texture,
@@ -7993,7 +8089,7 @@ public:
 
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
@@ -8002,17 +8098,17 @@ public:
             .signalFence = fence.get(),
         }, readbackFrame);
         if (!result) {
-            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+            return RHITestResult::fail(std::string("Queue::submit returned ") + toString(result));
         }
         result = fence->wait(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+            return RHITestResult::fail(std::string("Fence::wait returned ") + toString(result));
         }
 
         readbackBuffer->invalidate();
         void* mapped = readbackBuffer->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("readback buffer did not map");
+            return RHITestResult::fail("readback buffer did not map");
         }
 
         std::vector<uint8_t> pixels(static_cast<size_t>(kReadbackByteSize));
@@ -8029,7 +8125,7 @@ public:
             }
         }
         if (nonClearPixelCount == 0) {
-            return RhiTestResult::fail("GPUDrivenStreamAssetPass smoke produced only clear pixels");
+            return RHITestResult::fail("GPUDrivenStreamAssetPass smoke produced only clear pixels");
         }
 
         render::RenderGraph streamedFallbackGraph;
@@ -8057,7 +8153,7 @@ public:
             kHeight,
             log);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("streamed-fallback RenderGraphExecutor::compile returned ") +
                 toString(result) +
                 ": " +
@@ -8068,7 +8164,7 @@ public:
                 .graphicsQueue = graphicsQueue,
             });
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("streamed-fallback RenderGraphExecutor::execute frame ") +
                     std::to_string(frame) +
                     " returned " +
@@ -8076,7 +8172,7 @@ public:
             }
             result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("streamed-fallback RenderGraphExecutor::waitForSubmittedWork frame ") +
                     std::to_string(frame) +
                     " returned " +
@@ -8087,14 +8183,14 @@ public:
         std::unique_ptr<render::CommandBuffer> rasterCommandBuffer;
         result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { rasterCommandBuffer = std::move(rhiValue); });
         if (!result || rasterCommandBuffer == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createCommandBuffer(raster readback) returned ") +
                 toString(result));
         }
         std::unique_ptr<render::Fence> rasterFence;
         result = device->createFence(false).transform([&](auto rhiValue) { rasterFence = std::move(rhiValue); });
         if (!result || rasterFence == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createFence(raster readback) returned ") +
                 toString(result));
         }
@@ -8109,26 +8205,26 @@ public:
         };
         result = createRasterReadback(rasterColorReadback);
         if (!result || rasterColorReadback == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createBuffer(raster color readback) returned ") +
                 toString(result));
         }
         result = createRasterReadback(rasterVisibilityReadback);
         if (!result || rasterVisibilityReadback == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createBuffer(raster visibility readback) returned ") +
                 toString(result));
         }
 
         result = rasterCommandBuffer->begin();
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("raster readback CommandBuffer::begin returned ") +
                 toString(result));
         }
         result = streamedFallbackExecutor.execute(*rasterCommandBuffer);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("streamed-fallback execute(readback) returned ") +
                 toString(result));
         }
@@ -8138,7 +8234,7 @@ public:
             streamedFallbackExecutor.outputResource("GPUDriven.visibility");
         if (rasterColor == nullptr || rasterColor->texture == nullptr ||
             rasterVisibility == nullptr || rasterVisibility->texture == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "streamed-fallback raster outputs are missing");
         }
         result = streamedFallbackExecutor.transitionOutput(
@@ -8152,7 +8248,7 @@ public:
                 render::ResourceState::TransferSource);
         }
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("transitionOutput(raster readback) returned ") +
                 toString(result));
         }
@@ -8172,7 +8268,7 @@ public:
         rasterCommandBuffer->copyTextureToBuffer(visibilityCopy);
         result = rasterCommandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("raster readback CommandBuffer::end returned ") +
                 toString(result));
         }
@@ -8182,13 +8278,13 @@ public:
             .signalFence = rasterFence.get(),
         });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("raster readback Queue::submit returned ") +
                 toString(result));
         }
         result = rasterFence->wait(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("raster readback Fence::wait returned ") +
                 toString(result));
         }
@@ -8197,7 +8293,7 @@ public:
         const auto* rasterColorPixels =
             static_cast<const uint8_t*>(rasterColorReadback->map());
         if (rasterColorPixels == nullptr) {
-            return RhiTestResult::fail("raster color readback did not map");
+            return RHITestResult::fail("raster color readback did not map");
         }
         uint32_t rasterColorPixelCount = 0;
         for (uint32_t index = 0; index < kWidth * kHeight; ++index) {
@@ -8212,7 +8308,7 @@ public:
         const auto* visibilityIds =
             static_cast<const uint32_t*>(rasterVisibilityReadback->map());
         if (visibilityIds == nullptr) {
-            return RhiTestResult::fail("raster visibility readback did not map");
+            return RHITestResult::fail("raster visibility readback did not map");
         }
         uint32_t rasterVisibilityPixelCount = 0;
         for (uint32_t index = 0; index < kWidth * kHeight; ++index) {
@@ -8223,7 +8319,7 @@ public:
         }
         rasterVisibilityReadback->unmap();
         if (rasterColorPixelCount == 0 || rasterVisibilityPixelCount == 0) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("streamed-fallback raster path produced colorPixels=") +
                 std::to_string(rasterColorPixelCount) +
                 " visibilityPixels=" +
@@ -8335,7 +8431,7 @@ public:
             kResizedHeight,
             log);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("resized streamed-fallback compile returned ") +
                 toString(result) +
                 ": " +
@@ -8357,12 +8453,12 @@ public:
                 kResizedHeight,
                 resizedVisibilityPixelCount,
                 captureError)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("resized streamed-fallback capture failed: ") +
                 captureError);
         }
         if (resizedVisibilityPixelCount == 0) {
-            return RhiTestResult::fail("resized stream frame produced no visibility pixels");
+            return RHITestResult::fail("resized stream frame produced no visibility pixels");
         }
 
         std::vector<scene::SceneEntity> visibleObjects;
@@ -8374,18 +8470,18 @@ public:
             }
         }
         if (visibleObjects.empty()) {
-            return RhiTestResult::fail("stream visibility sync test found no visible objects");
+            return RHITestResult::fail("stream visibility sync test found no visible objects");
         }
         const uint64_t transformRevisionBeforeHide = runtimeScene.transformRevision();
         const uint64_t visibilityRevisionBeforeHide = runtimeScene.visibilityRevision();
         for (scene::SceneEntity object : visibleObjects) {
             if (!runtimeScene.setObjectVisible(object, false)) {
-                return RhiTestResult::fail("stream visibility sync test could not hide an object");
+                return RHITestResult::fail("stream visibility sync test could not hide an object");
             }
         }
         if (runtimeScene.transformRevision() != transformRevisionBeforeHide ||
             runtimeScene.visibilityRevision() == visibilityRevisionBeforeHide) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "stream visibility sync test did not isolate visibility revision changes");
         }
 
@@ -8396,7 +8492,7 @@ public:
             result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
         }
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("hidden stream frame returned ") + toString(result));
         }
         uint32_t hiddenVisibilityPixelCount = 0;
@@ -8405,10 +8501,10 @@ public:
                 kResizedHeight,
                 hiddenVisibilityPixelCount,
                 captureError)) {
-            return RhiTestResult::fail(captureError);
+            return RHITestResult::fail(captureError);
         }
         if (hiddenVisibilityPixelCount != 0) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "visibility-only hide left " +
                 std::to_string(hiddenVisibilityPixelCount) +
                 " raster pixels");
@@ -8416,7 +8512,7 @@ public:
 
         for (scene::SceneEntity object : visibleObjects) {
             if (!runtimeScene.setObjectVisible(object, true)) {
-                return RhiTestResult::fail("stream visibility sync test could not restore an object");
+                return RHITestResult::fail("stream visibility sync test could not restore an object");
             }
         }
         result = streamedFallbackExecutor.execute(render::RenderGraphSubmitDesc{
@@ -8426,7 +8522,7 @@ public:
             result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
         }
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("restored stream frame returned ") + toString(result));
         }
         uint32_t restoredVisibilityPixelCount = 0;
@@ -8435,10 +8531,10 @@ public:
                 kResizedHeight,
                 restoredVisibilityPixelCount,
                 captureError)) {
-            return RhiTestResult::fail(captureError);
+            return RHITestResult::fail(captureError);
         }
         if (restoredVisibilityPixelCount == 0) {
-            return RhiTestResult::fail("visibility-only show did not restore raster pixels");
+            return RHITestResult::fail("visibility-only show did not restore raster pixels");
         }
 
         for (uint32_t frame = 0; frame < 3; ++frame) {
@@ -8449,7 +8545,7 @@ public:
                 result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
             }
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "post-show stabilization frame " +
                     std::to_string(frame) +
                     " failed");
@@ -8460,12 +8556,12 @@ public:
                     kResizedHeight,
                     stableVisibilityPixelCount,
                     captureError)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "post-show stabilization capture failed: " +
                     captureError);
             }
             if (stableVisibilityPixelCount == 0) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "post-show stabilization frame " +
                     std::to_string(frame) +
                     " produced no visibility pixels");
@@ -8482,7 +8578,7 @@ public:
             kSecondResizeHeight,
             log);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("post-show resize compile returned ") +
                 toString(result) +
                 ": " +
@@ -8496,7 +8592,7 @@ public:
                 result = streamedFallbackExecutor.waitForSubmittedWork(5'000'000'000ull);
             }
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "post-show resized frame " +
                     std::to_string(frame) +
                     " failed");
@@ -8507,12 +8603,12 @@ public:
                     kSecondResizeHeight,
                     postShowResizedPixels,
                     captureError)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "post-show resize capture failed: " +
                     captureError);
             }
             if (postShowResizedPixels == 0) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "post-show resized frame " +
                     std::to_string(frame) +
                     " produced no visibility pixels");
@@ -8520,23 +8616,23 @@ public:
         }
 
         (void)device->waitIdle();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphGPUDrivenMixedProducerRenderTest : public RhiTest {
+class RenderGraphGPUDrivenMixedProducerRenderTest : public RHITest {
     int rasterMode_ = -1;
 public:
     explicit RenderGraphGPUDrivenMixedProducerRenderTest(int rasterMode = -1) : rasterMode_(rasterMode)
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         static constexpr const char* names[] = {
             "mixed_producer_raster_prepared", "mixed_producer_raster_legacy", "mixed_producer_raster_plane",
             "mixed_producer_raster_cooperative", "mixed_producer_raster_work_bins"};
         name = rasterMode < 0 ? "render_graph_gpu_driven_mixed_producer_render" : names[rasterMode];
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         constexpr uint32_t kWidth = 256;
         constexpr uint32_t kHeight = 192;
@@ -8559,14 +8655,14 @@ public:
                     .outputPath = streamAssetPath,
                 },
                 reason)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer streamasset build failed: " + reason);
         }
 
         scene::MeshletStreamAsset streamAsset;
         if (!streamAsset.open(streamAssetPath, reason) ||
             !streamAsset.isCurrentForSource(sourcePath)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer streamasset open failed: " + reason);
         }
 
@@ -8590,7 +8686,7 @@ public:
                 },
                 reason,
                 sourcePath)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer scene composition failed: " + reason);
         }
         if (runtimeScene.renderNodes().size() != 2 ||
@@ -8598,7 +8694,7 @@ public:
             streamAsset.instances()[0].renderNodeIndex != 0 ||
             runtimeScene.renderNodeIndexForSource("resident", 0) != 0 ||
             runtimeScene.renderNodeIndexForSource("stream", 0) != 1) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer fixture no longer has one stream owner and one ordinary instance");
         }
 
@@ -8618,7 +8714,7 @@ public:
         if (requestedStreamRecordCapacity == 0 ||
             !render::visibilityRecordCapacityFitsId(
                 requestedStreamRecordCapacity)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer fixture has an invalid stream record capacity");
         }
 
@@ -8638,15 +8734,15 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createDevice returned ") + toString(result));
         }
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer device has no graphics queue");
         }
 
@@ -8708,15 +8804,15 @@ public:
             device->capabilities().bindlessDescriptorHeap;
         if (!hasRequiredCapabilities) {
             if (!render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("expected Unsupported without mixed raster capabilities, got ") +
                     toString(result) + ": " + log);
             }
-            return RhiTestResult::skip(
+            return RHITestResult::skip(
                 "VisibilityBufferPass mixed producer mode requires task/mesh/geometry shaders and bindless descriptors");
         }
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("mixed-producer graph compile returned ") +
                 toString(result) + ": " + log);
         }
@@ -8736,7 +8832,7 @@ public:
                             {"operation", "minMax"}, {"field", "activeGroupCount"}, {"count", 1}}}}});
                 }
                 const auto queued = debugRuntime.core().dispatch({{"method", "gpu.probe"}, {"params", {{"batches", batches}}}});
-                if (queued["status"] != "ok") { return RhiTestResult::fail("Mixed debug capture enqueue: " + queued.dump()); }
+                if (queued["status"] != "ok") { return RHITestResult::fail("Mixed debug capture enqueue: " + queued.dump()); }
                 debugJobs = queued["result"]["jobs"];
                 if (device->capabilities().shaderBufferInt64Atomics) {
                     debug::DebugValue clusterBatches = debug::DebugValue::array();
@@ -8746,7 +8842,7 @@ public:
                             {{"id", "hybrid.GPUDriven.arguments"}, {"count", 15}}}}});
                     }
                     const auto clusters = debugRuntime.core().dispatch({{"method", "capture.batch"}, {"params", {{"batches", clusterBatches}}}});
-                    if (clusters["status"] != "ok") { return RhiTestResult::fail("Cluster capture enqueue: " + clusters.dump()); }
+                    if (clusters["status"] != "ok") { return RHITestResult::fail("Cluster capture enqueue: " + clusters.dump()); }
                     clusterJobs = clusters["result"]["jobs"];
                 }
             }
@@ -8758,12 +8854,12 @@ public:
                 result = executor.waitForSubmittedWork(5'000'000'000ull);
             }
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "mixed-producer warmup frame " +
                     std::to_string(frame) + " returned " + toString(result));
             }
             if (device->capabilities().independentComputeQueue && executor.executionStats().asyncComputeBranches != 3) {
-                return RhiTestResult::fail("Mixed rendering must fork resident early/late and stream early under the default policy");
+                return RHITestResult::fail("Mixed rendering must fork resident early/late and stream early under the default policy");
             }
             debugRuntime.poll();
         }
@@ -8772,15 +8868,15 @@ public:
         for (const auto& job : debugJobs) {
             const auto completed = debugRuntime.core().dispatch({{"method", "jobs.get"}, {"params", {{"job", job.at("job")}}}});
             if (completed["status"] != "ok" || completed["result"]["state"] != "Ready") {
-                return RhiTestResult::fail("Mixed checkpoint capture: " + completed.dump());
+                return RHITestResult::fail("Mixed checkpoint capture: " + completed.dump());
             }
             const auto execution = completed["result"]["evidence"]["execution"].get<uint64_t>();
-            if (debugExecution != UINT64_MAX && execution != debugExecution) { return RhiTestResult::fail("Mixed checkpoints span executions"); }
+            if (debugExecution != UINT64_MAX && execution != debugExecution) { return RHITestResult::fail("Mixed checkpoints span executions"); }
             debugExecution = execution;
             const auto comparison = debugRuntime.core().dispatch({{"method", "eval"}, {"params", {
                 {"job", job.at("job")}, {"expression", "probes.active.min == buffers[\"streaming.GPUDriven.activeHeader\"][0].activeGroupCount"}}}});
             if (comparison["status"] != "ok" || comparison["result"]["value"] != true) {
-                return RhiTestResult::fail("GPU probe differs from checkpoint readback: " + comparison.dump());
+                return RHITestResult::fail("GPU probe differs from checkpoint readback: " + comparison.dump());
             }
         }
         std::array<uint32_t, 2> softwareClusters{};
@@ -8790,24 +8886,24 @@ public:
             for (size_t i = 0; i < header.size(); ++i) {
                 const auto value = debugRuntime.core().dispatch({{"method", "eval"}, {"params", {
                     {"job", job}, {"expression", "buffers[\"hybrid.GPUDriven.clusters\"][" + std::to_string(i) + "]"}}}});
-                if (value["status"] != "ok") { return RhiTestResult::fail("Cluster header capture: " + value.dump()); }
+                if (value["status"] != "ok") { return RHITestResult::fail("Cluster header capture: " + value.dump()); }
                 header[i] = value["result"]["value"].get<uint32_t>();
             }
             uint32_t total = 0;
             for (size_t bin = 0; bin < 5; ++bin) { total += header[bin]; }
             if (header[14] != 0 || total > header[12] || header[12] > header[5]) {
-                return RhiTestResult::fail("Real cluster bins overflowed their candidate capacity");
+                return RHITestResult::fail("Real cluster bins overflowed their candidate capacity");
             }
             softwareClusters[jobIndex % 2] += header[4];
         }
         if (!clusterJobs.empty() && (softwareClusters[0] == 0 || softwareClusters[1] == 0)) {
-            return RhiTestResult::fail("Real resident/stream producers did not both use software cluster bins: " +
+            return RHITestResult::fail("Real resident/stream producers did not both use software cluster bins: " +
                 std::to_string(softwareClusters[0]) + "/" + std::to_string(softwareClusters[1]));
         }
         const auto residentRecord = debugRuntime.core().dispatch({{"method", "eval"}, {"params", {
             {"job", debugJobs.back().at("job")}, {"expression", "buffers[\"gpuScene.GPUDriven.meshletDraws\"][0].source.name"}}}});
         if (residentRecord["status"] != "ok" || residentRecord["result"]["value"] != "Resident") {
-            return RhiTestResult::fail("Resident record lost typed source: " + residentRecord.dump());
+            return RHITestResult::fail("Resident record lost typed source: " + residentRecord.dump());
         }
 
         render::RenderSubsystemHost* subsystemHost = executor.subsystemHost();
@@ -8815,7 +8911,7 @@ public:
             ? subsystemHost->get<render::GPUSceneSubsystem>()
             : nullptr;
         if (gpuScene == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer graph did not publish GPUScene");
         }
         const render::GPUSceneGlobalBufferViews& globalViews =
@@ -8826,19 +8922,19 @@ public:
             globalViews.meshletDraws.size == 0 ||
             (globalViews.meshletDraws.size %
                 sizeof(render::VisibleClusterRecord)) != 0) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer GPUScene resident record namespace is invalid");
         }
         const uint32_t streamRecordBase = static_cast<uint32_t>(
             globalViews.meshletDraws.size /
             sizeof(render::VisibleClusterRecord));
         if (residentRecord["result"]["coverage"]["streaming.GPUDriven.visibleClusters"]["visibleRecordBase"] != streamRecordBase) {
-            return RhiTestResult::fail("Stream capture lost the mixed visibility namespace offset");
+            return RHITestResult::fail("Stream capture lost the mixed visibility namespace offset");
         }
         if (!render::visibilityRecordCapacityFitsId(
                 static_cast<uint64_t>(streamRecordBase) +
                 requestedStreamRecordCapacity)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer combined record namespace exceeds visibility IDs");
         }
 
@@ -8848,7 +8944,7 @@ public:
             gpuScene->instanceForRenderNode(0);
         if (!streamInstance.valid() || !residentInstance.valid() ||
             streamInstance == residentInstance) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer fixture did not map two dense GPUScene instances");
         }
 
@@ -8861,31 +8957,31 @@ public:
         if (color == nullptr || color->texture == nullptr ||
             visibility == nullptr || visibility->texture == nullptr ||
             depth == nullptr || depth->texture == nullptr ||
-            color->desc.format != render::Format::Rgba8Unorm ||
+            color->desc.format != render::Format::RGBA8Unorm ||
             visibility->desc.format != render::Format::R32Uint ||
             depth->desc.format != render::Format::D32Sfloat) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer shared color/visibility/depth surfaces are missing");
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
         result = device->createCommandPool(*graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createCommandPool(mixed producer) returned ") +
                 toString(result));
         }
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createCommandBuffer(mixed producer) returned ") +
                 toString(result));
         }
         std::unique_ptr<render::Fence> fence;
         result = device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createFence(mixed producer) returned ") +
                 toString(result));
         }
@@ -8918,7 +9014,7 @@ public:
         if (!result || colorReadback == nullptr ||
             visibilityReadback == nullptr || depthReadback == nullptr ||
             residentRecordReadback == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createBuffer(mixed producer readback) returned ") +
                 toString(result));
         }
@@ -8940,7 +9036,7 @@ public:
             }
         }
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("record mixed-producer outputs returned ") +
                 toString(result));
         }
@@ -8972,13 +9068,13 @@ public:
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = {&residentRecordsToCopy, 1},
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
             auto sourceSlice = globalViews.meshletDraws.buffer->slice({globalViews.meshletDraws.offset, globalViews.meshletDraws.size});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = residentRecordReadback.get()->slice({0, globalViews.meshletDraws.size});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commandBuffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         const render::BufferBarrierDesc residentRecordsToRead{
             .buffer = globalViews.meshletDraws.buffer,
@@ -8988,10 +9084,10 @@ public:
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = {&residentRecordsToRead, 1},
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("end mixed-producer capture returned ") +
                 toString(result));
         }
@@ -9004,7 +9100,7 @@ public:
             result = fence->wait(5'000'000'000ull);
         }
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("submit mixed-producer capture returned ") +
                 toString(result));
         }
@@ -9043,7 +9139,7 @@ public:
                 *residentRecordReadback,
                 residentRecords.data(),
                 globalViews.meshletDraws.size)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer capture did not map all shared surfaces and records");
         }
 
@@ -9076,7 +9172,7 @@ public:
                 depthPixels[pixelIndex] <= 0.0f ||
                 depthPixels[pixelIndex] > 1.0f ||
                 (red <= 8u && green <= 8u && blue <= 8u)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "mixed-producer visibility does not match the shared depth/debug surfaces");
             }
 
@@ -9087,7 +9183,7 @@ public:
                         render::VisibleClusterSource::Resident ||
                     record.instanceIndex != residentInstance.index ||
                     record.instanceIndex == streamInstance.index) {
-                    return RhiTestResult::fail(
+                    return RHITestResult::fail(
                         "stream-owned geometry leaked into the resident producer namespace");
                 }
                 ++residentPixelCount;
@@ -9100,7 +9196,7 @@ public:
             const uint64_t localStreamRecord =
                 static_cast<uint64_t>(recordIndex) - streamRecordBase;
             if (localStreamRecord >= requestedStreamRecordCapacity) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "visibility referenced a stream record outside its logical namespace");
             }
             ++streamPixelCount;
@@ -9111,14 +9207,14 @@ public:
 
         if (residentPixelCount < 32 || streamPixelCount < 32 ||
             residentRecordIds.empty() || streamRecordIds.empty()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer frame did not contain both resident and stream visibility IDs: resident=" +
                 std::to_string(residentPixelCount) +
                 " stream=" + std::to_string(streamPixelCount));
         }
         if (streamMinX > streamMaxX || residentMinX > residentMaxX ||
             streamMaxX >= residentMinX) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed-producer mounted fixtures overlap or were assigned to the wrong producer");
         }
 
@@ -9129,13 +9225,13 @@ public:
                 node.type == "VisibilityBufferPass" ? 1u : 0u;
         }
         if (unifiedPassNodeCount != 1) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "mixed producers were not rasterized by one visibility-buffer graph node");
         }
 
         const auto* visualizationNode = graph.findNode("GPUDriven");
         if (visualizationNode == nullptr) {
-            return RhiTestResult::fail("mixed-producer visualization node is missing");
+            return RHITestResult::fail("mixed-producer visualization node is missing");
         }
         const auto visualizationNodeId = visualizationNode->id;
         const std::array visualizationModes{"triangle", "depth", "coverage", "none"};
@@ -9147,7 +9243,7 @@ public:
                     visualizationNodeId, "freezeCullingCamera", freezeCullingCamera) ||
                 !graph.setNodeRuntimeProperty(visualizationNodeId, "asyncSoftwareRaster", configuration % 2 == 0) ||
                 !executor.syncRuntimeProperties(graph)) {
-                return RhiTestResult::fail("could not switch mixed-producer visualization");
+                return RHITestResult::fail("could not switch mixed-producer visualization");
             }
             result = fence->reset();
             if (result) {
@@ -9183,7 +9279,7 @@ public:
                 result = fence->wait(5'000'000'000ull);
             }
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("capture visualization returned ") + toString(result));
             }
             std::vector<uint32_t> displayPixels(kWidth * kHeight);
@@ -9192,7 +9288,7 @@ public:
             if (!copyReadback(*colorReadback, displayPixels.data(), kPixelByteSize) ||
                 !copyReadback(*visibilityReadback, currentVisibility.data(), kPixelByteSize) ||
                 !copyReadback(*depthReadback, currentDepth.data(), kPixelByteSize)) {
-                return RhiTestResult::fail("could not read visualization surfaces");
+                return RHITestResult::fail("could not read visualization surfaces");
             }
             if (currentVisibility != visibilityPixels || currentDepth != depthPixels) {
                 size_t idDiff = 0, depthDiff = 0, first = currentDepth.size();
@@ -9203,7 +9299,7 @@ public:
                     maxDepthDiff = std::max(maxDepthDiff, std::abs(currentDepth[i] - depthPixels[i]));
                     if (first == currentDepth.size() && currentVisibility[i] != visibilityPixels[i]) { first = i; }
                 }
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("visualization changed raw visibility/depth: ") + mode +
                     " ids=" + std::to_string(idDiff) + " depths=" + std::to_string(depthDiff) +
                     " maxDepthDiff=" + std::to_string(maxDepthDiff) +
@@ -9214,17 +9310,17 @@ public:
                 if (std::string_view(mode) == "coverage" &&
                     ((displayPixels[pixelIndex] == 0xffffffffu) !=
                      (visibilityPixels[pixelIndex] != 0u))) {
-                    return RhiTestResult::fail("coverage visualization does not match raw IDs");
+                    return RHITestResult::fail("coverage visualization does not match raw IDs");
                 }
                 if (std::string_view(mode) == "none" &&
                     displayPixels[pixelIndex] != displayPixels.front()) {
-                    return RhiTestResult::fail("disabled visualization still draws color");
+                    return RHITestResult::fail("disabled visualization still draws color");
                 }
             }
         }
 
         (void)device->waitIdle();
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             "software clusters resident/stream=" + std::to_string(softwareClusters[0]) + "/" + std::to_string(softwareClusters[1]) +
             "; visualization preserves shared visibility/depth; residentPixels=" +
             std::to_string(residentPixelCount) +
@@ -9234,15 +9330,15 @@ public:
     }
 };
 
-class RenderGraphVisibilityBufferPassRenderTest : public RhiTest {
+class RenderGraphVisibilityBufferPassRenderTest : public RHITest {
 public:
     RenderGraphVisibilityBufferPassRenderTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_gpu_driven_preview_pass_render";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
         preview.setEnvironment(render::EnvironmentSettings{
@@ -9255,9 +9351,9 @@ public:
         render::Result<> result = preview.initialize(context.enableValidation, false);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip("RenderGraphPreviewRenderer is unsupported");
+                return RHITestResult::skip("RenderGraphPreviewRenderer is unsupported");
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RenderGraphPreviewRenderer::initialize returned ") +
                 toString(result));
         }
@@ -9286,10 +9382,10 @@ public:
         result = preview.render(graph, 192, 192);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("VisibilityBufferPass is unsupported on this device: ") + preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass render returned ") +
                 toString(result) +
                 ": " +
@@ -9298,7 +9394,7 @@ public:
 
         const uint32_t visiblePixelCount = countVisiblePixels(preview.pixels());
         if (visiblePixelCount < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
         }
@@ -9306,7 +9402,7 @@ public:
 
         result = preview.render(graph, 192, 192);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass second-frame HZB render returned ") +
                 toString(result) +
                 ": " +
@@ -9314,7 +9410,7 @@ public:
         }
         const uint32_t hzbVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (hzbVisiblePixelCount < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass second-frame HZB render produced too few visible pixels: ") +
                 std::to_string(hzbVisiblePixelCount));
         }
@@ -9323,7 +9419,7 @@ public:
             for (size_t pixelIndex = 0; pixelIndex < firstFramePixels.size(); ++pixelIndex) {
                 mismatchCount += preview.pixels()[pixelIndex] != firstFramePixels[pixelIndex] ? 1u : 0u;
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass stationary HZB frame changed ") +
                 std::to_string(mismatchCount) +
                 " pixels");
@@ -9332,11 +9428,11 @@ public:
         render::RenderGraphNode* gpuDrivenNode = graph.findNode("GPUDriven");
         if (gpuDrivenNode == nullptr ||
             !graph.setNodeRuntimeProperty(gpuDrivenNode->id, "camera.fovDegrees", 20.0f)) {
-            return RhiTestResult::fail("failed to configure the GPUDriven culling test camera");
+            return RHITestResult::fail("failed to configure the GPUDriven culling test camera");
         }
         result = preview.render(graph, 192, 192);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass narrow culling-camera render returned ") +
                 toString(result) +
                 ": " +
@@ -9346,29 +9442,29 @@ public:
 
         if (
             !graph.setNodeRuntimeProperty(gpuDrivenNode->id, "freezeCullingCamera", true)) {
-            return RhiTestResult::fail("failed to freeze the GPUDriven culling camera");
+            return RHITestResult::fail("failed to freeze the GPUDriven culling camera");
         }
         result = preview.render(graph, 192, 192);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass frozen-camera capture render returned ") +
                 toString(result) +
                 ": " +
                 preview.lastLog());
         }
         if (preview.pixels() != capturedCullingPixels) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "freezing the GPUDriven culling camera changed the captured view");
         }
 
         const render::RenderGraphProperties oppositeEye =
             render::RenderGraphProperties::array({0.22f, 0.110154f, -0.00153695f});
         if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "camera.eye", oppositeEye)) {
-            return RhiTestResult::fail("failed to move the GPUDriven observation camera");
+            return RHITestResult::fail("failed to move the GPUDriven observation camera");
         }
         result = preview.render(graph, 192, 192);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass frozen-culling observation render returned ") +
                 toString(result) +
                 ": " +
@@ -9376,7 +9472,7 @@ public:
         }
         const uint32_t frozenVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (frozenVisiblePixelCount < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass frozen culling produced too few visible pixels: ") +
                 std::to_string(frozenVisiblePixelCount));
         }
@@ -9384,16 +9480,16 @@ public:
 
         result = preview.render(graph, 192, 192);
         if (!result || preview.pixels() != frozenObservationPixels) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "VisibilityBufferPass frozen culling camera was not stable while observing from another view");
         }
 
         if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "freezeCullingCamera", false)) {
-            return RhiTestResult::fail("failed to restore live GPUDriven camera culling");
+            return RHITestResult::fail("failed to restore live GPUDriven camera culling");
         }
         result = preview.render(graph, 192, 192);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass restored live-camera render returned ") +
                 toString(result) +
                 ": " +
@@ -9401,7 +9497,7 @@ public:
         }
         const uint32_t liveVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (liveVisiblePixelCount < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass restored live culling produced too few visible pixels: ") +
                 std::to_string(liveVisiblePixelCount));
         }
@@ -9411,22 +9507,22 @@ public:
                 preview.pixels()[pixelIndex] != frozenObservationPixels[pixelIndex] ? 1u : 0u;
         }
         if (cullingCameraMismatchCount < 64) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "disabling the frozen culling camera did not restore view-dependent culling");
         }
 
         const render::RenderGraphProperties originalEye =
             render::RenderGraphProperties::array({-0.0168404f, 0.110154f, 0.22f});
         if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "camera.eye", originalEye)) {
-            return RhiTestResult::fail("failed to restore the GPUDriven observation camera");
+            return RHITestResult::fail("failed to restore the GPUDriven observation camera");
         }
         if (!graph.setNodeRuntimeProperty(gpuDrivenNode->id, "camera.fovDegrees", 60.0f)) {
-            return RhiTestResult::fail("failed to restore the GPUDriven camera FOV");
+            return RHITestResult::fail("failed to restore the GPUDriven camera FOV");
         }
 
         result = preview.render(graph, 128, 96);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass resize-down render returned ") +
                 toString(result) +
                 ": " +
@@ -9434,14 +9530,14 @@ public:
         }
         const uint32_t resizedDownVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (resizedDownVisiblePixelCount < 128) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass resize-down render produced too few visible pixels: ") +
                 std::to_string(resizedDownVisiblePixelCount));
         }
 
         result = preview.render(graph, 256, 144);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass resize-up render returned ") +
                 toString(result) +
                 ": " +
@@ -9449,13 +9545,13 @@ public:
         }
         const uint32_t resizedUpVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (resizedUpVisiblePixelCount < 256) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass resize-up render produced too few visible pixels: ") +
                 std::to_string(resizedUpVisiblePixelCount));
         }
 
         render::RenderGraph lodGraph;
-        lodGraph.setName("GPUDrivenPreviewLodRender");
+        lodGraph.setName("GPUDrivenPreviewLODRender");
         lodGraph.addNode(
             "VisibilityBufferPass",
             "GPUDriven",
@@ -9479,10 +9575,10 @@ public:
         result = preview.render(lodGraph, 192, 192);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("VisibilityBufferPass LOD mode is unsupported on this device: ") + preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass LOD render returned ") +
                 toString(result) +
                 ": " +
@@ -9491,24 +9587,24 @@ public:
 
         const uint32_t lodVisiblePixelCount = countVisiblePixels(preview.pixels());
         if (lodVisiblePixelCount < 512) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("VisibilityBufferPass LOD mode produced too few visible pixels: ") +
                 std::to_string(lodVisiblePixelCount));
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphGPUDrivenAlphaMaskRenderTest : public RhiTest {
+class RenderGraphGPUDrivenAlphaMaskRenderTest : public RHITest {
 public:
     RenderGraphGPUDrivenAlphaMaskRenderTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_gpu_driven_alpha_mask_render";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::filesystem::path scenePath;
         std::string message;
@@ -9516,7 +9612,7 @@ public:
                 context.outputDirectory / "gpu-driven-alpha-mask-scene",
                 scenePath,
                 message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         std::filesystem::path singleSidedScenePath;
         if (!writeAlphaMaskScene(
@@ -9524,7 +9620,7 @@ public:
                 singleSidedScenePath,
                 message,
                 false)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
 
         render::RenderGraphPreviewRenderer preview;
@@ -9536,8 +9632,8 @@ public:
         render::Result<> result = preview.initialize(context.enableValidation, false);
         if (!result) {
             return render::hasError(result, render::Error::Unsupported)
-                ? RhiTestResult::skip("GPUDriven alpha-mask preview is unsupported")
-                : RhiTestResult::fail(
+                ? RHITestResult::skip("GPUDriven alpha-mask preview is unsupported")
+                : RHITestResult::fail(
                       std::string("RenderGraphPreviewRenderer::initialize returned ") +
                       toString(result));
         }
@@ -9587,17 +9683,17 @@ public:
         result = preview.render(graph, 128, 128);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("VisibilityBufferPass is unsupported: ") +
                     preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("GPUDriven alpha-mask front render returned ") +
                 toString(result) + ": " + preview.lastLog());
         }
         const std::array<uint32_t, 3> front = classifyPixels();
         if (front[0] < 1024 || front[0] > 7500 || front[2] < 1024 || front[1] > 64) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUDriven MASK/BLEND classification is incorrect on the front face: coverage=" +
                 std::to_string(front[0]) + " unexpected-color=" + std::to_string(front[1]) +
                 " dark=" + std::to_string(front[2]));
@@ -9609,17 +9705,17 @@ public:
                 node->id,
                 "camera.eye",
                 render::RenderGraphProperties::array({0.0f, 0.0f, -2.0f}))) {
-            return RhiTestResult::fail("failed to move the GPUDriven camera behind the double-sided MASK quad");
+            return RHITestResult::fail("failed to move the GPUDriven camera behind the double-sided MASK quad");
         }
         result = preview.render(graph, 128, 128);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("GPUDriven alpha-mask back render returned ") +
                 toString(result) + ": " + preview.lastLog());
         }
         const std::array<uint32_t, 3> back = classifyPixels();
         if (back[0] < 1024 || back[0] > 7500 || back[2] < 1024 || back[1] > 64) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUDriven double-sided MASK did not survive back-face rendering: coverage=" +
                 std::to_string(back[0]) + " unexpected-color=" + std::to_string(back[1]) +
                 " dark=" + std::to_string(back[2]));
@@ -9649,38 +9745,38 @@ public:
         singleSidedGraph.markOutput("GPUDriven.color");
         result = preview.render(singleSidedGraph, 128, 128);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("GPUDriven single-sided MASK back render returned ") +
                 toString(result) + ": " + preview.lastLog());
         }
         const std::array<uint32_t, 3> singleSidedBack = classifyPixels();
         if (singleSidedBack[0] > 64 || singleSidedBack[1] > 64 ||
             singleSidedBack[2] < 4096) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUDriven single-sided MASK was not back-face culled: coverage=" +
                 std::to_string(singleSidedBack[0]) + " unexpected-color=" +
                 std::to_string(singleSidedBack[1]) + " dark=" +
                 std::to_string(singleSidedBack[2]));
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphGPUDrivenSponzaVisibilityRenderTest : public RhiTest {
+class RenderGraphGPUDrivenSponzaVisibilityRenderTest : public RHITest {
 public:
     RenderGraphGPUDrivenSponzaVisibilityRenderTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_gpu_driven_sponza_visibility_render";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         const std::filesystem::path sponzaPath =
             std::filesystem::path(PROJECT_SOURCE_DIR) /
             "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf";
         if (!std::filesystem::is_regular_file(sponzaPath)) {
-            return RhiTestResult::skip("SuperSponza glTF is not present");
+            return RHITestResult::skip("SuperSponza glTF is not present");
         }
 
         render::RenderGraphPreviewRenderer preview;
@@ -9696,9 +9792,9 @@ public:
         render::Result<> result = preview.initialize(context.enableValidation, false);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip("RenderGraphPreviewRenderer is unsupported");
+                return RHITestResult::skip("RenderGraphPreviewRenderer is unsupported");
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("RenderGraphPreviewRenderer::initialize returned ") +
                 toString(result));
         }
@@ -9732,10 +9828,10 @@ public:
         result = preview.render(graph, 256, 256);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("SuperSponza visibility rendering is unsupported: ") + preview.lastLog());
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("SuperSponza visibility render returned ") +
                 toString(result) +
                 ": " +
@@ -9745,7 +9841,7 @@ public:
 
         const std::vector<uint32_t> meshletPixels = preview.pixels();
         if (countVisiblePixels(meshletPixels) < 2048) {
-            return RhiTestResult::fail("Sponza visibility contains too few covered pixels");
+            return RHITestResult::fail("Sponza visibility contains too few covered pixels");
         }
         const auto memory = preview.subsystemHost()->device()->memoryBudget();
         const auto& textures = memory.domains[size_t(render::MemoryBudgetDomain::MaterialTextures)];
@@ -9758,11 +9854,11 @@ public:
         std::string imageLog;
         if (!saveRgba8Png(context.outputDirectory / "SuperSponzaResident-meshlet.png",
                 reinterpret_cast<const uint8_t*>(meshletPixels.data()), 256, 256, imageLog)) {
-            return RhiTestResult::fail(imageLog);
+            return RHITestResult::fail(imageLog);
         }
         result = preview.render(graph, 256, 256);
         if (!result || preview.pixels() != meshletPixels) {
-            return RhiTestResult::fail("stationary HZB changed meshlet-ID visualization");
+            return RHITestResult::fail("stationary HZB changed meshlet-ID visualization");
         }
         // Lighting is intentionally irrelevant to this pass, even with an
         // invalid environment path; no environment subsystem should activate.
@@ -9773,18 +9869,18 @@ public:
         result = preview.render(graph, 256, 256);
         if (!result || preview.pixels() != meshletPixels ||
             preview.subsystemHost()->get<render::EnvironmentLightingSubsystem>() != nullptr) {
-            return RhiTestResult::fail("visibility rasterization still depends on environment shading");
+            return RHITestResult::fail("visibility rasterization still depends on environment shading");
         }
         result = preview.render(graph, 256, 256, "GPUDriven.visibility");
         if (!result || preview.pixels().size() != meshletPixels.size()) {
-            return RhiTestResult::fail("Sponza visibility-ID readback failed");
+            return RHITestResult::fail("Sponza visibility-ID readback failed");
         }
         const std::vector<uint32_t> visibilityPixels = preview.pixels();
         std::ofstream visibilityFile(context.outputDirectory / "SuperSponzaResident-visibility.bin", std::ios::binary);
         visibilityFile.write(reinterpret_cast<const char*>(visibilityPixels.data()),
             visibilityPixels.size() * sizeof(uint32_t));
         if (!visibilityFile) {
-            return RhiTestResult::fail("failed to save Sponza visibility-ID readback");
+            return RHITestResult::fail("failed to save Sponza visibility-ID readback");
         }
         size_t legacyCoverageMismatch = 0;
         size_t lowRedCoveredPixels = 0;
@@ -9801,16 +9897,16 @@ public:
             {"minimumCoveredPixels", 2048}, {"minimumTriangleDifferences", 1024}, {"modes", nlohmann::json::array()}};
         render::RenderGraphNode* node = graph.findNode("GPUDriven");
         if (node == nullptr) {
-            return RhiTestResult::fail("Sponza visibility node is missing");
+            return RHITestResult::fail("Sponza visibility node is missing");
         }
         std::string message;
         for (const char* mode : {"meshlet", "triangle", "depth", "coverage", "none"}) {
             if (!graph.setNodeRuntimeProperty(node->id, "visualization", mode)) {
-                return RhiTestResult::fail("failed to select visibility visualization");
+                return RHITestResult::fail("failed to select visibility visualization");
             }
             result = preview.render(graph, 256, 256);
             if (!result) {
-                return RhiTestResult::fail(std::string("Sponza visualization ") + mode +
+                return RHITestResult::fail(std::string("Sponza visualization ") + mode +
                     " returned " + toString(result) + ": " + preview.lastLog());
             }
             const auto& pixels = preview.pixels();
@@ -9829,25 +9925,25 @@ public:
                 if (std::string_view(mode) == "depth" && wasCovered &&
                     (((rgb >> 8u) & 0xffu) != (rgb & 0xffu) ||
                         ((rgb >> 16u) & 0xffu) != (rgb & 0xffu))) {
-                    return RhiTestResult::fail("device-depth visualization is not grayscale");
+                    return RHITestResult::fail("device-depth visualization is not grayscale");
                 }
                 if (std::string_view(mode) == "none" && pixels[i] != pixels.front()) {
-                    return RhiTestResult::fail("disabled visualization did not clear the debug output");
+                    return RHITestResult::fail("disabled visualization did not clear the debug output");
                 }
             }
             if (covered < 2048 || (std::string_view(mode) == "triangle" && different < 1024)) {
-                return RhiTestResult::fail("triangle-ID visualization did not distinguish triangles");
+                return RHITestResult::fail("triangle-ID visualization did not distinguish triangles");
             }
             if (!saveRgba8Png(
                     context.outputDirectory / (std::string("visibility_buffer_sponza_") + mode + ".png"),
                     reinterpret_cast<const uint8_t*>(pixels.data()), 256, 256, message)) {
-                return RhiTestResult::fail(message);
+                return RHITestResult::fail(message);
             }
             comparison["modes"].push_back({{"mode", mode}, {"coveredPixels", covered},
                 {"differentPixels", different}, {"coverageMismatch", coverageMismatch}});
             std::ofstream(context.outputDirectory / "SuperSponzaResidentVisibilityComparison.json") << comparison.dump(2) << '\n';
             if (coverageMismatch != 0) {
-                return RhiTestResult::fail("coverage display differs from visibility coverage");
+                return RHITestResult::fail("coverage display differs from visibility coverage");
             }
         }
         graph.setNodeRuntimeProperty(node->id, "visualization", "meshlet");
@@ -9855,22 +9951,22 @@ public:
             result = preview.render(graph, 256, 133);
             if (!result || preview.pixels().size() != 256u * 133u ||
                 countVisiblePixels(preview.pixels()) < 1024) {
-                return RhiTestResult::fail("Sponza non-square visibility/HZB regression");
+                return RHITestResult::fail("Sponza non-square visibility/HZB regression");
             }
         }
-        return RhiTestResult::pass("validated unshaded ID/depth/coverage/off visualizations");
+        return RHITestResult::pass("validated unshaded ID/depth/coverage/off visualizations");
     }
 };
 
-class RenderGraphStreamedAsyncAccelerationStructureTest : public RhiTest {
+class RenderGraphStreamedAsyncAccelerationStructureTest : public RHITest {
 public:
     RenderGraphStreamedAsyncAccelerationStructureTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_streamed_async_acceleration_structure";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         constexpr uint32_t kWidth = 160, kHeight = 96;
@@ -9879,16 +9975,16 @@ public:
         std::string log;
         if (!scene::buildMeshletStreamAssetOffline({.sourcePath = source, .outputPath = cache,
                 .meshletOptions = {.maxWorkers = 1}}, log)) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
         RenderSampleLoadResult sample;
         if (!loadBuiltInRenderSample(kDefaultGPUDrivenSampleId, sample, log) ||
             !setRenderSampleScenePath(sample, source.generic_string(), log)) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
         auto& graph = sample.graph;
         auto* visibility = graph.findNode("VBuffer");
-        if (!visibility) { return RhiTestResult::fail("streamed sample has no visibility producer"); }
+        if (!visibility) { return RHITestResult::fail("streamed sample has no visibility producer"); }
         const auto visibilityId = visibility->id;
         auto& props = visibility->properties;
         props["streamAssetPath"] = cache.generic_string();
@@ -9904,7 +10000,7 @@ public:
         props["meshletFrustumCull"] = false; props["hybridRaster"] = false;
         graph.findNode("Shadows")->properties["sigmaDenoise"] = false;
         graph.findNode("Shadows")->properties["shadowAngularRadius"] = 0.0;
-        for (const char* name : {"DlssSr", "DlssNr", "AutoExposure"}) {
+        for (const char* name : {"DLSSSR", "DLSSNR", "AutoExposure"}) {
             if (auto* node = graph.findNode(name)) { graph.removeNode(node->id); }
         }
         graph.addEdge("Deferred.color", "FinalBlit.source");
@@ -9912,7 +10008,7 @@ public:
         graph.addEdge("VBuffer.accelerationStructure", "Shadows.accelerationStructure");
         graph.markOutput("FinalBlit.color");
         scene::Scene fixture;
-        if (!fixture.loadStreamMetadata(source)) { return RhiTestResult::fail(fixture.lastLoadResult().error); }
+        if (!fixture.loadStreamMetadata(source)) { return RHITestResult::fail(fixture.lastLoadResult().error); }
         const auto center = fixture.bounds().center();
         const auto radius = fixture.bounds().radius();
         graph.setViewProperties({{"camera", {{"eye", {center.x, center.y + radius * .3f, center.z + radius * 3}},
@@ -9928,8 +10024,8 @@ public:
         RenderGraphPreviewRenderer preview;
         auto result = preview.initialize(context.enableValidation, true, false);
         if (!result) {
-            return hasError(result, Error::Unsupported) ? RhiTestResult::skip("streamed RTAS features unavailable") :
-                RhiTestResult::fail(std::string("preview initialize returned ") + toString(result));
+            return hasError(result, Error::Unsupported) ? RHITestResult::skip("streamed RTAS features unavailable") :
+                RHITestResult::fail(std::string("preview initialize returned ") + toString(result));
         }
         preview.setEnvironment({.enabled = false});
         preview.setLighting(lighting);
@@ -9937,13 +10033,13 @@ public:
         for (uint32_t frame = 0; frame < 24; ++frame) {
             result = preview.render(graph, kWidth, kHeight, "FinalBlit.color");
             if (!result) {
-                return hasError(result, Error::Unsupported) ? RhiTestResult::skip(preview.lastLog()) :
-                    RhiTestResult::fail("async RTAS render failed: " + preview.lastLog());
+                return hasError(result, Error::Unsupported) ? RHITestResult::skip(preview.lastLog()) :
+                    RHITestResult::fail("async RTAS render failed: " + preview.lastLog());
             }
         }
         const auto* streamer = preview.subsystemHost()->get<StreamerSubsystem>();
         if (!streamer || !streamer->sceneReadiness().ready) {
-            return RhiTestResult::fail("streamed RTAS fixture did not finish fallback publication");
+            return RHITestResult::fail("streamed RTAS fixture did not finish fallback publication");
         }
         // Keep timing informational: a small correctness fixture does not
         // establish a production speedup. Both modes use the same warmed graph.
@@ -9965,14 +10061,14 @@ public:
             }
             return {};
         };
-        if (!measure(true)) { return RhiTestResult::fail("async RTAS timing frames failed: " + preview.lastLog()); }
+        if (!measure(true)) { return RHITestResult::fail("async RTAS timing frames failed: " + preview.lastLog()); }
         const auto asynchronous = preview.pixels();
         if (asynchronous.empty() || std::count_if(asynchronous.begin(), asynchronous.end(),
                 [&](uint32_t pixel) { return pixel != asynchronous.front(); }) < 64) {
-            return RhiTestResult::fail("async RTAS deferred image contains no useful geometry");
+            return RHITestResult::fail("async RTAS deferred image contains no useful geometry");
         }
         auto snapshot = preview.executionSnapshot();
-        if (!snapshot || !snapshot->success) { return RhiTestResult::fail("async RTAS capture is missing"); }
+        if (!snapshot || !snapshot->success) { return RHITestResult::fail("async RTAS capture is missing"); }
         const RenderGraphExecutionResourceSnapshot* accelerationStructure = nullptr;
         const RenderGraphExecutionPassSnapshot* producer = nullptr;
         for (const auto& resource : snapshot->resources) {
@@ -9981,7 +10077,7 @@ public:
         }
         for (const auto& pass : snapshot->passes) { if (pass.name == "VBuffer") { producer = &pass; } }
         if (!accelerationStructure || !producer || !accelerationStructure->memory.allocationId) {
-            return RhiTestResult::fail("stream TLAS is missing from first-class graph allocation capture");
+            return RHITestResult::fail("stream TLAS is missing from first-class graph allocation capture");
         }
         bool buildWrite = false, consumerRead = false, consumerBarrier = false;
         for (const auto& use : producer->uses) {
@@ -10002,7 +10098,7 @@ public:
             }
         }
         if (!buildWrite || !consumerRead || !consumerBarrier) {
-            return RhiTestResult::fail("AS build-to-ray-query graph dependency or inferred barrier is missing");
+            return RHITestResult::fail("AS build-to-ray-query graph dependency or inferred barrier is missing");
         }
         const auto hasRtasBranch = [&](const RenderGraphExecutionSnapshot& capture) {
             return std::any_of(capture.segments.begin(), capture.segments.end(), [&](const auto& segment) {
@@ -10012,65 +10108,65 @@ public:
         const bool independentCompute = std::any_of(snapshot->queues.begin(), snapshot->queues.end(),
             [](const auto& queue) { return queue.type == QueueType::Compute; });
         if (independentCompute && !hasRtasBranch(*snapshot)) {
-            return RhiTestResult::fail("default RTAS preference did not fork the compute build");
+            return RHITestResult::fail("default RTAS preference did not fork the compute build");
         }
         if (!graph.setNodeRuntimeProperty(visibilityId, "AsyncComputePreferred", false)) {
-            return RhiTestResult::fail("failed to disable async RTAS preference");
+            return RHITestResult::fail("failed to disable async RTAS preference");
         }
         for (uint32_t frame = 0; frame < 24; ++frame) {
             if (!preview.render(graph, kWidth, kHeight, "FinalBlit.color")) {
-                return RhiTestResult::fail("graphics RTAS fallback render failed: " + preview.lastLog());
+                return RHITestResult::fail("graphics RTAS fallback render failed: " + preview.lastLog());
             }
         }
-        if (!measure(false)) { return RhiTestResult::fail("graphics RTAS timing frames failed: " + preview.lastLog()); }
+        if (!measure(false)) { return RHITestResult::fail("graphics RTAS timing frames failed: " + preview.lastLog()); }
         std::ofstream(context.outputDirectory / "StreamedAsyncRtasTiming.json") <<
             RenderGraphProperties{{"width", kWidth}, {"height", kHeight},
                 {"warmupFramesPerMode", 24}, {"measuredScope", "Headless render and readback wall time; optional graph GPU envelope"},
                 {"samples", std::move(timings)}}.dump(2) << '\n';
         const auto fallback = preview.executionSnapshot();
         if (!fallback || !fallback->success || hasRtasBranch(*fallback)) {
-            return RhiTestResult::fail("disabled RTAS preference still forked the compute build");
+            return RHITestResult::fail("disabled RTAS preference still forked the compute build");
         }
         if (preview.pixels() != asynchronous) {
-            return RhiTestResult::fail("async and graphics RTAS builds produced different deferred/shadow output");
+            return RHITestResult::fail("async and graphics RTAS builds produced different deferred/shadow output");
         }
         if (!saveRgba8Png(context.outputDirectory / "StreamedAsyncRtas.png",
                 reinterpret_cast<const uint8_t*>(asynchronous.data()), kWidth, kHeight, log)) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
-        return RhiTestResult::pass(independentCompute ?
+        return RHITestResult::pass(independentCompute ?
             "Async stream TLAS, first-class AS edges/barriers and flag-disabled output equality" :
             "Compute queue unavailable: validated AS graph barriers and graphics fallback output equality");
     }
 };
 
-class ImportancePdfSizeTest : public RhiTest {
+class ImportancePdfSizeTest : public RHITest {
 public:
     ImportancePdfSizeTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "importance_pdf_size";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const render::ImportancePdfSize lightPdfSize = render::computeImportancePdfTextureSize(257);
         if (lightPdfSize.width != 32 || lightPdfSize.height != 16 || lightPdfSize.mipCount != 6) {
-            return RhiTestResult::fail("RTXDI local-light PDF sizing does not match a power-of-two rectangle");
+            return RHITestResult::fail("RTXDI local-light PDF sizing does not match a power-of-two rectangle");
         }
-        return RhiTestResult::pass("validated GPU PDF texture sizing");
+        return RHITestResult::pass("validated GPU PDF texture sizing");
     }
 };
 
-class ReGIRGridLayoutTest : public RhiTest {
+class ReGIRGridLayoutTest : public RHITest {
 public:
     ReGIRGridLayoutTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "regir_grid_layout";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const render::ReGIRGridLayout layout = render::computeReGIRGridLayout(12, 64);
         if (!layout.valid() ||
@@ -10079,27 +10175,27 @@ public:
             layout.bufferByteSize !=
                 static_cast<uint64_t>(110592 + render::kReGIRHeaderRecordCount) *
                     render::kReGIRRecordByteSize) {
-            return RhiTestResult::fail("ReGIR grid layout or buffer sizing is incorrect");
+            return RHITestResult::fail("ReGIR grid layout or buffer sizing is incorrect");
         }
 
         if (render::computeReGIRGridLayout(0, 64).valid() ||
             render::computeReGIRGridLayout(12, 0).valid() ||
             render::computeReGIRGridLayout(UINT32_MAX, UINT32_MAX).valid()) {
-            return RhiTestResult::fail("invalid ReGIR grid parameters were accepted");
+            return RHITestResult::fail("invalid ReGIR grid parameters were accepted");
         }
-        return RhiTestResult::pass("validated ReGIR cell, slot, and buffer layout");
+        return RHITestResult::pass("validated ReGIR cell, slot, and buffer layout");
     }
 };
 
-class EnvironmentSubsystemAsyncSnapshotTest : public RhiTest {
+class EnvironmentSubsystemAsyncSnapshotTest : public RHITest {
 public:
     EnvironmentSubsystemAsyncSnapshotTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "environment_subsystem_async_snapshot";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         registerTestPass();
         render::RenderGraph graph;
@@ -10107,19 +10203,19 @@ public:
         graph.addNode("TestEnvironmentConsumerPass", "EnvironmentConsumerB");
         if (!graph.markOutput("EnvironmentConsumerA.color") ||
             !graph.markOutput("EnvironmentConsumerB.color")) {
-            return RhiTestResult::fail("failed to construct the shared environment graph");
+            return RHITestResult::fail("failed to construct the shared environment graph");
         }
 
         render::RenderGraphPreviewRenderer preview;
         preview.setEnvironment(render::EnvironmentSettings{});
         render::Result<> result = preview.initialize(false, false);
         if (!result) {
-            return RhiTestResult::skip(
+            return RHITestResult::skip(
                 std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
         result = preview.render(graph, 16, 16, "EnvironmentConsumerA.color");
         if (!result) {
-            return RhiTestResult::fail("initial environment render failed: " + preview.lastLog());
+            return RHITestResult::fail("initial environment render failed: " + preview.lastLog());
         }
 
         render::EnvironmentLightingSubsystem* subsystem =
@@ -10127,7 +10223,7 @@ public:
         if (subsystem == nullptr ||
             !subsystem->snapshot().valid() ||
             subsystem->snapshot().pdfView == nullptr) {
-            return RhiTestResult::fail("environment subsystem did not publish its black fallback");
+            return RHITestResult::fail("environment subsystem did not publish its black fallback");
         }
         const render::TextureView* fallbackView = subsystem->snapshot().radianceView;
         const uint64_t fallbackRevision = subsystem->snapshot().resourceRevision;
@@ -10136,7 +10232,7 @@ public:
         if (!result ||
             subsystem->snapshot().radianceView != fallbackView ||
             subsystem->snapshot().resourceRevision != fallbackRevision) {
-            return RhiTestResult::fail("RenderGraph resize recreated the active environment resource");
+            return RHITestResult::fail("RenderGraph resize recreated the active environment resource");
         }
 
         render::EnvironmentSettings environment;
@@ -10147,7 +10243,7 @@ public:
         if (!result ||
             subsystem->snapshot().radianceView != fallbackView ||
             subsystem->snapshot().resourceRevision != fallbackRevision) {
-            return RhiTestResult::fail("environment resource changed before asynchronous decode completed");
+            return RHITestResult::fail("environment resource changed before asynchronous decode completed");
         }
 
         bool switched = false;
@@ -10155,7 +10251,7 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             result = preview.render(graph, 24, 16, "EnvironmentConsumerA.color");
             if (!result) {
-                return RhiTestResult::fail("environment switch render failed: " + preview.lastLog());
+                return RHITestResult::fail("environment switch render failed: " + preview.lastLog());
             }
             const render::EnvironmentLightingSnapshot& snapshot = subsystem->snapshot();
             switched = snapshot.status == render::EnvironmentLightingStatus::Ready &&
@@ -10164,7 +10260,7 @@ public:
                 snapshot.resourceRevision > fallbackRevision;
         }
         if (!switched || subsystem->decodeCount() != 1u) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "shared environment did not complete exactly one HDR decode: status=" +
                 std::to_string(static_cast<uint32_t>(subsystem->snapshot().status)) +
                 " decodeCount=" + std::to_string(subsystem->decodeCount()) +
@@ -10180,7 +10276,7 @@ public:
         for (uint32_t attempt = 0; attempt < 100 && !degraded; ++attempt) {
             result = preview.render(graph, 24, 16, "EnvironmentConsumerA.color");
             if (!result) {
-                return RhiTestResult::fail("degraded environment render failed: " + preview.lastLog());
+                return RHITestResult::fail("degraded environment render failed: " + preview.lastLog());
             }
             const render::EnvironmentLightingSnapshot& snapshot = subsystem->snapshot();
             degraded = snapshot.status == render::EnvironmentLightingStatus::Degraded;
@@ -10192,27 +10288,27 @@ public:
             subsystem->snapshot().radianceView != readyView ||
             subsystem->snapshot().resourceRevision != readyRevision ||
             subsystem->decodeCount() != 2u) {
-            return RhiTestResult::fail("failed environment switch did not preserve the last ready snapshot");
+            return RHITestResult::fail("failed environment switch did not preserve the last ready snapshot");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderGraphMissingSubsystemDiagnosticTest : public RhiTest {
+class RenderGraphMissingSubsystemDiagnosticTest : public RHITest {
 public:
     RenderGraphMissingSubsystemDiagnosticTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "render_graph_missing_subsystem_diagnostic";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerTestPass();
         render::RenderGraph graph;
         graph.addNode("TestMissingSubsystemPass", "MissingSubsystemUser");
         if (!graph.markOutput("MissingSubsystemUser.color")) {
-            return RhiTestResult::fail("failed to construct missing-subsystem graph");
+            return RHITestResult::fail("failed to construct missing-subsystem graph");
         }
 
         render::RenderGraphExecutor executor;
@@ -10221,21 +10317,21 @@ public:
         if (result ||
             log.find("MissingSubsystemUser") == std::string::npos ||
             log.find("test.missing-required-subsystem") == std::string::npos) {
-            return RhiTestResult::fail("missing subsystem diagnostic did not name the pass and subsystem: " + log);
+            return RHITestResult::fail("missing subsystem diagnostic did not name the pass and subsystem: " + log);
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RenderSubsystemHostLifecycleTest : public RhiTest {
+class RenderSubsystemHostLifecycleTest : public RHITest {
 public:
     RenderSubsystemHostLifecycleTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "render_subsystem_host_lifecycle";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         struct Probe final : render::IRenderSubsystem {
             Probe(std::string name, std::vector<std::string>& events, bool failBegin = false)
@@ -10301,35 +10397,35 @@ public:
         render::RenderSubsystemHost host;
         if (!registerProbe(host, "test.base", {}, events, log) ||
             !registerProbe(host, "test.consumer", {"test.base"}, events, log)) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
         if (registerProbe(host, "test.base", {}, events, log)) {
-            return RhiTestResult::fail("duplicate subsystem id was accepted");
+            return RHITestResult::fail("duplicate subsystem id was accepted");
         }
         log.clear();
         render::Result<> result = host.initialize(context.device, 3, log);
         if (!result) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
         result = host.activate("test.consumer", log);
         if (!result || events != std::vector<std::string>{"init:test.base", "init:test.consumer"}) {
-            return RhiTestResult::fail("dependency initialization order is incorrect: " + log);
+            return RHITestResult::fail("dependency initialization order is incorrect: " + log);
         }
         result = host.activate("test.consumer", log);
         if (!result || events.size() != 2u) {
-            return RhiTestResult::fail("active subsystem was not kept warm");
+            return RHITestResult::fail("active subsystem was not kept warm");
         }
 
         if (!host.registerSubsystem<ConfigurableRenderSubsystemProbe>(log) ||
             !host.configure<ConfigurableRenderSubsystemProbe>({.value = 42}, log) ||
             !host.activate(ConfigurableRenderSubsystemProbe::kSubsystemId, log)) {
-            return RhiTestResult::fail("subsystem configuration failed: " + log);
+            return RHITestResult::fail("subsystem configuration failed: " + log);
         }
         const ConfigurableRenderSubsystemProbe* configured =
             host.get<ConfigurableRenderSubsystemProbe>();
         if (configured == nullptr || configured->observedValue != 42 ||
             host.configure<ConfigurableRenderSubsystemProbe>({.value = 7}, log)) {
-            return RhiTestResult::fail("subsystem configuration was not applied before activation");
+            return RHITestResult::fail("subsystem configuration was not applied before activation");
         }
 
         render::RenderWorld world;
@@ -10343,12 +10439,12 @@ public:
             !render::hasRenderChange(
                 host.lastChanges(),
                 render::RenderChangeBits::InvalidateTemporalHistory)) {
-            return RhiTestResult::fail("world change bits were not aggregated");
+            return RHITestResult::fail("world change bits were not aggregated");
         }
         host.endFrame();
         result = host.beginFrame(8, 2, nullptr, log);
         if (!result || host.lastChanges() != render::RenderChangeBits::None) {
-            return RhiTestResult::fail("world change bits were not consumed exactly once");
+            return RHITestResult::fail("world change bits were not consumed exactly once");
         }
         host.endFrame();
         host.shutdown();
@@ -10358,20 +10454,20 @@ public:
         };
         if (events.size() < expectedTail.size() ||
             !std::equal(expectedTail.begin(), expectedTail.end(), events.end() - expectedTail.size())) {
-            return RhiTestResult::fail("subsystems did not shut down in reverse dependency order");
+            return RHITestResult::fail("subsystems did not shut down in reverse dependency order");
         }
 
         render::RenderSubsystemHost missingHost;
         if (!registerProbe(missingHost, "test.missing-user", {"test.not-registered"}, events, log)) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
         result = missingHost.initialize(context.device, 1, log);
         if (!result) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
         result = missingHost.activate("test.missing-user", log);
         if (result || log.find("test.not-registered") == std::string::npos) {
-            return RhiTestResult::fail("missing dependency did not produce a named error");
+            return RHITestResult::fail("missing dependency did not produce a named error");
         }
 
         render::RenderSubsystemHost cycleHost;
@@ -10380,11 +10476,11 @@ public:
         registerProbe(cycleHost, "test.cycle-b", {"test.cycle-a"}, events, log);
         result = cycleHost.initialize(context.device, 1, log);
         if (!result) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
         result = cycleHost.activate("test.cycle-a", log);
         if (result || log.find("cycle") == std::string::npos) {
-            return RhiTestResult::fail("dependency cycle was not detected");
+            return RHITestResult::fail("dependency cycle was not detected");
         }
 
         render::RenderSubsystemHost failingHost;
@@ -10392,21 +10488,22 @@ public:
         registerProbe(failingHost, "test.failing", {}, events, log, true);
         result = failingHost.initialize(context.device, 1, log);
         if (!result || !failingHost.activate("test.failing", log)) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
         result = failingHost.beginFrame(0, 0, nullptr, log);
         if (result || log.find("test.failing") == std::string::npos) {
-            return RhiTestResult::fail("hook error did not propagate with subsystem id");
+            return RHITestResult::fail("hook error did not propagate with subsystem id");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(RenderGraphSerializationTest);
 METALLIC_REGISTER_RHI_TEST(VisibilityBufferPassLegacyGraphTest);
-METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionApiTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphLegacyAcronymPassNamesTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphReflectionAPITest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPassKindTest);
-METALLIC_REGISTER_RHI_TEST(RenderGraphDlssRrMotionVectorContractTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphDLSSRRMotionVectorContractTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRuntimeSettingsDeclarationTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphRuntimeRebuildDirtyTest);
 METALLIC_REGISTER_RHI_TEST(RenderSampleLoadTest);
@@ -10420,24 +10517,24 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneMaterialVisualizationPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphScenePathTracePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSharcStagesTest);
-METALLIC_REGISTER_RHI_TEST(RenderGraphNrcStagesTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphNRCStagesTest);
 METALLIC_REGISTER_RHI_TEST(SlangShaderDiskCacheTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingShaderCompileTest);
 #if defined(METALLIC_HAS_RTXCR) && METALLIC_HAS_RTXCR
-METALLIC_REGISTER_RHI_TEST(RenderGraphRtxcrMaterialShaderCompileTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphRTXCRMaterialShaderCompileTest);
 #if defined(METALLIC_HAS_RTXCR_GEOMETRY) && METALLIC_HAS_RTXCR_GEOMETRY && \
     defined(METALLIC_HAS_RTXCR_ASSETS) && METALLIC_HAS_RTXCR_ASSETS
-METALLIC_REGISTER_RHI_TEST(RenderGraphRtxcrMaterialPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphRTXCRMaterialPreviewTest);
 #endif
 #endif
 METALLIC_REGISTER_RHI_TEST(GPUDrivenPreviewGeometryDedupPlanTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenPreviewShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphGPUDrivenStreamAssetTraversalDemandTest);
-METALLIC_REGISTER_RHI_TEST(RenderGraphRtxdiPreviewTest);
-METALLIC_REGISTER_RHI_TEST(RenderGraphRtxdiShaderCompileTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphRTXDIPreviewTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphRTXDIShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphPathTracingGuidesShaderCompileTest);
-METALLIC_REGISTER_RHI_TEST(RenderGraphStreamlineDlssSupportShaderCompileTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphStreamlineDLSSSupportShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneRayQueryClusterShaderCompileTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingSamplePreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphOpenPBRPathTracingDebugViewsTest);
@@ -10460,10 +10557,10 @@ METALLIC_REGISTER_RHI_TEST(RenderGraphMultiQueueSubmitTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphTextureFeedbackEpilogueTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphImageSamplePassPreviewTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphMaterialShaderObjectPassSmokeTest);
-class StreamSceneOpenRoutingTest final : public RhiTest {
+class StreamSceneOpenRoutingTest final : public RHITest {
 public:
     StreamSceneOpenRoutingTest() { name = "stream_scene_open_routing"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         const auto directory = std::filesystem::absolute(context.outputDirectory / "stream-open-routing");
@@ -10481,23 +10578,23 @@ public:
         if (same.streamAssetPath != directory / "custom.meshstream.bin" ||
             switched.streamAssetPath != scene::meshletStreamAssetPathFor(second) ||
             !graph.findNode(id)->runtimeProperties.empty()) {
-            return RhiTestResult::fail("Stream open planning reused another scene's cache or mutated the live graph");
+            return RHITestResult::fail("Stream open planning reused another scene's cache or mutated the live graph");
         }
         if (!editor::applyStreamSceneOpen(graph, second, switched.streamAssetPath)) {
-            return RhiTestResult::fail("Stream scene switch was not committed");
+            return RHITestResult::fail("Stream scene switch was not committed");
         }
         const auto& properties = graph.findNode(id)->runtimeProperties;
         if (properties.at("path") != second.generic_string() || properties.at("sceneBinding") != "world" ||
             properties.at("streamAssetPath") != switched.streamAssetPath.generic_string() ||
             editor::streamSceneLoadOptions(graph, second, directory).streamAssetPath != switched.streamAssetPath) {
-            return RhiTestResult::fail("Source, world binding and cache did not switch together");
+            return RHITestResult::fail("Source, world binding and cache did not switch together");
         }
         RenderGraph resident;
         resident.addNode("VisibilityBufferPass", "Resident", {});
         if (!editor::streamSceneLoadOptions(resident, second, directory).streamAssetPath.empty()) {
-            return RhiTestResult::fail("Resident graph unexpectedly selected metadata-only loading");
+            return RHITestResult::fail("Resident graph unexpectedly selected metadata-only loading");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamSceneOpenRoutingTest);

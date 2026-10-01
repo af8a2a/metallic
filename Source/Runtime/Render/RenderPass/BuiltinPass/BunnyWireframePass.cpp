@@ -12,7 +12,7 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "Stanford Bunny barycentric wireframe")
-            .format = Format::Rgba8Unorm;
+            .format = Format::RGBA8Unorm;
         reflection.addTextureOutput("depth", "Stanford Bunny depth")
             .depthStencilWrite();
         return reflection;
@@ -46,9 +46,9 @@ public:
             return {};
         }
 
-        std::vector<BunnyWireframeGpuPosition> positions;
-        std::vector<SceneGpuTransform> transforms;
-        BunnyWireframeGpuParams params;
+        std::vector<BunnyWireframeGPUPosition> positions;
+        std::vector<SceneGPUTransform> transforms;
+        BunnyWireframeGPUParams params;
         if (!buildBunnyGeometry(properties(), runtimeScene, positions, transforms, drawBounds_, log)) {
             return makeError(Error::Failure);
         }
@@ -70,7 +70,7 @@ public:
         Result<> result = uploadStorageBuffer(
             *context.device,
             positions.data(),
-            static_cast<uint64_t>(positions.size() * sizeof(BunnyWireframeGpuPosition)),
+            static_cast<uint64_t>(positions.size() * sizeof(BunnyWireframeGPUPosition)),
             positionBuffer_,
             log,
             "BunnyWireframePass positions");
@@ -80,7 +80,7 @@ public:
         result = uploadStorageBuffer(
             *context.device,
             transforms.data(),
-            static_cast<uint64_t>(transforms.size() * sizeof(SceneGpuTransform)),
+            static_cast<uint64_t>(transforms.size() * sizeof(SceneGPUTransform)),
             transformBuffer_,
             log,
             "BunnyWireframePass transforms");
@@ -319,9 +319,9 @@ private:
         if (runtimeScene->transformRevision() == transformRevision_) {
             return {};
         }
-        const std::vector<SceneGpuTransform> transforms = buildSceneGpuTransforms(*runtimeScene);
+        const std::vector<SceneGPUTransform> transforms = buildSceneGpuTransforms(*runtimeScene);
         if (transformBuffer_ == nullptr ||
-            transforms.size() * sizeof(SceneGpuTransform) != transformBuffer_->desc().size) {
+            transforms.size() * sizeof(SceneGPUTransform) != transformBuffer_->desc().size) {
             spdlog::warn("[BunnyWireframePass] Runtime scene transform layout changed");
             return makeError(Error::Failure);
         }
@@ -343,8 +343,8 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        std::vector<BunnyWireframeGpuPosition> positions;
-        std::vector<SceneGpuTransform> transforms;
+        std::vector<BunnyWireframeGPUPosition> positions;
+        std::vector<SceneGPUTransform> transforms;
         scene::Bounds bounds;
         std::string log;
         if (!buildBunnyGeometry(properties(), &runtimeScene, positions, transforms, bounds, log)) {
@@ -367,7 +367,7 @@ private:
         Result<> result = uploadStorageBuffer(
             *device_,
             positions.data(),
-            static_cast<uint64_t>(positions.size() * sizeof(BunnyWireframeGpuPosition)),
+            static_cast<uint64_t>(positions.size() * sizeof(BunnyWireframeGPUPosition)),
             positionBuffer,
             log,
             "BunnyWireframePass runtime positions");
@@ -378,7 +378,7 @@ private:
         result = uploadStorageBuffer(
             *device_,
             transforms.data(),
-            static_cast<uint64_t>(transforms.size() * sizeof(SceneGpuTransform)),
+            static_cast<uint64_t>(transforms.size() * sizeof(SceneGPUTransform)),
             transformBuffer,
             log,
             "BunnyWireframePass runtime transforms");
@@ -414,7 +414,7 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        BunnyWireframeGpuParams params;
+        BunnyWireframeGPUParams params;
         buildBunnyParams(width, height, properties, drawBounds_, params);
 
         void* mapped = paramsBuffer_->map();
@@ -518,8 +518,8 @@ private:
     static bool buildBunnyGeometry(
         const RenderGraphProperties& properties,
         const scene::Scene* runtimeScene,
-        std::vector<BunnyWireframeGpuPosition>& outPositions,
-        std::vector<SceneGpuTransform>& outTransforms,
+        std::vector<BunnyWireframeGPUPosition>& outPositions,
+        std::vector<SceneGPUTransform>& outTransforms,
         scene::Bounds& outBounds,
         std::string& log)
     {
@@ -541,7 +541,7 @@ private:
 
             const scene::RenderPrimitive& primitive =
                 bunnyScene.renderPrimitives()[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
-            if (primitive.mode != kGltfTriangleListMode || primitive.positions.empty()) {
+            if (primitive.mode != kglTFTriangleListMode || primitive.positions.empty()) {
                 continue;
             }
 
@@ -550,7 +550,7 @@ private:
                     return;
                 }
                 const float3 local = primitive.positions[static_cast<size_t>(localIndex)];
-                outPositions.push_back(BunnyWireframeGpuPosition{
+                outPositions.push_back(BunnyWireframeGPUPosition{
                     .x = local.x,
                     .y = local.y,
                     .z = local.z,
@@ -582,9 +582,9 @@ private:
         uint32_t height,
         const RenderGraphProperties& properties,
         const scene::Bounds& drawBounds,
-        BunnyWireframeGpuParams& outParams)
+        BunnyWireframeGPUParams& outParams)
     {
-        outParams = BunnyWireframeGpuParams{};
+        outParams = BunnyWireframeGPUParams{};
         const float3 center = drawBounds.center();
         const float3 halfExtent = (drawBounds.max - drawBounds.min) * 0.5f;
         const float aspect = height == 0 ? 1.0f : static_cast<float>(width) / static_cast<float>(height);

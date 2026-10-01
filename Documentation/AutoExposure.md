@@ -13,8 +13,8 @@ The physical realtime, path tracing (including SHaRC/NRC), RTXDI/NRD and DLSS sa
 
 For a custom graph:
 
-1. Enable **HDR Output (Auto Exposure)** (`outputLinear: true`) on `SceneRealtimeLightingPass`, `ScenePathTracePass` or `SceneRtxdiPass`.
-2. If using RTXDI + NRD, enable it on `RtxdiCompositePass` too; all radiance and emissive inputs must use the same exposure convention.
+1. Enable **HDR Output (Auto Exposure)** (`outputLinear: true`) on `SceneRealtimeLightingPass`, `ScenePathTracePass` or `SceneRTXDIPass`.
+2. If using RTXDI + NRD, enable it on `RTXDICompositePass` too; all radiance and emissive inputs must use the same exposure convention.
 3. Connect the final HDR color, after NRD composition or DLSS reconstruction, to `AutoExposurePass.source`.
 4. Connect `AutoExposurePass.color` to `FinalBlitPass.source`.
 
@@ -61,5 +61,5 @@ Ordinary HDR lighting and path-trace accumulation use RGBA32F. The existing NRC/
 ## Validation
 
 - `MetallicSceneTests`: `SceneEditing.PhysicalLightingRoundTrip`, `SceneEditing.AutoExposureValidationAndLegacyLoading` cover persistence, old sidecars and invalid settings.
-- `MetallicRhiTests --filter auto_exposure --rhi-validation`: physical gray calibration, percentile rejection, manual/automatic modes, limits, compensation, both speeds, zero speeds, timestep invariance and invalid pixels.
-- `MetallicRhiTests --filter photometric --rhi-validation`: real lighting, identical inline/manual-post-exposure pixels and a 10-stop light increase compensated by auto exposure. Produces `auto-exposure-realtime.png` in the selected output directory.
+- `MetallicRHITests --filter auto_exposure --rhi-validation`: physical gray calibration, percentile rejection, manual/automatic modes, limits, compensation, both speeds, zero speeds, timestep invariance and invalid pixels.
+- `MetallicRHITests --filter photometric --rhi-validation`: real lighting, identical inline/manual-post-exposure pixels and a 10-stop light increase compensated by auto exposure. Produces `auto-exposure-realtime.png` in the selected output directory.

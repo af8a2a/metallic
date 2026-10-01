@@ -27,7 +27,7 @@
 | unified layouts | `Source/` 中未发现该扩展的启用代码 | 需要设备能力查询、启用和 backend policy；目前不能假定有扩展效率保证 |
 | 首个纵向样例 | 材质分桶的三个 ComputeProgram 共用 9 个输入/输出绑定，后接现成的间接着色批次 | 先迁移这条链，比一开始覆盖整个 streaming/culling 更集中 |
 
-核心证据：[`ComputeProgram.cpp`](../Source/Runtime/Render/Core/ComputeProgram.cpp) 的 `ComputeDescriptorTables`、`acquireTables()`、`dispatchImpl()`；[`VulkanRhi.cpp`](../Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp) 的 `setupResourceHeap()`、`writeImages()`、`bindBindlessHeap()`、`stateInfo()`；[`UploadStreamer.cpp`](../Source/Runtime/Render/Streamer/UploadStreamer.cpp) 的 `beginFrame()`、`streamConstantData()`。
+核心证据：[`ComputeProgram.cpp`](../Source/Runtime/Render/Core/ComputeProgram.cpp) 的 `ComputeDescriptorTables`、`acquireTables()`、`dispatchImpl()`；[`VulkanRHI.cpp`](../Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp) 的 `setupResourceHeap()`、`writeImages()`、`bindBindlessHeap()`、`stateInfo()`；[`UploadStreamer.cpp`](../Source/Runtime/Render/Streamer/UploadStreamer.cpp) 的 `beginFrame()`、`streamConstantData()`。
 
 当前源码的调用面统计如下，只用于估计迁移规模，不表示动态调用次数：
 
@@ -114,7 +114,7 @@ Graph 仍需要访问声明。参数编码能够收集资源引用，却不能�
 
 最终参数 arena 使用稳定地址的 chunk；增长增加新 chunk，旧 chunk 不移动。分配对齐来自参数 ABI，非一致内存的 flush 满足设备 atom/alignment 要求。并行录制用线程所属 chunk 或明确同步的批量分配；已经发布的 descriptor/packet 不再改写。
 
-保留 `RenderFrameContext`、`GpuCompletionPoint`、`SubmissionTransaction`、`DeferredReleaseQueue`：录制取消释放未提交部分，部分提交保留已接受部分，多队列全部完成才回收。第一方新接口要求有效 recording context；不能让无 frame 的 convenience overload 悄悄失去这些保证。
+保留 `RenderFrameContext`、`GPUCompletionPoint`、`SubmissionTransaction`、`DeferredReleaseQueue`：录制取消释放未提交部分，部分提交保留已接受部分，多队列全部完成才回收。第一方新接口要求有效 recording context；不能让无 frame 的 convenience overload 悄悄失去这些保证。
 
 ### 旧接口的退出条件
 

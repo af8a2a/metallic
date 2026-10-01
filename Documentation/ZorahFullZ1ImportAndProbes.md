@@ -25,7 +25,7 @@
 
 ## 实现协议
 
-- [GltfGpuInstancing.cpp](E:/metallic/Source/Runtime/Scene/GltfGpuInstancing.cpp) 将 `EXT_mesh_gpu_instancing` 投影为普通子节点，供 metadata、resident `.gltf` 和外部范围读取 cook 共用。源节点保留原编号和层级变换，移除其普通 mesh，避免多画一份；实例世界矩阵为 `node world × instance TRS`。原有子节点只保留一次，不随实例复制。
+- [glTFGPUInstancing.cpp](E:/metallic/Source/Runtime/Scene/glTFGPUInstancing.cpp) 将 `EXT_mesh_gpu_instancing` 投影为普通子节点，供 metadata、resident `.gltf` 和外部范围读取 cook 共用。源节点保留原编号和层级变换，移除其普通 mesh，避免多画一份；实例世界矩阵为 `node world × instance TRS`。原有子节点只保留一次，不随实例复制。
 - 生成节点的源 node / instance 编号保存在 `LoadResult.gpuInstancing`，同一输入的展开顺序稳定。primitive 顺序沿用 mesh 中的顺序；metadata 与离线实例表逐项核对 render node、material 和 16 个矩阵分量。
 - 只按实例 accessor 范围读取外部 buffer。检查类型、归一化、stride、offset、声明及物理文件边界、count 一致性、有限值和四元数；几何 buffer 和 KTX2 不进入 metadata 载入路径。
 - metadata 保留图片 URI、MIME、sampler、texture 及已有材质字段，并在 `LoadResult.gltfMaterialDescriptions` 保存全部源材质 JSON。`specular/unlit` 尚未接入着色的部分不丢源描述，仍明确报告 ignored-extension 警告。MIME 是原始提示，Full 中错误的 PNG MIME 没有被伪装成已验证的容器类型。
@@ -43,7 +43,7 @@ Z1 实例 accessor 支持 float T/S、float 或归一化 signed byte/short R，�
 | StoneUdim | 12 | 22,430 | 11 | 20 | 石材、authored tangent、normal map、显式 UDIM 文件 |
 | InstancingNoTangent | 49 | 2 | 25 | 1 | 扩展实例、缺 authored tangent 的 normal map |
 | MaskedLeaves | 1312 | 369 | 2 | 3 | MASK、双面、alpha cutoff |
-| TextureTransformBc4 | 398 | 936 | 2 | 8 | UV transform、BC4 specular、masked 叶片 |
+| TextureTransformBC4 | 398 | 936 | 2 | 8 | UV transform、BC4 specular、masked 叶片 |
 | Glass | 334 | 15,872 | 1 | 30 | material 424 transmission / IOR |
 | Blend | 294 | 2 | 1 | 1 | material 395 BLEND |
 | Unlit | 109 | 19,200 | 1 | 17 | material 1513，无 authored normal |
@@ -57,9 +57,9 @@ Z1 实例 accessor 支持 float T/S、float 或归一化 signed byte/short R，�
 
 ## 验证与复跑
 
-- Release 构建通过：`MetallicSceneTests`、`MetallicMeshletCook`、`MetallicGPUDrivenSample`、`MetallicRhiTests`。
+- Release 构建通过：`MetallicSceneTests`、`MetallicMeshletCook`、`MetallicGPUDrivenSample`、`MetallicRHITests`。
 - 30 项定向 Scene 回归全部通过，含 5 项新增实例化测试、完整 Full metadata、10 个探针、已有普通 glTF/GLB、材质、层级、外部图像延迟加载和 cook 持久化/恢复测试。
-- `RhiRendering.stream_metadata_contract` 通过：128×128 离屏验证 metadata → GPUScene、双面 HW/SW coverage 及 resident/stream 材质解析兼容性。它是已有小场景回归，不是 ZorahFull GPU 渲染。
+- `RHIRendering.stream_metadata_contract` 通过：128×128 离屏验证 metadata → GPUScene、双面 HW/SW coverage 及 resident/stream 材质解析兼容性。它是已有小场景回归，不是 ZorahFull GPU 渲染。
 - 探针脚本连续生成的 10 个 glTF 哈希一致；`git diff --check` 通过。
 - 初次从仓库根执行旧测试时，旧 `scene-test-output` 无写权限且读到陈旧夹具；改在新的 `build-release/zorah-z1/regression` 目录执行后全部通过，无需更改旧目录权限或内容。
 
@@ -82,7 +82,7 @@ foreach ($probe in $manifest.probes) {
 $env:METALLIC_TEST_ZORAH_FULL = '1'
 $env:METALLIC_ZORAH_Z1_PROBES = 'E:/metallic/build-release/zorah-z1/probes/probes.json'
 $env:METALLIC_ZORAH_Z1_REPORT = 'E:/metallic/build-release/zorah-z1/full-metadata.json'
-& E:/metallic/build-release/tests/MetallicSceneTests.exe '--gtest_filter=GltfInstancing.*'
+& E:/metallic/build-release/tests/MetallicSceneTests.exe '--gtest_filter=glTFInstancing.*'
 ```
 
-下一阶段按 Z2 推进：先使用 StoneUdim / InstancingNoTangent / TextureTransformBc4 / SharedGeometry 固定 LOD0 属性契约，再处理粗 LOD 的 UV seam、切线符号和属性误差，之后才启动最大 mesh 及 Full 全量 cook。
+下一阶段按 Z2 推进：先使用 StoneUdim / InstancingNoTangent / TextureTransformBC4 / SharedGeometry 固定 LOD0 属性契约，再处理粗 LOD 的 UV seam、切线符号和属性误差，之后才启动最大 mesh 及 Full 全量 cook。

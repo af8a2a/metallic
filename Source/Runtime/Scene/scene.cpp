@@ -8,9 +8,9 @@
 
 #include "Runtime/Scene/Scene.h"
 #include "Runtime/Scene/GeometryAttributes.h"
-#include "Runtime/Scene/GltfGpuInstancing.h"
+#include "Runtime/Scene/glTFGPUInstancing.h"
 #include "Runtime/Scene/MeshletBuildParallel.h"
-#include "Runtime/Scene/UsdSceneImporter.h"
+#include "Runtime/Scene/USDSceneImporter.h"
 
 #include "meshoptimizer.h"
 #define CLUSTERLOD_IMPLEMENTATION
@@ -73,10 +73,10 @@ constexpr const char* kExtensionLightsPunctual = "KHR_lights_punctual";
 constexpr const char* kExtensionMaterialsDiffuseTransmission = "KHR_materials_diffuse_transmission";
 constexpr const char* kExtensionMaterialsClearcoat = "KHR_materials_clearcoat";
 constexpr const char* kExtensionMaterialsEmissiveStrength = "KHR_materials_emissive_strength";
-constexpr const char* kExtensionMaterialsIor = "KHR_materials_ior";
+constexpr const char* kExtensionMaterialsIOR = "KHR_materials_ior";
 constexpr const char* kExtensionMaterialsTransmission = "KHR_materials_transmission";
 constexpr const char* kExtensionMaterialsVolume = "KHR_materials_volume";
-constexpr const char* kExtensionMaterialsRtxcrHair = "NV_materials_hair";
+constexpr const char* kExtensionMaterialsRTXCRHair = "NV_materials_hair";
 constexpr const char* kExtensionNodeVisibility = "KHR_node_visibility";
 constexpr const char* kExtensionTextureTransform = "KHR_texture_transform";
 constexpr const char* kExtensionTextureSwizzle = "NV_texture_swizzle";
@@ -84,10 +84,10 @@ constexpr double kFallbackCameraYFov = 0.7853981633974483;
 constexpr size_t kMeshletClusterMaxVertices = 128;
 constexpr size_t kMeshletClusterMinTriangles = 32;
 constexpr size_t kMeshletClusterMaxTriangles = 128;
-constexpr size_t kMeshletLodGroupSize = 32;
+constexpr size_t kMeshletLODGroupSize = 32;
 constexpr float kMeshletClusterFillWeight = 0.5f;
-constexpr float kMeshletLodErrorMergePrevious = 1.5f;
-constexpr float kMeshletLodErrorMergeAdditive = 0.0f;
+constexpr float kMeshletLODErrorMergePrevious = 1.5f;
+constexpr float kMeshletLODErrorMergeAdditive = 0.0f;
 constexpr std::array<char, 8> kMeshletCacheMagic{'M', 'T', 'L', 'M', 'S', 'H', 'L', 'T'};
 constexpr uint32_t kMeshletCacheVersion = 4;
 constexpr uint32_t kMeshletCacheEndian = 0x01020304;
@@ -227,7 +227,7 @@ struct CachedMeshletCluster {
     int8_t packedCone[4]{0, 0, 127, 127};
 };
 
-struct CachedMeshletLodGroup {
+struct CachedMeshletLODGroup {
     uint32_t clusterOffset = 0;
     uint32_t clusterCount = 0;
     uint32_t lodLevel = 0;
@@ -237,7 +237,7 @@ struct CachedMeshletLodGroup {
     float maxQuadricError = 0.0f;
 };
 
-struct CachedMeshletLodLevel {
+struct CachedMeshletLODLevel {
     uint32_t groupOffset = 0;
     uint32_t groupCount = 0;
     uint32_t clusterOffset = 0;
@@ -250,8 +250,8 @@ static_assert(std::is_trivially_copyable_v<MeshletCacheHeader>);
 static_assert(std::is_trivially_copyable_v<MeshletCachePrimitiveHeader>);
 static_assert(std::is_trivially_copyable_v<CachedBounds>);
 static_assert(std::is_trivially_copyable_v<CachedMeshletCluster>);
-static_assert(std::is_trivially_copyable_v<CachedMeshletLodGroup>);
-static_assert(std::is_trivially_copyable_v<CachedMeshletLodLevel>);
+static_assert(std::is_trivially_copyable_v<CachedMeshletLODGroup>);
+static_assert(std::is_trivially_copyable_v<CachedMeshletLODLevel>);
 
 const std::unordered_set<std::string>& supportedRequiredExtensions()
 {
@@ -260,7 +260,7 @@ const std::unordered_set<std::string>& supportedRequiredExtensions()
         kExtensionNodeVisibility,
         kExtensionMaterialsDiffuseTransmission,
         kExtensionMaterialsEmissiveStrength,
-        kExtensionMaterialsIor,
+        kExtensionMaterialsIOR,
         kExtensionMaterialsTransmission,
         kExtensionMaterialsVolume,
         "KHR_materials_specular",
@@ -286,7 +286,7 @@ bool toleratesUnusedRtxcrRequiredExtension(
             return false;
         }
         hasRtxcrHairMaterial = hasRtxcrHairMaterial ||
-            material.extensions.contains(kExtensionMaterialsRtxcrHair);
+            material.extensions.contains(kExtensionMaterialsRTXCRHair);
     }
     return hasRtxcrHairMaterial;
 }
@@ -1169,17 +1169,17 @@ clodConfig makeMeshletLodConfig()
 {
     clodConfig config = clodDefaultConfigRT(kMeshletClusterMaxTriangles);
     config.max_vertices = kMeshletClusterMaxVertices;
-    config.partition_size = kMeshletLodGroupSize;
+    config.partition_size = kMeshletLODGroupSize;
     config.partition_spatial = true;
     config.partition_sort = true;
     config.cluster_fill_weight = kMeshletClusterFillWeight;
     config.optimize_clusters = true;
     config.optimize_clusters_level = 1;
-    config.simplify_error_merge_previous = kMeshletLodErrorMergePrevious;
-    config.simplify_error_merge_additive = kMeshletLodErrorMergeAdditive;
+    config.simplify_error_merge_previous = kMeshletLODErrorMergePrevious;
+    config.simplify_error_merge_additive = kMeshletLODErrorMergeAdditive;
 
     while (config.partition_size > 1 &&
-        config.partition_size + config.partition_size / 3u > kMeshletLodGroupSize) {
+        config.partition_size + config.partition_size / 3u > kMeshletLODGroupSize) {
         --config.partition_size;
     }
     return config;
@@ -1195,26 +1195,26 @@ bool meshletLodNormalsHaveSeam(const float* a, const float* b)
     // Authored normals need not be unit length. Compare their directions so a
     // small-magnitude hard edge cannot be mistaken for harmless normal noise.
     for (size_t component = 0; component < 3; ++component) {
-        if (std::abs(a[component] / aLength - b[component] / bLength) > kMeshletLodNormalSeamTolerance) {
+        if (std::abs(a[component] / aLength - b[component] / bLength) > kMeshletLODNormalSeamTolerance) {
             return true;
         }
     }
     return false;
 }
 
-struct PreparedMeshletLodGroup {
-    MeshletLodGroup group;
+struct PreparedMeshletLODGroup {
+    MeshletLODGroup group;
     std::vector<MeshletCluster> clusters;
     std::vector<uint32_t> vertices;
     std::vector<uint8_t> triangles;
     bool valid = true;
 };
 
-struct MeshletLodWorkerScratch {
+struct MeshletLODWorkerScratch {
     std::vector<unsigned int> merged;
     std::array<uint32_t, kMeshletClusterMaxTriangles * 3u> localVertices{};
     std::array<uint8_t, kMeshletClusterMaxTriangles * 3u> localTriangles{};
-    PreparedMeshletLodGroup output;
+    PreparedMeshletLODGroup output;
 };
 
 void prepareClusterLodGroup(
@@ -1223,9 +1223,9 @@ void prepareClusterLodGroup(
     const std::vector<int>& group,
     const clodBounds& simplified,
     int depth,
-    MeshletLodWorkerScratch& scratch)
+    MeshletLODWorkerScratch& scratch)
 {
-    PreparedMeshletLodGroup& output = scratch.output;
+    PreparedMeshletLODGroup& output = scratch.output;
     output.group = {};
     output.clusters.clear();
     output.vertices.clear();
@@ -1288,7 +1288,7 @@ size_t buildClusterLodParallel(const RenderPrimitive& primitive, clodConfig conf
         std::min<size_t>(options.maxWorkers, hardwareThreads) :
         std::max<size_t>(1u, hardwareThreads / 2u);
     MeshletBuildParallel& parallel = MeshletBuildParallel::shared(workerCount);
-    std::vector<MeshletLodWorkerScratch> workerScratch(parallel.workerCount());
+    std::vector<MeshletLODWorkerScratch> workerScratch(parallel.workerCount());
     assert(mesh.vertex_attributes_stride % sizeof(float) == 0);
     assert(mesh.attribute_count * sizeof(float) <= mesh.vertex_attributes_stride);
     assert(mesh.attribute_protect_mask <
@@ -1373,7 +1373,7 @@ size_t buildClusterLodParallel(const RenderPrimitive& primitive, clodConfig conf
         parallel.forEach(groups.size(), [&](size_t taskIndex, size_t workerIndex) {
             try {
                 const std::vector<int>& group = groups[taskIndex];
-                MeshletLodWorkerScratch& scratch = workerScratch[workerIndex];
+                MeshletLODWorkerScratch& scratch = workerScratch[workerIndex];
                 std::vector<unsigned int>& merged = scratch.merged;
                 merged.clear();
                 merged.reserve(group.size() * config.max_triangles * 3u);
@@ -1433,7 +1433,7 @@ size_t buildClusterLodParallel(const RenderPrimitive& primitive, clodConfig conf
             }
         });
 
-        MeshletLodDepthBuildStats* depthStats = nullptr;
+        MeshletLODDepthBuildStats* depthStats = nullptr;
         if (options.lodStats) {
             depthStats = &options.lodStats->depths.emplace_back();
             depthStats->depth = static_cast<uint32_t>(depth);
@@ -1472,7 +1472,7 @@ size_t buildClusterLodParallel(const RenderPrimitive& primitive, clodConfig conf
     if (!pending.empty()) {
         assert(pending.size() == 1);
         if (options.lodStats) {
-            MeshletLodDepthBuildStats& depthStats = options.lodStats->depths.emplace_back();
+            MeshletLODDepthBuildStats& depthStats = options.lodStats->depths.emplace_back();
             depthStats.depth = static_cast<uint32_t>(depth);
             depthStats.inputGroupCount = 1;
             depthStats.inputClusterCount = 1;
@@ -1569,7 +1569,7 @@ void canonicalizeMeshletLodIndices(
     bool hasUv,
     bool hasTangents,
     std::vector<uint32_t>& indices,
-    MeshletLodBuildStats* stats)
+    MeshletLODBuildStats* stats)
 {
     // Tangent generation can leave identical tuples at different source IDs.
     // Compare only attribute bytes, excluding float3 storage padding, so these
@@ -1618,7 +1618,7 @@ void canonicalizeMeshletLodIndices(
 }
 
 void recordMeshletLodAttributeDifference(
-    MeshletLodAttributeDifferenceStats& stats,
+    MeshletLODAttributeDifferenceStats& stats,
     const float* values,
     const float* remappedValues,
     size_t componentCount)
@@ -1657,7 +1657,7 @@ void collectMeshletLodAttributeStats(
     bool hasNormals,
     bool hasUv,
     bool hasTangents,
-    MeshletLodBuildStats& stats)
+    MeshletLODBuildStats& stats)
 {
     std::vector<unsigned int> remap(primitive.positions.size());
     meshopt_generatePositionRemap(
@@ -1764,7 +1764,7 @@ bool buildMeshletLods(RenderPrimitive& primitive, const MeshletBuildOptions& opt
     primitive.meshletLodTriangles.reserve(std::max<size_t>(clusterIndices.size(), primitive.meshletTriangles.size() * 2u));
 
     bool success = true;
-    auto outputGroup = [&](const PreparedMeshletLodGroup& prepared) -> int {
+    auto outputGroup = [&](const PreparedMeshletLODGroup& prepared) -> int {
         if (!success || !prepared.valid || prepared.clusters.empty() ||
             primitive.meshletLodGroups.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max()) ||
             primitive.meshletLodClusters.size() + prepared.clusters.size() > std::numeric_limits<uint32_t>::max() ||
@@ -1776,7 +1776,7 @@ bool buildMeshletLods(RenderPrimitive& primitive, const MeshletBuildOptions& opt
 
         const uint32_t lodLevel = prepared.group.lodLevel;
         while (primitive.meshletLodLevels.size() <= lodLevel) {
-            MeshletLodLevel level;
+            MeshletLODLevel level;
             level.groupOffset = static_cast<uint32_t>(primitive.meshletLodGroups.size());
             level.clusterOffset = static_cast<uint32_t>(primitive.meshletLodClusters.size());
             level.minBoundingSphereRadius = std::numeric_limits<float>::max();
@@ -1785,7 +1785,7 @@ bool buildMeshletLods(RenderPrimitive& primitive, const MeshletBuildOptions& opt
         }
 
         const int32_t groupIndex = static_cast<int32_t>(primitive.meshletLodGroups.size());
-        MeshletLodGroup lodGroup = prepared.group;
+        MeshletLODGroup lodGroup = prepared.group;
         lodGroup.clusterOffset = static_cast<uint32_t>(primitive.meshletLodClusters.size());
         const uint32_t vertexOffset = static_cast<uint32_t>(primitive.meshletLodVertices.size());
         const uint32_t triangleOffset = static_cast<uint32_t>(primitive.meshletLodTriangles.size());
@@ -1800,7 +1800,7 @@ bool buildMeshletLods(RenderPrimitive& primitive, const MeshletBuildOptions& opt
             primitive.meshletLodClusters.push_back(cluster);
         }
 
-        MeshletLodLevel& level = primitive.meshletLodLevels[lodLevel];
+        MeshletLODLevel& level = primitive.meshletLodLevels[lodLevel];
         ++level.groupCount;
         level.clusterCount += lodGroup.clusterCount;
         level.minBoundingSphereRadius = std::min(level.minBoundingSphereRadius, lodGroup.boundingSphereRadius);
@@ -2019,9 +2019,9 @@ MeshletCluster makeCluster(const CachedMeshletCluster& cached)
     return cluster;
 }
 
-CachedMeshletLodGroup makeCachedLodGroup(const MeshletLodGroup& group)
+CachedMeshletLODGroup makeCachedLodGroup(const MeshletLODGroup& group)
 {
-    CachedMeshletLodGroup cached;
+    CachedMeshletLODGroup cached;
     cached.clusterOffset = group.clusterOffset;
     cached.clusterCount = group.clusterCount;
     cached.lodLevel = group.lodLevel;
@@ -2034,9 +2034,9 @@ CachedMeshletLodGroup makeCachedLodGroup(const MeshletLodGroup& group)
     return cached;
 }
 
-MeshletLodGroup makeLodGroup(const CachedMeshletLodGroup& cached)
+MeshletLODGroup makeLodGroup(const CachedMeshletLODGroup& cached)
 {
-    MeshletLodGroup group;
+    MeshletLODGroup group;
     group.clusterOffset = cached.clusterOffset;
     group.clusterCount = cached.clusterCount;
     group.lodLevel = cached.lodLevel;
@@ -2050,9 +2050,9 @@ MeshletLodGroup makeLodGroup(const CachedMeshletLodGroup& cached)
     return group;
 }
 
-CachedMeshletLodLevel makeCachedLodLevel(const MeshletLodLevel& level)
+CachedMeshletLODLevel makeCachedLodLevel(const MeshletLODLevel& level)
 {
-    CachedMeshletLodLevel cached;
+    CachedMeshletLODLevel cached;
     cached.groupOffset = level.groupOffset;
     cached.groupCount = level.groupCount;
     cached.clusterOffset = level.clusterOffset;
@@ -2062,9 +2062,9 @@ CachedMeshletLodLevel makeCachedLodLevel(const MeshletLodLevel& level)
     return cached;
 }
 
-MeshletLodLevel makeLodLevel(const CachedMeshletLodLevel& cached)
+MeshletLODLevel makeLodLevel(const CachedMeshletLODLevel& cached)
 {
-    MeshletLodLevel level;
+    MeshletLODLevel level;
     level.groupOffset = cached.groupOffset;
     level.groupCount = cached.groupCount;
     level.clusterOffset = cached.clusterOffset;
@@ -2154,8 +2154,8 @@ bool meshletCachePrimitivePayloadByteSize(const MeshletCachePrimitiveHeader& hea
     return addArrayByteSize(byteSize, header.meshletClusterCount, sizeof(CachedMeshletCluster)) &&
         addArrayByteSize(byteSize, header.meshletVertexCount, sizeof(uint32_t)) &&
         addArrayByteSize(byteSize, header.meshletTriangleCount, sizeof(uint8_t)) &&
-        addArrayByteSize(byteSize, header.meshletLodLevelCount, sizeof(CachedMeshletLodLevel)) &&
-        addArrayByteSize(byteSize, header.meshletLodGroupCount, sizeof(CachedMeshletLodGroup)) &&
+        addArrayByteSize(byteSize, header.meshletLodLevelCount, sizeof(CachedMeshletLODLevel)) &&
+        addArrayByteSize(byteSize, header.meshletLodGroupCount, sizeof(CachedMeshletLODGroup)) &&
         addArrayByteSize(byteSize, header.meshletLodClusterCount, sizeof(CachedMeshletCluster)) &&
         addArrayByteSize(byteSize, header.meshletLodVertexCount, sizeof(uint32_t)) &&
         addArrayByteSize(byteSize, header.meshletLodTriangleCount, sizeof(uint8_t));
@@ -2219,8 +2219,8 @@ bool validateClusterData(
 
 bool validateLodData(
     const RenderPrimitive& primitive,
-    const std::vector<MeshletLodLevel>& levels,
-    const std::vector<MeshletLodGroup>& groups,
+    const std::vector<MeshletLODLevel>& levels,
+    const std::vector<MeshletLODGroup>& groups,
     const std::vector<MeshletCluster>& clusters,
     const std::vector<uint32_t>& vertices,
     const std::vector<uint8_t>& triangles)
@@ -2232,7 +2232,7 @@ bool validateLodData(
         return false;
     }
 
-    for (const MeshletLodLevel& level : levels) {
+    for (const MeshletLODLevel& level : levels) {
         if (level.groupCount == 0 ||
             level.clusterCount == 0 ||
             !rangeWithin(level.groupOffset, level.groupCount, groups.size()) ||
@@ -2242,14 +2242,14 @@ bool validateLodData(
     }
 
     for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
-        const MeshletLodGroup& group = groups[groupIndex];
+        const MeshletLODGroup& group = groups[groupIndex];
         if (group.clusterCount == 0 ||
             group.lodLevel >= levels.size() ||
             !rangeWithin(group.clusterOffset, group.clusterCount, clusters.size())) {
             return false;
         }
 
-        const MeshletLodLevel& level = levels[group.lodLevel];
+        const MeshletLODLevel& level = levels[group.lodLevel];
         if (groupIndex < level.groupOffset ||
             groupIndex >= static_cast<size_t>(level.groupOffset) + level.groupCount) {
             return false;
@@ -2264,8 +2264,8 @@ bool validateMeshletData(
     const std::vector<MeshletCluster>& clusters,
     const std::vector<uint32_t>& vertices,
     const std::vector<uint8_t>& triangles,
-    const std::vector<MeshletLodLevel>& lodLevels,
-    const std::vector<MeshletLodGroup>& lodGroups,
+    const std::vector<MeshletLODLevel>& lodLevels,
+    const std::vector<MeshletLODGroup>& lodGroups,
     const std::vector<MeshletCluster>& lodClusters,
     const std::vector<uint32_t>& lodVertices,
     const std::vector<uint8_t>& lodTriangles)
@@ -2288,10 +2288,10 @@ MeshletCacheHeader makeMeshletCacheHeader(
     header.maxVertices = static_cast<uint32_t>(kMeshletClusterMaxVertices);
     header.minTriangles = static_cast<uint32_t>(kMeshletClusterMinTriangles);
     header.maxTriangles = static_cast<uint32_t>(kMeshletClusterMaxTriangles);
-    header.lodGroupSize = static_cast<uint32_t>(kMeshletLodGroupSize);
+    header.lodGroupSize = static_cast<uint32_t>(kMeshletLODGroupSize);
     header.fillWeight = kMeshletClusterFillWeight;
-    header.lodErrorMergePrevious = kMeshletLodErrorMergePrevious;
-    header.lodErrorMergeAdditive = kMeshletLodErrorMergeAdditive;
+    header.lodErrorMergePrevious = kMeshletLODErrorMergePrevious;
+    header.lodErrorMergeAdditive = kMeshletLODErrorMergeAdditive;
     return header;
 }
 
@@ -2393,8 +2393,8 @@ struct MeshletCachePrimitiveData {
     std::vector<MeshletCluster> meshletClusters;
     std::vector<uint32_t> meshletVertices;
     std::vector<uint8_t> meshletTriangles;
-    std::vector<MeshletLodLevel> meshletLodLevels;
-    std::vector<MeshletLodGroup> meshletLodGroups;
+    std::vector<MeshletLODLevel> meshletLodLevels;
+    std::vector<MeshletLODGroup> meshletLodGroups;
     std::vector<MeshletCluster> meshletLodClusters;
     std::vector<uint32_t> meshletLodVertices;
     std::vector<uint8_t> meshletLodTriangles;
@@ -2442,12 +2442,12 @@ bool readMeshletCachePrimitive(
             makeCluster) ||
         !readArray(stream, header.meshletVertexCount, data.meshletVertices) ||
         !readArray(stream, header.meshletTriangleCount, data.meshletTriangles) ||
-        !readConvertedArray<MeshletLodLevel, CachedMeshletLodLevel>(
+        !readConvertedArray<MeshletLODLevel, CachedMeshletLODLevel>(
             stream,
             header.meshletLodLevelCount,
             data.meshletLodLevels,
             makeLodLevel) ||
-        !readConvertedArray<MeshletLodGroup, CachedMeshletLodGroup>(
+        !readConvertedArray<MeshletLODGroup, CachedMeshletLODGroup>(
             stream,
             header.meshletLodGroupCount,
             data.meshletLodGroups,
@@ -2497,11 +2497,11 @@ bool writeMeshletCachePrimitive(
             makeCachedCluster) &&
         writeArray(stream, primitive.meshletVertices) &&
         writeArray(stream, primitive.meshletTriangles) &&
-        writeConvertedArray<MeshletLodLevel, CachedMeshletLodLevel>(
+        writeConvertedArray<MeshletLODLevel, CachedMeshletLODLevel>(
             stream,
             primitive.meshletLodLevels,
             makeCachedLodLevel) &&
-        writeConvertedArray<MeshletLodGroup, CachedMeshletLodGroup>(
+        writeConvertedArray<MeshletLODGroup, CachedMeshletLODGroup>(
             stream,
             primitive.meshletLodGroups,
             makeCachedLodGroup) &&
@@ -2855,7 +2855,7 @@ bool loadModel(
     if (streamMetadata) {
         // Preserve the authored scene metadata through the normal glTF parser,
         // Only instance accessor ranges may be read. External image descriptors
-        // are preserved by TINYGLTF_NO_EXTERNAL_IMAGE in TinyGltfImpl.cpp.
+        // are preserved by TINYGLTF_NO_EXTERNAL_IMAGE in TinyGLTFImpl.cpp.
         try {
             if (lowerExtension(filename) != ".gltf") {
                 throw std::runtime_error("Stream metadata requires an external .gltf scene");
@@ -3691,7 +3691,7 @@ bool Scene::loadUsdInternal(
         return false;
     }
 
-    detail::UsdImportedScene imported;
+    detail::USDImportedScene imported;
     const auto usdImportBegin = SceneLoadClock::now();
     if (!detail::importUsdScene(filename, imported)) {
         lastLoadResult_.warning = std::move(imported.warning);
@@ -3743,7 +3743,7 @@ bool Scene::loadUsdInternal(
 
     const auto sceneGraphBegin = SceneLoadClock::now();
     for (size_t nodeIndex = 0; nodeIndex < imported.nodes.size(); ++nodeIndex) {
-        const detail::UsdImportedNode& importedNode = imported.nodes[nodeIndex];
+        const detail::USDImportedNode& importedNode = imported.nodes[nodeIndex];
         if (importedNode.meshIndex != kInvalidSceneIndex &&
             !validIndex(importedNode.meshIndex, meshes_.size())) {
             lastLoadResult_.error = "USD node references an out-of-range mesh";
@@ -3818,7 +3818,7 @@ bool Scene::loadUsdInternal(
     syncSceneNodeProjection();
 
     std::vector<uint32_t> remainingMeshUses(meshes_.size(), 0u);
-    for (const detail::UsdImportedNode& node : imported.nodes) {
+    for (const detail::USDImportedNode& node : imported.nodes) {
         if (validIndex(node.meshIndex, remainingMeshUses.size())) {
             ++remainingMeshUses[static_cast<size_t>(node.meshIndex)];
         }
@@ -3832,11 +3832,11 @@ bool Scene::loadUsdInternal(
             return;
         }
         const SceneNode& node = nodes_[static_cast<size_t>(nodeIndex)];
-        const detail::UsdImportedNode& importedNode = imported.nodes[static_cast<size_t>(nodeIndex)];
+        const detail::USDImportedNode& importedNode = imported.nodes[static_cast<size_t>(nodeIndex)];
         SceneObject object = sceneGraph_.objectFromSourceNode(nodeIndex);
 
         if (validIndex(importedNode.cameraIndex, imported.cameras.size())) {
-            const detail::UsdImportedCamera& importedCamera =
+            const detail::USDImportedCamera& importedCamera =
                 imported.cameras[static_cast<size_t>(importedNode.cameraIndex)];
             const CameraComponent& cameraComponent = object.getComponent<CameraComponent>();
             RenderCamera camera;
@@ -4272,7 +4272,7 @@ bool Scene::loadInternal(
             readExtensionTextureInfo(transmission, "transmissionTexture", material.transmissionTexture);
         }
 
-        const auto iorExtension = gltfMaterial.extensions.find(kExtensionMaterialsIor);
+        const auto iorExtension = gltfMaterial.extensions.find(kExtensionMaterialsIOR);
         if (iorExtension != gltfMaterial.extensions.end()) {
             material.ior = std::clamp(readFloatValue(iorExtension->second, "ior", material.ior), 1.0f, 3.0f);
         }
@@ -4315,7 +4315,7 @@ bool Scene::loadInternal(
                 material.diffuseTransmissionColorTexture);
         }
 
-        const auto rtxcrHairExtension = gltfMaterial.extensions.find(kExtensionMaterialsRtxcrHair);
+        const auto rtxcrHairExtension = gltfMaterial.extensions.find(kExtensionMaterialsRTXCRHair);
         if (rtxcrHairExtension != gltfMaterial.extensions.end()) {
             const tinygltf::Value& hair = rtxcrHairExtension->second;
             material.rtxcrHair = true;

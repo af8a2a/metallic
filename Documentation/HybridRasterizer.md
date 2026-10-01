@@ -53,7 +53,7 @@ Compute:                       └── SW raster ─────────�
 ## 验证
 
 ```powershell
-build/tests/MetallicRhiTests.exe --gtest_filter="*hybrid_*" --rhi-validation
+build/tests/MetallicRHITests.exe --gtest_filter="*hybrid_*" --rhi-validation
 ```
 
 `hybrid_raster_depth_coverage_and_overflow`：真实 Mesh Shader 分流及 indirect compute，逐像素比较 HW/SW ID 和 D32 深度，覆盖共享边、裁剪、透视深度、正反面、两种 Z、三种阈值和容量为 1 的强制溢出。单独读回软件原子像素，证明实际执行了软光栅。
@@ -75,7 +75,7 @@ build/tests/MetallicRhiTests.exe --gtest_filter="*hybrid_*" --rhi-validation
 ```powershell
 $env:VK_LAYER_PATH = 'E:\metallic\.tmp\VulkanValidationLayers\build\layers'
 $env:VK_VALIDATION_VALIDATE_SYNC = '1'
-build/tests/MetallicRhiTests.exe --gtest_filter="*hybrid_*:*frame_parallel_compute_join_and_cancellation*:*render_graph_gpu_driven_mixed_producer_render*" --rhi-validation
+build/tests/MetallicRHITests.exe --gtest_filter="*hybrid_*:*frame_parallel_compute_join_and_cancellation*:*render_graph_gpu_driven_mixed_producer_render*" --rhi-validation
 ```
 
 编辑器接入同时统一由 executor 推进 history 帧；完成 GPU 等待后回收旧命令缓冲，再允许重编译释放/复用 descriptor heap。交换链呈现提交使用 AllCommands 等待 acquire semaphore，覆盖其布局转换；设备创建为 Streamline 注入的 `VK_NV_low_latency2` 补齐设备支持的 present-id 扩展依赖。离屏 graph 提交仍可在交换链等待之前执行。

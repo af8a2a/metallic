@@ -2,18 +2,18 @@
 
 日期：2026-09-27。设计代码基线：`34cca1d72`。本文保留完整设计，M1 已按其中的有限范围落地，具体命令、行为和边界见 [M1 使用说明](RhiTestbench.md)。下文的完整类型和后续阶段仍为提案，以使用说明及代码为准。
 
-目标是把现有 `MetallicRhiTests` 演进为可复现、按能力选择、能够定位错误层级的正确性 testbench。沿用 `RhiTestRegistry`、GoogleTest、Slang probe 和 CTest。性能测量继续归入 `tests/perf` 或独立 benchmark 作业，不把墙钟耗时作为正确性判定。
+目标是把现有 `MetallicRHITests` 演进为可复现、按能力选择、能够定位错误层级的正确性 testbench。沿用 `RHITestRegistry`、GoogleTest、Slang probe 和 CTest。性能测量继续归入 `tests/perf` 或独立 benchmark 作业，不把墙钟耗时作为正确性判定。
 
 ## 1. 现状与设计决策
 
 | 已核对的实现 | 对方案的影响 |
 | --- | --- |
-| [RhiTest.h](../tests/rhi/RhiTest.h) 只有 Validation / Resource / Command / Rendering 分类和 pass / fail / skip | 增加声明式元数据及结构化原因，保留旧 suite/test 名称和过滤方式 |
+| [RHITest.h](../tests/rhi/RHITest.h) 只有 Validation / Resource / Command / Rendering 分类和 pass / fail / skip | 增加声明式元数据及结构化原因，保留旧 suite/test 名称和过滤方式 |
 | [Main.cpp](../tests/rhi/Main.cpp) 的全局环境先创建一台设备，再运行所有用例 | CPU 测试、不同 feature 配置和失败隔离不能继续依赖同一个全局 Device |
 | `Main.cpp` 的默认 validation 为 true，但 [tests/CMakeLists.txt](../tests/CMakeLists.txt) 的聚合 CTest 显式传入 `--rhi-no-validation` | 增加独立的 conformance validation 作业；不把旧聚合测试重命名后当成覆盖已经完成 |
 | 当前 sink 只累计 `messageIdName` 含 `VUID-` 的消息，adapter 不统一审查计数；部分用例自建 Device 没有传入 sink | 完整捕获消息并统一审查，覆盖非 VUID 的同步 hazard、设备创建、cleanup 和销毁阶段 |
 | Vulkan 后端使用 `activateVolkDevice()` / `volkLoadDevice()` 切换进程全局函数表，SDK 初始化也有进程级状态 | 首期采用“一个设备配置一个子进程”，不引入常驻多 Device 并行池 |
-| [DeviceDesc](../Source/Runtime/Render/GAPI/rhi.h) 明确要求 shader object，`enableShaderObject=false` 返回 InvalidArgument | 不设计 shaderObject ON/OFF 设备矩阵；测试 shader object 与 graphics pipeline 的执行形式对比、状态切换和禁用请求拒绝 |
+| [DeviceDesc](../Source/Runtime/Render/GAPI/RHI.h) 明确要求 shader object，`enableShaderObject=false` 返回 InvalidArgument | 不设计 shaderObject ON/OFF 设备矩阵；测试 shader object 与 graphics pipeline 的执行形式对比、状态切换和禁用请求拒绝 |
 | `DeviceCapabilities` 主要反映本次设备可用/已启用能力，没有完整公共物理设备、format 支持枚举接口 | 支持、请求、启用和实际执行分开记录；未知状态保留 Unknown，不能由 enabled=false 推断硬件不支持 |
 | 已有 [RenderGraphExecutionSnapshot](../Source/Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h)，包括资源、scope、predecessor、segment 和 batch | 优先复用结构断言；其 wait 信息注明不完整，不能充当最终 Vulkan submit/barrier 的完整 trace |
 | GAPI 之上的封装已迁到 `Runtime/Render/Core` | ComputeKernel、ResourceRegistry、FrameContext 等测试标记为 Core；不能全部算成裸 RHI 覆盖 |
@@ -27,7 +27,7 @@ NRISamples 作为能力清单和小型 workload 参考，特别是 CopyTests、D
 
 | 维度 | 取值示例 | 用途 |
 | --- | --- | --- |
-| Layer | Rhi / Core / RenderGraph / SceneIntegration / Sdk | 错误归因、依赖边界 |
+| Layer | RHI / Core / RenderGraph / SceneIntegration / Sdk | 错误归因、依赖边界 |
 | Domain | Resource / Binding / Execution / Synchronization / RayTracing | API 覆盖组织 |
 | Check | Contract / Semantic / Differential / Lifetime / Progress | 描述实际证明了什么 |
 | Validation | Off / Core / Synchronization / GpuAssisted | 本次验证配置；GpuAssisted 单独作业 |
@@ -40,7 +40,7 @@ NRISamples 作为能力清单和小型 workload 参考，特别是 CopyTests、D
 ```cpp
 struct RhiTestRequirements
 {
-    TestLayer layer = TestLayer::Rhi;
+    TestLayer layer = TestLayer::RHI;
     TestIsolation isolation = TestIsolation::SharedDevice;
     bool requiresDevice = true;
     bool requiresWindow = false;
@@ -67,7 +67,7 @@ struct TestDeviceProfile
 };
 ```
 
-保留 `RhiTest::run(RhiTestContext&)`。增加 `metadata()` 和证据服务；harness 的设备创建、等待、readback helper 均返回现有 `render::Result<T>`，不增加吞错 convenience overload。测试 verdict 与 RHI Error 是不同概念，必须分开：预期 InvalidArgument 被准确观察到时，用例是 Pass。
+保留 `RHITest::run(RHITestContext&)`。增加 `metadata()` 和证据服务；harness 的设备创建、等待、readback helper 均返回现有 `render::Result<T>`，不增加吞错 convenience overload。测试 verdict 与 RHI Error 是不同概念，必须分开：预期 InvalidArgument 被准确观察到时，用例是 Pass。
 
 CPU-only 用例通过 plan 在创建 SDL/Device 前识别，直接运行；GPU 用例初期仍保留 SDL video 初始化，因为当前 `createDevice()` 使用 `SDL_Vulkan_GetInstanceExtensions()`。`requiresWindow=false` 只承诺不创建窗口，暂不宣称无显示服务的 Linux headless 支持。
 
@@ -87,7 +87,7 @@ flowchart TD
     Verdict --> Parent
 ```
 
-同一个 `MetallicRhiTests` 可执行文件支持 plan、coordinator、child 三种模式，不增加一套 sample executable。父进程不创建 GPU Device；它先落盘计划，再启动 child。首期采用同一 GPU 串行调度，Windows 用受控子进程句柄/Job Object 管理超时与退出，避免超时后遗留进程。其他平台的进程实现后续补齐，不影响现有直接 GoogleTest 模式。
+同一个 `MetallicRHITests` 可执行文件支持 plan、coordinator、child 三种模式，不增加一套 sample executable。父进程不创建 GPU Device；它先落盘计划，再启动 child。首期采用同一 GPU 串行调度，Windows 用受控子进程句柄/Job Object 管理超时与退出，避免超时后遗留进程。其他平台的进程实现后续补齐，不影响现有直接 GoogleTest 模式。
 
 建议配置集如下，具体 `DeviceDesc` 值由单一 Profiles.cpp 展开并写入证据。profile 是测试配置名，不保证其请求的可选能力全部存在。
 
@@ -173,7 +173,7 @@ GPU hash 可作快速拒绝及大结果摘要，失败保存原始数据；小�
 | P0 RenderGraph | RenderGraphAccessPlanTests、RenderGraphComputeStageTests、FrameContextTests、ParallelRecordingTests | RAW/WAR/WAW、read/read 分支、失败提交、Pipelined/Joined、query/profiling 不引入依赖、外部 completion |
 | P1 RHI 布局策略 | `prepared_execution_lazy_views_layout_policy` | 扩展 clear→attachment→sampled→storage→copy→readback；depth、导入资源和 present 另设合适 fixture |
 | P1 RHI DGC | GeneratedCommandsTests | direct vs generated compute/draw/mesh，支持的 preprocess 模式、count、GPU 写命令、执行后 state rebind；按子能力选择，不把现有 native probe 当成整个公共 API 覆盖 |
-| P1 RHI 解压 | GpuDecompressionTests | CPU 原文 vs GPU 解压，格式及合法大小/alignment、跨页、批次、graphics/compute；非法压缩数据不随意送 GPU |
+| P1 RHI 解压 | GPUDecompressionTests | CPU 原文 vs GPU 解压，格式及合法大小/alignment、跨页、批次、graphics/compute；非法压缩数据不随意送 GPU |
 | P1 RHI Ray Query / 顶层 AS | RayTracingAccelerationStructureTests、UnifiedTopLevelTests | 小三角形、实例 mask/ID/transform、fixed rays；Standard/PTLAS 同一公开资源类型，不同类型化构建参数、错误 backend 拒绝 |
 | P1 RHI/Scene RT 对比 | PositionFetch、OpacityMicromap、ClasCompaction | 抽出无场景资产的底层 fixture；原 scene builder/压缩/OMM 测试继续归 integration |
 | P2 SDK / 场景 | DLSS/NRD、Streamer、MiniZorah 等 | 保留现有完整路径及输出检查，专门预算、进程隔离、fixture checksum；不阻塞基础 conformance 的设备创建 |
@@ -242,7 +242,7 @@ gtest.xml                # 从实际子进程结果汇总，不伪造已通过�
 ```text
 tests/rhi/
     Main.cpp                    # 参数、plan、child/GoogleTest 入口
-    RhiTest.h                   # 保留注册 API，增加 metadata
+    RHITest.h                   # 保留注册 API，增加 metadata
     harness/
         Requirements.*          # predicates / CapabilityCatalog
         Profiles.*              # DeviceDesc 配置展开
@@ -275,19 +275,19 @@ tests/rhi/
 | `MetallicTestbench.Integration` | scene / streaming / SDK | 按 fixture/SDK 可用性独立运行 |
 | `MetallicTestbench.Stress` | 固定 seed、多轮复用、query/descriptor ring | nightly，设显式时长和显存预算 |
 
-GPU CTest 使用统一 `RESOURCE_LOCK MetallicGpu`，或将所有 GPU 作业接入相同 CTest resource 配置；已有 editor/GPU tests 也需遵循同一规则，避免 `ctest -j` 意外并行。进程 watchdog < CTest TIMEOUT，并预留证据落盘/退出时间。GoogleTest skip 一般仍返回 0，不能依赖旧 `SKIP_RETURN_CODE 77` 统计局部覆盖；新 coordinator 的退出码由 required policy 和所有子进程结果决定。
+GPU CTest 使用统一 `RESOURCE_LOCK MetallicGPU`，或将所有 GPU 作业接入相同 CTest resource 配置；已有 editor/GPU tests 也需遵循同一规则，避免 `ctest -j` 意外并行。进程 watchdog < CTest TIMEOUT，并预留证据落盘/退出时间。GoogleTest skip 一般仍返回 0，不能依赖旧 `SKIP_RETURN_CODE 77` 统计局部覆盖；新 coordinator 的退出码由 required policy 和所有子进程结果决定。
 
 M1/M2/M3 已实现的命令（具体覆盖范围见 [使用说明](RhiTestbench.md)）：
 
 ```powershell
 # 列出配置与用例计划，不创建 Device。
-.\build-pass-stages-nrd\tests\MetallicRhiTests.exe --tb-plan --tb-suite core
+.\build-pass-stages-nrd\tests\MetallicRHITests.exe --tb-plan --tb-suite core
 # 运行已迁移的小型正确性集合。
-.\build-pass-stages-nrd\tests\MetallicRhiTests.exe --tb-run --tb-suite core --tb-validation core
+.\build-pass-stages-nrd\tests\MetallicRHITests.exe --tb-run --tb-suite core --tb-validation core
 # 运行同步 lane；实际 validation mode 写入 manifest。
-.\build-pass-stages-nrd\tests\MetallicRhiTests.exe --tb-run --tb-suite sync --tb-validation sync
+.\build-pass-stages-nrd\tests\MetallicRHITests.exe --tb-run --tb-suite sync --tb-validation sync
 # 从证据还原指定 case/variant/seed，检查版本差异并记录。
-.\build-pass-stages-nrd\tests\MetallicRhiTests.exe --tb-replay <case-directory>
+.\build-pass-stages-nrd\tests\MetallicRHITests.exe --tb-replay <case-directory>
 ```
 
 小型 case 的设计目标是 warm shader 后多数低于 100ms，但不把它作为功能门禁。设备启动、shader 编译、AS build 和 GPU gate 测试另设超时。长场景不伪装成快速 conformance；性能 regression 另做同设备、同缓存、无 validation 的测量。

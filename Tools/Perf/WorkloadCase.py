@@ -326,7 +326,7 @@ def execute(case, executable, output, runs, timeout, assets_path=None):
                  (directory / "Gpu.csv").open("wb") as telemetry, (directory / "GpuProcesses.csv").open("wb") as process_gpu, \
                  (directory / "GpuProcesses.stderr.log").open("wb") as process_gpu_errors:
                 try:
-                    competition = subprocess.Popen(["powershell.exe", "-NoProfile", "-File", str(ROOT / "Tools/MeasureGpuCompetition.ps1")],
+                    competition = subprocess.Popen(["powershell.exe", "-NoProfile", "-File", str(ROOT / "Tools/MeasureGPUCompetition.ps1")],
                                                    stdout=process_gpu, stderr=process_gpu_errors, creationflags=flags)
                     monitor = subprocess.Popen(["nvidia-smi", "--query-gpu=timestamp,utilization.gpu,memory.used,clocks.gr,temperature.gpu,power.draw",
                                                 "--format=csv", "-l", "1"], stdout=telemetry, stderr=subprocess.STDOUT, creationflags=flags)

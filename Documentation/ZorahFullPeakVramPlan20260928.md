@@ -29,7 +29,7 @@
 代码依据：
 
 - `Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp`：几何分配约 884 行；group/cluster capacity 约 966–1048 行；visible records 约 1824 行；terminal cut 约 918–950 行。
-- `Source/Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp`：315–350 行，完整 capacity storage 与每 queued frame 一个临时 builder。
+- `Source/Runtime/Render/Streamer/MeshletStreamCompactCLASPool.cpp`：315–350 行，完整 capacity storage 与每 queued frame 一个临时 builder。
 - `Source/Runtime/Render/VisibilityHybridRasterizer.cpp`：46 行，cluster queue 字节公式。
 - `Pipelines/Samples/gpu_driven_zorah_full.metallic_graph.json`：Full 各项预算。
 

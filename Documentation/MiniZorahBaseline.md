@@ -12,7 +12,7 @@
 | --- | --- |
 | GPU / 驱动 | RTX 5070 Ti 16 GB / 616.64 |
 | CPU / 系统 | Ryzen 7 7800X3D，16 逻辑处理器 / Windows build 26200.9445 |
-| 构建 | Release，MSVC 14.51，Ninja，`MetallicRhiTests.exe` |
+| 构建 | Release，MSVC 14.51，Ninja，`MetallicRHITests.exe` |
 | 场景 | 同一 `MiniZorah.meshstream.bin`，60,916,791,801 B，1,356,959 页，19,144 实例 |
 | 渲染 | 1920 × 1080，1.5 render px；VBuffer + MaterialResolve；混合软硬光栅，异步 compute，HZB |
 | 几何预算 | 1,024 MiB |
@@ -126,7 +126,7 @@ quality-A/B 各检查 33 个快照：第 29、59、119、179 帧，之后每 300
 ```powershell
 Set-Location E:\metallic
 cmake -S . -B build-release -DMETALLIC_BUILD_TESTS=ON
-cmake --build build-release --target MetallicRhiTests -j 6
+cmake --build build-release --target MetallicRHITests -j 6
 & .\Tools\RunMiniZorahBaseline.ps1 -OutputRoot build-release/minizorah-baseline/next-change
 python .\Tools\AnalyzeMiniZorahBaseline.py build-release/minizorah-baseline/next-change --plots
 ```

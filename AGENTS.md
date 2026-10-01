@@ -30,7 +30,7 @@ ctest --test-dir build-ci -R '^Metallic(Scene|Task|Debug)Tests$' --output-on-fai
 
 For other configured trees, use `cmake --build <build-dir> --target <target>` and `ctest --test-dir <build-dir> -R '<test-name-regex>' --output-on-failure`. Multi-config generators also need the matching `--config Debug` / `-C Debug`, and place executables under a configuration subdirectory. CTest does not build tests; build every selected executable first. The `metallic-full` build preset does not build every registered test target.
 
-Tests use GoogleTest through CTest. Main targets include `MetallicSceneTests`, `MetallicTaskTests`, `MetallicDebugTests`, `MetallicGpuPageTests`, and `MetallicRhiTests`. Use `--gtest_list_tests` and `--gtest_filter=<pattern>` on test executables for focused runs. RHI tests also accept legacy `--list` / `--filter`; unsupported GPU capabilities can produce skipped tests, which are not runtime validation of that path. Follow the local test conventions and register new sources in `tests/CMakeLists.txt`.
+Tests use GoogleTest through CTest. Main targets include `MetallicSceneTests`, `MetallicTaskTests`, `MetallicDebugTests`, `MetallicGPUPageTests`, and `MetallicRHITests`. Use `--gtest_list_tests` and `--gtest_filter=<pattern>` on test executables for focused runs. RHI tests also accept legacy `--list` / `--filter`; unsupported GPU capabilities can produce skipped tests, which are not runtime validation of that path. Follow the local test conventions and register new sources in `tests/CMakeLists.txt`.
 
 `MetallicShaderWarmup` is an optional manual target; keep it outside default builds and editor/sample dependencies.
 
@@ -42,6 +42,8 @@ When applying PascalCase to identifiers and file names, use these exceptions:
 
 - Preserve the established capitalization of technical acronyms with specific meanings, such as `CPU` and `GPU`; use names such as `CPUBuffer` and `GPUPage`, not `CpuBuffer` or `GpuPage`.
 - Preserve the official capitalization of explicitly integrated external components, such as `RTXDI` and `RTXCR`; use names such as `RTXDIIntegration` and `RTXCRPass`, not `RtxdiIntegration` or `RtxcrPass`.
+
+Keep official mixed-case spellings such as `glTF`, `sRGB`, and `scRGB`, including at the beginning of a name; examples include `glTFInstance`, `RGBA8sRGB`, and `HDRscRGB`.
 
 ## Change and Validation Boundaries
 

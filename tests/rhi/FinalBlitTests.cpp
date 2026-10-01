@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
 
@@ -14,7 +14,7 @@ public:
     {
         render::RenderPassReflection reflection;
         reflection.addTextureOutput("color").texture2D(17, 9).format =
-            properties().value("integer", false) ? render::Format::R32Uint : render::Format::Rgba16Sfloat;
+            properties().value("integer", false) ? render::Format::R32Uint : render::Format::RGBA16Sfloat;
         return reflection;
     }
 
@@ -37,27 +37,27 @@ public:
     }
 };
 
-class FinalBlitGraphTest : public RhiTest {
+class FinalBlitGraphTest : public RHITest {
 public:
     FinalBlitGraphTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_final_blit_contract";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraph graph;
         const uint32_t finalId = graph.addNode("FinalBlitPass", "FinalBlit")->id;
         std::string log;
         if (!graph.validate(log) || !graph.outputs().empty() ||
             graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("FinalBlit must work without marked outputs: " + log);
+            return RHITestResult::fail("FinalBlit must work without marked outputs: " + log);
         }
         render::RenderGraph roundTrip;
         if (!render::deserializeRenderGraphFromString(render::serializeRenderGraphToString(graph), roundTrip, log) ||
             roundTrip.firstOutputName() != "FinalBlit.color" || !roundTrip.outputs().empty()) {
-            return RhiTestResult::fail("FinalBlit presentation did not survive serialization: " + log);
+            return RHITestResult::fail("FinalBlit presentation did not survive serialization: " + log);
         }
         graph.addNode("ClearColorPass", "Source");
         graph.addEdge("Source.color", "FinalBlit.source");
@@ -70,103 +70,103 @@ public:
         }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!deviceResult) {
             return render::hasError(deviceResult, render::Error::Unsupported)
-                ? RhiTestResult::skip(toString(deviceResult))
-                : RhiTestResult::fail(toString(deviceResult));
+                ? RHITestResult::skip(toString(deviceResult))
+                : RHITestResult::fail(toString(deviceResult));
         }
         render::RenderGraphExecutor executor;
         if (!executor.compile(*device, graph, 63, 37, log) ||
             executor.outputResource("FinalBlit.color") == nullptr ||
             executor.outputResource("Source.color") == nullptr) {
-            return RhiTestResult::fail("FinalBlit or its producer was culled: " + log);
+            return RHITestResult::fail("FinalBlit or its producer was culled: " + log);
         }
         const auto* output = executor.outputResource("FinalBlit.color");
         if (!render::hasFlag(output->desc.usage, render::TextureUsageBits::Sampled) ||
             !render::hasFlag(output->desc.usage, render::TextureUsageBits::TransferSource)) {
-            return RhiTestResult::fail("Automatic presentation lacks display/readback access");
+            return RHITestResult::fail("Automatic presentation lacks display/readback access");
         }
         graph.markOutput("Source.color");
         if (graph.firstOutputName() != "FinalBlit.color") {
-            return RhiTestResult::fail("Legacy marked output overrides presentation");
+            return RHITestResult::fail("Legacy marked output overrides presentation");
         }
         graph.renameNode(finalId, "Present");
         if (graph.firstOutputName() != "Present.color" || !graph.validate(log)) {
-            return RhiTestResult::fail("Presentation rename broke graph: " + log);
+            return RHITestResult::fail("Presentation rename broke graph: " + log);
         }
         const uint32_t duplicateId = graph.addNode("FinalBlitPass", "Duplicate")->id;
         if (graph.validate(log) || log.find("multiple presentation") == std::string::npos) {
-            return RhiTestResult::fail("Ambiguous presentation outputs were accepted");
+            return RHITestResult::fail("Ambiguous presentation outputs were accepted");
         }
         graph.removeNode(duplicateId);
         graph.removeNode(finalId);
         if (!graph.validate(log) || graph.firstOutputName() != "Source.color") {
-            return RhiTestResult::fail("Removing FinalBlit did not restore legacy output");
+            return RHITestResult::fail("Removing FinalBlit did not restore legacy output");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class FinalBlitPixelsTest : public RhiTest {
+class FinalBlitPixelsTest : public RHITest {
 public:
     FinalBlitPixelsTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_final_blit_pixels";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::registerRenderGraphPassType("FinalBlitTestSource", "Test source",
             [] { return std::make_unique<FinalBlitTestSource>(); });
         render::RenderGraphPreviewRenderer preview;
         render::Result<> result = preview.initialize(context.enableValidation);
         if (!result) {
-            return RhiTestResult::skip("Preview device unavailable: " + std::string(toString(result)));
+            return RHITestResult::skip("Preview device unavailable: " + std::string(toString(result)));
         }
         render::RenderGraph graph;
         graph.addNode("FinalBlitPass", "FinalBlit");
         result = preview.render(graph, 63, 37);
         if (!result || !isUv(preview)) {
-            return RhiTestResult::fail("Unconnected FinalBlit did not display UV: " + preview.lastLog());
+            return RHITestResult::fail("Unconnected FinalBlit did not display UV: " + preview.lastLog());
         }
         std::string log;
         if (!saveRgba8Png(context.outputDirectory / "final_blit_uv.png",
                 reinterpret_cast<const uint8_t*>(preview.pixels().data()),
                 preview.width(), preview.height(), log)) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
 
         graph.addNode("FinalBlitTestSource", "Source");
         const uint32_t edgeId = graph.addEdge("Source.color", "FinalBlit.source")->id;
         result = preview.render(graph, 63, 37);
         if (!result || preview.width() != 63 || preview.height() != 37 || !isSolid(preview)) {
-            return RhiTestResult::fail("Float RT blit/resize/opaque alpha failed: " + preview.lastLog());
+            return RHITestResult::fail("Float RT blit/resize/opaque alpha failed: " + preview.lastLog());
         }
         if (!saveRgba8Png(context.outputDirectory / "final_blit_connected.png",
                 reinterpret_cast<const uint8_t*>(preview.pixels().data()),
                 preview.width(), preview.height(), log)) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
         result = preview.render(graph, 29, 19);
         if (!result || preview.width() != 29 || preview.height() != 19 || !isSolid(preview)) {
-            return RhiTestResult::fail("Connected FinalBlit viewport resize failed: " + preview.lastLog());
+            return RHITestResult::fail("Connected FinalBlit viewport resize failed: " + preview.lastLog());
         }
         const uint32_t sourceId = graph.findNode("Source")->id;
         graph.setNodeProperties(sourceId, {{"integer", true}});
         result = preview.render(graph, 29, 19);
         if (!result || !isUv(preview)) {
-            return RhiTestResult::fail("Integer RT did not use UV fallback: " + preview.lastLog());
+            return RHITestResult::fail("Integer RT did not use UV fallback: " + preview.lastLog());
         }
         graph.removeEdge(edgeId);
         result = preview.render(graph, 29, 19);
         if (!result || !isUv(preview)) {
-            return RhiTestResult::fail("Disconnect did not restore UV: " + preview.lastLog());
+            return RHITestResult::fail("Disconnect did not restore UV: " + preview.lastLog());
         }
         graph.removeNode(sourceId);
         result = preview.render(graph, 1, 1);
         if (!result || !isUv(preview)) {
-            return RhiTestResult::fail("Single-pixel UV fallback failed: " + preview.lastLog());
+            return RHITestResult::fail("Single-pixel UV fallback failed: " + preview.lastLog());
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 
 private:
@@ -209,15 +209,15 @@ private:
     }
 };
 
-class FinalBlitPipelinesTest : public RhiTest {
+class FinalBlitPipelinesTest : public RHITest {
 public:
     FinalBlitPipelinesTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "render_graph_final_blit_pipelines";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const std::unordered_map<std::string, std::string> expectedSources{
             {"default.metallic_graph.json", "PathTrace.color"},
@@ -237,14 +237,14 @@ public:
             {"lookdev_abeautiful_game.metallic_graph.json", "Slider.color"},
             {"material_visualization_abeautiful_game.metallic_graph.json", "MaterialViz.color"},
             {"pathtracing_abeautiful_game_openpbr.metallic_graph.json", "PathTrace.color"},
-            {"pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json", "DlssRr.color"},
-            {"pathtracing_abeautiful_game_openpbr_dlss_nr.metallic_graph.json", "DlssRr.color"},
-            {"pathtracing_abeautiful_game_openpbr_dlss_sr.metallic_graph.json", "DlssSr.color"},
+            {"pathtracing_abeautiful_game_openpbr_dlss_rr.metallic_graph.json", "DLSSRR.color"},
+            {"pathtracing_abeautiful_game_openpbr_dlss_nr.metallic_graph.json", "DLSSRR.color"},
+            {"pathtracing_abeautiful_game_openpbr_dlss_sr.metallic_graph.json", "DLSSSR.color"},
             {"pathtracing_meet_mat.metallic_graph.json", "PathTrace.color"},
             {"pathtracing_meet_mat_nrc.metallic_graph.json", "PathTrace.color"},
             {"pathtracing_meet_mat_sharc.metallic_graph.json", "PathTrace.color"},
             {"rtxcr_material_showcase.metallic_graph.json", "PathTrace.color"},
-            {"realtime_lighting.metallic_graph.json", "DlssSr.color"},
+            {"realtime_lighting.metallic_graph.json", "DLSSSR.color"},
             {"rtxdi_meet_mat.metallic_graph.json", "Composite.color"},
         };
         std::string log;
@@ -256,29 +256,29 @@ public:
             }
             render::RenderGraph graph;
             if (!render::loadRenderGraphFromFile(entry.path(), graph, log) || !graph.validate(log)) {
-                return RhiTestResult::fail(filename + ": " + log);
+                return RHITestResult::fail(filename + ": " + log);
             }
             const auto expected = expectedSources.find(filename);
             if (expected == expectedSources.end() || !hasFinalOutput(graph, expected->second)) {
-                return RhiTestResult::fail(filename + " must present its final color through FinalBlit");
+                return RHITestResult::fail(filename + " must present its final color through FinalBlit");
             }
             ++graphCount;
         }
         if (graphCount != expectedSources.size()) {
-            return RhiTestResult::fail("Not all expected pipeline assets were checked");
+            return RHITestResult::fail("Not all expected pipeline assets were checked");
         }
         for (const render::RenderSampleDesc& desc : render::listBuiltInRenderSamples()) {
             render::RenderSampleLoadResult sample;
             if (!render::loadBuiltInRenderSample(desc.id, sample, log)) {
-                return RhiTestResult::fail(desc.id + ": " + log);
+                return RHITestResult::fail(desc.id + ": " + log);
             }
             const auto expected = expectedSources.find(std::filesystem::path(desc.graphPath).filename().string());
             if (desc.previewOutput != "FinalBlit.color" || sample.desc.previewOutput != "FinalBlit.color" ||
                 expected == expectedSources.end() || !hasFinalOutput(sample.graph, expected->second)) {
-                return RhiTestResult::fail(desc.id + " bypasses FinalBlit presentation");
+                return RHITestResult::fail(desc.id + " bypasses FinalBlit presentation");
             }
         }
-        return RhiTestResult::pass("All pipeline assets and built-in Samples present through FinalBlit");
+        return RHITestResult::pass("All pipeline assets and built-in Samples present through FinalBlit");
     }
 
 private:
@@ -289,7 +289,7 @@ private:
         for (const auto& node : graph.nodes()) {
             if (node.type == "ScenePathTracePass" || node.type == "SceneRealtimeLightingPass" ||
                 node.type == "VisibilityBufferDeferredPass" ||
-                node.type == "SceneRtxdiPass" || node.type == "RtxdiCompositePass") {
+                node.type == "SceneRTXDIPass" || node.type == "RTXDICompositePass") {
                 physical = true;
                 if (!node.properties.value("outputLinear", false)) { return false; }
             }
@@ -307,8 +307,8 @@ private:
             if (hdrConnections != 1) { return false; }
             sourceOutput = "AutoExposure.color";
         }
-        if (const auto* nr = graph.findNode("DlssNr"); nr != nullptr) {
-            if (nr->type != "DlssNrPass") { return false; }
+        if (const auto* nr = graph.findNode("DLSSNR"); nr != nullptr) {
+            if (nr->type != "DLSSNRPass") { return false; }
             size_t colorConnections = 0;
             for (const auto& edge : graph.edges()) {
                 if (edge.dstPass == nr->name && edge.dstField == "inputColor") {
@@ -317,7 +317,7 @@ private:
                 }
             }
             if (colorConnections != 1) { return false; }
-            sourceOutput = "DlssNr.color";
+            sourceOutput = "DLSSNR.color";
         }
         const render::RenderGraphNode* final = graph.findNode("FinalBlit");
         if (final == nullptr || final->type != "FinalBlitPass" || !graph.outputs().empty() ||

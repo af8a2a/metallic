@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -64,24 +64,24 @@ private:
     render::SceneLightResources lights_;
 };
 
-class PhotometricGpuTest final : public RhiTest {
+class PhotometricGPUTest final : public RHITest {
 public:
-    PhotometricGpuTest() { type = RhiTestType::Rendering; name = "photometric_gpu_units_falloff_sh"; }
-    RhiTestResult run(RhiTestContext& context) override
+    PhotometricGPUTest() { type = RHITestType::Rendering; name = "photometric_gpu_units_falloff_sh"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         auto deviceResult = render::createDevice({.applicationName = "GPU photometry",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(deviceResult, render::Error::Unsupported)) {
-            return RhiTestResult::skip("requires bindless descriptors");
+            return RHITestResult::skip("requires bindless descriptors");
         }
-        if (!deviceResult) { return RhiTestResult::fail("GPU photometry device creation failed"); }
+        if (!deviceResult) { return RHITestResult::fail("GPU photometry device creation failed"); }
         auto* queue = device->getQueue(render::QueueType::Graphics);
         const auto hdrPath = std::filesystem::absolute(context.outputDirectory / "constant-photometric.hdr");
         std::filesystem::create_directories(context.outputDirectory);
         std::vector<float> pixels(64 * 32 * 3, 2.0f);
         if (!stbi_write_hdr(hdrPath.string().c_str(), 64, 32, 3, pixels.data())) {
-            return RhiTestResult::fail("cannot create constant HDR fixture");
+            return RHITestResult::fail("cannot create constant HDR fixture");
         }
         render::RenderWorld world;
         world.setEnvironment({.enabled = true, .path = hdrPath});
@@ -95,7 +95,7 @@ public:
             light.direction = float3(0.0f, 0.0f, 1.0f);
             lighting.lights.push_back(light);
         }
-        if (!world.setLighting(lighting)) { return RhiTestResult::fail("invalid fixture lighting"); }
+        if (!world.setLighting(lighting)) { return RHITestResult::fail("invalid fixture lighting"); }
         render::registerRenderGraphPassType("PhotometricProbePass", "GPU photometry test",
             [] { return std::make_unique<PhotometricProbePass>(); });
         render::RenderGraph graph;
@@ -105,7 +105,7 @@ public:
         executor.bindRenderWorld(&world);
         std::string log;
         auto result = executor.compile(*device, graph, 1, 1, log);
-        if (!result) { return RhiTestResult::fail(log); }
+        if (!result) { return RHITestResult::fail(log); }
         std::array<float, 48> reference{};
         for (int iteration = 0; iteration < 3; ++iteration) {
             if (iteration == 1) {
@@ -123,22 +123,22 @@ public:
             bool ready = false;
             for (int attempt = 0; attempt < 200; ++attempt) {
                 result = executor.execute({.graphicsQueue = queue});
-                if (!result) { return RhiTestResult::fail(std::string("probe execution failed: ") + toString(result)); }
+                if (!result) { return RHITestResult::fail(std::string("probe execution failed: ") + toString(result)); }
                 result = executor.waitForSubmittedWork(10'000'000'000ull);
-                if (!result) { return RhiTestResult::fail("probe wait failed"); }
+                if (!result) { return RHITestResult::fail("probe wait failed"); }
                 const auto& snapshot = executor.subsystemHost()->get<render::EnvironmentLightingSubsystem>()->snapshot();
                 ready = snapshot.mapAvailable && snapshot.status == render::EnvironmentLightingStatus::Ready;
                 if (ready) { break; }
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
             }
             if (!ready) {
-                return RhiTestResult::fail("constant HDR did not finish GPU publication: " +
+                return RHITestResult::fail("constant HDR did not finish GPU publication: " +
                     executor.subsystemHost()->get<render::EnvironmentLightingSubsystem>()->snapshot().error);
             }
             auto* buffer = executor.outputResource("Probe.data")->buffer;
             buffer->invalidate();
             void* mapped = buffer->map();
-            if (mapped == nullptr) { return RhiTestResult::fail("probe readback failed"); }
+            if (mapped == nullptr) { return RHITestResult::fail("probe readback failed"); }
             std::array<float, 48> values;
             std::memcpy(values.data(), mapped, sizeof(values));
             buffer->unmap();
@@ -147,25 +147,25 @@ public:
                 const std::array<float, 6> expected{100, 25, 100, 100, 100, 0};
                 for (size_t i = 0; i < expected.size(); ++i) {
                     if (std::abs(values[4 * i] - expected[i]) > 0.001f) {
-                        return RhiTestResult::fail("GPU inverse-square/directional/spot mismatch at " + std::to_string(i));
+                        return RHITestResult::fail("GPU inverse-square/directional/spot mismatch at " + std::to_string(i));
                     }
                 }
-                if (values[3] != 0.25f) { return RhiTestResult::fail("GPU exposure metadata mismatch"); }
+                if (values[3] != 0.25f) { return RHITestResult::fail("GPU exposure metadata mismatch"); }
                 for (size_t i = 6; i < 12; ++i) {
                     for (size_t c = 0; c < 3; ++c) {
                         if (std::abs(values[i * 4 + c] - 6.2831853f) > 0.012f) {
-                            return RhiTestResult::fail("GPU irradiance SH must evaluate to pi * radiance in every direction");
+                            return RHITestResult::fail("GPU irradiance SH must evaluate to pi * radiance in every direction");
                         }
                     }
                 }
             } else if (iteration == 1) {
                 for (size_t i = 0; i < values.size(); ++i) {
                     if (std::abs(values[i] - reference[i]) > 0.001f) {
-                        return RhiTestResult::fail("unit conversion changed GPU lighting");
+                        return RHITestResult::fail("unit conversion changed GPU lighting");
                     }
                 }
             } else if (std::abs(values[0] - 200.0f) > 0.001f) {
-                return RhiTestResult::fail("light edit did not update GPU snapshot");
+                return RHITestResult::fail("light edit did not update GPU snapshot");
             }
         }
         // A constant environment cannot detect coefficient order/sign mistakes.
@@ -187,14 +187,14 @@ public:
         }
         const auto directionalPath = std::filesystem::absolute(context.outputDirectory / "directional-photometric.hdr");
         if (!stbi_write_hdr(directionalPath.string().c_str(), 64, 32, 3, pixels.data())) {
-            return RhiTestResult::fail("cannot create directional HDR fixture");
+            return RHITestResult::fail("cannot create directional HDR fixture");
         }
         world.setEnvironment({.enabled = true, .path = directionalPath});
         bool directionalReady = false;
         for (int attempt = 0; attempt < 200; ++attempt) {
             result = executor.execute({.graphicsQueue = queue});
             if (!result || !executor.waitForSubmittedWork(5'000'000'000ull)) {
-                return RhiTestResult::fail("directional SH probe execution failed");
+                return RHITestResult::fail("directional SH probe execution failed");
             }
             const auto& snapshot = executor.subsystemHost()->get<render::EnvironmentLightingSubsystem>()->snapshot();
             directionalReady = snapshot.mapAvailable && snapshot.status == render::EnvironmentLightingStatus::Ready &&
@@ -202,11 +202,11 @@ public:
             if (directionalReady) { break; }
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
-        if (!directionalReady) { return RhiTestResult::fail("directional HDR did not finish GPU publication"); }
+        if (!directionalReady) { return RHITestResult::fail("directional HDR did not finish GPU publication"); }
         auto* directionalBuffer = executor.outputResource("Probe.data")->buffer;
         directionalBuffer->invalidate();
         void* directionalMapped = directionalBuffer->map();
-        if (directionalMapped == nullptr) { return RhiTestResult::fail("directional SH readback failed"); }
+        if (directionalMapped == nullptr) { return RHITestResult::fail("directional SH readback failed"); }
         std::array<float, 48> directionalValues;
         std::memcpy(directionalValues.data(), directionalMapped, sizeof(directionalValues));
         directionalBuffer->unmap();
@@ -220,30 +220,30 @@ public:
                 // Includes RGBE fixture quantization and 64x32 texel quadrature.
                 if (!std::isfinite(directionalValues[(6 + i) * 4 + c]) ||
                     std::abs(directionalValues[(6 + i) * 4 + c] - expected[c]) > 0.04) {
-                    return RhiTestResult::fail("directional irradiance SH basis or cosine normalization changed");
+                    return RHITestResult::fail("directional irradiance SH basis or cosine normalization changed");
                 }
             }
         }
-        return RhiTestResult::pass("GPU: SI/EV/lumen equivalence, inverse square, spot cutoff, exposure, constant/directional SH and live edits");
+        return RHITestResult::pass("GPU: SI/EV/lumen equivalence, inverse square, spot cutoff, exposure, constant/directional SH and live edits");
     }
 };
 
-class RealtimeLightingRenderTest final : public RhiTest {
+class RealtimeLightingRenderTest final : public RHITest {
 public:
-    RealtimeLightingRenderTest() { type = RhiTestType::Rendering; name = "photometric_realtime_render"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RealtimeLightingRenderTest() { type = RHITestType::Rendering; name = "photometric_realtime_render"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
         auto result = preview.initialize(context.enableValidation, true);
-        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("requires ray query"); }
-        if (!result) { return RhiTestResult::fail("preview initialization failed"); }
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("requires ray query"); }
+        if (!result) { return RHITestResult::fail("preview initialization failed"); }
         preview.setEnvironment({.enabled = false});
         render::RenderGraph graph;
         graph.addNode("SceneRealtimeLightingPass", "Lighting", {{"path", "Asset/meet_mat.glb"},
             {"camera", {{"eye", {0.0, 0.25, 3.0}}, {"center", {0.0, 0.15, 0.0}}}}});
         graph.markOutput("Lighting.color");
         result = preview.render(graph, 64, 64);
-        if (!result) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!result) { return RHITestResult::fail(preview.lastLog()); }
         const auto dark = preview.pixels();
         scene::LightingSettings settings;
         auto& light = settings.lights.emplace_back();
@@ -254,25 +254,25 @@ public:
         settings.exposureEV100 = 8;
         preview.setLighting(settings);
         result = preview.render(graph, 64, 64);
-        if (!result) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!result) { return RHITestResult::fail(preview.lastLog()); }
         const auto lit = preview.pixels();
-        if (lit == dark) { return RhiTestResult::fail("directional light did not affect real-time material shading"); }
+        if (lit == dark) { return RHITestResult::fail("directional light did not affect real-time material shading"); }
         settings.lights[0].properties.intensityUnit = scene::LightUnit::EV100;
         settings.lights[0].properties.intensity = std::log2(400.0);
         preview.setLighting(settings);
         result = preview.render(graph, 64, 64);
         if (!result || preview.pixels() != lit) {
-            return RhiTestResult::fail("equivalent lux/EV units changed real-time shading");
+            return RHITestResult::fail("equivalent lux/EV units changed real-time shading");
         }
         settings.lights.clear();
         settings.exposureEV100 = 0;
         preview.setLighting(settings);
         result = preview.render(graph, 64, 64);
-        if (!result || preview.pixels() != dark) { return RhiTestResult::fail("deleted light persisted in GPU lighting"); }
+        if (!result || preview.pixels() != dark) { return RHITestResult::fail("deleted light persisted in GPU lighting"); }
         std::string message;
         if (!saveRgba8Png(context.outputDirectory / "physical-realtime.png",
                 reinterpret_cast<const uint8_t*>(lit.data()), 64, 64, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
         render::RenderGraph hdrGraph;
         hdrGraph.addNode("SceneRealtimeLightingPass", "Lighting", {{"path", "Asset/meet_mat.glb"},
@@ -290,12 +290,12 @@ public:
         preview.setLighting(settings);
         result = preview.render(hdrGraph, 64, 64);
         if (!result || preview.pixels() != lit) {
-            return RhiTestResult::fail("HDR + manual post exposure differs from inline exposure: " + preview.lastLog());
+            return RHITestResult::fail("HDR + manual post exposure differs from inline exposure: " + preview.lastLog());
         }
         settings.autoExposure.enabled = true;
         preview.setLighting(settings);
         result = preview.render(hdrGraph, 64, 64);
-        if (!result) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!result) { return RHITestResult::fail(preview.lastLog()); }
         const auto automatic = preview.pixels();
         double subjectBrightness = 0.0;
         size_t subjectPixels = 0;
@@ -305,13 +305,13 @@ public:
         }
         if (subjectPixels == 0 || subjectBrightness / subjectPixels > 190.0 ||
             subjectBrightness / subjectPixels < 40.0) {
-            return RhiTestResult::fail("black background dominated metering and lost subject detail");
+            return RHITestResult::fail("black background dominated metering and lost subject detail");
         }
         settings.lights[0].properties.intensity *= 1024;
         preview.setLighting(settings);
         hdrGraph.findNode(exposureId)->runtimeProperties = {{"resetSerial", 1}};
         result = preview.render(hdrGraph, 64, 64);
-        if (!result) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!result) { return RHITestResult::fail(preview.lastLog()); }
         double error = 0.0;
         for (size_t i = 0; i < automatic.size(); ++i) {
             for (uint32_t shift : {0u, 8u, 16u}) {
@@ -320,17 +320,17 @@ public:
             }
         }
         if (error / (automatic.size() * 3) > 8.0) {
-            return RhiTestResult::fail("automatic exposure did not compensate a 10-stop physical light increase");
+            return RHITestResult::fail("automatic exposure did not compensate a 10-stop physical light increase");
         }
         if (!saveRgba8Png(context.outputDirectory / "auto-exposure-realtime.png",
                 reinterpret_cast<const uint8_t*>(preview.pixels().data()), 64, 64, message)) {
-            return RhiTestResult::fail(message);
+            return RHITestResult::fail(message);
         }
-        return RhiTestResult::pass("physical lighting and HDR/manual equivalence; automatic 10-stop compensation");
+        return RHITestResult::pass("physical lighting and HDR/manual equivalence; automatic 10-stop compensation");
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(PhotometricGpuTest);
+METALLIC_REGISTER_RHI_TEST(PhotometricGPUTest);
 METALLIC_REGISTER_RHI_TEST(RealtimeLightingRenderTest);
 } // namespace
 } // namespace metallic::tests

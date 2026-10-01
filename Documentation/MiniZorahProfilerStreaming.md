@@ -49,7 +49,7 @@ RTX 5070 Ti，RelWithDebInfo，1920×1080，1.5 px，180 帧：前 60 帧固定�
 
 ## 验证
 
-构建目标：Metallic、MetallicGPUDrivenSample、MetallicRhiTests。
+构建目标：Metallic、MetallicGPUDrivenSample、MetallicRHITests。
 
 - 最终计时/UI 组 **8/8 通过**：timestamp_query、render_graph_gpu_profiling、cancelled_gpu_profiling、gpu_profiling_scope_budget、editor_profiler_history、frame_parallel_compute_join_and_cancellation、frame_cross_queue_graph_dependencies、minizorah_profiler_streaming。
 - 渲染回归组 **6/6 通过**：MiniZorah profiler、MiniZorah VBuffer、MiniZorah 转视角稳定性、小场景可视化稳定性、VBuffer OpenPBR 材质、HZB 图像等价与计时。其中 profiler 与上组重复，合计 13 个不同测试。

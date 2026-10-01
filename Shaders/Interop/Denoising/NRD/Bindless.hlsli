@@ -3,21 +3,21 @@
 
 // Slots describe algorithm inputs, never Vulkan descriptor bindings. Values are
 // device ResourceRegistry indices and may be anywhere in the native heap.
-struct NrdResourceIndices
+struct NRDResourceIndices
 {
     uint sampled[32];
     uint storage[16];
     uint samplers[2];
 };
 
-struct NrdPushData
+struct NRDPushData
 {
     uint* constants;
-    NrdResourceIndices* resources;
+    NRDResourceIndices* resources;
 };
 
 import ParameterRoot;
-#define gNrdPush (Metallic::getParameters<NrdPushData>())
+#define gNrdPush (Metallic::getParameters<NRDPushData>())
 
 #define NRD_CONSTANTS_START(name) struct name {
 #define NRD_TYPE_float4x4 column_major float4x4

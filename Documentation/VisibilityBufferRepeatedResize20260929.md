@@ -22,9 +22,9 @@ Release sample 和 RHI tests 构建通过；`git diff --check` 通过。
 
 开启 Vulkan validation：
 
-1. `RhiRendering.zorah_full_first_frame` 通过：MiniZorah→Full，材质覆盖、后续帧及输出检查；无同尺寸 resize。
-2. `RhiRendering.visibility_buffer_abeautiful_game_transmission` 通过：运行时材质编辑、透射/体积对照、binned/unbinned 图像对照和真实尺寸切换。日志只记录实际宽高变化。
-3. `RhiRendering.streamed_realtime_pipeline` 首次缺少 `--rhi-realtime` 被跳过；补齐该设备配置后重新运行通过，覆盖流送、resize/recompile 连续性和阴影输出。
+1. `RHIRendering.zorah_full_first_frame` 通过：MiniZorah→Full，材质覆盖、后续帧及输出检查；无同尺寸 resize。
+2. `RHIRendering.visibility_buffer_abeautiful_game_transmission` 通过：运行时材质编辑、透射/体积对照、binned/unbinned 图像对照和真实尺寸切换。日志只记录实际宽高变化。
+3. `RHIRendering.streamed_realtime_pipeline` 首次缺少 `--rhi-realtime` 被跳过；补齐该设备配置后重新运行通过，覆盖流送、resize/recompile 连续性和阴影输出。
 
 日志无 Validation Error、VUID 或 DeviceLost。Full settled 输出已检查，建筑、植被和人物覆盖正常；原有单样本噪声仍在。验证输出为 960×540、DLSS 关闭，不能替代长期编辑器漫游图像验证。
 

@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -21,12 +21,12 @@ namespace metallic::tests {
 namespace {
 
 #define UPLOAD_REQUIRE(expression) do { const auto result = (expression); \
-    if (!result) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(result) + " " + log); } } while (false)
+    if (!result) { return RHITestResult::fail(std::string(#expression) + ": " + toString(result) + " " + log); } } while (false)
 
 constexpr uint32_t kTextureCount = 60;
 constexpr uint32_t kMipCount = 7;
 
-render::ValidationSink uploadValidationSink(RhiTestContext& context)
+render::ValidationSink uploadValidationSink(RHITestContext& context)
 {
     return {.callback = [](void* data, const render::ValidationMessage& message) noexcept {
         if (data != nullptr && message.messageIdName != nullptr && std::strstr(message.messageIdName, "VUID-") != nullptr) {
@@ -81,11 +81,11 @@ struct UploadQueueDrain {
     }
 };
 
-class SceneUploadPipelineTest final : public RhiTest {
+class SceneUploadPipelineTest final : public RHITest {
 public:
-    SceneUploadPipelineTest() { type = RhiTestType::Resource; name = "scene_upload_pipeline"; }
+    SceneUploadPipelineTest() { type = RHITestType::Resource; name = "scene_upload_pipeline"; }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         std::string log;
@@ -93,15 +93,15 @@ public:
         const auto initialized = createDevice({.applicationName = "Scene upload pipeline test",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
             .enableRayTracingAccelerationStructure = true, .validationSink = uploadValidationSink(context)}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (hasError(initialized, Error::Unsupported)) { return RhiTestResult::skip("Requires ray tracing and bindless resources"); }
+        if (hasError(initialized, Error::Unsupported)) { return RHITestResult::skip("Requires ray tracing and bindless resources"); }
         UPLOAD_REQUIRE(initialized);
         auto* graphics = device->getQueue(QueueType::Graphics);
         auto* copy = device->getQueue(QueueType::Copy);
-        if (!graphics) { return RhiTestResult::fail("No graphics queue"); }
+        if (!graphics) { return RHITestResult::fail("No graphics queue"); }
         if (!copy) { copy = graphics; }
         const auto path = writeUploadScene(context.outputDirectory / "scene-upload");
         scene::Scene scene;
-        if (!scene.load(path)) { return RhiTestResult::fail(scene.lastLoadResult().error); }
+        if (!scene.load(path)) { return RHITestResult::fail(scene.lastLoadResult().error); }
         for (uint32_t index = 0; index < kTextureCount; ++index) {
             std::vector<scene::RenderImage::Mip> mips;
             uint32_t width = 65, height = 33;
@@ -118,7 +118,7 @@ public:
                 width = std::max(width / 2u, 1u);
                 height = std::max(height / 2u, 1u);
             }
-            if (!scene.setImageDecodeResult(index, std::move(mips), {})) { return RhiTestResult::fail("Failed to set fixture mip chain"); }
+            if (!scene.setImageDecodeResult(index, std::move(mips), {})) { return RHITestResult::fail("Failed to set fixture mip chain"); }
         }
         std::unique_ptr<Semaphore> gate;
         UPLOAD_REQUIRE(device->createSemaphore({}).transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
@@ -135,10 +135,10 @@ public:
         auto stats = resources.uploadStats();
         if (stats.submittedBatches != 3 || stats.inFlightBatches != 3 || stats.completedBatches != 0 ||
             complete || resources.textureUploadsReady()) {
-            return RhiTestResult::fail("Expected three concurrent batches before releasing the GPU gate");
+            return RHITestResult::fail("Expected three concurrent batches before releasing the GPU gate");
         }
         for (uint32_t pump = 0; pump < 3; ++pump) { UPLOAD_REQUIRE(resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { complete = std::move(value); })); }
-        if (resources.uploadStats().submittedBatches != 3) { return RhiTestResult::fail("Upload backpressure exceeded three batches"); }
+        if (resources.uploadStats().submittedBatches != 3) { return RHITestResult::fail("Upload backpressure exceeded three batches"); }
         UPLOAD_REQUIRE(gate->signal(1));
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         while (!complete && std::chrono::steady_clock::now() < deadline) {
@@ -149,7 +149,7 @@ public:
         if (!complete || !resources.valid() || !resources.textureUploadsReady() ||
             resources.materialTextureCount() != kTextureCount + 1 || stats.submittedBatches < 4 ||
             stats.submittedBatches != stats.completedBatches || stats.inFlightBatches != 0 || stats.peakInFlightBatches != 3) {
-            return RhiTestResult::fail("Upload pipeline did not drain every batch");
+            return RHITestResult::fail("Upload pipeline did not drain every batch");
         }
 
         ShaderCompileResult shader;
@@ -199,7 +199,7 @@ public:
         UPLOAD_REQUIRE(frame.wait(30'000'000'000ull));
         output->invalidate();
         const auto* pixels = static_cast<const std::array<uint32_t, 4>*>(output->map());
-        if (!pixels) { return RhiTestResult::fail("Readback map failed"); }
+        if (!pixels) { return RHITestResult::fail("Readback map failed"); }
         bool matches = true;
         for (uint32_t index = 0; index < kTextureCount; ++index) {
             uint32_t width = 65, height = 33;
@@ -211,7 +211,7 @@ public:
             }
         }
         output->unmap();
-        if (!matches) { return RhiTestResult::fail("Mip pixels changed across batch retirement/staging reuse"); }
+        if (!matches) { return RHITestResult::fail("Mip pixels changed across batch retirement/staging reuse"); }
 
         // Rebuild and cancel with uploads still pending. Signal from another
         // thread so clear() must drain work before releasing its resources.
@@ -223,41 +223,41 @@ public:
         for (uint32_t pump = 0; pump < 20 && resources.uploadStats().submittedBatches < 3; ++pump) {
             UPLOAD_REQUIRE(resources.pumpPrepareAsync(10.0, progress, log).transform([&](auto value) { complete = std::move(value); }));
         }
-        if (resources.uploadStats().inFlightBatches != 3) { return RhiTestResult::fail("Cancel probe did not fill upload window"); }
+        if (resources.uploadStats().inFlightBatches != 3) { return RHITestResult::fail("Cancel probe did not fill upload window"); }
         std::jthread release([&] { std::this_thread::sleep_for(std::chrono::milliseconds(10)); (void)gate->signal(2); });
         resources.clear();
         if (resources.valid() || resources.preparing() || !resources.gpuWorkComplete() || resources.uploadStats().inFlightBatches != 0) {
-            return RhiTestResult::fail("Clear left pending scene uploads");
+            return RHITestResult::fail("Clear left pending scene uploads");
         }
-        return RhiTestResult::pass("Three batches in flight, bounded backpressure, 420 mips verified, in-flight clear drained");
+        return RHITestResult::pass("Three batches in flight, bounded backpressure, 420 mips verified, in-flight clear drained");
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(SceneUploadPipelineTest);
 
-class SuperSponzaUploadSmokeTest final : public RhiTest {
+class SuperSponzaUploadSmokeTest final : public RHITest {
 public:
-    SuperSponzaUploadSmokeTest() { type = RhiTestType::Resource; name = "super_sponza_upload_smoke"; }
-    RhiTestResult run(RhiTestContext& context) override
+    SuperSponzaUploadSmokeTest() { type = RHITestType::Resource; name = "super_sponza_upload_smoke"; }
+    RHITestResult run(RHITestContext& context) override
     {
         if (!std::getenv("METALLIC_TEST_SUPER_SPONZA_UPLOAD")) {
-            return RhiTestResult::skip("Set METALLIC_TEST_SUPER_SPONZA_UPLOAD=1 to load the large fixture");
+            return RHITestResult::skip("Set METALLIC_TEST_SUPER_SPONZA_UPLOAD=1 to load the large fixture");
         }
         const auto path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/SuperSponza/NewSponza_Main_glTF_003.gltf";
-        if (!std::filesystem::exists(path)) { return RhiTestResult::skip("Super Sponza fixture is unavailable"); }
+        if (!std::filesystem::exists(path)) { return RHITestResult::skip("Super Sponza fixture is unavailable"); }
         std::string log;
         std::unique_ptr<render::Device> device;
         const auto initialized = render::createDevice({.applicationName = "Super Sponza upload smoke",
             .enableValidation = context.enableValidation, .enableRayTracingAccelerationStructure = true,
             .validationSink = uploadValidationSink(context)}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires ray tracing"); }
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires ray tracing"); }
         UPLOAD_REQUIRE(initialized);
         scene::SceneLoader loader;
         auto handle = loader.request(path);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
         while (!handle.complete() && std::chrono::steady_clock::now() < deadline) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
         auto loaded = handle.takeResult();
-        if (!loaded) { return RhiTestResult::fail("CPU load failed: " + handle.progress().error); }
+        if (!loaded) { return RHITestResult::fail("CPU load failed: " + handle.progress().error); }
         render::ScenePathTraceResources resources;
         const auto begin = std::chrono::steady_clock::now();
         UPLOAD_REQUIRE(resources.beginPrepareAsync(*device, *device->getQueue(render::QueueType::Graphics),
@@ -268,7 +268,7 @@ public:
             UPLOAD_REQUIRE(resources.pumpPrepareAsync(8.0, progress, log).transform([&](auto value) { complete = std::move(value); }));
             if (!complete) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
         }
-        if (!complete || !resources.valid() || !resources.gpuWorkComplete()) { return RhiTestResult::fail("GPU preparation timed out: " + log); }
+        if (!complete || !resources.valid() || !resources.gpuWorkComplete()) { return RHITestResult::fail("GPU preparation timed out: " + log); }
         const auto stats = resources.uploadStats();
         const auto textures = resources.textureStats();
         std::ofstream(context.outputDirectory / "SuperSponzaUploadAllocation.json") <<
@@ -279,20 +279,20 @@ public:
         spdlog::info("[SceneUploadSmoke] GPU preparation including AS: {:.2f} ms, batches={}, peakInFlight={}, bytes={}",
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count(),
             stats.completedBatches, stats.peakInFlightBatches, stats.submittedBytes);
-        return RhiTestResult::pass("Super Sponza CPU decode, material uploads, and acceleration structures completed");
+        return RHITestResult::pass("Super Sponza CPU decode, material uploads, and acceleration structures completed");
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(SuperSponzaUploadSmokeTest);
 
-class SponzaAsyncRtasTest final : public RhiTest {
+class SponzaAsyncRtasTest final : public RHITest {
 public:
-    SponzaAsyncRtasTest() { type = RhiTestType::Resource; name = "sponza_async_scene_rtas"; }
-    RhiTestResult run(RhiTestContext& context) override
+    SponzaAsyncRtasTest() { type = RHITestType::Resource; name = "sponza_async_scene_rtas"; }
+    RHITestResult run(RHITestContext& context) override
     {
         if (!context.device.capabilities().rayTracingAccelerationStructure ||
             !context.device.capabilities().opacityMicromap) {
-            return RhiTestResult::skip("Requires --rhi-realtime with OMM enabled");
+            return RHITestResult::skip("Requires --rhi-realtime with OMM enabled");
         }
         const auto path = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Sponza/glTF/Sponza.gltf";
         std::string log;
@@ -303,7 +303,7 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         auto loaded = handle.takeResult();
-        if (!loaded) { return RhiTestResult::fail("CPU load failed: " + handle.progress().error); }
+        if (!loaded) { return RHITestResult::fail("CPU load failed: " + handle.progress().error); }
         render::ScenePathTraceResources resources;
         UPLOAD_REQUIRE(resources.beginPrepareAsync(context.device, context.graphicsQueue,
             {{"path", path.string()}}, *loaded, log));
@@ -315,14 +315,14 @@ public:
             UPLOAD_REQUIRE(context.graphicsQueue.waitIdle());
         }
         if (!complete || !resources.valid() || !resources.gpuWorkComplete()) {
-            return RhiTestResult::fail("Sponza GPU preparation timed out: " + log);
+            return RHITestResult::fail("Sponza GPU preparation timed out: " + log);
         }
         const auto& stats = resources.accelerationStructure().stats();
         if (stats.blasCount != 103 || stats.opacityMicromapCount != 10 ||
             stats.opacityMicromapTriangleCount != 34908 || stats.compactionSavedBytes == 0) {
-            return RhiTestResult::fail("Sponza did not exercise OMM and BLAS compaction");
+            return RHITestResult::fail("Sponza did not exercise OMM and BLAS compaction");
         }
-        return RhiTestResult::pass("Sponza async upload, 10 OMMs, 103 BLASes, compaction and TLAS completed");
+        return RHITestResult::pass("Sponza async upload, 10 OMMs, 103 BLASes, compaction and TLAS completed");
     }
 };
 

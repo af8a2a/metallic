@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Profiling/RenderGraphProfile.h"
 #include "Runtime/Render/Streamer/MeshletStreamLatency.h"
 #include "Runtime/Render/Streamer/MeshletStreamPageLoader.h"
@@ -21,7 +21,7 @@
 
 namespace metallic::render {
 
-struct CpuProfileRecorder;
+struct CPUProfileRecorder;
 
 inline constexpr uint32_t kInvalidStreamDeviceOffsetBytes = UINT32_MAX;
 inline constexpr uint64_t kMeshletStreamStorageAlignment = 256;
@@ -132,7 +132,7 @@ static_assert(sizeof(StreamPageTablePatch) == 8);
 static_assert(sizeof(StreamRequestBufferHeader) == kStreamRequestHeaderWordCount * sizeof(uint32_t));
 static_assert(sizeof(StreamUpdateBufferHeader) == kStreamUpdateHeaderWordCount * sizeof(uint32_t));
 
-struct StreamGpuRequestBatch {
+struct StreamGPURequestBatch {
     std::span<const uint32_t> loadPageIds;
     std::span<const uint32_t> unloadPageIds;
     uint32_t loadRequestCounter = 0;
@@ -218,7 +218,7 @@ struct MeshletStreamResidencyDesc {
 };
 
 struct MeshletStreamResidencyStats {
-    StreamCpuWorkCounters cpuWork;
+    StreamCPUWorkCounters cpuWork;
     uint64_t frameIndex = 0;
     uint32_t pageCount = 0;
     uint32_t trackedPageCount = 0;
@@ -361,21 +361,21 @@ public:
     bool initialize(const MeshletStreamResidencyDesc& desc, std::string& reason);
     void reset();
 
-    void beginFrame(CpuProfileRecorder* profiler = nullptr);
+    void beginFrame(CPUProfileRecorder* profiler = nullptr);
     bool lockFallbackPages(std::span<const uint32_t> pageIndices, std::string& reason);
     bool requestPage(uint32_t pageIndex);
     bool unloadPage(uint32_t pageIndex);
     uint32_t consumeGpuRequests(std::span<const uint32_t> pageIds);
-    uint32_t consumeGpuRequests(const StreamGpuRequestBatch& requests, CpuProfileRecorder* profiler = nullptr);
+    uint32_t consumeGpuRequests(const StreamGPURequestBatch& requests, CPUProfileRecorder* profiler = nullptr);
     // Called once after an upload is admitted, before the decoded payload is released.
     using UploadObserver = std::function<void(uint32_t, std::span<const uint8_t>)>;
-    using GpuUploadObserver = std::function<void(uint32_t, const scene::MeshletStreamGpuPage&)>;
+    using GPUUploadObserver = std::function<void(uint32_t, const scene::MeshletStreamGPUPage&)>;
     uint32_t processUploads(Streamer& streamer, Buffer& destination, uint32_t maxUploads,
-        const UploadObserver& observer = {}, CpuProfileRecorder* profiler = nullptr,
-        uint64_t maxUploadBytesPerFrame = 0, const GpuUploadObserver& gpuObserver = {});
+        const UploadObserver& observer = {}, CPUProfileRecorder* profiler = nullptr,
+        uint64_t maxUploadBytesPerFrame = 0, const GPUUploadObserver& gpuObserver = {});
 
     // Uses confirmed unused feedback; geometry and its CLAS share one victim list.
-    uint32_t reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc, CpuProfileRecorder* profiler = nullptr);
+    uint32_t reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc, CPUProfileRecorder* profiler = nullptr);
 
     void buildInitialPageTable(std::span<StreamPageTableEntry> outEntries) const;
     std::span<const StreamPageTablePatch> pendingPatches() const { return patches_; }
@@ -462,7 +462,7 @@ private:
 
     using PagePositionMember = uint32_t PageEntry::*;
 
-    size_t prepareEvictionCandidates(CpuProfileRecorder* profiler = nullptr, uint32_t minimumAge = 0);
+    size_t prepareEvictionCandidates(CPUProfileRecorder* profiler = nullptr, uint32_t minimumAge = 0);
     bool allocatePageStorage(uint32_t pageIndex);
     bool evictionBudgetAvailable(uint64_t allocationBytes) const;
     bool scheduleUnload(uint32_t pageIndex, bool eviction);
@@ -481,7 +481,7 @@ private:
         MeshletStreamPageResidencyState newState);
     uint64_t oldestAge(std::span<const uint32_t> pageIndices) const;
     void resetFrameStats();
-    void consumeReadyRequestTasks(CpuProfileRecorder* profiler = nullptr);
+    void consumeReadyRequestTasks(CPUProfileRecorder* profiler = nullptr);
 
     const scene::MeshletStreamAsset* asset_ = nullptr;
     MeshletStreamStorage storage_;

@@ -1,6 +1,6 @@
 # 统一流式 Meshlet LOD
 
-`VisibilityBufferPass` 的常驻和 StreamAsset 几何，以及独立 `GPUDrivenStreamAssetPass`，共用 `MeshletLodMetric.slang` 的屏幕误差公式和四个运行时设置：`autoLod`、`lodPixelError`（默认 1.5 display px）、`lodBias`（默认 0）、`lodLevel`。旧 `enableGpuLodSelection`、`selectedLodLevel` 配置仍可读取，新键优先；可视化模式不再决定是否启用自动选择。
+`VisibilityBufferPass` 的常驻和 StreamAsset 几何，以及独立 `GPUDrivenStreamAssetPass`，共用 `MeshletLODMetric.slang` 的屏幕误差公式和四个运行时设置：`autoLod`、`lodPixelError`（默认 1.5 display px）、`lodBias`（默认 0）、`lodLevel`。旧 `enableGpuLodSelection`、`selectedLodLevel` 配置仍可读取，新键优先；可视化模式不再决定是否启用自动选择。
 
 像素预算以最终显示视口高度为基准。RenderGraph 的 `displayWidth()/displayHeight()` 与 pass 的内部 `width()/height()` 分开，即使使用局部相机也保留图输出尺寸。`MeshletStreamFrameDesc::displayHeight` 传入显示高度，零值供独立调用者按原生分辨率回退。CPU 通过 `meshletLodRenderPixelThreshold()` 将带 bias 的显示像素阈值乘以 `renderHeight / displayHeight`，GPU 的 viewport、光栅、HZB 和抖动保护仍使用内部像素。需求、预取和最终 cut 使用同一个换算后的阈值；默认数值 1.5 和 cook 格式不变。DLSS 降低内部尺寸时不再自动放宽几何误差，旧图可能因此选择更多几何。
 
@@ -55,8 +55,8 @@ frontier 同时记录所有 active group 的稀疏列表，包括已被细化替
 
 ```powershell
 build/tests/MetallicSceneTests.exe --gtest_filter=SceneImport.MeshletStreamAsset:SceneImport.MeshoptCompressedMeshletStreamAsset
-build/tests/MetallicRhiTests.exe --gtest_filter="*meshlet_lod*"
-build/tests/MetallicRhiTests.exe --gtest_filter="*gpu_driven_mixed_producer_render*"
+build/tests/MetallicRHITests.exe --gtest_filter="*meshlet_lod*"
+build/tests/MetallicRHITests.exe --gtest_filter="*gpu_driven_mixed_producer_render*"
 ```
 
 合成参考测试检查原子几何覆盖、共享父组、跨层 terminal、缺页、PendingUpload、容量回退；GPU 差分测试对照选择、请求和间接参数。真实 Bunny 测试对照 CPU frontier 与 GPU group mask，并核对同帧 VBuffer 的每个有效 ID，同时切换透视/正交、标准/Reversed Z、误差、手动 LOD 和硬件/异步混合光栅。
@@ -116,10 +116,10 @@ frontier 临时状态为每实例 32 字节，加该实例每组 12 字节；只
 
 当前可达性方案保留已激活的祖先页。很小的预算可以维持完整粗 cut，但可能无法达到指定像素误差；进一步释放完全被替代的祖先 payload、合并请求和优先级调度仍是后续优化。
 
-2026-09-12 的 RTX 5070 Ti 验证中，80 组 CPU 覆盖检查、37 组 GPU 差分与 16 组收敛后的真实 Bunny 对照通过。透视 0.05 px 达到 550 个 cluster，16 px 为 18 个；手动最粗为 1 个。硬件与异步光栅的有效 ID 完全一致，无需使用深度 tie 容差；透视和正交冻结选择相机后移动渲染相机，cut 保持不变且画面正确变化。结果保存在 `StreamMeshletLodSceneReport.json` 与对应 PNG 中。
+2026-09-12 的 RTX 5070 Ti 验证中，80 组 CPU 覆盖检查、37 组 GPU 差分与 16 组收敛后的真实 Bunny 对照通过。透视 0.05 px 达到 550 个 cluster，16 px 为 18 个；手动最粗为 1 个。硬件与异步光栅的有效 ID 完全一致，无需使用深度 tie 容差；透视和正交冻结选择相机后移动渲染相机，cut 保持不变且画面正确变化。结果保存在 `StreamMeshletLODSceneReport.json` 与对应 PNG 中。
 
 独立 StreamAsset pass 在可见性、变换和尺寸更新时复用 Runtime 与驻留缓存；场景内容或资源配置变化才重新初始化。最终主程序、RHI 和 SceneTests 构建通过，CLAS/隐藏恢复/两次尺寸变化烟测，以及混合 resident/stream 生产者回归通过（开启 Vulkan validation）。
 
 BVH 版本验证：主程序、RHI 和 SceneTests 构建通过，9 个相关回归测试全部通过，包括 146 组线性/BVH GPU 差分、16 组真实 Bunny 对照、冻结相机、CLAS 和混合生产者。CPU 额外覆盖分散包围球、剪切、镜像、阈值附近比较，以及 `1e8` 坐标消减导致近裁面漏选的回归；GPU 初始化检查跨越 65535 工作组的第二行末尾哨兵。
 
-同一 Bunny 资产共有 50 个 group、19 个 BVH 节点。透视 16 px 阈值时访问 9 个节点、检查 7 个 group，输出仍为 18 个 cluster；正交 16 px 和手动最粗层级检查 4 个 group。0.05 px 近景仍检查全部 50 个 group。硬件与异步光栅选择及可见 ID 一致。对应结果在 `.tmp/bvh-lod/StreamMeshletLodSceneReport.json`，回归日志在 `.tmp/bvh-lod/regression2.log`；这些是选择工作量数据，没有据此推断整帧加速比例。
+同一 Bunny 资产共有 50 个 group、19 个 BVH 节点。透视 16 px 阈值时访问 9 个节点、检查 7 个 group，输出仍为 18 个 cluster；正交 16 px 和手动最粗层级检查 4 个 group。0.05 px 近景仍检查全部 50 个 group。硬件与异步光栅选择及可见 ID 一致。对应结果在 `.tmp/bvh-lod/StreamMeshletLODSceneReport.json`，回归日志在 `.tmp/bvh-lod/regression2.log`；这些是选择工作量数据，没有据此推断整帧加速比例。

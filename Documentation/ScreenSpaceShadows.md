@@ -96,10 +96,10 @@ restart history because object motion is not reconstructed from depth.
 ## Validation
 
 ```powershell
-cmake --build build --target Metallic MetallicGPUDrivenSample MetallicNrdTests MetallicRhiTests --parallel 6
-ctest --test-dir build -R '^MetallicNrdTests$' --output-on-failure
-build/tests/MetallicRhiTests.exe --filter realtime_ray_traced_sigma_shadows --rhi-validation --output-dir .tmp/full-ray-traced-shadows
-build/tests/MetallicRhiTests.exe --filter render_graph_sample_load
+cmake --build build --target Metallic MetallicGPUDrivenSample MetallicNRDTests MetallicRHITests --parallel 6
+ctest --test-dir build -R '^MetallicNRDTests$' --output-on-failure
+build/tests/MetallicRHITests.exe --filter realtime_ray_traced_sigma_shadows --rhi-validation --output-dir .tmp/full-ray-traced-shadows
+build/tests/MetallicRHITests.exe --filter render_graph_sample_load
 ```
 
 The NRD geometry test explicitly enables RayQuery. A TLAS quad behind the camera

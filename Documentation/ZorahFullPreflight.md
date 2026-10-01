@@ -35,14 +35,14 @@ EditorProfiler 现在按 preparation 的 parent 索引构建树；子 scope 可�
 
 ## 验证
 
-- Release MetallicGPUDrivenSample 与 MetallicRhiTests 构建成功。
+- Release MetallicGPUDrivenSample 与 MetallicRHITests 构建成功。
 - editor_profiler_history、editor_profiler_capture_attribution、editor_profiler_column_sorting、frame_output_consumer_gpu_dependencies 共 4 项通过。
 - 增强 profiler history 回归，验证 preparation 父子关系、同级 slot scope、CPU 数值以及延迟 GPU 回填不会污染 CPU 子项。
 - 输出消费者测试继续验证同/跨队列依赖、无 CPU drain、双槽复用与重建生命周期。
 - git diff --check 通过。
 
 ```powershell
-.\build-release\tests\MetallicRhiTests.exe --gtest_filter="*editor_profiler*:*frame_output_consumer_gpu_dependencies" --output-dir build-release/preflight-tests
+.\build-release\tests\MetallicRHITests.exe --gtest_filter="*editor_profiler*:*frame_output_consumer_gpu_dependencies" --output-dir build-release/preflight-tests
 pwsh -NoProfile -File Tools/RunZorahFullRoam.ps1 -OutputRoot build-release/<new-directory> -Runs 3 -DurationSeconds 30 -WarmupSeconds 10 -Width 1797 -Height 660 -TimeoutSeconds 900
 ```
 

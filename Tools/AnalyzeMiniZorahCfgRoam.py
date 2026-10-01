@@ -172,7 +172,7 @@ def main():
             handles,labels=axes[0].get_legend_handles_labels()
             fig.legend(handles,labels,loc='outside upper center',ncol=3)
             axes[-1].tick_params(axis='x',rotation=25)
-            fig.savefig(output/'CpuStreamBegin.png',dpi=160)
+            fig.savefig(output/'CPUStreamBegin.png',dpi=160)
             plt.close(fig)
         if cpu_work:
             fig,axes=plt.subplots(2,1,figsize=(12,8),sharex=True,layout='constrained')

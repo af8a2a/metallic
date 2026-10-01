@@ -105,12 +105,12 @@ bool EditorApplication::runDlssCameraSmokeTest()
         if (!condition) { spdlog::error("[Smoke DLSS Camera] {}", message); }
         return condition;
     };
-    auto* dlssNode = renderGraph_.findNode("DlssRr");
-    if (dlssNode == nullptr) { dlssNode = renderGraph_.findNode("DlssSr"); }
+    auto* dlssNode = renderGraph_.findNode("DLSSRR");
+    if (dlssNode == nullptr) { dlssNode = renderGraph_.findNode("DLSSSR"); }
     if (!expect(dlssNode != nullptr && graphExecutor_->renderView() == &viewportView_, "DLSS graph is bound to the viewport view")) {
         return false;
     }
-    const bool rasterCamera = dlssNode->type == "StreamlineDlssSrPass";
+    const bool rasterCamera = dlssNode->type == "StreamlineDLSSSRPass";
     const auto initialView = viewportCameraProperties();
     const std::string preview = activePreviewOutput_;
     for (const auto& node : renderGraph_.nodes()) {
@@ -219,7 +219,7 @@ bool EditorApplication::runVisibilityPreviewSmokeTest()
     const auto readPixels = [&](std::vector<uint32_t>& pixels, const char* mode) {
         if (!frameSubmissions_.wait() || !graphExecutor_->waitForSubmittedWork()) { return false; }
         auto* output = graphExecutor_->outputResource(activePreviewOutput_);
-        if (!expect(output != nullptr && output->desc.format == render::Format::Rgba8Unorm,
+        if (!expect(output != nullptr && output->desc.format == render::Format::RGBA8Unorm,
                 "Diagnostic is an RGBA8 output")) { return false; }
         pixels.resize(size_t(output->desc.width) * output->desc.height);
         std::unique_ptr<render::Buffer> readback;
@@ -356,11 +356,11 @@ bool EditorApplication::runSceneSwitchSmokeTest()
             return false;
         }
         auto* output = graphExecutor_->outputResource(activePreviewOutput_);
-        if (!output || (output->desc.format != render::Format::Rgba8Unorm && output->desc.format != render::Format::Rgba16Sfloat)) {
+        if (!output || (output->desc.format != render::Format::RGBA8Unorm && output->desc.format != render::Format::RGBA16Sfloat)) {
             spdlog::error("[Smoke Full Switch] Unsupported readback output '{}' format={}", activePreviewOutput_, output ? int(output->desc.format) : -1);
             return false;
         }
-        const bool hdr = output->desc.format == render::Format::Rgba16Sfloat;
+        const bool hdr = output->desc.format == render::Format::RGBA16Sfloat;
         const size_t pixelCount = size_t(output->desc.width) * output->desc.height;
         std::unique_ptr<render::Buffer> readback;
         render::RenderFrameContext frame;
@@ -527,7 +527,7 @@ bool EditorApplication::runSliderDebugSmokeTest()
     const uint32_t sliderId = slider->id;
     const uint64_t historyRevision = historyResources_.invalidationRevision();
     const auto split = [&] { return renderGraph_.findNode(sliderId)->runtimeProperties.value("splitPosition", 0.5f); };
-    const bool nrComparison = slider->type == "DlssNrPass";
+    const bool nrComparison = slider->type == "DLSSNRPass";
     std::string rawOutput;
     for (const auto& edge : renderGraph_.edges()) {
         if (edge.dstPass == slider->name) { rawOutput = edge.srcPass + "." + edge.srcField; break; }

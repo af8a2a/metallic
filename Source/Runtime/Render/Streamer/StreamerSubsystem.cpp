@@ -10,7 +10,7 @@
 #include "Runtime/Render/Streamer/StreamedImage.h"
 #include "Runtime/Render/Streamer/SceneStreamingConfig.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
-#include "Runtime/Render/Profiling/CpuProfile.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 
 namespace metallic::render {
 struct SceneStreamingState {
@@ -63,7 +63,7 @@ void StreamerSubsystem::endFrame(const RenderSubsystemFrameContext&)
     uploads_.endFrame();
 }
 
-void StreamerSubsystem::prepareBeforePacing(CpuProfileRecorder* profiler)
+void StreamerSubsystem::prepareBeforePacing(CPUProfileRecorder* profiler)
 {
     for (const auto& stream : streams_) {
         // A released view must not advance residency or launch more I/O.
@@ -240,10 +240,10 @@ Result<> StreamerSubsystem::recordSceneBegin(PreparedSceneResources& prepared,
             if (inserted) {
                 entry->second.resources = resources;
                 entry->second.frameIndex = context.frameIndex();
-                CpuProfileRecorder profiler;
+                CPUProfileRecorder profiler;
                 Result<> result;
                 {
-                    CpuProfileScope profile(&profiler, "Texture streaming");
+                    CPUProfileScope profile(&profiler, "Texture streaming");
                     result = resources->beginTextureStreaming(context.commandBuffer(), context.frameIndex(),
                         entry->second.feedback, &profiler, context.properties().value("benchmarkFreezeStreaming", false));
                 }

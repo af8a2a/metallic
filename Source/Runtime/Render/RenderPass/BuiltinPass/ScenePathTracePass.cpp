@@ -1,10 +1,10 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
-#include "Runtime/Render/GAPI/Vulkan/VulkanNrcWrapper.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNRCWrapper.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/MaterialBinning.h"
-#include "Runtime/Render/Profiling/CpuProfile.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -49,14 +49,14 @@ constexpr uint32_t kSharcMaintenanceBlockSize = 256;
 constexpr uint32_t kSharcDefaultMaxAccumulatedFrames = 20;
 constexpr uint32_t kSharcDefaultStaleFrameNum = 60;
 constexpr uint32_t kSharcDefaultUpdateStride = 5;
-constexpr uint32_t kNrcMaxPathVertices = 8;
+constexpr uint32_t kNRCMaxPathVertices = 8;
 
 enum class PathTracePermutation : uint32_t {
     Base = 0,
     SharcUpdate,
     SharcQuery,
-    NrcUpdate,
-    NrcQuery,
+    NRCUpdate,
+    NRCQuery,
     Count
 };
 
@@ -69,9 +69,9 @@ constexpr const char* toString(PathTracePermutation permutation)
         return "sharc-update";
     case PathTracePermutation::SharcQuery:
         return "sharc-query";
-    case PathTracePermutation::NrcUpdate:
+    case PathTracePermutation::NRCUpdate:
         return "nrc-update";
-    case PathTracePermutation::NrcQuery:
+    case PathTracePermutation::NRCQuery:
         return "nrc-query";
     default:
         return "?";
@@ -158,13 +158,13 @@ static constexpr OpenPBRVec3 kOpenPBRLtc[] = {
 constexpr uint32_t kOpenPBRLut2DBinding = 11;
 constexpr uint32_t kOpenPBRLut3DBinding = 12;
 constexpr uint32_t kEnvironmentImportancePdfBinding = 13;
-constexpr uint32_t kDlssRrAlbedoBinding = 14;
-constexpr uint32_t kDlssRrSpecularAlbedoBinding = 15;
-constexpr uint32_t kDlssRrNormalRoughnessBinding = 16;
-constexpr uint32_t kDlssRrMotionVectorsBinding = 17;
-constexpr uint32_t kDlssRrLinearDepthBinding = 18;
-constexpr uint32_t kDlssRrSpecularHitDistanceBinding = 19;
-constexpr uint32_t kDlssDepthBinding = 20;
+constexpr uint32_t kDLSSRRAlbedoBinding = 14;
+constexpr uint32_t kDLSSRRSpecularAlbedoBinding = 15;
+constexpr uint32_t kDLSSRRNormalRoughnessBinding = 16;
+constexpr uint32_t kDLSSRRMotionVectorsBinding = 17;
+constexpr uint32_t kDLSSRRLinearDepthBinding = 18;
+constexpr uint32_t kDLSSRRSpecularHitDistanceBinding = 19;
+constexpr uint32_t kDLSSDepthBinding = 20;
 constexpr uint32_t kOpenPBRLut2DCount = 6;
 constexpr uint32_t kOpenPBRLut3DCount = 2;
 constexpr uint32_t kOpenPBRLutSize = OpenPBR_EnergyTableSize;
@@ -467,7 +467,7 @@ private:
         result = device.createTexture(TextureDesc{
                 .type = depth > 1 ? TextureType::Texture3D : TextureType::Texture2D,
                 .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-                .format = Format::Rgba32Sfloat,
+                .format = Format::RGBA32Sfloat,
                 .width = width,
                 .height = height,
                 .depth = depth,
@@ -483,7 +483,7 @@ private:
 
         result = device.createTextureView(*outTexture.texture,
             TextureViewDesc{
-                .format = Format::Rgba32Sfloat,
+                .format = Format::RGBA32Sfloat,
                 .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { outTexture.view = std::move(rhiValue); });
         if (!result || outTexture.view == nullptr) {
@@ -637,30 +637,30 @@ public:
         auto& color = reflection.addTextureOutput("color", visibilityDeferred_ ? "OpenPBR deferred physical HDR" :
             (realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene"))
             .storageReadWrite();
-        color.format = (exportGuides || (visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false))) ? Format::Rgba16Sfloat :
-                ((visibilityDeferred_ || boolProperty(properties(), "outputLinear", false)) ? Format::Rgba32Sfloat : Format::Rgba8Unorm);
-        if (cacheModeFromProperties(properties()) == kScenePathTraceCacheModeNrc) {
+        color.format = (exportGuides || (visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false))) ? Format::RGBA16Sfloat :
+                ((visibilityDeferred_ || boolProperty(properties(), "outputLinear", false)) ? Format::RGBA32Sfloat : Format::RGBA8Unorm);
+        if (cacheModeFromProperties(properties()) == kScenePathTraceCacheModeNRC) {
             color.stageAccess(RenderGraphResourceAccess::TextureStorageReadWrite, RenderGraphPassKind::Unsafe);
         }
         if (visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false)) {
             reflection.addTextureOutput("motionVectors", "Unjittered current-to-previous UV motion")
-                .storageReadWrite().format = Format::Rg16Sfloat;
+                .storageReadWrite().format = Format::RG16Sfloat;
             reflection.addTextureOutput("deviceDepth", "Raster hardware depth for DLSS-SR")
                 .storageReadWrite().format = Format::R32Sfloat;
         }
         if (exportGuides) {
             reflection.addTextureOutput("albedo", "DLSS-RR diffuse albedo guide")
                 .storageReadWrite()
-                .format = Format::Rgba16Sfloat;
+                .format = Format::RGBA16Sfloat;
             reflection.addTextureOutput("specularAlbedo", "DLSS-RR specular albedo guide")
                 .storageReadWrite()
-                .format = Format::Rgba16Sfloat;
+                .format = Format::RGBA16Sfloat;
             reflection.addTextureOutput("normalRoughness", "DLSS-RR packed normal and roughness guide")
                 .storageReadWrite()
-                .format = Format::Rgba16Sfloat;
+                .format = Format::RGBA16Sfloat;
             reflection.addTextureOutput("motionVectors", "DLSS-RR motion vector guide")
                 .storageReadWrite()
-                .format = Format::Rg16Sfloat;
+                .format = Format::RG16Sfloat;
             reflection.addTextureOutput("linearDepth", "DLSS-RR linear depth guide")
                 .storageReadWrite()
                 .format = Format::R32Sfloat;
@@ -918,11 +918,11 @@ public:
                     "ScenePathTracePass radiance cache requires the standard BSDF without denoiser guides; cache disabled\n";
             }
 #if METALLIC_HAS_NRC
-            else if (cacheMode == kScenePathTraceCacheModeNrc && !context.device->capabilities().rayQuery) {
+            else if (cacheMode == kScenePathTraceCacheModeNRC && !context.device->capabilities().rayQuery) {
                 cacheMode = kScenePathTraceCacheModeOff;
             }
 #else
-            else if (cacheMode == kScenePathTraceCacheModeNrc) {
+            else if (cacheMode == kScenePathTraceCacheModeNRC) {
                 cacheMode = kScenePathTraceCacheModeOff;
                 cacheWarning =
                     "ScenePathTracePass built without the NRC SDK (METALLIC_HAS_NRC=0); NRC cache disabled\n";
@@ -977,9 +977,9 @@ public:
             (programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid() &&
                 programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid() &&
                 sharcClearProgram_.valid() && sharcResolveProgram_.valid());
-        const bool nrcReady = cacheMode_ != kScenePathTraceCacheModeNrc ||
-            (programs_[static_cast<size_t>(PathTracePermutation::NrcUpdate)].valid() &&
-                programs_[static_cast<size_t>(PathTracePermutation::NrcQuery)].valid() &&
+        const bool nrcReady = cacheMode_ != kScenePathTraceCacheModeNRC ||
+            (programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)].valid() &&
+                programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)].valid() &&
                 tonemapProgram_.valid());
         if (baseReady && sharcReady && nrcReady) {
             return {};
@@ -1114,31 +1114,31 @@ public:
         }
         if (exportGuides) {
             baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDlssRrAlbedoBinding,
+                .binding = kDLSSRRAlbedoBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDlssRrSpecularAlbedoBinding,
+                .binding = kDLSSRRSpecularAlbedoBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDlssRrNormalRoughnessBinding,
+                .binding = kDLSSRRNormalRoughnessBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDlssRrMotionVectorsBinding,
+                .binding = kDLSSRRMotionVectorsBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDlssRrLinearDepthBinding,
+                .binding = kDLSSRRLinearDepthBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDlssRrSpecularHitDistanceBinding,
+                .binding = kDLSSRRSpecularHitDistanceBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
             baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDlssDepthBinding,
+                .binding = kDLSSDepthBinding,
                 .kind = ComputeResourceBindingKind::StorageImage,
             });
         }
@@ -1440,27 +1440,27 @@ public:
         }
 
 #if METALLIC_HAS_NRC
-        if (cacheMode_ == kScenePathTraceCacheModeNrc) {
+        if (cacheMode_ == kScenePathTraceCacheModeNRC) {
             const std::vector<ComputeProgramBindingDesc> nrcBindings = [cacheBindings]() {
                 std::vector<ComputeProgramBindingDesc> bindings = cacheBindings;
                 bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceNrcQueryPathInfoBinding,
+                    .binding = kScenePathTraceNRCQueryPathInfoBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
                 bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceNrcTrainingPathInfoBinding,
+                    .binding = kScenePathTraceNRCTrainingPathInfoBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
                 bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceNrcTrainingPathVerticesBinding,
+                    .binding = kScenePathTraceNRCTrainingPathVerticesBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
                 bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceNrcQueryRadianceParamsBinding,
+                    .binding = kScenePathTraceNRCQueryRadianceParamsBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
                 bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceNrcCountersBinding,
+                    .binding = kScenePathTraceNRCCountersBinding,
                     .kind = ComputeResourceBindingKind::StorageBuffer,
                 });
                 return bindings;
@@ -1469,12 +1469,12 @@ public:
             const std::array<SlangMacroDefine, 1> nrcUpdateDefines{
                 SlangMacroDefine{.name = "NRC_UPDATE", .value = "1"},
             };
-            if (!programs_[static_cast<size_t>(PathTracePermutation::NrcUpdate)].valid()) {
+            if (!programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)].valid()) {
                 result = compilePermutation(
-                    PathTracePermutation::NrcUpdate,
+                    PathTracePermutation::NRCUpdate,
                     nrcUpdateDefines,
                     nrcBindings,
-                    programs_[static_cast<size_t>(PathTracePermutation::NrcUpdate)]);
+                    programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)]);
                 if (!result) {
                     return result;
                 }
@@ -1483,12 +1483,12 @@ public:
             const std::array<SlangMacroDefine, 1> nrcQueryDefines{
                 SlangMacroDefine{.name = "NRC_QUERY", .value = "1"},
             };
-            if (!programs_[static_cast<size_t>(PathTracePermutation::NrcQuery)].valid()) {
+            if (!programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)].valid()) {
                 result = compilePermutation(
-                    PathTracePermutation::NrcQuery,
+                    PathTracePermutation::NRCQuery,
                     nrcQueryDefines,
                     nrcBindings,
-                    programs_[static_cast<size_t>(PathTracePermutation::NrcQuery)]);
+                    programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)]);
                 if (!result) {
                     return result;
                 }
@@ -1555,7 +1555,7 @@ public:
             }
         }
 #else
-        if (cacheMode_ == kScenePathTraceCacheModeNrc) {
+        if (cacheMode_ == kScenePathTraceCacheModeNRC) {
             // Already downgraded to off above; nothing to compile.
         }
 #endif
@@ -1580,15 +1580,15 @@ public:
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
-        CpuProfileRecorder profiler;
+        CPUProfileRecorder profiler;
         const auto result = executeProfiled(context, visibilityDeferred_ ? &profiler : nullptr);
         context.publishCpuProfile(profiler.sections);
         return result;
     }
 
-    Result<> executeProfiled(RenderGraphExecutionContext& context, CpuProfileRecorder* profiler)
+    Result<> executeProfiled(RenderGraphExecutionContext& context, CPUProfileRecorder* profiler)
     {
-        CpuProfileScope profile(profiler, "Validate scene and environment");
+        CPUProfileScope profile(profiler, "Validate scene and environment");
         std::string syncLog;
         // RenderGraph prepares a single scene generation before recording any pass.
         // StreamerSubsystem publishes geometry, material tables and RTAS together;
@@ -1684,10 +1684,10 @@ public:
             } else {
                 renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)];
             }
-        } else if (cacheMode == kScenePathTraceCacheModeNrc) {
+        } else if (cacheMode == kScenePathTraceCacheModeNRC) {
 #if METALLIC_HAS_NRC
-            if (!programs_[static_cast<size_t>(PathTracePermutation::NrcQuery)].valid() ||
-                !programs_[static_cast<size_t>(PathTracePermutation::NrcUpdate)].valid() ||
+            if (!programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)].valid() ||
+                !programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)].valid() ||
                 !tonemapProgram_.valid()) {
                 cacheMode = kScenePathTraceCacheModeOff;
                 renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
@@ -1731,14 +1731,14 @@ public:
         push.materialTextureCount = sceneResources_.materialTextureCount();
         push.ntcTextureSetCount = sceneResources_.neuralTextures().textureSetCount();
         push.cacheMode = cacheMode;
-        push.outputLinear = visibilityDeferred_ || cacheMode == kScenePathTraceCacheModeNrc ||
+        push.outputLinear = visibilityDeferred_ || cacheMode == kScenePathTraceCacheModeNRC ||
             boolProperty(context.properties(), "outputLinear", false) ? 1u : 0u;
         TextureView* visibilityView = nullptr;
         TextureView* visibilityDepthView = nullptr;
         TextureView* domainView = nullptr;
         const GPUSceneGlobalBufferViews* deferredViews = nullptr;
         const ClusterLightGridSnapshot* deferredGrid = nullptr;
-        const MeshletStreamDeferredGpuResourcesView* deferredStream = nullptr;
+        const MeshletStreamDeferredGPUResourcesView* deferredStream = nullptr;
         Buffer* deferredFrameInfo = nullptr;
         VisibilityBufferFrameInfo info;
         profile.next("Prepare visibility resources");
@@ -1757,7 +1757,7 @@ public:
             std::memcpy(&info, mapped, sizeof(info));
             rasterInfo.buffer()->unmap();
             const auto domain = context.inputTexture("domain");
-            if ((info.reserved & 1u) != 0u && (!domain.valid() || domain.texture()->desc().format != Format::Rgba32Sfloat)) {
+            if ((info.reserved & 1u) != 0u && (!domain.valid() || domain.texture()->desc().format != Format::RGBA32Sfloat)) {
                 spdlog::error("Displaced VBuffer requires the matching domain graph input");
                 return makeError(Error::InvalidArgument);
             }
@@ -1986,7 +1986,7 @@ public:
                     shadow = {.texture = externalShadow.texture(), .shadow = externalShadow.view(),
                         .parameters = externalParameters.buffer()};
                 } else {
-                    CpuProfileScope shadowProfile(profiler, "Record inline shadows");
+                    CPUProfileScope shadowProfile(profiler, "Record inline shadows");
                     // Preserve realtime graphs authored before the explicit shadow stage.
                     if (context.streamer() == nullptr) { return makeError(Error::InvalidArgument); }
                     ViewConstants shadowView{};
@@ -2059,7 +2059,7 @@ public:
                 bindings.push_back({.binding = 83 + i, .buffer = streamBuffers[i]});
             }
             if (boolProperty(context.properties(), "materialBinning", true)) {
-                CpuProfileScope binningProfile(profiler, "Record material binning");
+                CPUProfileScope binningProfile(profiler, "Record material binning");
                 std::string binningLog;
                 result = materialBinning_.record(*device_, context.commandBuffer(), {
                     .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer
@@ -2089,31 +2089,31 @@ public:
         }
         if (exportGuides) {
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDlssRrAlbedoBinding,
+                .binding = kDLSSRRAlbedoBinding,
                 .textureView = albedo.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDlssRrSpecularAlbedoBinding,
+                .binding = kDLSSRRSpecularAlbedoBinding,
                 .textureView = specularAlbedo.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDlssRrNormalRoughnessBinding,
+                .binding = kDLSSRRNormalRoughnessBinding,
                 .textureView = normalRoughness.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDlssRrMotionVectorsBinding,
+                .binding = kDLSSRRMotionVectorsBinding,
                 .textureView = motionVectors.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDlssRrLinearDepthBinding,
+                .binding = kDLSSRRLinearDepthBinding,
                 .textureView = linearDepth.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDlssRrSpecularHitDistanceBinding,
+                .binding = kDLSSRRSpecularHitDistanceBinding,
                 .textureView = specularHitDistance.view(),
             });
             bindings.push_back(ComputeDispatchBinding{
-                .binding = kDlssDepthBinding,
+                .binding = kDLSSDepthBinding,
                 .textureView = depth.view(),
             });
         }
@@ -2161,14 +2161,14 @@ public:
             if (!result) {
                 return result;
             }
-        } else if (cacheMode == kScenePathTraceCacheModeNrc) {
+        } else if (cacheMode == kScenePathTraceCacheModeNRC) {
 #if METALLIC_HAS_NRC
             result = executeNrcFrame(
                 context,
                 push,
                 bindings,
-                programs_[static_cast<size_t>(PathTracePermutation::NrcUpdate)],
-                programs_[static_cast<size_t>(PathTracePermutation::NrcQuery)],
+                programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)],
+                programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)],
                 historyCurrentView,
                 historyPreviousView);
             if (!result) {
@@ -2320,7 +2320,7 @@ private:
         const bool accumulationEnabled = (!realtime_ || visibilityDeferred_) && !debugViewEnabled &&
             !(visibilityDeferred_ && (context.properties().value("lightingMode", "reference") == "realtime" ||
                 boolProperty(context.properties(), "exportUpscalerGuides", false))) &&
-            (push.cacheMode == kScenePathTraceCacheModeNrc ||
+            (push.cacheMode == kScenePathTraceCacheModeNRC ||
                 boolProperty(context.properties(), "accumulate", true));
         push.enableAccumulation = accumulationEnabled && history != nullptr ? 1u : 0u;
         push.hasHistory = 0;
@@ -2333,11 +2333,11 @@ private:
             return {};
         }
 
-        const bool nrcHistory = push.cacheMode == kScenePathTraceCacheModeNrc;
+        const bool nrcHistory = push.cacheMode == kScenePathTraceCacheModeNRC;
         // NRC's native resolve shader declares rgba32f storage output.
-        const Format historyFormat = nrcHistory ? Format::Rgba32Sfloat :
-            exportDenoiserGuides(context.properties()) ? Format::Rgba16Sfloat :
-            ((visibilityDeferred_ || boolProperty(context.properties(), "outputLinear", false)) ? Format::Rgba32Sfloat : Format::Rgba8Unorm);
+        const Format historyFormat = nrcHistory ? Format::RGBA32Sfloat :
+            exportDenoiserGuides(context.properties()) ? Format::RGBA16Sfloat :
+            ((visibilityDeferred_ || boolProperty(context.properties(), "outputLinear", false)) ? Format::RGBA32Sfloat : Format::RGBA8Unorm);
         const TextureDesc historyDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled |
@@ -2388,7 +2388,7 @@ private:
             return kScenePathTraceCacheModeSharc;
         }
         if (mode == "nrc" || mode == "NRC") {
-            return kScenePathTraceCacheModeNrc;
+            return kScenePathTraceCacheModeNRC;
         }
         return kScenePathTraceCacheModeOff;
     }
@@ -2750,7 +2750,7 @@ private:
             std::min(idealTraining.x, context.width()),
             std::min(idealTraining.y, context.height())};
         settings.samplesPerPixel = 1;
-        settings.maxPathVertices = kNrcMaxPathVertices;
+        settings.maxPathVertices = kNRCMaxPathVertices;
 
         const bool reconfigure =
             !nrcConfigured_ || settings != nrcContextSettings_ || settings.requestReset;
@@ -2787,7 +2787,7 @@ private:
             copyFloat4(push.previousEye, params.sharcCameraPositionPrev);
             params.sharcEntriesNum = 0;
             params.frameIndex = push.accumulationFrame;
-            params.cacheMode = kScenePathTraceCacheModeNrc;
+            params.cacheMode = kScenePathTraceCacheModeNRC;
             params.width = push.width;
             params.height = push.height;
             params.trainingWidth = nrcContextSettings_.trainingDimensions.x;
@@ -2829,11 +2829,11 @@ private:
             nrc::BufferIdx::Counter,
         };
         static constexpr uint32_t kTraceBindings[] = {
-            kScenePathTraceNrcQueryPathInfoBinding,
-            kScenePathTraceNrcTrainingPathInfoBinding,
-            kScenePathTraceNrcTrainingPathVerticesBinding,
-            kScenePathTraceNrcQueryRadianceParamsBinding,
-            kScenePathTraceNrcCountersBinding,
+            kScenePathTraceNRCQueryPathInfoBinding,
+            kScenePathTraceNRCTrainingPathInfoBinding,
+            kScenePathTraceNRCTrainingPathVerticesBinding,
+            kScenePathTraceNRCQueryRadianceParamsBinding,
+            kScenePathTraceNRCCountersBinding,
         };
         for (size_t index = 0; index < std::size(kTraceBuffers); ++index) {
             traceBindings.push_back(ComputeDispatchBinding{
@@ -2862,7 +2862,7 @@ private:
         result = importBuffer(resources, "cacheParams", cacheParamsBuffer_.get());
         if (!result) { return result; }
         resources.uses.push_back({"cacheParams", Access::BufferShaderRead});
-        std::array<std::string, vulkan::NrcIntegration::kBufferCount> names;
+        std::array<std::string, vulkan::NRCIntegration::kBufferCount> names;
         std::vector<RenderGraphStageUse> sdkUses;
         for (uint32_t i = 0; i < names.size(); ++i) {
             auto* buffer = nrc_.buffer(i);
@@ -3064,7 +3064,7 @@ private:
         std::string name(kScenePathTraceHistoryPrefix);
         name += context.passName();
         name += ".accumulation";
-        if (cacheMode == kScenePathTraceCacheModeNrc) {
+        if (cacheMode == kScenePathTraceCacheModeNRC) {
             name += ".hdr";
         }
         return name;
@@ -3306,7 +3306,7 @@ private:
     uint32_t cacheMode_ = kScenePathTraceCacheModeOff;
     struct CacheParamsAllocation {
         std::shared_ptr<Buffer> buffer;
-        GpuCompletionPoint completion;
+        GPUCompletionPoint completion;
     };
     std::vector<CacheParamsAllocation> cacheParamsAllocations_;
     std::shared_ptr<Buffer> cacheParamsBuffer_;
@@ -3318,7 +3318,7 @@ private:
     bool sharcClearPending_ = false;
     std::shared_ptr<bool> sharcDiscarded_ = std::make_shared<bool>(false);
 #if METALLIC_HAS_NRC
-    vulkan::NrcIntegration nrc_;
+    vulkan::NRCIntegration nrc_;
     nrc::ContextSettings nrcContextSettings_{};
     bool nrcConfigured_ = false;
     std::shared_ptr<bool> nrcEndFramePending_ = std::make_shared<bool>(false);

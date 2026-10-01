@@ -43,7 +43,7 @@ enum class NsightDomain {
 enum class NsightCategory : uint32_t {
     Generic = 0,
     Frame = 1,
-    EditorUi = 2,
+    EditorUI = 2,
     RenderGraph = 3,
     RenderPass = 4,
     QueueSubmit = 5,
@@ -73,7 +73,7 @@ inline uint32_t nsightCategoryColor(NsightCategory category)
     switch (category) {
     case NsightCategory::Frame:
         return 0xff0072b2u;
-    case NsightCategory::EditorUi:
+    case NsightCategory::EditorUI:
         return 0xffcc79a7u;
     case NsightCategory::RenderGraph:
         return 0xff56b4e9u;

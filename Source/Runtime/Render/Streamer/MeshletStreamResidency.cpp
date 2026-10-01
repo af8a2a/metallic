@@ -1,6 +1,6 @@
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
 #include "Runtime/Render/GAPI/StreamUploadCompletion.h"
-#include "Runtime/Render/Profiling/CpuProfile.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -406,9 +406,9 @@ void MeshletStreamResidencyManager::reset()
     maxEvictionBytesPerFrame_ = 0;
 }
 
-void MeshletStreamResidencyManager::beginFrame(CpuProfileRecorder* profiler)
+void MeshletStreamResidencyManager::beginFrame(CPUProfileRecorder* profiler)
 {
-    CpuProfileScope profile(profiler, "Reset / latency tracking");
+    CPUProfileScope profile(profiler, "Reset / latency tracking");
     ++frameIndex_;
     throughput_.sample(meshletStreamTimeMicroseconds(), traffic_);
     if (latency_) {
@@ -570,10 +570,10 @@ void MeshletStreamResidencyManager::completeUploadPages(
     }
 }
 
-void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder* profiler)
+void MeshletStreamResidencyManager::consumeReadyRequestTasks(CPUProfileRecorder* profiler)
 {
     if (requestTaskQueue_.canPop(frameIndex_, true)) {
-        CpuProfileScope profile(profiler, "Select latest request task");
+        CPUProfileScope profile(profiler, "Select latest request task");
         const uint32_t taskIndex = requestTaskQueue_.pop();
         uint32_t latestTaskIndex = taskIndex;
         while (requestTaskQueue_.canPop(frameIndex_, false)) {
@@ -661,7 +661,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder*
                 return a.schedulingPriority != b.schedulingPriority
                     ? a.schedulingPriority < b.schedulingPriority : a.pageIndex > b.pageIndex;
             };
-            enum class DeferredReason { None, Prefetch, Io, Budget };
+            enum class DeferredReason { None, Prefetch, IO, Budget };
             const auto deferredReason = [&](const PageRequest& request) {
                 if (!request.needsAllocation) { return DeferredReason::None; }
                 if (request.prefetch &&
@@ -670,7 +670,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder*
                     return DeferredReason::Prefetch;
                 }
                 if (pageLoader_.ready() && queuedUploadCount() >= uint64_t(maxPageLoadsInFlight_) * 2u) {
-                    return DeferredReason::Io;
+                    return DeferredReason::IO;
                 }
                 if (budgetAdmissionExhausted_ &&
                     ((maxResidentPages_ != 0 && activePages_.size() >= maxResidentPages_) ||
@@ -685,7 +685,7 @@ void MeshletStreamResidencyManager::consumeReadyRequestTasks(CpuProfileRecorder*
                     if (reason == DeferredReason::Prefetch) { ++stats_.totalPrefetchDeferred; }
                     else {
                         ++consumed;
-                        if (reason == DeferredReason::Io) { ++stats_.frameAdmissionDeferredCount; }
+                        if (reason == DeferredReason::IO) { ++stats_.frameAdmissionDeferredCount; }
                         else {
                             ++stats_.cpuWork.budgetRetrySuppressed;
                             ++stats_.frameAllocationDeferredCount;
@@ -907,7 +907,7 @@ bool MeshletStreamResidencyManager::unloadPage(uint32_t pageIndex)
 
 uint32_t MeshletStreamResidencyManager::consumeGpuRequests(std::span<const uint32_t> pageIds)
 {
-    return consumeGpuRequests(StreamGpuRequestBatch{
+    return consumeGpuRequests(StreamGPURequestBatch{
         .loadPageIds = pageIds,
         .loadRequestCounter = static_cast<uint32_t>(std::min<uint64_t>(
             pageIds.size(),
@@ -915,9 +915,9 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(std::span<const uint3
     });
 }
 
-uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuRequestBatch& requests, CpuProfileRecorder* profiler)
+uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGPURequestBatch& requests, CPUProfileRecorder* profiler)
 {
-    CpuProfileScope profile(profiler, "Deduplicate loads");
+    CPUProfileScope profile(profiler, "Deduplicate loads");
     if (asset_ == nullptr) {
         return 0;
     }
@@ -942,7 +942,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     stats_.totalGpuInvalidRequestCount += requests.invalidPageCounter;
 
     auto& uniqueRequests = requestScratch_;
-    CpuProfileScope detail(profiler, "Prepare load containers");
+    CPUProfileScope detail(profiler, "Prepare load containers");
     uniqueRequests.clear();
     uniqueRequests.reserve(requests.loadPageIds.size());
     detail.next("Validate / merge loads");
@@ -993,7 +993,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
     detail.end();
     profile.next("Deduplicate unloads");
     std::vector<uint32_t> uniqueUnloadRequests;
-    CpuProfileScope unloadDetail(profiler, "Prepare unused-page set");
+    CPUProfileScope unloadDetail(profiler, "Prepare unused-page set");
     uniqueUnloadRequests.reserve(requests.unloadPageIds.size());
     for (uint32_t word : unloadRequestTouchedWords_) { unloadRequestBits_[word] = 0; }
     unloadRequestTouchedWords_.clear();
@@ -1115,7 +1115,7 @@ uint32_t MeshletStreamResidencyManager::consumeGpuRequests(const StreamGpuReques
         return 0;
     }
 
-    CpuProfileScope admission(profiler, "Queue request task");
+    CPUProfileScope admission(profiler, "Queue request task");
     const uint32_t taskIndex = requestTaskQueue_.acquireTaskIndex();
     if (taskIndex == kInvalidStreamingTaskIndex) {
         ++stats_.frameRequestTaskFailureCount;
@@ -1143,10 +1143,10 @@ uint32_t MeshletStreamResidencyManager::processUploads(
     Streamer& streamer,
     Buffer& destination,
     uint32_t maxUploads,
-    const UploadObserver& observer, CpuProfileRecorder* profiler,
-    uint64_t maxUploadBytesPerFrame, const GpuUploadObserver& gpuObserver)
+    const UploadObserver& observer, CPUProfileRecorder* profiler,
+    uint64_t maxUploadBytesPerFrame, const GPUUploadObserver& gpuObserver)
 {
-    CpuProfileScope profile(profiler, "Sort queued loads");
+    CPUProfileScope profile(profiler, "Sort queued loads");
     if (asset_ == nullptr) {
         return 0;
     }
@@ -1200,7 +1200,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
                     page.deviceSizeBytes > maxUploadBytesPerFrame - stats_.frameUploadBytes - bytes)) { break; }
             bytes += page.deviceSizeBytes;
             ++count;
-            if (asset_->pages()[id].compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GpuTiles)) {
+            if (asset_->pages()[id].compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GPUTiles)) {
                 encodedBytes += page.deviceSizeBytes;
             }
             if (encodedBytes >= gpuDecompressionMinBatchBytes_) { return true; }
@@ -1262,7 +1262,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             if (latency_) {
                 const auto sample = latency_->find(loadedPage.pageIndex);
                 if (sample != nullptr) {
-                    latency_->observe(MeshletStreamLatencyStage::IoQueue, sample->enqueueTime, loadedPage.startedMicroseconds);
+                    latency_->observe(MeshletStreamLatencyStage::IOQueue, sample->enqueueTime, loadedPage.startedMicroseconds);
                     latency_->observe(MeshletStreamLatencyStage::Decode, loadedPage.startedMicroseconds, loadedPage.completedMicroseconds);
                 }
             }
@@ -1284,7 +1284,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             traffic_.loadedStoredBytes += asset_->pages()[loadedPage.pageIndex].payloadSize;
             traffic_.preparedDeviceBytes += page.deviceSizeBytes;
             if (gpuDecompression_ && !loadedPage.gpuEncoded &&
-                asset_->pages()[loadedPage.pageIndex].compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GpuTiles)) {
+                asset_->pages()[loadedPage.pageIndex].compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GPUTiles)) {
                 ++traffic_.smallBatchCpuPages;
             }
             preparedPageLoads_.push_back(std::move(loadedPage));
@@ -1371,8 +1371,8 @@ uint32_t MeshletStreamResidencyManager::processUploads(
         }
 
         std::span<const uint8_t> devicePayload;
-        scene::MeshletStreamGpuPage synchronousGpuPage;
-        const scene::MeshletStreamGpuPage* gpuPage = nullptr;
+        scene::MeshletStreamGPUPage synchronousGpuPage;
+        const scene::MeshletStreamGPUPage* gpuPage = nullptr;
         if (asynchronousLoads) {
             devicePayload = preparedPageLoads_.front().payload;
             if (preparedPageLoads_.front().gpuEncoded) { gpuPage = &preparedPageLoads_.front().gpuPage; }
@@ -1381,7 +1381,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             const std::span<const uint8_t> storedPayload = asset_->pagePayload(pageIndex);
             std::string decodeReason;
             const bool encoded = synchronousGpu &&
-                assetPage.compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GpuTiles);
+                assetPage.compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GPUTiles);
             const bool decoded = encoded
                 ? scene::inspectMeshletStreamGpuPage(assetPage, storedPayload, synchronousGpuPage, decodeReason)
                 : scene::decodeMeshletStreamPayloadForDevice(
@@ -1410,7 +1410,7 @@ uint32_t MeshletStreamResidencyManager::processUploads(
             traffic_.loadedStoredBytes += assetPage.payloadSize;
             traffic_.preparedDeviceBytes += page.deviceSizeBytes;
             if (gpuDecompression_ && !encoded &&
-                assetPage.compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GpuTiles)) { ++traffic_.smallBatchCpuPages; }
+                assetPage.compressionMode == uint32_t(scene::MeshletStreamPayloadCompression::GPUTiles)) { ++traffic_.smallBatchCpuPages; }
         }
 
         const StreamDataChunk chunk{
@@ -1665,10 +1665,10 @@ MeshletStreamResidencyStats MeshletStreamResidencyManager::stats(bool detailed) 
     return result;
 }
 
-size_t MeshletStreamResidencyManager::prepareEvictionCandidates(CpuProfileRecorder* profiler, uint32_t minimumAge)
+size_t MeshletStreamResidencyManager::prepareEvictionCandidates(CPUProfileRecorder* profiler, uint32_t minimumAge)
 {
     if (!evictionCandidatesBuilt_) {
-        CpuProfileScope profile(profiler, "Scan resident candidates");
+        CPUProfileScope profile(profiler, "Scan resident candidates");
         evictionCandidatesBuilt_ = true;
         evictionSortedCount_ = 0;
         evictionSortedMinimumAge_ = UINT64_MAX;
@@ -1697,7 +1697,7 @@ size_t MeshletStreamResidencyManager::prepareEvictionCandidates(CpuProfileRecord
             }
         }
     }
-    CpuProfileScope profile(profiler, "Sort cold candidates");
+    CPUProfileScope profile(profiler, "Sort cold candidates");
     const auto due = [this, minimumAge](const EvictionCandidate& candidate) {
         return minimumAge == 0 || (frameIndex_ >= candidate.lastUsedFrame &&
             frameIndex_ - candidate.lastUsedFrame >= minimumAge);
@@ -1723,9 +1723,9 @@ size_t MeshletStreamResidencyManager::prepareEvictionCandidates(CpuProfileRecord
         evictionCandidates_.begin() + evictionSortedCount_, due) - evictionCandidates_.begin());
 }
 
-uint32_t MeshletStreamResidencyManager::reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc, CpuProfileRecorder* profiler)
+uint32_t MeshletStreamResidencyManager::reclaimColdPages(const MeshletStreamColdPageReclaimDesc& desc, CPUProfileRecorder* profiler)
 {
-    CpuProfileScope profile(profiler, "Credit pending frees");
+    CPUProfileScope profile(profiler, "Credit pending frees");
     if (!residentDemandFeedback_ || !desc.retentionFrames || !desc.maxPages) { return 0; }
     const auto subtract = [](uint64_t a, uint64_t b) { return a > b ? a - b : 0; };
     uint64_t geometry = storage_.usedBytes();

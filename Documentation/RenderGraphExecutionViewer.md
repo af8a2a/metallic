@@ -50,10 +50,10 @@ Metallic currently allocates graph outputs separately and retains them across ex
 
 Capture does not install a render debug observer, force serial recording, disable pipelined submission, or wait for the GPU. Disabling it leaves the last snapshot available and skips new capture work.
 
-Build `MetallicRhiTests` before running focused checks:
+Build `MetallicRHITests` before running focused checks:
 
 ```powershell
-.\build-scheduling-release\tests\MetallicRhiTests.exe --gtest_filter='*render_graph_execution_viewer*:*resource_memory_info*:*render_graph_compute_stages*:*render_graph_stages*' --rhi-validation --rhi-async-compute
+.\build-scheduling-release\tests\MetallicRHITests.exe --gtest_filter='*render_graph_execution_viewer*:*resource_memory_info*:*render_graph_compute_stages*:*render_graph_stages*' --rhi-validation --rhi-async-compute
 ```
 
 The viewer test executes a small Vulkan graph, verifies pixel readback and allocation/queue information, generates ImGui PNGs using the real draw data, and exercises cell selection and capture controls. It also tests queue unification and frozen viewing after executor/device destruction. PNGs and logs are local test output, not source artifacts.
@@ -63,7 +63,7 @@ For the existing MiniZorah production regression, enable capture only on its las
 ```powershell
 $env:METALLIC_TEST_MINIZORAH = '1'
 $env:METALLIC_TEST_GRAPH_CAPTURE = '1'
-.\build-scheduling-release\tests\MetallicRhiTests.exe --gtest_filter='*minizorah_realtime_pipeline' --rhi-realtime --rhi-validation --rhi-async-compute --output-dir build-scheduling-release/viewer-minizorah
+.\build-scheduling-release\tests\MetallicRHITests.exe --gtest_filter='*minizorah_realtime_pipeline' --rhi-realtime --rhi-validation --rhi-async-compute --output-dir build-scheduling-release/viewer-minizorah
 ```
 
 This keeps the existing 180-frame sequence, resizing, shaded pixel/guide checks, and streaming budgets. It additionally saves `MiniZorahExecution.json` and three viewer PNGs. These screenshots render ImGui draw data from an actual Vulkan execution capture; they are not desktop window captures.

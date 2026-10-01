@@ -34,7 +34,7 @@
 | GPU 帧起点 → 终点 | 18.353 |
 | GPU 终点 → CPU wait 返回 | 0.321 |
 
-此帧发生 21 次扩容，容量合计 259.875 MiB；第 33 帧扩容 27 次、486 MiB，又产生 127.528 ms 的 GPU 开始前延迟。反向对照第 35 帧扩容 36 次、645.750 MiB，对应 114.383 ms 的 GPU 开始前延迟。等待热点在 `RenderGraphExecutor::waitForSubmittedWork` → `GpuCompletionPoint::wait` → `vkWaitSemaphores`，其等待时间不等于 GPU shader 执行时间。
+此帧发生 21 次扩容，容量合计 259.875 MiB；第 33 帧扩容 27 次、486 MiB，又产生 127.528 ms 的 GPU 开始前延迟。反向对照第 35 帧扩容 36 次、645.750 MiB，对应 114.383 ms 的 GPU 开始前延迟。等待热点在 `RenderGraphExecutor::waitForSubmittedWork` → `GPUCompletionPoint::wait` → `vkWaitSemaphores`，其等待时间不等于 GPU shader 执行时间。
 
 通过 `Queue::calibrateTimestamps` 将 GPU 时钟映射到 CPU steady clock。长帧的映射不确定度约 0.008～0.013 ms；GPU 完成后 CPU 返回约 0.17～0.44 ms，足以排除“GPU 已完成但 CPU 晚醒上百毫秒”作为这些帧的主因。GPU 起点在图的初始 view 准备后，因此该间隔也包含首个时间戳前的少量 GPU 设置，不能细分为纯 OS 排队时间。
 
@@ -79,7 +79,7 @@
 
 新增 `frame_upload_growth_burst` 用 64 个 20 KiB 页面验证分配放大上限，并在第 1 个帧槽中跨多次扩容记录拷贝，延迟 GPU 完成、推进 CPU 帧、销毁 Streamer 后再逐字节核对输出；同时验证容量溢出拒绝。该回归在线性对照下失败，倍增版本通过；既有 `frame_upload_lifetime` 也通过。
 
-- `Metallic` 和 `MetallicRhiTests` 构建通过；64 项相关 RHI 回归全部通过，包含 Streamer、帧/提交生命周期、GPU 时钟校准、RenderGraph GPU profiling、多队列、混合光栅和完整 MiniZorah VBuffer。
+- `Metallic` 和 `MetallicRHITests` 构建通过；64 项相关 RHI 回归全部通过，包含 Streamer、帧/提交生命周期、GPU 时钟校准、RenderGraph GPU profiling、多队列、混合光栅和完整 MiniZorah VBuffer。
 - 固定初始视角 10 秒质量检查：首个可见超标归零点为累计渲染 0.511 秒，末次最大可见 refinement 误差 1.499921 px。稳定 `roam-5.png` 与前序 `minizorah-cold-start/fixed-0/roam-5.png` 完全一致，SHA-256 为 `9824bc17b155a4f4466603fd488502c53c4e742cae5f8dca8b29669ace09aaf4`。
 - 64 MiB、10 秒压力检查：末次使用 62.79 MiB，驱逐 718 页，无无效请求、加载失败或意外取消；完整回退通过。末次仍有 3012 个可见超标 refinement，**仅验收预算及回退，不算 1.5 px 质量收敛**。
 
@@ -92,7 +92,7 @@ $env:METALLIC_MINIZORAH_LOW_LATENCY='1'
 $env:METALLIC_MINIZORAH_COMPLETION_UPLOADS='1'
 $env:METALLIC_MINIZORAH_LATENCY_ONLY='1'
 $env:METALLIC_MINIZORAH_STARTUP_TRACE_FRAMES='128'
-build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/minizorah-startup-stalls/repro
+build-relwithdebinfo/tests/MetallicRHITests.exe --gtest_filter=RHIRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/minizorah-startup-stalls/repro
 ```
 
 `MiniZorahStartupTrace.json` 包含 CPU 阶段、扩容字节、帧与 execution ID、GPU 时间跨度及校准不确定度。最大追踪 1024 帧 / 65536 个 CPU 事件，溢出计入 `droppedEvents`；本轮 128 帧结果均无事件丢失。默认关闭，不读取时钟或写日志；启用时在渲染线程内存中收集，检查点/结束时输出文件。关闭 `STARTUP_TRACE_FRAMES`、时长设为 60 可复测无追踪路线。

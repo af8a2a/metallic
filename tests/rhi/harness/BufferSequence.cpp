@@ -84,19 +84,19 @@ void validateBufferSequence(const Json& value)
 namespace metallic::tests {
 namespace {
 using namespace render;
-#define SEQUENCE_REQUIRE(expression) do { const auto& checked = (expression); if (!checked) { return RhiTestResult::fail(std::string(#expression) + ": " + resultToString(checked)); } } while (false)
-class BufferSequenceTest : public RhiTest {
+#define SEQUENCE_REQUIRE(expression) do { const auto& checked = (expression); if (!checked) { return RHITestResult::fail(std::string(#expression) + ": " + resultToString(checked)); } } while (false)
+class BufferSequenceTest : public RHITest {
 public:
     explicit BufferSequenceTest(bool injected = false) : injected_(injected)
-    { type = RhiTestType::Command; name = injected ? "buffer_sequence_injected_oracle" : "buffer_sequence"; }
+    { type = RHITestType::Command; name = injected ? "buffer_sequence_injected_oracle" : "buffer_sequence"; }
     std::optional<bench::Metadata> metadata() const override
     {
-        auto result = bench::gpuMetadata({"buffer.sequence.shadowModel", "buffer.sequence.replay"}, bench::Layer::Rhi,
+        auto result = bench::gpuMetadata({"buffer.sequence.shadowModel", "buffer.sequence.replay"}, bench::Layer::RHI,
             "core", injected_ ? "sequence-fixtures" : "property", {"sequence.json", "expected.bin", "readback.bin", "sequence-diff.json"});
         result.requirements.validation = bench::Validation::Synchronization;
         return result;
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         auto program = context.evidence ? bench::readJson(context.evidence->root() / "input.json").at("sequence") :
             bench::generateBufferSequence(1, 0, injected_);
@@ -115,7 +115,7 @@ public:
             SEQUENCE_REQUIRE(created); buffer = std::move(*created);
         }
         // All resources outlive the command drain, including exceptional exits.
-        bench::GpuCommands recording(context.graphicsQueue);
+        bench::GPUCommands recording(context.graphicsQueue);
         SEQUENCE_REQUIRE(recording.initialize(context.device));
         const auto transition = [&](uint32_t index, AccessBits access) -> Result<> {
             const SyncScope next{PipelineStageBits::Transfer, access};
@@ -181,7 +181,7 @@ public:
         bench::Json diff{{"schema", 1}, {"equal", true}, {"injectedOracle", injected_}, {"checkpoints", bench::Json::array()}};
         for (const auto& check : checkpoints) {
             const auto* mapped = static_cast<const uint32_t*>(check.buffer->map());
-            if (!mapped) { return RhiTestResult::fail("sequence readback map failed"); }
+            if (!mapped) { return RHITestResult::fail("sequence readback map failed"); }
             check.buffer->invalidate();
             std::vector<uint32_t> words(mapped, mapped + check.expected.size()); check.buffer->unmap();
             const auto mismatch = std::mismatch(words.begin(), words.end(), check.expected.begin());
@@ -200,7 +200,7 @@ public:
             context.evidence->bytes("expected.bin", std::as_bytes(std::span(expected)));
             context.evidence->json("sequence-diff.json", diff);
         }
-        return diff.at("equal").get<bool>() ? RhiTestResult::pass() : RhiTestResult::fail("buffer sequence readback mismatch");
+        return diff.at("equal").get<bool>() ? RHITestResult::pass() : RHITestResult::fail("buffer sequence readback mismatch");
     }
 private:
     bool injected_;
@@ -208,7 +208,7 @@ private:
 METALLIC_REGISTER_RHI_TEST(BufferSequenceTest);
 } // namespace
 // Explicit fault factory, excluded from the normal registry and GPU legacy run.
-std::vector<RhiTestRegistry::Factory> sequenceFaultFactories()
+std::vector<RHITestRegistry::Factory> sequenceFaultFactories()
 {
     return {[] { return std::make_unique<BufferSequenceTest>(true); }};
 }

@@ -1,5 +1,5 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
@@ -15,12 +15,12 @@ namespace metallic::tests {
 namespace {
 
 #define HYBRID_REQUIRE(expr) do { const auto checked = (expr); if (!checked) { \
-    return RhiTestResult::fail(std::string(#expr) + ": " + toString(checked) + " " + log); } } while (false)
+    return RHITestResult::fail(std::string(#expr) + ": " + toString(checked) + " " + log); } } while (false)
 
-class HybridRasterDepthTest final : public RhiTest {
+class HybridRasterDepthTest final : public RHITest {
 public:
-    HybridRasterDepthTest() { type = RhiTestType::Rendering; name = "hybrid_raster_depth_coverage_and_overflow"; }
-    RhiTestResult run(RhiTestContext& context) override
+    HybridRasterDepthTest() { type = RHITestType::Rendering; name = "hybrid_raster_depth_coverage_and_overflow"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         std::string log;
@@ -28,10 +28,10 @@ public:
         const auto created = createDevice({.applicationName = "Hybrid raster regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
             .enableMeshShader = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders and bindless heap"); }
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders and bindless heap"); }
         HYBRID_REQUIRE(created);
         if (!device->capabilities().shaderBufferInt64Atomics || device->capabilities().subPixelPrecisionBits > 8) {
-            return RhiTestResult::skip("Requires 64-bit buffer atomics and <=8 subpixel bits");
+            return RHITestResult::skip("Requires 64-bit buffer atomics and <=8 subpixel bits");
         }
         constexpr uint32_t width = 97, height = 73, pixelCount = width * height;
         std::vector<std::array<float, 4>> vertices;
@@ -73,7 +73,7 @@ public:
         HYBRID_REQUIRE(device->createBuffer({.size = vertices.size() * 16, .structureStride = 16,
             .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { input = std::move(rhiValue); }));
         void* mapped = input->map();
-        if (!mapped) { return RhiTestResult::fail("Vertex upload map failed"); }
+        if (!mapped) { return RHITestResult::fail("Vertex upload map failed"); }
         std::memcpy(mapped, vertices.data(), vertices.size() * 16); input->flush(); input->unmap();
         std::unique_ptr<BindlessHeap> heap;
         HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
@@ -145,11 +145,11 @@ public:
                 if ((plane < 2u || plane == 4u) && count != vertices.size()/3) { continue; }
                 if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
                 for (auto& output:pixels) {
-                    auto* data=output->map(); if (!data) { return RhiTestResult::fail("Prepared raster map failed"); }
+                    auto* data=output->map(); if (!data) { return RHITestResult::fail("Prepared raster map failed"); }
                     std::memset(data,0,pixelCount*8); output->flush(); output->unmap();
                 }
                 HYBRID_REQUIRE(commands->begin());
-                commands->bindBindlessHeap(*compareHeap); if (auto commandResult = commands->bindExecution((plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute).execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                commands->bindBindlessHeap(*compareHeap); if (auto commandResult = commands->bindExecution((plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 uint32_t push[]={vertexHandle.shaderIndex,handles[0].shaderIndex,handles[1].shaderIndex,width,height,reversed,sided,bits,plane,count};
                 commands->pushBindlessData(push,sizeof(push));
                 const uint32_t lanes=plane>=2u ? 128u : 64u;
@@ -160,23 +160,23 @@ public:
                 std::array<std::vector<uint64_t>,2> values;
                 for (size_t i=0;i<2;++i) {
                     pixels[i]->invalidate(); const auto* data=static_cast<const uint64_t*>(pixels[i]->map());
-                    if (!data) { return RhiTestResult::fail("Prepared raster read failed"); }
+                    if (!data) { return RHITestResult::fail("Prepared raster read failed"); }
                     values[i].assign(data,data+pixelCount); pixels[i]->unmap();
                 }
                 if (plane == 4u) {
-                    if (values[1][0] != 0 || values[1][1] < 1000) { return RhiTestResult::fail("SW workload coverage/atomic attempt count mismatch"); }
+                    if (values[1][0] != 0 || values[1][1] < 1000) { return RHITestResult::fail("SW workload coverage/atomic attempt count mismatch"); }
                     continue;
                 }
                 for (size_t i=0;i<pixelCount;++i) {
                     auto a=values[0][i],b=values[1][i]; written+=uint32_t(a)!=0;
-                    if (plane!=1u && a!=b) { return RhiTestResult::fail("Exact SW is not bit exact mode="+std::to_string(plane)+" count="+std::to_string(count)+" pixel="+std::to_string(i)+" bits="+std::to_string(bits)+" values="+std::to_string(a)+"/"+std::to_string(b)); }
+                    if (plane!=1u && a!=b) { return RHITestResult::fail("Exact SW is not bit exact mode="+std::to_string(plane)+" count="+std::to_string(count)+" pixel="+std::to_string(i)+" bits="+std::to_string(bits)+" values="+std::to_string(a)+"/"+std::to_string(b)); }
                     uint32_t za=uint32_t(a>>32),zb=uint32_t(b>>32); if (!reversed) { za=~za; zb=~zb; }
                     if (plane==1u && (uint32_t(a)!=uint32_t(b) || (uint32_t(a)!=0 && std::abs(std::bit_cast<float>(za)-std::bit_cast<float>(zb))>2e-6f))) {
-                        return RhiTestResult::fail("Incremental plane coverage/ID/depth tolerance mismatch at "+std::to_string(i));
+                        return RHITestResult::fail("Incremental plane coverage/ID/depth tolerance mismatch at "+std::to_string(i));
                     }
                 }
             }
-            if (written<1000) { return RhiTestResult::fail("Prepared SW fixture did not cover enough pixels"); }
+            if (written<1000) { return RHITestResult::fail("Prepared SW fixture did not cover enough pixels"); }
         }
         std::array<std::unique_ptr<ShaderModule>, 2> shaders;
         const char* entries[] = {"probeMeshMain", "probeFragmentMain"};
@@ -245,7 +245,7 @@ public:
                     if (rasterizer.setRenderExtent(0, height) || rasterizer.setRenderExtent(width * 3, height * 3) ||
                         rasterizer.width() != width || rasterizer.height() != height ||
                         &rasterizer.pixelBuffer() != pixelAllocation || &rasterizer.clusterBuffer() != clusters) {
-                        return RhiTestResult::fail("Hybrid extent reuse changed resources or accepted an invalid extent");
+                        return RHITestResult::fail("Hybrid extent reuse changed resources or accepted an invalid extent");
                     }
                     HYBRID_REQUIRE(heap->writeStorageBuffer(queueHandle, rasterizer.queueBuffer()));
                     if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
@@ -265,9 +265,9 @@ public:
                             .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
                             .after = {PipelineStageBits::DepthStencil, AccessBits::DepthStencilRead | AccessBits::DepthStencilWrite},
                         }};
-                    if (auto commandResult = commands->synchronize({.textures = {transitions, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.textures = {transitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     const bool hybrid = configuration != 0;
-                    if (hybrid) { if (auto commandResult = rasterizer.begin(*commands, configuration == 1 ? 1.f : configuration == 2 ? 8.f : 32.f, reversed); !commandResult) { return RhiTestResult::fail(std::string("begin failed: ") + render::resultToString(commandResult)); } }
+                    if (hybrid) { if (auto commandResult = rasterizer.begin(*commands, configuration == 1 ? 1.f : configuration == 2 ? 8.f : 32.f, reversed); !commandResult) { return RHITestResult::fail(std::string("begin failed: ") + render::resultToString(commandResult)); } }
                     const RenderingAttachmentDesc color{.view = views[0].get(), .state = ResourceState::ColorAttachment,
                         .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
                     const RenderingAttachmentDesc depth{.view = views[1].get(), .state = ResourceState::DepthStencilAttachment,
@@ -276,10 +276,10 @@ public:
                         .renderArea = {.width = width, .height = height},
                         .colorAttachments = {&color, 1},
                         .depthStencilAttachment = &depth,
-                    }); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
+                    }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                     commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f});
                     commands->setScissor({.width = width, .height = height});
-                    commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                    commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                     const uint32_t push[] = {inputHandle.shaderIndex, hybrid ? queueHandle.shaderIndex : UINT32_MAX, doubleSided ? 1u : 0u};
                     commands->pushBindlessData(push, sizeof(push));
                     commands->drawMeshTasks(uint32_t(vertices.size() / 3)); commands->endRendering();
@@ -296,20 +296,20 @@ public:
                                 .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead},
                                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                             }};
-                        if (auto commandResult = commands->synchronize({.buffers = {bufferTransitions, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                        if (auto commandResult = commands->synchronize({.buffers = {bufferTransitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         {
                             auto sourceSlice = (&rasterizer.queueBuffer())->slice({0, 32});
-                            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
                             auto destinationSlice = queueReadback.get()->slice({0, 32});
-                            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                         }
                         {
                             auto sourceSlice = (&rasterizer.pixelBuffer())->slice({0, pixelCount * 8});
-                            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
                             auto destinationSlice = pixelReadback.get()->slice({0, pixelCount * 8});
-                            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                            if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                         }
                     }
                     TextureBarrierDesc outputTransitions[2];
@@ -322,7 +322,7 @@ public:
                             .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                         };
                     }
-                    if (auto commandResult = commands->synchronize({.textures = {outputTransitions, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.textures = {outputTransitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     for (size_t i = 0; i < 2; ++i) {
                         commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = readback[i].get(), .width = width, .height = height});
                     }
@@ -333,20 +333,20 @@ public:
                     std::vector<uint32_t> ids(pixelCount); std::vector<float> depths(pixelCount);
                     for (size_t i = 0; i < 2; ++i) {
                         readback[i]->invalidate(); const void* data = readback[i]->map();
-                        if (!data) { return RhiTestResult::fail("Output readback failed"); }
+                        if (!data) { return RHITestResult::fail("Output readback failed"); }
                         std::memcpy(i == 0 ? static_cast<void*>(ids.data()) : depths.data(), data, pixelCount * 4); readback[i]->unmap();
                     }
                     if (!hybrid) { referenceIds = ids; referenceDepth = depths; continue; }
                     queueReadback->invalidate(); const auto* header = static_cast<const uint32_t*>(queueReadback->map());
-                    if (!header || header[0] == 0) { return RhiTestResult::fail("GPU producer did not enqueue software triangles"); }
+                    if (!header || header[0] == 0) { return RHITestResult::fail("GPU producer did not enqueue software triangles"); }
                     overflows += header[0] > header[1]; queueReadback->unmap();
                     pixelReadback->invalidate(); const auto* pixels = static_cast<const uint64_t*>(pixelReadback->map());
-                    if (!pixels) { return RhiTestResult::fail("Software pixel readback failed"); }
+                    if (!pixels) { return RHITestResult::fail("Software pixel readback failed"); }
                     for (size_t i = 0; i < pixelCount; ++i) { softwarePixels += uint32_t(pixels[i]) != 0; }
                     pixelReadback->unmap();
                     for (size_t i = 0; i < pixelCount; ++i) {
                         if (ids[i] != referenceIds[i] || !std::isfinite(depths[i]) || std::abs(depths[i] - referenceDepth[i]) > 2e-6f) {
-                            return RhiTestResult::fail("HW/SW mismatch: reversed=" + std::to_string(reversed) + " doubleSided=" +
+                            return RHITestResult::fail("HW/SW mismatch: reversed=" + std::to_string(reversed) + " doubleSided=" +
                                 std::to_string(doubleSided) + " config=" + std::to_string(configuration) + " pixel=" + std::to_string(i) +
                                 " id=" + std::to_string(ids[i]) + "/" + std::to_string(referenceIds[i]) +
                                 " depth=" + std::to_string(depths[i]) + "/" + std::to_string(referenceDepth[i]));
@@ -356,28 +356,28 @@ public:
                 }
             }
         }
-        if (softwarePixels < 1000 || overflows != 4) { return RhiTestResult::fail("Software writes or bounded-queue overflow were not exercised"); }
-        return RhiTestResult::pass(std::to_string(cases) + " HW/SW comparisons; software pixels=" + std::to_string(softwarePixels) +
+        if (softwarePixels < 1000 || overflows != 4) { return RHITestResult::fail("Software writes or bounded-queue overflow were not exercised"); }
+        return RHITestResult::pass(std::to_string(cases) + " HW/SW comparisons; software pixels=" + std::to_string(softwarePixels) +
             "; clipping, shared edges, perspective depth, both windings/Z directions, thresholds and four forced overflows");
     }
 };
 METALLIC_REGISTER_RHI_TEST(HybridRasterDepthTest);
 // Exercise the real stable compaction and argument generation on the GPU. IDs
 // deliberately differ from candidate indices so a namespace remap cannot pass.
-class HybridClusterBinTest final : public RhiTest {
+class HybridClusterBinTest final : public RHITest {
 public:
-    HybridClusterBinTest() { type = RhiTestType::Rendering; name = "hybrid_cluster_stable_bins_and_indirect_limits"; }
-    RhiTestResult run(RhiTestContext& context) override
+    HybridClusterBinTest() { type = RHITestType::Rendering; name = "hybrid_cluster_stable_bins_and_indirect_limits"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         std::string log;
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Hybrid cluster bin regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless heap"); }
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless heap"); }
         HYBRID_REQUIRE(created);
         if (!device->capabilities().shaderBufferInt64Atomics || device->capabilities().subPixelPrecisionBits > 8) {
-            return RhiTestResult::skip("Requires hybrid raster capabilities");
+            return RHITestResult::skip("Requires hybrid raster capabilities");
         }
         std::unique_ptr<BindlessHeap> heap;
         HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
@@ -422,7 +422,7 @@ public:
             HYBRID_REQUIRE(device->createBuffer({.size = capacity * 8ull, .structureStride = 8,
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { input = std::move(rhiValue); }));
             void* mapped = input->map();
-            if (!mapped) { return RhiTestResult::fail("Cluster input map failed"); }
+            if (!mapped) { return RHITestResult::fail("Cluster input map failed"); }
             std::memcpy(mapped, candidates.data(), candidates.size() * 8); input->flush(); input->unmap();
             HYBRID_REQUIRE(heap->writeStorageBuffer(inputHandle, *input));
             HYBRID_REQUIRE(heap->writeStorageBuffer(binHandle, rasterizer.clusterBuffer()));
@@ -435,10 +435,10 @@ public:
             HYBRID_REQUIRE(commands->begin());
             // Capacity validation must reject oversized dispatches before recording GPU work.
             if (!hasError(rasterizer.beginClusters(*commands, 8, true, 0, capacity + 1u, test.stream), Error::InvalidArgument)) {
-                return RhiTestResult::fail("Oversized cluster input was accepted");
+                return RHITestResult::fail("Oversized cluster input was accepted");
             }
             HYBRID_REQUIRE(rasterizer.beginClusters(*commands, 8, true, 0, test.count, test.stream));
-            commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+            commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             const uint32_t push[] = {inputHandle.shaderIndex, binHandle.shaderIndex, test.count};
             commands->pushBindlessData(push, sizeof(push));
             if (test.count != 0) {
@@ -456,20 +456,20 @@ public:
                     .before = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                 }};
-            if (auto commandResult = commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
                 auto sourceSlice = (&rasterizer.clusterBuffer())->slice({0, readbackBytes});
-                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
                 auto destinationSlice = readback.get()->slice({0, readbackBytes});
-                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             {
                 auto sourceSlice = (&rasterizer.clusterArguments())->slice({0, 60});
-                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
                 auto destinationSlice = arguments.get()->slice({0, 60});
-                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             HYBRID_REQUIRE(commands->end());
             CommandBuffer* list[] = {commands.get()};
@@ -478,7 +478,7 @@ public:
             readback->invalidate(); arguments->invalidate();
             const auto* bins = static_cast<const uint32_t*>(readback->map());
             const auto* args = static_cast<const uint32_t*>(arguments->map());
-            if (!bins || !args) { return RhiTestResult::fail("Cluster result map failed"); }
+            if (!bins || !args) { return RHITestResult::fail("Cluster result map failed"); }
             bool valid = bins[5] == capacity && bins[12] == test.count && bins[14] == 0u;
             for (size_t bin = 0; bin < 5; ++bin) {
                 const uint32_t count = static_cast<uint32_t>(expected[bin].size());
@@ -488,23 +488,23 @@ public:
                 valid = valid && std::equal(expected[bin].begin(), expected[bin].end(), bins + 16u + bin * capacity);
             }
             readback->unmap(); arguments->unmap();
-            if (!valid) { return RhiTestResult::fail("Stable bins/indirect args mismatch for count=" + std::to_string(test.count)); }
+            if (!valid) { return RHITestResult::fail("Stable bins/indirect args mismatch for count=" + std::to_string(test.count)); }
         }
-        return RhiTestResult::pass("Stable IDs, five bins, empty/culled/partial blocks, capacity rejection; 2D resident HW, stream HW and SW dispatch limits");
+        return RHITestResult::pass("Stable IDs, five bins, empty/culled/partial blocks, capacity rejection; 2D resident HW, stream HW and SW dispatch limits");
     }
 };
 METALLIC_REGISTER_RHI_TEST(HybridClusterBinTest);
 #undef HYBRID_REQUIRE
 
-class HybridRasterSceneTest final : public RhiTest {
+class HybridRasterSceneTest final : public RHITest {
 public:
-    HybridRasterSceneTest() { type = RhiTestType::Rendering; name = "hybrid_raster_scene_equivalence"; }
-    RhiTestResult run(RhiTestContext& context) override
+    HybridRasterSceneTest() { type = RHITestType::Rendering; name = "hybrid_raster_scene_equivalence"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
         auto result = preview.initialize(context.enableValidation, false);
-        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders"); }
-        if (!result) { return RhiTestResult::fail(preview.lastLog()); }
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders"); }
+        if (!result) { return RHITestResult::fail(preview.lastLog()); }
         render::RenderGraph graph;
         graph.addNode("VisibilityBufferPass", "VBuffer", {{"path", "Asset/StandfordBunny/scene.gltf"},
             {"visualization", "triangle"}, {"camera", {{"eye", {-.0168404f, .110154f, .22f}},
@@ -519,12 +519,12 @@ public:
                 graph.setNodeRuntimeProperty(node, "camera.projection", orthographic ? "orthographic" : "perspective");
                 graph.setNodeRuntimeProperty(node, "camera.reversedZ", reversed);
                 graph.setNodeRuntimeProperty(node, "hybridRaster", false);
-                if (!preview.render(graph, 193, 157)) { return RhiTestResult::fail(preview.lastLog()); }
+                if (!preview.render(graph, 193, 157)) { return RHITestResult::fail(preview.lastLog()); }
                 const auto reference = preview.pixels();
                 if (std::count_if(reference.begin(), reference.end(), [](uint32_t id) { return id != 0; }) < 1000) {
-                    return RhiTestResult::fail("Bunny reference did not produce meaningful visibility coverage");
+                    return RHITestResult::fail("Bunny reference did not produce meaningful visibility coverage");
                 }
-                if (!preview.render(graph, 193, 157, "VBuffer.depth")) { return RhiTestResult::fail(preview.lastLog()); }
+                if (!preview.render(graph, 193, 157, "VBuffer.depth")) { return RHITestResult::fail(preview.lastLog()); }
                 const auto referenceDepth = preview.pixels();
                 for (uint32_t configuration = 0; configuration < 9; ++configuration) {
                     const float threshold = std::array{1.f, 8.f, 32.f}[configuration % 3];
@@ -533,15 +533,15 @@ public:
                     graph.setNodeRuntimeProperty(node, "hybridRaster", true);
                     graph.setNodeRuntimeProperty(node, "softwareRasterMaxPixels", threshold);
                     for (uint32_t frame = 0; frame < 3; ++frame) {
-                        if (!preview.render(graph, 193, 157)) { return RhiTestResult::fail(preview.lastLog()); }
+                        if (!preview.render(graph, 193, 157)) { return RHITestResult::fail(preview.lastLog()); }
                         const bool independent = preview.subsystemHost()->device()->capabilities().independentComputeQueue;
                         const uint32_t branches = preview.executionStats().asyncComputeBranches;
                         if ((configuration >= 6 && independent) ? branches < 2u : branches != 0u) {
-                            return RhiTestResult::fail("Async setting did not select the expected hardware/software queue topology");
+                            return RHITestResult::fail("Async setting did not select the expected hardware/software queue topology");
                         }
                         const auto actual = preview.pixels();
                         if (actual != reference) {
-                            if (!preview.render(graph, 193, 157, "VBuffer.depth")) { return RhiTestResult::fail(preview.lastLog()); }
+                            if (!preview.render(graph, 193, 157, "VBuffer.depth")) { return RHITestResult::fail(preview.lastLog()); }
                             for (size_t pixel = 0; pixel < reference.size(); ++pixel) {
                                 if (reference[pixel] == actual[pixel]) { continue; }
                                 const uint32_t depth = preview.pixels()[pixel];
@@ -551,7 +551,7 @@ public:
                                 // Keep coverage and cluster identity exact; only qualify depth ties.
                                 if (reference[pixel] == 0 || actual[pixel] == 0 ||
                                     (reference[pixel] >> render::kVisibilityTriangleBits) != (actual[pixel] >> render::kVisibilityTriangleBits) || delta > 8u) {
-                                    return RhiTestResult::fail("HW/SW visibility mismatch at pixel " + std::to_string(pixel) +
+                                    return RHITestResult::fail("HW/SW visibility mismatch at pixel " + std::to_string(pixel) +
                                         "; ortho=" + std::to_string(orthographic) + ", reversed=" + std::to_string(reversed) +
                                         ", configuration=" + std::to_string(configuration) + ", frame=" + std::to_string(frame) +
                                         ", depth ULP=" + std::to_string(delta));
@@ -565,24 +565,24 @@ public:
             }
         }
         std::string log;
-        if (!preview.render(graph, 193, 157, "VBuffer.color")) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!preview.render(graph, 193, 157, "VBuffer.color")) { return RHITestResult::fail(preview.lastLog()); }
         if (!saveRgba8Png(context.outputDirectory / "HybridBunny.png", reinterpret_cast<const uint8_t*>(preview.pixels().data()),
-            preview.width(), preview.height(), log)) { return RhiTestResult::fail(log); }
-        return RhiTestResult::pass(std::to_string(cases) + " HZB frames: exact coverage/cluster IDs across queue topologies, projections and thresholds; " + std::to_string(roundingTies) + " near-coincident triangle depth ties within 8 ULP");
+            preview.width(), preview.height(), log)) { return RHITestResult::fail(log); }
+        return RHITestResult::pass(std::to_string(cases) + " HZB frames: exact coverage/cluster IDs across queue topologies, projections and thresholds; " + std::to_string(roundingTies) + " near-coincident triangle depth ties within 8 ULP");
     }
 };
 METALLIC_REGISTER_RHI_TEST(HybridRasterSceneTest);
-class VisibilityPreparationTest final : public RhiTest {
+class VisibilityPreparationTest final : public RHITest {
 public:
-    VisibilityPreparationTest() { type = RhiTestType::Rendering; name = "visibility_preparation_serial_parallel_pixels"; }
-    RhiTestResult run(RhiTestContext& context) override
+    VisibilityPreparationTest() { type = RHITestType::Rendering; name = "visibility_preparation_serial_parallel_pixels"; }
+    RHITestResult run(RHITestContext& context) override
     {
         auto* tasks = task::tryGetTaskSystem();
-        if (!tasks || tasks->workerCount() < 2) { return RhiTestResult::skip("two preparation workers required"); }
+        if (!tasks || tasks->workerCount() < 2) { return RHITestResult::skip("two preparation workers required"); }
         render::RenderGraphPreviewRenderer preview;
         auto initialized = preview.initialize(context.enableValidation, false, false);
-        if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("mesh shaders required"); }
-        if (!initialized) { return RhiTestResult::fail(preview.lastLog()); }
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("mesh shaders required"); }
+        if (!initialized) { return RHITestResult::fail(preview.lastLog()); }
         render::RenderGraph graph;
         graph.addNode("VisibilityBufferPass", "VBuffer", {{"path", "Asset/StandfordBunny/scene.gltf"},
             {"visualization", "triangle"}, {"camera", {{"eye", {-.0168404f, .110154f, .22f}},
@@ -603,30 +603,30 @@ public:
             for (const uint32_t workers : {1u, 4u}) {
                 preview.setRecordingWorkerLimit(workers);
                 for (uint32_t frame = 0; frame < 3; ++frame) {
-                    if (!preview.render(graph, 193, 157)) { return RhiTestResult::fail(preview.lastLog()); }
+                    if (!preview.render(graph, 193, 157)) { return RHITestResult::fail(preview.lastLog()); }
                     const auto& stats = preview.executionStats();
                     if (stats.preparationTaskCount != (workers == 1 ? 0u : 2u)) {
-                        return RhiTestResult::fail("VisibilityBuffer did not use the requested CPU preparation policy");
+                        return RHITestResult::fail("VisibilityBuffer did not use the requested CPU preparation policy");
                     }
                     if (frame == 2) {
                         if (workers == 1) { reference = preview.pixels(); branches = stats.asyncComputeBranches; serialCpu += stats.cpuMilliseconds; }
                         else {
                             parallelCpu += stats.cpuMilliseconds;
                             if (preview.pixels() != reference || stats.asyncComputeBranches != branches) {
-                                return RhiTestResult::fail("Serial/parallel VisibilityBuffer camera/material output or GPU topology differs, mode=" + std::to_string(mode));
+                                return RHITestResult::fail("Serial/parallel VisibilityBuffer camera/material output or GPU topology differs, mode=" + std::to_string(mode));
                             }
                         }
                     }
                 }
             }
             if (std::count_if(reference.begin(), reference.end(), [](uint32_t pixel) { return (pixel & 0xffffffu) != 0; }) < 1000) {
-                return RhiTestResult::fail("Visibility material output was empty");
+                return RHITestResult::fail("Visibility material output was empty");
             }
         }
         std::string log;
         if (!saveRgba8Png(context.outputDirectory / "VisibilityPreparedMaterial.png", reinterpret_cast<const uint8_t*>(preview.pixels().data()),
-            preview.width(), preview.height(), log)) { return RhiTestResult::fail(log); }
-        return RhiTestResult::pass("16 configurations / 96 frames, exact material pixels and GPU branch topology; validation-build sampled CPU totals (ms), serial=" +
+            preview.width(), preview.height(), log)) { return RHITestResult::fail(log); }
+        return RHITestResult::pass("16 configurations / 96 frames, exact material pixels and GPU branch topology; validation-build sampled CPU totals (ms), serial=" +
             std::to_string(serialCpu) + ", parallel=" + std::to_string(parallelCpu));
     }
 };

@@ -52,13 +52,13 @@ Full 当前使用材质分桶批次；四段计时覆盖整批，不是单个材
 
 ## 验证与证据
 
-Release MetallicGPUDrivenSample / MetallicRhiTests 构建通过。开启 Vulkan validation 的四项现有 GPU 回归通过：material_binning_indirect_coverage、stream_material_shading、stream_material_transmission、stream_material_shadow，无跳过或验证错误。
+Release MetallicGPUDrivenSample / MetallicRHITests 构建通过。开启 Vulkan validation 的四项现有 GPU 回归通过：material_binning_indirect_coverage、stream_material_shading、stream_material_transmission、stream_material_shadow，无跳过或验证错误。
 
 三轮共 3806 帧；逐帧验证 Record shading dispatch 及四个子 scope 都存在，GPU 时间为空，四个子项 CPU 总和不超过父项（允许导出精度 0.001 ms）。git diff --check 通过。
 
 ```powershell
-cmake --build build-release --target MetallicGPUDrivenSample MetallicRhiTests -j 6
-.\build-release\tests\MetallicRhiTests.exe --gtest_filter="*material_binning_indirect_coverage*:*stream_material_shading*:*stream_material_transmission*:*stream_material_shadow*" --rhi-bindless --rhi-validation
+cmake --build build-release --target MetallicGPUDrivenSample MetallicRHITests -j 6
+.\build-release\tests\MetallicRHITests.exe --gtest_filter="*material_binning_indirect_coverage*:*stream_material_shading*:*stream_material_transmission*:*stream_material_shadow*" --rhi-bindless --rhi-validation
 pwsh -NoProfile -File Tools/RunZorahFullRoam.ps1 -OutputRoot build-release/full-deferred-dispatch-profile-0923 -Runs 3 -DurationSeconds 30 -WarmupSeconds 10 -Width 1797 -Height 660 -TimeoutSeconds 900
 ```
 

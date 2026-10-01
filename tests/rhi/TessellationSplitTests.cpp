@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
@@ -12,18 +12,18 @@ namespace metallic::tests {
 namespace {
 
 #define TESS_REQUIRE(expr) do { const auto result = (expr); if (!result) { \
-    return RhiTestResult::fail(std::string(#expr) + ": " + toString(result)); } } while (false)
+    return RHITestResult::fail(std::string(#expr) + ": " + toString(result)); } } while (false)
 
-class TessellationSplitTest final : public RhiTest {
+class TessellationSplitTest final : public RHITest {
 public:
-    TessellationSplitTest() { type = RhiTestType::Rendering; name = "tessellation_recursive_topology"; }
-    RhiTestResult run(RhiTestContext& context) override
+    TessellationSplitTest() { type = RHITestType::Rendering; name = "tessellation_recursive_topology"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Recursive tessellation topology",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless compute"); }
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless compute"); }
         TESS_REQUIRE(created);
         constexpr uint32_t count = 512, poison = 0xa5a5a5a5u;
         using Vec = std::array<float, 4>;
@@ -61,13 +61,13 @@ public:
             TESS_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
             TESS_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
             void* p = buffers[i]->map();
-            if (!p) { return RhiTestResult::fail("Cannot map split probe buffer"); }
+            if (!p) { return RHITestResult::fail("Cannot map split probe buffer"); }
             std::memcpy(p, initial[i], sizes[i]); buffers[i]->flush(); buffers[i]->unmap();
         }
         ShaderCompileResult compiled;
         const auto compilation = compileSlangShaderToSpirv({.moduleName = "TessellationSplitProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
-        if (!compilation) { return RhiTestResult::fail(compiled.diagnostics); }
+        if (!compilation) { return RHITestResult::fail(compiled.diagnostics); }
         std::unique_ptr<ShaderModule> shader;
         TESS_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
         std::unique_ptr<ComputePipeline> pipeline;
@@ -86,8 +86,8 @@ public:
         const BufferBarrierDesc barriers[] = {
             {.buffer = buffers[0].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}},
             {.buffer = buffers[1].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}}};
-        if (auto commandResult = commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         const uint32_t push[] = {handles[0].shaderIndex, handles[1].shaderIndex};
         commands->pushBindlessData(push, sizeof(push)); commands->dispatch(count / 16);
         TESS_REQUIRE(commands->end());
@@ -95,7 +95,7 @@ public:
         TESS_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
         TESS_REQUIRE(fence->wait()); buffers[1]->invalidate();
         const void* p = buffers[1]->map();
-        if (!p) { return RhiTestResult::fail("Cannot read split probe"); }
+        if (!p) { return RHITestResult::fail("Cannot read split probe"); }
         std::memcpy(output.data(), p, sizes[1]); buffers[1]->unmap();
 
         const auto component = [](uint32_t v, uint32_t axis) -> int64_t {
@@ -107,7 +107,7 @@ public:
         for (uint32_t i = 0; i < count; ++i) {
             const auto header = output[i * 65];
             const uint32_t leaves = header[0], depth = uint32_t(input[i].options[2]);
-            if (leaves == 0 || leaves > (1u << (2 * depth)) || header[1] > 7) { return RhiTestResult::fail("Invalid leaf count or split mask"); }
+            if (leaves == 0 || leaves > (1u << (2 * depth)) || header[1] > 7) { return RHITestResult::fail("Invalid leaf count or split mask"); }
             masks |= 1u << header[1]; peak = std::max(peak, leaves); total += leaves;
             int64_t area = 0;
             // Edge use and rate checks are independent of the implementation's
@@ -116,34 +116,34 @@ public:
             for (uint32_t j = 0; j < 64; ++j) {
                 const auto q = output[i * 65 + j + 1];
                 if (j >= leaves) {
-                    if (q != Record{poison,poison,poison,poison}) { return RhiTestResult::fail("Out-of-bounds leaf write"); }
+                    if (q != Record{poison,poison,poison,poison}) { return RHITestResult::fail("Out-of-bounds leaf write"); }
                     continue;
                 }
                 for (uint32_t v = 0; v < 3; ++v) {
                     for (uint32_t a = 0; a < 3; ++a) {
-                        if (component(q[v], a) < 0 || component(q[v], a) > 4096) { return RhiTestResult::fail("Split escaped source domain"); }
+                        if (component(q[v], a) < 0 || component(q[v], a) > 4096) { return RHITestResult::fail("Split escaped source domain"); }
                     }
                 }
                 const auto x = component(q[0],1), y = component(q[0],2);
                 const auto signedArea = (component(q[1],1)-x)*(component(q[2],2)-y) - (component(q[2],1)-x)*(component(q[1],2)-y);
-                if (signedArea <= 0) { return RhiTestResult::fail("Degenerate or reversed leaf"); }
+                if (signedArea <= 0) { return RHITestResult::fail("Degenerate or reversed leaf"); }
                 area += signedArea;
                 for (uint32_t e = 0; e < 3; ++e) {
                     const auto rate = (q[3] >> (8 * e)) & 255;
-                    if (rate < 1 || rate > 8) { return RhiTestResult::fail("Unbounded leaf dice rate"); }
+                    if (rate < 1 || rate > 8) { return RHITestResult::fail("Unbounded leaf dice rate"); }
                     auto& edge = edges[std::minmax(q[e],q[(e+1)%3])];
-                    if (edge.first++ != 0 && edge.second != rate) { return RhiTestResult::fail("Interior dice rates disagree"); }
+                    if (edge.first++ != 0 && edge.second != rate) { return RHITestResult::fail("Interior dice rates disagree"); }
                     edge.second = rate;
                 }
             }
-            if (area != 4096ll * 4096ll) { return RhiTestResult::fail("Budget termination lost or overlapped coverage"); }
+            if (area != 4096ll * 4096ll) { return RHITestResult::fail("Budget termination lost or overlapped coverage"); }
             std::array<uint32_t, 2> common{}; uint32_t commonCount = 0;
             for (uint32_t a = 0; a < 3; ++a) {
                 for (uint32_t b = 0; b < 3; ++b) {
                     if (input[i].p[a] == input[i ^ 1].p[b]) { common[commonCount++] = a; }
                 }
             }
-            if (commonCount != 2) { return RhiTestResult::fail("Invalid shared-edge fixture"); }
+            if (commonCount != 2) { return RHITestResult::fail("Invalid shared-edge fixture"); }
             if (input[i].p[common[0]] > input[i].p[common[1]]) { std::swap(common[0],common[1]); }
             const uint32_t zero = 3 - common[0] - common[1], end = common[1];
             std::set<Fraction> boundary;
@@ -151,7 +151,7 @@ public:
                 const auto [a,b] = key; const auto [uses,rate] = usesRate;
                 bool outer = false;
                 for (uint32_t axis = 0; axis < 3; ++axis) { outer |= component(a,axis) == 0 && component(b,axis) == 0; }
-                if (uses != (outer ? 1u : 2u)) { return RhiTestResult::fail("Non-manifold split edge / T-junction"); }
+                if (uses != (outer ? 1u : 2u)) { return RHITestResult::fail("Non-manifold split edge / T-junction"); }
                 if (component(a,zero) != 0 || component(b,zero) != 0) { continue; }
                 for (uint32_t step = 0; step <= rate; ++step) {
                     const int64_t n = component(a,end) * (rate-step) + component(b,end) * step;
@@ -159,11 +159,11 @@ public:
                     boundary.emplace(n/gcd,d/gcd);
                 }
             }
-            if ((i & 1) != 0 && boundary != previousBoundary) { return RhiTestResult::fail("Neighbor source triangles produce different shared-edge samples"); }
+            if ((i & 1) != 0 && boundary != previousBoundary) { return RHITestResult::fail("Neighbor source triangles produce different shared-edge samples"); }
             previousBoundary = std::move(boundary);
         }
-        if (masks != 255 || peak != 64) { return RhiTestResult::fail("Probe failed to exercise all split masks and full depth budget"); }
-        return RhiTestResult::pass(std::to_string(count) + " GPU roots / " + std::to_string(total) +
+        if (masks != 255 || peak != 64) { return RHITestResult::fail("Probe failed to exercise all split masks and full depth budget"); }
+        return RHITestResult::pass(std::to_string(count) + " GPU roots / " + std::to_string(total) +
             " leaves: all split masks, depths 0..3, near-plane crossing, exact coverage, shared-edge samples and guarded writes");
     }
 };

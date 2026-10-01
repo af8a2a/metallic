@@ -23,9 +23,9 @@ Metallic 可以在现有 RenderGraph 与 VMA 3.3.0 上增加真正的物理内�
 | field 已有 usage/access/尺寸，缺少 transient 和首次初始化承诺 | [RenderGraphTypes.h](../Source/Runtime/Render/RenderGraph/RenderGraphTypes.h)，`RenderGraphField` | 首次 `writes=true` 不足以证明可丢弃旧内容 |
 | 实际 native queue identity 在每次 execute 时确定 | Executor 约 3216–3228 行 | 编译期 pass 序号不能直接作为跨队列 GPU 时间 |
 | 访问计划已有前驱、读者 frontier、布局 frontier、共享 barrier 编码器 | [RenderGraphAccessPlan.cpp](../Source/Runtime/Render/RenderGraph/RenderGraphAccessPlan.cpp)，约 251–407 行 | 可增设物理槽位 handoff，并接入现有提交前驱 |
-| 普通 Device 分配当前要求 dedicated allocation | [VulkanRhi.cpp](../Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp)，`allocationInfoForMemory`，约 1085 行 | alias backing 需要独立创建策略，不能直接共享当前 allocation |
+| 普通 Device 分配当前要求 dedicated allocation | [VulkanRHI.cpp](../Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp)，`allocationInfoForMemory`，约 1085 行 | alias backing 需要独立创建策略，不能直接共享当前 allocation |
 | resource impl 当前各自拥有 VmaAllocation 并调用 vmaDestroyBuffer/Image | 同文件约 3111、3164、3508–3525 行 | 必须拆分 native object 与 backing 所有权，否则重复释放、重复记账 |
-| command/frame 已保留资源 impl 至提交完成 | [RenderFrameContext.cpp](../Source/Runtime/Render/Core/RenderFrameContext.cpp)，约 104–111 行；VulkanRhi 约 4459 行 | 保留 resource impl → backing 的强引用链即可复用现有 completion 生命周期 |
+| command/frame 已保留资源 impl 至提交完成 | [RenderFrameContext.cpp](../Source/Runtime/Render/Core/RenderFrameContext.cpp)，约 104–111 行；VulkanRHI 约 4459 行 | 保留 resource impl → backing 的强引用链即可复用现有 completion 生命周期 |
 | execution viewer 已显示 native block、offset、size | [RenderGraphExecutionSnapshot.h](../Source/Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h)、[EditorRenderGraphViewer.cpp](../Source/Editor/EditorRenderGraphViewer.cpp) | 可以展示共享范围，但内存汇总需要按 backing 去重 |
 
 当前 bundled VMA 为 3.3.0，已有 `vmaAllocateMemory`、`vmaCreateAliasingImage2`、`vmaCreateAliasingBuffer2` 和 `VMA_ALLOCATION_CREATE_CAN_ALIAS_BIT`，见 [vk_mem_alloc.h](../External/VulkanMemoryAllocator/include/vk_mem_alloc.h)。现有 NRD 局部 pool 会复用同一个 Texture 槽位；这可以提供经验，但没有解决图级不同 VkImage 的共享 backing。
@@ -185,9 +185,9 @@ Viewer 当前 `overlaps()` 忽略相同 allocationId（约 236–243 行），me
 
 ## 11. Metallic 的候选与收益边界
 
-实时链路包含 `VBuffer → Shadows/Deferred → DlssSr → AutoExposure → DlssNr → FinalBlit`。经过初始化及访问审计后，早期 visibility/material guides 与晚期曝光/后处理输出可能存在复用窗口。例如 VBuffer.visibility 的最后 graph 消费在 Deferred，而 AutoExposure.color 的首次使用在更后面；是否合格还取决于 exports、SDK 实际消费和 requirements。
+实时链路包含 `VBuffer → Shadows/Deferred → DLSSSR → AutoExposure → DLSSNR → FinalBlit`。经过初始化及访问审计后，早期 visibility/material guides 与晚期曝光/后处理输出可能存在复用窗口。例如 VBuffer.visibility 的最后 graph 消费在 Deferred，而 AutoExposure.color 的首次使用在更后面；是否合格还取决于 exports、SDK 实际消费和 requirements。
 
-相邻 pass 的 input/output 同时被一个 pass 使用，不能共享。例如 Deferred.color 与 DlssSr.color 在 DlssSr 中同时活跃。`PathTrace → AutoExposure → FinalBlit` 的最简三段图中，相邻资源互相冲突，FinalBlit 又被 pin，texture-only 首版可能几乎没有收益；不能承诺所有图都省很多显存。
+相邻 pass 的 input/output 同时被一个 pass 使用，不能共享。例如 Deferred.color 与 DLSSSR.color 在 DLSSSR 中同时活跃。`PathTrace → AutoExposure → FinalBlit` 的最简三段图中，相邻资源互相冲突，FinalBlit 又被 pin，texture-only 首版可能几乎没有收益；不能承诺所有图都省很多显存。
 
 首版不会降低 geometry/streaming、BLAS/CLAS、material residency、history 或 SDK 内部分配。大场景总 VRAM 若主要由这些资源占用，图级 transient aliasing 仅解决其中一部分。
 
@@ -205,7 +205,7 @@ Viewer 当前 `overlaps()` 忽略相同 allocationId（约 236–243 行），me
 | 3：生产评估 | 同 workload/settings 下 alias on/off、viewer 证据、像素和长期序列检查 | 真实 backing bytes 降低；记录 barrier/wait/GPU 时间，检查是否损害并行 |
 | 4：扩展 | buffer aliases、offset packing、私有 transient 导入、可选 MinMemory | BDA usage flags、granularity、区间同步和跨帧 GPU 并行方案单独验证 |
 
-Buffer aliases 后置的具体原因：`addressCommandFlags()`（VulkanRhi 约 530–540 行）现在依赖“没有 overlapping live buffers”，仅凭当前 BufferDesc 决定 storage usage flag。引入混合 usage aliases 后，需要 backing-wide usage summary，或为这些 allocation 保守使用 UNKNOWN_STORAGE_BUFFER_USAGE；BDA 不能假定 alias buffers 地址不同。规则见 [Khronos Address Command Flags](https://docs.vulkan.org/refpages/latest/refpages/source/VkAddressCommandFlagBitsKHR.html)。
+Buffer aliases 后置的具体原因：`addressCommandFlags()`（VulkanRHI 约 530–540 行）现在依赖“没有 overlapping live buffers”，仅凭当前 BufferDesc 决定 storage usage flag。引入混合 usage aliases 后，需要 backing-wide usage summary，或为这些 allocation 保守使用 UNKNOWN_STORAGE_BUFFER_USAGE；BDA 不能假定 alias buffers 地址不同。规则见 [Khronos Address Command Flags](https://docs.vulkan.org/refpages/latest/refpages/source/VkAddressCommandFlagBitsKHR.html)。
 
 测试应覆盖实际行为：
 
@@ -221,8 +221,8 @@ Buffer aliases 后置的具体原因：`addressCommandFlags()`（VulkanRhi 约 5
 构建和运行示例是后续实现的验收入口，本次调研没有执行这些命令：
 
 ```powershell
-cmake --build build-scheduling-release --target MetallicRhiTests
-.\build-scheduling-release\tests\MetallicRhiTests.exe --gtest_filter='*render_graph_access_plan*:*render_graph_compute_stages*:*render_graph_stages*:*render_graph_execution_viewer*:*resource_memory_info*' --rhi-validation --rhi-async-compute
+cmake --build build-scheduling-release --target MetallicRHITests
+.\build-scheduling-release\tests\MetallicRHITests.exe --gtest_filter='*render_graph_access_plan*:*render_graph_compute_stages*:*render_graph_stages*:*render_graph_execution_viewer*:*resource_memory_info*' --rhi-validation --rhi-async-compute
 ```
 
 后续新增 memory-aliasing 专项应有单独筛选项；GPU 能力 skip 不能视作该路径验证。生产比较记录分辨率、图/SDK 开关、队列模式、frames-in-flight、cache/warmup、pin/debug 设置，分别报告 graph backing、全设备显存及 GPU frame/pass 时间；显存收益不应写成帧时间收益。

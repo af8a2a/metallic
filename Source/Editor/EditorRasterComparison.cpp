@@ -144,8 +144,8 @@ public:
     }
     Json snapshot(const std::filesystem::path& output, const std::string& name)
     {
-        const auto header = read<MeshletStreamGpuActiveHeader>("header").front();
-        auto groups = read<MeshletStreamGpuActiveGroup>("groups");
+        const auto header = read<MeshletStreamGPUActiveHeader>("header").front();
+        auto groups = read<MeshletStreamGPUActiveGroup>("groups");
         checkRaster(header.activeGroupCount <= groups.size(), "Active cut overflow");
         groups.resize(header.activeGroupCount);
         const auto pages = read<StreamPageTableEntry>("pages");

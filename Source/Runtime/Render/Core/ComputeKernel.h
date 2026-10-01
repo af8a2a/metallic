@@ -10,7 +10,7 @@ namespace metallic::render {
 
 struct ComputeKernelDesc {
     std::span<const uint32_t> spirv;
-    ParameterAbi parameters;
+    ParameterABI parameters;
     const char* debugName = nullptr;
     PipelineCache* pipelineCache = nullptr;
 };

@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/RayQueryFixture.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -16,10 +16,10 @@ using namespace render;
 
 #define GRAPH_AS_REQUIRE(expression) do { \
     const auto& checked = (expression); \
-    if (!checked) { return RhiTestResult::fail(std::string(#expression) + ": " + \
+    if (!checked) { return RHITestResult::fail(std::string(#expression) + ": " + \
         resultToString(Result<>{std::unexpected(checked.error())}) + " " + log); } \
 } while (false)
-#define GRAPH_AS_CHECK(expression) do { if (!(expression)) { return RhiTestResult::fail(#expression); } } while (false)
+#define GRAPH_AS_CHECK(expression) do { if (!(expression)) { return RHITestResult::fail(#expression); } } while (false)
 
 class GraphAccelerationStructureBuildPass final : public RenderGraphPass {
 public:
@@ -28,9 +28,9 @@ public:
     bool supportsAsyncQueue() const override { return true; }
     bool supportsFrameOverlap() const override { return true; }
     bool supportsPipelinedSubmission() const override { return true; }
-    CpuRecordingPolicy cpuRecordingPolicy() const override
+    CPURecordingPolicy cpuRecordingPolicy() const override
     {
-        return properties().value("fork", false) ? CpuRecordingPolicy::Serial : CpuRecordingPolicy::ParallelJoined;
+        return properties().value("fork", false) ? CPURecordingPolicy::Serial : CPURecordingPolicy::ParallelJoined;
     }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
@@ -164,7 +164,7 @@ public:
     bool supportsAsyncQueue() const override { return true; }
     bool supportsFrameOverlap() const override { return true; }
     bool supportsPipelinedSubmission() const override { return true; }
-    CpuRecordingPolicy cpuRecordingPolicy() const override { return CpuRecordingPolicy::ParallelJoined; }
+    CPURecordingPolicy cpuRecordingPolicy() const override { return CPURecordingPolicy::ParallelJoined; }
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
@@ -196,9 +196,9 @@ private:
     ComputeProgram program_;
 };
 
-class RenderGraphAccelerationStructureTest final : public RhiTest {
+class RenderGraphAccelerationStructureTest final : public RHITest {
 public:
-    RenderGraphAccelerationStructureTest() { type = RhiTestType::Rendering; name = "render_graph_acceleration_structure_publication"; }
+    RenderGraphAccelerationStructureTest() { type = RHITestType::Rendering; name = "render_graph_acceleration_structure_publication"; }
     std::optional<bench::Metadata> metadata() const override
     {
         auto result = bench::gpuMetadata({"graph.accelerationStructure.publication.rayQuery", "graph.accelerationStructure.cancel.lifetime",
@@ -207,7 +207,7 @@ public:
         result.requirements.capabilities.push_back(bench::Capability::RayQuery);
         return result;
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::string log;
         std::atomic_uint validationErrors = 0;
@@ -220,7 +220,7 @@ public:
                     ++*static_cast<std::atomic_uint*>(data);
                 }
             }, .context = &validationErrors}, .enableAsyncCompute = true});
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("ray query/descriptor heap unavailable"); }
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("ray query/descriptor heap unavailable"); }
         GRAPH_AS_REQUIRE(created);
         auto& device = **created;
         auto* graphics = device.getQueue(QueueType::Graphics);
@@ -301,7 +301,7 @@ public:
         pool->reset();
         GRAPH_AS_CHECK(allocation.expired());
         GRAPH_AS_CHECK(validationErrors.load() == 0);
-        return RhiTestResult::pass("16 analytic ray-query frames, queue aliases, AS replacement, fork stage context and cancelled lifetime");
+        return RHITestResult::pass("16 analytic ray-query frames, queue aliases, AS replacement, fork stage context and cancelled lifetime");
     }
 };
 

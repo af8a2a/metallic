@@ -94,9 +94,9 @@ offset 以 float4 元素计，写入时 w=0。不要把紧凑的 `L2RGB` 直接�
 - `visibility_buffer_deferred_openpbr`：回归参考与 VBuffer 的 OpenPBR 着色一致性。
 
 ```powershell
-cmake --build cmake-build-debug-visual-studio --target MetallicRhiTests --parallel 8
+cmake --build cmake-build-debug-visual-studio --target MetallicRHITests --parallel 8
 $env:METALLIC_VK_INTERNAL_PIPELINE_CACHE = 'disabled'
-.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --rhi-validation `
+.\cmake-build-debug-visual-studio\tests\MetallicRHITests.exe --rhi-validation `
   --gtest_filter="*spherical_harmonics_math_and_packing:*photometric_gpu_units_falloff_sh:*visibility_buffer_deferred_openpbr"
 ```
 

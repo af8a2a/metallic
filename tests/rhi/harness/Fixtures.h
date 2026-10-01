@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../RhiTest.h"
+#include "../RHITest.h"
 #include "Evidence.h"
 
 namespace metallic::tests::bench {
@@ -21,7 +21,7 @@ private:
     render::Device* borrowed_ = nullptr;
 };
 
-inline render::Result<TestDevice> createTestDevice(RhiTestContext& context,
+inline render::Result<TestDevice> createTestDevice(RHITestContext& context,
     render::DeviceDesc legacyDesc, bool additionalDevice = false)
 {
     if (context.evidence && !additionalDevice) { return TestDevice(context.device); }
@@ -29,7 +29,7 @@ inline render::Result<TestDevice> createTestDevice(RhiTestContext& context,
     return render::createDevice(legacyDesc).transform([](auto device) { return TestDevice(std::move(device)); });
 }
 
-inline Metadata gpuMetadata(std::vector<std::string> coverage, Layer layer = Layer::Rhi,
+inline Metadata gpuMetadata(std::vector<std::string> coverage, Layer layer = Layer::RHI,
     std::string profile = "core", std::string suite = "core", std::vector<std::string> artifacts = {}, bool nativePointers = false)
 {
     Metadata result{.suite = std::move(suite), .profile = std::move(profile), .layer = layer,
@@ -52,7 +52,7 @@ inline Metadata comparisonMetadata(std::vector<std::string> coverage, Layer laye
     return result;
 }
 
-inline void comparisonEvidence(RhiTestContext& context, const Json& fixture, const Json& observations,
+inline void comparisonEvidence(RHITestContext& context, const Json& fixture, const Json& observations,
     bool targetUsed)
 {
     if (!context.evidence) { return; }
@@ -62,10 +62,10 @@ inline void comparisonEvidence(RhiTestContext& context, const Json& fixture, con
 }
 
 // Declare after resources so exceptional exits drain before resource destruction.
-class GpuCommands {
+class GPUCommands {
 public:
-    explicit GpuCommands(render::Queue& queue) : queue_(queue) {}
-    ~GpuCommands()
+    explicit GPUCommands(render::Queue& queue) : queue_(queue) {}
+    ~GPUCommands()
     {
         if (submitted_) { (void)queue_.waitIdle(); }
         commands.reset();
@@ -103,7 +103,7 @@ private:
 };
 
 template<typename T>
-void readbackEvidence(RhiTestContext& context, const std::string& filename, std::span<const T> actual)
+void readbackEvidence(RHITestContext& context, const std::string& filename, std::span<const T> actual)
 {
     if (context.evidence) {
         std::string output = filename;

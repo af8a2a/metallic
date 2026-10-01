@@ -43,19 +43,19 @@ CPU 子项不分配 GPU timestamp；完成后挂接到当前 `Stream Begin` 下�
 
 同期 CLAS 退休页扫描为 **0.439 / 0.420 ms**，驻留需求更新为 **0.378 / 0.387 ms**。冷页排序约占 Stream Begin 的 29–30%；联合回收整体约占 50%。起点几乎没有排序和卸载操作，但仍逐帧扫描 CLAS 页、活跃页和驻留需求，所以总成本不会自动降为零。
 
-![CPU Stream Begin 分阶段组成](E:/metallic/build-release/stream-begin-profile/analysis-v2/CpuStreamBegin.png)
+![CPU Stream Begin 分阶段组成](E:/metallic/build-release/stream-begin-profile/analysis-v2/CPUStreamBegin.png)
 
 代码与数据共同指向三项后续工作：
 
 1. `prepareEvictionCandidates()` 每帧重建候选并排序，比较器反复通过 pages_.at 读取 lastUsedFrame。优先考虑保持既有 age/page-id 次序的增量候选结构，或缓存排序键、按实际回收需求减少排序工作。先保持回收语义，再验证相同轨迹的装卸与质量。
-2. `MeshletStreamCompactClasPool::beginFrame()` 即使没有退休页也扫描整个 CLAS page map。可单独维护到期退休队列，避免扫描所有活跃 CLAS。
+2. `MeshletStreamCompactCLASPool::beginFrame()` 即使没有退休页也扫描整个 CLAS page map。可单独维护到期退休队列，避免扫描所有活跃 CLAS。
 3. `consumeGpuRequests()` 的驻留需求更新和回收阶段的 pending-free 抵扣都扫描集合。后续可用增量计数/标记减少重复扫描，但必须保留延迟反馈与新上传页面的保护条件。
 
 这次没有把计时变化称为性能优化。两轮起点存在明显波动，CPU elapsed time 会受系统调度、缓存和内存访问影响；移动段候选排序的重复测量较一致。父项减去九个直接子项，起点与 forward_2 的未归属时间约为 7–11 μs，包含观测发布与调用开销，不能当作整个 instrumentation 开销的精确 A/B 测量。嵌套项不可重复相加。
 
 **验证和数据**
 
-- Release 构建通过：MetallicRhiTests、MetallicGPUDrivenSample。
+- Release 构建通过：MetallicRHITests、MetallicGPUDrivenSample。
 - 最终版本 m1/m2/quality 各 3,000 帧通过；检查 CPU-only 子项无 GPU timing、parent 在子项之前、时长非负、直接子项耗时不超过父项，且后续 GPU scope 均能正确解析。
 - 两轮末尾均为 11,598 驻留页，CLAS pending=0；最终 visibleOverTargetRefinements=0，保持原先 1.5 px 收敛条件。quality 的诊断读回不进入性能对比。
 - [结构化摘要](E:/metallic/Documentation/MiniZorahStreamBeginResults.json)、[完整 scope CSV](E:/metallic/build-release/stream-begin-profile/analysis-v2/Scopes.csv)、[完整分析](E:/metallic/build-release/stream-begin-profile/analysis-v2/Evidence.json)、[运行 manifest](E:/metallic/build-release/stream-begin-profile/replay-v2/Manifest.json)。manifest 保存运行二进制与相机输入的 SHA-256；原始基准产物未覆盖。
@@ -67,4 +67,4 @@ CPU 子项不分配 GPU timestamp；完成后挂接到当前 `Stream Begin` 下�
 python E:/metallic/Tools/AnalyzeMiniZorahCfgRoam.py E:/metallic/build-release/vk-minizorah-roam/20260914-idle-v1 --metallic E:/metallic/build-release/stream-begin-profile/replay-next --output E:/metallic/build-release/stream-begin-profile/analysis-next --plots
 ```
 
-关键实现：[CPU recorder](E:/metallic/Source/Runtime/Render/Profiling/CpuProfile.h)、[Stream Begin](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp:2297)、[回收候选](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp:1332)、[CLAS 退休扫描](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp:297)。
+关键实现：[CPU recorder](E:/metallic/Source/Runtime/Render/Profiling/CPUProfile.h)、[Stream Begin](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamRuntime.cpp:2297)、[回收候选](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp:1332)、[CLAS 退休扫描](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCompactCLASPool.cpp:297)。

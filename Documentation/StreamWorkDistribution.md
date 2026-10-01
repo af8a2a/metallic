@@ -100,7 +100,7 @@ debug snapshot 的 `distributedPageDemand` 表示功能可用，`distributedDema
 
 ## 正确性验证
 
-Release 的 `MetallicRhiTests` 和 `MetallicGPUDrivenSample` 构建通过。最终 `adaptive-tests.log` 的 8 项测试在 Vulkan validation 开启时全部通过：GPU/CPU oracle 共 872 个用例，涵盖共享父级、511/8191-group 大拓扑、缺页、PendingUpload、请求优先级、预取、隐藏恢复、稀疏状态清理、输出预算和逐帧切换调度；任务统计与实际测试数量也做一致性检查。任务根的 CPU 检查覆盖不同上限下叶子不重叠、不缺失。
+Release 的 `MetallicRHITests` 和 `MetallicGPUDrivenSample` 构建通过。最终 `adaptive-tests.log` 的 8 项测试在 Vulkan validation 开启时全部通过：GPU/CPU oracle 共 872 个用例，涵盖共享父级、511/8191-group 大拓扑、缺页、PendingUpload、请求优先级、预取、隐藏恢复、稀疏状态清理、输出预算和逐帧切换调度；任务统计与实际测试数量也做一致性检查。任务根的 CPU 检查覆盖不同上限下叶子不重叠、不缺失。
 
 真实 Bunny 测试核对 8 组视图/LOD × 4 种光栅配置的 cut、有效 ID、深度和冻结相机，确认自适应的两种调度都被执行，并验证队列容量为 1 时退回完整 ordered cut。混合 resident/stream 生产者和独立软硬光栅等价测试也通过。最终渲染图像和统计位于 `.cache/stream-distribution/adaptive-tests/`。
 
@@ -111,8 +111,8 @@ Release 的 `MetallicRhiTests` 和 `MetallicGPUDrivenSample` 构建通过。最�
 ## 验证命令
 
 ```powershell
-cmake --build build-release --target MetallicRhiTests MetallicGPUDrivenSample --parallel 6
-./build-release/tests/MetallicRhiTests.exe '--gtest_filter=*meshlet_lod_stream*:*hybrid_raster_scene_equivalence:*render_graph_gpu_driven_mixed_producer_render' --rhi-validation --output-dir .cache/stream-distribution/adaptive-tests
+cmake --build build-release --target MetallicRHITests MetallicGPUDrivenSample --parallel 6
+./build-release/tests/MetallicRHITests.exe '--gtest_filter=*meshlet_lod_stream*:*hybrid_raster_scene_equivalence:*render_graph_gpu_driven_mixed_producer_render' --rhi-validation --output-dir .cache/stream-distribution/adaptive-tests
 ./Tools/RunMetallicCfgReplay.ps1 -Replay .cache/gpudriven-four/Replay.json -OutputRoot .cache/stream-distribution/adaptive-ordered -Cases m1,m2 -Realtime -DemandTraversal Ordered
 ./Tools/RunMetallicCfgReplay.ps1 -Replay .cache/gpudriven-four/Replay.json -OutputRoot .cache/stream-distribution/adaptive -Realtime -QualityWithoutValidation
 ```

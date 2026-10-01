@@ -69,9 +69,9 @@ Metallic 对应 host frame 均值为 **7.290 / 7.439 ms**，CPU record 均值为
 | 起点 Traversal Run / LOD frontier GPU | 0.118 / 0.105 | 1.068 / 1.126 |
 | forward_2 Traversal Run / LOD frontier GPU | 0.111 / 0.098 | 0.600 / 0.616 |
 | 远端停留 Traversal Run / LOD frontier GPU | 0.122 / 0.099 | 0.583 / 0.582 |
-| forward_2 Clas Build New / CLAS build GPU | 0.057 / 0.054 | 0.113 / 0.112 |
+| forward_2 CLAS Build New / CLAS build GPU | 0.057 / 0.054 | 0.113 / 0.112 |
 
-这些 scope 是功能对应项，内部工作量并不完全相同：参考另有 Clas Prep Allocation、Clas Allocate New、Clas Append New 和 BLAS 构建，不能只用 Clas Build New 代表它的全部 CLAS 成本。Metallic 的 Stream early/Software raster 在起点约 0.857 / 0.859 ms，与 LOD frontier 一起是静止画面的主要 GPU 优化线索。嵌套 scope 与异步队列存在包含、重叠，不能把所有行相加。
+这些 scope 是功能对应项，内部工作量并不完全相同：参考另有 CLAS Prep Allocation、CLAS Allocate New、CLAS Append New 和 BLAS 构建，不能只用 CLAS Build New 代表它的全部 CLAS 成本。Metallic 的 Stream early/Software raster 在起点约 0.857 / 0.859 ms，与 LOD frontier 一起是静止画面的主要 GPU 优化线索。嵌套 scope 与异步队列存在包含、重叠，不能把所有行相加。
 
 **流送、驻留与质量**
 
@@ -106,7 +106,7 @@ Metallic m1/m2 最终 demand→drawable 统计的 P99 分别为 141 / 95 ms；�
 在已经初始化 MSVC 构建环境的终端执行。每次选择新的输出目录；参考脚本要求已有 glTF 和 `.gltf.nvsngeo` 缓存，避免误触全场景 cook。图表依赖 Python matplotlib。
 
 ```powershell
-cmake --build E:/metallic/build-release --target MetallicRhiTests --config Release
+cmake --build E:/metallic/build-release --target MetallicRHITests --config Release
 python E:/metallic/Tools/RunVkMiniZorahRoam.py --output E:/metallic/build-release/vk-minizorah-roam/repeat-v1
 & E:/metallic/Tools/RunMetallicCfgReplay.ps1 -Replay E:/metallic/build-release/vk-minizorah-roam/repeat-v1/Replay.json -OutputRoot E:/metallic/build-release/vk-minizorah-roam/repeat-metallic
 python E:/metallic/Tools/AnalyzeMiniZorahCfgRoam.py E:/metallic/build-release/vk-minizorah-roam/repeat-v1 --metallic E:/metallic/build-release/vk-minizorah-roam/repeat-metallic --plots

@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
@@ -8,51 +8,51 @@
 namespace metallic::tests {
 namespace {
 
-class ValidateDeviceTest : public RhiTest {
+class ValidateDeviceTest : public RHITest {
 public:
     ValidateDeviceTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "validate_device";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::Queue* graphicsQueue = context.device.getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail("graphics queue is unavailable");
+            return RHITestResult::fail("graphics queue is unavailable");
         }
         if (graphicsQueue->type() != render::QueueType::Graphics) {
-            return RhiTestResult::fail("graphics queue reported the wrong type");
+            return RHITestResult::fail("graphics queue reported the wrong type");
         }
         render::Queue* copyQueue = context.device.getQueue(render::QueueType::Copy);
         if (context.device.capabilities().independentCopyQueue != (copyQueue != nullptr)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "independentCopyQueue capability does not match QueueType::Copy availability");
         }
         if (copyQueue != nullptr &&
             (copyQueue == graphicsQueue || copyQueue->type() != render::QueueType::Copy)) {
-            return RhiTestResult::fail("copy queue did not expose an independent Copy wrapper");
+            return RHITestResult::fail("copy queue did not expose an independent Copy wrapper");
         }
 
         render::Result<> result = context.device.waitIdle();
         if (!result) {
-            return RhiTestResult::fail(std::string("Device::waitIdle returned ") + toString(result));
+            return RHITestResult::fail(std::string("Device::waitIdle returned ") + toString(result));
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class OptionalFeatureSoftRequestTest : public RhiTest {
+class OptionalFeatureSoftRequestTest : public RHITest {
 public:
     OptionalFeatureSoftRequestTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "optional_feature_soft_request";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> result = render::createDevice(render::DeviceDesc{
@@ -67,60 +67,60 @@ public:
                 .enablePartitionedAccelerationStructure = true,
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createDevice(optional features) returned ") + toString(result));
         }
         if (device == nullptr) {
-            return RhiTestResult::fail("createDevice(optional features) returned a null device");
+            return RHITestResult::fail("createDevice(optional features) returned a null device");
         }
 
         const render::DeviceCapabilities& capabilities = device->capabilities();
         if (capabilities.rayQuery && !capabilities.rayTracingAccelerationStructure) {
-            return RhiTestResult::fail("rayQuery capability was enabled without acceleration structure support");
+            return RHITestResult::fail("rayQuery capability was enabled without acceleration structure support");
         }
         if (capabilities.rayTracingPositionFetch && !capabilities.rayTracingAccelerationStructure) {
-            return RhiTestResult::fail("position fetch was enabled without acceleration structure support");
+            return RHITestResult::fail("position fetch was enabled without acceleration structure support");
         }
         if (capabilities.clusterAccelerationStructure && !capabilities.rayTracingAccelerationStructure) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "clusterAccelerationStructure capability was enabled without acceleration structure support");
         }
         if (capabilities.partitionedAccelerationStructure && !capabilities.rayTracingAccelerationStructure) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "partitionedAccelerationStructure capability was enabled without acceleration structure support");
         }
         if (capabilities.bindlessDescriptorHeap &&
             (capabilities.maxBindlessSamplers == 0 ||
                 capabilities.maxBindlessSampledImages == 0 ||
                 capabilities.maxBindlessBuffers == 0)) {
-            return RhiTestResult::fail("bindless descriptor heap capability reported zero capacity");
+            return RHITestResult::fail("bindless descriptor heap capability reported zero capacity");
         }
 
         result = device->waitIdle();
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("Device::waitIdle(optional features) returned ") + toString(result));
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class ShaderObjectRequiredTest : public RhiTest {
+class ShaderObjectRequiredTest : public RHITest {
 public:
     ShaderObjectRequiredTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "shader_object_required";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         if (!render::DeviceDesc{}.enableShaderObject) {
-            return RhiTestResult::fail("DeviceDesc must enable required shader objects by default");
+            return RHITestResult::fail("DeviceDesc must enable required shader objects by default");
         }
         if (!context.device.capabilities().shaderObject) {
-            return RhiTestResult::fail("A successfully created device must expose shader object support");
+            return RHITestResult::fail("A successfully created device must expose shader object support");
         }
 
         // Reject this invalid request before creating another Vulkan device.
@@ -132,67 +132,67 @@ public:
                 .enableShaderObject = false,
             }).transform([&](auto rhiValue) { rejectedDevice = std::move(rhiValue); });
         if (!render::hasError(result, render::Error::InvalidArgument) || rejectedDevice != nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createDevice(enableShaderObject=false) must reject the request without a device, got ") +
                 toString(result));
         }
 
-        return RhiTestResult::pass("Shader objects are enabled by default and cannot be disabled");
+        return RHITestResult::pass("Shader objects are enabled by default and cannot be disabled");
     }
 };
 
-class ScenePathNormalizationTest : public RhiTest {
+class ScenePathNormalizationTest : public RHITest {
 public:
     ScenePathNormalizationTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "scene_path_normalization";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::error_code error;
         const std::filesystem::path originalWorkingDirectory =
             std::filesystem::current_path(error);
         if (error) {
-            return RhiTestResult::fail("failed to query the current working directory");
+            return RHITestResult::fail("failed to query the current working directory");
         }
 
         const std::filesystem::path alternateWorkingDirectory =
             std::filesystem::temp_directory_path(error);
         if (error) {
-            return RhiTestResult::fail("failed to query the temporary directory");
+            return RHITestResult::fail("failed to query the temporary directory");
         }
         std::filesystem::current_path(alternateWorkingDirectory, error);
         if (error) {
-            return RhiTestResult::fail("failed to switch to the RHI test output directory");
+            return RHITestResult::fail("failed to switch to the RHI test output directory");
         }
         const std::filesystem::path normalizedRelative =
             render::normalizedScenePath("Asset/meet_mat.glb");
         std::filesystem::current_path(originalWorkingDirectory, error);
         if (error) {
-            return RhiTestResult::fail("failed to restore the current working directory");
+            return RHITestResult::fail("failed to restore the current working directory");
         }
 
         const std::filesystem::path normalizedAbsolute = render::normalizedScenePath(
             std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/meet_mat.glb");
         if (normalizedRelative != normalizedAbsolute) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "relative scene paths were resolved against the process working directory");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class ClusterAccelerationStructureSupportTest : public RhiTest {
+class ClusterAccelerationStructureSupportTest : public RHITest {
 public:
     ClusterAccelerationStructureSupportTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "cluster_acceleration_structure_support";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> result = render::createDevice(render::DeviceDesc{
@@ -201,11 +201,11 @@ public:
                 .enableClusterAccelerationStructure = true,
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createDevice(cluster acceleration structure) returned ") + toString(result));
         }
         if (device == nullptr) {
-            return RhiTestResult::fail("createDevice(cluster acceleration structure) returned a null device");
+            return RHITestResult::fail("createDevice(cluster acceleration structure) returned a null device");
         }
 
         render::ClusterAccelerationStructureBuildSizes triangleSizes;
@@ -219,21 +219,21 @@ public:
         const render::DeviceCapabilities& capabilities = device->capabilities();
         if (!capabilities.clusterAccelerationStructure) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::pass();
+                return RHITestResult::pass();
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("CLAS size query without capability returned ") + toString(result));
         }
         if (!capabilities.rayTracingAccelerationStructure) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "clusterAccelerationStructure capability was enabled without acceleration structure support");
         }
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("queryClusterAccelerationStructureTriangleBuildSizes returned ") + toString(result));
         }
         if (triangleSizes.accelerationStructureSize == 0 || triangleSizes.buildScratchSize == 0) {
-            return RhiTestResult::fail("triangle CLAS size query returned zero build size");
+            return RHITestResult::fail("triangle CLAS size query returned zero build size");
         }
 
         render::ClusterAccelerationStructureBuildSizes bottomLevelSizes;
@@ -242,26 +242,26 @@ public:
                 .maxTotalClusterCount = 1,
             }).transform([&](auto rhiValue) { bottomLevelSizes = std::move(rhiValue); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("queryClusterAccelerationStructureBottomLevelBuildSizes returned ") + toString(result));
         }
         if (bottomLevelSizes.accelerationStructureSize == 0 || bottomLevelSizes.buildScratchSize == 0) {
-            return RhiTestResult::fail("bottom-level CLAS size query returned zero build size");
+            return RHITestResult::fail("bottom-level CLAS size query returned zero build size");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class PartitionedAccelerationStructureSupportTest : public RhiTest {
+class PartitionedAccelerationStructureSupportTest : public RHITest {
 public:
     PartitionedAccelerationStructureSupportTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "partitioned_acceleration_structure_support";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> result = render::createDevice(render::DeviceDesc{
@@ -270,11 +270,11 @@ public:
                 .enablePartitionedAccelerationStructure = true,
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createDevice(partitioned acceleration structure) returned ") + toString(result));
         }
         if (device == nullptr) {
-            return RhiTestResult::fail("createDevice(partitioned acceleration structure) returned a null device");
+            return RHITestResult::fail("createDevice(partitioned acceleration structure) returned a null device");
         }
 
         render::PartitionedAccelerationStructureBuildSizes sizes;
@@ -288,17 +288,17 @@ public:
         const render::DeviceCapabilities& capabilities = device->capabilities();
         if (!capabilities.partitionedAccelerationStructure) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::pass();
+                return RHITestResult::pass();
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("PTLAS size query without capability returned ") + toString(result));
         }
         if (!capabilities.rayTracingAccelerationStructure) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "partitionedAccelerationStructure capability was enabled without acceleration structure support");
         }
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("queryPartitionedAccelerationStructureBuildSizes returned ") + toString(result));
         }
         if (sizes.accelerationStructureSize == 0 ||
@@ -306,27 +306,27 @@ public:
             sizes.operationInfoSize == 0 ||
             sizes.operationCountSize == 0 ||
             sizes.instanceWriteInfoSize == 0) {
-            return RhiTestResult::fail("PTLAS size query returned zero build size");
+            return RHITestResult::fail("PTLAS size query returned zero build size");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class ExpectedResourceResultsTest final : public RhiTest {
+class ExpectedResourceResultsTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
-        return bench::gpuMetadata({"result.resource.error.contract"}, bench::Layer::Rhi, "core", "core");
+        return bench::gpuMetadata({"result.resource.error.contract"}, bench::Layer::RHI, "core", "core");
     }
 
     ExpectedResourceResultsTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "expected_resource_results";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         static_assert(std::is_same_v<Result<BufferSlice>, std::expected<BufferSlice, Error>>);
@@ -341,7 +341,7 @@ public:
             !hasError(emptyDevice.textureAllocationSize({}), Error::InvalidArgument) ||
             !hasError(emptyDevice.queryRayTracingAccelerationStructureProperties(), Error::InvalidArgument) ||
             !hasError(BufferSlice{}.subslice(), Error::InvalidArgument)) {
-            return RhiTestResult::fail("invalid objects did not return the expected error");
+            return RHITestResult::fail("invalid objects did not return the expected error");
         }
 
         bool visited = false;
@@ -349,57 +349,57 @@ public:
             [&](auto) { visited = true; });
         if (visited || !hasError(rejected, Error::InvalidArgument) ||
             std::string_view(resultToString(rejected)) != "InvalidArgument") {
-            return RhiTestResult::fail("failed creation exposed a value or lost its error");
+            return RHITestResult::fail("failed creation exposed a value or lost its error");
         }
 
         auto created = context.device.createBuffer({.size = 64, .usage = BufferUsageBits::Storage});
-        if (!created) { return RhiTestResult::fail(resultToString(created)); }
+        if (!created) { return RHITestResult::fail(resultToString(created)); }
         auto buffer = std::move(*created);
         if (!buffer || *created) {
-            return RhiTestResult::fail("buffer ownership was not transferred from the result");
+            return RHITestResult::fail("buffer ownership was not transferred from the result");
         }
         auto slice = buffer->slice({16, 32});
         if (!slice || slice->offset() != 16 || slice->size() != 32 ||
             !hasError(slice->subslice({33}), Error::InvalidArgument)) {
-            return RhiTestResult::fail("slice result lost its range or error");
+            return RHITestResult::fail("slice result lost its range or error");
         }
         auto remainder = slice->subslice({8});
         if (!remainder || remainder->offset() != 24 || remainder->size() != 24) {
-            return RhiTestResult::fail("subslice default size did not preserve the remaining range");
+            return RHITestResult::fail("subslice default size did not preserve the remaining range");
         }
         std::weak_ptr<void> allocation = buffer->retainAllocation();
         buffer.reset();
         if (allocation.expired()) {
-            return RhiTestResult::fail("returned slices did not retain the buffer allocation");
+            return RHITestResult::fail("returned slices did not retain the buffer allocation");
         }
         slice = makeError(Error::Failure);
         remainder = makeError(Error::Failure);
         if (!allocation.expired()) {
-            return RhiTestResult::fail("discarded result values leaked a buffer allocation");
+            return RHITestResult::fail("discarded result values leaked a buffer allocation");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class ExpectedBindlessResultsTest final : public RhiTest {
+class ExpectedBindlessResultsTest final : public RHITest {
 public:
     ExpectedBindlessResultsTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "expected_bindless_results";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         auto device = createDevice({.applicationName = "Expected bindless results",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true});
-        if (hasError(device, Error::Unsupported)) { return RhiTestResult::skip(resultToString(device)); }
-        if (!device) { return RhiTestResult::fail(resultToString(device)); }
+        if (hasError(device, Error::Unsupported)) { return RHITestResult::skip(resultToString(device)); }
+        if (!device) { return RHITestResult::fail(resultToString(device)); }
         auto created = (*device)->createBindlessHeap({
             .maxSamplers = 1, .maxSampledImages = 1, .maxStorageImages = 1, .maxBuffers = 1});
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip(resultToString(created)); }
-        if (!created) { return RhiTestResult::fail(resultToString(created)); }
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip(resultToString(created)); }
+        if (!created) { return RHITestResult::fail(resultToString(created)); }
         auto& heap = **created;
         using Allocate = Result<BindlessHandle> (BindlessHeap::*)();
         const std::pair<Allocate, BindlessHandleKind> cases[] = {
@@ -412,21 +412,21 @@ public:
         for (const auto& [allocate, kind] : cases) {
             const auto handle = (heap.*allocate)();
             if (!handle || !handle->valid() || handle->kind != kind) {
-                return RhiTestResult::fail("allocation did not return the requested handle kind");
+                return RHITestResult::fail("allocation did not return the requested handle kind");
             }
             // Sampled and storage images share one pool with the summed capacity.
             const bool image = kind == BindlessHandleKind::SampledImage || kind == BindlessHandleKind::StorageImage;
             auto second = image ? (heap.*allocate)() : Result<BindlessHandle>(makeError(Error::Unsupported));
             if (image && (!second || second->kind != kind || second->index == handle->index)) {
-                return RhiTestResult::fail("shared image pool did not expose both slots");
+                return RHITestResult::fail("shared image pool did not expose both slots");
             }
             if (!hasError((heap.*allocate)(), Error::OutOfMemory)) {
-                return RhiTestResult::fail("exhausted allocation did not return OutOfMemory");
+                return RHITestResult::fail("exhausted allocation did not return OutOfMemory");
             }
             heap.release(*handle);
             const auto reused = (heap.*allocate)();
             if (!reused || reused->index != handle->index) {
-                return RhiTestResult::fail("released slot was not reusable");
+                return RHITestResult::fail("released slot was not reusable");
             }
             heap.release(*reused);
             if (second) { heap.release(*second); }
@@ -434,10 +434,10 @@ public:
         BindlessHeap moved = std::move(heap);
         for (const auto& [allocate, kind] : cases) {
             if (!hasError((heap.*allocate)(), Error::InvalidArgument)) {
-                return RhiTestResult::fail("moved-from heap did not return InvalidArgument");
+                return RHITestResult::fail("moved-from heap did not return InvalidArgument");
             }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 

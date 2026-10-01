@@ -41,8 +41,8 @@ Full 精确对照关闭 jitter、串行 HW/SW；每个目标帧前从偏移 `[0,
 
 ```powershell
 # 在已有 MSVC 配置中构建，再运行 GPU 边界测试。
-cmake --build build-scheduling-release --target MetallicGPUDrivenSample MetallicRhiTests
-.\build-scheduling-release\tests\MetallicRhiTests.exe --rhi-validation --rhi-bindless --filter stream_group_raster_boundaries
+cmake --build build-scheduling-release --target MetallicGPUDrivenSample MetallicRHITests
+.\build-scheduling-release\tests\MetallicRHITests.exe --rhi-validation --rhi-bindless --filter stream_group_raster_boundaries
 
 # 三段活动流送 + 同停点四入口精确对照。使用新的输出目录。
 pwsh -NoProfile -File Tools/RunZorahFullRoam.ps1 -OutputRoot build-scheduling-release/sw-group-checkpoints-new -SwGroupComparison -Executable E:/metallic/build-scheduling-release/Source/MetallicGPUDrivenSample.exe -RouteConfig Tools/Perf/SwGroupCorrectness.Checkpoints.json -Runs 1 -Rounds 3 -SampleFrames 8 -SettleFrames 8 -WarmupSeconds 15 -Validation -NoVSync -TimeoutSeconds 900

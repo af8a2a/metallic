@@ -172,7 +172,7 @@ struct ClusterLightGrid::Resources {
     std::array<std::shared_ptr<Buffer>, 5> buffers;
     // A legacy command without a frame must not mutate a shared descriptor table.
     std::shared_ptr<ComputeProgram> untrackedProgram;
-    GpuCompletionPoint completion;
+    GPUCompletionPoint completion;
     bool cancelled = false;
 };
 
@@ -240,7 +240,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
     Result<> result = buildClusterLightGridParams(desc, log).transform([&](auto value) { params = std::move(value); });
     if (!result) { return result; }
     if (scene.lights().size() > UINT32_MAX ||
-        scene.lights().size() * sizeof(GpuPunctualLight) > kMaxGridBytes) {
+        scene.lights().size() * sizeof(GPUPunctualLight) > kMaxGridBytes) {
         log = "ClusterLightGrid source light upload exceeds its buffer budget";
         return makeError(Error::InvalidArgument);
     }
@@ -248,7 +248,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
         static_cast<uint32_t>(visibleLights->directionalLights.size()),
         static_cast<uint32_t>(visibleLights->unboundedLocalLights.size()),
         static_cast<uint32_t>(scene.lights().size())};
-    std::vector<GpuPunctualLight> lightData;
+    std::vector<GPUPunctualLight> lightData;
     lightData.reserve(std::max(scene.lights().size(), size_t(1)));
     for (const auto& record : scene.lights()) { lightData.push_back(record.source.gpu); }
     if (lightData.empty()) { lightData.emplace_back(); }
@@ -272,7 +272,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
         if (!result) { return result; }
     }
     const uint64_t cellCount = uint64_t(params.grid[0]) * params.grid[1] * params.grid[2];
-    const std::array<uint64_t, 5> sizes{sizeof(params), lightData.size() * sizeof(GpuPunctualLight),
+    const std::array<uint64_t, 5> sizes{sizeof(params), lightData.size() * sizeof(GPUPunctualLight),
         candidates.size() * sizeof(uint32_t), cellCount * sizeof(ClusterLightGridCell),
         cellCount * desc.maxLightsPerCell * sizeof(uint32_t)};
     // In overlapped recording the newest snapshot is normally still in flight.

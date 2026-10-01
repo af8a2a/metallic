@@ -1,6 +1,6 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
-#include "Runtime/Render/Debug/GpuDebugProbe.h"
+#include "Runtime/Render/Debug/GPUDebugProbe.h"
 #include "Runtime/Debug/DebugProbe.h"
 
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -52,10 +52,10 @@ private:
 std::string textureLayout(Format format)
 {
     switch (format) {
-    case Format::Rgba8Unorm: case Format::Rgba8Srgb: return "RGBA8";
-    case Format::Bgra8Unorm: case Format::Bgra8Srgb: return "BGRA8";
-    case Format::Rgba16Sfloat: return "RGBA16F";
-    case Format::Rgba32Sfloat: return "RGBA32F";
+    case Format::RGBA8Unorm: case Format::RGBA8sRGB: return "RGBA8";
+    case Format::BGRA8Unorm: case Format::BGRA8sRGB: return "BGRA8";
+    case Format::RGBA16Sfloat: return "RGBA16F";
+    case Format::RGBA32Sfloat: return "RGBA32F";
     case Format::R32Uint: return "u32";
     case Format::R32Sfloat: case Format::D32Sfloat: return "f32";
     default: return {};
@@ -91,7 +91,7 @@ DebugValue resourceMetadata(const DebugResourceBinding& binding)
 
 struct RenderDebugRuntime::Execution {
     debug::DebugSnapshot snapshot;
-    GpuCompletionPoint completion;
+    GPUCompletionPoint completion;
     std::vector<debug::DebugCaptureRequest> requests;
     uint64_t capturedBytes = 0;
     uint64_t recordingNs = 0;

@@ -1,64 +1,64 @@
 {
   "edges": [
     {
-      "dst": "DlssRr.inputColor",
+      "dst": "DLSSRR.inputColor",
       "id": 1,
       "src": "PathTrace.color"
     },
     {
-      "dst": "DlssRr.albedo",
+      "dst": "DLSSRR.albedo",
       "id": 2,
       "src": "PathTrace.albedo"
     },
     {
-      "dst": "DlssRr.specularAlbedo",
+      "dst": "DLSSRR.specularAlbedo",
       "id": 3,
       "src": "PathTrace.specularAlbedo"
     },
     {
-      "dst": "DlssRr.normalRoughness",
+      "dst": "DLSSRR.normalRoughness",
       "id": 4,
       "src": "PathTrace.normalRoughness"
     },
     {
-      "dst": "DlssRr.motionVectors",
+      "dst": "DLSSRR.motionVectors",
       "id": 5,
       "src": "PathTrace.motionVectors"
     },
     {
-      "dst": "DlssRr.linearDepth",
+      "dst": "DLSSRR.linearDepth",
       "id": 6,
       "src": "PathTrace.linearDepth"
     },
     {
-      "dst": "DlssRr.specularHitDistance",
+      "dst": "DLSSRR.specularHitDistance",
       "id": 7,
       "src": "PathTrace.specularHitDistance"
     },
     {
       "dst": "FinalBlit.source",
       "id": 8,
-      "src": "DlssNr.color"
+      "src": "DLSSNR.color"
     },
     {
       "id": 9,
-      "src": "DlssRr.color",
+      "src": "DLSSRR.color",
       "dst": "AutoExposure.source"
     },
     {
       "id": 10,
       "src": "AutoExposure.color",
-      "dst": "DlssNr.inputColor"
+      "dst": "DLSSNR.inputColor"
     },
     {
       "id": 11,
       "src": "PathTrace.motionVectors",
-      "dst": "DlssNr.motionVectors"
+      "dst": "DLSSNR.motionVectors"
     },
     {
       "id": 12,
       "src": "PathTrace.depth",
-      "dst": "DlssNr.depth"
+      "dst": "DLSSNR.depth"
     }
   ],
   "name": "PathTracingSampleDLSSNR",
@@ -105,7 +105,7 @@
     },
     {
       "id": 2,
-      "name": "DlssRr",
+      "name": "DLSSRR",
       "position": {
         "x": 540.0,
         "y": 280.0
@@ -136,7 +136,7 @@
         "mode": "DLAA",
         "resetSerial": 0
       },
-      "type": "StreamlineDlssRrPass"
+      "type": "StreamlineDLSSRRPass"
     },
     {
       "id": 4,
@@ -160,8 +160,8 @@
     },
     {
       "id": 5,
-      "name": "DlssNr",
-      "type": "DlssNrPass",
+      "name": "DLSSNR",
+      "type": "DLSSNRPass",
       "position": {
         "x": 1260.0,
         "y": 280.0

@@ -1,0 +1,83 @@
+#pragma once
+
+#include "Runtime/Render/GAPI/RHI.h"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <span>
+#include <string>
+
+#ifndef METALLIC_HAS_NRD
+#define METALLIC_HAS_NRD 0
+#endif
+
+#if METALLIC_HAS_NRD
+#include "Runtime/Render/Denoising/NRDTypes.h"
+#endif
+
+namespace metallic::render {
+
+enum class NRDDenoiserMode : uint32_t {
+    Reblur,
+    Relax,
+    Reference,
+    Sigma = 4,
+};
+
+Format nrdNormalRoughnessFormat();
+
+#if METALLIC_HAS_NRD
+
+struct NRDTextureRef {
+    Texture* texture = nullptr;
+    TextureView* view = nullptr;
+};
+
+using NRDUserTexturePool = std::array<NRDTextureRef, static_cast<size_t>(denoising::ResourceType::MAX_NUM)>;
+
+// Vendored NRD kernels, scheduled and bound by Metallic. The caller must wait
+// for the previous frame before reusing this temporal instance (the render graph
+// enforces this through NRDDenoisePass::supportsFrameOverlap = false). User
+// textures enter and leave in General; the complete clear/dispatch sequence
+// derives its dependencies through the shared render graph access planner.
+class NRDRuntime {
+public:
+    NRDRuntime();
+    ~NRDRuntime();
+
+    NRDRuntime(NRDRuntime&&) noexcept;
+    NRDRuntime& operator=(NRDRuntime&&) noexcept;
+
+    NRDRuntime(const NRDRuntime&) = delete;
+    NRDRuntime& operator=(const NRDRuntime&) = delete;
+
+    Result<> initialize(Device& device, uint16_t width, uint16_t height, const NRDUserTexturePool& userTexturePool,
+                      std::string& log, bool sigmaOnly = false);
+    void clear();
+    bool valid() const;
+
+    uint16_t width() const;
+    uint16_t height() const;
+
+    void setUserPoolTexture(denoising::ResourceType resource, Texture& texture, TextureView& view);
+    Result<> setCommonSettings(const denoising::CommonSettings& settings);
+    Result<> setReblurSettings(const denoising::ReblurSettings& settings);
+    Result<> setRelaxSettings(const denoising::RelaxSettings& settings);
+    Result<> setSigmaSettings(const denoising::SigmaSettings& settings);
+    Result<> denoise(NRDDenoiserMode mode, CommandBuffer& commandBuffer);
+    Result<> denoiseReference(bool specular, CommandBuffer& commandBuffer);
+
+private:
+    Result<> record(uint32_t index, CommandBuffer& commandBuffer);
+    Result<> dispatch(CommandBuffer& commandBuffer, const denoising::DispatchDesc& stage,
+        std::span<const NRDTextureRef> textures);
+
+    struct Impl;
+    std::shared_ptr<Impl> impl_;
+};
+
+#endif
+
+} // namespace metallic::render

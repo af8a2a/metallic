@@ -228,7 +228,7 @@ def collect(case, executable, directory, timeout):
                                           "--format=csv", "-l", "1"], stdout=gpu, stderr=subprocess.STDOUT, creationflags=flags)
             process = subprocess.Popen([str(executable), "--sample", case["sampleId"]], cwd=ROOT, env=env,
                                        stdout=out, stderr=err, creationflags=flags)
-            monitor = subprocess.Popen(["powershell.exe", "-NoProfile", "-File", str(Path(__file__).with_name("MeasureExperimentGpu.ps1")),
+            monitor = subprocess.Popen(["powershell.exe", "-NoProfile", "-File", str(Path(__file__).with_name("MeasureExperimentGPU.ps1")),
                                         "-TargetProcessId", str(process.pid)],
                                        stdout=counters, stderr=counter_errors, creationflags=flags)
             code = process.wait(timeout=timeout)
@@ -321,7 +321,7 @@ def execute(args):
     policy = dict(POLICY)
     manifest = {"protocol": PROTOCOL, "status": "running", "runs": [], "policy": policy,
                 "blocks": args.blocks, "confirmationBlocks": args.confirmation_blocks,
-                "toolHashes": {n: w.digest(Path(__file__).with_name(n)) for n in ("ExperimentRunner.py", "WorkloadCase.py", "MeasureExperimentGpu.ps1")}}
+                "toolHashes": {n: w.digest(Path(__file__).with_name(n)) for n in ("ExperimentRunner.py", "WorkloadCase.py", "MeasureExperimentGPU.ps1")}}
     w.save(output / "Manifest.json", manifest)
     for name in manifest["toolHashes"]:
         (output / name).write_bytes(Path(__file__).with_name(name).read_bytes())
@@ -422,8 +422,12 @@ def verify(directory):
     for relative, expected in manifest["artifacts"].items():
         w.require(w.digest(w.file_in(directory, relative)) == expected, f"Artifact changed: {relative}")
     w.require(artifact_hashes(directory) == manifest["artifacts"], "Artifact inventory changed")
-    w.require({'ExperimentRunner.py', 'WorkloadCase.py'} <= set(manifest['toolHashes']) <=
-              {'ExperimentRunner.py', 'WorkloadCase.py', 'MeasureExperimentGpu.ps1'}, 'Missing/unknown producer tools')
+    required_tools = {'ExperimentRunner.py', 'WorkloadCase.py'}
+    # Historical archives retain the original monitor file name in their hash inventories.
+    monitor_tools = {'MeasureExperimentGPU.ps1', 'MeasureExperimentGpu.ps1'}
+    producer_tools = set(manifest['toolHashes'])
+    w.require(required_tools <= producer_tools <= required_tools | monitor_tools and
+              len(producer_tools & monitor_tools) <= 1, 'Missing/unknown producer tools')
     for name, expected in manifest["toolHashes"].items():
         w.require(w.digest(w.file_in(directory, name)) == expected, "Archived producer tool changed")
     case = w.validate_case(w.load(directory / "Case.json"))

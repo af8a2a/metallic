@@ -69,7 +69,7 @@ MiniZorah 两个固定视角的最终 cut 与 PNG 完全相同，visible over-ta
 
 ## 验证记录与复现
 
-- RelWithDebInfo 构建 `MetallicGPUDrivenSample`、`Metallic`、`MetallicRhiTests` 成功。
+- RelWithDebInfo 构建 `MetallicGPUDrivenSample`、`Metallic`、`MetallicRHITests` 成功。
 - 最终 21 项相关回归全部通过（104.882 秒，开启 Vulkan validation 与 async compute），没有跳过项，日志扫描未发现 Vulkan 验证告警/错误。包括独立 StreamAsset pass、VBuffer、全场景首帧、质量审计、候选/分类、稳定分箱与超过 65,535 组的间接调度、旧队列、shader reload、resize、双帧槽、LOD 持久化缓存。
 - 新增 raster equivalence 测试的 24 对 visibility/depth 比较全部逐位相同。
 - 最终日志：[final-regression.log](E:/metallic/build-relwithdebinfo/minizorah-indexed-hardware/final-regression.log)。早期日志中的 `SV_PrimitiveID` 功能验证告警已通过补齐设备功能配置和独立 pass 检查解决。

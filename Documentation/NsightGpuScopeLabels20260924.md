@@ -36,9 +36,9 @@ RenderGraphPass: VBuffer (VisibilityBufferPass)
 涉及代码：
 
 - [标记生成及分支恢复](../Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp)
-- [每个 recording 的标记栈](../Source/Runtime/Render/RenderGraph/RenderGraphGpuLabels.h)
+- [每个 recording 的标记栈](../Source/Runtime/Render/RenderGraph/RenderGraphGPULabels.h)
 - [纯 visibility 范围](../Source/Runtime/Render/RenderPass/BuiltinPass/VisibilityBufferPass.cpp)
-- [标记协议与 scope budget 回归](../tests/rhi/GpuProfilingTests.cpp)
+- [标记协议与 scope budget 回归](../tests/rhi/GPUProfilingTests.cpp)
 - [MiniZorah 实际 GPU 队列和 scope 层级验收](../tests/rhi/EditorProfilerTests.cpp)
 
 验收覆盖标记嵌套与配对、分支失败、query budget、取消提交、跨队列依赖，以及 MiniZorah 360 帧漫游。场景测试前 180 帧串行，后 180 帧 early/late 均启用 async raster，逐帧检查 GPU 时间可用性、父子层级和 software raster 的实际队列。
@@ -54,7 +54,7 @@ RenderGraphPass: VBuffer (VisibilityBufferPass)
 
 ```powershell
 $env:METALLIC_TEST_MINIZORAH='1'
-& build-release/tests/MetallicRhiTests.exe --rhi-no-validation '--gtest_filter=*gpu_profiling*:*frame_parallel_compute_join_and_cancellation:*frame_cross_queue_graph_dependencies:*editor_profiler_history:*editor_profiler_capture_attribution:*minizorah_profiler_streaming' --output-dir build/nsight-labels-acceptance
+& build-release/tests/MetallicRHITests.exe --rhi-no-validation '--gtest_filter=*gpu_profiling*:*frame_parallel_compute_join_and_cancellation:*frame_cross_queue_graph_dependencies:*editor_profiler_history:*editor_profiler_capture_attribution:*minizorah_profiler_streaming' --output-dir build/nsight-labels-acceptance
 ```
 
 本机旧 Vulkan validation layer 不认识 `VK_KHR_device_address_commands`，完整渲染在 validation 开启时发生异常，因此完整 GPU 场景使用 `--rhi-no-validation`。这不是 validation-clean 验收，也没有取得新的 Nsight GPU Trace。标记协议测试直接检查提交给 debug label 接口的名称层级和配对关系；MiniZorah 验证实际 GPU 执行及 timestamp 归属。

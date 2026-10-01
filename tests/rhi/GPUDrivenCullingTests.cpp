@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Core/RenderView.h"
@@ -43,16 +43,16 @@ private:
     render::ComputeProgram program_;
 };
 
-class GPUDrivenConeScaleTest final : public RhiTest {
+class GPUDrivenConeScaleTest final : public RHITest {
 public:
-    GPUDrivenConeScaleTest() { type = RhiTestType::Rendering; name = "gpu_driven_cone_scale_invariance"; }
-    RhiTestResult run(RhiTestContext& context) override
+    GPUDrivenConeScaleTest() { type = RHITestType::Rendering; name = "gpu_driven_cone_scale_invariance"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         const auto initialized = render::createDevice({.applicationName = "Cone scale regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
-        if (!initialized) { return RhiTestResult::fail("Cone probe device creation failed"); }
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires bindless descriptors"); }
+        if (!initialized) { return RHITestResult::fail("Cone probe device creation failed"); }
         render::registerRenderGraphPassType("GPUDrivenConeProbe", "Normal cone scale probe",
             [] { return std::make_unique<GPUDrivenConeProbe>(); });
         render::RenderGraph graph;
@@ -60,13 +60,13 @@ public:
         graph.markOutput("Probe.data");
         render::RenderGraphExecutor executor;
         std::string log;
-        if (!executor.compile(*device, graph, 1, 1, log)) { return RhiTestResult::fail(log); }
+        if (!executor.compile(*device, graph, 1, 1, log)) { return RHITestResult::fail(log); }
         if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
-            !executor.waitForSubmittedWork()) { return RhiTestResult::fail("Cone probe dispatch failed"); }
+            !executor.waitForSubmittedWork()) { return RHITestResult::fail("Cone probe dispatch failed"); }
         auto* buffer = executor.outputResource("Probe.data")->buffer;
         buffer->invalidate();
         const auto* data = static_cast<const std::array<float, 4>*>(buffer->map());
-        if (data == nullptr) { return RhiTestResult::fail("Cone probe readback failed"); }
+        if (data == nullptr) { return RHITestResult::fail("Cone probe readback failed"); }
         bool valid = true;
         for (uint32_t index = 0; index < 16; ++index) {
             const auto& axis = data[index * 2];
@@ -78,8 +78,8 @@ public:
             spdlog::info("[Cone] case={} axis=({},{},{}) front={} back={}", index, axis[0], axis[1], axis[2], axis[3], expected[3]);
         }
         buffer->unmap();
-        return valid ? RhiTestResult::pass("Normal cone front/back decisions survive uniform scales and rotation")
-            : RhiTestResult::fail("Object scale changed the cone axis or rejected a front-facing meshlet");
+        return valid ? RHITestResult::pass("Normal cone front/back decisions survive uniform scales and rotation")
+            : RHITestResult::fail("Object scale changed the cone axis or rejected a front-facing meshlet");
     }
 };
 
@@ -118,16 +118,16 @@ private:
     render::ComputeProgram program_;
 };
 
-class GPUDrivenTwoPassOcclusionTest final : public RhiTest {
+class GPUDrivenTwoPassOcclusionTest final : public RHITest {
 public:
-    GPUDrivenTwoPassOcclusionTest() { type = RhiTestType::Rendering; name = "gpu_driven_two_pass_occlusion"; }
-    RhiTestResult run(RhiTestContext& context) override
+    GPUDrivenTwoPassOcclusionTest() { type = RHITestType::Rendering; name = "gpu_driven_two_pass_occlusion"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         const auto initialized = render::createDevice({.applicationName = "Two-pass occlusion regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
-        if (!initialized) { return RhiTestResult::fail("Occlusion probe device creation failed"); }
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires bindless descriptors"); }
+        if (!initialized) { return RHITestResult::fail("Occlusion probe device creation failed"); }
         render::registerRenderGraphPassType("TwoPassOcclusionProbe", "Two-pass occlusion probe",
             [] { return std::make_unique<TwoPassOcclusionProbe>(); });
         render::RenderGraph graph;
@@ -137,13 +137,13 @@ public:
         graph.markOutput("Probe.current");
         render::RenderGraphExecutor executor;
         std::string log;
-        if (!executor.compile(*device, graph, 1, 1, log)) { return RhiTestResult::fail(log); }
+        if (!executor.compile(*device, graph, 1, 1, log)) { return RHITestResult::fail(log); }
         if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
-            !executor.waitForSubmittedWork()) { return RhiTestResult::fail("Occlusion probe dispatch failed"); }
+            !executor.waitForSubmittedWork()) { return RHITestResult::fail("Occlusion probe dispatch failed"); }
         auto* buffer = executor.outputResource("Probe.data")->buffer;
         buffer->invalidate();
         const auto* data = static_cast<const std::array<float, 4>*>(buffer->map());
-        if (data == nullptr) { return RhiTestResult::fail("Occlusion probe readback failed"); }
+        if (data == nullptr) { return RHITestResult::fail("Occlusion probe readback failed"); }
         const std::array<std::array<float, 2>, 12> expected{{
             {1, 0}, {0, 1}, {0, 0}, {1, 0}, {0, 1}, {1, 0},
             {1, 0}, {0, 1}, {0, 0}, {0, 0}, {0, 0}, {0, 1}}};
@@ -158,24 +158,24 @@ public:
                 index, value[0], value[1], value[2], value[3]);
         }
         buffer->unmap();
-        return valid ? RhiTestResult::pass("GPU occlusion rejection/recovery and conservative projection/depth/scale bounds")
-            : RhiTestResult::fail("Occlusion lost a disoccluded meshlet, drew a meshlet twice, or violated conservative bounds");
+        return valid ? RHITestResult::pass("GPU occlusion rejection/recovery and conservative projection/depth/scale bounds")
+            : RHITestResult::fail("Occlusion lost a disoccluded meshlet, drew a meshlet twice, or violated conservative bounds");
     }
 };
 
-class GPUDrivenSponzaCullingTest final : public RhiTest {
+class GPUDrivenSponzaCullingTest final : public RHITest {
 public:
-    GPUDrivenSponzaCullingTest() { type = RhiTestType::Rendering; name = "gpu_driven_sponza_culling_equivalence"; }
-    RhiTestResult run(RhiTestContext& context) override
+    GPUDrivenSponzaCullingTest() { type = RHITestType::Rendering; name = "gpu_driven_sponza_culling_equivalence"; }
+    RHITestResult run(RHITestContext& context) override
     {
         scene::SceneDocument scene;
         if (!scene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Sponza/glTF/Sponza.gltf")) {
-            return RhiTestResult::fail(scene.lastLoadResult().error);
+            return RHITestResult::fail(scene.lastLoadResult().error);
         }
         render::RenderGraphPreviewRenderer preview;
         const auto initialized = preview.initialize(context.enableValidation, true);
-        if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders"); }
-        if (!initialized) { return RhiTestResult::fail("Preview initialization failed"); }
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders"); }
+        if (!initialized) { return RHITestResult::fail("Preview initialization failed"); }
         preview.bindRuntimeScene(&scene);
         render::RenderGraph graph;
         const uint32_t raster = graph.addNode("VisibilityBufferPass", "VBuffer",
@@ -202,7 +202,7 @@ public:
                     graph.setNodeRuntimeProperty(raster, flags[flag], configuration != -2 && configuration != flag);
                 }
                 for (uint32_t frame = 0; frame < 3; ++frame) {
-                    if (!preview.render(graph, 799, 292)) { return RhiTestResult::fail(preview.lastLog()); }
+                    if (!preview.render(graph, 799, 292)) { return RHITestResult::fail(preview.lastLog()); }
                     if (configuration != -2 && preview.pixels() != reference) { valid = false; }
                 }
                 const auto& pixels = preview.pixels();
@@ -210,24 +210,24 @@ public:
                     reference = pixels;
                     const auto covered = std::count_if(pixels.begin(), pixels.end(),
                         [](uint32_t pixel) { return (pixel & 255u) >= 64u; });
-                    if (covered < 10000) { return RhiTestResult::fail("Sponza reference contains too little geometry"); }
+                    if (covered < 10000) { return RHITestResult::fail("Sponza reference contains too little geometry"); }
                 }
                 size_t changed = 0;
                 for (size_t pixel = 0; pixel < pixels.size(); ++pixel) { changed += pixels[pixel] != reference[pixel]; }
                 spdlog::info("[Sponza culling] camera={} configuration={} changed={}", cameraIndex, configuration, changed);
                 if (!saveRgba8Png(context.outputDirectory / ("Sponza" + std::to_string(cameraIndex) +
                         "Cull" + std::to_string(configuration) + ".png"), reinterpret_cast<const uint8_t*>(pixels.data()),
-                        preview.width(), preview.height(), log)) { return RhiTestResult::fail(log); }
+                        preview.width(), preview.height(), log)) { return RHITestResult::fail(log); }
             }
         }
         // Review artifact with actual materials/lighting at the failing camera.
         // Native resolution isolates culling from temporal reconstruction.
         render::RenderSampleLoadResult sample;
-        if (!render::loadBuiltInRenderSample("realtime-lighting", sample, log)) { return RhiTestResult::fail(log); }
-        const auto* sr = sample.graph.findNode("DlssSr");
-        const auto* nr = sample.graph.findNode("DlssNr");
+        if (!render::loadBuiltInRenderSample("realtime-lighting", sample, log)) { return RHITestResult::fail(log); }
+        const auto* sr = sample.graph.findNode("DLSSSR");
+        const auto* nr = sample.graph.findNode("DLSSNR");
         if (sr == nullptr || nr == nullptr || !sample.desc.environment.has_value()) {
-            return RhiTestResult::fail("Missing realtime sample reconstruction or environment settings");
+            return RHITestResult::fail("Missing realtime sample reconstruction or environment settings");
         }
         const auto srId = sr->id, nrId = nr->id;
         sample.graph.removeNode(srId);
@@ -240,23 +240,23 @@ public:
             {"temporalJitter", false}});
         preview.setEnvironment({.enabled = true, .path = std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.environment->path});
         for (uint32_t frame = 0; frame < 32; ++frame) {
-            if (!preview.render(sample.graph, 1198, 438)) { return RhiTestResult::fail(preview.lastLog()); }
+            if (!preview.render(sample.graph, 1198, 438)) { return RHITestResult::fail(preview.lastLog()); }
         }
         if (!saveRgba8Png(context.outputDirectory / "SponzaShaded.png", reinterpret_cast<const uint8_t*>(preview.pixels().data()),
-                preview.width(), preview.height(), log)) { return RhiTestResult::fail(log); }
-        return valid ? RhiTestResult::pass("Sponza captured cameras match unculled visibility with every culling stage enabled")
-            : RhiTestResult::fail("Culling changed visible Sponza geometry");
+                preview.width(), preview.height(), log)) { return RHITestResult::fail(log); }
+        return valid ? RHITestResult::pass("Sponza captured cameras match unculled visibility with every culling stage enabled")
+            : RHITestResult::fail("Culling changed visible Sponza geometry");
     }
 };
 
-class GPUDrivenTemporalOcclusionTest final : public RhiTest {
+class GPUDrivenTemporalOcclusionTest final : public RHITest {
 public:
-    GPUDrivenTemporalOcclusionTest() { type = RhiTestType::Rendering; name = "gpu_driven_temporal_occlusion_equivalence"; }
-    RhiTestResult run(RhiTestContext& context) override
+    GPUDrivenTemporalOcclusionTest() { type = RHITestType::Rendering; name = "gpu_driven_temporal_occlusion_equivalence"; }
+    RHITestResult run(RHITestContext& context) override
     {
         scene::SceneDocument scene;
         if (!scene.load(std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/Sponza/glTF/Sponza.gltf")) {
-            return RhiTestResult::fail(scene.lastLoadResult().error);
+            return RHITestResult::fail(scene.lastLoadResult().error);
         }
         // Independent histories, identical cameras/jitter. Only occlusion differs.
         render::RenderView view;
@@ -264,8 +264,8 @@ public:
         render::RenderGraphPreviewRenderer reference, culled;
         for (auto* preview : {&reference, &culled}) {
             const auto initialized = preview->initialize(context.enableValidation, true);
-            if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders"); }
-            if (!initialized) { return RhiTestResult::fail("Temporal preview initialization failed"); }
+            if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders"); }
+            if (!initialized) { return RHITestResult::fail("Temporal preview initialization failed"); }
             preview->bindRuntimeScene(&scene);
             preview->bindRenderView(&view);
         }
@@ -284,16 +284,16 @@ public:
                     {"up", {0, 1, 0}}, {"fovDegrees", 45.0}, {"znear", 0.018548}, {"zfar", 1854.789185},
                     {"reversedZ", frame < 10 || frame >= 20},
                     {"projection", frame >= 20 ? "orthographic" : "perspective"}, {"orthoHeight", 25.0}})) {
-                return RhiTestResult::fail("Temporal test camera is invalid");
+                return RHITestResult::fail("Temporal test camera is invalid");
             }
             if (frame == 8) { view.cameraCut(); }
             const uint32_t width = frame < 16 ? 257 : 193;
             const uint32_t height = frame < 16 ? 131 : 157;
-            if (!reference.render(referenceGraph, width, height)) { return RhiTestResult::fail(reference.lastLog()); }
-            if (!culled.render(culledGraph, width, height)) { return RhiTestResult::fail(culled.lastLog()); }
+            if (!reference.render(referenceGraph, width, height)) { return RHITestResult::fail(reference.lastLog()); }
+            if (!culled.render(culledGraph, width, height)) { return RHITestResult::fail(culled.lastLog()); }
             const auto covered = std::count_if(reference.pixels().begin(), reference.pixels().end(),
                 [](uint32_t pixel) { return (pixel & 255u) >= 64u; });
-            if (covered < 100) { return RhiTestResult::fail("Temporal reference contains too little geometry"); }
+            if (covered < 100) { return RHITestResult::fail("Temporal reference contains too little geometry"); }
             size_t changed = 0;
             for (size_t pixel = 0; pixel < reference.pixels().size(); ++pixel) {
                 changed += reference.pixels()[pixel] != culled.pixels()[pixel];
@@ -305,10 +305,10 @@ public:
                     reinterpret_cast<const uint8_t*>(reference.pixels().data()), width, height, log);
                 saveRgba8Png(context.outputDirectory / "TemporalCulled.png",
                     reinterpret_cast<const uint8_t*>(culled.pixels().data()), width, height, log);
-                return RhiTestResult::fail("Temporal HZB changed visibility at frame " + std::to_string(frame));
+                return RHITestResult::fail("Temporal HZB changed visibility at frame " + std::to_string(frame));
             }
         }
-        return RhiTestResult::pass("30 moving/jittered Sponza views match with occlusion on/off, including resize and both depth conventions");
+        return RHITestResult::pass("30 moving/jittered Sponza views match with occlusion on/off, including resize and both depth conventions");
     }
 };
 

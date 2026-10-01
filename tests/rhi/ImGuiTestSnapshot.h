@@ -1,6 +1,6 @@
 #pragma once
 
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "imgui.h"
 
 #include <algorithm>

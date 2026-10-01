@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/RayQueryFixture.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -20,10 +20,10 @@ using namespace render;
 
 #define SCENE_AS_REQUIRE(expression) do { \
     const auto& checked = (expression); \
-    if (!checked) { return RhiTestResult::fail(std::string(#expression) + ": " + \
+    if (!checked) { return RHITestResult::fail(std::string(#expression) + ": " + \
         resultToString(Result<>{std::unexpected(checked.error())}) + " " + log); } \
 } while (false)
-#define SCENE_AS_CHECK(expression) do { if (!(expression)) { return RhiTestResult::fail(#expression); } } while (false)
+#define SCENE_AS_CHECK(expression) do { if (!(expression)) { return RHITestResult::fail(#expression); } } while (false)
 
 class SceneAccelerationStructureProbePass final : public ComputePass {
 public:
@@ -80,14 +80,14 @@ private:
     std::shared_ptr<ScenePathTraceResources> sceneResources_;
 };
 
-class SceneAccelerationStructurePassTest : public RhiTest {
+class SceneAccelerationStructurePassTest : public RHITest {
 public:
     explicit SceneAccelerationStructurePassTest(bool partitioned = false) : partitioned_(partitioned)
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = partitioned ? "scene_acceleration_structure_pass_partitioned" : "scene_acceleration_structure_pass_standard";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::string log;
         std::atomic_uint validationErrors = 0;
@@ -100,11 +100,11 @@ public:
                     ++*static_cast<std::atomic_uint*>(data);
                 }
             }, .context = &validationErrors}, .enableAsyncCompute = true});
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("scene RTAS ray-query capabilities unavailable"); }
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("scene RTAS ray-query capabilities unavailable"); }
         SCENE_AS_REQUIRE(created);
         auto& device = **created;
         if (partitioned_ && !device.capabilities().partitionedAccelerationStructure) {
-            return RhiTestResult::skip("PTLAS unavailable");
+            return RHITestResult::skip("PTLAS unavailable");
         }
         auto* graphics = device.getQueue(QueueType::Graphics);
         auto* compute = device.getQueue(QueueType::Compute);
@@ -313,7 +313,7 @@ public:
                 otherProducer->accelerationStructure->memoryInfo().allocationId);
         }
         SCENE_AS_CHECK(validationErrors.load() == 0);
-        return RhiTestResult::pass("15 analytic scene frames verify TLAS/PTLAS refits, async preference, cancellation, connected scene sharing and AS producer isolation");
+        return RHITestResult::pass("15 analytic scene frames verify TLAS/PTLAS refits, async preference, cancellation, connected scene sharing and AS producer isolation");
     }
 private:
     bool partitioned_;

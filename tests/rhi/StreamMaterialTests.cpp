@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -125,10 +125,10 @@ void requireSharedMaterialGeometry(const std::filesystem::path& cache,
     }
 }
 
-class StreamMaterialShadingTest final : public RhiTest {
+class StreamMaterialShadingTest final : public RHITest {
 public:
-    StreamMaterialShadingTest() { type = RhiTestType::Rendering; name = "stream_material_shading"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamMaterialShadingTest() { type = RHITestType::Rendering; name = "stream_material_shading"; }
+    RHITestResult run(RHITestContext& context) override
     {
         try {
             const auto directory = std::filesystem::absolute(context.outputDirectory);
@@ -195,16 +195,16 @@ public:
                     graph.setNodeRuntimeProperty(graph.findNode("Raster")->id,"hybridRaster",false);
                 }
             }
-            return RhiTestResult::pass("Shared geometry preserves instance PBR, unlit, MASK, sidedness, mirrored TBN and material ID 257");
-        } catch(const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Shared geometry preserves instance PBR, unlit, MASK, sidedness, mirrored TBN and material ID 257");
+        } catch(const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMaterialShadingTest);
 
-class StreamMaterialTransmissionTest final : public RhiTest {
+class StreamMaterialTransmissionTest final : public RHITest {
 public:
-    StreamMaterialTransmissionTest() { type = RhiTestType::Rendering; name = "stream_material_transmission"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamMaterialTransmissionTest() { type = RHITestType::Rendering; name = "stream_material_transmission"; }
+    RHITestResult run(RHITestContext& context) override
     {
         try {
             const auto directory = std::filesystem::absolute(context.outputDirectory / "transmission");
@@ -265,7 +265,7 @@ public:
                     .pageLoadConcurrency=0, .queuedFrameCount=1}, log)), log);
                 require(bool(runtime.syncRuntimeScene(scene, log)), log);
                 Buffer* buffer=runtime.deferredGpuResources().instanceBuffer;
-                const auto* instances=static_cast<const MeshletStreamGpuInstance*>(buffer->map());
+                const auto* instances=static_cast<const MeshletStreamGPUInstance*>(buffer->map());
                 require(instances != nullptr, "Cannot read shared material instance bindings");
                 bool validBindings=true;
                 for (uint32_t index=0; index<4; ++index) {
@@ -325,17 +325,17 @@ public:
             graph.setNodeRuntimeProperty(deferred,"supplementaryPathTracing",false);
             require(bool(preview.render(graph,256,128)),preview.lastLog());
             require(preview.pixels()==defaultOff,"Disabling stream supplementary tracing did not restore default shading");
-            return RhiTestResult::pass("Default-off/explicit opt-in stream shading and restoration; "
+            return RHITestResult::pass("Default-off/explicit opt-in stream shading and restoration; "
                 "shared CLAS geometry preserves instance BLEND, IOR=1 glass, MASK holes and material ID 260");
-        } catch(const std::exception& error) { return RhiTestResult::fail(error.what()); }
+        } catch(const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMaterialTransmissionTest);
 
-class StreamMaterialShadowTest final : public RhiTest {
+class StreamMaterialShadowTest final : public RHITest {
 public:
-    StreamMaterialShadowTest() { type=RhiTestType::Rendering; name="stream_material_shadow"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamMaterialShadowTest() { type=RHITestType::Rendering; name="stream_material_shadow"; }
+    RHITestResult run(RHITestContext& context) override
     {
         try {
             const auto directory=std::filesystem::absolute(context.outputDirectory/"shadow");
@@ -391,8 +391,8 @@ public:
                 require(dark>100 && lit>100 && mismatch<20,
                     "MASK shadow mismatch: dark="+std::to_string(dark)+", lit="+std::to_string(lit)+", mismatch="+std::to_string(mismatch));
             }
-            return RhiTestResult::pass("Stream CLAS MASK shadow holes match resident ray-query coverage");
-        } catch(const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Stream CLAS MASK shadow holes match resident ray-query coverage");
+        } catch(const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMaterialShadowTest);
@@ -449,20 +449,20 @@ std::filesystem::path residentProbe(const std::filesystem::path& source, const s
     return path;
 }
 
-class ZorahStreamMaterialProbesTest final : public RhiTest {
+class ZorahStreamMaterialProbesTest final : public RHITest {
 public:
-    ZorahStreamMaterialProbesTest() { type=RhiTestType::Rendering; name="zorah_stream_material_probes"; }
-    RhiTestResult run(RhiTestContext& context) override
+    ZorahStreamMaterialProbesTest() { type=RHITestType::Rendering; name="zorah_stream_material_probes"; }
+    RHITestResult run(RHITestContext& context) override
     {
         const char* manifestPath=std::getenv("METALLIC_ZORAH_Z4_PROBES");
-        if(!manifestPath) { return RhiTestResult::skip("Set METALLIC_ZORAH_Z4_PROBES to the cooked Z2 probes.json"); }
+        if(!manifestPath) { return RHITestResult::skip("Set METALLIC_ZORAH_Z4_PROBES to the cooked Z2 probes.json"); }
         try {
             Json manifest,report=Json::array();
             { std::ifstream input(manifestPath); input>>manifest; }
             uint32_t executedProbes=0;
             for(const auto& probe : manifest["probes"]) {
                 const std::string name=probe["name"];
-                if(name!="StoneUdim" && name!="MaskedLeaves" && name!="TextureTransformBc4" && name!="MirroredInstances" &&
+                if(name!="StoneUdim" && name!="MaskedLeaves" && name!="TextureTransformBC4" && name!="MirroredInstances" &&
                     name!="InstancingNoTangent" && name!="Unlit" && name!="Glass" && name!="Blend" &&
                     !probe.value("runMaterialProbe",false)) { continue; }
                 ++executedProbes;
@@ -663,8 +663,8 @@ public:
                 }
             }
             require(executedProbes!=0,"Manifest selected no material probes; use a known fixture name or runMaterialProbe=true");
-            return RhiTestResult::pass("Zorah KTX2 attribute/material probes rendered and compared with independently decoded resident geometry");
-        } catch(const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Zorah KTX2 attribute/material probes rendered and compared with independently decoded resident geometry");
+        } catch(const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(ZorahStreamMaterialProbesTest);

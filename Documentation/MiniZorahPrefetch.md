@@ -58,7 +58,7 @@
 
 64 MiB、60 秒压力路线通过预算与完整 cut 回退检查。55 秒已用 62.30 MiB、累计上传 210.71 MB、驱逐 12,509 页，仍有 3,454 个可见超标 refinement，**不满足 1.5 px 质量目标**。受容量影响，部分已完成请求的等待超过 26 秒；统计保留了这一长尾，未把长期等不到空间的请求当作成功预取。
 
-**41 项相关回归通过**。GPU/reference 扩展到 365 组，验证实际 cut、请求前缀、饱和请求容量、预取额度、同帧重复预取、缺失父级、PendingUpload、手动 LOD、视锥、稀疏状态与完整回退。CPU 侧覆盖同帧/旧版准入、预取提升、内存及待加载队列余量，另验证直方图溢出、首次需求帧及生命周期统计。加载器、驻留、GPUScene、完整 MiniZorah VBuffer、元数据入口和混合光栅回归均通过。`Metallic`、`MetallicGPUDrivenSample`、`MetallicRhiTests` 构建成功。
+**41 项相关回归通过**。GPU/reference 扩展到 365 组，验证实际 cut、请求前缀、饱和请求容量、预取额度、同帧重复预取、缺失父级、PendingUpload、手动 LOD、视锥、稀疏状态与完整回退。CPU 侧覆盖同帧/旧版准入、预取提升、内存及待加载队列余量，另验证直方图溢出、首次需求帧及生命周期统计。加载器、驻留、GPUScene、完整 MiniZorah VBuffer、元数据入口和混合光栅回归均通过。`Metallic`、`MetallicGPUDrivenSample`、`MetallicRHITests` 构建成功。
 
 ## 实现
 
@@ -92,7 +92,7 @@ $env:METALLIC_MINIZORAH_PREFETCH='1'
 $env:METALLIC_MINIZORAH_LOW_LATENCY='1'
 $env:METALLIC_MINIZORAH_TRANSITION_CHECKS='1'
 $env:METALLIC_MINIZORAH_LATENCY_ONLY='0'
-build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/minizorah-prefetch/repro
+build-relwithdebinfo/tests/MetallicRHITests.exe --gtest_filter=RHIRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/minizorah-prefetch/repro
 ```
 
 墙钟延迟对照将 `LATENCY_ONLY` 设为 1，分别运行 `(PREFETCH, LOW_LATENCY)=(0,0)、(0,1)、(1,1)`。固定视角用 `METALLIC_MINIZORAH_FIXED_VIEW=0/15/35`，保留正常检查；持续漫游移除该变量并运行 180 秒。64 MiB 压力场景检查完整回退与预算，不算 1.5 px 质量验收。

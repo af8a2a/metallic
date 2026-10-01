@@ -36,9 +36,9 @@
 - `ComputeResources.slang:7`：公共 push 和 slot accessor。
 - `ComputeProgram.h:23`、`:72`：program/dispatch 双重 binding 描述。
 - `ComputeProgram.cpp:94`、`:160`、`:828`：私有 heap、快照、slot packet 写入。
-- `VulkanRhi.cpp:2645`、`:2667`、`:9889`：heap 分区、索引换算、公共数组映射。
+- `VulkanRHI.cpp:2645`、`:2667`、`:9889`：heap 分区、索引换算、公共数组映射。
 - `GPUDrivenSceneCommon.slang:9`：另一个携带 base/index 的 shader ABI。
-- `NrdRuntime.cpp:294`、`Shaders/Interop/Denoising/NRD/Bindless.hlsli`：NRD 独立 heap/参数路径。
+- `NRDRuntime.cpp:294`、`Shaders/Interop/Denoising/NRD/Bindless.hlsli`：NRD 独立 heap/参数路径。
 - `Shaders/Features/PostProcess/EditorDisplay.slang:19`、`EditorDisplayRenderer.cpp:79`：ImGui 显示互操作。
 
 ## 编译器与后端前提

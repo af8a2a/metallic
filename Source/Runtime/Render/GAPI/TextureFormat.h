@@ -1,15 +1,15 @@
 #pragma once
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 
 namespace metallic::render {
 inline constexpr uint32_t compressedBlockBytes(Format format)
 {
     switch (format) {
-    case Format::Bc4Unorm:
+    case Format::BC4Unorm:
         return 8;
-    case Format::Bc5Unorm:
-    case Format::Bc7Unorm:
-    case Format::Bc7Srgb:
+    case Format::BC5Unorm:
+    case Format::BC7Unorm:
+    case Format::BC7sRGB:
         return 16;
     default:
         return 0;

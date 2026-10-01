@@ -97,7 +97,7 @@ try {
         New-Item -ItemType Directory -Path $directory | Out-Null
         $env:METALLIC_FULL_ROAM_OUTPUT=$directory
         $monitor=Start-Process nvidia-smi.exe -ArgumentList @('--query-gpu=timestamp,utilization.gpu,memory.used,clocks.gr,temperature.gpu,power.draw','--format=csv','-l','1') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'Gpu.csv') -RedirectStandardError (Join-Path $directory 'Gpu.stderr.txt')
-        $competition=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $PSScriptRoot 'MeasureGpuCompetition.ps1')+'"')) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'GpuProcesses.csv') -RedirectStandardError (Join-Path $directory 'GpuProcesses.stderr.txt')
+        $competition=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $PSScriptRoot 'MeasureGPUCompetition.ps1')+'"')) -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'GpuProcesses.csv') -RedirectStandardError (Join-Path $directory 'GpuProcesses.stderr.txt')
         $process=$null
         try {
             $process=Start-Process -FilePath $exe -WorkingDirectory $repo -ArgumentList @('--sample','gpu-driven-zorah-full') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $directory 'stdout.log') -RedirectStandardError (Join-Path $directory 'stderr.log')

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 
 #include <cstdint>
@@ -32,15 +32,15 @@ struct ShaderDataSpan {
 };
 static_assert(sizeof(ShaderDataSpan) == 16);
 
-struct ParameterAbi {
+struct ParameterABI {
     uint64_t id = 0;
     uint32_t size = 0;
     uint32_t alignment = 0;
-    bool operator==(const ParameterAbi&) const = default;
+    bool operator==(const ParameterABI&) const = default;
 };
 
 template<typename T>
-constexpr ParameterAbi parameterAbi(uint64_t id)
+constexpr ParameterABI parameterAbi(uint64_t id)
 {
     static_assert(std::is_standard_layout_v<T> && std::is_trivially_copyable_v<T>);
     return {id, sizeof(T), alignof(T)};
@@ -63,10 +63,10 @@ private:
 class EncodedParameters {
 public:
     bool valid() const { return packet_ != nullptr; }
-    ParameterAbi abi() const;
+    ParameterABI abi() const;
     uint64_t address() const;
     const void* deviceIdentity() const;
-    bool compatible(const CommandBuffer& commands, ParameterAbi abi) const;
+    bool compatible(const CommandBuffer& commands, ParameterABI abi) const;
     // Also usable by raw bindless raster/compute paths: retain this immutable
     // packet locally and bind its registry without changing execution state.
     Result<> bindResources(CommandBuffer& commands) const;
@@ -154,13 +154,13 @@ public:
         return encodeBytes(&params, parameterAbi<T>(abiId));
     }
 private:
-    [[nodiscard]] Result<EncodedParameters> encodeBytes(const void* params, ParameterAbi abi);
+    [[nodiscard]] Result<EncodedParameters> encodeBytes(const void* params, ParameterABI abi);
     Result<> upload(const void* data, uint64_t size, uint64_t alignment,
         uint64_t& address, std::shared_ptr<void>& allocation);
     uint64_t append(Result<ResourceLease> lease);
     Device& device_;
     RenderFrameContext* frame_ = nullptr;
-    GpuCompletionPoint completion_;
+    GPUCompletionPoint completion_;
     std::shared_ptr<detail::RegistryState> registry_;
     Result<> result_;
     std::vector<std::shared_ptr<detail::ResourceLeaseState>> resources_;

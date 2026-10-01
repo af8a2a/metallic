@@ -32,7 +32,7 @@ Metallic 已有完整的静态几何流送、连续 LOD、安全覆盖和实时�
 
 ## 1. 数据密度：已有量化证据，收益最容易验证
 
-[当前 payload](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.h:160) 与 [CLAS 解码契约](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamClas.cpp:78) 仍要求 Float32x4 位置，即每顶点 16 B。磁盘格式支持 None/ByteRle，并不等于存在紧凑的 GPU 驻留编码。
+[当前 payload](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.h:160) 与 [CLAS 解码契约](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCLAS.cpp:78) 仍要求 Float32x4 位置，即每顶点 16 B。磁盘格式支持 None/ByteRle，并不等于存在紧凑的 GPU 驻留编码。
 
 [2026-09-13 完整缓存审计](E:/metallic/Documentation/MiniZorahMemoryComparison.json:23) 中，同一最高精度模型为 16.27 亿三角形；Metallic 与参考最高精度 cluster 数仅差约 0.2%。全部 LOD 的保留位置 payload 总和分别为 **56.340 GiB / 44.106 GiB**，相差约 **27.7%**。这些是全资产数据总和，不是运行时显存。
 
@@ -44,7 +44,7 @@ Metallic 位置占 payload 的 **78.16%**。单独把 16 B 改为 12 B、保持�
 
 ## 2. CLAS 发布和 BLAS 复用：当前 RT 路径的明确结构性开销
 
-[CLAS collect](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp:129) 在构建完成后读回尺寸；[分配阶段](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp:397) 使用 CPU 分配器；MOVE 完成后才发布 Active 地址。因此现在仍是：
+[CLAS collect](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCompactCLASPool.cpp:129) 在构建完成后读回尺寸；[分配阶段](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCompactCLASPool.cpp:397) 使用 CPU 分配器；MOVE 完成后才发布 Active 地址。因此现在仍是：
 
 `几何完成确认 → 构建 CLAS → 完成确认/尺寸回读 → CPU 分配 → MOVE → 完成确认/发布地址`
 
@@ -80,7 +80,7 @@ Metallic 位置占 payload 的 **78.16%**。单独把 16 B 改为 12 B、保持�
 
 - 首屏只保证根级覆盖。是否增加初始视图误差/缺页阈值或可配置的根驻留细节，应根据等待时间与首屏质量权衡；把加载藏在遮罩后不代表吞吐提高。
 - [prefixStreamLodFrontier](E:/metallic/Shaders/Features/GPUDriven/GPUDrivenStreamAsset.slang:2154) 在 active 容量溢出时选择全局 terminal cut。覆盖安全，但可能造成整片粗细跳变；缺预算压力下逐渐调整目标误差的控制。参考有可选 adaptive error，录像并不能证明它已启用。也不能假定 Nanite 自动解决一切容量溢出，Epic 明确记录了候选/可见 cluster buffer 的容量限制。[Epic 容量说明](https://dev.epicgames.com/documentation/en-us/unreal-engine/nanite-technical-details)
-- 已有扩张视锥/误差预取、收益优先级和冷页保留；尚未形成针对相机速度的预测及 LOD 切换迟滞。Metallic 采用更保守且随视角变化的 [LOD 投影度量](E:/metallic/Shaders/Modules/GPUDriven/MeshletLodMetric.slang:9)，1.5 px 不能与参考 1 px 直接等同。
+- 已有扩张视锥/误差预取、收益优先级和冷页保留；尚未形成针对相机速度的预测及 LOD 切换迟滞。Metallic 采用更保守且随视角变化的 [LOD 投影度量](E:/metallic/Shaders/Modules/GPUDriven/MeshletLODMetric.slang:9)，1.5 px 不能与参考 1 px 直接等同。
 - [加载任务](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamPageLoader.cpp:40) 先复制到独立 payload，再进入 staging；每帧页数也不代表固定字节量。可优化为有界批次与 staging 直写，并统一上传/CLAS 的时间、字节准入。
 - 同帧几何首次可用早于 CPU Resident 确认，旧 `UploadToDrawable` CPU 计时不能直接度量新链路。需要 GPU 阶段时间戳和屏幕细节收敛指标。
 

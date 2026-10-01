@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
@@ -14,13 +14,13 @@ namespace {
 
 #define REG_REQUIRE(expression) do { \
     const render::Result<> result = (expression); \
-    if (!result) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(result)); } \
+    if (!result) { return RHITestResult::fail(std::string(#expression) + ": " + toString(result)); } \
 } while (false)
 #define REG_CHECK(expression) do { \
-    if (!(expression)) { return RhiTestResult::fail(#expression); } \
+    if (!(expression)) { return RHITestResult::fail(#expression); } \
 } while (false)
 
-constexpr uint64_t kAbi = 0x5245475000000001ull;
+constexpr uint64_t kABI = 0x5245475000000001ull;
 struct ProbeParams {
     render::ShaderBuffer source, output;
     uint32_t add, index;
@@ -95,18 +95,18 @@ render::Result<> makeKernel(render::Device& device, render::ComputeKernel& kerne
         .entryPointName = "registryProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
         .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     if (!result) { log = shader.diagnostics; return result; }
-    return kernel.initialize(device, {.spirv = shader.spirv, .parameters = render::parameterAbi<ProbeParams>(kAbi)}, log);
+    return kernel.initialize(device, {.spirv = shader.spirv, .parameters = render::parameterAbi<ProbeParams>(kABI)}, log);
 }
 
-class RegistryIdentityTest final : public RhiTest {
+class RegistryIdentityTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"registry.identity.capacity.contract", "registry.descriptor.recycle.contract"}, bench::Layer::Core, "binding", "binding");
     }
 
-    RegistryIdentityTest() { type = RhiTestType::Resource; name = "registry_identity_capacity_and_views"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RegistryIdentityTest() { type = RHITestType::Resource; name = "registry_identity_capacity_and_views"; }
+    RHITestResult run(RHITestContext& context) override
     {
         bench::TestDevice device;
         REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Registry identity", .enableValidation = context.enableValidation,
@@ -140,9 +140,9 @@ public:
         std::unique_ptr<render::Texture> texture;
         std::unique_ptr<render::TextureView> first, second;
         REG_REQUIRE(device->createTexture({.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::Storage,
-            .format = render::Format::Rgba8Unorm}).transform([&](auto rhiValue) { texture = std::move(rhiValue); }));
+            .format = render::Format::RGBA8Unorm}).transform([&](auto rhiValue) { texture = std::move(rhiValue); }));
         REG_REQUIRE(device->createTextureView(*texture, {}).transform([&](auto rhiValue) { first = std::move(rhiValue); }));
-        REG_REQUIRE(device->createTextureView(*texture, {.format = render::Format::Rgba8Unorm}).transform([&](auto rhiValue) { second = std::move(rhiValue); }));
+        REG_REQUIRE(device->createTextureView(*texture, {.format = render::Format::RGBA8Unorm}).transform([&](auto rhiValue) { second = std::move(rhiValue); }));
         render::ResourceLease imageA, imageB, generalImage, storageImage;
         bool written = false;
         REG_REQUIRE(registry.sampledImage(*first, render::ResourceState::ShaderRead, &written).transform([&](auto value) { imageA = std::move(value); }));
@@ -175,30 +175,30 @@ public:
         REG_REQUIRE(frame.begin(0));
         render::ParameterWriter writer(*device, frame, other);
         REG_CHECK(render::hasError(writer.use(bLease), render::Error::InvalidArgument));
-        const auto invalid = writer.encode(ProbeParams{}, kAbi);
+        const auto invalid = writer.encode(ProbeParams{}, kABI);
         REG_CHECK(render::hasError(invalid, render::Error::InvalidArgument));
         render::ParameterWriter staleWriter(*device, frame, registry);
-        const auto encoded = staleWriter.encode(ProbeParams{}, kAbi);
+        const auto encoded = staleWriter.encode(ProbeParams{}, kABI);
         REG_CHECK(encoded && encoded->valid());
         frame.cancel();
         REG_REQUIRE(frame.begin(1));
-        const auto stale = staleWriter.encode(ProbeParams{}, kAbi);
+        const auto stale = staleWriter.encode(ProbeParams{}, kABI);
         REG_CHECK(render::hasError(stale, render::Error::InvalidArgument));
         REG_CHECK(encoded->valid()); // A failed encode cannot overwrite an earlier packet.
         frame.cancel();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RegistrySubmissionTest final : public RhiTest {
+class RegistrySubmissionTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"parameters.submission.lifetime.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
     }
 
-    RegistrySubmissionTest() { type = RhiTestType::Command; name = "registry_typed_submission_lifetime"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RegistrySubmissionTest() { type = RHITestType::Command; name = "registry_typed_submission_lifetime"; }
+    RHITestResult run(RHITestContext& context) override
     {
         bench::TestDevice device;
         REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Registry lifetime", .enableValidation = context.enableValidation,
@@ -230,26 +230,26 @@ public:
             render::ParameterWriter writer(*device, first.frame, *registry);
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 100, 0};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { encoded = std::move(value); }));
             stale = encoded;
             REG_REQUIRE(firstKernel.dispatch(*first.commands, encoded, 1));
             params.add = 200; params.index = 1;
-            REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { encoded = std::move(value); }));
             render::BufferBarrierDesc barrier{
                 .buffer = output.get(),
                 .before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             };
-            if (auto commandResult = first.commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = first.commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(secondKernel.dispatch(*first.commands, encoded, 1));
             // Force the parameter arena to grow without moving already encoded roots.
             std::array<uint32_t, 17000> burst{};
             render::EncodedParameters oversized;
-            REG_REQUIRE(writer.encode(burst, kAbi + 2).transform([&](auto value) { oversized = std::move(value); }));
+            REG_REQUIRE(writer.encode(burst, kABI + 2).transform([&](auto value) { oversized = std::move(value); }));
             REG_CHECK(oversized.address() != stale.address());
             params.add = 999; // Encoded packets must not reference this mutable CPU struct.
             render::EncodedParameters wrong;
-            REG_REQUIRE(writer.encode(params, kAbi + 1).transform([&](auto value) { wrong = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI + 1).transform([&](auto value) { wrong = std::move(value); }));
             REG_CHECK(render::hasError(firstKernel.dispatch(*first.commands, wrong, 1), render::Error::InvalidArgument));
         }
         source.reset();
@@ -264,7 +264,7 @@ public:
             render::ParameterWriter writer(*device, second.frame, *registry);
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 300, 2};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { encoded = std::move(value); }));
             REG_CHECK(encoded.address() != stale.address());
             REG_REQUIRE(secondKernel.dispatch(*second.commands, encoded, 1));
         }
@@ -298,7 +298,7 @@ public:
             render::ParameterWriter writer(*device, first.frame, *registry);
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 1, 0};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { encoded = std::move(value); }));
             REG_REQUIRE(firstKernel.dispatch(*first.commands, encoded, 1));
             cancelled = encoded;
         }
@@ -314,22 +314,22 @@ public:
         REG_CHECK(registry->stats().parameterCapacity == capacity);
         registry->collect();
         REG_CHECK(registry->stats().liveDescriptors == 1);
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(RegistryIdentityTest);
 METALLIC_REGISTER_RHI_TEST(RegistrySubmissionTest);
 
-class RegistryPipelinedParametersTest final : public RhiTest {
+class RegistryPipelinedParametersTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"parameters.pipelined.append.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
     }
 
-    RegistryPipelinedParametersTest() { type = RhiTestType::Command; name = "registry_pipelined_parameter_append"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RegistryPipelinedParametersTest() { type = RHITestType::Command; name = "registry_pipelined_parameter_append"; }
+    RHITestResult run(RHITestContext& context) override
     {
         for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             bench::TestDevice device;
@@ -360,7 +360,7 @@ public:
                 // iteration 2 appends after prior batches complete, frame open.
                 params.add = (i + 1) * 100;
                 params.index = i;
-                REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { packets[i] = std::move(value); }));
+                REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { packets[i] = std::move(value); }));
                 if (i) { REG_CHECK(packets[i].address() > packets[i - 1].address()); }
                 REG_REQUIRE(recordings[i].initialize(*device, queue));
                 render::CommandBuffer* commands = nullptr;
@@ -397,7 +397,7 @@ public:
             }
             REG_REQUIRE(frame.sealRecording());
             render::EncodedParameters rejected;
-            REG_CHECK(!writer.encode(params, kAbi).transform([&](auto value) { rejected = std::move(value); }));
+            REG_CHECK(!writer.encode(params, kABI).transform([&](auto value) { rejected = std::move(value); }));
             REG_REQUIRE(frame.finishSubmission());
             REG_REQUIRE(frame.wait(5'000'000'000ull));
             output->invalidate();
@@ -409,12 +409,12 @@ public:
             output->unmap();
             REG_CHECK((values == std::array<uint32_t, 3>{111, 211, 311}));
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(RegistryPipelinedParametersTest);
 
-class RegistryPartialSubmissionTest final : public RhiTest {
+class RegistryPartialSubmissionTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -423,15 +423,15 @@ public:
         return metadata;
     }
 
-    RegistryPartialSubmissionTest() { type = RhiTestType::Command; name = "registry_partial_multi_queue_retention"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RegistryPartialSubmissionTest() { type = RHITestType::Command; name = "registry_partial_multi_queue_retention"; }
+    RHITestResult run(RHITestContext& context) override
     {
         bench::TestDevice device;
         REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Registry partial submission",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& graphics = *device->getQueue(render::QueueType::Graphics);
         auto* copy = device->getQueue(render::QueueType::Copy);
-        if (!copy) { return RhiTestResult::skip("Requires a copy queue"); }
+        if (!copy) { return RHITestResult::skip("Requires a copy queue"); }
         std::shared_ptr<render::ResourceRegistry> registry;
         REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         render::ComputeKernel kernel;
@@ -457,13 +457,13 @@ public:
             writer.retain(owner);
             ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), 1, 0};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { encoded = std::move(value); }));
             REG_REQUIRE(kernel.dispatch(*recording.commands, encoded, 1));
         }
         REG_REQUIRE(recording.commands->end());
         source.reset(); owner.reset(); kernel.clear();
         render::CommandBuffer* buffers[] = {recording.commands.get()};
-        render::GpuCompletionPoint graphicsDone, copyDone, rejected;
+        render::GPUCompletionPoint graphicsDone, copyDone, rejected;
         REG_REQUIRE(graphicsTracker.submitSegment({.commandBuffers = {buffers, 1}}, recording.frame).transform([&](auto value) { graphicsDone = std::move(value); }));
         render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
         REG_REQUIRE(copyTracker.submitSegment({.waitSemaphores = {&wait, 1}}, recording.frame).transform([&](auto value) { copyDone = std::move(value); }));
@@ -478,20 +478,20 @@ public:
         REG_REQUIRE(recording.pool->reset());
         REG_REQUIRE(recording.frame.reset());
         REG_CHECK(allocation.expired() && transitiveOwner.expired());
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(RegistryPartialSubmissionTest);
 
-class RegistryTextureSubmissionTest final : public RhiTest {
+class RegistryTextureSubmissionTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"binding.texture.array.lifetime.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
     }
 
-    RegistryTextureSubmissionTest() { type = RhiTestType::Rendering; name = "registry_texture_array_submission_lifetime"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RegistryTextureSubmissionTest() { type = RHITestType::Rendering; name = "registry_texture_array_submission_lifetime"; }
+    RHITestResult run(RHITestContext& context) override
     {
         bench::TestDevice device;
         REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Registry texture array",
@@ -509,7 +509,7 @@ public:
             REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "RegistryTextureProbe",
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             REG_REQUIRE(kernels[i].initialize(*device, {.spirv = shader.spirv,
-                .parameters = render::parameterAbi<Params>(kAbi + 3)}, log));
+                .parameters = render::parameterAbi<Params>(kABI + 3)}, log));
         }
         std::unique_ptr<render::Texture> image;
         std::unique_ptr<render::TextureView> view;
@@ -532,7 +532,7 @@ public:
             const std::array<render::TextureView*, 3> views{view.get(), view.get(), view.get()};
             Params params{writer.storageImage(view.get()), writer.sampledImages(views), writer.buffer(output.get())};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi + 3).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI + 3).transform([&](auto value) { encoded = std::move(value); }));
             REG_CHECK(registry->stats().descriptorWrites == 3); // storage image, sampled image, output
             render::TextureBarrierDesc barrier{
                 .texture = image.get(),
@@ -541,10 +541,10 @@ public:
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             };
-            if (auto commandResult = recording.commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[0].dispatch(*recording.commands, encoded, 1));
             barrier.oldLayout = render::TextureLayout::General; barrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite}; barrier.newLayout = render::TextureLayout::ShaderRead; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
-            if (auto commandResult = recording.commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[1].dispatch(*recording.commands, encoded, 1));
         }
         image.reset(); view.reset();
@@ -564,20 +564,20 @@ public:
         REG_REQUIRE(recording.pool->reset());
         REG_REQUIRE(recording.frame.reset());
         REG_CHECK(allocation.expired());
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(RegistryTextureSubmissionTest);
 // Native provenance and narrowing are checked without creating descriptors.
-class BufferSliceValidationTest final : public RhiTest {
+class BufferSliceValidationTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"bufferSlice.range.provenance.contract"}, bench::Layer::Core, "binding", "binding");
     }
 
-    BufferSliceValidationTest() { type = RhiTestType::Resource; name = "buffer_slice_range_and_provenance"; }
-    RhiTestResult run(RhiTestContext& context) override
+    BufferSliceValidationTest() { type = RHITestType::Resource; name = "buffer_slice_range_and_provenance"; }
+    RHITestResult run(RHITestContext& context) override
     {
         bench::TestDevice device, other;
         REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Buffer slice ranges",
@@ -634,11 +634,11 @@ public:
             render::ParameterWriter invalidWriter(*other, frame, *registry);
             invalidWriter.dataBuffer<uint32_t>(child);
             REG_CHECK(!invalidWriter.status());
-            REG_CHECK(!invalidWriter.encode(render::ShaderDataSpan{}, kAbi + 4).transform([&](auto value) { packet = std::move(value); }) && !packet.valid());
+            REG_CHECK(!invalidWriter.encode(render::ShaderDataSpan{}, kABI + 4).transform([&](auto value) { packet = std::move(value); }) && !packet.valid());
             render::ParameterWriter writer(*device, frame, *registry);
             const auto data = writer.dataBuffer<uint32_t>(child);
             REG_CHECK(data.address == address && data.count == 2 && data.stride == 4);
-            REG_REQUIRE(writer.encode(data, kAbi + 4).transform([&](auto value) { packet = std::move(value); }));
+            REG_REQUIRE(writer.encode(data, kABI + 4).transform([&](auto value) { packet = std::move(value); }));
         }
         child = {};
         REG_CHECK(!allocation.expired());
@@ -647,20 +647,20 @@ public:
         REG_REQUIRE(frame.reset());
         REG_CHECK(allocation.expired());
         REG_CHECK(registry->stats().descriptorWrites == 0);
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(BufferSliceValidationTest);
 
-class BufferSliceSubmissionTest final : public RhiTest {
+class BufferSliceSubmissionTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"bufferSlice.bda.copy.indirect.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
     }
 
-    BufferSliceSubmissionTest() { type = RhiTestType::Rendering; name = "buffer_slice_bda_copy_compute_indirect_lifetime"; }
-    RhiTestResult run(RhiTestContext& context) override
+    BufferSliceSubmissionTest() { type = RHITestType::Rendering; name = "buffer_slice_bda_copy_compute_indirect_lifetime"; }
+    RHITestResult run(RHITestContext& context) override
     {
         bench::TestDevice device;
         REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Buffer slice data chain",
@@ -677,9 +677,9 @@ public:
             render::ShaderCompileResult shader;
             auto result = render::compileSlangShaderToSpirv({.moduleName = "DataSliceProbe",
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
-            if (!result) { return RhiTestResult::fail(shader.diagnostics); }
+            if (!result) { return RHITestResult::fail(shader.diagnostics); }
             REG_REQUIRE(kernels[i].initialize(*device, {.spirv = shader.spirv,
-                .parameters = render::parameterAbi<Params>(kAbi + 5)}, log));
+                .parameters = render::parameterAbi<Params>(kABI + 5)}, log));
         }
         render::ShaderCompileResult shader;
         REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "DataSliceProbe",
@@ -736,28 +736,28 @@ public:
                 .before = {},
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             };
-            if (auto commandResult = recording.commands->synchronize({.buffers = {&workBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.buffers = {&workBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(recording.commands->copyBuffer(from, data));
             workBarrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite}; workBarrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
-            if (auto commandResult = recording.commands->synchronize({.buffers = {&workBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.buffers = {&workBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::BufferBarrierDesc outputBarrier{
                 .buffer = output.get(),
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             };
-            if (auto commandResult = recording.commands->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::ParameterWriter writer(*device, recording.frame, *registry);
             const Params params{writer.dataBuffer<uint32_t>(data), writer.dataBuffer<uint32_t>(to),
                 writer.dataBuffer<uint32_t>(arguments), 7};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kAbi + 5).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kABI + 5).transform([&](auto value) { encoded = std::move(value); }));
             REG_REQUIRE(kernels[0].dispatch(*recording.commands, encoded, 1));
             outputBarrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
             workBarrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite}; workBarrier.after = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead};
             const render::BufferBarrierDesc barriers[] = {outputBarrier, workBarrier};
-            if (auto commandResult = recording.commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             REG_REQUIRE(kernels[1].dispatchIndirect(*recording.commands, encoded, arguments));
-            if (auto commandResult = recording.commands->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = recording.commands->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             render::ComputeDispatchBinding binding{.binding = 0, .data = to};
             render::ComputeDispatchDesc dispatch{.commandBuffer = recording.commands.get(), .bindings = {&binding, 1}};
             binding.range.offset = 4;
@@ -788,20 +788,20 @@ public:
         REG_REQUIRE(recording.pool->reset());
         REG_REQUIRE(recording.frame.reset());
         REG_CHECK(sourceAllocation.expired() && workAllocation.expired());
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(BufferSliceSubmissionTest);
 
-class ResourceRangeContractTest final : public RhiTest {
+class ResourceRangeContractTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
-        return bench::gpuMetadata({"resource.range.shaderInput.contract"}, bench::Layer::Rhi, "binding", "binding");
+        return bench::gpuMetadata({"resource.range.shaderInput.contract"}, bench::Layer::RHI, "binding", "binding");
     }
 
-    ResourceRangeContractTest() { type = RhiTestType::Resource; name = "resource_range_and_shader_input_contract"; }
-    RhiTestResult run(RhiTestContext& context) override
+    ResourceRangeContractTest() { type = RHITestType::Resource; name = "resource_range_and_shader_input_contract"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using render::BufferRange;
         using render::Error;
@@ -832,7 +832,7 @@ public:
         }
 
         auto texture = device.createTexture({.usage = render::TextureUsageBits::Sampled,
-            .format = render::Format::Rgba8Unorm, .width = 8, .height = 8, .mipCount = 3, .layerCount = 2});
+            .format = render::Format::RGBA8Unorm, .width = 8, .height = 8, .mipCount = 3, .layerCount = 2});
         REG_CHECK(texture);
         const render::TextureSubresourceRange range{1, 2, 1, 1};
         REG_CHECK(range.valid(3, 2));
@@ -853,21 +853,21 @@ public:
         REG_CHECK(render::hasError(device.createShaderModule({.spirv = truncated}), Error::InvalidArgument));
         REG_CHECK(render::hasError(device.createShaderModule({.spirv = badMagic}), Error::InvalidArgument));
         REG_CHECK(render::hasError(device.createShaderModule({.spirv = badInstruction}), Error::InvalidArgument));
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(ResourceRangeContractTest);
 
 
-class SynchronizationScopesTest final : public RhiTest {
+class SynchronizationScopesTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
-        return bench::gpuMetadata({"synchronization.atomic.validation.contract"}, bench::Layer::Rhi, "core", "sync");
+        return bench::gpuMetadata({"synchronization.atomic.validation.contract"}, bench::Layer::RHI, "core", "sync");
     }
 
-    SynchronizationScopesTest() { type = RhiTestType::Command; name = "synchronization_scopes_batch_and_validation"; }
-    RhiTestResult run(RhiTestContext& context) override
+    SynchronizationScopesTest() { type = RHITestType::Command; name = "synchronization_scopes_batch_and_validation"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using S = render::PipelineStageBits;
         using A = render::AccessBits;
@@ -915,7 +915,7 @@ public:
         REG_REQUIRE(recording.begin(1));
         REG_CHECK(command.synchronizationStats().calls == 0);
         recording.frame.cancel();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(SynchronizationScopesTest);
@@ -952,15 +952,15 @@ struct BarrierEncodingCapture {
     }
 };
 
-class SynchronizationEncodingTest final : public RhiTest {
+class SynchronizationEncodingTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
-        return bench::gpuMetadata({"synchronization.explicitScopes.encoding"}, bench::Layer::Rhi, "core", "sync");
+        return bench::gpuMetadata({"synchronization.explicitScopes.encoding"}, bench::Layer::RHI, "core", "sync");
     }
 
-    SynchronizationEncodingTest() { type = RhiTestType::Command; name = "synchronization_explicit_scopes_and_layouts"; }
-    RhiTestResult run(RhiTestContext& context) override
+    SynchronizationEncodingTest() { type = RHITestType::Command; name = "synchronization_explicit_scopes_and_layouts"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using S = render::PipelineStageBits;
         using A = render::AccessBits;
@@ -970,7 +970,7 @@ public:
         REG_REQUIRE(recording.begin(0));
         auto& command = *recording.commands;
         auto texture = context.device.createTexture({.usage = render::TextureUsageBits::Storage | render::TextureUsageBits::Sampled,
-            .format = render::Format::Rgba8Unorm, .width = 4, .height = 4});
+            .format = render::Format::RGBA8Unorm, .width = 4, .height = 4});
         REG_CHECK(texture);
         std::unique_ptr<render::Buffer> buffer;
         REG_REQUIRE(makeBuffer(context.device, buffer));
@@ -1025,20 +1025,20 @@ public:
         REG_CHECK(capture.calls == beforeInvalid);
         REG_REQUIRE(command.end());
         recording.frame.cancel();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(SynchronizationEncodingTest);
 
-class PreparedExecutionViewsTest final : public RhiTest {
+class PreparedExecutionViewsTest final : public RHITest {
 public:
-    PreparedExecutionViewsTest() { type = RhiTestType::Rendering; name = "prepared_execution_lazy_views_layout_policy"; }
+    PreparedExecutionViewsTest() { type = RHITestType::Rendering; name = "prepared_execution_lazy_views_layout_policy"; }
     std::optional<bench::Metadata> metadata() const override
     {
-        return bench::comparisonMetadata({"layouts.optimal.unified.preparedViews.draw.copy"}, bench::Layer::Rhi,
+        return bench::comparisonMetadata({"layouts.optimal.unified.preparedViews.draw.copy"}, bench::Layer::RHI,
             "core", {"core-unified", "unifiedLayouts", bench::Capability::UnifiedLayouts});
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         constexpr uint32_t extent = 32, bytes = extent * extent * 4;
         std::array<uint8_t, bytes> reference{};
@@ -1090,7 +1090,7 @@ public:
             REG_REQUIRE(device->createGraphicsPipeline({
                 .vertexShader = {modules[0].get()},
                 .fragmentShader = {modules[1].get()},
-                .colorFormat = render::Format::Rgba8Unorm,
+                .colorFormat = render::Format::RGBA8Unorm,
             }).transform([&](auto value) { pipeline = std::move(value); }));
             std::unique_ptr<render::GraphicsShaderObjectProgram> program;
             REG_REQUIRE(device->createGraphicsShaderObjectProgram({.vertexShader = {modules[0].get()}, .fragmentShader = {modules[1].get()}}).transform([&](auto value) { program = std::move(value); }));
@@ -1115,7 +1115,7 @@ public:
             for (uint32_t i = 0; i < executions.size(); ++i) {
                 std::unique_ptr<render::Texture> texture;
                 REG_REQUIRE(device->createTexture({.usage = render::TextureUsageBits::ColorAttachment | render::TextureUsageBits::TransferSource,
-                    .format = render::Format::Rgba8Unorm, .width = extent, .height = extent}).transform([&](auto value) { texture = std::move(value); }));
+                    .format = render::Format::RGBA8Unorm, .width = extent, .height = extent}).transform([&](auto value) { texture = std::move(value); }));
                 std::unique_ptr<render::TextureView> view;
                 REG_REQUIRE(device->createTextureView(*texture, {}).transform([&](auto value) { view = std::move(value); }));
                 REG_CHECK(!view->hasNativeView());
@@ -1180,7 +1180,7 @@ public:
             REG_REQUIRE(recording.begin(1));
             std::weak_ptr<void> cancelled;
             {
-                auto texture = device->createTexture({.usage = render::TextureUsageBits::ColorAttachment, .format = render::Format::Rgba8Unorm});
+                auto texture = device->createTexture({.usage = render::TextureUsageBits::ColorAttachment, .format = render::Format::RGBA8Unorm});
                 REG_CHECK(texture);
                 auto view = device->createTextureView(**texture, {});
                 REG_CHECK(view);
@@ -1196,31 +1196,31 @@ public:
         }
         bench::comparisonEvidence(context, {{"extent", extent}, {"draws", 3}}, observations,
             context.deviceDesc && context.deviceDesc->preferUnifiedImageLayouts);
-        if (context.evidence) { return RhiTestResult::pass("prepared views and three readbacks passed; parent compares layout policies"); }
-        return RhiTestResult::pass(unifiedTested ? "GENERAL and optimal layouts produced identical PSO/shader-object readback" :
+        if (context.evidence) { return RHITestResult::pass("prepared views and three readbacks passed; parent compares layout policies"); }
+        return RHITestResult::pass(unifiedTested ? "GENERAL and optimal layouts produced identical PSO/shader-object readback" :
             "Optimal-layout fallback passed; unified image layouts unavailable on this device");
     }
 };
 METALLIC_REGISTER_RHI_TEST(PreparedExecutionViewsTest);
 
-class ParallelRegistryTest final : public RhiTest {
+class ParallelRegistryTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"parameters.parallel.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"});
     }
 
-    ParallelRegistryTest() { type = RhiTestType::Command; name = "parallel_registry_packets"; }
-    RhiTestResult run(RhiTestContext& context) override
+    ParallelRegistryTest() { type = RHITestType::Command; name = "parallel_registry_packets"; }
+    RHITestResult run(RHITestContext& context) override
     {
         for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             auto result = runMode(context, mode);
             if (!result.passed) { return result; }
         }
-        return RhiTestResult::pass("Four concurrent writers sharing a registry and kernel in mapped/native modes");
+        return RHITestResult::pass("Four concurrent writers sharing a registry and kernel in mapped/native modes");
     }
 private:
-    static RhiTestResult runMode(RhiTestContext& context, render::SlangDescriptorHeapMode mode)
+    static RHITestResult runMode(RHITestContext& context, render::SlangDescriptorHeapMode mode)
     {
         bench::TestDevice device;
         REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Parallel registry", .enableValidation = context.enableValidation,
@@ -1253,7 +1253,7 @@ private:
                     render::ParameterWriter writer(*device, frame, *registry);
                     ProbeParams params{writer.buffer(source.get()), writer.buffer(output.get()), i, i};
                     render::EncodedParameters encoded;
-                    auto result = writer.encode(params, kAbi).transform([&](auto value) { encoded = std::move(value); });
+                    auto result = writer.encode(params, kABI).transform([&](auto value) { encoded = std::move(value); });
                     if (result) { result = kernel.dispatch(*commands[i], encoded, 1); }
                     return result ? commands[i]->end() : result;
                 });
@@ -1278,20 +1278,20 @@ private:
         REG_REQUIRE(frame.reset());
         registry->collect();
         REG_CHECK(allocation.expired());
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(ParallelRegistryTest);
 
-class PreparedDispatchParallelTest final : public RhiTest {
+class PreparedDispatchParallelTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"compute.prepared.parallel.lifetime.readback"}, bench::Layer::Core, "binding", "binding", {"readback.bin"}, true);
     }
 
-    PreparedDispatchParallelTest() { type = RhiTestType::Rendering; name = "prepared_dispatch_parallel_snapshot_lifetime"; }
-    RhiTestResult run(RhiTestContext& context) override
+    PreparedDispatchParallelTest() { type = RHITestType::Rendering; name = "prepared_dispatch_parallel_snapshot_lifetime"; }
+    RHITestResult run(RHITestContext& context) override
     {
         for (const auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             bench::TestDevice device;
@@ -1374,7 +1374,7 @@ public:
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             };
-            if (auto commandResult = commands[0]->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands[0]->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             std::jthread recordA([&] { outcomes[0] = contexts[0].record([&]() -> render::Result<> {
                 auto recorded = packets[0].record(*commands[0]); return recorded ? commands[0]->end() : recorded; }); });
             std::jthread recordB([&] { outcomes[1] = contexts[1].record([&]() -> render::Result<> {
@@ -1405,22 +1405,22 @@ public:
             frame.cancel();
             REG_REQUIRE(contexts[0].reset()); REG_REQUIRE(frame.reset());
         }
-        return RhiTestResult::pass("Mapped/native: concurrent preparation and recording, frozen constants, indirect permutations, lifetime and stale generation");
+        return RHITestResult::pass("Mapped/native: concurrent preparation and recording, frozen constants, indirect permutations, lifetime and stale generation");
     }
 };
 METALLIC_REGISTER_RHI_TEST(PreparedDispatchParallelTest);
 
 // Standalone packets own their parameter storage; a batch can be prepared and
 // recorded after the writer, source wrappers and kernel wrappers are destroyed.
-class KernelPreparedDispatchTest final : public RhiTest {
+class KernelPreparedDispatchTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"compute.prepared.direct.indirectBatch.readback", "compute.abi.staleTail.contract"}, bench::Layer::Core, "binding", "binding", {"readback.bin"}, true);
     }
 
-    KernelPreparedDispatchTest() { type = RhiTestType::Rendering; name = "compute_kernel_prepared_standalone_batch"; }
-    RhiTestResult run(RhiTestContext& context) override
+    KernelPreparedDispatchTest() { type = RHITestType::Rendering; name = "compute_kernel_prepared_standalone_batch"; }
+    RHITestResult run(RHITestContext& context) override
     {
         for (const auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             bench::TestDevice device;
@@ -1452,17 +1452,17 @@ public:
                 for (auto& kernel : kernels) { REG_REQUIRE(makeKernel(*device, kernel, log, mode)); }
                 render::ParameterWriter writer(*device, **registry);
                 ProbeParams params{writer.buffer(input.get()), writer.buffer(output.get()), 1, 0};
-                auto first = writer.encode(params, kAbi);
+                auto first = writer.encode(params, kABI);
                 REG_CHECK(first);
                 REG_REQUIRE(kernels[0].prepareDispatch(*first, 1).transform([&](auto value) { direct = std::move(value); }));
                 REG_CHECK(!kernels[0].prepareDispatch(*first, 0));
-                auto wrongAbi = writer.encode(params, kAbi + 1);
+                auto wrongAbi = writer.encode(params, kABI + 1);
                 REG_CHECK(wrongAbi && !kernels[0].prepareDispatch(*wrongAbi, 1));
                 REG_CHECK(!kernels[0].prepareIndirectBatch({}));
                 render::ComputeIndirectParameters items[2];
                 for (uint32_t i = 0; i < 2; ++i) {
                     params.add = i + 2; params.index = i + 1;
-                    REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { items[i].parameters = std::move(value); }));
+                    REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { items[i].parameters = std::move(value); }));
                     REG_REQUIRE(arguments->slice({12 * i, 12}).transform([&](auto value) { items[i].arguments = std::move(value); }));
                     items[i].kernel = &kernels[i];
                 }
@@ -1472,12 +1472,12 @@ public:
                 REG_CHECK(!kernels[0].prepareIndirectBatch(items));
                 items[1].arguments = saved;
                 params.add = 999; params.index = 15;
-                REG_REQUIRE(writer.encode(params, kAbi).transform([&](auto value) { items[0].parameters = std::move(value); }));
+                REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { items[0].parameters = std::move(value); }));
                 render::RenderFrameContext frame;
                 REG_REQUIRE(frame.begin(0));
                 render::ParameterWriter scopedWriter(*device, frame, **registry);
                 const ProbeParams scoped{scopedWriter.buffer(input.get()), scopedWriter.buffer(output.get()), 999, 15};
-                REG_REQUIRE(scopedWriter.encode(scoped, kAbi).transform([&](auto value) { items[1].parameters = std::move(value); }));
+                REG_REQUIRE(scopedWriter.encode(scoped, kABI).transform([&](auto value) { items[1].parameters = std::move(value); }));
                 REG_REQUIRE(kernels[0].prepareIndirectBatch(items).transform([&](auto value) { rejected = std::move(value); }));
                 frame.cancel();
             }
@@ -1505,22 +1505,22 @@ public:
             REG_REQUIRE(recording.commands->end());
             REG_CHECK(inputLife.expired() && argumentLife.expired());
         }
-        return RhiTestResult::pass("Mapped/native: standalone storage, direct/batch execution, ABI checks, stale-tail rejection and retained allocations");
+        return RHITestResult::pass("Mapped/native: standalone storage, direct/batch execution, ABI checks, stale-tail rejection and retained allocations");
     }
 };
 METALLIC_REGISTER_RHI_TEST(KernelPreparedDispatchTest);
 
 // Exercise the common prepared resource-table path in mapped and native modes.
 // Two writes to the same word require a memory-only dependency between dispatches.
-class BatchMemoryBarrierTest final : public RhiTest {
+class BatchMemoryBarrierTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"compute.batch.memoryBarrier.readback", "compute.batch.error.contract"}, bench::Layer::Core, "binding", "sync", {"readback.bin"}, true);
     }
 
-    BatchMemoryBarrierTest() { type = RhiTestType::Rendering; name = "compute_batch_memory_barrier_and_error_propagation"; }
-    RhiTestResult run(RhiTestContext& context) override
+    BatchMemoryBarrierTest() { type = RHITestType::Rendering; name = "compute_batch_memory_barrier_and_error_propagation"; }
+    RHITestResult run(RHITestContext& context) override
     {
         for (uint32_t path = 0; path < 2; ++path) {
             bench::TestDevice device;
@@ -1587,7 +1587,7 @@ public:
             REG_CHECK(recording.commands->synchronizationStats().calls == 0);
             recording.frame.cancel(); // Discard the first dispatch of the rejected batch.
         }
-        return RhiTestResult::pass("Prepared mapped/native: memory-only ordering and barrier errors");
+        return RHITestResult::pass("Prepared mapped/native: memory-only ordering and barrier errors");
     }
 };
 METALLIC_REGISTER_RHI_TEST(BatchMemoryBarrierTest);

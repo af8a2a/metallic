@@ -30,7 +30,7 @@ GPUScene → instance cull → compute cluster cull / stable bins
 4. 深度附件使用 `D32Sfloat`。Opaque fragment 允许 early depth；masked fragment 先按 alpha cutoff discard，不能强制 early depth 写入。四个 raster bucket 分别覆盖 opaque/masked 与单面/双面材质，BLEND 暂不进入此路径。
 5. Compute 将第一阶段深度归约成当前 HZB：Reversed-Z 用 min，普通 Z 用 max。第二阶段用当前剔除相机和当前 HZB 重测被延后的实例及 meshlet，将恢复可见的 meshlet 补绘到同一 visibility/depth；早期已经绘制的 meshlet 不再重复绘制。
 6. 完整深度再生成下一帧 HZB，直接保留最终 `GPUDriven.visibility`（R32Uint）和 `GPUDriven.depth`（D32Sfloat），不执行属性重建或材质着色。
-7. 可选的 `VisibilityBufferComposite.slang` 直接读取原始 ID / depth，输出 `GPUDriven.color`（Rgba8Unorm）供视口调试显示，不改变原始输出。关闭可视化时只清空 color，不绘制全屏三角形。内置图将 `GPUDriven.color` 连接到 `FinalBlit.source`，样例的 `previewOutput` 为自动呈现输出 `FinalBlit.color`，JSON 的 `outputs` 数组为空。原始 visibility / depth 仍是节点输出，可供后续 Pass 使用；整数 ID 应先经过可视化再呈现。
+7. 可选的 `VisibilityBufferComposite.slang` 直接读取原始 ID / depth，输出 `GPUDriven.color`（RGBA8Unorm）供视口调试显示，不改变原始输出。关闭可视化时只清空 color，不绘制全屏三角形。内置图将 `GPUDriven.color` 连接到 `FinalBlit.source`，样例的 `previewOutput` 为自动呈现输出 `FinalBlit.color`，JSON 的 `outputs` 数组为空。原始 visibility / depth 仍是节点输出，可供后续 Pass 使用；整数 ID 应先经过可视化再呈现。
 
 两阶段 meshlet 划分通过重算不变的早期遮挡条件完成，不需要有容量上限的延后候选追加队列。
 默认由 compute 在两个阶段分类并生成稳定的硬件/软件列表，AS 仅间接消费对应硬件箱。MiniZorah 的实时图和 VBuffer 诊断图默认 `asyncSoftwareRaster=false`：软光栅 compute 与硬件光栅在 graphics 队列执行，仍然使用混合光栅。设为 `true` 时 stream early 软件箱可在独立 compute 队列执行，与硬件光栅重叠，在深度合并和 HZB 前通过 timeline semaphore 汇合；stream late 还要求 `asyncLateRaster=true`（默认 false），避免少量补绘承担一次跨队列分支。resident 生产者仍由 `asyncSoftwareRaster` 同时控制两个阶段。无独立队列时自动串行。`clusterPrebin=false` 保留 AS 扫描候选与 Mesh Shader 按三角形分流的对照路径。队列对照与成本解释见 [StreamRasterCost.md](StreamRasterCost.md)。
@@ -45,7 +45,7 @@ StreamAsset 的 cluster 使用同一阶段划分和保守遮挡规则。历史�
 
 ### SPD HZB 生成
 
-`VisibilityBufferPass` 默认使用 `HzbSpd.slang`，这是针对 FP32 深度与现有线性 HZB buffer 的
+`VisibilityBufferPass` 默认使用 `HZBSPD.slang`，这是针对 FP32 深度与现有线性 HZB buffer 的
 [FidelityFX SPD 算法](https://gpuopen.com/manuals/fidelityfx_sdk/techniques/single-pass-downsampler/) Slang 实现：
 每组 256 个线程处理 64×64 深度块，默认使用 wave operations：前两级在各线程的寄存器中归约，
 Morton 布局让相邻 2×2/4×4 像素落在连续 lane 中，后两级用 `WaveReadLaneAt` shuffle 归约。
@@ -122,7 +122,7 @@ Shader 职责按模块拆分：
 | 模块 | 职责 |
 | --- | --- |
 | `GPUDrivenCulling.slang` | Reset、实例剔除、逐 mip HZB 回退 |
-| `HzbSpd.slang` | 64×64 分块、单次 dispatch 的完整 HZB 归约 |
+| `HZBSPD.slang` | 64×64 分块、单次 dispatch 的完整 HZB 归约 |
 | `VisibilityBuffer.slang` | AS meshlet 剔除、opaque/masked MS、visibility PS |
 | `VisibilityBufferComposite.slang` | 可选的 ID / device depth / coverage 全屏调试显示 |
 
@@ -179,11 +179,11 @@ Shader 编译测试覆盖 Wave32 / atomic fallback 以及 opaque / masked 两种
 验证开启/关闭遮挡的 30 帧 Sponza 三角形可见性逐像素一致。
 
 ```powershell
-cmake-build-release-visual-studio\tests\MetallicRhiTests.exe --filter render_graph_gpu_driven_preview_shader_compile
-cmake-build-release-visual-studio\tests\MetallicRhiTests.exe --rhi-validation --filter render_graph_gpu_driven_preview_pass_render
-cmake-build-release-visual-studio\tests\MetallicRhiTests.exe --rhi-validation --filter render_graph_gpu_driven_sponza_visibility_render
-cmake-build-release-visual-studio\tests\MetallicRhiTests.exe --rhi-validation --filter render_graph_gpu_driven_alpha_mask_render
-cmake-build-release-visual-studio\tests\MetallicRhiTests.exe --rhi-validation --filter render_graph_gpu_driven_mixed_producer_render
+cmake-build-release-visual-studio\tests\MetallicRHITests.exe --filter render_graph_gpu_driven_preview_shader_compile
+cmake-build-release-visual-studio\tests\MetallicRHITests.exe --rhi-validation --filter render_graph_gpu_driven_preview_pass_render
+cmake-build-release-visual-studio\tests\MetallicRHITests.exe --rhi-validation --filter render_graph_gpu_driven_sponza_visibility_render
+cmake-build-release-visual-studio\tests\MetallicRHITests.exe --rhi-validation --filter render_graph_gpu_driven_alpha_mask_render
+cmake-build-release-visual-studio\tests\MetallicRHITests.exe --rhi-validation --filter render_graph_gpu_driven_mixed_producer_render
 ```
 
 

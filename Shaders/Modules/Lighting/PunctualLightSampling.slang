@@ -8,7 +8,7 @@ namespace Metallic.Lighting
 {
 public struct PunctualSamplingResources
 {
-    public StructuredBuffer<GpuPunctualLight> lights;
+    public StructuredBuffer<GPUPunctualLight> lights;
     public StructuredBuffer<uint4> regir;
     public Texture2D<float> pdf;
 };
@@ -32,14 +32,14 @@ public float punctualSamplingRandom(inout uint state)
     return float(state & 0x00ffffffu) / 16777216.0;
 }
 
-internal float punctualIntensityLuminance(GpuPunctualLight light)
+internal float punctualIntensityLuminance(GPUPunctualLight light)
 {
     float value = dot(max(light.colorIntensity.rgb, 0.0), float3(0.2126, 0.7152, 0.0722)) *
         max(light.colorIntensity.w, 0.0);
     return isfinite(value) ? max(value, 0.0) : 0.0;
 }
 
-public float punctualLightPower(GpuPunctualLight light)
+public float punctualLightPower(GPUPunctualLight light)
 {
     const float pi = 3.14159265358979323846;
     float intensity = punctualIntensityLuminance(light);
@@ -57,7 +57,7 @@ public float punctualLightPower(GpuPunctualLight light)
     return isfinite(power) && power > 0.0 ? power : intensity;
 }
 
-public float punctualLightTargetForVolume(GpuPunctualLight light, float3 center, float radius)
+public float punctualLightTargetForVolume(GPUPunctualLight light, float3 center, float radius)
 {
     float intensity = punctualIntensityLuminance(light);
     if (light.directionType.w < 0.5) { return intensity; }

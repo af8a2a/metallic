@@ -1,5 +1,5 @@
-#include "RhiTest.h"
-#include "RenderGraphViewerTestUi.h"
+#include "RHITest.h"
+#include "RenderGraphViewerTestUI.h"
 #include "Editor/EditorRenderGraphViewer.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -25,7 +25,7 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addTextureOutput("color").storageWrite().format = render::Format::Rgba8Unorm;
+        reflection.addTextureOutput("color").storageWrite().format = render::Format::RGBA8Unorm;
         return reflection;
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
@@ -86,17 +86,17 @@ public:
     }
 };
 
-class RenderGraphViewerTest final : public RhiTest {
+class RenderGraphViewerTest final : public RHITest {
 public:
-    RenderGraphViewerTest() { type = RhiTestType::Rendering; name = "render_graph_execution_viewer"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RenderGraphViewerTest() { type = RHITestType::Rendering; name = "render_graph_execution_viewer"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         auto result = render::createDevice({.applicationName = "Render graph viewer regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
             .enableAsyncCompute = true, .preferUnifiedImageLayouts = false}).transform([&](auto value) { device = std::move(value); });
-        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("bindless device unavailable"); }
-        if (!result) { return RhiTestResult::fail("viewer device creation failed"); }
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("bindless device unavailable"); }
+        if (!result) { return RHITestResult::fail("viewer device creation failed"); }
         render::registerRenderGraphPassType("ViewerComputeFixture", "Viewer compute fixture",
             [] { return std::make_unique<ViewerComputeFixture>(); });
         render::registerRenderGraphPassType("ViewerReadbackFixture", "Viewer readback fixture",
@@ -113,10 +113,10 @@ public:
         graph.markOutput("Raster.color");
         graph.markOutput("Readback.data");
         render::RenderGraphExecutor executor;
-        if (executor.executionSnapshot()) { return RhiTestResult::fail("disabled capture unexpectedly exposed a snapshot"); }
+        if (executor.executionSnapshot()) { return RHITestResult::fail("disabled capture unexpectedly exposed a snapshot"); }
         executor.setExecutionCaptureEnabled(true);
         std::string log;
-        if (!executor.compile(*device, graph, 16, 16, log)) { return RhiTestResult::fail("viewer graph compile: " + log); }
+        if (!executor.compile(*device, graph, 16, 16, log)) { return RHITestResult::fail("viewer graph compile: " + log); }
         auto* graphics = device->getQueue(render::QueueType::Graphics);
         auto* compute = device->getQueue(render::QueueType::Compute);
         auto* copy = device->getQueue(render::QueueType::Copy);
@@ -133,34 +133,34 @@ public:
             }
             return executor.waitForSubmittedWork(5'000'000'000ull).has_value();
         };
-        if (!execute()) { return RhiTestResult::fail("viewer graph execution failed"); }
+        if (!execute()) { return RHITestResult::fail("viewer graph execution failed"); }
         const auto first = executor.executionSnapshot();
         if (!first || !first->success || first->passes.size() != 4 || first->resources.size() < 4 ||
             first->status != render::RenderGraphExecutionSnapshotStatus::Submitted) {
-            return RhiTestResult::fail("viewer did not receive the actual executed graph and resources");
+            return RHITestResult::fail("viewer did not receive the actual executed graph and resources");
         }
         if (!recorded || first->segments.empty() || first->segments.size() != recordedCompletion.size()) {
-            return RhiTestResult::fail("viewer omitted submitted segments");
+            return RHITestResult::fail("viewer omitted submitted segments");
         }
         for (size_t index = 0; index < first->segments.size(); ++index) {
             if (!first->segments[index].completionKnown || !first->segments[index].completed ||
                 recorded->segments[index].completed != recordedCompletion[index]) {
-                return RhiTestResult::fail("viewer completion refresh changed an immutable snapshot or missed GPU completion");
+                return RHITestResult::fail("viewer completion refresh changed an immutable snapshot or missed GPU completion");
             }
         }
         auto* output = executor.outputResource("Readback.data");
         std::array<uint32_t, 16 * 16> pixels{};
         if (!output || !output->buffer) {
-            return RhiTestResult::fail("viewer graph readback failed");
+            return RHITestResult::fail("viewer graph readback failed");
         }
         output->buffer->invalidate();
         const void* mapped = output->buffer->map();
-        if (!mapped) { return RhiTestResult::fail("viewer graph readback map failed"); }
+        if (!mapped) { return RHITestResult::fail("viewer graph readback map failed"); }
         std::memcpy(pixels.data(), mapped, sizeof(pixels));
         output->buffer->unmap();
         for (uint32_t pixel : pixels) {
             if (pixel != 0xff404040u && pixel != 0xff3f3f3fu) {
-                return RhiTestResult::fail("viewer fixture did not execute real compute/write/copy/read operations");
+                return RHITestResult::fail("viewer fixture did not execute real compute/write/copy/read operations");
             }
         }
         const auto findPass = [&](std::string_view name) -> const render::RenderGraphExecutionPassSnapshot* {
@@ -172,27 +172,27 @@ public:
         const auto* copyPass = findPass("Copy");
         if (!computePass || !rasterPass || !copyPass || findPass("Unused") || computePass->stages.empty() ||
             computePass->stages.front().name != "Fill pixels" || !computePass->stages.front().recorded) {
-            return RhiTestResult::fail("viewer snapshot lost culling, executed passes or internal stage declarations");
+            return RHITestResult::fail("viewer snapshot lost culling, executed passes or internal stage declarations");
         }
         if (compute && !compute->sameQueue(*graphics) && computePass->actualQueueId == rasterPass->actualQueueId) {
-            return RhiTestResult::fail("viewer reported the graphics queue for actual async compute work");
+            return RHITestResult::fail("viewer reported the graphics queue for actual async compute work");
         }
         if (copy && !copy->sameQueue(*graphics) && copyPass->actualQueueId == rasterPass->actualQueueId) {
-            return RhiTestResult::fail("viewer reported the graphics queue for actual copy work");
+            return RHITestResult::fail("viewer reported the graphics queue for actual copy work");
         }
         if (copyPass->barriers.empty() || !copyPass->synchronization.calls ||
             !copyPass->synchronization.imageTransitions) {
-            return RhiTestResult::fail("viewer lost the planned transfer layout barrier or its native encoding statistics");
+            return RHITestResult::fail("viewer lost the planned transfer layout barrier or its native encoding statistics");
         }
         bool alias = false, read = false, write = false;
         std::set<uint64_t> allocationIds;
         for (const auto& resource : first->resources) {
             if (!resource.id || !allocationIds.insert(resource.id).second) {
-                return RhiTestResult::fail("viewer resource list duplicated a canonical allocation");
+                return RHITestResult::fail("viewer resource list duplicated a canonical allocation");
             }
             if (!resource.memory.known || resource.memory.allocationId != resource.id ||
                 !resource.memory.memoryBlockId || !resource.memory.sizeBytes) {
-                return RhiTestResult::fail("viewer memory data does not describe the actual live allocations");
+                return RHITestResult::fail("viewer memory data does not describe the actual live allocations");
             }
             if (resource.name == "Compute.color") {
                 alias = std::find(resource.aliases.begin(), resource.aliases.end(), "Copy.source") != resource.aliases.end();
@@ -201,59 +201,59 @@ public:
             }
         }
         if (!alias || !read || !write || first->batches.empty()) {
-            return RhiTestResult::fail("viewer lost input alias, canonical read/write use or queue batches");
+            return RHITestResult::fail("viewer lost input alias, canonical read/write use or queue batches");
         }
         for (const auto& batch : first->batches) {
-            if (!batch.accepted) { return RhiTestResult::fail("completed viewer graph contains an unaccepted batch"); }
+            if (!batch.accepted) { return RHITestResult::fail("completed viewer graph contains an unaccepted batch"); }
         }
         if (compute && !compute->sameQueue(*graphics) &&
             std::none_of(first->batches.begin(), first->batches.end(), [](const auto& batch) {
                 return !batch.waitPredecessors.empty();
             })) {
-            return RhiTestResult::fail("actual compute-to-copy dependency was missing its cross-queue wait");
+            return RHITestResult::fail("actual compute-to-copy dependency was missing its cross-queue wait");
         }
         editor::RenderGraphExecutionViewer viewer;
         viewer.setLive(true);
         viewer.update(first);
         viewer.setLive(false);
-        if (!execute()) { return RhiTestResult::fail("second viewer graph execution failed"); }
+        if (!execute()) { return RHITestResult::fail("second viewer graph execution failed"); }
         const auto second = executor.executionSnapshot();
-        if (!second || second->executionId == first->executionId) { return RhiTestResult::fail("viewer snapshot did not advance"); }
+        if (!second || second->executionId == first->executionId) { return RHITestResult::fail("viewer snapshot did not advance"); }
         viewer.update(second);
-        if (viewer.snapshot() != first) { return RhiTestResult::fail("frozen viewer replaced its captured execution"); }
+        if (viewer.snapshot() != first) { return RHITestResult::fail("frozen viewer replaced its captured execution"); }
         viewer.requestCapture();
-        if (!viewer.wantsCapture()) { return RhiTestResult::fail("viewer capture request was lost"); }
+        if (!viewer.wantsCapture()) { return RHITestResult::fail("viewer capture request was lost"); }
         viewer.update(second);
-        if (viewer.snapshot() != second || viewer.wantsCapture()) { return RhiTestResult::fail("viewer did not consume one requested capture"); }
+        if (viewer.snapshot() != second || viewer.wantsCapture()) { return RHITestResult::fail("viewer did not consume one requested capture"); }
 
         std::filesystem::create_directories(context.outputDirectory);
-        ViewerUiContext ui(true);
+        ViewerUIContext ui(true);
         using Tab = editor::RenderGraphExecutionViewer::Tab;
         std::set<std::string> images;
         const std::array tabs{std::pair{Tab::Resources, "resources"}, std::pair{Tab::Queues, "queues"}, std::pair{Tab::Memory, "memory"}};
         for (const auto& [tab, name] : tabs) {
             const auto path = context.outputDirectory / (std::string("render_graph_viewer_") + name + ".png");
             const auto failure = ui.save(viewer, tab, path);
-            if (!failure.empty()) { return RhiTestResult::fail(std::string(name) + ": " + failure); }
+            if (!failure.empty()) { return RHITestResult::fail(std::string(name) + ": " + failure); }
             std::ifstream file(path, std::ios::binary);
             std::string image((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
             if (image.size() < 1024 || !images.insert(std::move(image)).second) {
-                return RhiTestResult::fail("viewer tabs produced missing or identical screenshots");
+                return RHITestResult::fail("viewer tabs produced missing or identical screenshots");
             }
         }
         executor.setExecutionCaptureEnabled(false);
-        if (!execute()) { return RhiTestResult::fail("graph execution with capture disabled failed"); }
+        if (!execute()) { return RHITestResult::fail("graph execution with capture disabled failed"); }
         const auto retained = executor.executionSnapshot();
         if (!retained || retained->executionId != second->executionId || viewer.snapshot() != second ||
             first->executionId == second->executionId) {
-            return RhiTestResult::fail("disabled capture replaced or invalidated the retained viewer snapshot");
+            return RHITestResult::fail("disabled capture replaced or invalidated the retained viewer snapshot");
         }
         executor.setExecutionCaptureEnabled(true);
         if (!executor.execute({.graphicsQueue = graphics, .computeQueue = graphics, .copyQueue = graphics,
                 .recordingWorkerLimit = 1, .recordingBatchWorkload = 1,
                 .submissionMode = render::FrameSubmissionMode::Pipelined}) ||
             !executor.waitForSubmittedWork(5'000'000'000ull)) {
-            return RhiTestResult::fail("viewer unified-queue execution failed");
+            return RHITestResult::fail("viewer unified-queue execution failed");
         }
         const auto unified = executor.executionSnapshot();
         if (!unified || unified->queues.size() != 1 ||
@@ -262,12 +262,12 @@ public:
             }) || std::any_of(unified->batches.begin(), unified->batches.end(), [](const auto& batch) {
                 return !batch.waitPredecessors.empty();
             })) {
-            return RhiTestResult::fail("viewer invented queue lanes or cross-queue waits for a unified queue");
+            return RHITestResult::fail("viewer invented queue lanes or cross-queue waits for a unified queue");
         }
         viewer.requestCapture();
         viewer.update(unified);
         auto failure = ui.save(viewer, Tab::Queues, context.outputDirectory / "render_graph_viewer_queues_unified.png");
-        if (!failure.empty()) { return RhiTestResult::fail("unified queues: " + failure); }
+        if (!failure.empty()) { return RHITestResult::fail("unified queues: " + failure); }
 
         // A frozen UI owns only copied diagnostics. Tear down every allocation,
         // submission tracker and the device before asking it to draw again.
@@ -275,11 +275,11 @@ public:
         executor = render::RenderGraphExecutor{};
         device.reset();
         if (viewer.snapshot() != unified || unified->resources.front().id != allocation) {
-            return RhiTestResult::fail("graph destruction invalidated the frozen execution snapshot");
+            return RHITestResult::fail("graph destruction invalidated the frozen execution snapshot");
         }
         failure = ui.save(viewer, Tab::Memory, context.outputDirectory / "render_graph_viewer_memory_frozen.png");
-        if (!failure.empty()) { return RhiTestResult::fail("frozen graph destruction: " + failure); }
-        return RhiTestResult::pass("real 16x16 multi/unified queues and frozen teardown; offscreen ImGui PNGs in " + context.outputDirectory.string());
+        if (!failure.empty()) { return RHITestResult::fail("frozen graph destruction: " + failure); }
+        return RHITestResult::pass("real 16x16 multi/unified queues and frozen teardown; offscreen ImGui PNGs in " + context.outputDirectory.string());
     }
 };
 

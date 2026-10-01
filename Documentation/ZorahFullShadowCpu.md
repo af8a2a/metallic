@@ -52,13 +52,13 @@ Shadows GPU 均值基准为 0.0464 ms，前两轮缓存为 0.0452 / 0.0467 ms，
 
 ## 验证与证据
 
-Release MetallicGPUDrivenSample / MetallicRhiTests 构建通过。7 项开启 Vulkan validation 的测试通过，无跳过或验证错误：frame_sampled_image_cache、frame_descriptor_snapshots、frame_history_dependencies、frame_two_slot_graph_reuse、frame_submission_transactions、ktx2_texture_streaming、stream_material_shadow。
+Release MetallicGPUDrivenSample / MetallicRHITests 构建通过。7 项开启 Vulkan validation 的测试通过，无跳过或验证错误：frame_sampled_image_cache、frame_descriptor_snapshots、frame_history_dependencies、frame_two_slot_graph_reuse、frame_submission_transactions、ktx2_texture_streaming、stream_material_shadow。
 
 新增 GPU 回归读取实际 shader 输出，覆盖同代零改写、新代单项改写、普通数组使缓存失效、两个并行在途帧分别使用旧/新代，以及 caller 释放后在途保活、完成帧释放后缓存不阻止旧纹理回收。stream_material_shadow 验证流式材质阴影路径。当前构建 METALLIC_HAS_NRD=0，未验证 NRD/SIGMA 执行分支。
 
 ```powershell
-cmake --build build-release --target MetallicGPUDrivenSample MetallicRhiTests -j 6
-.\build-release\tests\MetallicRhiTests.exe --gtest_filter="*frame_sampled_image_cache*:*frame_descriptor_snapshots*:*frame_history_dependencies*:*frame_two_slot_graph_reuse*:*frame_submission_transactions*:*ktx2_texture_streaming*:*stream_material_shadow*" --rhi-bindless --rhi-validation
+cmake --build build-release --target MetallicGPUDrivenSample MetallicRHITests -j 6
+.\build-release\tests\MetallicRHITests.exe --gtest_filter="*frame_sampled_image_cache*:*frame_descriptor_snapshots*:*frame_history_dependencies*:*frame_two_slot_graph_reuse*:*frame_submission_transactions*:*ktx2_texture_streaming*:*stream_material_shadow*" --rhi-bindless --rhi-validation
 pwsh -NoProfile -File Tools/RunZorahFullRoam.ps1 -OutputRoot build-release/full-shadow-cache-0923 -Runs 3 -DurationSeconds 30 -WarmupSeconds 10 -Width 1797 -Height 660 -TimeoutSeconds 900
 ```
 

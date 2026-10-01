@@ -9,7 +9,7 @@ $repo = Split-Path -Parent $PSScriptRoot
 if (-not [IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory = Join-Path $repo $OutputDirectory }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-$executable = Join-Path $repo 'build-release/tests/MetallicRhiTests.exe'
+$executable = Join-Path $repo 'build-release/tests/MetallicRHITests.exe'
 $cache = Join-Path $repo 'Asset/ZorahFull/zorah_textured_public.v1.gltf.meshstream.bin'
 if (-not (Test-Path -LiteralPath $cache) -or (Test-Path -LiteralPath "$cache.partial")) {
     throw 'ZorahFull cook is missing or incomplete. Finish MetallicMeshletCook before the first-frame run.'
@@ -19,7 +19,7 @@ $oldCycles = $env:METALLIC_ZORAH_FULL_CYCLES
 $env:METALLIC_TEST_ZORAH_FULL = '1'
 $env:METALLIC_ZORAH_FULL_CYCLES = [string]$Cycles
 try {
-    $arguments = @('--gtest_filter=RhiRendering.zorah_full_first_frame', '--output-dir',
+    $arguments = @('--gtest_filter=RHIRendering.zorah_full_first_frame', '--output-dir',
         ('"' + $OutputDirectory + '"'), ('"--gtest_output=json:' + (Join-Path $OutputDirectory 'rhi.json') + '"'))
     if ($Validation) { $arguments += '--rhi-validation' } else { $arguments += '--rhi-no-validation' }
     $gpuQuery = Get-Command nvidia-smi -ErrorAction SilentlyContinue

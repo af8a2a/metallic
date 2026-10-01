@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/RayQueryFixture.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
@@ -13,17 +13,17 @@ namespace {
 
 #define TLAS_REQUIRE(expression) do { \
     const auto& checked = (expression); \
-    if (!checked) { return RhiTestResult::fail(std::string(#expression) + ": " + \
+    if (!checked) { return RHITestResult::fail(std::string(#expression) + ": " + \
         toString(render::Result<>{std::unexpected(checked.error())}) + " " + log); } \
 } while (false)
-#define TLAS_CHECK(expression) do { if (!(expression)) { return RhiTestResult::fail(#expression); } } while (false)
+#define TLAS_CHECK(expression) do { if (!(expression)) { return RHITestResult::fail(#expression); } } while (false)
 
-class UnifiedTopLevelTest : public RhiTest {
+class UnifiedTopLevelTest : public RHITest {
 public:
     UnifiedTopLevelTest(bool partitioned = false, bool native = false)
         : partitioned_(partitioned), native_(native)
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = partitioned ? (native ? "unified_top_level_partitioned_native" : "unified_top_level_partitioned")
             : (native ? "unified_top_level_standard_native" : "unified_top_level_standard");
     }
@@ -32,10 +32,10 @@ public:
     {
         if (!partitioned_) { return std::nullopt; }
         return bench::comparisonMetadata({"rayQuery.analytic.hit.miss.mask.distance.barycentric.frontFace", "topLevel.typedBackend.contract.lifetime", "topLevel.transform.standardRefit.partitionedRebuild"},
-            bench::Layer::Rhi, "ray-query", {"ray-query-ptlas", "partitionedAS", bench::Capability::PartitionedAS, 0.00001}, native_);
+            bench::Layer::RHI, "ray-query", {"ray-query-ptlas", "partitionedAS", bench::Capability::PartitionedAS, 0.00001}, native_);
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         const bool usePartitioned = context.deviceDesc ? context.deviceDesc->enablePartitionedAccelerationStructure : partitioned_;
@@ -50,13 +50,13 @@ public:
                     ++*static_cast<std::atomic_uint*>(data);
                 }
             }, .context = &validationErrors}});
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("ray query/descriptor heap unavailable"); }
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("ray query/descriptor heap unavailable"); }
         TLAS_REQUIRE(created);
         auto& device = **created;
         TLAS_CHECK(hasError(device.createRayTracingAccelerationStructure(RayTracingAccelerationStructureDesc{}), Error::InvalidArgument));
         TLAS_CHECK(hasError(device.createRayTracingAccelerationStructure(PartitionedAccelerationStructureDesc{}), Error::InvalidArgument));
         if (usePartitioned && !device.capabilities().partitionedAccelerationStructure) {
-            return RhiTestResult::skip("PTLAS unavailable");
+            return RHITestResult::skip("PTLAS unavailable");
         }
         auto& queue = *device.getQueue(QueueType::Graphics);
         const auto& vertices = bench::kRayVertices;
@@ -132,7 +132,7 @@ public:
             .spirv = shader.spirv,
             .bindings = {layout, 2},
         }, log);
-        if (native_ && hasError(initialized, Error::Unsupported)) { return RhiTestResult::skip("native descriptor heap unavailable"); }
+        if (native_ && hasError(initialized, Error::Unsupported)) { return RHITestResult::skip("native descriptor heap unavailable"); }
         TLAS_REQUIRE(initialized);
         using Probe = bench::RayObservations;
         auto output = device.createBuffer({.size = sizeof(Probe), .structureStride = sizeof(bench::RayObservation), .usage = BufferUsageBits::Storage,
@@ -257,7 +257,7 @@ public:
         }
         (*heap)->release(*handle);
         TLAS_CHECK(validationErrors.load() == 0);
-        return RhiTestResult::pass("unified binding, ray hits/miss/mask, backend guards, move and allocation lifetime");
+        return RHITestResult::pass("unified binding, ray hits/miss/mask, backend guards, move and allocation lifetime");
     }
 private:
     bool partitioned_;

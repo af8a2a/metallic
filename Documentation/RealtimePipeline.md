@@ -12,20 +12,20 @@ GPUDrivenSample 使用同一组实时 Pass，默认场景为 MiniZorah，入口�
 - **统一视图**：相机由视口持有的 `RenderView` 管理，图资产顶层 `view.camera` / `view.temporalJitter` 保存初始配置。Executor 每帧生成 `ViewConstants`（当前/上一帧相机、抖动、渲染/显示尺寸、切镜与历史状态），按 frame slot 上传同一个只读 GPU buffer。VBuffer 和 LightGrid 使用其当前相机；延迟 shader 直接读取该 buffer；SR 从 execution context 获取相同的相机和历史。切换预览输出不影响相机，也不再通过 `cameraSyncGroup` 或 pass 类型同步相机。
 - **DLSS-SR**：默认 Quality。由 SR 查询输入尺寸并反向约束光栅/延迟分辨率，所有消费者使用 ViewConstants 的同一像素抖动。延迟导出 RG16F 的 current-to-previous UV motion 和 R32F 标准 Z（光栅可使用 reversed Z 或标准 Z）。普通平移/旋转保留 DLSS 重投影历史，只重置逐帧累积；切镜、尺寸变化、场景编辑或显式 Reset 仍重置重投影。当前运动矢量支持相机运动，不提供蒙皮或独立物体的逐顶点速度。
 - **曝光**：SR 输入保持物理 HDR，AutoExposure 对升频后的 HDR 进行直方图测光、适应和色调映射。曝光设置沿用场景 Physical Lighting 中的自动曝光开关和参数。
-- **可选 NR**：开启 `DlssNr.enabled`。NR 接收色调映射后的 RGBA8，以及 SR 生成的显示分辨率运动/深度引导。引导重采样去除当前抖动并在边缘选择前景深度；UV 运动不乘分辨率比例。其深度设置为 `depthInverted = false`。没有可用 NR runtime 时按 `fallbackToInput = true` 透传。SR 需要可用 NVIDIA Streamline/DLSS-SR；NR 依赖项目已有的实验性 runtime 接口。
+- **可选 NR**：开启 `DLSSNR.enabled`。NR 接收色调映射后的 RGBA8，以及 SR 生成的显示分辨率运动/深度引导。引导重采样去除当前抖动并在边缘选择前景深度；UV 运动不乘分辨率比例。其深度设置为 `depthInverted = false`。没有可用 NR runtime 时按 `fallbackToInput = true` 透传。SR 需要可用 NVIDIA Streamline/DLSS-SR；NR 依赖项目已有的实验性 runtime 接口。
 
 环境漫反射/镜面分离参考本地 Unreal 的 `Engine/Shaders/Private/ReflectionEnvironmentShared.ush` 和 `BRDF.ush`；实现复用 Metallic 的 SH 与 GGX 积分近似。
 
 HDRI 镜面预过滤参考 Unreal `ReflectionEnvironmentShaders.usf` 的 PDF 驱动 mip 选择：先在异步解码任务中生成按球面面积加权的 radiance mip，GPU 再按 GGX 样本的 `1 / (sampleCount * pdf)` 立体角选择源 mip，并做三线性过滤。lat-long 使用采样纬度处的 texel 立体角；过滤足迹增加一级 mip 的重叠，降低有限样本对极亮小光源的残余混叠。非二次幂尺寸保留边界 texel 的面积贡献，极点按球面面积积分；原始 mip 0 保留 HDR 峰值，供背景、镜面极限和 SH/PDF 积分读取。这只增加环境更新时的预计算及约三分之一的纹理内存，不增加逐帧 pass。
 
-亮点回归来自 `LookDev_2026_09_11_12_23_50.ngfx-capture`：原先 256 个 GGX 样本始终读取 HDRI mip 0，将亮 texel 复制成离散白点。捕获中的 4 MiB 镜面预过滤 buffer 与修复前 GPU 回读逐字节相同；恢复捕获相机、移除 SR/NR 后也可复现。`MetallicRhiTests --filter environment_prefilter --rhi-validation` 验证恒定环境能量、单 texel HDR 的 GGX 峰值上界、非二次幂极点 mip 能量、原始 HDR 峰值保留，并输出同视角 `CaptureView.png` 供图像检查。单 texel 亮度 32768、粗糙度 4/7 时，峰值由 144.39 降至约 2.59（连续积分上界约 2.36，允许有限样本误差）。
+亮点回归来自 `LookDev_2026_09_11_12_23_50.ngfx-capture`：原先 256 个 GGX 样本始终读取 HDRI mip 0，将亮 texel 复制成离散白点。捕获中的 4 MiB 镜面预过滤 buffer 与修复前 GPU 回读逐字节相同；恢复捕获相机、移除 SR/NR 后也可复现。`MetallicRHITests --filter environment_prefilter --rhi-validation` 验证恒定环境能量、单 texel HDR 的 GGX 峰值上界、非二次幂极点 mip 能量、原始 HDR 峰值保留，并输出同视角 `CaptureView.png` 供图像检查。单 texel 亮度 32768、粗糙度 4/7 时，峰值由 144.39 降至约 2.59（连续积分上界约 2.36，允许有限样本误差）。
 
 该修复验证：上述 3 项预过滤测试及环境异步快照、提交恢复、2 项 photometric、SH 数学共 8 项回归通过；`build-relwithdebinfo/Source/LookDev.exe --sample realtime-lighting --smoke-test` 配合 `METALLIC_SMOKE_TEST_DLSS_CAMERA=1` 通过 16 帧 SR 相机移动、共享视图及显式 Reset，并正常退出。测试日志和同视角修复前后图保存在本地 `.cache/bright-spots/`。
 
 视图的所有权参考 Unreal `SceneView.h` 中每个 `FSceneView` 的 `ViewUniformBuffer`：共享范围是一个视图，不是整个进程的单例。运行时可调用 `executor.bindRenderView(&view)` 并在录制下一帧前更新相机；多个 executor 各自保存帧历史。未绑定外部 View 时，具有顶层 `view` 的图会创建自己的 RenderView。编辑器只在加载旧图时从旧 `camera` 属性导入一次；旧 pass 的参数 ABI 通过执行上下文适配，节点原始属性不会随视口运动改变。`sceneBinding: asset` 默认保留独立相机，显式设置 `viewBinding: global` 可使独立资产跟随视口；`viewBinding: local` 选择局部相机，场景输入消费者继承 producer 的局部视图约束。MiniZorah 两个入口使用顶层 `view.camera` 保存原始视点并跟随共享视口，场景仍独立加载。`rasterInfo` 继续用于验证场景身份和光栅资源，旧 SR 图仍可启用 `useRasterCamera` 兼容路径。
 
-统一视图回归：`MetallicRhiTests --filter render_view_shared_constants_history --rhi-validation` 检查 GPU 数据共享、纯旋转、上一帧数据、切镜、resize、序列化及多视图隔离。编辑器回归使用环境变量 `METALLIC_SMOKE_TEST_SAMPLE=realtime-lighting`、`METALLIC_SMOKE_TEST_DLSS_CAMERA=1` 运行 `Metallic --smoke-test`，检查 16 帧平移/旋转和显式 DLSS Reset。
+统一视图回归：`MetallicRHITests --filter render_view_shared_constants_history --rhi-validation` 检查 GPU 数据共享、纯旋转、上一帧数据、切镜、resize、序列化及多视图隔离。编辑器回归使用环境变量 `METALLIC_SMOKE_TEST_SAMPLE=realtime-lighting`、`METALLIC_SMOKE_TEST_DLSS_CAMERA=1` 运行 `Metallic --smoke-test`，检查 16 帧平移/旋转和显式 DLSS Reset。
 
-验证：`MetallicRhiTests --rhi-realtime --filter realtime_clustered_dlss_pipeline --rhi-validation`，输出 `RealtimePipeline0/1/2.png`，覆盖默认 SR、可选 NR、相机运动、静态抖动和窗口尺寸变化。`--rhi-realtime` 使用单个具备 mesh/task shader、ray query 和 Streamline 能力的设备；普通 RHI 测试入口跳过该硬件测试。另运行 `realtime_environment_prefilter_energy`、LightGrid、photometric、auto exposure 和 DLSS motion 回归。
+验证：`MetallicRHITests --rhi-realtime --filter realtime_clustered_dlss_pipeline --rhi-validation`，输出 `RealtimePipeline0/1/2.png`，覆盖默认 SR、可选 NR、相机运动、静态抖动和窗口尺寸变化。`--rhi-realtime` 使用单个具备 mesh/task shader、ray query 和 Streamline 能力的设备；普通 RHI 测试入口跳过该硬件测试。另运行 `realtime_environment_prefilter_energy`、LightGrid、photometric、auto exposure 和 DLSS motion 回归。
 
 本机验证记录（2026-09-11）：主程序构建通过；编辑器 SR 相机 smoke test 的 16 帧平移/纯旋转、相机属性隔离、历史保留和显式 Reset 全部通过，进程正常退出。启用 Vulkan 验证的 16 项相关 GPU 回归通过，包括共享 View、历史资源、独立资产视图、LightGrid、曝光及原延迟 OpenPBR 参考对比。完整 SR/NR 链路的逐帧图像、运动、标准 Z 和 resize 断言通过，但完整测试进程仍未通过：启用 Vulkan 验证后，图重建会报告 `VUID-vkCmdBindResourceHeapEXT-pBindInfo-11236`；测试进程中的 Streamline 关闭还会在 `sl.common.dll` 内发生异常并遗留一个信号量。关闭 NR 后此前也复现过关闭异常。受限进程环境中关闭调用还会等待 NGX 遥测线程。上述限制保留在测试日志中，未过滤验证消息或绕过 SDK 关闭。

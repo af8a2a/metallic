@@ -8,7 +8,7 @@ post processing and debug passes. NRD already uses its own native bindless ABI.
 
 ## Shader and runtime contract
 
-`ComputeKernel` owns executable code and its `ParameterAbi`. Direct dispatch,
+`ComputeKernel` owns executable code and its `ParameterABI`. Direct dispatch,
 indirect dispatch and immutable prepared batches all record through
 `PreparedComputeDispatch`. `ComputeProgram` is a resource-table input encoder for
 existing Core shaders; it has no private heap, descriptor-table pool or separate
@@ -65,13 +65,13 @@ clearing a program with GPU work pending. The
 material-binning GPU test covers indirect batches with per-dispatch constants
 and compatible shader permutations.
 
-Use `MetallicRhiTests --rhi-validation --gtest_filter=<filter>` with filters such
+Use `MetallicRHITests --rhi-validation --gtest_filter=<filter>` with filters such
 as `*rtxdi*`, `*frame_descriptor_snapshots*`,
 `*material_binning_indirect_coverage*`, `*pathtracing_guides_shader_compile*`,
 `*scene_ray_tracing_position_fetch*` and `*visibility_buffer_deferred_openpbr*`.
 The complete RTXDI preview also requires `METALLIC_ENABLE_NRD=ON`.
 
-On 2026-09-11, the Debug `Metallic` and `MetallicRhiTests` targets built with NRD
+On 2026-09-11, the Debug `Metallic` and `MetallicRHITests` targets built with NRD
 enabled. Thirty-one distinct focused RHI tests passed, including the full
 RTXDI/confidence/RELAX/composite preview, temporal RTXDI, textured Standard/OpenPBR
 path tracing, position fetch, visibility-buffer deferred shading, indirect

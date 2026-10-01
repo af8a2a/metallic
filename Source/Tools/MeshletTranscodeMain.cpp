@@ -1,4 +1,4 @@
-#include "Runtime/Scene/MeshletStreamGpuCodec.h"
+#include "Runtime/Scene/MeshletStreamGPUCodec.h"
 #include <cstdio>
 #include <exception>
 #include <string_view>

@@ -37,7 +37,7 @@ Aftermath 都报告驱动内部 `AS Build or Refit / ray_tracing_02 @ 0xad0` 的
 
 ## 修复
 
-- `MeshletStreamCompactClasPool` 按移动查询的 `updateScratchSize` 加对齐余量分配。
+- `MeshletStreamCompactCLASPool` 按移动查询的 `updateScratchSize` 加对齐余量分配。
   MiniZorah 默认批次的缓冲从 256 字节变为 196,992 字节，约 192.4 KiB。
 - Vulkan RHI 对每次实际搬移按同一字段检查 scratch 的有效剩余范围，在记录 GPU 命令前拒绝不足的缓冲。
 - RHI 接口补充移动查询字段说明；实际尺寸分配、搬移、联合冷页回收继续启用。
@@ -59,7 +59,7 @@ Aftermath 都报告驱动内部 `AS Build or Refit / ray_tracing_02 @ 0xad0` 的
 - `MetallicGPUDrivenSample.exe` 和 `Metallic.exe` Release 重建成功。
 
 日志：`build-relwithdebinfo/clas-device-lost/editor-fixed.log`、`final-tests.log`、
-`final-tests/MiniZorahClasInFlight.jsonl`、`final-tests/ClasSizeMove.txt`。
+`final-tests/MiniZorahCLASInFlight.jsonl`、`final-tests/CLASSizeMove.txt`。
 
 验证边界：RHI 验证层较旧时自动回退 KHR OMM 为 shader alpha traversal，日志有相应提示；
 Release 编辑器切换验证使用实际 KHR OMM 路径。编辑器各轮 GPU 完成后已输出通过标记；

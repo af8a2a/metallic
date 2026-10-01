@@ -64,7 +64,7 @@ Local Memory Size 返回 68719476736 / 68719476752 一类异常大值，原样�
 
 ## 验证、证据与复现
 
-- Release `MetallicGPUDrivenSample`、`MetallicRhiTests` 构建通过：[构建日志](../build/sw-group-build.log)。
+- Release `MetallicGPUDrivenSample`、`MetallicRHITests` 构建通过：[构建日志](../build/sw-group-build.log)。
 - 分析器三项 CPU 回归通过；Vulkan validation 的 `hybrid_raster_depth_coverage_and_overflow` 通过：[RHI 日志](../build/sw-group-rhi-regression.log)。这项是已有光栅回归，不冒充新增组大小边界覆盖。
 - `stream_cluster_cull_classify_equivalence` validation/bindless 回归通过：[分类日志](../build/sw-group-classify-regression.log)。
 - [正式完整证据](../build-scheduling-release/sw-group32-64-128-formal-01/Review.json)、[原始 Manifest](../build-scheduling-release/sw-group32-64-128-formal-01/Manifest.json)、[诊断 pilot](../build-scheduling-release/sw-group32-64-128-pilot-01/run1/Capture.json)、[实际资源日志](../build-scheduling-release/sw-group32-64-128-pilot-01/run1/stdout.log)。

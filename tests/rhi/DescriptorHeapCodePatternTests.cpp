@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -41,12 +41,12 @@ bool parseNumber(std::string_view text, uint32_t& value, int base = 10)
     return result.ec == std::errc{} && result.ptr == text.data() + text.size();
 }
 
-RhiTestResult verifyEnvironmentPartials(render::Buffer& buffer, render::Buffer& coefficients, uint32_t groups,
+RHITestResult verifyEnvironmentPartials(render::Buffer& buffer, render::Buffer& coefficients, uint32_t groups,
     bool procedural, bool integrateOnly, const std::string& description)
 {
     buffer.invalidate();
     const auto* actual = static_cast<const std::array<float, 4>*>(buffer.map());
-    if (actual == nullptr) { return RhiTestResult::fail("SH partials mapping failed"); }
+    if (actual == nullptr) { return RHITestResult::fail("SH partials mapping failed"); }
     // The single texel covers 4 pi steradians and samples direction (1, 0, 0).
     constexpr std::array<float, 9> kBasis{
         0.2820947918f, 0, 0, 0.4886025119f, 0, 0, -0.3153915653f, 0, 0.5462742153f};
@@ -66,7 +66,7 @@ RhiTestResult verifyEnvironmentPartials(render::Buffer& buffer, render::Buffer& 
                         "]=" + std::to_string(value) + (procedural ? ", expected finite RGB / zero alpha" :
                             ", expected=" + std::to_string(expected));
                     buffer.unmap();
-                    return RhiTestResult::fail(mismatch);
+                    return RHITestResult::fail(mismatch);
                 }
                 if (coefficient == 0 && channel < 3) { dcSum += value; }
                 sums[coefficient][channel] += value;
@@ -74,14 +74,14 @@ RhiTestResult verifyEnvironmentPartials(render::Buffer& buffer, render::Buffer& 
         }
     }
     buffer.unmap();
-    if (procedural && !(dcSum > 0.0)) { return RhiTestResult::fail(description + ": nonpositive SH DC sum"); }
+    if (procedural && !(dcSum > 0.0)) { return RHITestResult::fail(description + ": nonpositive SH DC sum"); }
     if (integrateOnly) {
-        return RhiTestResult::pass(description + ", verified " + std::to_string(groups * 9) +
+        return RHITestResult::pass(description + ", verified " + std::to_string(groups * 9) +
             " SH partial float4 values");
     }
     coefficients.invalidate();
     const auto* finalized = static_cast<const std::array<float, 4>*>(coefficients.map());
-    if (finalized == nullptr) { return RhiTestResult::fail("SH coefficients mapping failed"); }
+    if (finalized == nullptr) { return RHITestResult::fail("SH coefficients mapping failed"); }
     constexpr double kPi = 3.14159265358979323846;
     for (uint32_t coefficient = 0; coefficient < 9; ++coefficient) {
         const double convolution = coefficient == 0 ? kPi : (coefficient < 4 ? 2.0 * kPi / 3.0 : kPi / 4.0);
@@ -93,12 +93,12 @@ RhiTestResult verifyEnvironmentPartials(render::Buffer& buffer, render::Buffer& 
                     "][" + std::to_string(channel) + "]=" + std::to_string(value) +
                     ", expected=" + std::to_string(expected);
                 coefficients.unmap();
-                return RhiTestResult::fail(mismatch);
+                return RHITestResult::fail(mismatch);
             }
         }
     }
     coefficients.unmap();
-    return RhiTestResult::pass(description + ", verified " + std::to_string(groups * 9) +
+    return RHITestResult::pass(description + ", verified " + std::to_string(groups * 9) +
         " SH partial float4 values and 9 finalized coefficients");
 }
 
@@ -120,7 +120,7 @@ struct PatternCommands {
 
 #define PATTERN_REQUIRE(expression) do { \
     const render::Result<> patternResult = (expression); \
-    if (!patternResult) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(patternResult)); } \
+    if (!patternResult) { return RHITestResult::fail(std::string(#expression) + ": " + toString(patternResult)); } \
 } while (false)
 
 // Raw vk::binding/push-data diagnostics intentionally stay below the production
@@ -180,15 +180,15 @@ private:
     render::BindlessHandle image_, input_, output_;
 };
 
-class DescriptorHeapCodePatternTest final : public RhiTest {
+class DescriptorHeapCodePatternTest final : public RHITest {
 public:
     DescriptorHeapCodePatternTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "descriptor_heap_code_pattern";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         // Shader objects are mandatory even for this ordinary compute pipeline.
         // GPU execution using an existing driver cache requires explicit opt-in.
@@ -201,12 +201,12 @@ public:
                 if (text == kPatternNames[i]) { pattern = i; found = true; break; }
             }
             if (!found && (!parseNumber(text, pattern) || pattern >= kPatternNames.size())) {
-                return RhiTestResult::fail("METALLIC_GPU_PATTERN: use 0..6 or push_fields, entry_value, push_copy, buffer_copy, buffer_fields, environment_sh, environment_sh_procedural");
+                return RHITestResult::fail("METALLIC_GPU_PATTERN: use 0..6 or push_fields, entry_value, push_copy, buffer_copy, buffer_fields, environment_sh, environment_sh_procedural");
             }
         }
         if (const char* requested = std::getenv("METALLIC_GPU_PATTERN_GROUPS")) {
             if (!parseNumber(requested, groups) || groups == 0 || groups > 65535) {
-                return RhiTestResult::fail("METALLIC_GPU_PATTERN_GROUPS must be in [1, 65535]");
+                return RHITestResult::fail("METALLIC_GPU_PATTERN_GROUPS must be in [1, 65535]");
             }
         }
         const bool environment = pattern >= 5;
@@ -214,7 +214,7 @@ public:
         // Production SH fixtures deliberately use fixed image/partial counts.
         if (environment) { groups = procedural ? 256u : 1u; }
         if (environment && std::getenv("METALLIC_GPU_PATTERN_TABLES")) {
-            return RhiTestResult::fail("METALLIC_GPU_PATTERN_TABLES was removed: resource tables are immutable parameter packets");
+            return RHITestResult::fail("METALLIC_GPU_PATTERN_TABLES was removed: resource tables are immutable parameter packets");
         }
         const char* pdfValue = std::getenv("METALLIC_GPU_PATTERN_PREFIX_PDF");
         const bool prefixPdf = environment && pdfValue != nullptr && std::strcmp(pdfValue, "1") == 0;
@@ -229,7 +229,7 @@ public:
             const bool hexadecimal = text.starts_with("0x") || text.starts_with("0X");
             if (hexadecimal) { text.remove_prefix(2); }
             if (!parseNumber(text, generatorOverride, hexadecimal ? 16 : 10)) {
-                return RhiTestResult::fail("METALLIC_GPU_PATTERN_SPIRV_GENERATOR must be a uint32 decimal or 0x hexadecimal integer");
+                return RHITestResult::fail("METALLIC_GPU_PATTERN_SPIRV_GENERATOR must be a uint32 decimal or 0x hexadecimal integer");
             }
         }
         const char* aftermathValue = std::getenv("METALLIC_TEST_AFTERMATH");
@@ -240,7 +240,7 @@ public:
         // old feature-off experiment as a required-feature device.
         if (const char* legacyShaderObject = std::getenv("METALLIC_GPU_PATTERN_SHADER_OBJECT");
             legacyShaderObject != nullptr && std::strcmp(legacyShaderObject, "1") != 0) {
-            return RhiTestResult::fail("ShaderObject is required; METALLIC_GPU_PATTERN_SHADER_OBJECT may only be 1. "
+            return RHITestResult::fail("ShaderObject is required; METALLIC_GPU_PATTERN_SHADER_OBJECT may only be 1. "
                 "Use the standalone Vulkan reproducer for feature-off cache experiments");
         }
         const char* internalCacheValue = std::getenv("METALLIC_VK_INTERNAL_PIPELINE_CACHE");
@@ -258,7 +258,7 @@ public:
         // by a shaderObject=true device. Keep those experiments outside ordinary
         // regression runs; feature-off controls now live in the standalone repro.
         if (!compileOnly && !internalCacheDisabled && !allowDeviceLost) {
-            return RhiTestResult::skip("GPU cache experiment requires METALLIC_VK_INTERNAL_PIPELINE_CACHE=disabled "
+            return RHITestResult::skip("GPU cache experiment requires METALLIC_VK_INTERNAL_PIPELINE_CACHE=disabled "
                 "or explicit METALLIC_GPU_PATTERN_ALLOW_DEVICE_LOST=1; compile-only needs neither");
         }
         if (!compileOnly && !internalCacheDisabled) {
@@ -285,11 +285,11 @@ public:
             .enableClusterAccelerationStructure = previewDevice,
             .enableAftermath = aftermath}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) {
-            return RhiTestResult::skip("Requested device capabilities unavailable: " + description);
+            return RHITestResult::skip("Requested device capabilities unavailable: " + description);
         }
-        if (!result) { return RhiTestResult::fail("Device initialization failed: " + std::string(toString(result))); }
+        if (!result) { return RHITestResult::fail("Device initialization failed: " + std::string(toString(result))); }
         auto* queue = device->getQueue(render::QueueType::Graphics);
-        if (queue == nullptr) { return RhiTestResult::fail("Missing graphics queue"); }
+        if (queue == nullptr) { return RHITestResult::fail("Missing graphics queue"); }
 
         const std::string patternMacro = std::to_string(pattern);
         const render::SlangMacroDefine macro{"METALLIC_GPU_PATTERN", patternMacro.c_str()};
@@ -300,9 +300,9 @@ public:
             .searchPath = environment ? PROJECT_SOURCE_DIR "/Shaders" : PROJECT_SOURCE_DIR "/tests/rhi/shaders",
             .macroDefines = {environment ? nullptr : &macro, environment ? 0u : 1u},
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
-        if (!result) { return RhiTestResult::fail(shader.diagnostics); }
+        if (!result) { return RHITestResult::fail(shader.diagnostics); }
         if (shader.spirv.size() < 5 || shader.spirv[0] != 0x07230203u) {
-            return RhiTestResult::fail("Pattern shader has an invalid SPIR-V header");
+            return RHITestResult::fail("Pattern shader has an invalid SPIR-V header");
         }
         // Match the compiler cache's FNV-1a byte hash without changing its
         // contents. The experimental generator edit applies only to this copy.
@@ -332,11 +332,11 @@ public:
             .debugName = "DescriptorHeap Code Pattern",
             .requiresRayQuery = false,
         }, log) : mappedProgram.initialize(*device, shader.spirv);
-        if (!result) { return RhiTestResult::fail(log + render::resultToString(result)); }
+        if (!result) { return RHITestResult::fail(log + render::resultToString(result)); }
         if (compileOnly) {
             std::cout << "Pattern compile only: pipeline initialized; no fixture resources, commands or submissions; "
                 "PDF prefix skipped." << std::endl;
-            return RhiTestResult::pass(description + ", pipeline initialization completed without GPU submission");
+            return RHITestResult::pass(description + ", pipeline initialization completed without GPU submission");
         }
 
         const PatternValues push = environment ?
@@ -360,20 +360,20 @@ public:
         PATTERN_REQUIRE(device->createBuffer({.size = sizeof(kTexel),
             .usage = render::BufferUsageBits::TransferSource, .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { upload = std::move(rhiValue); }));
         void* mapped = input->map();
-        if (mapped == nullptr) { return RhiTestResult::fail("Input mapping failed"); }
+        if (mapped == nullptr) { return RHITestResult::fail("Input mapping failed"); }
         if (environment) { std::memset(mapped, 0, static_cast<size_t>(inputBytes)); }
         else { std::memcpy(mapped, &kInput, sizeof(kInput)); }
         input->flush();
         input->unmap();
         mapped = upload->map();
-        if (mapped == nullptr) { return RhiTestResult::fail("Texture upload mapping failed"); }
+        if (mapped == nullptr) { return RHITestResult::fail("Texture upload mapping failed"); }
         std::memcpy(mapped, kTexel.data(), sizeof(kTexel));
         upload->flush();
         upload->unmap();
         PATTERN_REQUIRE(device->createTexture({
             .usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::TransferDestination,
-            .format = render::Format::Rgba32Sfloat, .width = 1, .height = 1}).transform([&](auto rhiValue) { texture = std::move(rhiValue); }));
-        PATTERN_REQUIRE(device->createTextureView(*texture, {.format = render::Format::Rgba32Sfloat}).transform([&](auto rhiValue) { view = std::move(rhiValue); }));
+            .format = render::Format::RGBA32Sfloat, .width = 1, .height = 1}).transform([&](auto rhiValue) { texture = std::move(rhiValue); }));
+        PATTERN_REQUIRE(device->createTextureView(*texture, {.format = render::Format::RGBA32Sfloat}).transform([&](auto rhiValue) { view = std::move(rhiValue); }));
 
         // These objects outlive PatternCommands; production PDF code also
         // retains its descriptor tables and allocations through the frame.
@@ -382,7 +382,7 @@ public:
         if (prefixPdf) {
             result = pdfCompute.initialize(*device, log);
             if (result) { result = pdfTexture.initialize(*device, 1, 1, "DescriptorHeap Pattern PDF", log); }
-            if (!result) { return RhiTestResult::fail("PDF prefix initialization: " + log); }
+            if (!result) { return RHITestResult::fail("PDF prefix initialization: " + log); }
         }
 
         PatternCommands commands;
@@ -409,7 +409,7 @@ public:
                 .before = {},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             }};
-        if (auto commandResult = commands.buffer->synchronize({.textures = {&toTransfer, 1}, .buffers = {toGeneral, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands.buffer->synchronize({.textures = {&toTransfer, 1}, .buffers = {toGeneral, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commands.buffer->copyBufferToTexture({.buffer = upload.get(), .texture = texture.get(), .width = 1, .height = 1});
         const render::TextureBarrierDesc toRead{
             .texture = texture.get(),
@@ -418,7 +418,7 @@ public:
             .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
         };
-        if (auto commandResult = commands.buffer->synchronize({.textures = {&toRead, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands.buffer->synchronize({.textures = {&toRead, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         if (prefixPdf) {
             PATTERN_REQUIRE(pdfCompute.buildEnvironment(*commands.buffer, *view, pdfTexture));
         }
@@ -441,7 +441,7 @@ public:
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
                 .range = {.size = inputBytes},
             };
-            if (auto commandResult = commands.buffer->synchronize({.buffers = {&partialsBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands.buffer->synchronize({.buffers = {&partialsBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             PatternValues finalizePush = push;
             finalizePush.a = 1;
             PATTERN_REQUIRE(program.dispatch({
@@ -461,18 +461,18 @@ public:
 
         output->invalidate();
         const auto* actual = static_cast<const uint32_t*>(output->map());
-        if (actual == nullptr) { return RhiTestResult::fail("Output mapping failed"); }
+        if (actual == nullptr) { return RHITestResult::fail("Output mapping failed"); }
         const uint32_t base = weightedSum(push) + weightedSum(kInput) + 30;
         for (uint32_t i = 0; i < elementCount; ++i) {
             if (actual[i] != base + i) {
                 const std::string mismatch = description + ": output[" + std::to_string(i) +
                     "]=" + std::to_string(actual[i]) + ", expected=" + std::to_string(base + i);
                 output->unmap();
-                return RhiTestResult::fail(mismatch);
+                return RHITestResult::fail(mismatch);
             }
         }
         output->unmap();
-        return RhiTestResult::pass(description + ", verified " + std::to_string(elementCount) + " words");
+        return RHITestResult::pass(description + ", verified " + std::to_string(elementCount) + " words");
     }
 };
 

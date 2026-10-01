@@ -11,7 +11,7 @@
                 "y": 80.0
             },
             "properties": {
-                "path": "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf",
+                "path": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
                 "camera": {
                     "eye": [
                         0.0,
@@ -51,7 +51,7 @@
                 "y": 440.0
             },
             "properties": {
-                "path": "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf",
+                "path": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
                 "camera": {
                     "eye": [
                         0.0,

@@ -3,7 +3,7 @@
 #include "StreamAttributeDecode.slang"
 // Large descriptor-heap buffers can report zero from GetDimensions(). Use the
 // producer's bounded pool capacity, just as the raster decoder does. Offset is
-// asserted against MeshletStreamGpuParams::pageBufferBytes on the CPU.
+// asserted against MeshletStreamGPUParams::pageBufferBytes on the CPU.
 uint streamPageWordCount(ByteAddressBuffer params)
 {
     return params.Load(100u) / 4u;

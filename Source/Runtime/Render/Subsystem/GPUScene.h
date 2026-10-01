@@ -1,9 +1,9 @@
 #pragma once
 
-#include "Runtime/Render/MeshletLod.h"
+#include "Runtime/Render/MeshletLOD.h"
 
 #include "Runtime/Render/GPUDrivenRaster.h"
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Scene/scene.h"
@@ -77,14 +77,14 @@ struct GPUSceneDrawKey {
 // free of compiler-specific vector and matrix types so their layout is stable.
 inline constexpr uint32_t kGPUSceneMaterialTextureSlotCount = 9;
 
-enum GPUSceneGpuInstanceFlags : uint32_t {
-    GPUSceneGpuInstanceVisible = 1u << 0,
-    GPUSceneGpuInstanceDoubleSided = 1u << 1,
-    GPUSceneGpuInstanceMasked = 1u << 2,
-    GPUSceneGpuInstanceBlend = 1u << 3,
+enum GPUSceneGPUInstanceFlags : uint32_t {
+    GPUSceneGPUInstanceVisible = 1u << 0,
+    GPUSceneGPUInstanceDoubleSided = 1u << 1,
+    GPUSceneGPUInstanceMasked = 1u << 2,
+    GPUSceneGPUInstanceBlend = 1u << 3,
 };
 
-struct alignas(16) GPUSceneGpuGeometryRecord {
+struct alignas(16) GPUSceneGPUGeometryRecord {
     // sourceRenderPrimitiveIndex, meshIndex, primitiveIndex, primitive mode.
     std::array<uint32_t, 4> source{};
     // vertexCount, indexCount, triangleCount, meshlet LOD level count.
@@ -101,8 +101,8 @@ struct alignas(16) GPUSceneGpuGeometryRecord {
     std::array<uint32_t, 4> identity{};
 };
 
-struct alignas(16) GPUSceneGpuMaterialTextureInfo {
-    // Index into GPUSceneGpuDescriptorRemapRecord, not a consumer descriptor.
+struct alignas(16) GPUSceneGPUMaterialTextureInfo {
+    // Index into GPUSceneGPUDescriptorRemapRecord, not a consumer descriptor.
     uint32_t textureIndex = std::numeric_limits<uint32_t>::max();
     uint32_t texCoord = 0;
     uint32_t padding0 = 0;
@@ -112,7 +112,7 @@ struct alignas(16) GPUSceneGpuMaterialTextureInfo {
     std::array<float, 4> transform1{0.0f, 1.0f, 0.0f, 0.0f};
 };
 
-struct alignas(16) GPUSceneGpuMaterialRecord {
+struct alignas(16) GPUSceneGPUMaterialRecord {
     // The first 544 bytes intentionally match GPUDrivenPreviewMaterial.
     std::array<float, 4> baseColor{1.0f, 1.0f, 1.0f, 1.0f};
     std::array<float, 4> emissive{};
@@ -125,20 +125,20 @@ struct alignas(16) GPUSceneGpuMaterialRecord {
     std::array<float, 4> attenuationColor{1.0f, 1.0f, 1.0f, 0.0f};
     // diffuse-transmission color rgb and factor.
     std::array<float, 4> diffuseTransmission{1.0f, 1.0f, 1.0f, 0.0f};
-    GPUSceneGpuMaterialTextureInfo baseColorTexture;
-    GPUSceneGpuMaterialTextureInfo metallicRoughnessTexture;
-    GPUSceneGpuMaterialTextureInfo normalTexture;
-    GPUSceneGpuMaterialTextureInfo occlusionTexture;
-    GPUSceneGpuMaterialTextureInfo emissiveTexture;
-    GPUSceneGpuMaterialTextureInfo transmissionTexture;
-    GPUSceneGpuMaterialTextureInfo thicknessTexture;
-    GPUSceneGpuMaterialTextureInfo diffuseTransmissionTexture;
-    GPUSceneGpuMaterialTextureInfo diffuseTransmissionColorTexture;
+    GPUSceneGPUMaterialTextureInfo baseColorTexture;
+    GPUSceneGPUMaterialTextureInfo metallicRoughnessTexture;
+    GPUSceneGPUMaterialTextureInfo normalTexture;
+    GPUSceneGPUMaterialTextureInfo occlusionTexture;
+    GPUSceneGPUMaterialTextureInfo emissiveTexture;
+    GPUSceneGPUMaterialTextureInfo transmissionTexture;
+    GPUSceneGPUMaterialTextureInfo thicknessTexture;
+    GPUSceneGPUMaterialTextureInfo diffuseTransmissionTexture;
+    GPUSceneGPUMaterialTextureInfo diffuseTransmissionColorTexture;
     // material ID index/generation, source material index, material flags.
     std::array<uint32_t, 4> identity{};
 };
 
-struct alignas(16) GPUSceneGpuInstanceRecord {
+struct alignas(16) GPUSceneGPUInstanceRecord {
     std::array<float, 16> worldMatrix{};
     std::array<float, 16> previousWorldMatrix{};
     std::array<float, 4> localBoundingSphere{};
@@ -146,14 +146,14 @@ struct alignas(16) GPUSceneGpuInstanceRecord {
     std::array<uint32_t, 4> identity{};
 };
 
-struct alignas(16) GPUSceneGpuDrawKeyRecord {
+struct alignas(16) GPUSceneGPUDrawKeyRecord {
     // bucket, material index, geometry index, first DrawSet instance index.
     std::array<uint32_t, 4> key{};
     // instance count, material generation, geometry generation, reserved.
     std::array<uint32_t, 4> range{};
 };
 
-struct alignas(16) GPUSceneGpuVertexRecord {
+struct alignas(16) GPUSceneGPUVertexRecord {
     std::array<float, 4> position{};
     std::array<float, 4> normal{};
     std::array<float, 4> tangent{};
@@ -162,7 +162,7 @@ struct alignas(16) GPUSceneGpuVertexRecord {
     uint32_t reserved = 0;
 };
 
-struct alignas(16) GPUSceneGpuMeshletRecord {
+struct alignas(16) GPUSceneGPUMeshletRecord {
     // Global meshlet-vertex word offset/count and packed-triangle word
     // offset/triangle count. Meshlet vertex values remain geometry-local.
     std::array<uint32_t, 4> ranges{};
@@ -176,9 +176,9 @@ struct alignas(16) GPUSceneGpuMeshletRecord {
     std::array<float, 4> coneAxisLodError{};
 };
 
-using GPUSceneGpuMeshletDrawRecord = VisibleClusterRecord;
+using GPUSceneGPUMeshletDrawRecord = VisibleClusterRecord;
 
-struct alignas(16) GPUSceneGpuDescriptorRemapRecord {
+struct alignas(16) GPUSceneGPUDescriptorRemapRecord {
     // Logical texture ID from the material system. descriptorIndex remains
     // UINT32_MAX until a consumer maps that logical ID into its own heap.
     int32_t logicalTextureId = scene::kInvalidSceneIndex;
@@ -187,25 +187,25 @@ struct alignas(16) GPUSceneGpuDescriptorRemapRecord {
     uint32_t textureSlot = std::numeric_limits<uint32_t>::max();
 };
 
-static_assert(sizeof(GPUSceneGpuGeometryRecord) == 96);
-static_assert(sizeof(GPUSceneGpuMaterialTextureInfo) == 48);
-static_assert(sizeof(GPUSceneGpuMaterialRecord) == 560);
-static_assert(offsetof(GPUSceneGpuMaterialRecord, identity) == 544);
-static_assert(sizeof(GPUSceneGpuInstanceRecord) == 160);
-static_assert(sizeof(GPUSceneGpuDrawKeyRecord) == 32);
-static_assert(sizeof(GPUSceneGpuVertexRecord) == 64);
-static_assert(sizeof(GPUSceneGpuMeshletRecord) == 80);
-static_assert(sizeof(GPUSceneGpuMeshletDrawRecord) == 16);
-static_assert(sizeof(GPUSceneGpuDescriptorRemapRecord) == 16);
-static_assert(std::is_trivially_copyable_v<GPUSceneGpuGeometryRecord>);
-static_assert(std::is_trivially_copyable_v<GPUSceneGpuMaterialTextureInfo>);
-static_assert(std::is_trivially_copyable_v<GPUSceneGpuMaterialRecord>);
-static_assert(std::is_trivially_copyable_v<GPUSceneGpuInstanceRecord>);
-static_assert(std::is_trivially_copyable_v<GPUSceneGpuDrawKeyRecord>);
-static_assert(std::is_trivially_copyable_v<GPUSceneGpuVertexRecord>);
-static_assert(std::is_trivially_copyable_v<GPUSceneGpuMeshletRecord>);
-static_assert(std::is_trivially_copyable_v<GPUSceneGpuMeshletDrawRecord>);
-static_assert(std::is_trivially_copyable_v<GPUSceneGpuDescriptorRemapRecord>);
+static_assert(sizeof(GPUSceneGPUGeometryRecord) == 96);
+static_assert(sizeof(GPUSceneGPUMaterialTextureInfo) == 48);
+static_assert(sizeof(GPUSceneGPUMaterialRecord) == 560);
+static_assert(offsetof(GPUSceneGPUMaterialRecord, identity) == 544);
+static_assert(sizeof(GPUSceneGPUInstanceRecord) == 160);
+static_assert(sizeof(GPUSceneGPUDrawKeyRecord) == 32);
+static_assert(sizeof(GPUSceneGPUVertexRecord) == 64);
+static_assert(sizeof(GPUSceneGPUMeshletRecord) == 80);
+static_assert(sizeof(GPUSceneGPUMeshletDrawRecord) == 16);
+static_assert(sizeof(GPUSceneGPUDescriptorRemapRecord) == 16);
+static_assert(std::is_trivially_copyable_v<GPUSceneGPUGeometryRecord>);
+static_assert(std::is_trivially_copyable_v<GPUSceneGPUMaterialTextureInfo>);
+static_assert(std::is_trivially_copyable_v<GPUSceneGPUMaterialRecord>);
+static_assert(std::is_trivially_copyable_v<GPUSceneGPUInstanceRecord>);
+static_assert(std::is_trivially_copyable_v<GPUSceneGPUDrawKeyRecord>);
+static_assert(std::is_trivially_copyable_v<GPUSceneGPUVertexRecord>);
+static_assert(std::is_trivially_copyable_v<GPUSceneGPUMeshletRecord>);
+static_assert(std::is_trivially_copyable_v<GPUSceneGPUMeshletDrawRecord>);
+static_assert(std::is_trivially_copyable_v<GPUSceneGPUDescriptorRemapRecord>);
 
 struct GPUSceneSourceView {
     std::span<const scene::RenderPrimitive> renderPrimitives;
@@ -352,7 +352,7 @@ enum class GPUSceneGlobalBufferKind : uint8_t {
     MeshletVertices,
     MeshletTriangleWords,
     DescriptorRemap,
-    LodGroups,
+    LODGroups,
     Count,
 };
 
@@ -384,7 +384,7 @@ enum class GPUSceneCullPhase : uint8_t {
 inline constexpr size_t kGPUSceneCullPhaseCount =
     static_cast<size_t>(GPUSceneCullPhase::Count);
 
-struct GPUSceneBucketGpuView {
+struct GPUSceneBucketGPUView {
     GPUSceneBufferView indirectArguments;
     GPUSceneBufferView overflow;
     // Element offset into the phase visibleMeshletIds worklist. Consumers
@@ -394,12 +394,12 @@ struct GPUSceneBucketGpuView {
     uint32_t visibleMeshletCapacity = 0;
 };
 
-struct GPUSceneCullPhaseGpuView {
+struct GPUSceneCullPhaseGPUView {
     GPUSceneBufferView visibleMeshletIds;
-    std::array<GPUSceneBucketGpuView, kGPUSceneRasterDrawBucketCount> buckets;
+    std::array<GPUSceneBucketGPUView, kGPUSceneRasterDrawBucketCount> buckets;
 };
 
-struct GPUSceneHzbGpuView {
+struct GPUSceneHZBGPUView {
     std::array<GPUSceneBufferView, 2> history;
     uint32_t width = 0;
     uint32_t height = 0;
@@ -409,15 +409,15 @@ struct GPUSceneHzbGpuView {
     bool valid = false;
 };
 
-struct GPUSceneVisibleGpuResources {
+struct GPUSceneVisibleGPUResources {
     // Per-instance 0/1/2/3 culling state used by the early/late passes.
     GPUSceneBufferView instanceVisibilityStates;
     // Optional compact instance output for consumers that need one. GPUScene
     // never maps this buffer back to the CPU.
     GPUSceneBufferView visibleInstanceIds;
     GPUSceneBufferView visibleInstanceCounter;
-    std::array<GPUSceneCullPhaseGpuView, kGPUSceneCullPhaseCount> phases;
-    GPUSceneHzbGpuView hzb;
+    std::array<GPUSceneCullPhaseGPUView, kGPUSceneCullPhaseCount> phases;
+    GPUSceneHZBGPUView hzb;
     GPUSceneViewId sourceView;
     uint32_t frameSlot = 0;
     uint32_t sourceDrawSetGeneration = 0;
@@ -453,7 +453,7 @@ struct GPUSceneVisibleLightSet {
 struct GPUSceneVisibleDrawSet {
     std::vector<GPUSceneInstanceId> instances;
     std::array<std::vector<GPUSceneInstanceId>, kGPUSceneDrawBucketCount> buckets;
-    GPUSceneVisibleGpuResources gpu;
+    GPUSceneVisibleGPUResources gpu;
     GPUSceneVisibleDrawSetStats stats;
     GPUSceneVisibleLightSet lights;
 
@@ -593,7 +593,7 @@ public:
     bool setVisibleGpuResources(
         GPUSceneViewId view,
         uint32_t frameSlot,
-        GPUSceneVisibleGpuResources resources);
+        GPUSceneVisibleGPUResources resources);
 
     const GPUSceneGlobalBufferViews& globalBufferViews() const { return globalBufferViews_; }
     bool setGlobalBufferViews(GPUSceneGlobalBufferViews views);

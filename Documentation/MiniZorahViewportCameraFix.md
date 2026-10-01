@@ -16,7 +16,7 @@ MiniZorah 独立 StreamAsset 与统一 VBuffer 两个图都提供顶层 `view.ca
 
 通用回归增加独立 asset 使用 global view、下游消费者继承、移动不重编译，以及无场景依赖 pass 的 GPU 共享视图对照。保留旧 asset 的局部相机行为测试。
 
-`Metallic`、`MetallicGPUDrivenSample` 和 `MetallicRhiTests` 的 RelWithDebInfo 构建成功。启用 Vulkan 验证和异步计算的 8 项回归全部通过（184.643 秒）：共享 GPU 视图、场景绑定契约、异步场景切换、Bunny 的两个流式入口、MiniZorah 的两个完整场景入口及持续漫游。日志中没有 VUID 或 Vulkan validation error。
+`Metallic`、`MetallicGPUDrivenSample` 和 `MetallicRHITests` 的 RelWithDebInfo 构建成功。启用 Vulkan 验证和异步计算的 8 项回归全部通过（184.643 秒）：共享 GPU 视图、场景绑定契约、异步场景切换、Bunny 的两个流式入口、MiniZorah 的两个完整场景入口及持续漫游。日志中没有 VUID 或 Vulkan validation error。
 
 共享视口的 60.008 秒、1 GiB、1920×1080 漫游完成 2,756 个计时帧；12 个检查点的渲染相机、cut、覆盖和页池检查全部通过。完整场景两个入口均通过原始/远景/近景检查；统一 VBuffer 另外通过 resize、释放和重载。此处验证相机链路；用户的旧编辑器仍同时运行，本轮不作为独占 GPU 性能对照。
 

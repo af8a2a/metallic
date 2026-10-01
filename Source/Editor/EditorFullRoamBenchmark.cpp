@@ -277,7 +277,7 @@ bool EditorApplication::runZorahFullRoamBenchmark()
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "adaptivePageRetention", config.value("adaptivePageRetention", true));
         renderGraph_.setNodeRuntimeProperty(vbuffer->id, "enableLodTransitionTelemetry", config.value("enableLodTransitionTelemetry", false));
         const auto* deferred = renderGraph_.findNode("Deferred");
-        const auto* dlss = renderGraph_.findNode("DlssSr");
+        const auto* dlss = renderGraph_.findNode("DLSSSR");
         if (!deferred || !dlss) { throw std::runtime_error("Missing Full shading/reconstruction nodes"); }
         renderGraph_.setNodeRuntimeProperty(deferred->id, "stochasticTextureFiltering", config.value("stochasticTextureFiltering", false));
         const auto applyDeferredOverrides = [&]() {

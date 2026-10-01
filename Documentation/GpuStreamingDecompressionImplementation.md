@@ -7,7 +7,7 @@
 ## 已实现
 
 - v10 流文件读取及独立离线转码工具 `MetallicMeshletTranscode`。保留 v8/v9 读取，转码支持 v9/v10 输入；不重新生成 LOD，不改变 page/group/cluster 编号。禁止覆盖已有输出，失败清理自己的临时文件，目录校验通过后再发布输出文件。离线转换以最多 8 个后台批次并行编码，按原页序写出。
-- `GpuTiles` 传输封装：最终 float3 紧凑 payload、每 tile 最多 64 KiB、Raw/GDeflate 独立选择、范围检查、metadata/tile CRC32C。解压后仍是已有 shader 使用的 v4 payload。编码器固定 NVIDIA libdeflate 提交 `8ba9502fb30d2bf728592d121f0d402e40c8cb05`，下载内容另有 SHA-256 校验。
+- `GPUTiles` 传输封装：最终 float3 紧凑 payload、每 tile 最多 64 KiB、Raw/GDeflate 独立选择、范围检查、metadata/tile CRC32C。解压后仍是已有 shader 使用的 v4 payload。编码器固定 NVIDIA libdeflate 提交 `8ba9502fb30d2bf728592d121f0d402e40c8cb05`，下载内容另有 SHA-256 校验。
 - CPU GDeflate 回退；GPU worker 保留压缩数据并提取 CLAS sideband。GPU 路径无需先把完整页在 CPU 上解压，CLAS 的 vertex/index 地址基于最终驻留页计算。
 - RHI 查询/启用 `VK_EXT_memory_decompression` 与 `GDEFLATE_1_0`，增加 64 位原生 buffer usage、VMA usage2 支持和批量 direct 解压命令。预检查拒绝非法范围、重叠目标和不支持的命令队列。
 - Streamer 在同一安装批次中完成压缩 tile 上传、EXT 解压和 Raw tile 复制。仅 payload tile 经 GPU copy，sideband 留在 CPU；输入缓冲区按 frame slot 保留至完成。每 slot 最多接纳 64 MiB 压缩封装输入，仍沿用原有解压后字节预算与页数预算。输入缓冲区容量按需增长，增长时旧分配也保留至完成，因此瞬时分配量可能超过当前容量。
@@ -45,7 +45,7 @@
 
 ## 初始驱动 610.47 的历史验证
 
-GPU 为 RTX 5060，驱动 610.47，Vulkan 1.4.341。独立 `MetallicGpuPageTests` 直接建立只要求 EXT 解压、BDA 和同步能力的 Vulkan 设备；这不替代引擎集成测试。
+GPU 为 RTX 5060，驱动 610.47，Vulkan 1.4.341。独立 `MetallicGPUPageTests` 直接建立只要求 EXT 解压、BDA 和同步能力的 Vulkan 设备；这不替代引擎集成测试。
 
 已完成的测试：
 
@@ -59,11 +59,11 @@ GPU 为 RTX 5060，驱动 610.47，Vulkan 1.4.341。独立 `MetallicGpuPageTests
 
 当前分支的 `87735db` 已将 `VK_KHR_device_address_commands` 设为引擎硬要求。2026-09-18 驱动升级前复核 610.47：禁用所有隐式层的 Loader 查询，以及绕过 Loader 直连 `nvoglv64.dll` 的 ICD 查询，都返回 280 个设备扩展，目标扩展未列出，`deviceAddressCommands=false`。这描述的是当时驱动暴露的能力，不是 RTX 5060 硬件不支持。两份原始结果为 [Loader 查询](../.cache/fast-streaming/address-loader.log)、[原生 ICD 查询](../.cache/fast-streaming/address-direct-icd.log)；路径与 hash 见 [复核证据](GpuStreamingDecompressionFollowupEvidence.json)。[NVIDIA 官方记录](https://developer.nvidia.com/vulkan-driver) 已在 Windows 595.92 Vulkan beta（2026-03-13）中列出该扩展，不能仅凭驱动版本数字大小判断当前分支包含该能力。
 
-因此当时 `MetallicRhiTests` 在创建设备时跳过用例，尚未验证 MiniZorah 完整实时回放。上述历史结果没有被记作集成通过；616.92 的新结果单独记录在前节。
+因此当时 `MetallicRHITests` 在创建设备时跳过用例，尚未验证 MiniZorah 完整实时回放。上述历史结果没有被记作集成通过；616.92 的新结果单独记录在前节。
 
 ## 固定页安装基准与校验优化
 
-新增可选 `GpuPageCodec.FixedPageUploadBenchmark`：从同一 MiniZorah v10 文件均匀选择 128 页（含首尾），固定页 ID、输出位置和最终字节。Raw 控制组在计时前生成相同布局的 Raw 封装；三组都保留运行时校验。输入预读到 CPU 内存，每组 4 次预热、32 次采样，完整重复 3 轮；数据包含全部页 ID、P50/P95 以及原始采样文件 hash。性能测量关闭验证层，另行开启同步校验运行并核对三组 GPU 输出。
+新增可选 `GPUPageCodec.FixedPageUploadBenchmark`：从同一 MiniZorah v10 文件均匀选择 128 页（含首尾），固定页 ID、输出位置和最终字节。Raw 控制组在计时前生成相同布局的 Raw 封装；三组都保留运行时校验。输入预读到 CPU 内存，每组 4 次预热、32 次采样，完整重复 3 轮；数据包含全部页 ID、P50/P95 以及原始采样文件 hash。性能测量关闭验证层，另行开启同步校验运行并核对三组 GPU 输出。
 
 单批最终输出 4,346,336 字节；CPU 路径 GPU copy 同量，EXT 路径 GPU copy 的 tile 数据为 3,072,976 字节（减少 29.30%）。这来自命令记录的 payload 字节，并非 PCIe 硬件计数器；Host staging 还包含 sideband 和对齐。复用相同的预录制命令，GPU query 分别测量复制、解压加 barrier 和总安装时间，正确性 readback 排除在计时之外。
 
@@ -84,7 +84,7 @@ GPU 路径的 CPU 准备时间降低约 68.8%；其 GPU 复制约 0.262 ms、解
 ```powershell
 $env:METALLIC_GPU_PAGE_BENCHMARK = 'E:/metallic/.cache/fast-streaming/fixed-pages.json'
 $env:METALLIC_GPU_PAGE_NO_VALIDATION = '1'
-build-release/tests/MetallicGpuPageTests.exe --gtest_filter=GpuPageCodec.FixedPageUploadBenchmark
+build-release/tests/MetallicGPUPageTests.exe --gtest_filter=GPUPageCodec.FixedPageUploadBenchmark
 # 正确性复测移除 METALLIC_GPU_PAGE_NO_VALIDATION，并设置 VK_LAYER_VALIDATE_SYNC=1。
 ```
 
@@ -108,7 +108,7 @@ build-release/tests/MetallicGpuPageTests.exe --gtest_filter=GpuPageCodec.FixedPa
 
 ```powershell
 cmake -S . -B build-release -DMETALLIC_BUILD_TESTS=ON
-cmake --build build-release --target MetallicGpuPageTests MetallicMeshletTranscode MetallicGPUDrivenSample MetallicRhiTests
+cmake --build build-release --target MetallicGPUPageTests MetallicMeshletTranscode MetallicGPUDrivenSample MetallicRHITests
 build-release/Source/MetallicMeshletTranscode.exe input.meshstream.bin output.meshstream.bin
 # --raw 写相同的 GPU-ready 封装，但所有 tile 使用 Raw。
 
@@ -116,8 +116,8 @@ $env:METALLIC_TEST_MINIZORAH = '1'
 $env:VK_LAYER_VALIDATE_SYNC = '1'
 # 本轮完整回放使用 1.4.357 + f6ff981；此路径仅用于本地测试工具。
 $env:VK_LAYER_PATH = 'E:/metallic/.cache/fast-streaming/vvl/install/bin'
-build-release/tests/MetallicGpuPageTests.exe
-build-release/tests/MetallicRhiTests.exe --filter streamer_gpu_ --rhi-validation
+build-release/tests/MetallicGPUPageTests.exe
+build-release/tests/MetallicRHITests.exe --filter streamer_gpu_ --rhi-validation
 ```
 
 离线依赖可通过 `-DFETCHCONTENT_SOURCE_DIR_METALLIC_GDEFLATE=<解压后的固定版本目录>` 提供。不设置 `METALLIC_TEST_MINIZORAH` 时，大资产抽样用例跳过；CPU 与合成 GPU 测试不依赖 MiniZorah。
@@ -127,8 +127,8 @@ build-release/tests/MetallicRhiTests.exe --filter streamer_gpu_ --rhi-validation
 ```powershell
 tools/RunMetallicCfgReplay.ps1 -Replay .cache/gpudriven-four/Replay.json `
   -OutputRoot .cache/fast-streaming/replay-gpu -Realtime `
-  -StreamAsset .cache/fast-streaming/MiniZorah.gdeflate.meshstream.bin -GpuDecompression On
-# 使用新的 OutputRoot 和 -GpuDecompression Off 得到 CPU 对照。
+  -StreamAsset .cache/fast-streaming/MiniZorah.gdeflate.meshstream.bin -GPUDecompression On
+# 使用新的 OutputRoot 和 -GPUDecompression Off 得到 CPU 对照。
 ```
 
 调试报告增加 `gpuDecompressionEnabled`、`frameStoredUploadBytes`/`totalStoredUploadBytes`、`frameGpuDecompressedPages`/`totalGpuDecompressedPages`。原 `frameUploadBytes`/`totalUploadBytes` 继续表示解压后字节预算；Stored 计数表示 Host staging 的封装字节，含 CPU sideband，不能直接当作 PCIe 计数；GPU 页计数表示被接纳的 GPU 安装页，包含全 Raw 页，不表示已完成或已绘制。

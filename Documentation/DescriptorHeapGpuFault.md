@@ -21,7 +21,7 @@ Shader Object 特性状态，因此统一按 `Incompatible` 从空缓存重建�
 
 ### 本次策略验证
 
-Debug 构建 `MetallicRhiTests`、`LookDev`、`Metallic` 成功。
+Debug 构建 `MetallicRHITests`、`LookDev`、`Metallic` 成功。
 `shader_object_required`、`validate_device`、`optional_feature_soft_request` 和
 `pipeline_cache_persistence_and_shader_invalidation` 四项通过；测试覆盖默认设备
 能力、显式关闭拒绝、其他特性软请求和旧 backend tag 的缓存拒绝。
@@ -171,7 +171,7 @@ VBuffer、OpenPBR 求值、渲染图或窗口。失败用例没有开启 Afterma
   `Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp:2704` 无条件设置
   `enableShaderObject = true`。LookDev 的 OpenPBR/VBuffer 路径使用 `VkPipeline`，
   仍被这一全局设备配置带入已复现的组合。
-- `Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp` 将 `enableShaderObject` 转为
+- `Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp` 将 `enableShaderObject` 转为
   `VkPhysicalDeviceShaderObjectFeaturesEXT::shaderObject` 和 `VK_EXT_shader_object`。
 - `ComputeProgram::initialize()` / `dispatch()` 始终创建并绑定普通 compute pipeline。
   Vulkan 路径使用 `VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT`，
@@ -264,12 +264,12 @@ $env:METALLIC_TEST_AFTERMATH = '0'
 # 关闭驱动内部缓存的对照
 $env:METALLIC_VK_INTERNAL_PIPELINE_CACHE = 'disabled'
 $env:METALLIC_GPU_PATTERN_PREVIEW_DEVICE = '0'
-.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter descriptor_heap_code_pattern --rhi-validation
+.\cmake-build-debug-visual-studio\tests\MetallicRHITests.exe --filter descriptor_heap_code_pattern --rhi-validation
 
 # 显式允许执行旧驱动缓存，可能触发 DeviceLost / 驱动恢复
 $env:METALLIC_VK_INTERNAL_PIPELINE_CACHE = 'enabled'
 $env:METALLIC_GPU_PATTERN_ALLOW_DEVICE_LOST = '1'
-.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter descriptor_heap_code_pattern --rhi-validation
+.\cmake-build-debug-visual-studio\tests\MetallicRHITests.exe --filter descriptor_heap_code_pattern --rhi-validation
 ```
 
 原始 shader 缓存已逐一校验并恢复。现有证据保存在本地，未加入 Git：

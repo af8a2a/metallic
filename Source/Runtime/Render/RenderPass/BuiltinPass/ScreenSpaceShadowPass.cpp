@@ -1,7 +1,7 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
-#include "Runtime/Render/Profiling/CpuProfile.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -77,15 +77,15 @@ public:
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
-        CpuProfileRecorder profiler;
+        CPUProfileRecorder profiler;
         const auto result = executeProfiled(context, profiler);
         context.publishCpuProfile(profiler.sections);
         return result;
     }
 
-    Result<> executeProfiled(RenderGraphExecutionContext& context, CpuProfileRecorder& profiler)
+    Result<> executeProfiled(RenderGraphExecutionContext& context, CPUProfileRecorder& profiler)
     {
-        CpuProfileScope profile(&profiler, "Validate inputs and camera");
+        CPUProfileScope profile(&profiler, "Validate inputs and camera");
         const auto depth = context.inputTexture("depth");
         const auto metadata = context.inputBuffer("rasterInfo");
         const auto output = context.outputTexture("shadow");
@@ -136,7 +136,7 @@ public:
         profile.next("Build light records");
         const auto lights = buildScreenSpaceShadowLightRecords(scene, resolveSceneLighting(scene, context.world()));
         profile.next("Resolve stream resources");
-        const MeshletStreamDeferredGpuResourcesView* stream = nullptr;
+        const MeshletStreamDeferredGPUResourcesView* stream = nullptr;
         if (scene->hasStreamGeometry()) {
             const auto* gpuScene = context.subsystem<GPUSceneSubsystem>();
             if (gpuScene != nullptr) {

@@ -35,13 +35,13 @@ public:
     }
 
 private:
-    explicit StreamUploadCompletion(GpuCompletionPoint completion)
+    explicit StreamUploadCompletion(GPUCompletionPoint completion)
         : completion_(std::move(completion)),
           submission_(std::make_shared<SubmissionTransaction>(nullptr, nullptr))
     {
     }
 
-    GpuCompletionPoint completion_;
+    GPUCompletionPoint completion_;
     std::shared_ptr<SubmissionTransaction> submission_;
     friend struct detail::StreamerImpl;
 };

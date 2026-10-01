@@ -18,7 +18,7 @@ constexpr uint64_t kFnvPrime = 1099511628211ull;
 
 float4 lightBoundingSphere(const SceneLightRecord& record)
 {
-    const GpuPunctualLight& light = record.gpu;
+    const GPUPunctualLight& light = record.gpu;
     float4 sphere(light.positionRange[0], light.positionRange[1],
         light.positionRange[2], light.positionRange[3]);
     if (!record.enabled || light.directionType[3] != 2.0f || sphere.w <= 0.0f) {
@@ -539,7 +539,7 @@ bool GPUSceneRasterDrawLayout::validFor(
         drawSetGeneration == generation && drawSetRevision == revision;
 }
 
-bool GPUSceneVisibleGpuResources::validFor(
+bool GPUSceneVisibleGPUResources::validFor(
     uint32_t generation,
     uint64_t revision) const
 {
@@ -553,13 +553,13 @@ bool GPUSceneVisibleGpuResources::validFor(
         hzb.writeIndex >= hzb.history.size()) {
         return false;
     }
-    for (const GPUSceneCullPhaseGpuView& phase : phases) {
+    for (const GPUSceneCullPhaseGPUView& phase : phases) {
         if (!phase.visibleMeshletIds.validFor(generation, revision)) {
             return false;
         }
         const uint64_t visibleMeshletElementCount =
             phase.visibleMeshletIds.size / phase.visibleMeshletIds.structureStride;
-        for (const GPUSceneBucketGpuView& bucket : phase.buckets) {
+        for (const GPUSceneBucketGPUView& bucket : phase.buckets) {
             if (bucket.visibleMeshletCapacity == 0 ||
                 bucket.visibleMeshletOffset > visibleMeshletElementCount ||
                 bucket.visibleMeshletCapacity >
@@ -957,7 +957,7 @@ bool GPUScene::syncLights(std::span<const scene::RenderLight> renderLights,
                 previous.sourceVirtualLightIndex != current.sourceVirtualLightIndex ||
                 previous.sourceObject != current.sourceObject;
             changed |= topologyChanged || previous.enabled != current.enabled ||
-                std::memcmp(&previous.gpu, &current.gpu, sizeof(GpuPunctualLight)) != 0;
+                std::memcmp(&previous.gpu, &current.gpu, sizeof(GPUPunctualLight)) != 0;
         }
     }
     if (!changed) {
@@ -1383,7 +1383,7 @@ GPUSceneVisibleDrawSet* GPUScene::visibleDrawSetForUpdate(
 bool GPUScene::setVisibleGpuResources(
     GPUSceneViewId view,
     uint32_t frameSlot,
-    GPUSceneVisibleGpuResources resources)
+    GPUSceneVisibleGPUResources resources)
 {
     GPUSceneVisibleDrawSet* visible = visibleDrawSetForUpdate(view, frameSlot);
     if (visible == nullptr) {
@@ -1416,7 +1416,7 @@ bool GPUScene::setVisibleGpuResources(
             drawSet_.revision)) {
         return false;
     }
-    for (GPUSceneCullPhaseGpuView& phase : resources.phases) {
+    for (GPUSceneCullPhaseGPUView& phase : resources.phases) {
         if (!normalizeBufferView(
                 phase.visibleMeshletIds,
                 drawSet_.generation,
@@ -1425,7 +1425,7 @@ bool GPUScene::setVisibleGpuResources(
         }
         const uint64_t visibleMeshletElementCount =
             phase.visibleMeshletIds.size / phase.visibleMeshletIds.structureStride;
-        for (GPUSceneBucketGpuView& bucket : phase.buckets) {
+        for (GPUSceneBucketGPUView& bucket : phase.buckets) {
             if (bucket.visibleMeshletCapacity == 0 ||
                 bucket.visibleMeshletOffset > visibleMeshletElementCount ||
                 bucket.visibleMeshletCapacity >

@@ -38,14 +38,14 @@
 
 ## 验证
 
-- Release `MetallicRhiTests` 和 `MetallicGPUDrivenSample` 构建通过，sample 可执行文件已更新。
+- Release `MetallicRHITests` 和 `MetallicGPUDrivenSample` 构建通过，sample 可执行文件已更新。
 - `meshlet_lod_stream_scene_runtime_cut` 开启 Vulkan validation 通过。改为真实纯流送元数据与全局 RenderView；断言仅两个异步分支，并比较 CPU/GPU cut、软硬光栅覆盖/ID、透视/正交、两种 Z、冻结相机。新增转身后空背景 ID 为 0、深度为对应 clear value 的检查。
 - `hybrid_raster_scene_equivalence`、`render_graph_gpu_driven_preview_pass_render` 开启 validation 通过，覆盖常驻生产者。
 - `render_graph_gpu_driven_mixed_producer_render`、`visibility_buffer_deferred_openpbr`、`streamed_realtime_pipeline` 在 `--rhi-realtime --rhi-no-validation` 下通过。混合测试仍要求四个异步分支，验证常驻与流送生产者同时绘制。
 - 首轮混合/延迟测试开启 validation 时出现 `0xC0000005`，不是断言或 VUID 错误；关闭 validation 后同项通过。本轮未重新定位其异常栈，不将这些项标记为 validation 通过。前一轮同类 descriptor-heap validation 异常的调查见 `MiniZorahTraversalBudget.md`。
 - 完整实时回放使用 `--rhi-no-validation`；Streamline 在测试报告完成后的退出阶段停滞，由脚本清理自己启动的进程，记录于各 `Process.json`，不计入帧耗时。
 
-原始验证日志为 `.cache/vbuffer-empty-resident/{build,stream-test-final,tests,integration}.log`；Bunny 的可视化输出在 `stream-test-final/StreamLodBunny-*.png`。完整回放汇总可重跑：
+原始验证日志为 `.cache/vbuffer-empty-resident/{build,stream-test-final,tests,integration}.log`；Bunny 的可视化输出在 `stream-test-final/StreamLODBunny-*.png`。完整回放汇总可重跑：
 
 ```powershell
 python Tools/SummarizeMetallicCfgReplay.py --before .cache/vbuffer-empty-resident/before --after .cache/vbuffer-empty-resident/after --quality .cache/vbuffer-empty-resident/after/quality --output .cache/vbuffer-empty-resident/Comparison.json

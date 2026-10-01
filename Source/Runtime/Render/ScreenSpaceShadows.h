@@ -7,8 +7,8 @@
 namespace metallic::render {
 
 class ScenePathTraceResources;
-struct MeshletStreamDeferredGpuResourcesView;
-struct CpuProfileRecorder;
+struct MeshletStreamDeferredGPUResourcesView;
+struct CPUProfileRecorder;
 
 struct ScreenSpaceShadowSettings {
     bool enabled = true;
@@ -25,7 +25,7 @@ struct ScreenSpaceShadowSettings {
 
 struct ScreenSpaceShadowParameters {
     ViewConstants view;
-    GpuPunctualLight light;
+    GPUPunctualLight light;
     float trace[4]{}; // ray length, reserved, normal bias, tan(angular radius)
     uint32_t control[4]{}; // enabled, reserved, stable light slot, debug
     float shape[4]{}; // local light radius, denoise enabled, reserved, reserved
@@ -39,10 +39,10 @@ struct ScreenSpaceShadowResult {
 };
 
 // Header followed by stable GPUScene source slots, including disabled slots.
-std::vector<GpuPunctualLight> buildScreenSpaceShadowLightRecords(
+std::vector<GPUPunctualLight> buildScreenSpaceShadowLightRecords(
     const scene::Scene* scene, const scene::LightingSettings& lighting);
 // Invalid/disabled requested slots use the same automatic selection as -1.
-uint32_t selectScreenSpaceShadowLight(std::span<const GpuPunctualLight> lights, int32_t requestedIndex);
+uint32_t selectScreenSpaceShadowLight(std::span<const GPUPunctualLight> lights, int32_t requestedIndex);
 
 // Full TLAS shadow tracing; the legacy C++ name is retained for existing callers.
 // One shadow history for the selected punctual light. The owner serializes frames.
@@ -54,14 +54,14 @@ public:
         Streamer& streamer,
         TextureView& depth,
         const ViewConstants& view,
-        std::span<const GpuPunctualLight> lights,
+        std::span<const GPUPunctualLight> lights,
         uint64_t sceneRevision,
         uint64_t transformRevision,
         const ScreenSpaceShadowSettings& settings,
         std::string& log,
         ScenePathTraceResources* geometry,
-        const MeshletStreamDeferredGpuResourcesView* streamGeometry = nullptr,
-        CpuProfileRecorder* profiler = nullptr,
+        const MeshletStreamDeferredGPUResourcesView* streamGeometry = nullptr,
+        CPUProfileRecorder* profiler = nullptr,
         RayTracingAccelerationStructure* accelerationStructure = nullptr);
     void clear();
 

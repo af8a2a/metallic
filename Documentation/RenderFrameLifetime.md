@@ -9,7 +9,7 @@ slot. Presentation mode is unchanged.
 ## Submission contract
 
 `QueueSubmissionTracker` owns a timeline semaphore for one queue. A
-`GpuCompletionPoint` identifies a recording/submission batch, independently of
+`GPUCompletionPoint` identifies a recording/submission batch, independently of
 the CPU frame number or reusable slot index:
 
 - Recording: not complete and not waitable.
@@ -43,7 +43,7 @@ resources. On an abandoned recording, reset the command pool before
 `frame.cancel()`. Device and queue ownership must outlive their completion
 points and retained resources.
 
-`GpuCompletionPoint::appendWaits` exports/coalesces GPU waits. The point must stay
+`GPUCompletionPoint::appendWaits` exports/coalesces GPU waits. The point must stay
 alive until the consumer completes. `RenderFrameContext::addDependency` retains
 it and adds waits to tracked submissions; `CommandBuffer::addDependency` retains
 it until the command buffer's next recording and adds waits even to direct
@@ -190,7 +190,7 @@ synchronization validation enabled:
 
 ```powershell
 $env:VK_KHRONOS_VALIDATION_VALIDATE_SYNC = 'true'
-build\tests\MetallicRhiTests.exe --gtest_filter=RhiCommand.frame_*:RhiResource.frame_*:RhiRendering.frame_* --rhi-validation
+build\tests\MetallicRHITests.exe --gtest_filter=RHICommand.frame_*:RHIResource.frame_*:RHIRendering.frame_* --rhi-validation
 $env:METALLIC_SMOKE_TEST_FRAMES = '6'
 build\Source\Metallic.exe --smoke-test
 ```

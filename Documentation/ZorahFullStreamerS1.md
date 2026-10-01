@@ -14,7 +14,7 @@
 
 ## 验证
 
-Release MetallicGPUDrivenSample、MetallicRhiTests 构建成功；9/9 项聚焦回归通过，Vulkan validation 关闭。覆盖请求选择、prefetch、预算、上传完成、发布重试、demand cache 和联合冷回收。
+Release MetallicGPUDrivenSample、MetallicRHITests 构建成功；9/9 项聚焦回归通过，Vulkan validation 关闭。覆盖请求选择、prefetch、预算、上传完成、发布重试、demand cache 和联合冷回收。
 
 新增 [生命周期回归](E:/metallic/tests/rhi/StreamerTests.cpp:2216) 使用确定时间逐帧对照原全表扫描算法，检查 pending、abandoned、首次需求/反馈时间、完成直方图和帧延迟；覆盖预取升级、重复需求、稀疏页 ID、槽复用、在途保护、时间轮回绕、超过轮长的保留期限和跳帧。持续刷新 14000 条预算阻塞需求的 300 帧中，不调用 residency 过期判定；停止刷新后到期一次性回收，统计不丢失。
 

@@ -103,7 +103,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
         // Do not turn a positive finite influence radius into an unbounded light
         // through float underflow (range zero means infinite influence).
         if (properties.range > 0.0 && range == 0.0f) { return; }
-        GpuPunctualLight light;
+        GPUPunctualLight light;
         light.positionRange[0] = position.x;
         light.positionRange[1] = position.y;
         light.positionRange[2] = position.z;
@@ -183,13 +183,13 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
     return records;
 }
 
-std::vector<GpuPunctualLight> buildPunctualLightRecords(
+std::vector<GPUPunctualLight> buildPunctualLightRecords(
     const scene::Scene* scene, const scene::LightingSettings& settings)
 {
     const auto sceneRecords = buildSceneLightRecords(scene != nullptr
         ? std::span<const scene::RenderLight>(scene->lights())
         : std::span<const scene::RenderLight>(), settings.lights);
-    std::vector<GpuPunctualLight> records(1);
+    std::vector<GPUPunctualLight> records(1);
     records.reserve(sceneRecords.size() + 1);
     records[0].positionRange[1] = std::exp2(-settings.exposureEV100);
     for (const SceneLightRecord& record : sceneRecords) {
@@ -204,7 +204,7 @@ Result<> SceneLightResources::update(Device& device, CommandBuffer& commands,
 {
     if (!scene::validLightingSettings(settings)) { return makeError(Error::InvalidArgument); }
     auto records = buildPunctualLightRecords(scene, settings);
-    const uint64_t bytes = records.size() * sizeof(GpuPunctualLight);
+    const uint64_t bytes = records.size() * sizeof(GPUPunctualLight);
     if (records.size() != records_.size() ||
         std::memcmp(records.data(), records_.data(), static_cast<size_t>(bytes)) != 0) {
         std::unique_ptr<Buffer> next;

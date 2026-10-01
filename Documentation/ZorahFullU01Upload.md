@@ -46,7 +46,7 @@ U1 已将旧代码每 mip 打开/context 创建的 44140 次结构性工作量�
 
 ```powershell
 $env:METALLIC_ZORAH_Z3_FULL='1'
-.\build-release\tests\MetallicRhiTests.exe --rhi-bindless --rhi-validation '--gtest_filter=*ktx2_texture_resources:*bc_texture_padded_upload:*scene_upload_pipeline:*zorah_texture_resources' --output-dir build-release/zorah-upload-u01/final '--gtest_output=json:build-release/zorah-upload-u01/final/tests.json'
+.\build-release\tests\MetallicRHITests.exe --rhi-bindless --rhi-validation '--gtest_filter=*ktx2_texture_resources:*bc_texture_padded_upload:*scene_upload_pipeline:*zorah_texture_resources' --output-dir build-release/zorah-upload-u01/final '--gtest_output=json:build-release/zorah-upload-u01/final/tests.json'
 ```
 
 证据目录中的 `baseline` 为修改前记录；`after` 首轮报告文件因输出目录不存在而未写出，但日志及测试成功结果保留。已修正 Full 测试创建输出目录并检查写入状态；`verified` 用于核对字段时发现完成样本计数窗口问题，最终修复后的验收以 `final` 为准。

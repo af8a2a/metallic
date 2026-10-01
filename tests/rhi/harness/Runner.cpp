@@ -3,7 +3,7 @@
 #include "GTestHtmlReport.h"
 #include "TraceRecorder.h"
 #include "BufferSequence.h"
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "ValidationRecorder.h"
 #include "VulkanDiagnostics.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.h"
@@ -21,8 +21,8 @@
 #include <cmath>
 
 namespace metallic::tests {
-std::vector<RhiTestRegistry::Factory> testbenchFaultFactories();
-std::vector<RhiTestRegistry::Factory> sequenceFaultFactories();
+std::vector<RHITestRegistry::Factory> testbenchFaultFactories();
+std::vector<RHITestRegistry::Factory> sequenceFaultFactories();
 }
 
 namespace metallic::tests::bench {
@@ -31,7 +31,7 @@ namespace {
 struct Case {
     std::string id;
     Metadata metadata;
-    RhiTestRegistry::Factory factory;
+    RHITestRegistry::Factory factory;
 };
 struct Options {
     std::string mode;
@@ -52,13 +52,13 @@ struct Options {
     bool allowMismatch = false;
 };
 
-const char* suiteName(RhiTestType type)
+const char* suiteName(RHITestType type)
 {
     switch (type) {
-    case RhiTestType::Validation: return "RhiValidation";
-    case RhiTestType::Resource: return "RhiResource";
-    case RhiTestType::Command: return "RhiCommand";
-    case RhiTestType::Rendering: return "RhiRendering";
+    case RHITestType::Validation: return "RHIValidation";
+    case RHITestType::Resource: return "RHIResource";
+    case RHITestType::Command: return "RHICommand";
+    case RHITestType::Rendering: return "RHIRendering";
     }
     return "Unknown";
 }
@@ -66,7 +66,7 @@ const char* suiteName(RhiTestType type)
 std::vector<Case> cases()
 {
     std::vector<Case> result;
-    auto factories = RhiTestRegistry::factories();
+    auto factories = RHITestRegistry::factories();
     const auto sequenceFaults = sequenceFaultFactories();
     factories.insert(factories.end(), sequenceFaults.begin(), sequenceFaults.end());
     const auto faults = testbenchFaultFactories();
@@ -194,7 +194,7 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
     auto config = profile(input.at("profile").get<std::string>(), parseValidation(input.at("validation").get<std::string>())).value();
     auto test = selected.factory();
     std::unique_ptr<render::Device> device;
-    std::unique_ptr<RhiTestContext> context;
+    std::unique_ptr<RHITestContext> context;
     bool sdl = false, tasks = false, initialized = false;
     auto phase = [&](const char* label) { recorder.phase(label); evidence.phase(label); };
     auto step = [&](const char* label, auto&& body) {
@@ -293,7 +293,7 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
         }
         auto* graphics = device->getQueue(render::QueueType::Graphics);
         if (!graphics) { issue(verdict, Status::EnvironmentFailure, "no graphics queue"); return; }
-        context = std::make_unique<RhiTestContext>(RhiTestContext{*device, *graphics, evidence.root(),
+        context = std::make_unique<RHITestContext>(RHITestContext{*device, *graphics, evidence.root(),
             activeValidation(*device) != Validation::Off, &recorder.messageCount, nullptr, &evidence, &config.desc, input.value("trace", false) ? &trace : nullptr});
     });
     if (recorder.failed()) { issue(verdict, Status::EnvironmentFailure, "validation reported a setup error/warning"); }
@@ -301,7 +301,7 @@ Json execute(const Case& selected, const Json& input, Evidence& evidence)
         initialized = true;
         step("run", [&] {
             verdict.executed = true;
-            RhiTestResult result;
+            RHITestResult result;
             if (context) { test->init(*context); result = test->run(*context); }
             else { result = test->runCpu(evidence); }
             if (result.skipped) { issue(verdict, Status::Fail, "unexpected skip after requirements passed: " + result.message); }
@@ -376,7 +376,7 @@ int child(const Options& options)
     const auto dot = id.find('.');
     const auto directory = options.input.parent_path();
     std::string filter = "--gtest_filter=" + id;
-    std::string repeat = "--gtest_repeat=1", color = "--gtest_color=no", program = "MetallicRhiTests";
+    std::string repeat = "--gtest_repeat=1", color = "--gtest_color=no", program = "MetallicRHITests";
     char* arguments[]{program.data(), filter.data(), repeat.data(), color.data()};
     int count = 4;
     ::testing::InitGoogleTest(&count, arguments);
@@ -496,7 +496,7 @@ int parent(const Options& options)
                 if (plan.back()["trace"].get<bool>() && selected.metadata.requirements.requiresDevice) {
                     plan.back()["metadata"]["artifacts"].push_back("trace.json");
                 }
-                if (selected.id.starts_with("RhiCommand.buffer_sequence")) {
+                if (selected.id.starts_with("RHICommand.buffer_sequence")) {
                     auto sequence = replay.is_null() ? (options.sequence.empty() ?
                         generateBufferSequence(options.seed, iteration, selected.metadata.suite == "sequence-fixtures") : readJson(options.sequence)) : replay.at("sequence");
                     validateBufferSequence(sequence);

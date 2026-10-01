@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
@@ -23,11 +23,11 @@ using render::detail::GraphAccessUse;
 using render::detail::buildGraphAccessPlan;
 
 #define ACCESS_CHECK(condition) do { \
-    if (!(condition)) { return RhiTestResult::fail(#condition); } \
+    if (!(condition)) { return RHITestResult::fail(#condition); } \
 } while (false)
 #define ACCESS_REQUIRE(expression) do { \
     const auto checked = (expression); \
-    if (!checked) { return RhiTestResult::fail(std::string(#expression) + ": " + render::resultToString(checked)); } \
+    if (!checked) { return RHITestResult::fail(std::string(#expression) + ": " + render::resultToString(checked)); } \
 } while (false)
 
 constexpr SyncScope kComputeRead{PipelineStageBits::ComputeShader, AccessBits::ShaderRead};
@@ -67,7 +67,7 @@ bool hasVisibilityBarrier(const GraphAccessPlan& plan, size_t first, size_t last
     return false;
 }
 
-class AccessPlanAccelerationStructureTest final : public RhiTest {
+class AccessPlanAccelerationStructureTest final : public RHITest {
 public:
     AccessPlanAccelerationStructureTest() { name = "render_graph_access_plan_acceleration_structure"; }
     std::optional<bench::Metadata> metadata() const override
@@ -76,9 +76,9 @@ public:
             .requirements = {.requiresDevice = false, .validation = bench::Validation::Off, .queues = {}},
             .coverage = {"graph.plan.contract.acceleration_structure"}};
     }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         using Access = render::RenderGraphResourceAccess;
         using Kind = render::RenderGraphPassKind;
@@ -126,11 +126,11 @@ public:
         ACCESS_CHECK(input.resourceType == Type::AccelerationStructure && input.access == Access::AccelerationStructureShaderRead);
         auto& output = reflection.addAccelerationStructureOutput("result");
         ACCESS_CHECK(output.resourceType == Type::AccelerationStructure && output.access == Access::AccelerationStructureBuildWrite);
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanWriterVisibilityTest final : public RhiTest {
+class AccessPlanWriterVisibilityTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -140,9 +140,9 @@ public:
     }
 
     AccessPlanWriterVisibilityTest() { name = "render_graph_access_plan_writer_stage_visibility"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array passes{
@@ -159,11 +159,11 @@ public:
             AccessBits::ShaderWrite, PipelineStageBits::FragmentShader));
         ACCESS_CHECK(hasVisibilityBarrier(*plan, 1, 1, PipelineStageBits::ComputeShader,
             AccessBits::ShaderWrite, PipelineStageBits::ComputeShader));
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanQueueFanoutTest final : public RhiTest {
+class AccessPlanQueueFanoutTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -173,9 +173,9 @@ public:
     }
 
     AccessPlanQueueFanoutTest() { name = "render_graph_access_plan_queue_fanout_and_join"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array passes{
@@ -195,11 +195,11 @@ public:
             ACCESS_CHECK(!containsBits(barrier.beforeScope.stages, PipelineStageBits::FragmentShader));
         }
         ACCESS_CHECK(plan->passes[1].barriers.empty() && plan->passes[2].barriers.empty());
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanWarTest final : public RhiTest {
+class AccessPlanWarTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -209,9 +209,9 @@ public:
     }
 
     AccessPlanWarTest() { name = "render_graph_access_plan_read_frontier_execution_dependency"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array passes{
@@ -232,11 +232,11 @@ public:
             coveredFragment |= containsBits(barrier.beforeScope.stages, PipelineStageBits::FragmentShader);
         }
         ACCESS_CHECK(coveredCompute && coveredFragment);
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanImageLayoutTest final : public RhiTest {
+class AccessPlanImageLayoutTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -246,9 +246,9 @@ public:
     }
 
     AccessPlanImageLayoutTest() { name = "render_graph_access_plan_image_layout_frontier"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array undefinedImage{GraphAccessResource{.type = render::RenderGraphResourceType::Texture2D}};
         const std::array firstReads{
@@ -298,11 +298,11 @@ public:
                 return barrier.before == ResourceState::ShaderRead && barrier.after == ResourceState::TransferSource &&
                     !barrier.executionOnly;
             }));
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanAliasesTest final : public RhiTest {
+class AccessPlanAliasesTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -312,9 +312,9 @@ public:
     }
 
     AccessPlanAliasesTest() { name = "render_graph_access_plan_alias_merge_and_rejection"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array buffers{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array aliases{GraphAccessPass{.uses = {
@@ -335,11 +335,11 @@ public:
         }}};
         ACCESS_CHECK(render::hasError(buildGraphAccessPlan(buffers, incompatibleBuffer), render::Error::InvalidArgument));
         ACCESS_CHECK(aliases[0].uses.size() == 2 && aliases[0].uses[0].state == ResourceState::ShaderRead);
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanInvalidInputTest final : public RhiTest {
+class AccessPlanInvalidInputTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -349,9 +349,9 @@ public:
     }
 
     AccessPlanInvalidInputTest() { name = "render_graph_access_plan_invalid_resource_is_transactional"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array passes{
@@ -366,11 +366,11 @@ public:
         ACCESS_CHECK(render::hasError(buildGraphAccessPlan(resources, missingScope), render::Error::InvalidArgument));
         auto empty = buildGraphAccessPlan({}, {});
         ACCESS_CHECK(empty && empty->passes.empty());
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanFrameBoundaryTest final : public RhiTest {
+class AccessPlanFrameBoundaryTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -380,9 +380,9 @@ public:
     }
 
     AccessPlanFrameBoundaryTest() { name = "render_graph_access_plan_initial_scope_and_access_types"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array resources{GraphAccessResource{
             .type = render::RenderGraphResourceType::Buffer, .state = ResourceState::General, .scope = kComputeWrite}};
@@ -409,11 +409,11 @@ public:
         ACCESS_CHECK(opaque.stages == PipelineStageBits::AllCommands);
         ACCESS_CHECK(containsBits(opaque.access, AccessBits::MemoryRead | AccessBits::MemoryWrite |
             AccessBits::ShaderRead | AccessBits::ShaderWrite));
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanInternalBoundaryTest final : public RhiTest {
+class AccessPlanInternalBoundaryTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -423,9 +423,9 @@ public:
     }
 
     AccessPlanInternalBoundaryTest() { name = "render_graph_access_plan_internal_boundary_and_stage_hazard"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array resources{
             GraphAccessResource{.type = render::RenderGraphResourceType::Buffer,
@@ -458,11 +458,11 @@ public:
         const auto& barrier = changed->passes[0].barriers.front();
         ACCESS_CHECK(barrier.before == ResourceState::ShaderRead && barrier.after == ResourceState::General);
         ACCESS_CHECK(!barrier.executionOnly && barrier.beforeScope.access == AccessBits::None);
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanRawVisibilityReuseTest final : public RhiTest {
+class AccessPlanRawVisibilityReuseTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -472,9 +472,9 @@ public:
     }
 
     AccessPlanRawVisibilityReuseTest() { name = "render_graph_access_plan_raw_visibility_reuse"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         std::array<GraphAccessPass, 7> passes{};
@@ -499,11 +499,11 @@ public:
             }
             ACCESS_CHECK(barrierCount == 1);
         }
-        return RhiTestResult::pass("six same-scope readers require one RAW barrier per plan");
+        return RHITestResult::pass("six same-scope readers require one RAW barrier per plan");
     }
 };
 
-class AccessPlanRawVisibilityScopePairsTest final : public RhiTest {
+class AccessPlanRawVisibilityScopePairsTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -513,9 +513,9 @@ public:
     }
 
     AccessPlanRawVisibilityScopePairsTest() { name = "render_graph_access_plan_raw_visibility_scope_pairs"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         constexpr SyncScope fragmentUniform{PipelineStageBits::FragmentShader, AccessBits::UniformRead};
@@ -554,11 +554,11 @@ public:
         auto subsets = buildGraphAccessPlan(resources, broadThenSubsets);
         ACCESS_CHECK(subsets && subsets->passes[1].barriers.size() == 1);
         ACCESS_CHECK(subsets->passes[2].barriers.empty() && subsets->passes[3].barriers.empty());
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanRawVisibilityWriterGenerationTest final : public RhiTest {
+class AccessPlanRawVisibilityWriterGenerationTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -568,9 +568,9 @@ public:
     }
 
     AccessPlanRawVisibilityWriterGenerationTest() { name = "render_graph_access_plan_raw_visibility_writer_generation"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer}};
         const std::array passes{
@@ -602,11 +602,11 @@ public:
         ACCESS_CHECK(plan->passes[7].barriers.size() == 1 && hasPredecessor(*plan, 7, 6));
         ACCESS_CHECK(!plan->passes[7].barriers.front().executionOnly);
         ACCESS_CHECK(containsBits(plan->passes[7].barriers.front().beforeScope.access, AccessBits::ShaderWrite));
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanRawVisibilityLayoutGenerationTest final : public RhiTest {
+class AccessPlanRawVisibilityLayoutGenerationTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -616,9 +616,9 @@ public:
     }
 
     AccessPlanRawVisibilityLayoutGenerationTest() { name = "render_graph_access_plan_raw_visibility_layout_generation"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Texture2D}};
         const auto imageUse = [](ResourceState state, SyncScope scope, bool writes = false) {
@@ -662,11 +662,11 @@ public:
         ACCESS_CHECK(hasPredecessor(*written, 3, 0) && hasPredecessor(*written, 3, 1));
         ACCESS_CHECK(containsBits(written->passes[3].barriers.front().beforeScope.access,
             AccessBits::ShaderWrite | AccessBits::MemoryWrite));
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class AccessPlanRawVisibilityInitialQueueTest final : public RhiTest {
+class AccessPlanRawVisibilityInitialQueueTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -676,9 +676,9 @@ public:
     }
 
     AccessPlanRawVisibilityInitialQueueTest() { name = "render_graph_access_plan_raw_visibility_initial_queue"; }
-    RhiTestResult run(RhiTestContext&) override { return check(); }
-    RhiTestResult runCpu(bench::Evidence&) override { return check(); }
-    RhiTestResult check()
+    RHITestResult run(RHITestContext&) override { return check(); }
+    RHITestResult runCpu(bench::Evidence&) override { return check(); }
+    RHITestResult check()
     {
         const std::array resources{GraphAccessResource{.type = render::RenderGraphResourceType::Buffer,
             .state = ResourceState::General, .scope = kComputeWrite}};
@@ -714,7 +714,7 @@ public:
             ACCESS_CHECK(fanout->passes[reader].predecessors.size() == 1);
             ACCESS_CHECK(hasPredecessor(*fanout, reader, 0));
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
@@ -726,7 +726,7 @@ public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
     bool supportsPipelinedSubmission() const override { return true; }
-    render::CpuRecordingPolicy cpuRecordingPolicy() const override { return render::CpuRecordingPolicy::ParallelJoined; }
+    render::CPURecordingPolicy cpuRecordingPolicy() const override { return render::CPURecordingPolicy::ParallelJoined; }
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
     {
         return pass_->reflect(context);
@@ -743,7 +743,7 @@ private:
     std::unique_ptr<render::RenderGraphPass> pass_ = render::builtin_pass::createRenderGraphBufferCopyPass();
 };
 
-class AccessPlanGpuFanoutTest final : public RhiTest {
+class AccessPlanGPUFanoutTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -751,8 +751,8 @@ public:
             bench::Layer::RenderGraph, "async", "sync", {"fanout.bin"});
     }
 
-    AccessPlanGpuFanoutTest() { type = RhiTestType::Rendering; name = "render_graph_access_plan_gpu_fanout"; }
-    RhiTestResult run(RhiTestContext& context) override
+    AccessPlanGPUFanoutTest() { type = RHITestType::Rendering; name = "render_graph_access_plan_gpu_fanout"; }
+    RHITestResult run(RHITestContext& context) override
     {
         constexpr std::array expected{0x11223344u, 0xAABBCCDDu, 0xDEADBEEFu, 0xCAFEBABEu};
         static const bool registered = render::registerRenderGraphPassType("AccessPlanGraphicsCopyPass",
@@ -776,7 +776,7 @@ public:
         render::RenderGraphExecutor executor;
         std::string log;
         auto compiled = executor.compile(*device, graph, 1, 1, log);
-        if (!compiled) { return RhiTestResult::fail("compile: " + log); }
+        if (!compiled) { return RHITestResult::fail("compile: " + log); }
         for (bool aliasQueues : {false, true}) {
             for (uint32_t workers : {1u, 4u}) {
                 for (auto mode : {render::FrameSubmissionMode::Joined, render::FrameSubmissionMode::Pipelined}) {
@@ -804,7 +804,7 @@ public:
         }
         ACCESS_REQUIRE(device->waitIdle());
 
-        return RhiTestResult::pass(graphics->sameQueue(*compute)
+        return RHITestResult::pass(graphics->sameQueue(*compute)
             ? "32 frames, six consumers; device exposes aliased compute and graphics queues"
             : "32 frames, six consumers; distinct compute/graphics queues and explicit queue aliases");
     }
@@ -824,7 +824,7 @@ METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityScopePairsTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityWriterGenerationTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityLayoutGenerationTest);
 METALLIC_REGISTER_RHI_TEST(AccessPlanRawVisibilityInitialQueueTest);
-METALLIC_REGISTER_RHI_TEST(AccessPlanGpuFanoutTest);
+METALLIC_REGISTER_RHI_TEST(AccessPlanGPUFanoutTest);
 
 #undef ACCESS_REQUIRE
 #undef ACCESS_CHECK

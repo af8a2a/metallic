@@ -10,7 +10,7 @@ using Metallic.Lighting;
 #if METALLIC_DEFERRED_LIGHT_GRID
 
 #define gDeferredGridParams getResource<StructuredBuffer<ClusterLightGridParams>>(75)
-#define gDeferredGridLights getResource<StructuredBuffer<GpuPunctualLight>>(76)
+#define gDeferredGridLights getResource<StructuredBuffer<GPUPunctualLight>>(76)
 #define gDeferredGridCandidates getResource<StructuredBuffer<uint>>(77)
 #define gDeferredGridCells getResource<StructuredBuffer<ClusterLightGridCell>>(78)
 #define gDeferredGridIndices getResource<StructuredBuffer<uint>>(79)
@@ -99,7 +99,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
             uint2(samplePixel), cameraLinearDepth(hit.position, push));
         uint count = lookup.count + clusterLightGridGlobalLightCount(grid);
 #else
-        uint count = punctualLightCount(getResource<StructuredBuffer<GpuPunctualLight>>(50));
+        uint count = punctualLightCount(getResource<StructuredBuffer<GPUPunctualLight>>(50));
 #endif
         for (uint i = 0u; i < count; ++i) {
 #if METALLIC_DEFERRED_LIGHT_GRID
@@ -108,7 +108,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
                 : clusterLightGridGlobalLightIndex(grid, gDeferredGridCandidates, i - lookup.count);
             PunctualLightSample light = samplePunctualLightData(gDeferredGridLights[source], hit.position);
 #else
-            PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GpuPunctualLight>>(50), i, hit.position);
+            PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), i, hit.position);
 #endif
             float3 bsdf = max(openpbr_get_sum_of_diffuse_specular(
                 openpbr_eval(prepared, light.direction)), float3(0.0));

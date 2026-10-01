@@ -44,9 +44,9 @@
 | 页加载 | [MeshletStreamPageLoader](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamPageLoader.cpp:18) 每页提交 TaskSystem 工作，最多 32 个并发 load | 返回的是 CPU 解码后的 vector，Raw 路径也可能复制/转换 |
 | 解码/布局 | [decodeMeshletStreamPayloadForDevice](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp:4801) 支持 None/ByteRle，校验后 float4→float3 | GPU 解压输出必须预先达到最终布局；不能留下运行时 CPU 重排 |
 | 上传 | [processUploads](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp:951) 向最终页 offset 上传 decoded bytes | 可以复用现有最终分配；增加压缩输入 ring 和解压 batch |
-| CLAS 计划 | [buildMeshletStreamClasPagePlan](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamClas.cpp:46) 读取 header/cluster，并逐 triangle index 校验 | GPU 解压后不能仍要求 CPU 完整 payload，否则收益链路被截断 |
+| CLAS 计划 | [buildMeshletStreamClasPagePlan](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCLAS.cpp:46) 读取 header/cluster，并逐 triangle index 校验 | GPU 解压后不能仍要求 CPU 完整 payload，否则收益链路被截断 |
 | 发布 | [completeUploadPages](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamResidency.cpp:510) 在 completion 后设 Resident | GPU 路径必须等待最终安装完成，不能沿用压缩输入 copy 的 completion |
-| Vulkan 复制 | [CommandBuffer::copyBuffer](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp:5509) 已使用 `vkCmdCopyMemoryKHR` | 目前已是 BDA 复制；KHR indirect 的新增价值是 GPU 读取参数，不是引入 BDA |
+| Vulkan 复制 | [CommandBuffer::copyBuffer](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp:5509) 已使用 `vkCmdCopyMemoryKHR` | 目前已是 BDA 复制；KHR indirect 的新增价值是 GPU 读取参数，不是引入 BDA |
 
 最近的 [wave 工作分配报告](E:/metallic/Documentation/StreamWaveWorkDistribution.md) 中 `Stream traversal` 包含 demand/frontier 等 GPU 工作；解压扩展不会消除这些工作，也不会直接降低 Stream early/late 的光栅成本。既有 [Stream Begin 细分](E:/metallic/Documentation/MiniZorahStreamBegin.md) 没有覆盖后台加载线程全部执行时间，不能用其小的上传 CPU scope 推断磁盘和解码没有瓶颈。
 
@@ -118,7 +118,7 @@ flowchart LR
 
 **RHI 与同步改动范围**
 
-建议增加独立 capability、direct/indirect decompression 和 indirect copy 的 typed desc；为输入 ring/目标 arena 设置 usage，并把 Vulkan 通用 buffer 创建改为 `VkBufferUsageFlags2CreateInfo`。现有通用 [buffer 创建](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp:8682) 使用 32 位 native usage；heap/DGC 部分已有 usage2 可复用。RHI 自己的 `BufferUsageBits` 可以新增抽象 bit 后映射，不必仅因 Vulkan bit 超过 32 位就强制全项目枚举扩宽。
+建议增加独立 capability、direct/indirect decompression 和 indirect copy 的 typed desc；为输入 ring/目标 arena 设置 usage，并把 Vulkan 通用 buffer 创建改为 `VkBufferUsageFlags2CreateInfo`。现有通用 [buffer 创建](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp:8682) 使用 32 位 native usage；heap/DGC 部分已有 usage2 可复用。RHI 自己的 `BufferUsageBits` 可以新增抽象 bit 后映射，不必仅因 Vulkan bit 超过 32 位就强制全项目枚举扩宽。
 
 下面列出直接解压路径的必要依赖。跨队列用 semaphore/timeline 建立依赖，exclusive resource 另做 queue-family ownership transfer；host 非 coherent 写入要先 flush。
 

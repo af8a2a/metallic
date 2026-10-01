@@ -17,7 +17,7 @@ using Metallic;
 
 #define gDlssDepth getResource<RWTexture2D<float>>(20)
 
-struct DlssRrGuideData
+struct DLSSRRGuideData
 {
     float3 albedo;
     float3 specularAlbedo;
@@ -28,9 +28,9 @@ struct DlssRrGuideData
     float specularHitDistance;
 };
 
-DlssRrGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
+DLSSRRGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
 {
-    DlssRrGuideData data;
+    DLSSRRGuideData data;
     data.albedo = float3(0.0, 0.0, 0.0);
     data.specularAlbedo = float3(0.0, 0.0, 0.0);
     data.normal = float3(0.0, 1.0, 0.0);
@@ -41,7 +41,7 @@ DlssRrGuideData makeDefaultDlssRrGuideData(ScenePathTracePush push)
     return data;
 }
 
-void writeDlssRrGuides(uint2 pixel, DlssRrGuideData data, ScenePathTracePush push)
+void writeDlssRrGuides(uint2 pixel, DLSSRRGuideData data, ScenePathTracePush push)
 {
     gDlssRrAlbedo[pixel] = float4(saturate(data.albedo), 1.0);
     gDlssRrSpecularAlbedo[pixel] = float4(saturate(data.specularAlbedo), 1.0);
@@ -52,14 +52,14 @@ void writeDlssRrGuides(uint2 pixel, DlssRrGuideData data, ScenePathTracePush pus
     gDlssDepth[pixel] = cameraHardwareDepth(data.linearDepth, push);
 }
 
-DlssRrGuideData evaluateStandardDlssRrGuides(
+DLSSRRGuideData evaluateStandardDlssRrGuides(
     Ray ray,
     RayCone rayCone,
     float2 samplePixel,
     ScenePathTracePush push,
     inout uint seed)
 {
-    DlssRrGuideData data = makeDefaultDlssRrGuideData(push);
+    DLSSRRGuideData data = makeDefaultDlssRrGuideData(push);
 
     HitInfo hit;
     if (!traceClosest(ray, push, hit)) {
@@ -141,7 +141,7 @@ void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         pixel.y * max(push.width, 1u) +
         (push.sampleFrame + 1u) * 0x9e3779b9u);
     float3 color = float3(0.0, 0.0, 0.0);
-    DlssRrGuideData guides = makeDefaultDlssRrGuideData(push);
+    DLSSRRGuideData guides = makeDefaultDlssRrGuideData(push);
     float firstSampleSpecularHitDistance = 0.0;
     PathTraceCacheContext cache = makeCacheContext();
     for (uint sampleIndex = 0u; sampleIndex < samples; ++sampleIndex) {
@@ -178,6 +178,6 @@ void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         gHistoryCurrent[pixel] = float4(color, 1.0);
     }
 
-    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(getResource<StructuredBuffer<GpuPunctualLight>>(50))), 1.0);
+    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50))), 1.0);
     writeDlssRrGuides(pixel, guides, push);
 }

@@ -1,5 +1,5 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 
@@ -15,7 +15,7 @@ using namespace render;
 using debug::DebugValue;
 
 #define DEBUG_REQUIRE(expression) do { const auto result = (expression); \
-    if (!result) { return RhiTestResult::fail(std::string(#expression) + ": " + resultToString(result)); } } while (false)
+    if (!result) { return RHITestResult::fail(std::string(#expression) + ": " + resultToString(result)); } } while (false)
 
 class DebugCheckpointPass final : public ComputePass {
 public:
@@ -117,10 +117,10 @@ struct FrameCommands {
     }
 };
 
-class DebugControlCaptureTest final : public RhiTest {
+class DebugControlCaptureTest final : public RHITest {
 public:
-    DebugControlCaptureTest() { name = "DebugControl checkpoint capture and lifetime"; type = RhiTestType::Command; }
-    RhiTestResult run(RhiTestContext& context) override
+    DebugControlCaptureTest() { name = "DebugControl checkpoint capture and lifetime"; type = RHITestType::Command; }
+    RHITestResult run(RHITestContext& context) override
     {
         registerRenderGraphPassType("DebugCheckpointPass", "Debug capture fixture", [] { return std::make_unique<DebugCheckpointPass>(); });
         RenderGraph graph;
@@ -135,23 +135,23 @@ public:
         const auto group = call(runtime, "capture.batch", {{"batches", {
             {{"pass", "Probe"}, {"checkpoint", "Early"}, {"resources", {{{"id", "Ids"}, {"count", 4}}}}},
             {{"pass", "Probe"}, {"checkpoint", "Late"}, {"resources", {{{"id", "Ids"}, {"count", 4}}}}}}}});
-        if (group["status"] != "ok") { return RhiTestResult::fail(group.dump()); }
+        if (group["status"] != "ok") { return RHITestResult::fail(group.dump()); }
         const std::string early = group["result"]["jobs"][0]["job"], late = group["result"]["jobs"][1]["job"];
         DEBUG_REQUIRE(frame.begin(70));
         DEBUG_REQUIRE(executor.execute(*frame.commands));
         runtime.poll();
         if (call(runtime, "jobs.get", {{"job", early}})["result"]["state"] != "Recorded" ||
             call(runtime, "frame.latest")["status"] != "error") {
-            return RhiTestResult::fail("Unsubmitted recording was published as complete");
+            return RHITestResult::fail("Unsubmitted recording was published as complete");
         }
         DEBUG_REQUIRE(frame.submit()); DEBUG_REQUIRE(frame.frame.wait(5'000'000'000ull)); runtime.poll();
         for (const auto& [id, expected] : {std::pair{early, 11u}, std::pair{late, 22u}}) {
             const auto result = call(runtime, "eval", {{"job", id}, {"expression", "buffers[\"Ids\"][0]"}});
             if (result.value("status", "") != "ok" || result["result"]["value"] != expected) {
-                return RhiTestResult::fail("Checkpoint copy did not preserve original data: " + result.dump());
+                return RHITestResult::fail("Checkpoint copy did not preserve original data: " + result.dump());
             }
             if (result["result"]["evidence"]["provenance"]["submissionFrame"] != 70) {
-                return RhiTestResult::fail("Lost external submission frame identity");
+                return RHITestResult::fail("Lost external submission frame identity");
             }
         }
         // The copy-queue self-submitting route uses the same observer, including
@@ -161,42 +161,42 @@ public:
         DEBUG_REQUIRE(executor.waitForSubmittedWork(5'000'000'000ull)); runtime.poll();
         if (call(runtime, "eval", {{"job", next}, {"expression", "buffers[\"Ids\"][0]"}})["result"]["value"] != 11 ||
             call(runtime, "eval", {{"job", late}, {"expression", "buffers[\"Ids\"][0]"}})["result"]["value"] != 22) {
-            return RhiTestResult::fail("Self submission or retained capture changed content");
+            return RHITestResult::fail("Self submission or retained capture changed content");
         }
         const auto stale = capture(runtime, "Early");
         DEBUG_REQUIRE(executor.compile(context.device, graph, 8, 8, log));
         if (call(runtime, "jobs.get", {{"job", stale}})["result"]["error"]["code"] != "StaleHandle") {
-            return RhiTestResult::fail("Resize did not invalidate queued capture");
+            return RHITestResult::fail("Resize did not invalidate queued capture");
         }
         const auto reloadStale = capture(runtime, "Early");
         DEBUG_REQUIRE(executor.reloadShaders(log));
         if (call(runtime, "jobs.get", {{"job", reloadStale}})["result"]["error"]["code"] != "StaleHandle") {
-            return RhiTestResult::fail("Shader reload did not invalidate queued capture");
+            return RHITestResult::fail("Shader reload did not invalidate queued capture");
         }
         graph.setNodeRuntimeProperty(graph.findNode("Probe")->id, "fail", true);
         executor.syncRuntimeProperties(graph);
         const auto abandoned = capture(runtime, "Early");
         DEBUG_REQUIRE(frame.begin(71));
-        if (executor.execute(*frame.commands)) { return RhiTestResult::fail("Expected fixture recording failure"); }
+        if (executor.execute(*frame.commands)) { return RHITestResult::fail("Expected fixture recording failure"); }
         DEBUG_REQUIRE(frame.pool->reset()); frame.frame.cancel(); runtime.poll();
         if (call(runtime, "jobs.get", {{"job", abandoned}})["result"]["state"] == "Ready") {
-            return RhiTestResult::fail("Abandoned recording produced evidence");
+            return RHITestResult::fail("Abandoned recording produced evidence");
         }
         // Submit a recorded prefix after the pass reports failure, then reject
         // a later segment. Already accepted evidence must survive frame.cancel.
         const auto prefixJob = capture(runtime, "Early");
         DEBUG_REQUIRE(frame.begin(72));
-        if (executor.execute(*frame.commands)) { return RhiTestResult::fail("Expected prefix fixture failure"); }
+        if (executor.execute(*frame.commands)) { return RHITestResult::fail("Expected prefix fixture failure"); }
         DEBUG_REQUIRE(frame.commands->end());
         CommandBuffer* raw = frame.commands.get();
-        GpuCompletionPoint prefix, failed;
+        GPUCompletionPoint prefix, failed;
         DEBUG_REQUIRE(frame.tracker.submitSegment({.commandBuffers = {&raw, 1}}, frame.frame).transform([&](auto value) { prefix = std::move(value); }));
-        if (frame.tracker.submitSegment({.commandBuffers = std::array<render::CommandBuffer*, 1>{nullptr}}, frame.frame).transform([&](auto value) { failed = std::move(value); })) { return RhiTestResult::fail("Expected rejected tail submission"); }
+        if (frame.tracker.submitSegment({.commandBuffers = std::array<render::CommandBuffer*, 1>{nullptr}}, frame.frame).transform([&](auto value) { failed = std::move(value); })) { return RHITestResult::fail("Expected rejected tail submission"); }
         frame.frame.cancel(); DEBUG_REQUIRE(frame.frame.wait()); runtime.poll();
         const auto prefixResult = call(runtime, "eval", {{"job", prefixJob}, {"expression", "buffers[\"Ids\"][0]"}});
         if (prefixResult["status"] != "ok" || prefixResult["result"]["value"] != 11 ||
             prefixResult["result"]["evidence"]["provenance"]["executionComplete"] != false) {
-            return RhiTestResult::fail("Submitted prefix capture was released early or attributed to a complete execution");
+            return RHITestResult::fail("Submitted prefix capture was released early or attributed to a complete execution");
         }
         const auto legacyJob = capture(runtime, "Early");
         DEBUG_REQUIRE(frame.pool->reset()); DEBUG_REQUIRE(frame.commands->begin());
@@ -204,18 +204,18 @@ public:
         const auto legacy = call(runtime, "frame.latest", {{"recorded", true}});
         if (legacy["result"]["source"] != "recorded-untracked" ||
             call(runtime, "jobs.get", {{"job", legacyJob}})["result"]["error"]["code"] != "Unsupported") {
-            return RhiTestResult::fail("Legacy metadata was unavailable or an untracked GPU capture was accepted");
+            return RHITestResult::fail("Legacy metadata was unavailable or an untracked GPU capture was accepted");
         }
         DEBUG_REQUIRE(frame.pool->reset());
         runtime.drain();
-        return RhiTestResult::pass("Early/late copies, external/self submission, overwrite isolation, resize and cancellation verified");
+        return RHITestResult::pass("Early/late copies, external/self submission, overwrite isolation, resize and cancellation verified");
     }
 };
 
-class DebugControlTextureTest final : public RhiTest {
+class DebugControlTextureTest final : public RHITest {
 public:
-    DebugControlTextureTest() { name = "DebugControl texture ROI and validation events"; type = RhiTestType::Rendering; }
-    RhiTestResult run(RhiTestContext& context) override
+    DebugControlTextureTest() { name = "DebugControl texture ROI and validation events"; type = RHITestType::Rendering; }
+    RHITestResult run(RHITestContext& context) override
     {
         RenderDebugRuntime runtime;
         RenderGraphExecutor executor;
@@ -228,37 +228,37 @@ public:
         const std::string pass = output.substr(0, output.find('.'));
         const auto queued = call(runtime, "capture.batch", {{"pass", pass}, {"resources", DebugValue::array({
             {{"id", output}, {"roi", {{"x", 4}, {"y", 4}, {"width", 3}, {"height", 2}}}}})}});
-        if (queued["status"] != "ok") { return RhiTestResult::fail(queued.dump()); }
+        if (queued["status"] != "ok") { return RHITestResult::fail(queued.dump()); }
         DEBUG_REQUIRE(frame.initialize(context.device, context.graphicsQueue));
         DEBUG_REQUIRE(frame.begin(0)); DEBUG_REQUIRE(executor.execute(*frame.commands));
         DEBUG_REQUIRE(frame.submit()); DEBUG_REQUIRE(frame.frame.wait()); runtime.poll();
         const auto job = queued["result"]["job"];
         auto response = call(runtime, "eval", {{"job", job}, {"expression", "count(buffers[\"" + output + "\"])"}});
         if (response["status"] != "ok" || response["result"]["value"] != 6 || response["result"]["coverage"][output]["completeCoverage"] != false) {
-            return RhiTestResult::fail("ROI shape or coverage mismatch: " + response.dump());
+            return RHITestResult::fail("ROI shape or coverage mismatch: " + response.dump());
         }
         const auto sink = runtime.validationSink();
         sink.callback(sink.context, {.severity = 4096, .messageId = 7, .messageIdName = "fixture", .message = "validation evidence"});
         const auto events = runtime.core().events("validation");
         if (events["events"][0]["messageId"] != 7 || !events["events"][0]["execution"].is_null()) {
-            return RhiTestResult::fail("Validation event lost severity/identity or invented frame association");
+            return RHITestResult::fail("Validation event lost severity/identity or invented frame association");
         }
         runtime.drain();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
 
-class DebugControlGpuProbeTest final : public RhiTest {
+class DebugControlGPUProbeTest final : public RHITest {
 public:
-    DebugControlGpuProbeTest() { name = "DebugControl fixed GPU probes watch and binding restoration"; type = RhiTestType::Command; }
-    RhiTestResult run(RhiTestContext& context) override
+    DebugControlGPUProbeTest() { name = "DebugControl fixed GPU probes watch and binding restoration"; type = RHITestType::Command; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<Device> device;
         RenderDebugRuntime runtime;
         auto setup = createDevice({.applicationName = "Debug GPU Probe", .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true, .validationSink = runtime.validationSink()}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (!setup && hasError(setup, Error::Unsupported)) { return RhiTestResult::skip("Descriptor heap unavailable"); }
+        if (!setup && hasError(setup, Error::Unsupported)) { return RHITestResult::skip("Descriptor heap unavailable"); }
         DEBUG_REQUIRE(setup);
         auto& queue = *device->getQueue(QueueType::Graphics);
         FrameCommands frame;
@@ -304,7 +304,7 @@ public:
         auto lateSpec = specs; lateSpec["checkpoint"] = "Late";
         lateSpec["resources"] = {{{"id", "Sentinel"}, {"count", 1}}};
         const auto response = call(runtime, "gpu.probe", {{"batches", {specs, lateSpec}}});
-        if (response["status"] != "ok") { return RhiTestResult::fail(response.dump()); }
+        if (response["status"] != "ok") { return RHITestResult::fail(response.dump()); }
         const auto early = response["result"]["jobs"][0]["job"], late = response["result"]["jobs"][1]["job"];
         const auto watch = call(runtime, "watch.create", {{"probe", lateSpec}, {"everyExecutions", 2},
             {"trigger", {{"probe", "bounds"}, {"value", 0}}}})["result"]["watch"];
@@ -324,18 +324,18 @@ public:
         auto& commands = *frame.commands;
         commands.hostWriteBarrier();
         BufferBarrierDesc sourceBarrier{.buffer = ids.get(), .before = {}, .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
-        if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
             auto sourceSlice = upload.get()->slice({0, kCount * 4});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = ids.get()->slice({0, kCount * 4});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         sourceBarrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite}; sourceBarrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
-        if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         BufferBarrierDesc outBarrier{.buffer = sentinel.get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
-        if (auto commandResult = commands.synchronize({.buffers = {&outBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands.synchronize({.buffers = {&outBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         const ComputeDispatchBinding originalBindings[] = {{.binding = 0, .buffer = ids.get()}, {.binding = 1, .buffer = sentinel.get()}};
         const uint32_t index = 0;
         DEBUG_REQUIRE(original.dispatch({
@@ -346,26 +346,26 @@ public:
         }));
         runtime.beginExecution(*device, {.graph = "probe-graph", .generation = 1, .execution = 9}, nullptr);
         runtime.boundary(commands, "Early", 0, "Probe", bindings, DebugValue::object());
-        std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
             auto sourceSlice = upload.get()->slice({kCount * 4, kCount * 4});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = ids.get()->slice({0, kCount * 4});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
-        std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        outBarrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; if (auto commandResult = commands.synchronize({.buffers = {&outBarrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        outBarrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; if (auto commandResult = commands.synchronize({.buffers = {&outBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         // No rebind: debug instrumentation must restore heap, pipeline and push data.
         commands.dispatch(1);
         runtime.boundary(commands, "Late", 0, "Probe", bindings, DebugValue::object());
         runtime.endExecution(true); runtime.poll();
         if (call(runtime, "jobs.get", {{"job", early}})["result"]["state"] != "Recorded") {
-            return RhiTestResult::fail("Probe not recorded or was published before submission: " + call(runtime, "jobs.get", {{"job", early}}).dump());
+            return RHITestResult::fail("Probe not recorded or was published before submission: " + call(runtime, "jobs.get", {{"job", early}}).dump());
         }
         DEBUG_REQUIRE(frame.submit()); DEBUG_REQUIRE(frame.frame.wait()); runtime.poll();
         auto first = call(runtime, "jobs.get", {{"job", early}}), second = call(runtime, "jobs.get", {{"job", late}});
-        if (first["result"]["state"] != "Ready" || second["result"]["state"] != "Ready") { return RhiTestResult::fail(first.dump() + second.dump()); }
+        if (first["result"]["state"] != "Ready" || second["result"]["state"] != "Ready") { return RHITestResult::fail(first.dump() + second.dump()); }
         const auto& a = first["result"]["probes"];
         const auto& b = second["result"]["probes"];
         if (a["bounds"]["matchedCount"] != kCount - 200 || a["bounds"]["firstIndex"] != 200 || a["bounds"]["max"] != UINT32_MAX ||
@@ -373,15 +373,15 @@ public:
             a["finite"]["finiteCount"] != 4 || a["finite"]["nanCount"] != 1 || a["finite"]["infCount"] != 2 ||
             a["finite"]["min"] != -2.5 || a["finite"]["max"] != 5.0 || a["finite"]["firstIndex"] != 2 ||
             a["signed"]["matchedCount"] != 2 || a["signed"]["min"] != INT32_MIN || a["signed"]["max"] != INT32_MAX ||
-            a["packed"]["matchedCount"] != 1) { return RhiTestResult::fail("GPU reduction mismatch: " + first.dump() + second.dump()); }
+            a["packed"]["matchedCount"] != 1) { return RHITestResult::fail("GPU reduction mismatch: " + first.dump() + second.dump()); }
         const auto restored = call(runtime, "eval", {{"job", late}, {"expression", "buffers.Sentinel[0]"}});
-        if (restored["result"]["value"] != 22) { return RhiTestResult::fail("Probe disturbed original compute binding: " + restored.dump()); }
+        if (restored["result"]["value"] != 22) { return RHITestResult::fail("Probe disturbed original compute binding: " + restored.dump()); }
         const auto triggered = call(runtime, "watch.get", {{"watch", watch}});
         if (triggered["result"]["state"] != "Triggered" || triggered["result"]["result"]["evidence"]["execution"] != 9) {
-            return RhiTestResult::fail("Watch did not retain exact-boundary evidence: " + triggered.dump());
+            return RHITestResult::fail("Watch did not retain exact-boundary evidence: " + triggered.dump());
         }
         if (call(runtime, "eval", {{"job", early}, {"expression", "probes.bounds.matchedCount"}})["result"]["value"] != kCount - 200) {
-            return RhiTestResult::fail("Typed probe evaluation differs from online result");
+            return RHITestResult::fail("Typed probe evaluation differs from online result");
         }
         DebugValue invalid = DebugValue::array();
         auto bad = specs; bad["probes"] = DebugValue::array({specs["probes"][0]});
@@ -398,7 +398,7 @@ public:
         for (size_t i = 0; i < 5; ++i) {
             const auto status = call(runtime, "jobs.get", {{"job", rejected["result"]["jobs"][i]["job"]}});
             if (status["result"]["error"]["code"] != expectedErrors[i] || status["result"]["reservedBytes"] != 0) {
-                return RhiTestResult::fail("Invalid probe was not rejected atomically: " + status.dump());
+                return RHITestResult::fail("Invalid probe was not rejected atomically: " + status.dump());
             }
         }
         DEBUG_REQUIRE(frame.submit()); DEBUG_REQUIRE(frame.frame.wait()); runtime.poll();
@@ -408,11 +408,11 @@ public:
         runtime.boundary(commands, "Early", 0, "Probe", bindings, DebugValue::object()); runtime.endExecution(true);
         DEBUG_REQUIRE(frame.submit());
         const auto cancelled = call(runtime, "jobs.cancel", {{"job", cancelJob}});
-        if (cancelled["result"]["reservedBytes"] == 0) { return RhiTestResult::fail("Cancelled GPU probe released its reservation early"); }
+        if (cancelled["result"]["reservedBytes"] == 0) { return RHITestResult::fail("Cancelled GPU probe released its reservation early"); }
         DEBUG_REQUIRE(frame.frame.wait()); runtime.poll();
         const auto cancelDone = call(runtime, "jobs.get", {{"job", cancelJob}});
         if (cancelDone["result"]["state"] != "Cancelled" || cancelDone["result"]["reservedBytes"] != 0) {
-            return RhiTestResult::fail("Cancelled GPU probe leaked its reservation");
+            return RHITestResult::fail("Cancelled GPU probe leaked its reservation");
         }
         debug::DebugLimits tinyLimits; tinyLimits.probeScanBytes = 4;
         RenderDebugRuntime tiny(tinyLimits);
@@ -422,7 +422,7 @@ public:
         tiny.beginExecution(*device, {.graph = "probe-graph", .generation = 1, .execution = 12}, nullptr);
         tiny.boundary(commands, "Early", 0, "Probe", bindings, DebugValue::object()); tiny.endExecution(true);
         if (call(tiny, "jobs.get", {{"job", budgetJob}})["result"]["error"]["code"] != "BudgetExceeded") {
-            return RhiTestResult::fail("GPU scan budget was not enforced");
+            return RHITestResult::fail("GPU scan budget was not enforced");
         }
         DEBUG_REQUIRE(frame.submit()); DEBUG_REQUIRE(frame.frame.wait()); tiny.poll(); tiny.drain();
         // The same probe must work on the actual compute queue, with shared
@@ -439,7 +439,7 @@ public:
             DEBUG_REQUIRE(computeFrame.submit()); DEBUG_REQUIRE(computeFrame.frame.wait()); runtime.poll();
             const auto completed = call(runtime, "jobs.get", {{"job", computeJob}});
             if (completed["result"]["state"] != "Ready" || completed["result"]["probes"]["finite"]["matchedCount"] != 3) {
-                return RhiTestResult::fail("Compute queue probe failed: " + completed.dump());
+                return RHITestResult::fail("Compute queue probe failed: " + completed.dump());
             }
         }
         if (auto* copyQueue = device->getQueue(QueueType::Copy)) {
@@ -451,21 +451,21 @@ public:
                 runtime.beginExecution(*device, {.graph = "probe-graph", .generation = 1, .execution = 14}, nullptr);
                 runtime.boundary(*copyFrame.commands, "Early", 0, "Probe", bindings, DebugValue::object()); runtime.endExecution(true);
                 if (call(runtime, "jobs.get", {{"job", copyJob}})["result"]["error"]["code"] != "Unsupported") {
-                    return RhiTestResult::fail("Transfer-only queue accepted a compute probe");
+                    return RHITestResult::fail("Transfer-only queue accepted a compute probe");
                 }
                 DEBUG_REQUIRE(copyFrame.commands->end()); copyFrame.frame.cancel(); runtime.poll();
             }
         }
         const auto events = runtime.core().events("validation");
         for (const auto& event : events["events"]) {
-            if (event["severity"].get<uint32_t>() & 4096) { return RhiTestResult::fail("Probe validation error: " + event.dump()); }
+            if (event["severity"].get<uint32_t>() & 4096) { return RHITestResult::fail("Probe validation error: " + event.dump()); }
         }
         runtime.drain();
-        return RhiTestResult::pass("GPU count, OOB, NaN/Inf, extrema, packed fields, checkpoint isolation and watch verified");
+        return RHITestResult::pass("GPU count, OOB, NaN/Inf, extrema, packed fields, checkpoint isolation and watch verified");
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(DebugControlGpuProbeTest);
+METALLIC_REGISTER_RHI_TEST(DebugControlGPUProbeTest);
 METALLIC_REGISTER_RHI_TEST(DebugControlCaptureTest);
 METALLIC_REGISTER_RHI_TEST(DebugControlTextureTest);
 } // namespace

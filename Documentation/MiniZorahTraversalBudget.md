@@ -8,7 +8,7 @@
 
 ### 有序 tile 层级
 
-`MeshletLod.cpp::buildMeshletLodTiles()` 在同级、最多 64 个 group 的 tile 之上建立 BVH4。包围球、最大误差、最大层级和 terminal 标志使用保守聚合；包围球半径向外舍入。GPU 可以通过 escape index 跳过整段不需要细化的 tile，正式需求和预取共用这套层级。
+`MeshletLOD.cpp::buildMeshletLodTiles()` 在同级、最多 64 个 group 的 tile 之上建立 BVH4。包围球、最大误差、最大层级和 terminal 标志使用保守聚合；包围球半径向外舍入。GPU 可以通过 escape index 跳过整段不需要细化的 tile，正式需求和预取共用这套层级。
 
 叶子仍按原来的 group 顺序排列，同一 tile 内不存在父子依赖。每个叶子执行完后保留组屏障，后续细级仍只在全部父级可绘制时进入安全 cut。没有引入会乱序处理共享父级的工作队列。小于等于 4 个 tile 的 primitive 保持平坦结构，避免额外内节点成本；旧 cook 不需要重建。
 
@@ -30,7 +30,7 @@ prefix 先为每个实例预留完整表示，再以稳定实例顺序分配剩�
 
 ## 验证
 
-- Release 构建 `MetallicRhiTests` 和 `MetallicGPUDrivenSample`。
+- Release 构建 `MetallicRHITests` 和 `MetallicGPUDrivenSample`。
 - 23 项专项测试开启 Vulkan validation 通过，覆盖原有 365 组 CPU/GPU cut 对照、共享父级、缺页、视锥、预取、HW/SW 等价、页发布和回收。
 - 新的多实例容量测试覆盖 257 个实例、24 组容量组合，包括混合回退、根容量不足、精确边界、更便宜的细节表示和 uint32 极值。
 - 新的 tile 层级测试对 16,383 个 group 检查完整叶子顺序、同级约束和 32 组视图阈值下的需求一致性；粗视图访问量必须小于原 tile 数的四分之一。

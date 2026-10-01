@@ -65,12 +65,12 @@ RG32Sfloat、R32Sfloat、B10G11R11UfloatPack32。整数 ID、深度、sRGB 格�
 需要稳定比较时应保持手动曝光。
 
 图资产 `Pipelines/Samples/lookdev_shading_compare.metallic_graph.json` 与参考场景一起由
-`Tools/BuildOpenPbrLookDev.py` 生成。
+`Tools/BuildOpenPBRLookDev.py` 生成。
 
 ## 验证
 
 ```powershell
-.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter slider_debug --rhi-validation --output-dir rhi-test-output/slider-debug
+.\cmake-build-debug-visual-studio\tests\MetallicRHITests.exe --filter slider_debug --rhi-validation --output-dir rhi-test-output/slider-debug
 ctest --test-dir cmake-build-debug-visual-studio -C Debug -R MetallicLookDevSliderSmoke --output-on-failure
 ```
 

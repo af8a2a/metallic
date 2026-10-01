@@ -188,7 +188,7 @@ Reference 和 VBuffer 通过 `cameraSyncGroup: "LookDevComparison"` 联动。
   参考路径使用每 primitive 的平均尺度，纹理缩小过滤可有差异。
 
 场景、HDRI、太阳和材质参考来源见 [OpenPbrLookDev.md](OpenPbrLookDev.md)。
-默认 shader ball 渲染图由 `Tools/BuildOpenPbrLookDev.py` 随参考场景一起生成。
+默认 shader ball 渲染图由 `Tools/BuildOpenPBRLookDev.py` 随参考场景一起生成。
 ABeautifulGame 图为 `Pipelines/Samples/lookdev_abeautiful_game.metallic_graph.json`，使用资产配套 HDRI，
 默认 8 次环境采样、2 次透射采样，以便交互比较。
 图中保存的透射采样数不自动开启补充路径追踪；需要显式设置 `supplementaryPathTracing: true`。
@@ -197,7 +197,7 @@ ABeautifulGame 图为 `Pipelines/Samples/lookdev_abeautiful_game.metallic_graph.
 
 2026-09-30，MSVC Release、RTX 5070 Ti / NVIDIA 616.92：
 
-- `MetallicGPUDrivenSample` 和 `MetallicRhiTests` 构建通过；独立预热工具编译 66 个 Deferred
+- `MetallicGPUDrivenSample` 和 `MetallicRHITests` 构建通过；独立预热工具编译 66 个 Deferred
   宏变体，0 个缓存命中、0 个失败，覆盖整屏／5 类分箱、resident reference／realtime 和 Stream realtime。
 - Vulkan validation 开启时，`visibility_buffer_deferred_openpbr`、`visibility_buffer_deferred_shadow_history`、
   `visibility_buffer_abeautiful_game_transmission`、`stream_material_transmission` 和
@@ -217,9 +217,9 @@ GPU 图像和报告位于 `build/DeferredPathTracingGpu20260930/` 与 `build/Def
 
 ```powershell
 $env:METALLIC_VK_INTERNAL_PIPELINE_CACHE = "disabled"
-.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter material_binning_indirect_coverage --rhi-validation --output-dir .cache/validation/material-binning
-.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter visibility_buffer_abeautiful_game_transmission --rhi-validation --output-dir .cache/validation/material-binning
-.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter visibility_buffer_deferred_openpbr --rhi-validation --output-dir rhi-test-output/vbuffer-lookdev
+.\cmake-build-debug-visual-studio\tests\MetallicRHITests.exe --filter material_binning_indirect_coverage --rhi-validation --output-dir .cache/validation/material-binning
+.\cmake-build-debug-visual-studio\tests\MetallicRHITests.exe --filter visibility_buffer_abeautiful_game_transmission --rhi-validation --output-dir .cache/validation/material-binning
+.\cmake-build-debug-visual-studio\tests\MetallicRHITests.exe --filter visibility_buffer_deferred_openpbr --rhi-validation --output-dir rhi-test-output/vbuffer-lookdev
 ctest --test-dir cmake-build-debug-visual-studio -C Debug -R "MetallicLookDev(SceneSwitch|VBuffer)Smoke" --output-on-failure
 ```
 
@@ -299,7 +299,7 @@ SO=false 编译后由 SO=true 命中相同 key 时失败，禁用缓存或先由
 在原始实现上启用资源追踪、自动检查点，关闭 shader debug info 后捕获到：
 
 - `Error_DMA_PageFault`，读取 GPU 虚拟地址 `0`，Graphics Processing Cluster。
-- 最早的正在执行检查点是 `EnvironmentLightingSubsystem::GpuPrecompute::build()`
+- 最早的正在执行检查点是 `EnvironmentLightingSubsystem::GPUPrecompute::build()`
   的环境 SH dispatch，经 `publishDecoded()` / `recordPreGraph()` 调用。
 - 开启完整 shader debug info 时，同一完整 VBuffer 回归通过。
   这说明诊断配置改变了复现条件，不能视作修复或据此认定驱动存在 bug。

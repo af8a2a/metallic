@@ -6,12 +6,12 @@
 namespace metallic {
 namespace {
 
-const char* dlssModeName(render::vulkan::StreamlineDlssRrMode mode)
+const char* dlssModeName(render::vulkan::StreamlineDLSSRRMode mode)
 {
-    using Mode = render::vulkan::StreamlineDlssRrMode;
+    using Mode = render::vulkan::StreamlineDLSSRRMode;
     switch (mode) {
     case Mode::Off: return "Off";
-    case Mode::Dlaa: return "DLAA";
+    case Mode::DLAA: return "DLAA";
     case Mode::Quality: return "Quality";
     case Mode::Balanced: return "Balanced";
     case Mode::Performance: return "Performance";
@@ -24,15 +24,15 @@ const char* dlssModeName(render::vulkan::StreamlineDlssRrMode mode)
 const char* resourceFormatName(render::Format format)
 {
     switch (format) {
-    case render::Format::Rgba16Sfloat: return "RGBA16_FLOAT";
-    case render::Format::Rg16Sfloat: return "RG16_FLOAT";
+    case render::Format::RGBA16Sfloat: return "RGBA16_FLOAT";
+    case render::Format::RG16Sfloat: return "RG16_FLOAT";
     case render::Format::R32Sfloat: return "R32_FLOAT";
     case render::Format::D32Sfloat: return "D32_FLOAT";
     default: return "Other / unknown";
     }
 }
 
-void drawDlssStatus(const char* title, bool supported, const render::vulkan::StreamlineDlssDebugStatus& status)
+void drawDlssStatus(const char* title, bool supported, const render::vulkan::StreamlineDLSSDebugStatus& status)
 {
     if (!ImGui::CollapsingHeader(title, ImGuiTreeNodeFlags_DefaultOpen)) { return; }
     ImGui::PushID(title);

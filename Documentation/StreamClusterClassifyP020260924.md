@@ -60,21 +60,21 @@ case 0 单次进程的降低率范围：普通优化 12.49–12.96%，capture sy
 ```powershell
 & 'E:/VS2026/Common7/Tools/Launch-VsDevShell.ps1' -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
 & 'F:/CLion 2026.2.2/bin/cmake/win/x64/bin/cmake.exe' -S . -B build-release -DMETALLIC_BUILD_TESTS=ON
-& 'F:/CLion 2026.2.2/bin/cmake/win/x64/bin/cmake.exe' --build build-release --target MetallicRhiTests -j 8
+& 'F:/CLion 2026.2.2/bin/cmake/win/x64/bin/cmake.exe' --build build-release --target MetallicRHITests -j 8
 
 # 输出目录先创建；每次进程使用不同 CSV 文件。
 $env:METALLIC_CLASSIFY_BENCHMARK = 'E:/metallic/build/classify-p0-20260924/reproduce.csv'
 $env:METALLIC_CLASSIFY_CAPTURE_SYMBOLS = '0' # 改为 1 对照优化 + g2
-& build-release/tests/MetallicRhiTests.exe --rhi-no-validation '--gtest_filter=*stream_cluster_cull_classify_equivalence'
+& build-release/tests/MetallicRHITests.exe --rhi-no-validation '--gtest_filter=*stream_cluster_cull_classify_equivalence'
 Remove-Item Env:METALLIC_CLASSIFY_BENCHMARK
 Remove-Item Env:METALLIC_CLASSIFY_CAPTURE_SYMBOLS
 
 # 单独检查资源，勿把此运行作为性能采样。
 $env:METALLIC_VK_PIPELINE_STATISTICS = '1'
-& build-release/tests/MetallicRhiTests.exe --rhi-validation '--gtest_filter=*stream_cluster_cull_classify_equivalence'
+& build-release/tests/MetallicRHITests.exe --rhi-validation '--gtest_filter=*stream_cluster_cull_classify_equivalence'
 Remove-Item Env:METALLIC_VK_PIPELINE_STATISTICS
 
-& build-release/tests/MetallicRhiTests.exe --rhi-no-validation '--gtest_filter=*stream_metadata_vbuffer:*stream_reflected_winding:*stream_metadata_contract'
+& build-release/tests/MetallicRHITests.exe --rhi-no-validation '--gtest_filter=*stream_metadata_vbuffer:*stream_reflected_winding:*stream_metadata_contract'
 ```
 
 下一步应在同 camera/cut/驻留的实际 GPUDrivenSample 新帧上，测量 classifier 与完整 VisibilityBufferPass，并重新查看首个同步点的 profile；本次已有 kernel 层面的收益证据，尚未完成这一整帧测量。

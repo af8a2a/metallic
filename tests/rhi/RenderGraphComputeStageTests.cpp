@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 
@@ -204,7 +204,7 @@ private:
     render::Device* device_ = nullptr;
 };
 
-RhiTestResult runStageProbe(RhiTestContext& context, StageProbeCase mode, uint32_t callbacks, bool succeeds = false)
+RHITestResult runStageProbe(RHITestContext& context, StageProbeCase mode, uint32_t callbacks, bool succeeds = false)
 {
     static const bool registered = render::registerRenderGraphPassType("ComputeStageProbePass",
         "Compute-stage declaration validation", [] { return std::make_unique<ComputeStageProbePass>(); });
@@ -221,38 +221,38 @@ RhiTestResult runStageProbe(RhiTestContext& context, StageProbeCase mode, uint32
     executor.setExecutionCaptureEnabled(true);
     std::string log;
     auto result = executor.compile(context.device, graph, 4, 4, log);
-    if (!result) { return RhiTestResult::fail("compute-stage probe compile: " + log); }
+    if (!result) { return RHITestResult::fail("compute-stage probe compile: " + log); }
     result = executor.execute({.graphicsQueue = &context.graphicsQueue, .recordingWorkerLimit = 1,
         .submissionMode = render::FrameSubmissionMode::Joined});
     const std::string label = "compute-stage case " + std::to_string(static_cast<uint32_t>(mode));
     if (succeeds) {
-        if (!result) { return RhiTestResult::fail(label + ": " + render::resultToString(result)); }
+        if (!result) { return RHITestResult::fail(label + ": " + render::resultToString(result)); }
         result = executor.waitForSubmittedWork(5'000'000'000ull);
-        if (!result) { return RhiTestResult::fail(label + ": completion failed"); }
+        if (!result) { return RHITestResult::fail(label + ": completion failed"); }
     } else {
         if (result || result.error() != render::Error::InvalidArgument) {
-            return RhiTestResult::fail(label + ": expected InvalidArgument");
+            return RHITestResult::fail(label + ": expected InvalidArgument");
         }
         if (executor.compiled() || executor.lastSubmittedCompletion().valid()) {
-            return RhiTestResult::fail(label + ": failed recording must invalidate the graph without submitting work");
+            return RHITestResult::fail(label + ": failed recording must invalidate the graph without submitting work");
         }
     }
     if (probe.callbacks != callbacks || probe.unexpectedCallbacks != 0) {
-        return RhiTestResult::fail(label + ": unexpected callback execution");
+        return RHITestResult::fail(label + ": unexpected callback execution");
     }
     const auto snapshot = executor.executionSnapshot();
     if (!snapshot || snapshot->success != succeeds || snapshot->passes.size() != 1 ||
         snapshot->passes.front().recorded != succeeds) {
-        return RhiTestResult::fail(label + ": execution capture lost recording outcome");
+        return RHITestResult::fail(label + ": execution capture lost recording outcome");
     }
     const auto& capturedStages = snapshot->passes.front().stages;
     if (succeeds && std::any_of(capturedStages.begin(), capturedStages.end(),
             [](const auto& stage) { return !stage.recorded; })) {
-        return RhiTestResult::fail(label + ": successful internal stages were not captured as recorded");
+        return RHITestResult::fail(label + ": successful internal stages were not captured as recorded");
     }
     if (mode == StageProbeCase::PrivateAliases && (probe.barriersAtCallbacks.size() != 2 ||
         probe.barriersAtCallbacks[1] <= probe.barriersAtCallbacks[0])) {
-        return RhiTestResult::fail(label + ": aliased private write/read stages lacked their memory dependency");
+        return RHITestResult::fail(label + ": aliased private write/read stages lacked their memory dependency");
     }
     if (mode == StageProbeCase::PrivateAliases) {
         const auto resource = std::find_if(snapshot->resources.begin(), snapshot->resources.end(),
@@ -264,7 +264,7 @@ RhiTestResult runStageProbe(RhiTestContext& context, StageProbeCase mode, uint32
             capturedStages[0].uses[0].resourceId != resource->id || capturedStages[1].uses[0].resourceId != resource->id ||
             !capturedStages[0].uses[0].writes || !capturedStages[1].uses[0].reads ||
             capturedStages[1].barriers.size() != 1) {
-            return RhiTestResult::fail(label + ": snapshot failed to canonicalize private slice aliases and RAW dependency");
+            return RHITestResult::fail(label + ": snapshot failed to canonicalize private slice aliases and RAW dependency");
         }
     }
     const bool generic = mode == StageProbeCase::GenericRepeatedBufferReads ||
@@ -275,26 +275,26 @@ RhiTestResult runStageProbe(RhiTestContext& context, StageProbeCase mode, uint32
         // the callbacks deliberately do not execute a shader workload.
         constexpr std::array<uint64_t, 10> expectedDeltas{0, 1, 1, 1, 1, 1, 1, 2, 3, 3};
         if (capturedStages.size() != expectedDeltas.size() + size_t(generic)) {
-            return RhiTestResult::fail(label + ": captured stage count disagrees with declared sequence");
+            return RHITestResult::fail(label + ": captured stage count disagrees with declared sequence");
         }
         for (size_t index = 0; index < expectedDeltas.size(); ++index) {
             const auto expected = expectedDeltas[index] - (index == 0 ? 0 : expectedDeltas[index - 1]);
             if (capturedStages[index].barriers.size() != expected ||
                 capturedStages[index].synchronization.memoryBarriers != expected) {
-                return RhiTestResult::fail(label + ": captured RAW plan/native barriers disagree at stage " + std::to_string(index));
+                return RHITestResult::fail(label + ": captured RAW plan/native barriers disagree at stage " + std::to_string(index));
             }
         }
         if (generic && (!capturedStages.back().restoreBoundary || !capturedStages.back().barriers.empty())) {
-            return RhiTestResult::fail(label + ": capture invented a same-layout restore barrier");
+            return RHITestResult::fail(label + ": capture invented a same-layout restore barrier");
         }
         if (probe.barriersAtCallbacks.size() != expectedDeltas.size()) {
-            return RhiTestResult::fail(label + ": unexpected synchronization sample count");
+            return RHITestResult::fail(label + ": unexpected synchronization sample count");
         }
         const auto baseline = probe.barriersAtCallbacks.front();
         for (size_t index = 0; index < expectedDeltas.size(); ++index) {
             const auto expected = baseline + expectedDeltas[index];
             if (probe.barriersAtCallbacks[index] != expected) {
-                return RhiTestResult::fail(label + ": stage " + std::to_string(index) +
+                return RHITestResult::fail(label + ": stage " + std::to_string(index) +
                     " expected " + std::to_string(expected) + " memory barriers, got " +
                     std::to_string(probe.barriersAtCallbacks[index]));
             }
@@ -302,21 +302,21 @@ RhiTestResult runStageProbe(RhiTestContext& context, StageProbeCase mode, uint32
         if (generic && (probe.afterSequence.memoryBarriers != probe.beforeSequence.memoryBarriers + 3 ||
             probe.afterSequence.memoryBarriers != probe.barriersAtCallbacks.back() ||
             probe.afterSequence.imageTransitions != probe.beforeSequence.imageTransitions)) {
-            return RhiTestResult::fail(label + ": same-layout generic sequence added an entry/exit barrier or lost an internal dependency");
+            return RHITestResult::fail(label + ": same-layout generic sequence added an entry/exit barrier or lost an internal dependency");
         }
     }
-    return RhiTestResult::pass();
+    return RHITestResult::pass();
 }
 
-class ComputeStageValidationTest final : public RhiTest {
+class ComputeStageValidationTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"graph.stages.validation.contract"}, bench::Layer::RenderGraph, "binding", "sync");
     }
 
-    ComputeStageValidationTest() { type = RhiTestType::Command; name = "render_graph_compute_stages_validate_before_recording"; }
-    RhiTestResult run(RhiTestContext& context) override
+    ComputeStageValidationTest() { type = RHITestType::Command; name = "render_graph_compute_stages_validate_before_recording"; }
+    RHITestResult run(RHITestContext& context) override
     {
         for (const auto mode : {StageProbeCase::LateUnknownResource, StageProbeCase::LateMissingRecorder,
                 StageProbeCase::HiddenBufferWrite, StageProbeCase::HiddenImageWrite,
@@ -326,71 +326,71 @@ public:
             auto result = runStageProbe(context, mode, 0);
             if (!result.passed) { return result; }
         }
-        return RhiTestResult::pass("all declarations checked before the first callback");
+        return RHITestResult::pass("all declarations checked before the first callback");
     }
 };
 
-class ComputeStageAliasesTest final : public RhiTest {
+class ComputeStageAliasesTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"graph.stages.alias.contract"}, bench::Layer::RenderGraph, "binding", "sync");
     }
 
-    ComputeStageAliasesTest() { type = RhiTestType::Command; name = "render_graph_compute_stages_private_allocation_aliases"; }
-    RhiTestResult run(RhiTestContext& context) override
+    ComputeStageAliasesTest() { type = RHITestType::Command; name = "render_graph_compute_stages_private_allocation_aliases"; }
+    RHITestResult run(RHITestContext& context) override
     {
         return runStageProbe(context, StageProbeCase::PrivateAliases, 2, true);
     }
 };
 
-class ComputeStageReentryTest final : public RhiTest {
+class ComputeStageReentryTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"graph.stages.reentry.contract"}, bench::Layer::RenderGraph, "binding", "sync");
     }
 
-    ComputeStageReentryTest() { type = RhiTestType::Command; name = "render_graph_compute_stages_reject_reentry_and_forks"; }
-    RhiTestResult run(RhiTestContext& context) override
+    ComputeStageReentryTest() { type = RHITestType::Command; name = "render_graph_compute_stages_reject_reentry_and_forks"; }
+    RHITestResult run(RHITestContext& context) override
     {
         for (const auto mode : {StageProbeCase::RepeatedScope, StageProbeCase::NestedScope, StageProbeCase::ForkInsideScope}) {
             auto result = runStageProbe(context, mode, 1);
             if (!result.passed) { return result; }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class ComputeStageRawVisibilityTest final : public RhiTest {
+class ComputeStageRawVisibilityTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"graph.stages.raw.encoding"}, bench::Layer::RenderGraph, "binding", "sync");
     }
 
-    ComputeStageRawVisibilityTest() { type = RhiTestType::Command; name = "render_graph_compute_stages_repeated_raw_encoding"; }
-    RhiTestResult run(RhiTestContext& context) override
+    ComputeStageRawVisibilityTest() { type = RHITestType::Command; name = "render_graph_compute_stages_repeated_raw_encoding"; }
+    RHITestResult run(RHITestContext& context) override
     {
         return runStageProbe(context, StageProbeCase::RepeatedRawReads, 10, true);
     }
 };
 
-class GeneralStageRawVisibilityTest final : public RhiTest {
+class GeneralStageRawVisibilityTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"graph.stages.raw.restore.encoding"}, bench::Layer::RenderGraph, "binding", "sync");
     }
 
-    GeneralStageRawVisibilityTest() { type = RhiTestType::Command; name = "render_graph_stages_repeated_raw_no_exit_barrier"; }
-    RhiTestResult run(RhiTestContext& context) override
+    GeneralStageRawVisibilityTest() { type = RHITestType::Command; name = "render_graph_stages_repeated_raw_no_exit_barrier"; }
+    RHITestResult run(RHITestContext& context) override
     {
         for (const auto mode : {StageProbeCase::GenericRepeatedBufferReads, StageProbeCase::GenericRepeatedImageReads}) {
             auto result = runStageProbe(context, mode, 10, true);
             if (!result.passed) { return result; }
         }
-        return RhiTestResult::pass("three internal hazards; no same-layout graph buffer/image exit barrier");
+        return RHITestResult::pass("three internal hazards; no same-layout graph buffer/image exit barrier");
     }
 };
 
@@ -427,7 +427,7 @@ public:
             reflection.addTextureInput("image").storageRead().stageAccess(Access::TextureTransferRead, Kind::Unsafe);
         }
         auto& image = reflection.addTextureOutput("image").storageReadWrite();
-        image.format = render::Format::Rgba8Unorm;
+        image.format = render::Format::RGBA8Unorm;
         if (scenario() != GeneralStageCase::UnauthorizedTransfer) {
             image.stageAccess(Access::TextureTransferWrite, Kind::Unsafe)
                 .stageAccess(Access::TextureTransferRead, Kind::Unsafe);
@@ -450,7 +450,7 @@ public:
         }
         const render::TextureDesc desc{.usage = invalidState ? render::TextureUsageBits::Sampled :
             render::TextureUsageBits::Storage | render::TextureUsageBits::TransferSource | render::TextureUsageBits::TransferDestination,
-            .format = render::Format::Rgba8Unorm, .width = 4, .height = 4};
+            .format = render::Format::RGBA8Unorm, .width = 4, .height = 4};
         auto result = context.device->createTexture(desc).transform([&](auto value) { privateTexture_ = std::move(value); });
         if (!result) { return result; }
         result = context.device->createTextureView(*privateTexture_, {.format = desc.format}).transform(
@@ -568,7 +568,7 @@ private:
     render::ResourceState privateState_ = render::ResourceState::Undefined;
 };
 
-RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mode, bool succeeds, bool enableAsync = true)
+RHITestResult runGeneralStageProbe(RHITestContext& context, GeneralStageCase mode, bool succeeds, bool enableAsync = true)
 {
     static const bool registered = render::registerRenderGraphPassType("GeneralStageProbePass",
         "Resource access stages across compute and transfer", [] { return std::make_unique<GeneralStageProbePass>(); });
@@ -589,7 +589,7 @@ RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mod
     executor.setExecutionCaptureEnabled(true);
     std::string log;
     auto result = executor.compile(context.device, graph, 4, 4, log);
-    if (!result) { return RhiTestResult::fail("general-stage compile: " + log); }
+    if (!result) { return RHITestResult::fail("general-stage compile: " + log); }
     const auto label = "general-stage case " + std::to_string(static_cast<uint32_t>(mode));
     const bool fork = mode == GeneralStageCase::UnsafeFork || mode == GeneralStageCase::DeniedFork;
     const uint32_t frameCount = succeeds && !fork ? 2u : 1u;
@@ -601,27 +601,27 @@ RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mod
         if (!succeeds) {
             if (result || result.error() != render::Error::InvalidArgument ||
                 probe.callbacks != (mode == GeneralStageCase::DeniedFork ? 1u : 0u) || probe.branches != 0u) {
-                return RhiTestResult::fail(label + ": invalid sequence executed callbacks or was accepted");
+                return RHITestResult::fail(label + ": invalid sequence executed callbacks or was accepted");
             }
-            return RhiTestResult::pass();
+            return RHITestResult::pass();
         }
         if (!result || !executor.waitForSubmittedWork(5'000'000'000ull)) {
-            return RhiTestResult::fail(label + ": stage execution/submission failed");
+            return RHITestResult::fail(label + ": stage execution/submission failed");
         }
         const auto snapshot = executor.executionSnapshot();
-        if (!snapshot) { return RhiTestResult::fail(label + ": missing stage capture"); }
+        if (!snapshot) { return RHITestResult::fail(label + ": missing stage capture"); }
         const auto capturedPass = std::find_if(snapshot->passes.begin(), snapshot->passes.end(),
             [](const auto& pass) { return pass.name == "Probe"; });
-        if (capturedPass == snapshot->passes.end()) { return RhiTestResult::fail(label + ": missing captured pass"); }
+        if (capturedPass == snapshot->passes.end()) { return RHITestResult::fail(label + ": missing captured pass"); }
         for (const auto& stage : capturedPass->stages) {
             if (stage.restoreBoundary && std::any_of(stage.uses.begin(), stage.uses.end(),
                     [](const auto& use) { return use.reads || use.writes; })) {
-                return RhiTestResult::fail(label + ": layout restoration was misreported as data access");
+                return RHITestResult::fail(label + ": layout restoration was misreported as data access");
             }
         }
         if (fork) {
             if (probe.callbacks != 1u || probe.branches != 2u) {
-                return RhiTestResult::fail(label + ": declared fork did not join both branches");
+                return RHITestResult::fail(label + ": declared fork did not join both branches");
             }
             using Role = render::RenderGraphSegmentRole;
             const auto compute = std::find_if(snapshot->segments.begin(), snapshot->segments.end(),
@@ -637,7 +637,7 @@ RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mod
                     compute->queueId == graphics->queueId || join->queueId != graphics->queueId ||
                     std::find(join->predecessors.begin(), join->predecessors.end(), compute->id) == join->predecessors.end() ||
                     std::find(join->predecessors.begin(), join->predecessors.end(), graphics->id) == join->predecessors.end()) {
-                    return RhiTestResult::fail(label + ": capture lost real compute/graphics fork and join dependencies");
+                    return RHITestResult::fail(label + ": capture lost real compute/graphics fork and join dependencies");
                 }
                 const auto batch = std::find_if(snapshot->batches.begin(), snapshot->batches.end(), [&](const auto& value) {
                     return std::find(value.segmentIds.begin(), value.segmentIds.end(), join->id) != value.segmentIds.end();
@@ -645,10 +645,10 @@ RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mod
                 if (batch == snapshot->batches.end() ||
                     std::find(batch->waitPredecessors.begin(), batch->waitPredecessors.end(), compute->id) == batch->waitPredecessors.end() ||
                     std::find(batch->waitPredecessors.begin(), batch->waitPredecessors.end(), graphics->id) != batch->waitPredecessors.end()) {
-                    return RhiTestResult::fail(label + ": join wait capture does not match actual cross-queue producer");
+                    return RHITestResult::fail(label + ": join wait capture does not match actual cross-queue producer");
                 }
             } else if (compute != snapshot->segments.end() || graphics != snapshot->segments.end() || join != snapshot->segments.end()) {
-                return RhiTestResult::fail(label + ": serial fallback invented parallel queue branches");
+                return RHITestResult::fail(label + ": serial fallback invented parallel queue branches");
             }
             continue;
         }
@@ -657,22 +657,22 @@ RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mod
                 [](const auto& resource) { return resource.name == "Source.color"; });
             if (source == snapshot->resources.end() || std::find(source->aliases.begin(), source->aliases.end(),
                     "Probe.input.image") == source->aliases.end()) {
-                return RhiTestResult::fail(label + ": capture failed to disambiguate input/output field aliases");
+                return RHITestResult::fail(label + ": capture failed to disambiguate input/output field aliases");
             }
             const auto use = std::find_if(capturedPass->uses.begin(), capturedPass->uses.end(),
                 [&](const auto& value) { return value.resourceId == source->id; });
             if (use == capturedPass->uses.end() || !use->reads || use->writes || !use->exclusive) {
-                return RhiTestResult::fail(label + ": read-only input layout changes were misreported as data writes");
+                return RHITestResult::fail(label + ": read-only input layout changes were misreported as data writes");
             }
         }
         const auto* output = executor.outputResource("Probe.data");
         const auto* image = executor.outputResource("Probe.image");
         if (!output || !output->buffer || !image || image->state != render::ResourceState::General) {
-            return RhiTestResult::fail(label + ": graph boundary state was not preserved");
+            return RHITestResult::fail(label + ": graph boundary state was not preserved");
         }
         output->buffer->invalidate();
         const auto* bytes = static_cast<const uint8_t*>(output->buffer->map());
-        if (!bytes) { return RhiTestResult::fail(label + ": readback map failed"); }
+        if (!bytes) { return RHITestResult::fail(label + ": readback map failed"); }
         const std::array<uint8_t, 4> expected = mode == GeneralStageCase::QualifiedNames
             ? std::array<uint8_t, 4>{255, 255, 0, 255} : std::array<uint8_t, 4>{255, 0, 255, 255};
         bool matches = true;
@@ -683,39 +683,39 @@ RhiTestResult runGeneralStageProbe(RhiTestContext& context, GeneralStageCase mod
         }
         bench::readbackEvidence(context, "readback.bin", std::span<const uint8_t>(bytes, 64));
         output->buffer->unmap();
-        if (!matches) { return RhiTestResult::fail(label + ": clear/copy pixels differ"); }
+        if (!matches) { return RHITestResult::fail(label + ": clear/copy pixels differ"); }
     }
-    return RhiTestResult::pass();
+    return RHITestResult::pass();
 }
 
-class GeneralStageTransfersTest final : public RhiTest {
+class GeneralStageTransfersTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"graph.stages.transfer.readback"}, bench::Layer::RenderGraph, "binding", "sync", {"readback.bin"});
     }
 
-    GeneralStageTransfersTest() { type = RhiTestType::Command; name = "render_graph_stages_transfer_pixels_and_private_aliases"; }
-    RhiTestResult run(RhiTestContext& context) override
+    GeneralStageTransfersTest() { type = RHITestType::Command; name = "render_graph_stages_transfer_pixels_and_private_aliases"; }
+    RHITestResult run(RHITestContext& context) override
     {
         for (const auto mode : {GeneralStageCase::GraphTransfer, GeneralStageCase::PrivateTextureAliases,
                 GeneralStageCase::QualifiedNames}) {
             auto result = runGeneralStageProbe(context, mode, true);
             if (!result.passed) { return result; }
         }
-        return RhiTestResult::pass("clear/copy/readback and restored layouts survived two frames");
+        return RHITestResult::pass("clear/copy/readback and restored layouts survived two frames");
     }
 };
 
-class GeneralStageValidationTest final : public RhiTest {
+class GeneralStageValidationTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"graph.stages.transfer.contract"}, bench::Layer::RenderGraph, "binding", "sync");
     }
 
-    GeneralStageValidationTest() { type = RhiTestType::Command; name = "render_graph_stages_validate_transfers_imports_and_names"; }
-    RhiTestResult run(RhiTestContext& context) override
+    GeneralStageValidationTest() { type = RHITestType::Command; name = "render_graph_stages_validate_transfers_imports_and_names"; }
+    RHITestResult run(RHITestContext& context) override
     {
         for (const auto mode : {GeneralStageCase::UnauthorizedTransfer, GeneralStageCase::WrongTextureView,
                 GeneralStageCase::GraphTextureImport, GeneralStageCase::AmbiguousName,
@@ -724,19 +724,19 @@ public:
             auto result = runGeneralStageProbe(context, mode, false);
             if (!result.passed) { return result; }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class GeneralStageForkTest final : public RhiTest {
+class GeneralStageForkTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"graph.stages.forkJoin.contract"}, bench::Layer::RenderGraph, "binding", "sync");
     }
 
-    GeneralStageForkTest() { type = RhiTestType::Command; name = "render_graph_stages_explicit_unsafe_fork_join"; }
-    RhiTestResult run(RhiTestContext& context) override
+    GeneralStageForkTest() { type = RHITestType::Command; name = "render_graph_stages_explicit_unsafe_fork_join"; }
+    RHITestResult run(RHITestContext& context) override
     {
         auto result = runGeneralStageProbe(context, GeneralStageCase::UnsafeFork, true);
         if (!result.passed) { return result; }

@@ -8,7 +8,7 @@ class CopyColorPass final : public UnsafePass {
 public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
-    CpuRecordingPolicy cpuRecordingPolicy() const override { return CpuRecordingPolicy::ParallelJoined; }
+    CPURecordingPolicy cpuRecordingPolicy() const override { return CPURecordingPolicy::ParallelJoined; }
     bool supportsPipelinedSubmission() const override { return true; }
     QueueType queueType() const override { return QueueType::Copy; }
 
@@ -19,7 +19,7 @@ public:
             .transferRead();
         reflection.addTextureOutput("color", "Copied color texture")
             .transferWrite()
-            .format = Format::Rgba8Unorm;
+            .format = Format::RGBA8Unorm;
         return reflection;
     }
 

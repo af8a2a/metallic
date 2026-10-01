@@ -1,6 +1,6 @@
 # RTXCR Claire Ponytail Sample
 
-`MetallicRtxcrSample` renders an NVIDIA Claire reference groom through Metallic's
+`MetallicRTXCRSample` renders an NVIDIA Claire reference groom through Metallic's
 Vulkan ray-query path. The sample works directly from the pinned upstream
 repositories instead of copying NVIDIA source or assets into Metallic:
 
@@ -55,14 +55,14 @@ The default configuration discovers the three `External/RTXCR-*` submodules:
 
 ```powershell
 cmake -S . -B build -DMETALLIC_BUILD_TESTS=ON
-cmake --build build --target MetallicRtxcrSample --config Debug
-build\Source\Debug\MetallicRtxcrSample.exe
+cmake --build build --target MetallicRTXCRSample --config Debug
+build\Source\Debug\MetallicRTXCRSample.exe
 ```
 
 For a one-frame Vulkan integration check:
 
 ```powershell
-build\Source\Debug\MetallicRtxcrSample.exe --smoke-test
+build\Source\Debug\MetallicRTXCRSample.exe --smoke-test
 ```
 
 Single-config generators place the executable directly under `build\Source`.
@@ -106,8 +106,8 @@ the source-notice and application-distribution requirements.
 
 ```powershell
 build\tests\Debug\MetallicSceneTests.exe `
-    --gtest_filter=SceneImport.RtxcrClairePonytailDots
-build\tests\Debug\MetallicRhiTests.exe --filter rtxcr
+    --gtest_filter=SceneImport.RTXCRClairePonytailDots
+build\tests\Debug\MetallicRHITests.exe --filter rtxcr
 ```
 
 For a single-config build, omit the `Debug` path component.

@@ -91,7 +91,7 @@ backend 仍拒绝多 pass；只有 isolated owner 能进入恢复后多 pass 路
   三进程单 pass 完成并由原 verifier 复核，仍为 in-frame scope。这不替代缺失的
   9 月 25 日原始证据。
 - NvPerf ON：`cmake --build build-release --target MetallicGPUDrivenSample -j 12` 通过。
-  NvPerf OFF：复用原有 `build-pass-stages-nrd` 配置构建 `MetallicRhiTests` 通过，
+  NvPerf OFF：复用原有 `build-pass-stages-nrd` 配置构建 `MetallicRHITests` 通过，
   未更改该树的编译器、SDK 或生成器选项。
 - `python -B -X utf8 -m unittest discover -s tests/perf -p 'Test*.py'`：115 项通过。
   `ctest --test-dir build/perf-tests -C Debug --output-on-failure`：8/8 组通过。

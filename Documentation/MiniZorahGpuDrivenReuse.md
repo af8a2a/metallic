@@ -37,7 +37,7 @@
 
 ### 2. CLAS 在 MOVE 所在提交中发布
 
-[CompactClasPool](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCompactClasPool.cpp) 把地址数组与页状态更新放进独立 staging，在 MOVE 之后通过 GPU copy 和 barrier 发布。之后的 BLAS/遍历在同一有序提交链上即可使用新地址。
+[CompactClasPool](E:/metallic/Source/Runtime/Render/Streamer/MeshletStreamCompactCLASPool.cpp) 把地址数组与页状态更新放进独立 staging，在 MOVE 之后通过 GPU copy 和 barrier 发布。之后的 BLAS/遍历在同一有序提交链上即可使用新地址。
 
 ```mermaid
 flowchart LR
@@ -95,7 +95,7 @@ NRD 编译路径、启用的 DLSS-NR、DLSS-RR、非流送/非 compact 路径保
 
 通过的检查：
 
-- Release 构建 `MetallicRhiTests`、`MetallicSceneTests`、`MetallicGPUDrivenSample`。
+- Release 构建 `MetallicRHITests`、`MetallicSceneTests`、`MetallicGPUDrivenSample`。
 - 30 项 RHI 专项检查，开启 Vulkan validation：CLAS 同提交发布/取消/退役，BLAS 静态复用/LOD 变化/取消/退役失效，LightGrid 生命周期，流送上传，HW/SW 与 indexed mesh 等价、调试身份、帧槽与跨队列依赖。
 - 3 项 Scene MeshletStream 检查。
 - Bunny 与 MiniZorah 实时图检查通过，并人工检查输出图。Bunny fixture 禁用 HDRI，避免用背景变化掩盖几何解码失败；同时验证分箱/非分箱一致、阴影衰减、相机 guides、resize 与流送会话保留。
@@ -121,6 +121,6 @@ python Tools/SummarizeMetallicCfgReplay.py `
   --output Documentation/MiniZorahGpuDrivenReuseResults.json
 ```
 
-脚本保存 exe、相机回放、测试源码与 shader tree 哈希，检测采样中途修改；新增 [MeasureGpuCompetition.ps1](E:/metallic/Tools/MeasureGpuCompetition.ps1) 的 `GpuProcesses.csv`，补足仅有整卡 `nvidia-smi` 利用率的盲点。汇总工具拒绝失败或不完整计时轮，保留所有选定样本并标记 GPU 竞争，不自动删异常值。
+脚本保存 exe、相机回放、测试源码与 shader tree 哈希，检测采样中途修改；新增 [MeasureGPUCompetition.ps1](E:/metallic/Tools/MeasureGPUCompetition.ps1) 的 `GpuProcesses.csv`，补足仅有整卡 `nvidia-smi` 利用率的盲点。汇总工具拒绝失败或不完整计时轮，保留所有选定样本并标记 GPU 竞争，不自动删异常值。
 
 下一步优先级：暂停竞争后重新取得可归因的同机性能基线；把 BLAS 复用从整个 cut 细化为实例/几何级缓存；再推进 GPU 尺寸分配与量化位置。当前功能与这些后续工作之间的边界已明确保留。

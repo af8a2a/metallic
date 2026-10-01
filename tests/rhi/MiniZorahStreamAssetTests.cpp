@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
@@ -116,12 +116,12 @@ public:
     void endExecution(bool success) override { debug.endExecution(success); }
 };
 
-RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool unified = false, bool superSponza = false)
+RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool unified = false, bool superSponza = false)
 {
     const char* optIn = superSponza ? "METALLIC_TEST_SUPER_SPONZA_STREAM" : "METALLIC_TEST_MINIZORAH";
     const char* enabled = std::getenv(optIn);
     if ((miniZorah || superSponza) && (enabled == nullptr || std::string_view(enabled) != "1")) {
-        return RhiTestResult::skip(std::string("Set ") + optIn + "=1 to run the full cooked scene milestone");
+        return RHITestResult::skip(std::string("Set ") + optIn + "=1 to run the full cooked scene milestone");
     }
     const std::string label = superSponza ? "SuperSponza" :
         std::string(miniZorah ? "MiniZorah" : "StreamOnlyBunny") + (unified ? "VBuffer" : "");
@@ -298,7 +298,7 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
         }
         report["metadataCheckSeconds"] = seconds();
         const auto initialized = preview.initialize(context.enableValidation, false, false);
-        if (hasError(initialized, Error::Unsupported)) { return RhiTestResult::skip("Requires mesh shaders and descriptor heaps"); }
+        if (hasError(initialized, Error::Unsupported)) { return RHITestResult::skip("Requires mesh shaders and descriptor heaps"); }
         require(bool(initialized), preview.lastLog());
         preview.setDebugObserver(&observer);
         uint32_t width = miniZorah ? 1920 : 256, height = miniZorah ? 1080 : superSponza ? 256 : 192;
@@ -620,53 +620,53 @@ RhiTestResult runStreamStartup(RhiTestContext& context, bool miniZorah, bool uni
         report["residentVertexBytes"] = 0; report["residentMeshletDrawBytes"] = 0;
         report["frames"] = frames; report["status"] = "passed";
         saveReport();
-        return RhiTestResult::pass(label + " complete root coverage and first frames verified");
+        return RHITestResult::pass(label + " complete root coverage and first frames verified");
     } catch (const std::exception& error) {
         report["status"] = "failed"; report["error"] = error.what();
         saveReport();
-        return RhiTestResult::fail(error.what());
+        return RHITestResult::fail(error.what());
     }
 }
 
-class StreamAssetOnlyFirstFrameTest final : public RhiTest {
+class StreamAssetOnlyFirstFrameTest final : public RHITest {
 public:
-    StreamAssetOnlyFirstFrameTest() { type = RhiTestType::Rendering; name = "streamasset_only_first_frame"; }
-    RhiTestResult run(RhiTestContext& context) override { return runStreamStartup(context, false); }
+    StreamAssetOnlyFirstFrameTest() { type = RHITestType::Rendering; name = "streamasset_only_first_frame"; }
+    RHITestResult run(RHITestContext& context) override { return runStreamStartup(context, false); }
 };
-class MiniZorahFirstFrameTest final : public RhiTest {
+class MiniZorahFirstFrameTest final : public RHITest {
 public:
-    MiniZorahFirstFrameTest() { type = RhiTestType::Rendering; name = "minizorah_stream_first_frame"; }
-    RhiTestResult run(RhiTestContext& context) override { return runStreamStartup(context, true); }
+    MiniZorahFirstFrameTest() { type = RHITestType::Rendering; name = "minizorah_stream_first_frame"; }
+    RHITestResult run(RHITestContext& context) override { return runStreamStartup(context, true); }
 };
 METALLIC_REGISTER_RHI_TEST(StreamAssetOnlyFirstFrameTest);
 METALLIC_REGISTER_RHI_TEST(MiniZorahFirstFrameTest);
-class StreamMetadataVBufferTest final : public RhiTest {
+class StreamMetadataVBufferTest final : public RHITest {
 public:
-    StreamMetadataVBufferTest() { type = RhiTestType::Rendering; name = "stream_metadata_vbuffer"; }
-    RhiTestResult run(RhiTestContext& context) override { return runStreamStartup(context, false, true); }
+    StreamMetadataVBufferTest() { type = RHITestType::Rendering; name = "stream_metadata_vbuffer"; }
+    RHITestResult run(RHITestContext& context) override { return runStreamStartup(context, false, true); }
 };
-class MiniZorahVBufferTest final : public RhiTest {
+class MiniZorahVBufferTest final : public RHITest {
 public:
-    MiniZorahVBufferTest() { type = RhiTestType::Rendering; name = "minizorah_vbuffer"; }
-    RhiTestResult run(RhiTestContext& context) override { return runStreamStartup(context, true, true); }
+    MiniZorahVBufferTest() { type = RHITestType::Rendering; name = "minizorah_vbuffer"; }
+    RHITestResult run(RHITestContext& context) override { return runStreamStartup(context, true, true); }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMetadataVBufferTest);
 METALLIC_REGISTER_RHI_TEST(MiniZorahVBufferTest);
 
-class SuperSponzaStreamFirstFrameTest final : public RhiTest {
+class SuperSponzaStreamFirstFrameTest final : public RHITest {
 public:
-    SuperSponzaStreamFirstFrameTest() { type = RhiTestType::Rendering; name = "super_sponza_stream_first_frame"; }
-    RhiTestResult run(RhiTestContext& context) override { return runStreamStartup(context, false, true, true); }
+    SuperSponzaStreamFirstFrameTest() { type = RHITestType::Rendering; name = "super_sponza_stream_first_frame"; }
+    RHITestResult run(RHITestContext& context) override { return runStreamStartup(context, false, true, true); }
 };
 METALLIC_REGISTER_RHI_TEST(SuperSponzaStreamFirstFrameTest);
 
-class MiniZorahGroundCoverageTest final : public RhiTest {
+class MiniZorahGroundCoverageTest final : public RHITest {
 public:
-    MiniZorahGroundCoverageTest() { type = RhiTestType::Rendering; name = "minizorah_ground_coverage"; }
-    RhiTestResult run(RhiTestContext& context) override
+    MiniZorahGroundCoverageTest() { type = RHITestType::Rendering; name = "minizorah_ground_coverage"; }
+    RHITestResult run(RHITestContext& context) override
     {
         const char* enabled = std::getenv("METALLIC_TEST_MINIZORAH");
-        if (!enabled || std::string_view(enabled) != "1") { return RhiTestResult::skip("Requires MiniZorah cache"); }
+        if (!enabled || std::string_view(enabled) != "1") { return RHITestResult::skip("Requires MiniZorah cache"); }
         try {
             RenderSampleLoadResult sample;
             std::string log;
@@ -723,16 +723,16 @@ public:
             for (size_t i = 0; i < baseline.size(); ++i) { mismatch += baseline[i] != hardware[i]; }
             // HW/SW subpixel edge ties may select adjacent triangle IDs.
             require(mismatch <= baseline.size() / 500, "HW/hybrid ground images diverged");
-            return RhiTestResult::pass("Ground camera culling and HW/hybrid coverage verified");
-        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Ground camera culling and HW/hybrid coverage verified");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(MiniZorahGroundCoverageTest);
 
-class StreamReflectedWindingTest final : public RhiTest {
+class StreamReflectedWindingTest final : public RHITest {
 public:
-    StreamReflectedWindingTest() { type = RhiTestType::Rendering; name = "stream_reflected_winding"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamReflectedWindingTest() { type = RHITestType::Rendering; name = "stream_reflected_winding"; }
+    RHITestResult run(RHITestContext& context) override
     {
         try {
             const auto path = std::filesystem::absolute(context.outputDirectory / "ReflectedTriangle.gltf");
@@ -805,16 +805,16 @@ public:
                     graph.setNodeRuntimeProperty(node, "camera", camera);
                 }
             }
-            return RhiTestResult::pass("Reflected and regular instances preserve front/back coverage in HW/SW rasterization");
-        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Reflected and regular instances preserve front/back coverage in HW/SW rasterization");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamReflectedWindingTest);
 
-class StreamMetadataContractTest final : public RhiTest {
+class StreamMetadataContractTest final : public RHITest {
 public:
-    StreamMetadataContractTest() { type = RhiTestType::Rendering; name = "stream_metadata_contract"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamMetadataContractTest() { type = RHITestType::Rendering; name = "stream_metadata_contract"; }
+    RHITestResult run(RHITestContext& context) override
     {
         try {
             const auto path = std::filesystem::absolute(context.outputDirectory / "MetadataOnly.gltf");
@@ -924,8 +924,8 @@ public:
             auto* subsystem = preview.subsystemHost()->get<GPUSceneSubsystem>();
             require(subsystem->rasterDrawLayout().maxRangeCount > 0, "Mixed fixture lost its resident layout");
             require(residentColors == preview.pixels(), "Resident and mixed-stream material resolve differ");
-            return RhiTestResult::pass("Metadata import never reads external buffers, preserves identity, and classifies only constant opaque alpha");
-        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Metadata import never reads external buffers, preserves identity, and classifies only constant opaque alpha");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamMetadataContractTest);

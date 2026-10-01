@@ -13,7 +13,7 @@ struct VisibilityBufferCompositePush
     uint shadedColors;
 };
 
-// Matches MeshletStreamGpuActiveGroup. Logical pageIndex survives compaction
+// Matches MeshletStreamGPUActiveGroup. Logical pageIndex survives compaction
 // and physical page eviction/reload; dataIndex and pageDeviceOffset do not.
 struct VisibilityDebugActiveGroup
 {

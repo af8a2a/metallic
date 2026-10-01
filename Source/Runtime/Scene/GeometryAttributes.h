@@ -12,7 +12,7 @@ inline constexpr uint32_t kGeometryCookRevision = 4;
 // Small normalized normal-direction differences remain weighted simplification
 // error instead of hard seams. UVs and tangent handedness stay protected exactly.
 // This is a cook policy, not an attribute quantization or welding tolerance.
-inline constexpr float kMeshletLodNormalSeamTolerance = 1e-3f;
+inline constexpr float kMeshletLODNormalSeamTolerance = 1e-3f;
 
 bool validateGeometryAttributes(const RenderPrimitive& primitive, std::string& reason);
 // Repair finite zero-length authored normals from incident triangles. Preserve

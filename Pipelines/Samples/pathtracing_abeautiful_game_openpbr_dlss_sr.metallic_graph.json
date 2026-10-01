@@ -1,17 +1,17 @@
 {
     "edges": [
         {
-            "dst": "DlssSr.inputColor",
+            "dst": "DLSSSR.inputColor",
             "id": 1,
             "src": "PathTrace.color"
         },
         {
-            "dst": "DlssSr.motionVectors",
+            "dst": "DLSSSR.motionVectors",
             "id": 2,
             "src": "PathTrace.motionVectors"
         },
         {
-            "dst": "DlssSr.depth",
+            "dst": "DLSSSR.depth",
             "id": 3,
             "src": "PathTrace.depth"
         },
@@ -22,7 +22,7 @@
         },
         {
             "id": 5,
-            "src": "DlssSr.color",
+            "src": "DLSSSR.color",
             "dst": "AutoExposure.source"
         }
     ],
@@ -70,7 +70,7 @@
         },
         {
             "id": 2,
-            "name": "DlssSr",
+            "name": "DLSSSR",
             "position": {
                 "x": 540.0,
                 "y": 280.0
@@ -101,7 +101,7 @@
                 "mode": "Balanced",
                 "resetSerial": 0
             },
-            "type": "StreamlineDlssSrPass"
+            "type": "StreamlineDLSSSRPass"
         },
         {
             "id": 4,

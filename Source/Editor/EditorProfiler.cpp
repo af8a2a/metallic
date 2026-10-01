@@ -58,7 +58,7 @@ const char* queueName(render::QueueType queue)
 }
 
 enum class ProfilerColumn : ImGuiID {
-    Timer = 1, GpuAverage, CpuAverage, Queue, GpuLast, GpuMinimum, GpuMaximum, CpuLast, CpuMinimum, CpuMaximum
+    Timer = 1, GPUAverage, CPUAverage, Queue, GPULast, GPUMinimum, GPUMaximum, CPULast, CPUMinimum, CPUMaximum
 };
 
 using ProfilerTableRow = EditorProfiler::HistoryStatistics;
@@ -73,14 +73,14 @@ double tableSortValue(const EditorProfiler::Node& node, const ProfilerTableRow& 
 {
     const double missing = std::numeric_limits<double>::quiet_NaN();
     switch (column) {
-    case ProfilerColumn::GpuAverage: return row.gpu.count ? row.gpu.average : missing;
-    case ProfilerColumn::CpuAverage: return row.cpu.count ? row.cpu.average : missing;
-    case ProfilerColumn::GpuLast: return node.gpuTimingAvailable ? node.gpuMilliseconds : missing;
-    case ProfilerColumn::GpuMinimum: return row.gpu.count ? row.gpu.minimum : missing;
-    case ProfilerColumn::GpuMaximum: return row.gpu.count ? row.gpu.maximum : missing;
-    case ProfilerColumn::CpuLast: return node.cpuMilliseconds;
-    case ProfilerColumn::CpuMinimum: return row.cpu.count ? row.cpu.minimum : missing;
-    case ProfilerColumn::CpuMaximum: return row.cpu.count ? row.cpu.maximum : missing;
+    case ProfilerColumn::GPUAverage: return row.gpu.count ? row.gpu.average : missing;
+    case ProfilerColumn::CPUAverage: return row.cpu.count ? row.cpu.average : missing;
+    case ProfilerColumn::GPULast: return node.gpuTimingAvailable ? node.gpuMilliseconds : missing;
+    case ProfilerColumn::GPUMinimum: return row.gpu.count ? row.gpu.minimum : missing;
+    case ProfilerColumn::GPUMaximum: return row.gpu.count ? row.gpu.maximum : missing;
+    case ProfilerColumn::CPULast: return node.cpuMilliseconds;
+    case ProfilerColumn::CPUMinimum: return row.cpu.count ? row.cpu.minimum : missing;
+    case ProfilerColumn::CPUMaximum: return row.cpu.count ? row.cpu.maximum : missing;
     default: return missing;
     }
 }
@@ -161,16 +161,16 @@ void drawProfilerTable(const EditorProfiler::Frame& frame, const EditorProfiler&
             (numeric ? ImGuiTableColumnFlags_PreferSortDescending : ImGuiTableColumnFlags_None), width, static_cast<ImGuiID>(column));
     };
     ImGui::TableSetupColumn("Timer", ImGuiTableColumnFlags_WidthStretch, 300, static_cast<ImGuiID>(ProfilerColumn::Timer));
-    setupColumn("GPU avg ms", ProfilerColumn::GpuAverage, 90);
-    setupColumn("CPU avg ms", ProfilerColumn::CpuAverage, 90);
+    setupColumn("GPU avg ms", ProfilerColumn::GPUAverage, 90);
+    setupColumn("CPU avg ms", ProfilerColumn::CPUAverage, 90);
     setupColumn("Queue", ProfilerColumn::Queue, 90, false);
     if (detailed) {
-        setupColumn("GPU last", ProfilerColumn::GpuLast, 85);
-        setupColumn("GPU min", ProfilerColumn::GpuMinimum, 85);
-        setupColumn("GPU max", ProfilerColumn::GpuMaximum, 85);
-        setupColumn("CPU last", ProfilerColumn::CpuLast, 85);
-        setupColumn("CPU min", ProfilerColumn::CpuMinimum, 85);
-        setupColumn("CPU max", ProfilerColumn::CpuMaximum, 85);
+        setupColumn("GPU last", ProfilerColumn::GPULast, 85);
+        setupColumn("GPU min", ProfilerColumn::GPUMinimum, 85);
+        setupColumn("GPU max", ProfilerColumn::GPUMaximum, 85);
+        setupColumn("CPU last", ProfilerColumn::CPULast, 85);
+        setupColumn("CPU min", ProfilerColumn::CPUMinimum, 85);
+        setupColumn("CPU max", ProfilerColumn::CPUMaximum, 85);
     }
     ImGui::TableSetupScrollFreeze(1, 1);
     ImGui::TableHeadersRow();

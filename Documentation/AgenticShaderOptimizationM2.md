@@ -54,7 +54,7 @@
 
 - Release `MetallicGPUDrivenSample` 构建通过；日志 [m2-build-02.log](../build/m2-build-02.log)。
 - 三进程数据对应上述构建及 manifest 归档的源码/二进制 hash。之后增加了 SDK 重复启动/未启动停止的状态保护；不能把历史测量标签自动转移到后来重建的二进制。
-- 最终 `MetallicGPUDrivenSample` 与 `MetallicRhiTests` 构建通过；[构建日志](../build/m2-build-final.log)。[RHI SDK 状态测试](../build/m2-rhi-state.log) 1/1 通过：未启动即停止、未注入即启动、失败后再次停止均安全返回失败。
+- 最终 `MetallicGPUDrivenSample` 与 `MetallicRHITests` 构建通过；[构建日志](../build/m2-build-final.log)。[RHI SDK 状态测试](../build/m2-rhi-state.log) 1/1 通过：未启动即停止、未注入即启动、失败后再次停止均安全返回失败。
 - [12 项 WorkloadCase 证据测试](../tests/perf/TestWorkloadCase.py)通过；覆盖错配置、shader/queue、零工作量、bin 漂移、读回篡改、非有限时间戳、诊断计时、跨运行身份差异、噪声判定、路径越界与失败 manifest 不得重新认证。
 - [Perf CTest](../build/m2-perf-ctest.log) 4/4 通过，含之前 38 项 M0/M1 测试，总计 50 项 Python 测试。
 - 正式证据包的 `verify` 通过完整性和语义检查，重新计算的 A/A 仍为 `inconclusive`；命令以退出码 2 表示此结果，而非成功资格。

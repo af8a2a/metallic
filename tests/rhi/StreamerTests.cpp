@@ -2,9 +2,9 @@
 #include <stdexcept>
 #include <string>
 
-#include "RhiTest.h"
+#include "RHITest.h"
 
-#include "Runtime/Render/Streamer/MeshletStreamClas.h"
+#include "Runtime/Render/Streamer/MeshletStreamCLAS.h"
 #include "Runtime/Render/Streamer/MeshletStreamInitialLoader.h"
 #include "Runtime/Render/Streamer/MeshletStreamPageLoader.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
@@ -39,7 +39,7 @@
 namespace metallic::tests {
 namespace {
 
-RhiTestResult createCommandResources(
+RHITestResult createCommandResources(
     render::Device& device,
     render::Queue& queue,
     std::unique_ptr<render::CommandPool>& outCommandPool,
@@ -48,23 +48,23 @@ RhiTestResult createCommandResources(
 {
     render::Result<> result = device.createCommandPool(queue).transform([&](auto rhiValue) { outCommandPool = std::move(rhiValue); });
     if (!result || outCommandPool == nullptr) {
-        return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+        return RHITestResult::fail(std::string("createCommandPool returned ") + toString(result));
     }
 
     result = outCommandPool->createCommandBuffer().transform([&](auto rhiValue) { outCommandBuffer = std::move(rhiValue); });
     if (!result || outCommandBuffer == nullptr) {
-        return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+        return RHITestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
     }
 
     result = device.createFence(false).transform([&](auto rhiValue) { outFence = std::move(rhiValue); });
     if (!result || outFence == nullptr) {
-        return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
+        return RHITestResult::fail(std::string("createFence returned ") + toString(result));
     }
 
-    return RhiTestResult::pass();
+    return RHITestResult::pass();
 }
 
-RhiTestResult submitAndWait(
+RHITestResult submitAndWait(
     render::Queue& queue,
     render::CommandBuffer& commandBuffer,
     render::Fence& fence)
@@ -75,14 +75,14 @@ RhiTestResult submitAndWait(
         .signalFence = &fence,
     });
     if (!result) {
-        return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+        return RHITestResult::fail(std::string("Queue::submit returned ") + toString(result));
     }
 
     result = fence.wait(5'000'000'000ull);
     if (!result) {
-        return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+        return RHITestResult::fail(std::string("Fence::wait returned ") + toString(result));
     }
-    return RhiTestResult::pass();
+    return RHITestResult::pass();
 }
 
 bool readBufferBytes(render::Buffer& buffer, void* outData, uint64_t byteSize)
@@ -107,7 +107,7 @@ render::StreamerDesc makeTestStreamerDesc(uint64_t dynamicSizePerFrame = 1024)
     return desc;
 }
 
-RhiTestResult buildBunnyStreamAssetForTest(
+RHITestResult buildBunnyStreamAssetForTest(
     const std::filesystem::path& outputPath,
     scene::MeshletStreamAsset& outAsset,
     scene::MeshletStreamPayloadCompression compressionMode = scene::MeshletStreamPayloadCompression::None)
@@ -117,7 +117,7 @@ RhiTestResult buildBunnyStreamAssetForTest(
 
     scene::Scene scene;
     if (!scene.load(sourcePath)) {
-        return RhiTestResult::fail("Scene::load failed: " + scene.lastLoadResult().error);
+        return RHITestResult::fail("Scene::load failed: " + scene.lastLoadResult().error);
     }
 
     std::string reason;
@@ -129,16 +129,16 @@ RhiTestResult buildBunnyStreamAssetForTest(
                 .compressionMode = compressionMode,
             },
             reason)) {
-        return RhiTestResult::fail("buildMeshletStreamAsset failed: " + reason);
+        return RHITestResult::fail("buildMeshletStreamAsset failed: " + reason);
     }
 
     if (!outAsset.open(outputPath, reason)) {
-        return RhiTestResult::fail("MeshletStreamAsset::open failed: " + reason);
+        return RHITestResult::fail("MeshletStreamAsset::open failed: " + reason);
     }
     if (outAsset.pageCount() == 0) {
-        return RhiTestResult::fail("streamasset has no pages");
+        return RHITestResult::fail("streamasset has no pages");
     }
-    return RhiTestResult::pass();
+    return RHITestResult::pass();
 }
 
 std::vector<uint32_t> fallbackPagesFor(const scene::MeshletStreamAsset& asset)
@@ -237,20 +237,20 @@ public:
     std::vector<task::TaskGraphSnapshot> completed;
 };
 
-class MeshletStreamPageLoaderTaskGraphTest : public RhiTest {
+class MeshletStreamPageLoaderTaskGraphTest : public RHITest {
 public:
     MeshletStreamPageLoaderTaskGraphTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "meshlet_stream_page_loader_task_graph";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         const std::filesystem::path streamAssetPath =
             context.outputDirectory / "task_graph_page_loader.meshstream.bin";
         scene::MeshletStreamAsset asset;
-        RhiTestResult build = buildBunnyStreamAssetForTest(
+        RHITestResult build = buildBunnyStreamAssetForTest(
             streamAssetPath,
             asset,
             scene::MeshletStreamPayloadCompression::ByteRle);
@@ -261,7 +261,7 @@ public:
         render::MeshletStreamPageLoader loader;
         std::string reason;
         if (!loader.initialize(asset, 2, reason)) {
-            return RhiTestResult::fail("MeshletStreamPageLoader::initialize failed: " + reason);
+            return RHITestResult::fail("MeshletStreamPageLoader::initialize failed: " + reason);
         }
 
         auto sink = std::make_shared<PageLoaderEventSink>();
@@ -269,7 +269,7 @@ public:
         auto fail = [&](std::string message) {
             loader.reset();
             (void)task::taskSystem().unsubscribe(sinkToken);
-            return RhiTestResult::fail(std::move(message));
+            return RHITestResult::fail(std::move(message));
         };
 
         const uint32_t validLoadCount = std::min(asset.pageCount(), 8u);
@@ -364,21 +364,21 @@ public:
         (void)task::taskSystem().unsubscribe(sinkToken);
         if (loader.ready() || loader.pendingCount() != 0 || loader.activeCount() != 0 ||
             loader.completedCount() != 0 || loader.outstandingCount() != 0) {
-            return RhiTestResult::fail("MeshletStreamPageLoader::reset did not drain and clear the loader");
+            return RHITestResult::fail("MeshletStreamPageLoader::reset did not drain and clear the loader");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class MeshletStreamPageLoadConfigurationCompatibilityTest : public RhiTest {
+class MeshletStreamPageLoadConfigurationCompatibilityTest : public RHITest {
 public:
     MeshletStreamPageLoadConfigurationCompatibilityTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "meshlet_stream_page_load_configuration_compatibility";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderGraphProperties legacyOnly{{"pageLoadWorkerCount", 5}};
         render::RenderGraphProperties bothKeys{
@@ -396,27 +396,27 @@ public:
             render::builtin_pass::pageLoadConcurrencyFromProperties(invalidNewKey) != 4 ||
             render::builtin_pass::pageLoadConcurrencyFromProperties(capped) !=
                 render::kMeshletStreamMaxPageLoadConcurrency) {
-            return RhiTestResult::fail("page load concurrency configuration compatibility failed");
+            return RHITestResult::fail("page load concurrency configuration compatibility failed");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class StreamingTaskQueueLifecycleTest : public RhiTest {
+class StreamingTaskQueueLifecycleTest : public RHITest {
 public:
     StreamingTaskQueueLifecycleTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "streaming_task_queue_lifecycle";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::StreamingTaskQueue queue;
         if (queue.availableTaskCount() != render::kStreamingMaxActiveTasks ||
             queue.queuedTaskCount() != 0 ||
             queue.acquiredTaskCount() != 0) {
-            return RhiTestResult::fail("new StreamingTaskQueue did not start with all tasks available");
+            return RHITestResult::fail("new StreamingTaskQueue did not start with all tasks available");
         }
 
         const uint32_t first = queue.acquireTaskIndex();
@@ -429,7 +429,7 @@ public:
             fourth != render::kInvalidStreamingTaskIndex ||
             queue.availableTaskCount() != 0 ||
             queue.acquiredTaskCount() != render::kStreamingMaxActiveTasks) {
-            return RhiTestResult::fail("StreamingTaskQueue did not allocate fixed task indices in order");
+            return RHITestResult::fail("StreamingTaskQueue did not allocate fixed task indices in order");
         }
 
         queue.push(first, 5, 17);
@@ -442,34 +442,34 @@ public:
             queue.frontTaskIndex() != first ||
             queue.frontDependentIndex() != 17 ||
             queue.frontCompletionFrameIndex() != 5) {
-            return RhiTestResult::fail("StreamingTaskQueue did not expose front task acquisition pressure");
+            return RHITestResult::fail("StreamingTaskQueue did not expose front task acquisition pressure");
         }
         if (queue.canPop(4, false) ||
             !queue.canPop(5, false) ||
             queue.queuedTaskCount() != 2) {
-            return RhiTestResult::fail("StreamingTaskQueue completion frame test failed");
+            return RHITestResult::fail("StreamingTaskQueue completion frame test failed");
         }
 
         uint32_t dependent = render::kInvalidStreamingTaskIndex;
         const uint32_t popped = queue.popWithDependent(dependent);
         if (popped != first || dependent != 17 || queue.queuedTaskCount() != 1) {
-            return RhiTestResult::fail("StreamingTaskQueue did not pop the first queued task with its dependent index");
+            return RHITestResult::fail("StreamingTaskQueue did not pop the first queued task with its dependent index");
         }
         queue.releaseTaskIndex(popped);
         if (queue.availableTaskCount() != 1 || queue.acquiredTaskCount() != 2) {
-            return RhiTestResult::fail("StreamingTaskQueue did not release a completed task index");
+            return RHITestResult::fail("StreamingTaskQueue did not release a completed task index");
         }
 
         const uint32_t recycled = queue.acquireTaskIndex();
         if (recycled != first) {
-            return RhiTestResult::fail("StreamingTaskQueue did not recycle the released task index");
+            return RHITestResult::fail("StreamingTaskQueue did not recycle the released task index");
         }
         queue.push(recycled, 6);
         if (queue.canPop(6, false)) {
-            return RhiTestResult::fail("StreamingTaskQueue did not preserve FIFO completion order");
+            return RHITestResult::fail("StreamingTaskQueue did not preserve FIFO completion order");
         }
         if (!queue.canPop(7, true)) {
-            return RhiTestResult::fail("StreamingTaskQueue did not report the front task ready at its completion frame");
+            return RHITestResult::fail("StreamingTaskQueue did not report the front task ready at its completion frame");
         }
 
         queue.releaseTaskIndex(queue.pop());
@@ -478,32 +478,32 @@ public:
         if (!queue.empty() ||
             queue.availableTaskCount() != render::kStreamingMaxActiveTasks ||
             queue.acquiredTaskCount() != 0) {
-            return RhiTestResult::fail("StreamingTaskQueue did not return to an idle state");
+            return RHITestResult::fail("StreamingTaskQueue did not return to an idle state");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class MeshletStreamStorageAddressLimitTest : public RhiTest {
+class MeshletStreamStorageAddressLimitTest : public RHITest {
 public:
     MeshletStreamStorageAddressLimitTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "meshlet_stream_storage_address_limit";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         constexpr uint64_t kLargeCapacity = 5ull * 1024ull * 1024ull * 1024ull;
         render::MeshletStreamStorage storage;
         std::string reason;
         if (storage.initialize(kLargeCapacity, 256, reason)) {
-            return RhiTestResult::fail("page storage accepted a byte budget above its default 32-bit limit");
+            return RHITestResult::fail("page storage accepted a byte budget above its default 32-bit limit");
         }
         if (!storage.initialize(kLargeCapacity, 256, reason, UINT64_MAX) ||
             storage.capacityBytes() != kLargeCapacity) {
-            return RhiTestResult::fail("64-bit CLAS storage budget initialization failed: " + reason);
+            return RHITestResult::fail("64-bit CLAS storage budget initialization failed: " + reason);
         }
 
         const render::MeshletStreamStorageAllocation allocation =
@@ -511,20 +511,20 @@ public:
         if (!allocation.valid() ||
             allocation.offset != 0 ||
             storage.usedBytes() != allocation.allocatedSize) {
-            return RhiTestResult::fail("64-bit CLAS storage allocation failed");
+            return RHITestResult::fail("64-bit CLAS storage allocation failed");
         }
         storage.release(allocation);
         if (storage.usedBytes() != 0 || storage.freeBytes() != storage.capacityBytes()) {
-            return RhiTestResult::fail("64-bit CLAS storage release did not restore capacity");
+            return RHITestResult::fail("64-bit CLAS storage release did not restore capacity");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class StreamLodPipelineCacheTest : public RhiTest {
+class StreamLODPipelineCacheTest : public RHITest {
 public:
-    StreamLodPipelineCacheTest() { type = RhiTestType::Resource; name = "stream_lod_pipeline_cache_persistence"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamLODPipelineCacheTest() { type = RHITestType::Resource; name = "stream_lod_pipeline_cache_persistence"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         std::unique_ptr<Device> device;
@@ -532,8 +532,8 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
             .enableShaderObject = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!created) {
-            return hasError(created, Error::Unsupported) ? RhiTestResult::skip("Bindless device unavailable")
-                : RhiTestResult::fail("Cannot create LOD cache test device");
+            return hasError(created, Error::Unsupported) ? RHITestResult::skip("Bindless device unavailable")
+                : RHITestResult::fail("Cannot create LOD cache test device");
         }
         const auto assetPath = context.outputDirectory / "lod_pipeline_cache.meshstream.bin";
         scene::MeshletStreamAsset asset;
@@ -542,7 +542,7 @@ public:
         const auto cachePath = context.outputDirectory / "lod_pipeline_cache.pso";
         std::error_code fileError;
         std::filesystem::remove(cachePath, fileError);
-        if (fileError) { return RhiTestResult::fail("Cannot clear test pipeline cache: " + fileError.message()); }
+        if (fileError) { return RHITestResult::fail("Cannot clear test pipeline cache: " + fileError.message()); }
         const std::string cacheName = cachePath.string();
         const MeshletStreamRuntimeDesc desc{
             .sourcePath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf",
@@ -563,20 +563,20 @@ public:
         // driver data and PSO keys, not retained pipeline objects.
         for (uint32_t pass = 0; pass < 2; ++pass) {
             auto result = device->createPipelineCache({.filePath = cacheName.c_str(), .saveOnDestroy = false}).transform([&](auto rhiValue) { cache = std::move(rhiValue); });
-            if (!result || !cache) { return RhiTestResult::fail("Cannot create LOD test cache"); }
+            if (!result || !cache) { return RHITestResult::fail("Cannot create LOD test cache"); }
             const auto expectedLoad = pass == 0 ? PipelineCacheLoadStatus::NotFound : PipelineCacheLoadStatus::Loaded;
-            if (cache->stats().loadStatus != expectedLoad) { return RhiTestResult::fail("LOD cache load status mismatch"); }
+            if (cache->stats().loadStatus != expectedLoad) { return RHITestResult::fail("LOD cache load status mismatch"); }
             result = runtime.initialize(*device, desc, log, cache.get());
-            if (!result || !runtime.ready()) { return RhiTestResult::fail("LOD initialization failed: " + log); }
+            if (!result || !runtime.ready()) { return RHITestResult::fail("LOD initialization failed: " + log); }
             const auto stats = cache->stats();
             // Page-table init/update, traversal, active build, cooperative LOD.
             if (stats.sessionPsoCount != 5 || stats.hitCount != (pass == 0 ? 0 : 5) ||
                 stats.missCount != (pass == 0 ? 5 : 0)) {
-                return RhiTestResult::fail("An internal streaming/LOD pipeline bypassed the persistent cache");
+                return RHITestResult::fail("An internal streaming/LOD pipeline bypassed the persistent cache");
             }
             result = cache->save();
             if (!result || cache->stats().backendDataSize == 0) {
-                return RhiTestResult::fail("LOD cache did not serialize native pipeline data");
+                return RHITestResult::fail("LOD cache did not serialize native pipeline data");
             }
             // Initialization does not retain the caller's cache pointer.
             cache.reset();
@@ -584,32 +584,32 @@ public:
         }
         const auto uncached = runtime.initialize(*device, desc, log);
         if (!uncached || !runtime.ready()) {
-            return RhiTestResult::fail("Optional-cache compatibility failed: " + log);
+            return RHITestResult::fail("Optional-cache compatibility failed: " + log);
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(StreamLodPipelineCacheTest);
+METALLIC_REGISTER_RHI_TEST(StreamLODPipelineCacheTest);
 
-class StreamLodDisplayPixelParamsTest final : public RhiTest {
+class StreamLODDisplayPixelParamsTest final : public RHITest {
 public:
-    StreamLodDisplayPixelParamsTest()
+    StreamLODDisplayPixelParamsTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "meshlet_lod_stream_display_pixel_params";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Stream display-pixel LOD",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
             .transform([&](auto value) { device = std::move(value); });
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless compute"); }
-        if (!created) { return RhiTestResult::fail("Cannot create stream display-pixel device"); }
-        const auto assetPath = std::filesystem::absolute(context.outputDirectory / "DisplayPixelLod.meshstream.bin");
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless compute"); }
+        if (!created) { return RHITestResult::fail("Cannot create stream display-pixel device"); }
+        const auto assetPath = std::filesystem::absolute(context.outputDirectory / "DisplayPixelLOD.meshstream.bin");
         scene::MeshletStreamAsset asset;
         const auto built = buildBunnyStreamAssetForTest(assetPath, asset);
         if (!built.passed) { return built; }
@@ -621,7 +621,7 @@ public:
             .maxPageUploadsPerFrame = 64, .maxGpuPageRequests = 256, .maxGpuPageUnloadRequests = 256,
             .maxActiveGroups = 2048, .maxTraversalWorkers = 64, .maxTraversalWorkItems = 4096,
             .pageLoadConcurrency = 0, .queuedFrameCount = 2, .prefetchPages = false}, log);
-        if (!initialized) { return RhiTestResult::fail("Stream initialize: " + log); }
+        if (!initialized) { return RHITestResult::fail("Stream initialize: " + log); }
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -630,7 +630,7 @@ public:
         if (!setup.passed) { return setup; }
         std::unique_ptr<Streamer> streamer;
         if (!device->createStreamer(makeTestStreamerDesc()).transform([&](auto value) { streamer = std::move(value); })) {
-            return RhiTestResult::fail("Cannot create display-pixel streamer");
+            return RHITestResult::fail("Cannot create display-pixel streamer");
         }
         struct Case {
             uint32_t renderHeight, displayHeight;
@@ -658,44 +658,44 @@ public:
                 frame.renderCamera = frame.camera;
                 frame.renderCamera.fovDegrees = 75.f;
                 if (!pool->reset() || !fence->reset() || !commands->begin()) {
-                    return RhiTestResult::fail("Display-pixel frame setup failed");
+                    return RHITestResult::fail("Display-pixel frame setup failed");
                 }
                 auto result = runtime.cmdBeginFrame(*commands, *streamer, frame);
                 if (result) { result = commands->copyStreamedData(*streamer); }
                 if (result) { result = runtime.cmdPreTraversal(*commands, frame); }
                 if (result) { result = runtime.cmdPostTraversal(*commands); }
                 if (result) { result = runtime.cmdEndFrame(*commands); }
-                if (!result || !commands->end()) { return RhiTestResult::fail("Display-pixel frame recording failed"); }
+                if (!result || !commands->end()) { return RHITestResult::fail("Display-pixel frame recording failed"); }
                 const auto submitted = submitAndWait(*queue, *commands, *fence);
                 streamer->endFrame();
                 if (!submitted.passed) { return submitted; }
-                MeshletStreamGpuParams params;
+                MeshletStreamGPUParams params;
                 auto* buffer = runtime.deferredGpuResources().paramsBuffer;
                 if (!buffer || !readBufferBytes(*buffer, &params, sizeof(params))) {
-                    return RhiTestResult::fail("Cannot read published stream parameters");
+                    return RHITestResult::fail("Cannot read published stream parameters");
                 }
                 if (std::abs(params.lodPixelError - test.expected) > 1e-6f ||
                     params.viewport[1] != float(std::max(frame.width, 1u)) ||
                     params.viewport[2] != float(std::max(frame.height, 1u)) ||
                     params.renderViewport[1] != params.viewport[1] || params.renderViewport[2] != params.viewport[2] ||
                     params.upProjection[3] != (orthographic ? 1.f : 0.f)) {
-                    return RhiTestResult::fail("Published LOD threshold or raster viewport used the wrong pixel space");
+                    return RHITestResult::fail("Published LOD threshold or raster viewport used the wrong pixel space");
                 }
             }
         }
-        return RhiTestResult::pass("Stream frame-to-GPU parameters convert display thresholds after clamp/bias and preserve internal raster dimensions, including separate render cameras and missing extents");
+        return RHITestResult::pass("Stream frame-to-GPU parameters convert display thresholds after clamp/bias and preserve internal raster dimensions, including separate render cameras and missing extents");
     }
 };
-METALLIC_REGISTER_RHI_TEST(StreamLodDisplayPixelParamsTest);
+METALLIC_REGISTER_RHI_TEST(StreamLODDisplayPixelParamsTest);
 
-class StreamClasRuntimeTest : public RhiTest {
+class StreamCLASRuntimeTest : public RHITest {
 public:
-    explicit StreamClasRuntimeTest(bool pressure = false) : pressure_(pressure)
+    explicit StreamCLASRuntimeTest(bool pressure = false) : pressure_(pressure)
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = pressure ? "stream_clas_eviction_reupload" : "stream_clas_runtime_lifecycle";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         std::unique_ptr<Device> device;
@@ -703,10 +703,10 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
             .enableShaderObject = true, .enableClusterAccelerationStructure = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!created) {
-            return hasError(created, Error::Unsupported) ? RhiTestResult::skip("Requires CLAS and bindless support")
-                : RhiTestResult::fail("CLAS device creation failed");
+            return hasError(created, Error::Unsupported) ? RHITestResult::skip("Requires CLAS and bindless support")
+                : RHITestResult::fail("CLAS device creation failed");
         }
-        if (!device->capabilities().clusterAccelerationStructure) { return RhiTestResult::skip("CLAS unavailable"); }
+        if (!device->capabilities().clusterAccelerationStructure) { return RHITestResult::skip("CLAS unavailable"); }
         const auto path = std::filesystem::absolute(context.outputDirectory / "clas_lifecycle.meshstream.bin");
         scene::MeshletStreamAsset asset;
         const auto built = buildBunnyStreamAssetForTest(path, asset, scene::MeshletStreamPayloadCompression::ByteRle);
@@ -722,7 +722,7 @@ public:
             .pageLoadConcurrency = pressure_ ? 0u : 1u, .maxPageLoadsInFlight = 64, .queuedFrameCount = 2,
             .enableClas = true, .maxClasBytes = pressure_ ? 64ull << 10 : 16ull << 20, .maxClasBuildClusters = pressure_ ? budget * asset.pageCount() : budget,
             .prefetchPages = false}, log);
-        if (!initialized) { return RhiTestResult::fail("CLAS-only initialize: " + log); }
+        if (!initialized) { return RHITestResult::fail("CLAS-only initialize: " + log); }
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -730,7 +730,7 @@ public:
         const auto setup = createCommandResources(*device, *queue, pool, commands, fence);
         if (!setup.passed) { return setup; }
         std::unique_ptr<Streamer> streamer;
-        if (!device->createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) { return RhiTestResult::fail("Cannot create streamer"); }
+        if (!device->createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) { return RHITestResult::fail("Cannot create streamer"); }
         MeshletStreamFrameDesc frame{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
         frame.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f},
             .znear = .001f, .zfar = 10.f};
@@ -738,17 +738,17 @@ public:
         bool sawBuilt = false, sawPending = false;
         uint64_t stableBuildCount = 0;
         uint32_t reloadPage = UINT32_MAX;
-        std::ofstream trace(context.outputDirectory / (pressure_ ? "ClasEviction.jsonl" : "ClasLifecycle.jsonl"));
+        std::ofstream trace(context.outputDirectory / (pressure_ ? "CLASEviction.jsonl" : "CLASLifecycle.jsonl"));
         for (uint32_t f = 0; f < 420; ++f) {
             frame.camera = nearCamera;
             if (f >= 180 && f < 240) { frame.camera.eye = {100.f, 100.f, 100.f}; frame.camera.center = {101.f, 100.f, 100.f}; }
-            if (!pool->reset() || !fence->reset() || !commands->begin()) { return RhiTestResult::fail("Frame setup failed"); }
+            if (!pool->reset() || !fence->reset() || !commands->begin()) { return RHITestResult::fail("Frame setup failed"); }
             if (pressure_ && reloadPage != UINT32_MAX && f % 12 == 2) {
                 const_cast<MeshletStreamResidencyManager&>(runtime.residency()).requestPage(reloadPage);
             }
             auto result = runtime.cmdBeginFrame(*commands, *streamer, frame);
             if (result) {
-                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 // Keep the old CLAS queue entry across unload completion, then
                 // admit a new upload before draining it (e.g. deferred traversal).
                 if (!pressure_ || reloadPage == UINT32_MAX || f % 12 != 1) {
@@ -757,7 +757,7 @@ public:
             }
             if (result) { result = runtime.cmdPostTraversal(*commands); }
             if (result) { result = runtime.cmdEndFrame(*commands); }
-            if (!result || !commands->end()) { return RhiTestResult::fail("CLAS frame failed: " + std::string(toString(result))); }
+            if (!result || !commands->end()) { return RHITestResult::fail("CLAS frame failed: " + std::string(toString(result))); }
             const auto submitted = submitAndWait(*queue, *commands, *fence);
             streamer->endFrame();
             if (!submitted.passed) { return submitted; }
@@ -768,7 +768,7 @@ public:
                     {"retiring", stats.clasRetiringPages}, {"rejected", stats.clasRejectedPages}, {"bytes", stats.clasUsedBytes}}}}.dump() << '\n';
             if (!stats.clasEnabled || runtime.tlasReady() || runtime.accelerationStructure() ||
                 stats.clasBuiltClusters > budget || stats.clasUsedBytes > stats.clasCapacityBytes) {
-                return RhiTestResult::fail("CLAS-only runtime violated build/storage budget or built a TLAS");
+                return RHITestResult::fail("CLAS-only runtime violated build/storage budget or built a TLAS");
             }
             if (pressure_ && f > 40 && f % 12 == 0) {
                 // Inject the same unload operation used by GPU feedback after
@@ -788,41 +788,41 @@ public:
             sawPending |= stats.clasPendingPages > 0;
             if (f == 150) { stableBuildCount = stats.clasTotalBuiltPages; }
             if (!pressure_ && f >= 151 && f < 180 && (stats.clasTotalBuiltPages != stableBuildCount || stats.clasPendingPages != 0)) {
-                return RhiTestResult::fail("Steady resident CLAS rebuilt or backlog failed to converge");
+                return RHITestResult::fail("Steady resident CLAS rebuilt or backlog failed to converge");
             }
         }
         const auto last = runtime.profilingStats();
         if (pressure_) {
             const auto residency = runtime.residency().stats();
             if (!sawPending || residency.totalCompletedUnloadCount < 10 || last.clasRejectedPages == 0) {
-                return RhiTestResult::fail("Pressure fixture did not exercise eviction and exhausted CLAS storage: " +
+                return RHITestResult::fail("Pressure fixture did not exercise eviction and exhausted CLAS storage: " +
                     std::to_string(residency.totalCompletedUnloadCount));
             }
-            return RhiTestResult::pass("CLAS budget exhaustion with repeated geometry eviction/reupload retains live upload plans");
+            return RHITestResult::pass("CLAS budget exhaustion with repeated geometry eviction/reupload retains live upload plans");
         }
         if (!sawBuilt || !sawPending || last.clasPendingPages || last.clasResidentPages != last.residentPages ||
             last.clasTotalBuiltPages != stableBuildCount) {
-            return RhiTestResult::fail("Lifecycle coverage/convergence: built=" + std::to_string(sawBuilt) +
+            return RHITestResult::fail("Lifecycle coverage/convergence: built=" + std::to_string(sawBuilt) +
                 " pending=" + std::to_string(sawPending) +
                 " final pending=" + std::to_string(last.clasPendingPages) + " resident=" + std::to_string(last.residentPages) +
                 " CLAS=" + std::to_string(last.clasResidentPages));
         }
-        return RhiTestResult::pass("Compressed uploads, bounded build backlog, camera round-trip reuses cached CLAS, independent CLAS without BLAS/TLAS");
+        return RHITestResult::pass("Compressed uploads, bounded build backlog, camera round-trip reuses cached CLAS, independent CLAS without BLAS/TLAS");
     }
 private:
     bool pressure_ = false;
 };
-METALLIC_REGISTER_RHI_TEST(StreamClasRuntimeTest);
-class StreamClasEvictionTest final : public StreamClasRuntimeTest {
+METALLIC_REGISTER_RHI_TEST(StreamCLASRuntimeTest);
+class StreamCLASEvictionTest final : public StreamCLASRuntimeTest {
 public:
-    StreamClasEvictionTest() : StreamClasRuntimeTest(true) {}
+    StreamCLASEvictionTest() : StreamCLASRuntimeTest(true) {}
 };
-METALLIC_REGISTER_RHI_TEST(StreamClasEvictionTest);
+METALLIC_REGISTER_RHI_TEST(StreamCLASEvictionTest);
 
-class StreamBlasCacheTest final : public RhiTest {
+class StreamBLASCacheTest final : public RHITest {
 public:
-    StreamBlasCacheTest() { type = RhiTestType::Rendering; name = "stream_blas_cut_cache"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamBLASCacheTest() { type = RHITestType::Rendering; name = "stream_blas_cut_cache"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         std::unique_ptr<Device> device;
@@ -830,8 +830,8 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
             .enableShaderObject = true, .enableRayTracingAccelerationStructure = true,
             .enableRayQuery = true, .enableClusterAccelerationStructure = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (!created) { return hasError(created, Error::Unsupported) ? RhiTestResult::skip("CLAS unavailable")
-            : RhiTestResult::fail("Device creation failed"); }
+        if (!created) { return hasError(created, Error::Unsupported) ? RHITestResult::skip("CLAS unavailable")
+            : RHITestResult::fail("Device creation failed"); }
         const auto path = std::filesystem::absolute(context.outputDirectory / "blas_cache.meshstream.bin");
         scene::MeshletStreamAsset asset;
         const auto built = buildBunnyStreamAssetForTest(path, asset, scene::MeshletStreamPayloadCompression::ByteRle);
@@ -861,13 +861,13 @@ public:
             std::unique_ptr<Buffer> readback;
             require(bool(tracker.initialize(*device, *queue)) && bool(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); })) &&
                 bool(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })) && bool(device->createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) &&
-                bool(device->createBuffer({.size = sizeof(MeshletStreamGpuBlasHeader) + sizeof(MeshletStreamGpuActiveHeader) + 2048 * sizeof(MeshletStreamGpuActiveGroup), .usage = BufferUsageBits::TransferDestination,
+                bool(device->createBuffer({.size = sizeof(MeshletStreamGPUBLASHeader) + sizeof(MeshletStreamGPUActiveHeader) + 2048 * sizeof(MeshletStreamGPUActiveGroup), .usage = BufferUsageBits::TransferDestination,
                     .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); })), "Frame resources failed");
             MeshletStreamFrameDesc view{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
             view.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f}, .znear = .001f, .zfar = 10.f};
             uint64_t frameId = 0;
             bool cancelledInitialFallback = false;
-            MeshletStreamGpuBlasHeader header;
+            MeshletStreamGPUBLASHeader header;
             std::vector<uint32_t> referencedPages;
             uint64_t lastAcceptedFeedback = UINT64_MAX;
             const auto record = [&](bool cancel = false) {
@@ -906,8 +906,8 @@ public:
                 std::swap(barrier.before, barrier.after);
                 if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
                 uint64_t readOffset = sizeof(header);
-                for (const auto& [name, bytes] : {std::pair{"test.activeHeader", uint64_t(sizeof(MeshletStreamGpuActiveHeader))},
-                        std::pair{"test.activeGroups", uint64_t(2048 * sizeof(MeshletStreamGpuActiveGroup))}}) {
+                for (const auto& [name, bytes] : {std::pair{"test.activeHeader", uint64_t(sizeof(MeshletStreamGPUActiveHeader))},
+                        std::pair{"test.activeGroups", uint64_t(2048 * sizeof(MeshletStreamGPUActiveGroup))}}) {
                     const auto source = std::find_if(bindings.begin(), bindings.end(), [&](const auto& binding) { return binding.id == name; });
                     require(source != bindings.end(), "Active cut telemetry missing");
                     BufferBarrierDesc copyBarrier{.buffer = source->buffer,
@@ -944,11 +944,11 @@ public:
                 const auto* data = readback->map();
                 require(data != nullptr, "BLAS readback failed");
                 std::memcpy(&header, data, sizeof(header));
-                MeshletStreamGpuActiveHeader active;
+                MeshletStreamGPUActiveHeader active;
                 std::memcpy(&active, static_cast<const uint8_t*>(data) + sizeof(header), sizeof(active));
                 referencedPages.clear();
                 for (uint32_t group = 0; group < std::min(active.activeGroupCount, 2048u); ++group) {
-                    MeshletStreamGpuActiveGroup entry;
+                    MeshletStreamGPUActiveGroup entry;
                     std::memcpy(&entry, static_cast<const uint8_t*>(data) + sizeof(header) + sizeof(active) + group * sizeof(entry), sizeof(entry));
                     referencedPages.push_back(entry.pageIndex);
                 }
@@ -1004,17 +1004,17 @@ public:
             runtime.reset();
             require(!runtime.sceneReady() && runtime.sceneReadiness().requiredPages == 0,
                 "Reset retained the previous scene readiness");
-            return RhiTestResult::pass("Stable cut reuse, changed LOD, cancellation and CLAS retirement invalidation");
-        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Stable cut reuse, changed LOD, cancellation and CLAS retirement invalidation");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
-METALLIC_REGISTER_RHI_TEST(StreamBlasCacheTest);
+METALLIC_REGISTER_RHI_TEST(StreamBLASCacheTest);
 
-class StreamInitialLoadingTest final : public RhiTest {
+class StreamInitialLoadingTest final : public RHITest {
 public:
-    StreamInitialLoadingTest() { type = RhiTestType::Rendering; name = "stream_initial_loading"; }
+    StreamInitialLoadingTest() { type = RHITestType::Rendering; name = "stream_initial_loading"; }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         const auto require = [](bool condition, const std::string& reason) {
@@ -1032,8 +1032,8 @@ public:
                 }
             }, .context = &validationMessages}})
             .transform([&](auto value) { device = std::move(value); });
-        if (!created) { return hasError(created, Error::Unsupported) ? RhiTestResult::skip("CLAS unavailable")
-            : RhiTestResult::fail("Initial loading device creation failed"); }
+        if (!created) { return hasError(created, Error::Unsupported) ? RHITestResult::skip("CLAS unavailable")
+            : RHITestResult::fail("Initial loading device creation failed"); }
         try {
             {
                 // Four independent primitives force a root batch larger than the
@@ -1249,8 +1249,8 @@ public:
                         "Metadata traversal recording failed");
                     std::vector<DebugResourceBinding> bindings;
                     runtime.appendDebugBindings(bindings, "metadata.");
-                    const uint64_t headerBytes = sizeof(MeshletStreamGpuActiveHeader);
-                    const uint64_t groupsBytes = uint64_t(desc.maxActiveGroups) * sizeof(MeshletStreamGpuActiveGroup);
+                    const uint64_t headerBytes = sizeof(MeshletStreamGPUActiveHeader);
+                    const uint64_t groupsBytes = uint64_t(desc.maxActiveGroups) * sizeof(MeshletStreamGPUActiveGroup);
                     std::unique_ptr<Buffer> cutReadback;
                     require(bool(device->createBuffer({.size = headerBytes + groupsBytes,
                         .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback})
@@ -1285,13 +1285,13 @@ public:
                     streamer->endFrame();
                     std::vector<uint8_t> cutBytes(headerBytes + groupsBytes);
                     require(readBufferBytes(*cutReadback, cutBytes.data(), cutBytes.size()), "Metadata cut readback failed");
-                    MeshletStreamGpuActiveHeader active;
+                    MeshletStreamGPUActiveHeader active;
                     std::memcpy(&active, cutBytes.data(), sizeof(active));
                     require(active.activeGroupCount > 0 && active.activeGroupCount <= desc.maxActiveGroups && active.overflowCount == 0,
                         "Initialized metadata produced an empty or overflowing traversal cut");
                     std::vector<std::array<uint32_t, 6>> cut;
                     for (uint32_t group = 0; group < active.activeGroupCount; ++group) {
-                        MeshletStreamGpuActiveGroup entry;
+                        MeshletStreamGPUActiveGroup entry;
                         std::memcpy(&entry, cutBytes.data() + headerBytes + group * sizeof(entry), sizeof(entry));
                         cut.push_back({entry.instanceIndex, entry.primitiveIndex, entry.pageIndex,
                             entry.lodLevel, entry.clusterCount, entry.clusterSelectionMask});
@@ -1335,22 +1335,22 @@ public:
             // Include retirement and device destruction in the validation verdict.
             device.reset();
             require(validationMessages.load() == 0, "Initial loading produced Vulkan validation errors");
-            return RhiTestResult::pass("Device/Host metadata agree on GPU traversal; independent loading, cancellation, GPU-gated readiness, steady-state budgets and reload");
-        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Device/Host metadata agree on GPU traversal; independent loading, cancellation, GPU-gated readiness, steady-state budgets and reload");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamInitialLoadingTest);
 
 
-class StreamerBufferUploadTest : public RhiTest {
+class StreamerBufferUploadTest : public RHITest {
 public:
     StreamerBufferUploadTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "streamer_buffer_upload";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         constexpr std::array<uint32_t, 4> kExpected{
             0x11223344u,
@@ -1363,7 +1363,7 @@ public:
         std::unique_ptr<render::Streamer> streamer;
         render::Result<> result = context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
-            return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> readbackBuffer;
@@ -1373,7 +1373,7 @@ public:
                 .memoryLocation = render::MemoryLocation::HostReadback,
             }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
         if (!result || readbackBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
 
         const render::StreamDataChunk chunks[] = {
@@ -1393,7 +1393,7 @@ public:
             .dstOffset = 0,
         });
         if (!streamed.valid()) {
-            return RhiTestResult::fail("streamBufferData returned an invalid source");
+            return RHITestResult::fail("streamBufferData returned an invalid source");
         }
         render::StreamerStats streamerStats = streamer->stats();
         if (streamerStats.currentFrameDynamicBytes != kByteSize ||
@@ -1401,13 +1401,13 @@ public:
             streamerStats.totalDynamicBytes != 0 ||
             streamerStats.pendingCopies.bufferCopyCount != 1 ||
             streamerStats.pendingCopies.bufferCopyBytes != kByteSize) {
-            return RhiTestResult::fail("streamBufferData did not update current-frame dynamic streamer stats");
+            return RHITestResult::fail("streamBufferData did not update current-frame dynamic streamer stats");
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         std::unique_ptr<render::Fence> fence;
-        RhiTestResult setup = createCommandResources(
+        RHITestResult setup = createCommandResources(
             context.device,
             context.graphicsQueue,
             commandPool,
@@ -1419,7 +1419,7 @@ public:
 
         result = commandBuffer->begin();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
         render::BufferBarrierDesc toTransfer{
             .buffer = readbackBuffer.get(),
@@ -1429,14 +1429,14 @@ public:
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = {&toTransfer, 1},
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
-        RhiTestResult submit = submitAndWait(context.graphicsQueue, *commandBuffer, *fence);
+        RHITestResult submit = submitAndWait(context.graphicsQueue, *commandBuffer, *fence);
         streamer->endFrame();
         if (!submit.passed) {
             return submit;
@@ -1447,29 +1447,29 @@ public:
             streamerStats.peakFrameDynamicBytes != kByteSize ||
             streamerStats.totalDynamicBytes != kByteSize ||
             streamerStats.lastFrameDynamicRequestCount != 1) {
-            return RhiTestResult::fail("Streamer::endFrame did not roll dynamic upload stats");
+            return RHITestResult::fail("Streamer::endFrame did not roll dynamic upload stats");
         }
 
         std::array<uint32_t, 4> actual{};
         if (!readBufferBytes(*readbackBuffer, actual.data(), kByteSize)) {
-            return RhiTestResult::fail("readback buffer did not map");
+            return RHITestResult::fail("readback buffer did not map");
         }
         if (actual != kExpected) {
-            return RhiTestResult::fail("streamed buffer bytes did not match expected pattern");
+            return RHITestResult::fail("streamed buffer bytes did not match expected pattern");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class StreamerTextureUploadTest : public RhiTest {
+class StreamerTextureUploadTest : public RHITest {
 public:
     StreamerTextureUploadTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "streamer_texture_upload";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         constexpr uint32_t kWidth = 4;
         constexpr uint32_t kHeight = 4;
@@ -1501,14 +1501,14 @@ public:
         std::unique_ptr<render::Streamer> streamer;
         render::Result<> result = context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
-            return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
 
         std::unique_ptr<render::Texture> texture;
         result = context.device.createTexture(render::TextureDesc{
                 .type = render::TextureType::Texture2D,
                 .usage = render::TextureUsageBits::TransferDestination | render::TextureUsageBits::TransferSource,
-                .format = render::Format::Rgba8Unorm,
+                .format = render::Format::RGBA8Unorm,
                 .width = kWidth,
                 .height = kHeight,
                 .depth = 1,
@@ -1517,7 +1517,7 @@ public:
                 .memoryLocation = render::MemoryLocation::Device,
             }).transform([&](auto rhiValue) { texture = std::move(rhiValue); });
         if (!result || texture == nullptr) {
-            return RhiTestResult::fail(std::string("createTexture returned ") + toString(result));
+            return RHITestResult::fail(std::string("createTexture returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> readbackBuffer;
@@ -1527,7 +1527,7 @@ public:
                 .memoryLocation = render::MemoryLocation::HostReadback,
             }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
         if (!result || readbackBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
 
         render::BufferOffset streamed = streamer->streamTextureData(render::StreamTextureDataDesc{
@@ -1540,13 +1540,13 @@ public:
             .depth = 1,
         });
         if (!streamed.valid()) {
-            return RhiTestResult::fail("streamTextureData returned an invalid source");
+            return RHITestResult::fail("streamTextureData returned an invalid source");
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         std::unique_ptr<render::Fence> fence;
-        RhiTestResult setup = createCommandResources(
+        RHITestResult setup = createCommandResources(
             context.device,
             context.graphicsQueue,
             commandPool,
@@ -1558,7 +1558,7 @@ public:
 
         result = commandBuffer->begin();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
         render::TextureBarrierDesc textureToTransfer{
             .texture = texture.get(),
@@ -1570,8 +1570,8 @@ public:
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .textures = {&textureToTransfer, 1},
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         render::TextureBarrierDesc textureToSource{
             .texture = texture.get(),
             .oldLayout = render::TextureLayout::TransferDestination,
@@ -1582,7 +1582,7 @@ public:
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .textures = {&textureToSource, 1},
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
             .texture = texture.get(),
             .buffer = readbackBuffer.get(),
@@ -1592,10 +1592,10 @@ public:
         });
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
-        RhiTestResult submit = submitAndWait(context.graphicsQueue, *commandBuffer, *fence);
+        RHITestResult submit = submitAndWait(context.graphicsQueue, *commandBuffer, *fence);
         streamer->endFrame();
         if (!submit.passed) {
             return submit;
@@ -1603,24 +1603,24 @@ public:
 
         std::array<uint8_t, kPixelByteSize> actual{};
         if (!readBufferBytes(*readbackBuffer, actual.data(), actual.size())) {
-            return RhiTestResult::fail("texture readback buffer did not map");
+            return RHITestResult::fail("texture readback buffer did not map");
         }
         if (actual != expected) {
-            return RhiTestResult::fail("streamed texture pixels did not match expected pattern");
+            return RHITestResult::fail("streamed texture pixels did not match expected pattern");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class StreamerConstantUploadTest : public RhiTest {
+class StreamerConstantUploadTest : public RHITest {
 public:
     StreamerConstantUploadTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "streamer_constant_upload";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         constexpr std::array<uint32_t, 4> kFirst{
             0x01020304u,
@@ -1638,7 +1638,7 @@ public:
         desc.constantBufferSize = 4096;
         render::Result<> result = context.device.createStreamer(desc).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr || streamer->constantBuffer() == nullptr) {
-            return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
 
         const uint64_t firstOffset = streamer->streamConstantData(
@@ -1649,10 +1649,10 @@ public:
             kSecond.size() * sizeof(uint32_t));
         if (firstOffset == std::numeric_limits<uint64_t>::max() ||
             secondOffset == std::numeric_limits<uint64_t>::max()) {
-            return RhiTestResult::fail("streamConstantData returned an invalid offset");
+            return RHITestResult::fail("streamConstantData returned an invalid offset");
         }
         if (firstOffset != 0) {
-            return RhiTestResult::fail("first constant upload did not start at offset zero");
+            return RHITestResult::fail("first constant upload did not start at offset zero");
         }
 
         const uint64_t alignment = std::max<uint64_t>(
@@ -1660,7 +1660,7 @@ public:
             1);
         if (secondOffset % alignment != 0 ||
             secondOffset < kFirst.size() * sizeof(uint32_t)) {
-            return RhiTestResult::fail("second constant upload was not aligned after first upload");
+            return RHITestResult::fail("second constant upload was not aligned after first upload");
         }
         const uint64_t expectedConstantBytes =
             kFirst.size() * sizeof(uint32_t) + kSecond.size() * sizeof(uint32_t);
@@ -1668,14 +1668,14 @@ public:
         if (streamerStats.currentFrameConstantBytes != expectedConstantBytes ||
             streamerStats.currentFrameConstantRequestCount != 2 ||
             streamerStats.totalConstantBytes != 0) {
-            return RhiTestResult::fail("streamConstantData did not update current-frame constant streamer stats");
+            return RHITestResult::fail("streamConstantData did not update current-frame constant streamer stats");
         }
 
         render::Buffer* constantBuffer = streamer->constantBuffer();
         constantBuffer->invalidate({0, desc.constantBufferSize});
         void* mapped = constantBuffer->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("constant buffer did not map");
+            return RHITestResult::fail("constant buffer did not map");
         }
 
         bool firstMatches = std::memcmp(
@@ -1688,7 +1688,7 @@ public:
             kSecond.size() * sizeof(uint32_t)) == 0;
         constantBuffer->unmap();
         if (!firstMatches || !secondMatches) {
-            return RhiTestResult::fail("constant buffer contents did not match streamed data");
+            return RHITestResult::fail("constant buffer contents did not match streamed data");
         }
         streamer->endFrame();
         streamerStats = streamer->stats();
@@ -1697,9 +1697,9 @@ public:
             streamerStats.peakFrameConstantBytes != expectedConstantBytes ||
             streamerStats.totalConstantBytes != expectedConstantBytes ||
             streamerStats.lastFrameConstantRequestCount != 2) {
-            return RhiTestResult::fail("Streamer::endFrame did not roll constant upload stats");
+            return RHITestResult::fail("Streamer::endFrame did not roll constant upload stats");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
@@ -1801,15 +1801,15 @@ void registerStreamerGraphPass()
         []() { return std::make_unique<StreamerCrossQueueSinkPass>(); });
 }
 
-class StreamerRenderGraphFlushTest : public RhiTest {
+class StreamerRenderGraphFlushTest : public RHITest {
 public:
     StreamerRenderGraphFlushTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "streamer_render_graph_flush";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerStreamerGraphPass();
 
@@ -1822,13 +1822,13 @@ public:
         std::string log;
         render::Result<> result = executor.compile(context.device, graph, 1, 1, log);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+            return RHITestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         std::unique_ptr<render::Fence> fence;
-        RhiTestResult setup = createCommandResources(
+        RHITestResult setup = createCommandResources(
             context.device,
             context.graphicsQueue,
             commandPool,
@@ -1840,11 +1840,11 @@ public:
 
         result = commandBuffer->begin();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
         result = executor.execute(*commandBuffer);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::execute returned ") + toString(result));
+            return RHITestResult::fail(std::string("RenderGraphExecutor::execute returned ") + toString(result));
         }
         const render::RenderGraphStreamingStats& streamingStats = executor.streamingStats();
         const uint64_t expectedBytes = StreamerGraphUploadPass::kExpected.size() * sizeof(uint32_t);
@@ -1855,32 +1855,32 @@ public:
             streamingStats.textureTransferCount != 0 ||
             streamingStats.transferBytes != expectedBytes ||
             streamingStats.bufferTransferBytes != expectedBytes) {
-            return RhiTestResult::fail("RenderGraph streaming subsystem stats did not match the streamed pass work");
+            return RHITestResult::fail("RenderGraph streaming subsystem stats did not match the streamed pass work");
         }
         if (streamingStats.streamer.pendingCopies.copyCount() != 0 ||
             streamingStats.streamer.frameIndex == 0) {
-            return RhiTestResult::fail("RenderGraph streaming subsystem did not end the streamer frame cleanly");
+            return RHITestResult::fail("RenderGraph streaming subsystem did not end the streamer frame cleanly");
         }
         if (streamingStats.streamer.currentFrameDynamicBytes != 0 ||
             streamingStats.streamer.lastFrameDynamicBytes != expectedBytes ||
             streamingStats.streamer.peakFrameDynamicBytes != expectedBytes ||
             streamingStats.streamer.totalDynamicBytes != expectedBytes ||
             streamingStats.streamer.lastFrameDynamicRequestCount != 1) {
-            return RhiTestResult::fail("RenderGraph streaming subsystem did not retain last-frame Streamer stats");
+            return RHITestResult::fail("RenderGraph streaming subsystem did not retain last-frame Streamer stats");
         }
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
-        RhiTestResult submit = submitAndWait(context.graphicsQueue, *commandBuffer, *fence);
+        RHITestResult submit = submitAndWait(context.graphicsQueue, *commandBuffer, *fence);
         if (!submit.passed) {
             return submit;
         }
 
         render::RenderGraphResource* output = executor.outputResource("Upload.data");
         if (output == nullptr || output->buffer == nullptr) {
-            return RhiTestResult::fail("streamer graph output resource is missing");
+            return RHITestResult::fail("streamer graph output resource is missing");
         }
 
         std::array<uint32_t, 4> actual{};
@@ -1888,30 +1888,30 @@ public:
                 *output->buffer,
                 actual.data(),
                 actual.size() * sizeof(uint32_t))) {
-            return RhiTestResult::fail("streamer graph output did not map");
+            return RHITestResult::fail("streamer graph output did not map");
         }
         if (actual != StreamerGraphUploadPass::kExpected) {
-            return RhiTestResult::fail("streamer graph output bytes did not match expected pattern");
+            return RHITestResult::fail("streamer graph output bytes did not match expected pattern");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class StreamerRenderGraphInvalidDoesNotBeginFrameTest : public RhiTest {
+class StreamerRenderGraphInvalidDoesNotBeginFrameTest : public RHITest {
 public:
     StreamerRenderGraphInvalidDoesNotBeginFrameTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "streamer_render_graph_invalid_does_not_begin_frame";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         registerStreamerGraphPass();
 
         render::Queue* computeQueue = context.device.getQueue(render::QueueType::Compute);
         if (computeQueue == nullptr) {
-            return RhiTestResult::skip("device has no compute queue");
+            return RHITestResult::skip("device has no compute queue");
         }
 
         render::RenderGraph graph;
@@ -1925,7 +1925,7 @@ public:
         std::string log;
         render::Result<> result = executor.compile(context.device, graph, 1, 1, log);
         if (!result) {
-            return RhiTestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
+            return RHITestResult::fail(std::string("RenderGraphExecutor::compile returned ") + toString(result) + ": " + log);
         }
 
         const render::RenderGraphStreamingStats before = executor.streamingStats();
@@ -1934,7 +1934,7 @@ public:
             .computeQueue = computeQueue,
         });
         if (!render::hasError(result, render::Error::InvalidArgument)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("expected InvalidArgument for missing graphics queue, got ") +
                 toString(result));
         }
@@ -1944,25 +1944,25 @@ public:
             after.streamer.frameIndex != before.streamer.frameIndex ||
             after.flushCount != before.flushCount ||
             after.transferCount != before.transferCount) {
-            return RhiTestResult::fail("invalid submit started or mutated the RenderGraph streaming frame");
+            return RHITestResult::fail("invalid submit started or mutated the RenderGraph streaming frame");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class StreamerMeshletResidencyUploadTest : public RhiTest {
+class StreamerMeshletResidencyUploadTest : public RHITest {
 public:
     StreamerMeshletResidencyUploadTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "streamer_meshlet_residency_upload";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         const std::filesystem::path streamAssetPath = context.outputDirectory / "streamer_residency.meshstream.bin";
         scene::MeshletStreamAsset asset;
-        RhiTestResult build = buildBunnyStreamAssetForTest(
+        RHITestResult build = buildBunnyStreamAssetForTest(
             streamAssetPath,
             asset,
             scene::MeshletStreamPayloadCompression::ByteRle);
@@ -1990,16 +1990,16 @@ public:
                     .maxPageLoadsInFlight = 2,
                 },
                 reason)) {
-            return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
+            return RHITestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
         }
         render::MeshletStreamResidencyStats sparseStats = residency.stats();
         if (sparseStats.pageCount != asset.pageCount() ||
             sparseStats.trackedPageCount != 0 ||
             residency.trackedPageCount() != 0) {
-            return RhiTestResult::fail("residency initialization eagerly tracked unloaded scene pages");
+            return RHITestResult::fail("residency initialization eagerly tracked unloaded scene pages");
         }
         if (!residency.lockFallbackPages(fallbackPages, reason)) {
-            return RhiTestResult::fail("lockFallbackPages failed: " + reason);
+            return RHITestResult::fail("lockFallbackPages failed: " + reason);
         }
         render::MeshletStreamResidencyStats stats = residency.stats();
         if (residency.activePages().size() != fallbackPages.size() ||
@@ -2016,13 +2016,13 @@ public:
             stats.queuedUpdateTaskCount != 0 ||
             stats.availableUpdateTaskCount != render::kStreamingMaxActiveTasks ||
             stats.totalQueuedUploadCount != fallbackPages.size()) {
-            return RhiTestResult::fail("fallback lock did not populate active/storage residency tables");
+            return RHITestResult::fail("fallback lock did not populate active/storage residency tables");
         }
 
         std::unique_ptr<render::Streamer> streamer;
         render::Result<> result = context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
-            return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> pageBuffer;
@@ -2032,12 +2032,12 @@ public:
                 .memoryLocation = render::MemoryLocation::HostReadback,
             }).transform([&](auto rhiValue) { pageBuffer = std::move(rhiValue); });
         if (!result || pageBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createBuffer(pageBuffer) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBuffer(pageBuffer) returned ") + toString(result));
         }
 
         residency.beginFrame();
         if (fallbackPages.empty() || residency.queuedUploadCount() == 0) {
-            return RhiTestResult::fail("lockFallbackPages did not queue fallback uploads");
+            return RHITestResult::fail("lockFallbackPages did not queue fallback uploads");
         }
         const uint32_t pageIndex = fallbackPages.front();
         std::vector<render::StreamPageTableEntry> initialTable(asset.pageCount());
@@ -2046,17 +2046,17 @@ public:
                 render::kInvalidStreamDeviceOffsetBytes ||
             render::streamPageTableState(initialTable[pageIndex]) !=
                 render::MeshletStreamPageResidencyState::Unloaded) {
-            return RhiTestResult::fail("initial stream page table entry did not encode missing fallback page");
+            return RHITestResult::fail("initial stream page table entry did not encode missing fallback page");
         }
         if (asset.pages()[pageIndex].compressionMode !=
             static_cast<uint32_t>(scene::MeshletStreamPayloadCompression::ByteRle)) {
-            return RhiTestResult::fail("compressed streamasset did not preserve ByteRle page metadata");
+            return RHITestResult::fail("compressed streamasset did not preserve ByteRle page metadata");
         }
         residency.clearPendingPatches();
 
         const bool alreadyResident = residency.requestPage(pageIndex);
         if (alreadyResident || residency.queuedUploadCount() == 0) {
-            return RhiTestResult::fail("fallback page was resident before upload");
+            return RHITestResult::fail("fallback page was resident before upload");
         }
         uint32_t uploaded = 0;
         const auto pageLoadDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -2067,10 +2067,10 @@ public:
             }
         }
         if (uploaded != 1) {
-            return RhiTestResult::fail("asynchronous page load did not schedule exactly one upload");
+            return RHITestResult::fail("asynchronous page load did not schedule exactly one upload");
         }
         if (residency.pageState(pageIndex) != render::MeshletStreamPageResidencyState::PendingUpload) {
-            return RhiTestResult::fail("uploaded page did not enter PendingUpload state");
+            return RHITestResult::fail("uploaded page did not enter PendingUpload state");
         }
         stats = residency.stats();
         if (residency.pendingPages().size() != 1 ||
@@ -2087,7 +2087,7 @@ public:
             stats.frameCompletedPageLoadCount == 0 ||
             stats.framePageLoadFailureCount != 0 ||
             stats.oldestPendingAge != 0) {
-            return RhiTestResult::fail("pending upload did not update pending table or upload stats");
+            return RHITestResult::fail("pending upload did not update pending table or upload stats");
         }
         std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
         if (patches.size() != 1 ||
@@ -2096,14 +2096,14 @@ public:
                 render::kInvalidStreamDeviceOffsetBytes ||
             render::streamPageTablePatchState(patches[0]) !=
                 render::MeshletStreamPageResidencyState::PendingUpload) {
-            return RhiTestResult::fail("pending upload did not produce expected page table patch");
+            return RHITestResult::fail("pending upload did not produce expected page table patch");
         }
         residency.clearPendingPatches();
 
         std::unique_ptr<render::CommandPool> commandPool;
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         std::unique_ptr<render::Fence> fence;
-        RhiTestResult setup = createCommandResources(
+        RHITestResult setup = createCommandResources(
             context.device,
             context.graphicsQueue,
             commandPool,
@@ -2115,7 +2115,7 @@ public:
 
         result = commandBuffer->begin();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
         render::BufferBarrierDesc toTransfer{
             .buffer = pageBuffer.get(),
@@ -2125,14 +2125,14 @@ public:
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = {&toTransfer, 1},
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
-        RhiTestResult submit = submitAndWait(context.graphicsQueue, *commandBuffer, *fence);
+        RHITestResult submit = submitAndWait(context.graphicsQueue, *commandBuffer, *fence);
         streamer->endFrame();
         if (!submit.passed) {
             return submit;
@@ -2140,10 +2140,10 @@ public:
 
         residency.beginFrame();
         if (residency.pageResident(pageIndex)) {
-            return RhiTestResult::fail("page became resident before queued frame delay elapsed");
+            return RHITestResult::fail("page became resident before queued frame delay elapsed");
         }
         if (!residency.newlyResidentPages().empty() || !residency.newlyUnloadedPages().empty()) {
-            return RhiTestResult::fail("residency reported a lifecycle transition before upload completion");
+            return RHITestResult::fail("residency reported a lifecycle transition before upload completion");
         }
         stats = residency.stats();
         if (stats.pendingPageCount != 1 ||
@@ -2153,17 +2153,17 @@ public:
             stats.queuedUpdateTaskCount != 0 ||
             stats.availableUpdateTaskCount != render::kStreamingMaxActiveTasks - 1u ||
             stats.oldestPendingAge != 1) {
-            return RhiTestResult::fail("pending table age did not advance while upload was delayed");
+            return RHITestResult::fail("pending table age did not advance while upload was delayed");
         }
         if (!residency.pendingPatches().empty()) {
-            return RhiTestResult::fail("residency produced a patch before pending upload completed");
+            return RHITestResult::fail("residency produced a patch before pending upload completed");
         }
         residency.beginFrame();
         if (residency.pageResident(pageIndex)) {
-            return RhiTestResult::fail("page became resident before queued update task elapsed");
+            return RHITestResult::fail("page became resident before queued update task elapsed");
         }
         if (!residency.newlyResidentPages().empty() || !residency.newlyUnloadedPages().empty()) {
-            return RhiTestResult::fail("residency reported a lifecycle transition before the update task completed");
+            return RHITestResult::fail("residency reported a lifecycle transition before the update task completed");
         }
         stats = residency.stats();
         if (stats.pendingPageCount != 1 ||
@@ -2175,19 +2175,19 @@ public:
             stats.frameCompletedStorageTaskCount != 1 ||
             stats.frameScheduledUpdateCount != 1 ||
             stats.oldestPendingAge != 2) {
-            return RhiTestResult::fail("storage completion did not queue a resident update task");
+            return RHITestResult::fail("storage completion did not queue a resident update task");
         }
         if (!residency.pendingPatches().empty()) {
-            return RhiTestResult::fail("storage completion produced a resident patch before update task completed");
+            return RHITestResult::fail("storage completion produced a resident patch before update task completed");
         }
         residency.beginFrame();
         if (!residency.pageResident(pageIndex)) {
-            return RhiTestResult::fail("page did not become resident after queued update task elapsed");
+            return RHITestResult::fail("page did not become resident after queued update task elapsed");
         }
         if (residency.newlyResidentPages().size() != 1 ||
             residency.newlyResidentPages().front() != pageIndex ||
             !residency.newlyUnloadedPages().empty()) {
-            return RhiTestResult::fail("completed upload did not report the newly resident page");
+            return RHITestResult::fail("completed upload did not report the newly resident page");
         }
         stats = residency.stats();
         if (residency.pendingPages().size() != 0 ||
@@ -2202,7 +2202,7 @@ public:
             stats.frameCompletedUpdateCount != 1 ||
             stats.frameCompletedUploadCount != 1 ||
             stats.oldestResidentAge != residency.pageAge(pageIndex)) {
-            return RhiTestResult::fail("resident upload did not update resident table or completion stats");
+            return RHITestResult::fail("resident upload did not update resident table or completion stats");
         }
         patches = residency.pendingPatches();
         if (patches.size() != 1 ||
@@ -2211,19 +2211,19 @@ public:
                 render::kInvalidStreamDeviceOffsetBytes ||
             render::streamPageTablePatchState(patches[0]) !=
                 render::MeshletStreamPageResidencyState::LockedFallback) {
-            return RhiTestResult::fail("resident fallback did not produce expected page table patch");
+            return RHITestResult::fail("resident fallback did not produce expected page table patch");
         }
 
         const uint64_t deviceOffset = residency.deviceOffsetForPage(pageIndex);
         if (deviceOffset == UINT64_MAX) {
-            return RhiTestResult::fail("resident page has no device offset");
+            return RHITestResult::fail("resident page has no device offset");
         }
 
         std::vector<uint8_t> actual(static_cast<size_t>(asset.pages()[pageIndex].uncompressedSize));
         pageBuffer->invalidate({deviceOffset, actual.size()});
         void* mapped = pageBuffer->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("page buffer did not map");
+            return RHITestResult::fail("page buffer did not map");
         }
         std::memcpy(
             actual.data(),
@@ -2240,28 +2240,28 @@ public:
                 expectedStorage,
                 expected,
                 decodeReason)) {
-            return RhiTestResult::fail("failed to decode compressed expected streamasset payload: " + decodeReason);
+            return RHITestResult::fail("failed to decode compressed expected streamasset payload: " + decodeReason);
         }
         if (actual.size() != expected.size() ||
             std::memcmp(actual.data(), expected.data(), expected.size()) != 0) {
-            return RhiTestResult::fail("streamed page payload bytes did not match decoded streamasset payload");
+            return RHITestResult::fail("streamed page payload bytes did not match decoded streamasset payload");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class MeshletStreamClasPagePlanTest : public RhiTest {
+class MeshletStreamCLASPagePlanTest : public RHITest {
 public:
-    MeshletStreamClasPagePlanTest()
+    MeshletStreamCLASPagePlanTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "meshlet_stream_clas_page_plan";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         scene::MeshletStreamAsset asset;
-        RhiTestResult build = buildBunnyStreamAssetForTest(
+        RHITestResult build = buildBunnyStreamAssetForTest(
             context.outputDirectory / "streamer_clas_page_plan.meshstream.bin",
             asset,
             scene::MeshletStreamPayloadCompression::ByteRle);
@@ -2277,27 +2277,27 @@ public:
                 pageClusterOffsets,
                 clusterCount,
                 reason)) {
-            return RhiTestResult::fail("buildMeshletStreamPageClusterOffsets failed: " + reason);
+            return RHITestResult::fail("buildMeshletStreamPageClusterOffsets failed: " + reason);
         }
         if (pageClusterOffsets.size() != static_cast<size_t>(asset.pageCount()) + 1u ||
             pageClusterOffsets.back() != clusterCount ||
             clusterCount == 0) {
-            return RhiTestResult::fail("CLAS page cluster offsets did not cover the streamasset");
+            return RHITestResult::fail("CLAS page cluster offsets did not cover the streamasset");
         }
 
         const std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
         if (fallbackPages.empty()) {
-            return RhiTestResult::fail("streamasset has no fallback page for CLAS planning");
+            return RHITestResult::fail("streamasset has no fallback page for CLAS planning");
         }
         const uint32_t pageIndex = fallbackPages.front();
-        render::MeshletStreamClasPagePlan plan;
+        render::MeshletStreamCLASPagePlan plan;
         if (!render::buildMeshletStreamClasPagePlan(
                 asset,
                 pageIndex,
                 pageClusterOffsets[pageIndex],
                 plan,
                 reason)) {
-            return RhiTestResult::fail("buildMeshletStreamClasPagePlan failed: " + reason);
+            return RHITestResult::fail("buildMeshletStreamClasPagePlan failed: " + reason);
         }
 
         const scene::MeshletStreamPageInfo& page = asset.pages()[pageIndex];
@@ -2307,11 +2307,11 @@ public:
             plan.lodLevel != page.lodLevel ||
             plan.payloadByteSize != page.uncompressedSize ||
             plan.clusters.size() != page.clusterCount) {
-            return RhiTestResult::fail("CLAS page plan did not preserve streamasset page metadata");
+            return RHITestResult::fail("CLAS page plan did not preserve streamasset page metadata");
         }
 
         for (uint32_t clusterIndex = 0; clusterIndex < plan.clusters.size(); ++clusterIndex) {
-            const render::MeshletStreamClasClusterInput& cluster = plan.clusters[clusterIndex];
+            const render::MeshletStreamCLASClusterInput& cluster = plan.clusters[clusterIndex];
             if (cluster.clusterId != pageClusterOffsets[pageIndex] + clusterIndex ||
                 cluster.pageIndex != pageIndex ||
                 cluster.clusterIndex != clusterIndex ||
@@ -2320,25 +2320,25 @@ public:
                 cluster.triangleCount == 0 ||
                 cluster.vertexOffsetBytes >= page.uncompressedSize ||
                 cluster.triangleOffsetBytes >= page.uncompressedSize) {
-                return RhiTestResult::fail("CLAS page plan contains an invalid cluster build input");
+                return RHITestResult::fail("CLAS page plan contains an invalid cluster build input");
             }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class StreamerMeshletResidencyGpuRequestPatchTest : public RhiTest {
+class StreamerMeshletResidencyGPURequestPatchTest : public RHITest {
 public:
-    StreamerMeshletResidencyGpuRequestPatchTest()
+    StreamerMeshletResidencyGPURequestPatchTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "streamer_meshlet_residency_gpu_request_patches";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         scene::MeshletStreamAsset asset;
-        RhiTestResult build = buildBunnyStreamAssetForTest(
+        RHITestResult build = buildBunnyStreamAssetForTest(
             context.outputDirectory / "streamer_residency_gpu_request.meshstream.bin",
             asset);
         if (!build.passed) {
@@ -2348,7 +2348,7 @@ public:
         std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
         std::vector<uint32_t> streamablePages = nonFallbackPagesFor(asset, fallbackPages);
         if (fallbackPages.empty() || streamablePages.size() < 2) {
-            return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
+            return RHITestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
         }
         const uint32_t firstPage = streamablePages[0];
         const uint32_t secondPage = streamablePages[1];
@@ -2365,10 +2365,10 @@ public:
                     .queuedFrameCount = 2,
                 },
                 reason)) {
-            return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
+            return RHITestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
         }
         if (!residency.lockFallbackPages(fallbackPages, reason)) {
-            return RhiTestResult::fail("lockFallbackPages failed: " + reason);
+            return RHITestResult::fail("lockFallbackPages failed: " + reason);
         }
         residency.clearPendingPatches();
 
@@ -2380,13 +2380,13 @@ public:
         };
         const uint32_t scheduled = residency.consumeGpuRequests(gpuRequests);
         if (scheduled != 2) {
-            return RhiTestResult::fail("consumeGpuRequests did not deduplicate and schedule page ids");
+            return RHITestResult::fail("consumeGpuRequests did not deduplicate and schedule page ids");
         }
         const std::span<const uint32_t> requestedPages = residency.requestedPages();
         if (requestedPages.size() != 2 ||
             std::find(requestedPages.begin(), requestedPages.end(), firstPage) == requestedPages.end() ||
             std::find(requestedPages.begin(), requestedPages.end(), secondPage) == requestedPages.end()) {
-            return RhiTestResult::fail("request table did not preserve unique GPU-requested page ids");
+            return RHITestResult::fail("request table did not preserve unique GPU-requested page ids");
         }
         render::MeshletStreamResidencyStats requestStats = residency.stats();
         if (requestStats.frameGpuRequestCount != gpuRequests.size() ||
@@ -2398,12 +2398,12 @@ public:
             requestStats.trackedPageCount != fallbackPages.size() ||
             requestStats.activePageCount != fallbackPages.size() ||
             requestStats.freeResidentBytes != secondPageBytes) {
-            return RhiTestResult::fail("GPU request readback did not queue an isolated request task");
+            return RHITestResult::fail("GPU request readback did not queue an isolated request task");
         }
         if (residency.pageAllocated(firstPage) ||
             residency.pageAllocated(secondPage) ||
             !residency.pendingPatches().empty()) {
-            return RhiTestResult::fail("queued GPU request task modified residency before beginFrame consumed it");
+            return RHITestResult::fail("queued GPU request task modified residency before beginFrame consumed it");
         }
 
         residency.beginFrame();
@@ -2411,13 +2411,13 @@ public:
         if (consumedRequestPages.size() != 2 ||
             std::find(consumedRequestPages.begin(), consumedRequestPages.end(), firstPage) == consumedRequestPages.end() ||
             std::find(consumedRequestPages.begin(), consumedRequestPages.end(), secondPage) == consumedRequestPages.end()) {
-            return RhiTestResult::fail("request task did not preserve unique page ids when consumed");
+            return RHITestResult::fail("request task did not preserve unique page ids when consumed");
         }
         if (residency.pageAllocated(firstPage)) {
-            return RhiTestResult::fail("older requested page received storage despite latest-page pressure");
+            return RHITestResult::fail("older requested page received storage despite latest-page pressure");
         }
         if (!residency.pageAllocated(secondPage)) {
-            return RhiTestResult::fail("latest requested page did not receive the single streamable allocation");
+            return RHITestResult::fail("latest requested page did not receive the single streamable allocation");
         }
         const std::span<const uint32_t> activePages = residency.activePages();
         requestStats = residency.stats();
@@ -2433,28 +2433,28 @@ public:
             requestStats.trackedPageCount != fallbackPages.size() + 1u ||
             requestStats.activePageCount != fallbackPages.size() + 1u ||
             requestStats.freeResidentBytes != 0) {
-            return RhiTestResult::fail("active/request/storage stats did not track GPU request pressure");
+            return RHITestResult::fail("active/request/storage stats did not track GPU request pressure");
         }
 
         if (!residency.pendingPatches().empty()) {
-            return RhiTestResult::fail("budget-limited request emitted an unexpected eviction patch");
+            return RHITestResult::fail("budget-limited request emitted an unexpected eviction patch");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class StreamerMeshletResidencyLatestGpuRequestTest : public RhiTest {
+class StreamerMeshletResidencyLatestGPURequestTest : public RHITest {
 public:
-    StreamerMeshletResidencyLatestGpuRequestTest()
+    StreamerMeshletResidencyLatestGPURequestTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "streamer_meshlet_residency_latest_gpu_request";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         scene::MeshletStreamAsset asset;
-        RhiTestResult build = buildBunnyStreamAssetForTest(
+        RHITestResult build = buildBunnyStreamAssetForTest(
             context.outputDirectory / "streamer_residency_latest_gpu_request.meshstream.bin",
             asset);
         if (!build.passed) {
@@ -2464,7 +2464,7 @@ public:
         std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
         std::vector<uint32_t> streamablePages = nonFallbackPagesFor(asset, fallbackPages);
         if (fallbackPages.empty() || streamablePages.size() < 2) {
-            return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
+            return RHITestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
         }
         const uint32_t stalePage = streamablePages[0];
         const uint32_t latestPage = streamablePages[1];
@@ -2481,17 +2481,17 @@ public:
                     .queuedFrameCount = 2,
                 },
                 reason)) {
-            return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
+            return RHITestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
         }
         if (!residency.lockFallbackPages(fallbackPages, reason)) {
-            return RhiTestResult::fail("lockFallbackPages failed: " + reason);
+            return RHITestResult::fail("lockFallbackPages failed: " + reason);
         }
         residency.clearPendingPatches();
 
         const uint32_t staleScheduled = residency.consumeGpuRequests(std::span<const uint32_t>(&stalePage, 1));
         const uint32_t latestScheduled = residency.consumeGpuRequests(std::span<const uint32_t>(&latestPage, 1));
         if (staleScheduled != 1 || latestScheduled != 1) {
-            return RhiTestResult::fail("consumeGpuRequests did not schedule two request tasks");
+            return RHITestResult::fail("consumeGpuRequests did not schedule two request tasks");
         }
 
         render::MeshletStreamResidencyStats stats = residency.stats();
@@ -2500,7 +2500,7 @@ public:
             stats.frameScheduledRequestTaskCount != 2 ||
             stats.frameUniqueGpuRequestCount != 2 ||
             stats.frameConsumedGpuRequestCount != 0) {
-            return RhiTestResult::fail("multiple GPU request readbacks were not queued as separate tasks");
+            return RHITestResult::fail("multiple GPU request readbacks were not queued as separate tasks");
         }
 
         residency.beginFrame();
@@ -2515,18 +2515,18 @@ public:
             stats.frameConsumedGpuRequestCount != 1 ||
             stats.queuedRequestTaskCount != 0 ||
             stats.availableRequestTaskCount != render::kStreamingMaxActiveTasks) {
-            return RhiTestResult::fail("request queue did not drop stale ready tasks and consume the latest request");
+            return RHITestResult::fail("request queue did not drop stale ready tasks and consume the latest request");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class StreamerMeshletScreenPriorityTest : public RhiTest {
+class StreamerMeshletScreenPriorityTest : public RHITest {
 public:
-    StreamerMeshletScreenPriorityTest() { type = RhiTestType::Command; name = "streamer_meshlet_screen_priority"; }
+    StreamerMeshletScreenPriorityTest() { type = RHITestType::Command; name = "streamer_meshlet_screen_priority"; }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
@@ -2534,7 +2534,7 @@ public:
         if (!built.passed) { return built; }
         const auto roots = fallbackPagesFor(asset);
         auto pages = nonFallbackPagesFor(asset, roots);
-        if (roots.empty() || pages.size() < 2) { return RhiTestResult::skip("Needs two streamable pages"); }
+        if (roots.empty() || pages.size() < 2) { return RHITestResult::skip("Needs two streamable pages"); }
         std::sort(pages.begin(), pages.end(), [&](uint32_t a, uint32_t b) {
             return asset.pages()[a].uncompressedSize < asset.pages()[b].uncompressedSize;
         });
@@ -2560,26 +2560,26 @@ public:
         const uint32_t ids[] = {large, small, large};
         const float duplicateMax[] = {1.f, 10.f, 1000000.f};
         std::string reason = verify(ids, duplicateMax, large);
-        if (!reason.empty()) { return RhiTestResult::fail(reason); }
+        if (!reason.empty()) { return RHITestResult::fail(reason); }
         const uint32_t two[] = {large, small};
         const float equal[] = {100.f, 100.f};
         reason = verify(two, equal, small);
-        if (!reason.empty()) { return RhiTestResult::fail("Benefit per byte: " + reason); }
+        if (!reason.empty()) { return RHITestResult::fail("Benefit per byte: " + reason); }
         const float invalid[] = {std::numeric_limits<float>::quiet_NaN(), 100.f};
         reason = verify(two, invalid, small);
-        if (!reason.empty()) { return RhiTestResult::fail("Non-finite feedback: " + reason); }
+        if (!reason.empty()) { return RHITestResult::fail("Non-finite feedback: " + reason); }
         const float shortScores[] = {100.f};
         reason = verify(two, shortScores, large);
-        if (!reason.empty()) { return RhiTestResult::fail("Short feedback: " + reason); }
-        return RhiTestResult::pass("Shared-page maximum, benefit per byte, roots, NaN and short feedback");
+        if (!reason.empty()) { return RHITestResult::fail("Short feedback: " + reason); }
+        return RHITestResult::pass("Shared-page maximum, benefit per byte, roots, NaN and short feedback");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletScreenPriorityTest);
 
-class StreamerMeshletPrefetchTest final : public RhiTest {
+class StreamerMeshletPrefetchTest final : public RHITest {
 public:
-    StreamerMeshletPrefetchTest() { type = RhiTestType::Command; name = "streamer_meshlet_prefetch_admission"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamerMeshletPrefetchTest() { type = RHITestType::Command; name = "streamer_meshlet_prefetch_admission"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
@@ -2587,45 +2587,45 @@ public:
         if (!built.passed) { return built; }
         const auto roots = fallbackPagesFor(asset);
         const auto pages = nonFallbackPagesFor(asset, roots);
-        if (pages.size() < 3) { return RhiTestResult::skip("Needs three streamable pages"); }
+        if (pages.size() < 3) { return RHITestResult::skip("Needs three streamable pages"); }
         const uint64_t bytes = pageStorageBytes(asset, roots) + pageStorageBytes(asset, pages);
         std::string reason;
         MeshletStreamResidencyManager legacy, immediate;
         if (!legacy.initialize({.asset = &asset, .maxResidentBytes = bytes}, reason) ||
             !immediate.initialize({.asset = &asset, .maxResidentBytes = bytes,
-                .measurePageLatency = true, .immediateGpuRequests = true}, reason)) { return RhiTestResult::fail(reason); }
+                .measurePageLatency = true, .immediateGpuRequests = true}, reason)) { return RHITestResult::fail(reason); }
         legacy.beginFrame(); immediate.beginFrame();
         const uint32_t current[] = {pages[0]};
         (void)legacy.consumeGpuRequests({.loadPageIds = current, .frameIndex = 1});
         (void)immediate.consumeGpuRequests({.loadPageIds = current, .frameIndex = 1});
         if (legacy.pageAllocated(pages[0]) || !immediate.pageAllocated(pages[0])) {
-            return RhiTestResult::fail("Immediate requests did not remove exactly the admission frame");
+            return RHITestResult::fail("Immediate requests did not remove exactly the admission frame");
         }
         legacy.beginFrame();
-        if (!legacy.pageAllocated(pages[0])) { return RhiTestResult::fail("Legacy admission changed"); }
+        if (!legacy.pageAllocated(pages[0])) { return RHITestResult::fail("Legacy admission changed"); }
         const uint32_t duplicate[] = {pages[1] | kStreamPrefetchPageTag, pages[1]};
         (void)immediate.consumeGpuRequests({.loadPageIds = duplicate, .frameIndex = 1, .taggedPrefetchRequests = true});
         if (!immediate.pageAllocated(pages[1]) || immediate.stats().totalPrefetchAdmitted != 0 ||
             immediate.latencySnapshot().pendingDemand != 2 || immediate.latencySnapshot().pendingPrefetch != 0) {
-            return RhiTestResult::fail("Actual demand did not win a tagged duplicate without priorities");
+            return RHITestResult::fail("Actual demand did not win a tagged duplicate without priorities");
         }
         // One page of speculation fits, but the next cannot evict it or use the
         // reserved quarter. Current demand can use that remaining capacity.
         MeshletStreamResidencyManager bounded;
         const uint64_t largest = std::max(pageStorageBytes(asset, pages[0]), pageStorageBytes(asset, pages[1]));
         if (!bounded.initialize({.asset = &asset, .maxResidentBytes = largest * 4,
-                .maxResidentPages = 2, .immediateGpuRequests = true}, reason)) { return RhiTestResult::fail(reason); }
+                .maxResidentPages = 2, .immediateGpuRequests = true}, reason)) { return RHITestResult::fail(reason); }
         bounded.beginFrame();
         const uint32_t forecasts[] = {pages[0] | kStreamPrefetchPageTag, pages[1] | kStreamPrefetchPageTag};
         (void)bounded.consumeGpuRequests({.loadPageIds = forecasts, .taggedPrefetchRequests = true});
         if (bounded.stats().totalPrefetchAdmitted != 1 || bounded.stats().totalPrefetchDeferred != 1 ||
             bounded.stats().totalEvictedPageCount != 0) {
-            return RhiTestResult::fail("Speculative admission displaced the demand reserve");
+            return RHITestResult::fail("Speculative admission displaced the demand reserve");
         }
         const uint32_t missing[] = {bounded.pageAllocated(pages[0]) ? pages[1] : pages[0]};
         (void)bounded.consumeGpuRequests({.loadPageIds = missing});
         if (!bounded.pageAllocated(pages[0]) || !bounded.pageAllocated(pages[1])) {
-            return RhiTestResult::fail("Actual demand could not use reserved capacity");
+            return RHITestResult::fail("Actual demand could not use reserved capacity");
         }
         // Resident speculation must survive old/truncated feedback and count
         // exactly one hit when a complete eligible view first needs it.
@@ -2633,14 +2633,14 @@ public:
         std::unique_ptr<Streamer> uploader;
         auto uploadResult = context.device.createStreamer(makeTestStreamerDesc(2 * asset.maxPagePayloadBytes() + 4096))
             .transform([&](auto value) { uploader = std::move(value); });
-        if (!uploadResult) { return RhiTestResult::fail(toString(uploadResult)); }
+        if (!uploadResult) { return RHITestResult::fail(toString(uploadResult)); }
         std::unique_ptr<Buffer> destination;
         uploadResult = context.device.createBuffer({.size = bounded.pageBufferSize(),
             .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback})
             .transform([&](auto value) { destination = std::move(value); });
-        if (!uploadResult) { return RhiTestResult::fail(toString(uploadResult)); }
+        if (!uploadResult) { return RHITestResult::fail(toString(uploadResult)); }
         if (bounded.processUploads(*uploader, *destination, 2) != 2) {
-            return RhiTestResult::fail("Cannot upload prefetch cohort");
+            return RHITestResult::fail("Cannot upload prefetch cohort");
         }
         for (uint32_t frame = 0; frame < 4; ++frame) { bounded.beginFrame(); }
         (void)bounded.consumeGpuRequests({.frameIndex = 1, .residentDemandFeedback = true});
@@ -2649,47 +2649,47 @@ public:
         (void)bounded.consumeGpuRequests({.unloadPageIds = prefetched, .unloadRequestCounter = 1,
             .residentDemandFeedback = true});
         if (bounded.stats().totalPrefetchUsed != 0) {
-            return RhiTestResult::fail("Old, truncated or unused feedback invented a prefetch hit");
+            return RHITestResult::fail("Old, truncated or unused feedback invented a prefetch hit");
         }
         (void)bounded.consumeGpuRequests({.residentDemandFeedback = true});
         (void)bounded.consumeGpuRequests({.residentDemandFeedback = true});
         if (bounded.stats().totalPrefetchUsed != 1) {
-            return RhiTestResult::fail("Resident prefetch cohort lost or repeated its hit");
+            return RHITestResult::fail("Resident prefetch cohort lost or repeated its hit");
         }
         MeshletStreamResidencyManager queued;
         if (!queued.initialize({.asset = &asset, .maxResidentBytes = bytes,
                 .pageLoadConcurrency = 1, .maxPageLoadsInFlight = 4, .immediateGpuRequests = true}, reason)) {
-            return RhiTestResult::fail(reason);
+            return RHITestResult::fail(reason);
         }
         const uint32_t queuedForecasts[] = {pages[0] | kStreamPrefetchPageTag,
             pages[1] | kStreamPrefetchPageTag, pages[2] | kStreamPrefetchPageTag};
         (void)queued.consumeGpuRequests({.loadPageIds = queuedForecasts, .taggedPrefetchRequests = true});
         if (queued.queuedUploadCount() != 1 || queued.availablePrefetchRequests() != 0 ||
             queued.stats().totalPrefetchDeferred != 2) {
-            return RhiTestResult::fail("Unissued speculative I/O occupied the demand queue reserve");
+            return RHITestResult::fail("Unissued speculative I/O occupied the demand queue reserve");
         }
         (void)queued.consumeGpuRequests({.loadPageIds = std::span(pages).first(3)});
         if (queued.queuedUploadCount() != 3 || queued.stats().totalPrefetchUsed != 1) {
-            return RhiTestResult::fail("Demand could not promote or bypass queued speculation");
+            return RHITestResult::fail("Demand could not promote or bypass queued speculation");
         }
-        return RhiTestResult::pass("Immediate/legacy admission, tagged promotion, memory and queue reserves, no speculative eviction");
+        return RHITestResult::pass("Immediate/legacy admission, tagged promotion, memory and queue reserves, no speculative eviction");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletPrefetchTest);
 
-class StreamerMeshletLatencyTest final : public RhiTest {
+class StreamerMeshletLatencyTest final : public RHITest {
 public:
-    StreamerMeshletLatencyTest() { type = RhiTestType::Validation; name = "streamer_meshlet_latency"; }
-    RhiTestResult run(RhiTestContext&) override
+    StreamerMeshletLatencyTest() { type = RHITestType::Validation; name = "streamer_meshlet_latency"; }
+    RHITestResult run(RHITestContext&) override
     {
         using namespace render;
         MeshletStreamLatencyHistogram histogram;
-        if (histogram.summary().count != 0) { return RhiTestResult::fail("Empty latency histogram"); }
+        if (histogram.summary().count != 0) { return RHITestResult::fail("Empty latency histogram"); }
         for (uint32_t i = 0; i < 99; ++i) { histogram.observe(999); }
         histogram.observe(5000123);
         const auto sample = histogram.summary();
         if (sample.count != 100 || sample.p50 != 1 || sample.p99 != 1 || sample.maximum != 5000.123) {
-            return RhiTestResult::fail("Latency percentile or overflow bin lost the tail");
+            return RHITestResult::fail("Latency percentile or overflow bin lost the tail");
         }
         MeshletStreamLatencyTracker tracker;
         tracker.request(1, 2, 3, true);
@@ -2705,31 +2705,31 @@ public:
             snapshot.abandonedDemand != 1 || snapshot.abandonedPrefetch != 1 ||
             snapshot.pendingDemand != 0 || snapshot.pendingPrefetch != 1 ||
             snapshot.milliseconds[size_t(MeshletStreamLatencyStage::Feedback)].count != 4) {
-            return RhiTestResult::fail("Latency duplicate, first demand frame, promotion or retirement accounting");
+            return RHITestResult::fail("Latency duplicate, first demand frame, promotion or retirement accounting");
         }
-        return RhiTestResult::pass("Histogram tail, source frames, promotion, duplicates and abandoned requests");
+        return RHITestResult::pass("Histogram tail, source frames, promotion, duplicates and abandoned requests");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletLatencyTest);
 
 // Verify eligibility at feedback time, independent of immediate/deferred admission.
-class StreamerMeshletLatencyEligibilityTest final : public RhiTest {
+class StreamerMeshletLatencyEligibilityTest final : public RHITest {
 public:
-    StreamerMeshletLatencyEligibilityTest() { type = RhiTestType::Command; name = "streamer_meshlet_latency_eligibility"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamerMeshletLatencyEligibilityTest() { type = RHITestType::Command; name = "streamer_meshlet_latency_eligibility"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
         const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "latency_eligibility.meshstream.bin", asset);
         if (!built.passed) { return built; }
-        if (asset.pageCount() < 4) { return RhiTestResult::fail("Need four latency lifecycle pages"); }
+        if (asset.pageCount() < 4) { return RHITestResult::fail("Need four latency lifecycle pages"); }
         const uint64_t capacity = alignStreamStorageBytes(asset.maxPagePayloadBytes()) * 4u;
         std::unique_ptr<Streamer> streamer;
         std::unique_ptr<Buffer> destination;
         if (!context.device.createStreamer(makeTestStreamerDesc(capacity + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }) ||
             !context.device.createBuffer({.size = capacity, .usage = BufferUsageBits::TransferDestination,
                 .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { destination = std::move(rhiValue); })) {
-            return RhiTestResult::fail("Cannot create latency lifecycle upload resources");
+            return RHITestResult::fail("Cannot create latency lifecycle upload resources");
         }
         MeshletStreamResidencyManager residency;
         std::string reason;
@@ -2737,7 +2737,7 @@ public:
             const MeshletStreamResidencyDesc desc{.asset = &asset, .maxResidentBytes = capacity,
                 .maxResidentPages = 3, .queuedFrameCount = 1, .unloadDelayFrames = 2,
                 .measurePageLatency = true, .immediateGpuRequests = immediate, .completionDrivenUploads = false};
-            if (!residency.initialize(desc, reason)) { return RhiTestResult::fail(reason); }
+            if (!residency.initialize(desc, reason)) { return RHITestResult::fail(reason); }
             const auto counts = [&](uint64_t feedback, uint32_t demand, uint32_t prefetch) {
                 const auto value = residency.latencySnapshot();
                 return value.enabled && value.milliseconds[size_t(MeshletStreamLatencyStage::Feedback)].count == feedback &&
@@ -2745,61 +2745,61 @@ public:
             };
             residency.beginFrame();
             const uint32_t root = 0, promotedRoot = 1, detail = 2;
-            if (!residency.lockFallbackPages(std::span(&root, 1), reason)) { return RhiTestResult::fail(reason); }
+            if (!residency.lockFallbackPages(std::span(&root, 1), reason)) { return RHITestResult::fail(reason); }
             (void)residency.requestPage(promotedRoot);
             const uint32_t forecast = promotedRoot | kStreamPrefetchPageTag;
             (void)residency.consumeGpuRequests({.loadPageIds = std::span(&forecast, 1), .taggedPrefetchRequests = true});
-            if (!counts(1, 0, 1)) { return RhiTestResult::fail("Queued prefetch not tracked"); }
-            if (!residency.lockFallbackPages(std::span(&promotedRoot, 1), reason)) { return RhiTestResult::fail(reason); }
+            if (!counts(1, 0, 1)) { return RHITestResult::fail("Queued prefetch not tracked"); }
+            if (!residency.lockFallbackPages(std::span(&promotedRoot, 1), reason)) { return RHITestResult::fail(reason); }
             (void)residency.consumeGpuRequests(std::span(&promotedRoot, 1));
-            if (!counts(1, 0, 1)) { return RhiTestResult::fail("Fallback pin without state change promoted latency demand"); }
+            if (!counts(1, 0, 1)) { return RHITestResult::fail("Fallback pin without state change promoted latency demand"); }
             (void)residency.requestPage(detail);
             const uint32_t mixed[] = {root, promotedRoot, detail, 3, detail, UINT32_MAX};
             (void)residency.consumeGpuRequests(mixed);
-            if (!counts(3, 2, 1)) { return RhiTestResult::fail("Fallback exclusion, duplicate merge or blocked latency changed"); }
+            if (!counts(3, 2, 1)) { return RHITestResult::fail("Fallback exclusion, duplicate merge or blocked latency changed"); }
             // Use the existing frame-delayed CPU residency protocol here; real GPU
             // submission/cancellation is covered by streamer_meshlet_upload_completion.
             if (residency.processUploads(*streamer, *destination, 3) != 3) {
-                return RhiTestResult::fail("Cannot prepare latency lifecycle residents");
+                return RHITestResult::fail("Cannot prepare latency lifecycle residents");
             }
             for (uint32_t i = 0; i < 4; ++i) { residency.beginFrame(); }
             if (!residency.pageResident(detail) || !counts(3, 1, 0)) {
-                return RhiTestResult::fail("Completion did not publish residency and retire latency");
+                return RHITestResult::fail("Completion did not publish residency and retire latency");
             }
             (void)residency.consumeGpuRequests(mixed);
-            if (!counts(3, 1, 0)) { return RhiTestResult::fail("Resident feedback created a false latency request"); }
-            if (!residency.unloadPage(detail)) { return RhiTestResult::fail("Cannot schedule latency lifecycle unload"); }
+            if (!counts(3, 1, 0)) { return RHITestResult::fail("Resident feedback created a false latency request"); }
+            if (!residency.unloadPage(detail)) { return RHITestResult::fail("Cannot schedule latency lifecycle unload"); }
             (void)residency.consumeGpuRequests(std::span(&detail, 1));
-            if (!counts(4, 2, 0)) { return RhiTestResult::fail("Pending unload remained excluded from demand tracking"); }
+            if (!counts(4, 2, 0)) { return RHITestResult::fail("Pending unload remained excluded from demand tracking"); }
             residency.beginFrame(); residency.beginFrame();
             if (residency.latencySnapshot().abandonedDemand != 1) {
-                return RhiTestResult::fail("Retirement did not abandon pending unload demand exactly once");
+                return RHITestResult::fail("Retirement did not abandon pending unload demand exactly once");
             }
             (void)residency.consumeGpuRequests(std::span(&detail, 1));
-            if (!counts(5, 2, 0)) { return RhiTestResult::fail("Erased/reloaded page retained stale residency eligibility"); }
-            if (!residency.initialize(desc, reason)) { return RhiTestResult::fail(reason); }
+            if (!counts(5, 2, 0)) { return RHITestResult::fail("Erased/reloaded page retained stale residency eligibility"); }
+            if (!residency.initialize(desc, reason)) { return RHITestResult::fail(reason); }
             residency.beginFrame();
             const uint32_t newScene[] = {root, promotedRoot, detail};
             (void)residency.consumeGpuRequests(newScene);
-            if (!counts(3, 3, 0)) { return RhiTestResult::fail("Reset retained exclusions for reused page IDs"); }
+            if (!counts(3, 3, 0)) { return RHITestResult::fail("Reset retained exclusions for reused page IDs"); }
             auto disabled = desc; disabled.measurePageLatency = false;
-            if (!residency.initialize(disabled, reason)) { return RhiTestResult::fail(reason); }
+            if (!residency.initialize(disabled, reason)) { return RHITestResult::fail(reason); }
             residency.beginFrame();
-            if (!residency.lockFallbackPages(std::span(&root, 1), reason)) { return RhiTestResult::fail(reason); }
+            if (!residency.lockFallbackPages(std::span(&root, 1), reason)) { return RHITestResult::fail(reason); }
             (void)residency.consumeGpuRequests(newScene);
-            if (residency.latencySnapshot().enabled) { return RhiTestResult::fail("Disabled latency tracking became enabled"); }
+            if (residency.latencySnapshot().enabled) { return RHITestResult::fail("Disabled latency tracking became enabled"); }
         }
-        return RhiTestResult::pass("Fallback pin, completion, pending unload, blocked demand, erase/reload, reset and deferred batches");
+        return RHITestResult::pass("Fallback pin, completion, pending unload, blocked demand, erase/reload, reset and deferred batches");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletLatencyEligibilityTest);
 
 // Compare against the former full-scan semantics using deterministic timestamps.
 // Exercise sparse IDs, wheel wrap, frame gaps, slot reuse, promotion and in-flight expiry.
-class StreamerMeshletLatencyLifecycleTest final : public RhiTest {
+class StreamerMeshletLatencyLifecycleTest final : public RHITest {
 public:
-    StreamerMeshletLatencyLifecycleTest() { type = RhiTestType::Validation; name = "streamer_meshlet_latency_lifecycle"; }
-    RhiTestResult run(RhiTestContext&) override
+    StreamerMeshletLatencyLifecycleTest() { type = RHITestType::Validation; name = "streamer_meshlet_latency_lifecycle"; }
+    RHITestResult run(RHITestContext&) override
     {
         using namespace render;
         for (const uint64_t grace : {2u, 8u, 300u}) {
@@ -2863,24 +2863,24 @@ public:
                     const uint32_t page = id * 1027;
                     const auto found = reference.find(page);
                     const auto actual = tracker.find(page);
-                    if ((actual == nullptr) != (found == reference.end())) { return RhiTestResult::fail("Expiry/slot reuse differs from full scan"); }
+                    if ((actual == nullptr) != (found == reference.end())) { return RHITestResult::fail("Expiry/slot reuse differs from full scan"); }
                     if (!actual) { continue; }
                     const auto& expected = found->second;
                     if (actual->firstTime != expected.firstTime || actual->feedbackTime != expected.feedbackTime ||
                         actual->lastSeenFrame != expected.lastSeenFrame || actual->demandTime != expected.demandTime ||
-                        actual->demandFrame != expected.demandFrame) { return RhiTestResult::fail("Request timestamp/promotion changed"); }
+                        actual->demandFrame != expected.demandFrame) { return RHITestResult::fail("Request timestamp/promotion changed"); }
                     if (expected.demandTime) { ++pendingDemand; oldest = std::max(oldest, double(now - expected.demandTime) / 1000); }
                 }
                 const auto snapshot = tracker.snapshot(now);
                 if (snapshot.pendingDemand != pendingDemand || snapshot.pendingPrefetch != reference.size() - pendingDemand ||
                     snapshot.abandonedDemand != abandonedDemand || snapshot.abandonedPrefetch != abandonedPrefetch ||
                     snapshot.oldestPendingDemandMilliseconds != oldest || tracker.demandFrames.bins != demandFrames.bins) {
-                    return RhiTestResult::fail("Pending, abandoned or latency frame statistics changed");
+                    return RHITestResult::fail("Pending, abandoned or latency frame statistics changed");
                 }
                 for (size_t stage = 0; stage < histograms.size(); ++stage) {
                     const auto& a = tracker.stages[stage]; const auto& b = histograms[stage];
                     if (a.bins != b.bins || a.count != b.count || a.totalMicroseconds != b.totalMicroseconds ||
-                        a.maximumMicroseconds != b.maximumMicroseconds) { return RhiTestResult::fail("Latency histogram differs from reference"); }
+                        a.maximumMicroseconds != b.maximumMicroseconds) { return RHITestResult::fail("Latency histogram differs from reference"); }
                 }
             }
         }
@@ -2892,26 +2892,26 @@ public:
             blocked.expire(frame, [&](uint32_t) { ++queries; return false; });
             for (uint32_t page = 0; page < 14000; ++page) { blocked.request(page, frame, frame, false, frame * 1000); }
         }
-        if (queries || blocked.snapshot(300000).pendingDemand != 14000) { return RhiTestResult::fail("Hot blocked demand was scanned or discarded"); }
+        if (queries || blocked.snapshot(300000).pendingDemand != 14000) { return RHITestResult::fail("Hot blocked demand was scanned or discarded"); }
         blocked.expire(309, [&](uint32_t) { ++queries; return false; });
-        if (queries != 14000 || blocked.snapshot(309000).abandonedDemand != 14000) { return RhiTestResult::fail("Due requests were not retired exactly once"); }
-        return RhiTestResult::pass("Full-scan reference equivalence, sparse IDs, expiry wraps/gaps, in-flight protection and bounded expiry work");
+        if (queries != 14000 || blocked.snapshot(309000).abandonedDemand != 14000) { return RHITestResult::fail("Due requests were not retired exactly once"); }
+        return RHITestResult::pass("Full-scan reference equivalence, sparse IDs, expiry wraps/gaps, in-flight protection and bounded expiry work");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletLatencyLifecycleTest);
 
-class StreamerMeshletResidencyGpuRequestUnloadOverflowTest : public RhiTest {
+class StreamerMeshletResidencyGPURequestUnloadOverflowTest : public RHITest {
 public:
-    StreamerMeshletResidencyGpuRequestUnloadOverflowTest()
+    StreamerMeshletResidencyGPURequestUnloadOverflowTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "streamer_meshlet_residency_gpu_request_unload_overflow";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         scene::MeshletStreamAsset asset;
-        RhiTestResult build = buildBunnyStreamAssetForTest(
+        RHITestResult build = buildBunnyStreamAssetForTest(
             context.outputDirectory / "streamer_residency_gpu_request_unload.meshstream.bin",
             asset);
         if (!build.passed) {
@@ -2921,7 +2921,7 @@ public:
         std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
         std::vector<uint32_t> streamablePages = nonFallbackPagesFor(asset, fallbackPages);
         if (fallbackPages.empty() || streamablePages.size() < 2) {
-            return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
+            return RHITestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
         }
         const uint32_t unloadPage = streamablePages[0];
         const uint32_t loadPage = streamablePages[1];
@@ -2940,21 +2940,21 @@ public:
                     .queuedFrameCount = 2,
                 },
                 reason)) {
-            return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
+            return RHITestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
         }
         if (!residency.lockFallbackPages(fallbackPages, reason)) {
-            return RhiTestResult::fail("lockFallbackPages failed: " + reason);
+            return RHITestResult::fail("lockFallbackPages failed: " + reason);
         }
         residency.clearPendingPatches();
 
         (void)residency.requestPage(unloadPage);
         if (!residency.pageAllocated(unloadPage)) {
-            return RhiTestResult::fail("test setup did not allocate streamable page storage");
+            return RHITestResult::fail("test setup did not allocate streamable page storage");
         }
 
         const std::array<uint32_t, 2> loadRequests = {loadPage, loadPage};
         const std::array<uint32_t, 2> unloadRequests = {unloadPage, unloadPage};
-        const uint32_t scheduled = residency.consumeGpuRequests(render::StreamGpuRequestBatch{
+        const uint32_t scheduled = residency.consumeGpuRequests(render::StreamGPURequestBatch{
             .loadPageIds = loadRequests,
             .unloadPageIds = unloadRequests,
             .loadRequestCounter = 3,
@@ -2965,7 +2965,7 @@ public:
             .frameIndex = 37,
         });
         if (scheduled != 2) {
-            return RhiTestResult::fail("load/unload GPU request batch did not schedule unique page ids");
+            return RHITestResult::fail("load/unload GPU request batch did not schedule unique page ids");
         }
 
         render::MeshletStreamResidencyStats stats = residency.stats();
@@ -2978,13 +2978,13 @@ public:
             stats.frameGpuInvalidRequestCount != 1 ||
             stats.frameScheduledRequestTaskCount != 1 ||
             stats.queuedRequestTaskCount != 1) {
-            return RhiTestResult::fail("GPU request load/unload overflow stats were not tracked");
+            return RHITestResult::fail("GPU request load/unload overflow stats were not tracked");
         }
         if (residency.requestedPages().size() != 1 ||
             residency.requestedPages().front() != loadPage ||
             residency.unloadRequestedPages().size() != 1 ||
             residency.unloadRequestedPages().front() != unloadPage) {
-            return RhiTestResult::fail("GPU request batch did not preserve unique load/unload page ids");
+            return RHITestResult::fail("GPU request batch did not preserve unique load/unload page ids");
         }
 
         residency.beginFrame();
@@ -3000,13 +3000,13 @@ public:
             stats.frameDelayedFreeCount != 0 ||
             stats.frameResidentBudgetFailureCount != 1 ||
             stats.frameEvictedPageCount != 0) {
-            return RhiTestResult::fail("GPU unload request did not enter delayed-free state before consuming loads");
+            return RHITestResult::fail("GPU unload request did not enter delayed-free state before consuming loads");
         }
         if (residency.requestedPages().size() != 1 ||
             residency.requestedPages().front() != loadPage ||
             residency.unloadRequestedPages().size() != 1 ||
             residency.unloadRequestedPages().front() != unloadPage) {
-            return RhiTestResult::fail("completed request task did not expose consumed load/unload ids");
+            return RHITestResult::fail("completed request task did not expose consumed load/unload ids");
         }
 
         std::span<const render::StreamPageTablePatch> patches = residency.pendingPatches();
@@ -3019,7 +3019,7 @@ public:
                         render::streamPageTablePatchState(patch) ==
                             render::MeshletStreamPageResidencyState::PendingUnload;
                 }) == patches.end()) {
-            return RhiTestResult::fail("GPU unload request did not emit a pending-unload page table patch");
+            return RHITestResult::fail("GPU unload request did not emit a pending-unload page table patch");
         }
 
         residency.clearPendingPatches();
@@ -3031,18 +3031,18 @@ public:
             stats.frameCompletedUnloadCount != 1 ||
             stats.frameDelayedFreeCount != 1 ||
             stats.freeResidentBytes != streamableBudgetBytes) {
-            return RhiTestResult::fail("delayed unload task did not free resident page storage");
+            return RHITestResult::fail("delayed unload task did not free resident page storage");
         }
         if (residency.newlyUnloadedPages().size() != 1 ||
             residency.newlyUnloadedPages().front() != unloadPage ||
             !residency.newlyResidentPages().empty()) {
-            return RhiTestResult::fail("completed unload did not report the newly unloaded page");
+            return RHITestResult::fail("completed unload did not report the newly unloaded page");
         }
 
         (void)residency.requestPage(loadPage);
         if (!residency.pageAllocated(loadPage) ||
             stats.frameCompletedUnloadCount != 1) {
-            return RhiTestResult::fail("load request did not acquire storage after delayed free completed");
+            return RHITestResult::fail("load request did not acquire storage after delayed free completed");
         }
 
         patches = residency.pendingPatches();
@@ -3056,25 +3056,25 @@ public:
                         render::streamPageTablePatchState(patch) ==
                             render::MeshletStreamPageResidencyState::Unloaded;
                 }) == patches.end()) {
-            return RhiTestResult::fail("delayed unload completion did not emit an unloaded page table patch");
+            return RHITestResult::fail("delayed unload completion did not emit an unloaded page table patch");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class StreamerMeshletResidencyEvictionDelayAgeTest : public RhiTest {
+class StreamerMeshletResidencyEvictionDelayAgeTest : public RHITest {
 public:
     StreamerMeshletResidencyEvictionDelayAgeTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "streamer_meshlet_residency_eviction_delay_age";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         scene::MeshletStreamAsset asset;
-        RhiTestResult build = buildBunnyStreamAssetForTest(
+        RHITestResult build = buildBunnyStreamAssetForTest(
             context.outputDirectory / "streamer_residency_eviction_delay_age.meshstream.bin",
             asset);
         if (!build.passed) {
@@ -3084,7 +3084,7 @@ public:
         std::vector<uint32_t> fallbackPages = fallbackPagesFor(asset);
         std::vector<uint32_t> streamablePages = nonFallbackPagesFor(asset, fallbackPages);
         if (fallbackPages.empty() || streamablePages.size() < 2) {
-            return RhiTestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
+            return RHITestResult::skip("streamasset does not contain enough fallback/non-fallback pages");
         }
         const uint32_t residentPage = streamablePages[0];
         const uint32_t requestedPage = streamablePages[1];
@@ -3105,7 +3105,7 @@ public:
                 pageLimitedReason) ||
             pageLimitedResidency.lockFallbackPages(overBudgetLockedPages, pageLimitedReason) ||
             !pageLimitedResidency.activePages().empty()) {
-            return RhiTestResult::fail("locked fallback pages did not reject the resident page-count budget atomically");
+            return RHITestResult::fail("locked fallback pages did not reject the resident page-count budget atomically");
         }
 
         render::MeshletStreamResidencyManager residency;
@@ -3121,10 +3121,10 @@ public:
                     .evictionAgeThresholdFrames = kAgeThreshold,
                 },
                 reason)) {
-            return RhiTestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
+            return RHITestResult::fail("MeshletStreamResidencyManager::initialize failed: " + reason);
         }
         if (!residency.lockFallbackPages(fallbackPages, reason)) {
-            return RhiTestResult::fail("lockFallbackPages failed: " + reason);
+            return RHITestResult::fail("lockFallbackPages failed: " + reason);
         }
 
         render::StreamerDesc streamerDesc = makeTestStreamerDesc(
@@ -3132,7 +3132,7 @@ public:
         std::unique_ptr<render::Streamer> streamer;
         render::Result<> result = context.device.createStreamer(streamerDesc).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
         if (!result || streamer == nullptr) {
-            return RhiTestResult::fail(std::string("createStreamer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createStreamer returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> pageBuffer;
@@ -3142,21 +3142,21 @@ public:
                 .memoryLocation = render::MemoryLocation::HostReadback,
             }).transform([&](auto rhiValue) { pageBuffer = std::move(rhiValue); });
         if (!result || pageBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createBuffer(pageBuffer) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBuffer(pageBuffer) returned ") + toString(result));
         }
 
         residency.beginFrame();
         (void)residency.requestPage(residentPage);
         const uint32_t uploadBudget = static_cast<uint32_t>(fallbackPages.size()) + 1u;
         if (residency.processUploads(*streamer, *pageBuffer, uploadBudget) != uploadBudget) {
-            return RhiTestResult::fail("processUploads did not schedule fallback and streamable uploads");
+            return RHITestResult::fail("processUploads did not schedule fallback and streamable uploads");
         }
 
         residency.beginFrame();
         residency.beginFrame();
         residency.beginFrame();
         if (!residency.pageResident(residentPage)) {
-            return RhiTestResult::fail("test setup did not make streamable page resident");
+            return RHITestResult::fail("test setup did not make streamable page resident");
         }
 
         (void)residency.requestPage(requestedPage);
@@ -3168,7 +3168,7 @@ public:
             stats.frameEvictionAgeRejectedCount != 1 ||
             stats.frameResidentBudgetFailureCount != 1 ||
             stats.frameScheduledUnloadCount != 0) {
-            return RhiTestResult::fail("age filter did not reject eviction of a young resident page");
+            return RHITestResult::fail("age filter did not reject eviction of a young resident page");
         }
 
         for (uint32_t retry = 0; retry < 10000; ++retry) { (void)residency.requestPage(requestedPage); }
@@ -3177,7 +3177,7 @@ public:
             stats.frameAllocationDeferredCount != 10001 || stats.frameAllocationFailureCount != 1 ||
             stats.cpuWork.allocationAttempts != 1 || stats.cpuWork.budgetRetrySuppressed != 10000 ||
             stats.trackedPageCount != fallbackPages.size() + 1 || residency.pageAllocated(requestedPage)) {
-            return RhiTestResult::fail("budget pressure repeated an eviction scan or lost age protection");
+            return RHITestResult::fail("budget pressure repeated an eviction scan or lost age protection");
         }
 
         while (residency.pageAge(residentPage) < kAgeThreshold) {
@@ -3191,7 +3191,7 @@ public:
             stats.frameScheduledUnloadCount != 1 ||
             stats.queuedUnloadTaskCount != 1 ||
             stats.frameDelayedFreeCount != 0) {
-            return RhiTestResult::fail("eligible eviction did not schedule a delayed unload task");
+            return RHITestResult::fail("eligible eviction did not schedule a delayed unload task");
         }
 
         residency.beginFrame();
@@ -3201,7 +3201,7 @@ public:
             stats.frameCompletedUnloadCount != 1 ||
             stats.frameDelayedFreeCount != 1 ||
             stats.freeResidentBytes != streamableBudgetBytes) {
-            return RhiTestResult::fail("delayed eviction did not free its storage on task completion");
+            return RHITestResult::fail("delayed eviction did not free its storage on task completion");
         }
 
         (void)residency.requestPage(requestedPage);
@@ -3210,29 +3210,29 @@ public:
             stats.activePageCount != fallbackPages.size() + 1u ||
             stats.usedSlotCount > stats.maxResidentPages ||
             stats.freeSlotCount != 0) {
-            return RhiTestResult::fail("request did not acquire storage after delayed eviction completed");
+            return RHITestResult::fail("request did not acquire storage after delayed eviction completed");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class StreamerMeshletRequestSelectionTest final : public RhiTest {
+class StreamerMeshletRequestSelectionTest final : public RHITest {
 public:
     StreamerMeshletRequestSelectionTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "streamer_meshlet_request_selection";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
         const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "RequestSelection.meshstream.bin", asset);
         if (!built.passed) { return built; }
         auto pages = nonFallbackPagesFor(asset, fallbackPagesFor(asset));
-        if (pages.size() < 5) { return RhiTestResult::fail("Need five request candidates"); }
+        if (pages.size() < 5) { return RHITestResult::fail("Need five request candidates"); }
         pages.resize(std::min<size_t>(pages.size(), 64));
         const uint32_t count = static_cast<uint32_t>(pages.size());
         MeshletStreamResidencyManager residency;
@@ -3243,7 +3243,7 @@ public:
         // Reinitialize and permute across batches: old lookup slots must not
         // alias a different current scratch vector, or a previous scene lifetime.
         for (uint32_t round = 0; round < 5; ++round) {
-            if (!residency.initialize(desc, reason)) { return RhiTestResult::fail(reason); }
+            if (!residency.initialize(desc, reason)) { return RHITestResult::fail(reason); }
             residency.beginFrame();
             std::rotate(pages.begin(), pages.begin() + 1, pages.end());
             std::vector<uint32_t> ids;
@@ -3265,21 +3265,21 @@ public:
             std::sort(expected.begin(), expected.end(), [](const auto& a, const auto& b) {
                 return a.first != b.first ? a.first > b.first : a.second < b.second;
             });
-            const auto batch = StreamGpuRequestBatch{.loadPageIds = ids, .frameIndex = 1,
+            const auto batch = StreamGPURequestBatch{.loadPageIds = ids, .frameIndex = 1,
                 .loadPriorities = benefits, .taggedPrefetchRequests = true};
             if (residency.consumeGpuRequests(batch) != count) {
-                return RhiTestResult::fail("Request selection lost unique candidates");
+                return RHITestResult::fail("Request selection lost unique candidates");
             }
             for (size_t i = 0; i < expected.size(); ++i) {
                 if (residency.pageAllocated(expected[i].second) != (i < 3)) {
-                    return RhiTestResult::fail("Heap selection differs from full priority sort");
+                    return RHITestResult::fail("Heap selection differs from full priority sort");
                 }
             }
             auto stats = residency.stats();
             if (stats.cpuWork.admissionCalls != 4 || stats.cpuWork.admissionPriorityPops != 4 ||
                 stats.cpuWork.requestDuplicatesMerged != count || stats.frameGpuInvalidRequestCount != 1 ||
                 stats.totalPrefetchAdmitted != 0 || residency.latencySnapshot().pendingPrefetch != 0) {
-                return RhiTestResult::fail("Demand merge or bounded priority selection did not hold");
+                return RHITestResult::fail("Demand merge or bounded priority selection did not hold");
             }
             // Repeat while capacity is blocked: allocated work stays alive,
             // missing work remains demanded, neither requires a heap pop/call.
@@ -3289,15 +3289,15 @@ public:
             stats = residency.stats();
             if (stats.cpuWork.admissionCalls != 4 || stats.cpuWork.admissionPriorityPops != 4 ||
                 stats.frameUniqueGpuRequestCount != count * 2 || residency.latencySnapshot().pendingDemand != count) {
-                return RhiTestResult::fail("Repeated batch re-admitted blocked or queued pages, or lost latency demand");
+                return RHITestResult::fail("Repeated batch re-admitted blocked or queued pages, or lost latency demand");
             }
             residency.beginFrame();
             (void)residency.consumeGpuRequests(batch);
             if (residency.stats().cpuWork.admissionCalls != 1 || residency.queuedUploadCount() != 3) {
-                return RhiTestResult::fail("Next frame lost queued demand or failed to refresh capacity eligibility");
+                return RHITestResult::fail("Next frame lost queued demand or failed to refresh capacity eligibility");
             }
             if (residency.stats().cpuWork.priorityRecomputed != 0 || residency.stats().cpuWork.priorityReused == 0) {
-                return RhiTestResult::fail("Unchanged eligible priorities were not reused across feedback batches");
+                return RHITestResult::fail("Unchanged eligible priorities were not reused across feedback batches");
             }
             // Change one surviving candidate's benefit without changing its ID;
             // only that candidate must invalidate, including merged prefetch input.
@@ -3308,23 +3308,23 @@ public:
             residency.beginFrame();
             (void)residency.consumeGpuRequests(batch);
             if (residency.stats().cpuWork.priorityRecomputed != 1 || residency.stats().cpuWork.priorityReused == 0) {
-                return RhiTestResult::fail("Benefit change did not incrementally invalidate exactly one cached priority");
+                return RHITestResult::fail("Benefit change did not incrementally invalidate exactly one cached priority");
             }
         }
-        return RhiTestResult::pass("Priority oracle, duplicate promotion, blocked tails, queued keepalive and lookup lifetime");
+        return RHITestResult::pass("Priority oracle, duplicate promotion, blocked tails, queued keepalive and lookup lifetime");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletRequestSelectionTest);
 
-class StreamerMeshletBudgetAdmissionTest final : public RhiTest {
+class StreamerMeshletBudgetAdmissionTest final : public RHITest {
 public:
     StreamerMeshletBudgetAdmissionTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "streamer_meshlet_budget_admission";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
@@ -3332,13 +3332,13 @@ public:
         if (!built.passed) { return built; }
         auto roots = fallbackPagesFor(asset);
         auto pages = nonFallbackPagesFor(asset, roots);
-        if (roots.empty() || pages.size() < 2) { return RhiTestResult::fail("Need variable-sized pages"); }
+        if (roots.empty() || pages.size() < 2) { return RHITestResult::fail("Need variable-sized pages"); }
         std::sort(pages.begin(), pages.end(), [&](uint32_t a, uint32_t b) {
             return pageStorageBytes(asset, a) < pageStorageBytes(asset, b);
         });
         const uint32_t small = pages.front(), large = pages.back();
         if (pageStorageBytes(asset, small) == pageStorageBytes(asset, large)) {
-            return RhiTestResult::fail("Need unequal page allocation sizes");
+            return RHITestResult::fail("Need unequal page allocation sizes");
         }
         MeshletStreamResidencyManager residency;
         std::string reason;
@@ -3346,7 +3346,7 @@ public:
             .maxResidentBytes = pageStorageBytes(asset, roots) + pageStorageBytes(asset, small),
             .immediateGpuRequests = true};
         if (!residency.initialize(desc, reason) || !residency.lockFallbackPages(roots, reason)) {
-            return RhiTestResult::fail(reason);
+            return RHITestResult::fail(reason);
         }
         residency.beginFrame();
         // A higher-priority oversized page must not block a lower-priority fit.
@@ -3358,74 +3358,74 @@ public:
         if (!residency.pageAllocated(small) || residency.pageAllocated(large) ||
             stats.cpuWork.allocationAttempts != 2 || stats.cpuWork.budgetRetrySuppressed != 100 ||
             stats.frameAllocationFailureCount != 1 || stats.usedResidentBytes > stats.maxResidentBytes) {
-            return RhiTestResult::fail("Budget gate blocked a smaller fit or repeated impossible allocations");
+            return RHITestResult::fail("Budget gate blocked a smaller fit or repeated impossible allocations");
         }
         for (uint32_t root : roots) {
             if (!residency.pageAllocated(root) || residency.unloadPage(root)) {
-                return RhiTestResult::fail("Budget gate lost fallback protection");
+                return RHITestResult::fail("Budget gate lost fallback protection");
             }
         }
         residency.beginFrame();
         (void)residency.requestPage(large);
         if (residency.stats().cpuWork.allocationAttempts != 1) {
-            return RhiTestResult::fail("New frame did not refresh admission eligibility");
+            return RHITestResult::fail("New frame did not refresh admission eligibility");
         }
         // Reset/reinitialize must clear both the exhausted gate and its counters.
         if (!residency.initialize({.asset = &asset, .maxResidentBytes = pageStorageBytes(asset, large)}, reason)) {
-            return RhiTestResult::fail(reason);
+            return RHITestResult::fail(reason);
         }
         (void)residency.requestPage(large);
         if (!residency.pageAllocated(large) || residency.stats().cpuWork.budgetRetrySuppressed != 0) {
-            return RhiTestResult::fail("Reinitialization retained stale budget pressure");
+            return RHITestResult::fail("Reinitialization retained stale budget pressure");
         }
-        return RhiTestResult::pass("Bounded retries, smaller fit, priority order, locked roots and reset");
+        return RHITestResult::pass("Bounded retries, smaller fit, priority order, locked roots and reset");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletBudgetAdmissionTest);
 
-class StreamerMeshletBatchedUnloadTest final : public RhiTest {
+class StreamerMeshletBatchedUnloadTest final : public RHITest {
 public:
-    StreamerMeshletBatchedUnloadTest() { type = RhiTestType::Command; name = "streamer_meshlet_batched_unload"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamerMeshletBatchedUnloadTest() { type = RHITestType::Command; name = "streamer_meshlet_batched_unload"; }
+    RHITestResult run(RHITestContext& context) override
     {
         scene::MeshletStreamAsset asset;
         const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "batched_unload.meshstream.bin", asset);
         if (!built.passed) { return built; }
         const auto roots = fallbackPagesFor(asset);
         auto pages = nonFallbackPagesFor(asset, roots);
-        if (pages.size() < 8) { return RhiTestResult::skip("Requires eight streamable pages"); }
+        if (pages.size() < 8) { return RHITestResult::skip("Requires eight streamable pages"); }
         pages.resize(8);
         render::MeshletStreamResidencyManager residency;
         std::string reason;
         if (!residency.initialize({.asset = &asset,
                 .maxResidentBytes = pageStorageBytes(asset, roots) + pageStorageBytes(asset, pages)}, reason) ||
-            !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
+            !residency.lockFallbackPages(roots, reason)) { return RHITestResult::fail(reason); }
         residency.beginFrame();
         for (uint32_t page : pages) { (void)residency.requestPage(page); }
         for (uint32_t page : pages) {
             if (!residency.pageAllocated(page) || !residency.unloadPage(page)) {
-                return RhiTestResult::fail("Batch unload exhausted the task ring");
+                return RHITestResult::fail("Batch unload exhausted the task ring");
             }
         }
         if (residency.stats().queuedUnloadTaskCount != 1 || residency.stats().frameScheduledUnloadCount != pages.size()) {
-            return RhiTestResult::fail("Same-frame unloads were not batched");
+            return RHITestResult::fail("Same-frame unloads were not batched");
         }
         residency.beginFrame();
         for (uint32_t page : pages) {
-            if (residency.pageAllocated(page)) { return RhiTestResult::fail("Batch was not retired after the delayed free"); }
+            if (residency.pageAllocated(page)) { return RHITestResult::fail("Batch was not retired after the delayed free"); }
         }
         for (uint32_t root : roots) {
-            if (!residency.pageAllocated(root) || residency.unloadPage(root)) { return RhiTestResult::fail("Batch lost a locked root"); }
+            if (!residency.pageAllocated(root) || residency.unloadPage(root)) { return RHITestResult::fail("Batch lost a locked root"); }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletBatchedUnloadTest);
 
-class StreamerMeshletDemandCacheTest final : public RhiTest {
+class StreamerMeshletDemandCacheTest final : public RHITest {
 public:
-    StreamerMeshletDemandCacheTest() { type = RhiTestType::Command; name = "streamer_meshlet_demand_cache"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamerMeshletDemandCacheTest() { type = RHITestType::Command; name = "streamer_meshlet_demand_cache"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
@@ -3433,7 +3433,7 @@ public:
         if (!built.passed) { return built; }
         const auto roots = fallbackPagesFor(asset);
         auto pages = nonFallbackPagesFor(asset, roots);
-        if (pages.size() < 3) { return RhiTestResult::skip("Requires three streamable pages"); }
+        if (pages.size() < 3) { return RHITestResult::skip("Requires three streamable pages"); }
         pages.resize(3);
         MeshletStreamResidencyManager residency;
         std::string reason;
@@ -3441,45 +3441,45 @@ public:
                 .maxResidentBytes = pageStorageBytes(asset, roots) + pageStorageBytes(asset, pages),
                 .maxResidentPages = static_cast<uint32_t>(roots.size() + 2), .queuedFrameCount = 1,
                 .unloadDelayFrames = 1, .evictionAgeThresholdFrames = 1}, reason) ||
-            !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
+            !residency.lockFallbackPages(roots, reason)) { return RHITestResult::fail(reason); }
         std::unique_ptr<Streamer> streamer;
         auto result = context.device.createStreamer(makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
-        if (!result) { return RhiTestResult::fail(toString(result)); }
+        if (!result) { return RHITestResult::fail(toString(result)); }
         std::unique_ptr<Buffer> destination;
         result = context.device.createBuffer({.size = residency.pageBufferSize(),
             .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { destination = std::move(rhiValue); });
-        if (!result) { return RhiTestResult::fail(toString(result)); }
+        if (!result) { return RHITestResult::fail(toString(result)); }
         residency.beginFrame();
         (void)residency.requestPage(pages[0]); (void)residency.requestPage(pages[1]);
         const auto uploads = static_cast<uint32_t>(roots.size() + 2);
         if (residency.processUploads(*streamer, *destination, uploads) != uploads) {
-            return RhiTestResult::fail("Cannot prepare demand-cache residents");
+            return RHITestResult::fail("Cannot prepare demand-cache residents");
         }
         for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
         if (!residency.pageResident(pages[0]) || !residency.pageResident(pages[1])) {
-            return RhiTestResult::fail("Demand-cache setup is not resident");
+            return RHITestResult::fail("Demand-cache setup is not resident");
         }
         const std::array<uint32_t, 2> firstUnused{pages[0], pages[0]};
         (void)residency.consumeGpuRequests({.unloadPageIds = firstUnused, .unloadRequestCounter = 2,
             .residentDemandFeedback = true});
         if (residency.stats().queuedUnloadTaskCount != 0 || residency.stats().frameCachedUnusedPageCount != 1) {
-            return RhiTestResult::fail("Unused feedback eagerly unloaded cached geometry");
+            return RHITestResult::fail("Unused feedback eagerly unloaded cached geometry");
         }
         const auto initialWork = residency.stats().cpuWork;
         if (initialWork.demandUnused != 1 || initialWork.demandVisited != 1 || initialWork.demandEpochUpdates != 1 ||
             initialWork.demandTransitions != 1) {
-            return RhiTestResult::fail("Complete feedback counters do not match resident work");
+            return RHITestResult::fail("Complete feedback counters do not match resident work");
         }
         residency.beginFrame();
         if (residency.stats().cpuWork.demandVisited != 0) {
-            return RhiTestResult::fail("CPU work counters did not reset at beginFrame");
+            return RHITestResult::fail("CPU work counters did not reset at beginFrame");
         }
         // An empty complete batch means the previously unused page is needed
         // again. Returning to it must neither reload nor leave it evictable.
-        (void)residency.consumeGpuRequests(StreamGpuRequestBatch{.residentDemandFeedback = true});
+        (void)residency.consumeGpuRequests(StreamGPURequestBatch{.residentDemandFeedback = true});
         if (residency.pageAge(pages[0]) != 0 || !residency.requestPage(pages[0]) ||
             residency.stats().totalScheduledUploadCount != uploads || residency.queuedUploadCount() != 0) {
-            return RhiTestResult::fail("Returning demand did not reuse its cached payload");
+            return RHITestResult::fail("Returning demand did not reuse its cached payload");
         }
         // Compare lazy age against the former eager refresh semantics across
         // complete, truncated and duplicate unused feedback, including two
@@ -3499,16 +3499,16 @@ public:
                 .unloadOverflowCounter = complete ? 0u : 1u, .residentDemandFeedback = true});
             for (uint32_t i = 0; i < 2; ++i) {
                 if (residency.pageAge(pages[i]) != residency.stats().frameIndex - lastUse[i]) {
-                    return RhiTestResult::fail("Incremental demand age differs from eager reference");
+                    return RHITestResult::fail("Incremental demand age differs from eager reference");
                 }
             }
         }
-        (void)residency.consumeGpuRequests(StreamGpuRequestBatch{.residentDemandFeedback = true});
+        (void)residency.consumeGpuRequests(StreamGPURequestBatch{.residentDemandFeedback = true});
         residency.beginFrame();
-        (void)residency.consumeGpuRequests(StreamGpuRequestBatch{.residentDemandFeedback = true});
+        (void)residency.consumeGpuRequests(StreamGPURequestBatch{.residentDemandFeedback = true});
         if (residency.stats().cpuWork.demandVisited != 0 || residency.pageAge(pages[0]) != 0 ||
             residency.pageAge(pages[1]) != 0 || residency.stats().cpuWork.demandEpochUpdates != 1) {
-            return RhiTestResult::fail("Stable hot feedback did not use constant-time epoch refresh");
+            return RHITestResult::fail("Stable hot feedback did not use constant-time epoch refresh");
         }
         // Monotonic producer frames: old feedback cannot turn a newly hot page cold.
         const auto sourceFrame = static_cast<uint32_t>(residency.stats().frameIndex);
@@ -3516,12 +3516,12 @@ public:
         (void)residency.consumeGpuRequests({.unloadPageIds = firstUnused, .unloadRequestCounter = 2,
             .frameIndex = sourceFrame - 1, .residentDemandFeedback = true});
         if (residency.stats().cpuWork.demandStaleBatches != 1 || residency.pageAge(pages[0]) != 0) {
-            return RhiTestResult::fail("Stale producer feedback changed a newer demand epoch");
+            return RHITestResult::fail("Stale producer feedback changed a newer demand epoch");
         }
         residency.beginFrame();
         (void)residency.requestPage(pages[2]);
         if (residency.stats().frameEvictedPageCount != 0 || residency.pageAllocated(pages[2])) {
-            return RhiTestResult::fail("Budget pressure evicted demanded geometry");
+            return RHITestResult::fail("Budget pressure evicted demanded geometry");
         }
         // Refresh in the SAME frame after exhausting admission: new explicit
         // cold feedback must reopen the gate without waiting for beginFrame.
@@ -3533,27 +3533,27 @@ public:
         const auto incompleteWork = residency.stats().cpuWork;
         if (incompleteWork.demandUnused != 1 || incompleteWork.demandRefreshed != 0 ||
             incompleteWork.demandVisited != 1 || incompleteWork.demandEpochUpdates != 0) {
-            return RhiTestResult::fail("Truncated feedback counters lost protected pages");
+            return RHITestResult::fail("Truncated feedback counters lost protected pages");
         }
         (void)residency.requestPage(pages[2]);
         if (!residency.pageResident(pages[0]) || residency.pageState(pages[1]) != MeshletStreamPageResidencyState::PendingUnload ||
             residency.stats().frameEvictedPageCount != 1 || residency.pageAllocated(pages[2])) {
-            return RhiTestResult::fail("Budget victim ignored demand feedback or delayed release");
+            return RHITestResult::fail("Budget victim ignored demand feedback or delayed release");
         }
         residency.beginFrame();
         (void)residency.requestPage(pages[2]);
         if (!residency.pageAllocated(pages[2]) || residency.pageAllocated(pages[1])) {
-            return RhiTestResult::fail("Cached victim was not recycled after completion");
+            return RHITestResult::fail("Cached victim was not recycled after completion");
         }
         for (uint32_t page : roots) {
-            if (!residency.pageResident(page) || residency.unloadPage(page)) { return RhiTestResult::fail("Demand cache lost a root"); }
+            if (!residency.pageResident(page) || residency.unloadPage(page)) { return RHITestResult::fail("Demand cache lost a root"); }
         }
-        if (!residency.unloadPage(pages[0])) { return RhiTestResult::fail("Explicit unload no longer works"); }
+        if (!residency.unloadPage(pages[0])) { return RHITestResult::fail("Explicit unload no longer works"); }
         const auto beforeReupload = static_cast<uint32_t>(residency.stats().frameIndex);
         residency.beginFrame();
         (void)residency.requestPage(pages[1]);
         if (residency.processUploads(*streamer, *destination, 2) != 2) {
-            return RhiTestResult::fail("Could not reupload the previously cold page");
+            return RHITestResult::fail("Could not reupload the previously cold page");
         }
         for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
         const auto ageBeforeOldView = residency.pageAge(pages[1]);
@@ -3561,16 +3561,16 @@ public:
             .frameIndex = beforeReupload, .residentDemandFeedback = true});
         if (!residency.pageResident(pages[1]) || residency.pageAge(pages[1]) != ageBeforeOldView ||
             residency.stats().cpuWork.demandNewerThanFeedback == 0) {
-            return RhiTestResult::fail("Old view altered a new residency of the same page");
+            return RHITestResult::fail("Old view altered a new residency of the same page");
         }
         (void)residency.consumeGpuRequests({.frameIndex = beforeReupload, .residentDemandFeedback = true});
         if (residency.pageAge(pages[1]) != ageBeforeOldView) {
-            return RhiTestResult::fail("Lazy complete epoch refreshed a page absent from the producer view");
+            return RHITestResult::fail("Lazy complete epoch refreshed a page absent from the producer view");
         }
         (void)residency.consumeGpuRequests({.frameIndex = static_cast<uint32_t>(residency.stats().frameIndex),
             .residentDemandFeedback = true});
         if (residency.pageAge(pages[1]) != 0) {
-            return RhiTestResult::fail("New residency did not join an eligible complete epoch");
+            return RHITestResult::fail("New residency did not join an eligible complete epoch");
         }
         // Exercise duplicate bits, every asset word (including the final partial
         // word), invalid IDs, and clearing/reusing all touched words.
@@ -3585,18 +3585,18 @@ public:
                 .unloadRequestCounter = static_cast<uint32_t>(allUnused.size()), .residentDemandFeedback = true});
             const auto stats = residency.stats();
             if (stats.frameUniqueGpuUnloadRequestCount != asset.pageCount() || stats.frameGpuInvalidRequestCount != 2) {
-                return RhiTestResult::fail("Unused page marks lost duplicates, bounds checks or touched-word clearing");
+                return RHITestResult::fail("Unused page marks lost duplicates, bounds checks or touched-word clearing");
             }
         }
-        return RhiTestResult::pass("Cache reuse, empty/truncated demand feedback, hot-page protection and delayed budget eviction");
+        return RHITestResult::pass("Cache reuse, empty/truncated demand feedback, hot-page protection and delayed budget eviction");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletDemandCacheTest);
 
-class StreamerJointColdReclaimTest final : public RhiTest {
+class StreamerJointColdReclaimTest final : public RHITest {
 public:
-    StreamerJointColdReclaimTest() { type = RhiTestType::Command; name = "streamer_joint_cold_reclaim"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamerJointColdReclaimTest() { type = RHITestType::Command; name = "streamer_joint_cold_reclaim"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
@@ -3604,7 +3604,7 @@ public:
         if (!built.passed) { return built; }
         const auto roots = fallbackPagesFor(asset);
         auto pages = nonFallbackPagesFor(asset, roots);
-        if (pages.size() < 3) { return RhiTestResult::skip("Requires three streamable pages"); }
+        if (pages.size() < 3) { return RHITestResult::skip("Requires three streamable pages"); }
         pages.resize(3);
         MeshletStreamResidencyManager residency;
         std::string reason;
@@ -3612,23 +3612,23 @@ public:
                 .maxResidentBytes = 4 * (pageStorageBytes(asset, roots) + pageStorageBytes(asset, pages)),
                 .maxResidentPages = static_cast<uint32_t>(roots.size() + 3), .queuedFrameCount = 1,
                 .unloadDelayFrames = 1, .evictionAgeThresholdFrames = 1}, reason) ||
-            !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
+            !residency.lockFallbackPages(roots, reason)) { return RHITestResult::fail(reason); }
         std::unique_ptr<Streamer> streamer;
         auto result = context.device.createStreamer(makeTestStreamerDesc((roots.size() + 2) * asset.maxPagePayloadBytes() + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
-        if (!result) { return RhiTestResult::fail(toString(result)); }
+        if (!result) { return RHITestResult::fail(toString(result)); }
         std::unique_ptr<Buffer> destination;
         result = context.device.createBuffer({.size = residency.pageBufferSize(),
             .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { destination = std::move(rhiValue); });
-        if (!result) { return RhiTestResult::fail(toString(result)); }
+        if (!result) { return RHITestResult::fail(toString(result)); }
         residency.beginFrame();
         (void)residency.requestPage(pages[0]); (void)residency.requestPage(pages[1]);
         const auto uploads = static_cast<uint32_t>(roots.size() + 2);
         if (residency.processUploads(*streamer, *destination, uploads) != uploads) {
-            return RhiTestResult::fail("Cannot prepare demand-cache residents");
+            return RHITestResult::fail("Cannot prepare demand-cache residents");
         }
         for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
         if (!residency.pageResident(pages[0]) || !residency.pageResident(pages[1])) {
-            return RhiTestResult::fail("Demand-cache setup is not resident");
+            return RHITestResult::fail("Demand-cache setup is not resident");
         }
 
         const std::array<uint32_t, 1> unused{pages[1]};
@@ -3636,30 +3636,30 @@ public:
             .retentionFrames = 120, .pressureAgeFrames = 16,
             .clasPageBytes = [&](uint32_t page) -> uint64_t { return page == pages[0] || page == pages[1] ? 512 : 0; }};
         (void)residency.consumeGpuRequests({.unloadPageIds = unused, .unloadRequestCounter = 1, .residentDemandFeedback = true});
-        if (residency.reclaimColdPages(reclaim) != 0) { return RhiTestResult::fail("CLAS pressure evicted a recent page"); }
+        if (residency.reclaimColdPages(reclaim) != 0) { return RHITestResult::fail("CLAS pressure evicted a recent page"); }
         for (uint32_t frame = 0; frame < 16; ++frame) { residency.beginFrame(); }
         (void)residency.consumeGpuRequests({.unloadPageIds = unused, .unloadRequestCounter = 1, .residentDemandFeedback = true});
         if (residency.reclaimColdPages(reclaim) != 1 || residency.pageState(pages[1]) != MeshletStreamPageResidencyState::PendingUnload ||
             !residency.pageResident(pages[0]) || residency.stats().usedResidentBytes >= residency.maxResidentBytes() * 70 / 100) {
-            return RhiTestResult::fail("CLAS-only pressure did not schedule the shared cold geometry page");
+            return RHITestResult::fail("CLAS-only pressure did not schedule the shared cold geometry page");
         }
         if (residency.reclaimColdPages(reclaim) != 0 || residency.stats().frameEvictionScanCount != 1) {
-            return RhiTestResult::fail("Pending joint frees caused duplicate victims or scans");
+            return RHITestResult::fail("Pending joint frees caused duplicate victims or scans");
         }
         residency.beginFrame();
-        if (residency.pageAllocated(pages[1])) { return RhiTestResult::fail("Joint victim geometry was not freed"); }
+        if (residency.pageAllocated(pages[1])) { return RHITestResult::fail("Joint victim geometry was not freed"); }
         reclaim.clasUsedBytes = 512;
         reclaim.clasRetiringBytes = 512;
         for (uint32_t frame = 0; frame < 121; ++frame) { residency.beginFrame(); }
         // Complete feedback still protects the current view even after a long pause.
-        (void)residency.consumeGpuRequests(StreamGpuRequestBatch{.residentDemandFeedback = true});
-        if (residency.reclaimColdPages(reclaim) != 0) { return RhiTestResult::fail("Current view was treated as cold"); }
+        (void)residency.consumeGpuRequests(StreamGPURequestBatch{.residentDemandFeedback = true});
+        if (residency.reclaimColdPages(reclaim) != 0) { return RHITestResult::fail("Current view was treated as cold"); }
         const std::array<uint32_t, 1> nowUnused{pages[0]};
         for (uint32_t frame = 0; frame < 121; ++frame) { residency.beginFrame(); }
         (void)residency.consumeGpuRequests({.unloadPageIds = nowUnused, .unloadRequestCounter = 1, .residentDemandFeedback = true});
-        if (residency.reclaimColdPages(reclaim) != 1) { return RhiTestResult::fail("Old cold page was retained below both budgets"); }
+        if (residency.reclaimColdPages(reclaim) != 1) { return RHITestResult::fail("Old cold page was retained below both budgets"); }
         for (uint32_t root : roots) {
-            if (!residency.pageResident(root)) { return RhiTestResult::fail("Joint reclaim lost a fallback page"); }
+            if (!residency.pageResident(root)) { return RHITestResult::fail("Joint reclaim lost a fallback page"); }
         }
         // Reinsert erased entries in reverse order. Age wins over page ID,
         // and equal-age pages keep ID order despite resident-table swaps.
@@ -3672,7 +3672,7 @@ public:
                 (void)residency.requestPage(*it);
             }
             if (residency.processUploads(*streamer, *destination, 3) != 3) {
-                return RhiTestResult::fail("Cannot upload cold-sort fixture");
+                return RHITestResult::fail("Cannot upload cold-sort fixture");
             }
             for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
             (void)residency.requestPage(pages[0]);
@@ -3685,17 +3685,17 @@ public:
                 reclaim.retentionFrames = cycle == 1 && expected == pages[1] ? 4 : 1;
                 if (residency.reclaimColdPages(reclaim) != 1 ||
                     residency.pageState(expected) != MeshletStreamPageResidencyState::PendingUnload) {
-                    return RhiTestResult::fail("Cold eviction changed age/ID order after erase and reinsertion");
+                    return RHITestResult::fail("Cold eviction changed age/ID order after erase and reinsertion");
                 }
             }
             if (residency.reclaimColdPages(reclaim) != 0 || residency.stats().frameEvictionScanCount != 1) {
-                return RhiTestResult::fail("Cached cold candidates scheduled a duplicate victim");
+                return RHITestResult::fail("Cached cold candidates scheduled a duplicate victim");
             }
         }
         residency.beginFrame();
         for (uint32_t id : pages) { (void)residency.requestPage(id); }
         if (residency.processUploads(*streamer, *destination, 3) != 3) {
-            return RhiTestResult::fail("Cannot upload partial-sort fixture");
+            return RHITestResult::fail("Cannot upload partial-sort fixture");
         }
         for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
         (void)residency.consumeGpuRequests({.unloadPageIds = pages, .unloadRequestCounter = 3,
@@ -3704,7 +3704,7 @@ public:
         reclaim.retentionFrames = 120;
         reclaim.clasPageBytes = [&](uint32_t) -> uint64_t { ++clasQueries; return 512; };
         if (residency.reclaimColdPages(reclaim) != 0 || clasQueries != 0 || residency.stats().cpuWork.coldVisited != 0) {
-            return RhiTestResult::fail("Unexpired retention suffix was visited or queried for CLAS sizes");
+            return RHITestResult::fail("Unexpired retention suffix was visited or queried for CLAS sizes");
         }
         // Expand the same cached candidates when CLAS pressure appears later in
         // the frame. Once one victim is credited, the remaining young suffix
@@ -3714,21 +3714,21 @@ public:
         if (residency.reclaimColdPages(reclaim) != 1 || clasQueries != 1 ||
             residency.pageState(pages[0]) != MeshletStreamPageResidencyState::PendingUnload ||
             residency.stats().frameEvictionScanCount != 1) {
-            return RhiTestResult::fail("Partial cold sort missed new pressure, changed ID order or over-evicted after pressure ended");
+            return RHITestResult::fail("Partial cold sort missed new pressure, changed ID order or over-evicted after pressure ended");
         }
         // Pending-free credit ends pressure on another call in the same frame.
         if (residency.reclaimColdPages(reclaim) != 0 || clasQueries != 2) {
-            return RhiTestResult::fail("Partial cold sort ignored pending free credit");
+            return RHITestResult::fail("Partial cold sort ignored pending free credit");
         }
-        return RhiTestResult::pass("CLAS pressure, delayed credit, partial-sort expansion, due cutoff and age/ID order across reloads");
+        return RHITestResult::pass("CLAS pressure, delayed credit, partial-sort expansion, due cutoff and age/ID order across reloads");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerJointColdReclaimTest);
 
-class StreamerMeshletPrefetchByteReserveTest final : public RhiTest {
+class StreamerMeshletPrefetchByteReserveTest final : public RHITest {
 public:
-    StreamerMeshletPrefetchByteReserveTest() { type = RhiTestType::Command; name = "streamer_meshlet_prefetch_byte_reserve"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamerMeshletPrefetchByteReserveTest() { type = RHITestType::Command; name = "streamer_meshlet_prefetch_byte_reserve"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
@@ -3736,7 +3736,7 @@ public:
         if (!built.passed) { return built; }
         const auto roots = fallbackPagesFor(asset);
         auto pages = nonFallbackPagesFor(asset, roots);
-        if (pages.size() < 9) { return RhiTestResult::skip("Requires nine streamable pages"); }
+        if (pages.size() < 9) { return RHITestResult::skip("Requires nine streamable pages"); }
         std::sort(pages.begin(), pages.end(), [&](uint32_t a, uint32_t b) {
             return pageDeviceStorageBytes(asset, a) > pageDeviceStorageBytes(asset, b);
         });
@@ -3749,7 +3749,7 @@ public:
         while (occupied <= 3 * (reserve + speculativeBytes) && residentCount < pages.size()) {
             occupied += pageDeviceStorageBytes(asset, pages[residentCount++]);
         }
-        if (occupied <= 3 * (reserve + speculativeBytes)) { return RhiTestResult::skip("Cannot fill more than three quarters of the test budget"); }
+        if (occupied <= 3 * (reserve + speculativeBytes)) { return RHITestResult::skip("Cannot fill more than three quarters of the test budget"); }
         pages.resize(residentCount);
         MeshletStreamResidencyDesc desc{.asset = &asset, .maxResidentBytes = occupied + reserve + speculativeBytes,
             .immediateGpuRequests = true};
@@ -3757,44 +3757,44 @@ public:
         MeshletStreamResidencyManager residency;
         std::string reason;
         if (!residency.initialize(desc, reason) || !residency.lockFallbackPages(roots, reason)) {
-            return RhiTestResult::fail(reason);
+            return RHITestResult::fail(reason);
         }
         residency.beginFrame();
         for (uint32_t id : pages) {
             (void)residency.requestPage(id);
-            if (!residency.pageAllocated(id)) { return RhiTestResult::fail("Cannot allocate the occupied reserve fixture"); }
+            if (!residency.pageAllocated(id)) { return RHITestResult::fail("Cannot allocate the occupied reserve fixture"); }
         }
         if (residency.storage().usedBytes() <= residency.maxResidentBytes() * 3 / 4 ||
             !residency.canPrefetchPage(scene::meshletStreamDevicePayloadSize(asset.pages()[speculative]))) {
-            return RhiTestResult::fail("Byte reserve still applies the legacy 75 percent watermark");
+            return RHITestResult::fail("Byte reserve still applies the legacy 75 percent watermark");
         }
         const uint32_t forecast[] = {speculative | kStreamPrefetchPageTag};
         (void)residency.consumeGpuRequests({.loadPageIds = forecast, .taggedPrefetchRequests = true});
         if (!residency.pageAllocated(speculative) || residency.stats().totalPrefetchAdmitted != 1 ||
             residency.canPrefetchPage(scene::meshletStreamDevicePayloadSize(asset.pages()[demanded]))) {
-            return RhiTestResult::fail("Prefetch did not leave exactly the requested byte reserve");
+            return RHITestResult::fail("Prefetch did not leave exactly the requested byte reserve");
         }
         const uint32_t blockedForecast[] = {demanded | kStreamPrefetchPageTag};
         (void)residency.consumeGpuRequests({.loadPageIds = blockedForecast, .taggedPrefetchRequests = true});
         if (residency.pageAllocated(demanded) || residency.stats().totalPrefetchDeferred != 1 ||
             residency.stats().totalEvictedPageCount != 0) {
-            return RhiTestResult::fail("Speculative admission consumed the demand reserve or evicted geometry");
+            return RHITestResult::fail("Speculative admission consumed the demand reserve or evicted geometry");
         }
         const uint32_t demand[] = {demanded};
         (void)residency.consumeGpuRequests({.loadPageIds = demand});
         if (!residency.pageAllocated(demanded) || residency.storage().usedBytes() != residency.maxResidentBytes() ||
             residency.stats().totalEvictedPageCount != 0) {
-            return RhiTestResult::fail("Current demand could not consume reserved bytes without eviction");
+            return RHITestResult::fail("Current demand could not consume reserved bytes without eviction");
         }
-        return RhiTestResult::pass("Prefetch above 75 percent, exact demand byte reserve and no speculative eviction");
+        return RHITestResult::pass("Prefetch above 75 percent, exact demand byte reserve and no speculative eviction");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletPrefetchByteReserveTest);
 
-class StreamerMeshletDemandRetentionHeadroomTest final : public RhiTest {
+class StreamerMeshletDemandRetentionHeadroomTest final : public RHITest {
 public:
-    StreamerMeshletDemandRetentionHeadroomTest() { type = RhiTestType::Command; name = "streamer_meshlet_demand_retention_headroom"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamerMeshletDemandRetentionHeadroomTest() { type = RHITestType::Command; name = "streamer_meshlet_demand_retention_headroom"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
@@ -3802,25 +3802,25 @@ public:
         if (!built.passed) { return built; }
         const auto roots = fallbackPagesFor(asset);
         auto pages = nonFallbackPagesFor(asset, roots);
-        if (pages.size() < 3) { return RhiTestResult::skip("Requires three streamable pages"); }
+        if (pages.size() < 3) { return RHITestResult::skip("Requires three streamable pages"); }
         pages.resize(3);
         std::sort(pages.begin(), pages.end());
         const uint64_t bytes = pageDeviceStorageBytes(asset, roots) + pageDeviceStorageBytes(asset, pages);
-        const auto upload = [&](MeshletStreamResidencyManager& residency, uint32_t count) -> RhiTestResult {
+        const auto upload = [&](MeshletStreamResidencyManager& residency, uint32_t count) -> RHITestResult {
             std::unique_ptr<Streamer> streamer;
             auto result = context.device.createStreamer(makeTestStreamerDesc(count * asset.maxPagePayloadBytes() + 4096))
                 .transform([&](auto value) { streamer = std::move(value); });
-            if (!result) { return RhiTestResult::fail(toString(result)); }
+            if (!result) { return RHITestResult::fail(toString(result)); }
             std::unique_ptr<Buffer> destination;
             result = context.device.createBuffer({.size = residency.pageBufferSize(),
                 .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback})
                 .transform([&](auto value) { destination = std::move(value); });
-            if (!result) { return RhiTestResult::fail(toString(result)); }
+            if (!result) { return RHITestResult::fail(toString(result)); }
             if (residency.processUploads(*streamer, *destination, count) != count) {
-                return RhiTestResult::fail("Cannot upload the retention fixture");
+                return RHITestResult::fail("Cannot upload the retention fixture");
             }
             for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
-            return RhiTestResult::pass();
+            return RHITestResult::pass();
         };
         MeshletStreamResidencyDesc desc{.asset = &asset, .maxResidentBytes = bytes,
             .queuedFrameCount = 1, .unloadDelayFrames = 1, .evictionAgeThresholdFrames = 1,
@@ -3828,7 +3828,7 @@ public:
         desc.prefetchReserveBytes = kMeshletStreamStorageAlignment;
         MeshletStreamResidencyManager residency;
         std::string reason;
-        if (!residency.initialize(desc, reason) || !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
+        if (!residency.initialize(desc, reason) || !residency.lockFallbackPages(roots, reason)) { return RHITestResult::fail(reason); }
         residency.beginFrame();
         for (uint32_t id : pages) { (void)residency.requestPage(id); }
         const uint32_t uploads = static_cast<uint32_t>(roots.size() + pages.size());
@@ -3840,7 +3840,7 @@ public:
         reclaim.retainDemandCache = true;
         (void)residency.consumeGpuRequests({.residentDemandFeedback = true});
         if (residency.storage().usedBytes() != residency.maxResidentBytes() || residency.reclaimColdPages(reclaim) != 0) {
-            return RhiTestResult::fail("Headroom policy evicted the fully hot working set");
+            return RHITestResult::fail("Headroom policy evicted the fully hot working set");
         }
         // Two old demand pages become unused. Only the first is needed to meet
         // the byte target; the other should survive for a later return.
@@ -3851,13 +3851,13 @@ public:
         if (residency.reclaimColdPages(reclaim) != 1 ||
             residency.pageState(pages[0]) != MeshletStreamPageResidencyState::PendingUnload ||
             !residency.pageResident(pages[1]) || !residency.pageResident(pages[2])) {
-            return RhiTestResult::fail("Headroom did not stop after enough confirmed cold bytes");
+            return RHITestResult::fail("Headroom did not stop after enough confirmed cold bytes");
         }
         if (residency.reclaimColdPages(reclaim) != 0 ||
             residency.canPrefetchPage(scene::meshletStreamDevicePayloadSize(asset.pages()[pages[0]])) ||
             residency.stats().frameEvictedPageCount != 1 ||
             residency.stats().framePendingFreeBytes != reclaim.geometryReserveBytes) {
-            return RhiTestResult::fail("Pending free was double-evicted or counted as allocatable prefetch space");
+            return RHITestResult::fail("Pending free was double-evicted or counted as allocatable prefetch space");
         }
         residency.beginFrame();
         for (uint32_t frame = 0; frame < 120; ++frame) { residency.beginFrame(); }
@@ -3865,21 +3865,21 @@ public:
         (void)residency.consumeGpuRequests({.unloadPageIds = stillUnused, .unloadRequestCounter = 1,
             .residentDemandFeedback = true});
         if (residency.reclaimColdPages(reclaim) != 0 || !residency.pageResident(pages[1])) {
-            return RhiTestResult::fail("Unpressured demand cache expired instead of retaining a returnable page");
+            return RHITestResult::fail("Unpressured demand cache expired instead of retaining a returnable page");
         }
         (void)residency.consumeGpuRequests({.residentDemandFeedback = true});
         if (!residency.requestPage(pages[1]) || residency.queuedUploadCount() != 0 ||
             residency.stats().totalScheduledUploadCount != uploads) {
-            return RhiTestResult::fail("Returning demand reloaded a retained page");
+            return RHITestResult::fail("Returning demand reloaded a retained page");
         }
         for (uint32_t root : roots) {
-            if (!residency.pageResident(root)) { return RhiTestResult::fail("Headroom reclaim lost a locked root"); }
+            if (!residency.pageResident(root)) { return RHITestResult::fail("Headroom reclaim lost a locked root"); }
         }
         // Useful demand cache and unused speculation have different retention:
         // with ample memory, only the unused speculative payload expires.
         MeshletStreamResidencyManager speculative;
         desc.maxResidentBytes = bytes * 4;
-        if (!speculative.initialize(desc, reason)) { return RhiTestResult::fail(reason); }
+        if (!speculative.initialize(desc, reason)) { return RHITestResult::fail(reason); }
         speculative.beginFrame();
         (void)speculative.requestPage(pages[0]);
         const uint32_t forecast[] = {pages[1] | kStreamPrefetchPageTag};
@@ -3891,17 +3891,17 @@ public:
         if (speculative.reclaimColdPages(reclaim) != 1 || !speculative.pageResident(pages[0]) ||
             speculative.pageState(pages[1]) != MeshletStreamPageResidencyState::PendingUnload ||
             speculative.stats().totalPrefetchUsed != 0) {
-            return RhiTestResult::fail("Unused speculation did not expire independently of useful demand cache");
+            return RHITestResult::fail("Unused speculation did not expire independently of useful demand cache");
         }
-        return RhiTestResult::pass("Hot/root safety, bounded headroom, pending-free credit, return reuse and unused speculation expiry");
+        return RHITestResult::pass("Hot/root safety, bounded headroom, pending-free credit, return reuse and unused speculation expiry");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletDemandRetentionHeadroomTest);
 
-class StreamerMeshletEvictionByteBudgetTest final : public RhiTest {
+class StreamerMeshletEvictionByteBudgetTest final : public RHITest {
 public:
-    StreamerMeshletEvictionByteBudgetTest() { type = RhiTestType::Command; name = "streamer_meshlet_eviction_byte_budget"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamerMeshletEvictionByteBudgetTest() { type = RHITestType::Command; name = "streamer_meshlet_eviction_byte_budget"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
@@ -3909,14 +3909,14 @@ public:
         if (!built.passed) { return built; }
         const auto roots = fallbackPagesFor(asset);
         auto pages = nonFallbackPagesFor(asset, roots);
-        if (pages.size() < 4) { return RhiTestResult::skip("Requires four streamable pages"); }
+        if (pages.size() < 4) { return RHITestResult::skip("Requires four streamable pages"); }
         std::sort(pages.begin(), pages.end(), [&](uint32_t a, uint32_t b) {
             return pageDeviceStorageBytes(asset, a) > pageDeviceStorageBytes(asset, b);
         });
         const uint32_t demandProbe = pages[3];
         pages.resize(3);
         const uint64_t largest = pageDeviceStorageBytes(asset, pages[0]);
-        if (pageDeviceStorageBytes(asset, pages[2]) <= largest / 2) { return RhiTestResult::skip("Requires three similarly sized pages"); }
+        if (pageDeviceStorageBytes(asset, pages[2]) <= largest / 2) { return RHITestResult::skip("Requires three similarly sized pages"); }
         const uint64_t bytes = pageDeviceStorageBytes(asset, roots) + pageDeviceStorageBytes(asset, pages);
         for (bool constrainBytes : {true, false}) {
             MeshletStreamResidencyDesc desc{.asset = &asset, .maxResidentBytes = bytes * 4,
@@ -3926,21 +3926,21 @@ public:
             desc.maxEvictionBytesPerFrame = constrainBytes ? largest : largest * 3;
             MeshletStreamResidencyManager residency;
             std::string reason;
-            if (!residency.initialize(desc, reason) || !residency.lockFallbackPages(roots, reason)) { return RhiTestResult::fail(reason); }
+            if (!residency.initialize(desc, reason) || !residency.lockFallbackPages(roots, reason)) { return RHITestResult::fail(reason); }
             residency.beginFrame();
             for (uint32_t id : pages) { (void)residency.requestPage(id); }
             const uint32_t count = static_cast<uint32_t>(roots.size() + pages.size());
             std::unique_ptr<Streamer> streamer;
             auto result = context.device.createStreamer(makeTestStreamerDesc(count * asset.maxPagePayloadBytes() + 4096))
                 .transform([&](auto value) { streamer = std::move(value); });
-            if (!result) { return RhiTestResult::fail(toString(result)); }
+            if (!result) { return RHITestResult::fail(toString(result)); }
             std::unique_ptr<Buffer> destination;
             result = context.device.createBuffer({.size = residency.pageBufferSize(),
                 .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback})
                 .transform([&](auto value) { destination = std::move(value); });
-            if (!result) { return RhiTestResult::fail(toString(result)); }
+            if (!result) { return RHITestResult::fail(toString(result)); }
             if (residency.processUploads(*streamer, *destination, count) != count) {
-                return RhiTestResult::fail("Cannot upload the eviction-budget fixture");
+                return RHITestResult::fail("Cannot upload the eviction-budget fixture");
             }
             for (uint32_t frame = 0; frame < 4; ++frame) { residency.beginFrame(); }
             (void)residency.consumeGpuRequests({.unloadPageIds = pages, .unloadRequestCounter = 3,
@@ -3952,7 +3952,7 @@ public:
                 if (frame == 0) {
                     (void)residency.requestPage(demandProbe);
                     if (residency.pageAllocated(demandProbe)) {
-                        return RhiTestResult::fail("Admission reused a page slot before its delayed free completed");
+                        return RHITestResult::fail("Admission reused a page slot before its delayed free completed");
                     }
                 }
                 uint64_t pendingBytes = 0;
@@ -3964,87 +3964,87 @@ public:
                 if (evicted != 1 || residency.stats().frameEvictedPageCount != 1 ||
                     pendingBytes > desc.maxEvictionBytesPerFrame || residency.stats().frameEvictedGeometryBytes != pendingBytes ||
                     residency.stats().totalEvictedPageCount != frame + 1) {
-                    return RhiTestResult::fail(constrainBytes
+                    return RHITestResult::fail(constrainBytes
                         ? "Repeated reclaim exceeded or failed to reset the shared byte cap"
                         : "Repeated reclaim exceeded or failed to reset the shared page cap");
                 }
                 residency.beginFrame();
             }
             for (uint32_t root : roots) {
-                if (!residency.pageResident(root)) { return RhiTestResult::fail("Capped reclaim lost a locked root"); }
+                if (!residency.pageResident(root)) { return RHITestResult::fail("Capped reclaim lost a locked root"); }
             }
         }
-        return RhiTestResult::pass("Byte/page limits shared by reclaim and admission reset only at beginFrame");
+        return RHITestResult::pass("Byte/page limits shared by reclaim and admission reset only at beginFrame");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletEvictionByteBudgetTest);
 
-class MeshletStreamFragmentedStorageTest final : public RhiTest {
+class MeshletStreamFragmentedStorageTest final : public RHITest {
 public:
-    MeshletStreamFragmentedStorageTest() { type = RhiTestType::Validation; name = "streamer_meshlet_fragmented_storage"; }
-    RhiTestResult run(RhiTestContext&) override
+    MeshletStreamFragmentedStorageTest() { type = RHITestType::Validation; name = "streamer_meshlet_fragmented_storage"; }
+    RHITestResult run(RHITestContext&) override
     {
         render::MeshletStreamStorage storage;
         std::string reason;
-        if (!storage.initialize(4096, 256, reason)) { return RhiTestResult::fail(reason); }
+        if (!storage.initialize(4096, 256, reason)) { return RHITestResult::fail(reason); }
         const auto large = storage.allocate(1024);
         const auto separator = storage.allocate(256);
         const auto small = storage.allocate(512);
         const auto tail = storage.allocate(2304);
         if (!large.valid() || !separator.valid() || !small.valid() || !tail.valid()) {
-            return RhiTestResult::fail("Best-fit setup failed");
+            return RHITestResult::fail("Best-fit setup failed");
         }
         storage.release(large); storage.release(small);
         const auto fitted = storage.allocate(257, true);
         const auto preserved = storage.allocate(1024, true);
         if (fitted.offset != small.offset || preserved.offset != large.offset || storage.allocate(UINT64_MAX, true).valid()) {
-            return RhiTestResult::fail("Best-fit consumed a larger hole or accepted overflow");
+            return RHITestResult::fail("Best-fit consumed a larger hole or accepted overflow");
         }
         storage.release(fitted); storage.release(preserved); storage.release(separator); storage.release(tail);
         if (storage.largestFreeBlockBytes() != 4096 || storage.freeBlockCount() != 1) {
-            return RhiTestResult::fail("Best-fit releases failed to coalesce");
+            return RHITestResult::fail("Best-fit releases failed to coalesce");
         }
-        if (!storage.initialize(4096u * 256u, 256, reason)) { return RhiTestResult::fail(reason); }
+        if (!storage.initialize(4096u * 256u, 256, reason)) { return RHITestResult::fail(reason); }
         std::vector<render::MeshletStreamStorageAllocation> pages;
         for (uint32_t i = 0; i < 4096; ++i) {
             pages.push_back(storage.allocate(256));
-            if (!pages.back().valid()) { return RhiTestResult::fail("Cannot fill fragmented storage"); }
+            if (!pages.back().valid()) { return RHITestResult::fail("Cannot fill fragmented storage"); }
         }
         for (uint32_t i = 0; i < pages.size(); i += 2) { storage.release(pages[i]); }
         for (uint32_t retry = 0; retry < 10000; ++retry) {
             if (storage.canAllocate(257) || storage.allocate(257).valid() || storage.largestFreeBlockBytes() != 256) {
-                return RhiTestResult::fail("Fragmented free bytes were mistaken for a contiguous allocation");
+                return RHITestResult::fail("Fragmented free bytes were mistaken for a contiguous allocation");
             }
         }
         storage.release(pages[1]);
         if (!storage.canAllocate(768) || storage.largestFreeBlockBytes() != 768) {
-            return RhiTestResult::fail("Coalescing did not invalidate the free-block bound");
+            return RHITestResult::fail("Coalescing did not invalidate the free-block bound");
         }
         const auto merged = storage.allocate(768);
         if (!merged.valid() || merged.offset != 0 || storage.canAllocate(512) ||
             storage.canAllocate(UINT64_MAX) || storage.allocate(UINT64_MAX).valid()) {
-            return RhiTestResult::fail("Allocation left a stale bound or accepted overflowing alignment");
+            return RHITestResult::fail("Allocation left a stale bound or accepted overflowing alignment");
         }
         storage.release(merged);
-        if (!storage.canAllocate(768)) { return RhiTestResult::fail("Released range did not become allocatable"); }
+        if (!storage.canAllocate(768)) { return RHITestResult::fail("Released range did not become allocatable"); }
         if (!storage.initialize(512, 256, reason) || storage.largestFreeBlockBytes() != 512) {
-            return RhiTestResult::fail("Storage reset retained old free-block bounds");
+            return RHITestResult::fail("Storage reset retained old free-block bounds");
         }
-        return RhiTestResult::pass("Fragmentation, repeated misses, coalescing, allocation, overflow and reset");
+        return RHITestResult::pass("Fragmentation, repeated misses, coalescing, allocation, overflow and reset");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MeshletStreamFragmentedStorageTest);
 
-class StreamerMeshletUploadCompletionTest final : public RhiTest {
+class StreamerMeshletUploadCompletionTest final : public RHITest {
 public:
-    StreamerMeshletUploadCompletionTest() { type = RhiTestType::Command; name = "streamer_meshlet_upload_completion"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamerMeshletUploadCompletionTest() { type = RHITestType::Command; name = "streamer_meshlet_upload_completion"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
         const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "completion.meshstream.bin", asset);
         if (!built.passed) { return built; }
-        if (asset.pageCount() < 3) { return RhiTestResult::fail("Need three pages for completion batching"); }
+        if (asset.pageCount() < 3) { return RHITestResult::fail("Need three pages for completion batching"); }
         MeshletStreamResidencyManager residency;
         std::unique_ptr<Streamer> streamer;
         std::unique_ptr<Buffer> destination;
@@ -4066,7 +4066,7 @@ public:
             }
         } drain{context.graphicsQueue, gate, frame};
 #define UPLOAD_REQUIRE(expression) \
-        if (!(expression)) { return RhiTestResult::fail("Upload completion: " #expression); }
+        if (!(expression)) { return RHITestResult::fail("Upload completion: " #expression); }
         UPLOAD_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
         UPLOAD_REQUIRE(context.device.createStreamer(makeTestStreamerDesc()).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         UPLOAD_REQUIRE(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
@@ -4111,7 +4111,7 @@ public:
                         .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                         .range = {.size = capacity},
                     };
-                    if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     const auto copyResult = commands->copyStreamedData(*streamer);
                     const bool sameRecording = !(scenario == 5 && attempt == 0);
                     if (sameRecording) { UPLOAD_REQUIRE(copyResult); }
@@ -4145,7 +4145,7 @@ public:
                         UPLOAD_REQUIRE(prefix->begin(&frame));
                         UPLOAD_REQUIRE(prefix->end());
                         CommandBuffer* prefixBuffers[] = {prefix.get()};
-                        GpuCompletionPoint prefixCompletion;
+                        GPUCompletionPoint prefixCompletion;
                         UPLOAD_REQUIRE(tracker.submitSegment({
                             .commandBuffers = {prefixBuffers, 1},
                         }, frame).transform([&](auto value) { prefixCompletion = std::move(value); }));
@@ -4208,15 +4208,15 @@ public:
         UPLOAD_REQUIRE(abandoned->isCancelled() && !abandoned->isComplete());
         frame.cancel();
 #undef UPLOAD_REQUIRE
-        return RhiTestResult::pass("GPU gate, unflushed/cancelled/partial/mismatched submissions, demand/root retries, batch drain and reset");
+        return RHITestResult::pass("GPU gate, unflushed/cancelled/partial/mismatched submissions, demand/root retries, batch drain and reset");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletUploadCompletionTest);
 
-class StreamerOrderedPublicationTest final : public RhiTest {
+class StreamerOrderedPublicationTest final : public RHITest {
 public:
-    StreamerOrderedPublicationTest() { type = RhiTestType::Command; name = "streamer_ordered_publication_retry"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamerOrderedPublicationTest() { type = RHITestType::Command; name = "streamer_ordered_publication_retry"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         std::atomic_uint validationMessages = 0;
@@ -4230,8 +4230,8 @@ public:
                 }
             }, .context = &validationMessages}}).transform([&](auto rhiValue) { ownedDevice = std::move(rhiValue); });
         if (!created) {
-            return hasError(created, Error::Unsupported) ? RhiTestResult::skip("Bindless device unavailable") :
-                RhiTestResult::fail("Cannot create ordered publication device");
+            return hasError(created, Error::Unsupported) ? RHITestResult::skip("Bindless device unavailable") :
+                RHITestResult::fail("Cannot create ordered publication device");
         }
         auto& device = *ownedDevice;
         auto& queue = *device.getQueue(QueueType::Graphics);
@@ -4251,7 +4251,7 @@ public:
             ~Drain() { a.cancel(); b.cancel(); (void)queue.waitIdle(); }
         } drain{queue, frame0, frame1};
 #define ORDERED_REQUIRE(expression) \
-        if (!(expression)) { return RhiTestResult::fail("Ordered publication: " #expression); }
+        if (!(expression)) { return RHITestResult::fail("Ordered publication: " #expression); }
         std::string log;
         runtime.setDebugReadbackEnabled(true);
         ORDERED_REQUIRE(runtime.initialize(device, {
@@ -4265,7 +4265,7 @@ public:
         ORDERED_REQUIRE(device.createCommandPool(queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
         ORDERED_REQUIRE(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
         ORDERED_REQUIRE(tracker.initialize(device, queue));
-        ORDERED_REQUIRE(device.createBuffer({.size = sizeof(MeshletStreamGpuActiveHeader),
+        ORDERED_REQUIRE(device.createBuffer({.size = sizeof(MeshletStreamGPUActiveHeader),
             .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         MeshletStreamFrameDesc view{.width = 192, .height = 128, .selectedLodLevel = 0, .enableGpuLodSelection = false};
         view.camera = {.eye = {-.0168404f, .110154f, .22f}, .center = {-.0168404f, .110154f, -.00153695f},
@@ -4290,18 +4290,18 @@ public:
                 .buffer = header->buffer,
                 .before = metallic::render::resourceSyncScope(header->state, metallic::render::PipelineStageBits::AllCommands),
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
-                .range = {.size = sizeof(MeshletStreamGpuActiveHeader)},
+                .range = {.size = sizeof(MeshletStreamGPUActiveHeader)},
             };
-            if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
-                auto sourceSlice = header->buffer->slice({0, sizeof(MeshletStreamGpuActiveHeader)});
-                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                auto destinationSlice = readback.get()->slice({0, sizeof(MeshletStreamGpuActiveHeader)});
-                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                auto sourceSlice = header->buffer->slice({0, sizeof(MeshletStreamGPUActiveHeader)});
+                if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                auto destinationSlice = readback.get()->slice({0, sizeof(MeshletStreamGPUActiveHeader)});
+                if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             std::swap(barrier.before, barrier.after);
-            if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             ORDERED_REQUIRE(runtime.cmdEndFrame(*commands));
             ORDERED_REQUIRE(commands->end());
             streamer->endFrame();
@@ -4309,7 +4309,7 @@ public:
             CommandBuffer* buffers[]{commands.get()};
             ORDERED_REQUIRE(tracker.submit({.commandBuffers = {buffers, 1}}, frame));
             ORDERED_REQUIRE(frame.wait(5'000'000'000ull));
-            MeshletStreamGpuActiveHeader result;
+            MeshletStreamGPUActiveHeader result;
             ORDERED_REQUIRE(readBufferBytes(*readback, &result, sizeof(result)));
             ORDERED_REQUIRE(result.activeGroupCount != 0 && result.overflowCount == 0);
         }
@@ -4329,7 +4329,7 @@ public:
         ORDERED_REQUIRE(runtime.sceneReadiness().completedPages == 0);
         ORDERED_REQUIRE(validationMessages == 0);
 #undef ORDERED_REQUIRE
-        return RhiTestResult::pass("Cancelled initial publication retries; GPU selects uploaded roots before CPU confirmation across frame slots");
+        return RHITestResult::pass("Cancelled initial publication retries; GPU selects uploaded roots before CPU confirmation across frame slots");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerOrderedPublicationTest);
@@ -4344,38 +4344,38 @@ METALLIC_REGISTER_RHI_TEST(StreamerConstantUploadTest);
 METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphFlushTest);
 METALLIC_REGISTER_RHI_TEST(StreamerRenderGraphInvalidDoesNotBeginFrameTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyUploadTest);
-METALLIC_REGISTER_RHI_TEST(MeshletStreamClasPagePlanTest);
-METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestPatchTest);
-METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyLatestGpuRequestTest);
-METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGpuRequestUnloadOverflowTest);
+METALLIC_REGISTER_RHI_TEST(MeshletStreamCLASPagePlanTest);
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGPURequestPatchTest);
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyLatestGPURequestTest);
+METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyGPURequestUnloadOverflowTest);
 METALLIC_REGISTER_RHI_TEST(StreamerMeshletResidencyEvictionDelayAgeTest);
 
 
-class StreamerUploadByteBudgetTest final : public RhiTest {
+class StreamerUploadByteBudgetTest final : public RHITest {
 public:
-    StreamerUploadByteBudgetTest() { type = RhiTestType::Validation; name = "streamer_meshlet_upload_byte_budget"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamerUploadByteBudgetTest() { type = RHITestType::Validation; name = "streamer_meshlet_upload_byte_budget"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         scene::MeshletStreamAsset asset;
         const auto built = buildBunnyStreamAssetForTest(context.outputDirectory / "ByteBudget.meshstream.bin", asset);
         if (!built.passed) { return built; }
-        if (asset.pageCount() < 4) { return RhiTestResult::fail("Need four pages for byte budget test"); }
+        if (asset.pageCount() < 4) { return RHITestResult::fail("Need four pages for byte budget test"); }
         const uint64_t capacity = uint64_t(asset.maxPagePayloadBytes()) * 8;
         std::unique_ptr<Buffer> destination;
         auto result = context.device.createBuffer({.size = capacity,
             .usage = BufferUsageBits::TransferDestination, .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { destination = std::move(rhiValue); });
-        if (!result) { return RhiTestResult::fail(toString(result)); }
+        if (!result) { return RHITestResult::fail(toString(result)); }
         for (bool asynchronous : {false, true}) {
             for (uint64_t budget : {0ull, 1ull, uint64_t(asset.maxPagePayloadBytes())}) {
                 MeshletStreamResidencyManager residency;
                 std::string reason;
                 if (!residency.initialize({.asset = &asset, .maxResidentBytes = capacity, .queuedFrameCount = 1,
                         .pageLoadConcurrency = asynchronous ? 2u : 0u, .maxPageLoadsInFlight = 4,
-                        .completionDrivenUploads = false}, reason)) { return RhiTestResult::fail(reason); }
+                        .completionDrivenUploads = false}, reason)) { return RHITestResult::fail(reason); }
                 std::unique_ptr<Streamer> streamer;
                 result = context.device.createStreamer(makeTestStreamerDesc(capacity + 4096)).transform([&](auto rhiValue) { streamer = std::move(rhiValue); });
-                if (!result) { return RhiTestResult::fail(toString(result)); }
+                if (!result) { return RHITestResult::fail(toString(result)); }
                 residency.beginFrame();
                 for (uint32_t page = 0; page < 4; ++page) { (void)residency.requestPage(page); }
                 if (asynchronous) {
@@ -4384,7 +4384,7 @@ public:
                         (void)residency.processUploads(*streamer, *destination, 0);
                         std::this_thread::yield();
                     }
-                    if (residency.stats().preparedPageLoadCount != 4) { return RhiTestResult::fail("Async pages not prepared"); }
+                    if (residency.stats().preparedPageLoadCount != 4) { return RHITestResult::fail("Async pages not prepared"); }
                 }
                 std::vector<uint32_t> seen;
                 uint64_t observedBytes = 0;
@@ -4401,10 +4401,10 @@ public:
                     (void)residency.processUploads(*streamer, *destination, 4, observer, nullptr, budget);
                     const auto spent = residency.stats().frameUploadBytes;
                     if (budget != 0 && spent > budget && (seen.size() - before != 1 || spent != firstBytes || seen.size() != after)) {
-                        return RhiTestResult::fail("Byte credit was bypassed by a repeat call or oversized page");
+                        return RHITestResult::fail("Byte credit was bypassed by a repeat call or oversized page");
                     }
                     if (seen.size() == before || (budget == 1 && seen.size() - before != 1)) {
-                        return RhiTestResult::fail("Oversized page starved or multiple pages escaped the budget");
+                        return RHITestResult::fail("Oversized page starved or multiple pages escaped the budget");
                     }
                 }
                 std::sort(seen.begin(), seen.end());
@@ -4412,11 +4412,11 @@ public:
                 for (uint32_t page = 0; page < 4; ++page) { expectedBytes += scene::meshletStreamDevicePayloadSize(asset.pages()[page]); }
                 if (seen != std::vector<uint32_t>{0, 1, 2, 3} || observedBytes != expectedBytes ||
                     residency.stats().totalUploadBytes != expectedBytes) {
-                    return RhiTestResult::fail("Budget deferral lost/duplicated a page or counted disk bytes");
+                    return RHITestResult::fail("Budget deferral lost/duplicated a page or counted disk bytes");
                 }
             }
         }
-        return RhiTestResult::pass("Sync/async uploads: shared frame credit, unlimited mode, oversized progress, exact device bytes and deferred retry");
+        return RHITestResult::pass("Sync/async uploads: shared frame credit, unlimited mode, oversized progress, exact device bytes and deferred retry");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamerUploadByteBudgetTest);

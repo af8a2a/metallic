@@ -13,7 +13,7 @@ namespace {
 
 constexpr int32_t kTriangleListMode = 4;
 
-struct BvhNode {
+struct BVHNode {
     Bounds bounds;
     uint32_t first = 0;
     uint32_t count = 0;
@@ -49,14 +49,14 @@ uint32_t longestAxis(const Bounds& bounds)
 
 template <typename Reference>
 int32_t buildBvhNode(
-    std::vector<BvhNode>& nodes,
+    std::vector<BVHNode>& nodes,
     std::vector<uint32_t>& order,
     const std::vector<Reference>& references,
     uint32_t first,
     uint32_t count)
 {
     const int32_t nodeIndex = static_cast<int32_t>(nodes.size());
-    nodes.push_back(BvhNode{});
+    nodes.push_back(BVHNode{});
     Bounds bounds;
     Bounds centerBounds;
     for (uint32_t index = first; index < first + count; ++index) {
@@ -194,20 +194,20 @@ bool invertible(const float4x4& matrix)
 } // namespace
 
 struct ScenePicker::Impl {
-    struct PrimitiveBvh {
+    struct PrimitiveBVH {
         std::vector<TriangleReference> triangles;
         std::vector<uint32_t> order;
-        std::vector<BvhNode> nodes;
+        std::vector<BVHNode> nodes;
     };
 
     std::filesystem::path scenePath;
     uint64_t sceneLifetimeRevision = std::numeric_limits<uint64_t>::max();
     uint64_t transformRevision = std::numeric_limits<uint64_t>::max();
     uint64_t structuralRevision = std::numeric_limits<uint64_t>::max();
-    std::vector<PrimitiveBvh> primitiveBvhs;
+    std::vector<PrimitiveBVH> primitiveBvhs;
     std::vector<InstanceReference> instances;
     std::vector<uint32_t> instanceOrder;
-    std::vector<BvhNode> instanceNodes;
+    std::vector<BVHNode> instanceNodes;
 
     void buildPrimitives(const Scene& scene)
     {
@@ -215,7 +215,7 @@ struct ScenePicker::Impl {
         primitiveBvhs.resize(scene.renderPrimitives().size());
         for (size_t primitiveIndex = 0; primitiveIndex < scene.renderPrimitives().size(); ++primitiveIndex) {
             const RenderPrimitive& primitive = scene.renderPrimitives()[primitiveIndex];
-            PrimitiveBvh& bvh = primitiveBvhs[primitiveIndex];
+            PrimitiveBVH& bvh = primitiveBvhs[primitiveIndex];
             if (primitive.mode != kTriangleListMode) {
                 continue;
             }
@@ -306,7 +306,7 @@ struct ScenePicker::Impl {
 
     bool hitPrimitive(
         const RenderPrimitive& primitive,
-        const PrimitiveBvh& bvh,
+        const PrimitiveBVH& bvh,
         const ScenePickRay& localRay,
         float& nearestDistance,
         uint32_t& triangleIndex) const
@@ -317,7 +317,7 @@ struct ScenePicker::Impl {
         bool hit = false;
         std::vector<int32_t> stack{0};
         while (!stack.empty()) {
-            const BvhNode& node = bvh.nodes[static_cast<size_t>(stack.back())];
+            const BVHNode& node = bvh.nodes[static_cast<size_t>(stack.back())];
             stack.pop_back();
             if (!rayIntersectsBounds(localRay, node.bounds, nearestDistance)) {
                 continue;
@@ -394,7 +394,7 @@ ScenePickResult ScenePicker::pick(const Scene& scene, const ScenePickRay& ray)
     float nearestDistance = worldRay.maximumDistance;
     std::vector<int32_t> stack{0};
     while (!stack.empty()) {
-        const BvhNode& node = impl_->instanceNodes[static_cast<size_t>(stack.back())];
+        const BVHNode& node = impl_->instanceNodes[static_cast<size_t>(stack.back())];
         stack.pop_back();
         if (!rayIntersectsBounds(worldRay, node.bounds, nearestDistance)) {
             continue;

@@ -1,37 +1,37 @@
 {
     "edges": [
         {
-            "dst": "DlssRr.inputColor",
+            "dst": "DLSSRR.inputColor",
             "id": 1,
             "src": "PathTrace.color"
         },
         {
-            "dst": "DlssRr.albedo",
+            "dst": "DLSSRR.albedo",
             "id": 2,
             "src": "PathTrace.albedo"
         },
         {
-            "dst": "DlssRr.specularAlbedo",
+            "dst": "DLSSRR.specularAlbedo",
             "id": 3,
             "src": "PathTrace.specularAlbedo"
         },
         {
-            "dst": "DlssRr.normalRoughness",
+            "dst": "DLSSRR.normalRoughness",
             "id": 4,
             "src": "PathTrace.normalRoughness"
         },
         {
-            "dst": "DlssRr.motionVectors",
+            "dst": "DLSSRR.motionVectors",
             "id": 5,
             "src": "PathTrace.motionVectors"
         },
         {
-            "dst": "DlssRr.linearDepth",
+            "dst": "DLSSRR.linearDepth",
             "id": 6,
             "src": "PathTrace.linearDepth"
         },
         {
-            "dst": "DlssRr.specularHitDistance",
+            "dst": "DLSSRR.specularHitDistance",
             "id": 7,
             "src": "PathTrace.specularHitDistance"
         },
@@ -42,7 +42,7 @@
         },
         {
             "id": 9,
-            "src": "DlssRr.color",
+            "src": "DLSSRR.color",
             "dst": "AutoExposure.source"
         }
     ],
@@ -90,7 +90,7 @@
         },
         {
             "id": 2,
-            "name": "DlssRr",
+            "name": "DLSSRR",
             "position": {
                 "x": 540.0,
                 "y": 280.0
@@ -121,7 +121,7 @@
                 "mode": "Balanced",
                 "resetSerial": 0
             },
-            "type": "StreamlineDlssRrPass"
+            "type": "StreamlineDLSSRRPass"
         },
         {
             "id": 4,

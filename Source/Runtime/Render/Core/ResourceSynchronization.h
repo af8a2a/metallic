@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 
 namespace metallic::render {
 

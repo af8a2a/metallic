@@ -4,7 +4,7 @@
 
 namespace metallic::render {
 
-inline constexpr uint64_t kMaterialBinningAbi = 0x4d42494e00000003ull;
+inline constexpr uint64_t kMaterialBinningABI = 0x4d42494e00000003ull;
 struct MaterialBinningParams {
     ShaderSampledImage visibility;
     ShaderDataSpan records;

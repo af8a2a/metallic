@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 
 #include <array>
@@ -93,14 +93,14 @@ private:
     bool active_ = false;
 };
 
-struct StreamlineDlssRrTextureRef {
+struct StreamlineDLSSRRTextureRef {
     Texture* texture = nullptr;
     TextureView* view = nullptr;
 };
 
-enum class StreamlineDlssRrMode : uint32_t {
+enum class StreamlineDLSSRRMode : uint32_t {
     Off,
-    Dlaa,
+    DLAA,
     Quality,
     Balanced,
     Performance,
@@ -108,7 +108,7 @@ enum class StreamlineDlssRrMode : uint32_t {
     UltraQuality,
 };
 
-struct StreamlineDlssRrOptimalSettings {
+struct StreamlineDLSSRROptimalSettings {
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
     uint32_t renderWidthMin = 0;
@@ -117,7 +117,7 @@ struct StreamlineDlssRrOptimalSettings {
     uint32_t renderHeightMax = 0;
 };
 
-struct StreamlineDlssRrCamera {
+struct StreamlineDLSSRRCamera {
     float eye[3] = {0.0f, 0.0f, 0.0f};
     float center[3] = {0.0f, 0.0f, -1.0f};
     float up[3] = {0.0f, 1.0f, 0.0f};
@@ -140,40 +140,40 @@ struct StreamlineDlssRrCamera {
     bool previousValid = false;
 };
 
-struct StreamlineDlssRrDesc {
-    StreamlineDlssRrTextureRef inputColor;
-    StreamlineDlssRrTextureRef outputColor;
-    StreamlineDlssRrTextureRef albedo;
-    StreamlineDlssRrTextureRef specularAlbedo;
-    StreamlineDlssRrTextureRef normalRoughness;
-    StreamlineDlssRrTextureRef motionVectors;
-    StreamlineDlssRrTextureRef linearDepth;
-    StreamlineDlssRrTextureRef specularHitDistance;
+struct StreamlineDLSSRRDesc {
+    StreamlineDLSSRRTextureRef inputColor;
+    StreamlineDLSSRRTextureRef outputColor;
+    StreamlineDLSSRRTextureRef albedo;
+    StreamlineDLSSRRTextureRef specularAlbedo;
+    StreamlineDLSSRRTextureRef normalRoughness;
+    StreamlineDLSSRRTextureRef motionVectors;
+    StreamlineDLSSRRTextureRef linearDepth;
+    StreamlineDLSSRRTextureRef specularHitDistance;
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
     uint32_t outputWidth = 0;
     uint32_t outputHeight = 0;
-    StreamlineDlssRrCamera camera;
-    StreamlineDlssRrMode mode = StreamlineDlssRrMode::Balanced;
+    StreamlineDLSSRRCamera camera;
+    StreamlineDLSSRRMode mode = StreamlineDLSSRRMode::Balanced;
     bool reset = false;
 };
 
-using StreamlineDlssSrTextureRef = StreamlineDlssRrTextureRef;
-using StreamlineDlssSrMode = StreamlineDlssRrMode;
-using StreamlineDlssSrOptimalSettings = StreamlineDlssRrOptimalSettings;
-using StreamlineDlssSrCamera = StreamlineDlssRrCamera;
+using StreamlineDLSSSRTextureRef = StreamlineDLSSRRTextureRef;
+using StreamlineDLSSSRMode = StreamlineDLSSRRMode;
+using StreamlineDLSSSROptimalSettings = StreamlineDLSSRROptimalSettings;
+using StreamlineDLSSSRCamera = StreamlineDLSSRRCamera;
 
-struct StreamlineDlssSrDesc {
-    StreamlineDlssSrTextureRef inputColor;
-    StreamlineDlssSrTextureRef outputColor;
-    StreamlineDlssSrTextureRef motionVectors;
-    StreamlineDlssSrTextureRef depth;
+struct StreamlineDLSSSRDesc {
+    StreamlineDLSSSRTextureRef inputColor;
+    StreamlineDLSSSRTextureRef outputColor;
+    StreamlineDLSSSRTextureRef motionVectors;
+    StreamlineDLSSSRTextureRef depth;
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
     uint32_t outputWidth = 0;
     uint32_t outputHeight = 0;
-    StreamlineDlssSrCamera camera;
-    StreamlineDlssSrMode mode = StreamlineDlssSrMode::Balanced;
+    StreamlineDLSSSRCamera camera;
+    StreamlineDLSSSRMode mode = StreamlineDLSSSRMode::Balanced;
     bool reset = false;
 };
 
@@ -186,16 +186,16 @@ struct StreamlineDebugResource {
     Format format = Format::Unknown;
 };
 
-struct StreamlineDlssDebugStatus {
+struct StreamlineDLSSDebugStatus {
     uint64_t attempts = 0;
     uint64_t successes = 0;
     uint32_t frameIndex = 0;
-    StreamlineDlssRrMode mode = StreamlineDlssRrMode::Off;
+    StreamlineDLSSRRMode mode = StreamlineDLSSRRMode::Off;
     uint32_t renderWidth = 0;
     uint32_t renderHeight = 0;
     uint32_t outputWidth = 0;
     uint32_t outputHeight = 0;
-    StreamlineDlssRrCamera camera;
+    StreamlineDLSSRRCamera camera;
     bool reset = false;
     bool succeeded = false;
     double cpuMs = 0.0; // CPU evaluation wall time, not GPU execution time.
@@ -215,8 +215,8 @@ struct StreamlineDebugStatus {
     std::string sdkVersion;
     uint32_t frameIndex = 0;
     StreamlineReflexStatus reflex;
-    StreamlineDlssDebugStatus sr;
-    StreamlineDlssDebugStatus rr;
+    StreamlineDLSSDebugStatus sr;
+    StreamlineDLSSDebugStatus rr;
 };
 
 StreamlineDebugStatus streamlineDebugStatus();
@@ -226,16 +226,16 @@ bool streamlineInitialized();
 bool streamlineDlssSrSupported();
 bool streamlineDlssRrSupported();
 Result<> getStreamlineDlssSrOptimalSettings(
-    StreamlineDlssSrMode mode,
+    StreamlineDLSSSRMode mode,
     uint32_t outputWidth,
     uint32_t outputHeight,
-    StreamlineDlssSrOptimalSettings& settings,
+    StreamlineDLSSSROptimalSettings& settings,
     std::string& log);
 Result<> getStreamlineDlssRrOptimalSettings(
-    StreamlineDlssRrMode mode,
+    StreamlineDLSSRRMode mode,
     uint32_t outputWidth,
     uint32_t outputHeight,
-    StreamlineDlssRrOptimalSettings& settings,
+    StreamlineDLSSRROptimalSettings& settings,
     std::string& log);
 Result<> initializeStreamlinePreDevice(std::string& log);
 Result<> setStreamlineVulkanDevice(
@@ -247,7 +247,7 @@ void shutdownStreamline();
 // Switch from the engine's descriptor heap to legacy NGX descriptors, including
 // direct experimental features that share Streamline's Vulkan device.
 void prepareStreamlineNgxCommandBuffer(CommandBuffer& commandBuffer);
-Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDlssSrDesc& desc, std::string& log);
-Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDlssRrDesc& desc, std::string& log);
+Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDLSSSRDesc& desc, std::string& log);
+Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDLSSRRDesc& desc, std::string& log);
 
 } // namespace metallic::render::vulkan

@@ -1,8 +1,8 @@
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
-#include "Runtime/Render/Profiling/CpuProfile.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
-#include "Runtime/Render/RenderGraph/NrdRuntime.h"
+#include "Runtime/Render/RenderGraph/NRDRuntime.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -39,18 +39,18 @@ void writeCameraMatrices(const ViewCameraConstants& camera, float* worldToView, 
 
 } // namespace
 
-std::vector<GpuPunctualLight> buildScreenSpaceShadowLightRecords(
+std::vector<GPUPunctualLight> buildScreenSpaceShadowLightRecords(
     const scene::Scene* scene, const scene::LightingSettings& lighting)
 {
     const auto sources = buildSceneLightRecords(scene != nullptr
         ? std::span<const scene::RenderLight>(scene->lights()) : std::span<const scene::RenderLight>(), lighting.lights);
-    std::vector<GpuPunctualLight> lights(sources.size() + 1);
+    std::vector<GPUPunctualLight> lights(sources.size() + 1);
     lights[0].positionRange[0] = static_cast<float>(sources.size());
     for (size_t i = 0; i < sources.size(); ++i) { lights[i + 1] = sources[i].gpu; }
     return lights;
 }
 
-uint32_t selectScreenSpaceShadowLight(std::span<const GpuPunctualLight> lights, int32_t requestedIndex)
+uint32_t selectScreenSpaceShadowLight(std::span<const GPUPunctualLight> lights, int32_t requestedIndex)
 {
     const auto enabled = [&](size_t entry) {
         return entry < lights.size() && lights[entry].colorIntensity[3] > 0.0f;
@@ -75,14 +75,14 @@ struct ScreenSpaceShadows::State {
     uint32_t width = 0, height = 0;
     uint64_t sceneRevision = 0;
     uint64_t transformRevision = 0;
-    GpuPunctualLight light{};
+    GPUPunctualLight light{};
     ScreenSpaceShadowSettings settings;
     uint32_t lightIndex = UINT32_MAX;
     bool initialized = false;
     bool cancelled = false;
     bool traceEnabled = false;
 #if METALLIC_HAS_NRD
-    NrdRuntime sigma;
+    NRDRuntime sigma;
 #endif
 };
 
@@ -98,18 +98,18 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     Streamer& streamer,
     TextureView& depth,
     const ViewConstants& view,
-    std::span<const GpuPunctualLight> lights,
+    std::span<const GPUPunctualLight> lights,
     uint64_t sceneRevision,
     uint64_t transformRevision,
     const ScreenSpaceShadowSettings& settings,
     std::string& log,
     ScenePathTraceResources* geometry,
-    const MeshletStreamDeferredGpuResourcesView* streamGeometry,
-    CpuProfileRecorder* profiler,
+    const MeshletStreamDeferredGPUResourcesView* streamGeometry,
+    CPUProfileRecorder* profiler,
     RayTracingAccelerationStructure* accelerationStructure)
 {
     ScreenSpaceShadowResult output{};
-    CpuProfileScope profile(profiler, "Validate shadow resources");
+    CPUProfileScope profile(profiler, "Validate shadow resources");
     output = {};
     const uint32_t width = static_cast<uint32_t>(view.current.viewport[1]);
     const uint32_t height = static_cast<uint32_t>(view.current.viewport[2]);
@@ -207,7 +207,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     if (!state_ || state_->cancelled || state_->width != width || state_->height != height) {
         auto next = std::make_shared<State>();
         const Format formats[] = {Format::R16Sfloat, nrdNormalRoughnessFormat(), Format::R32Sfloat,
-            Format::Rgba16Sfloat, Format::R8Unorm};
+            Format::RGBA16Sfloat, Format::R8Unorm};
         for (size_t i = 0; i < next->textures.size(); ++i) {
             auto result = device.createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::Storage |
                 TextureUsageBits::TransferDestination | TextureUsageBits::TransferSource,
@@ -308,7 +308,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     uint32_t geometryPush[2]{};
     if (streamed) {
         if (streamTlas) {
-            CpuProfileScope resources(profiler, "Prepare material textures");
+            CPUProfileScope resources(profiler, "Prepare material textures");
             if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
             bindings.push_back({.binding = 0, .accelerationStructure = accelerationStructure
                 ? accelerationStructure : streamGeometry->accelerationStructure});
@@ -322,7 +322,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             geometryPush[0] = textureCount;
         }
     } else {
-        CpuProfileScope resources(profiler, "Prepare material textures");
+        CPUProfileScope resources(profiler, "Prepare material textures");
         if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
         bindings.push_back({.binding = 0, .accelerationStructure = accelerationStructure
             ? accelerationStructure : geometry->accelerationStructure().accelerationStructure()});
@@ -370,7 +370,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         result = enterStage(2);
         if (!result) { return makeError(result.error()); }
         if (!state->sigma.valid()) {
-            NrdUserTexturePool pool{};
+            NRDUserTexturePool pool{};
             const denoising::ResourceType resources[] = {denoising::ResourceType::IN_PENUMBRA,
                 denoising::ResourceType::IN_NORMAL_ROUGHNESS, denoising::ResourceType::IN_VIEWZ,
                 denoising::ResourceType::IN_MV, denoising::ResourceType::OUT_SHADOW_TRANSLUCENCY};
@@ -395,7 +395,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         common.accumulationMode = !state->initialized || !view.frame[1] || sceneRevision != state->sceneRevision ||
             transformRevision != state->transformRevision || parameters.control[0] != state->traceEnabled ||
             selected != state->lightIndex || settings != state->settings ||
-            std::memcmp(&parameters.light, &state->light, sizeof(GpuPunctualLight)) != 0
+            std::memcmp(&parameters.light, &state->light, sizeof(GPUPunctualLight)) != 0
             ? denoising::AccumulationMode::CLEAR_AND_RESTART : denoising::AccumulationMode::CONTINUE;
         result = state->sigma.setCommonSettings(common);
         if (!result) { return makeError(result.error()); }
@@ -405,7 +405,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             for (size_t i = 0; i < 3; ++i) { sigma.lightDirection[i] = -parameters.light.directionType[i]; }
         }
         result = state->sigma.setSigmaSettings(sigma);
-        if (result) { result = state->sigma.denoise(NrdDenoiserMode::Sigma, commands); }
+        if (result) { result = state->sigma.denoise(NRDDenoiserMode::Sigma, commands); }
         if (!result) { return makeError(result.error()); }
     }
 #endif

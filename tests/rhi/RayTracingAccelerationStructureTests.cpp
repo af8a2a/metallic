@@ -1,6 +1,6 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 
-#include "Runtime/Render/Streamer/MeshletStreamClas.h"
+#include "Runtime/Render/Streamer/MeshletStreamCLAS.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -22,15 +22,15 @@
 namespace metallic::tests {
 namespace {
 
-class RayTracingAccelerationStructureBarrierTest : public RhiTest {
+class RayTracingAccelerationStructureBarrierTest : public RHITest {
 public:
     RayTracingAccelerationStructureBarrierTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "ray_tracing_acceleration_structure_barriers";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         auto deviceResult = render::createDevice(render::DeviceDesc{
             .applicationName = "Metallic AS Barrier Test",
@@ -41,8 +41,8 @@ public:
         });
         if (!deviceResult) {
             return render::hasError(deviceResult, render::Error::Unsupported)
-                ? RhiTestResult::skip("ray tracing acceleration structures unavailable")
-                : RhiTestResult::fail(std::string("createDevice returned ") + render::resultToString(deviceResult));
+                ? RHITestResult::skip("ray tracing acceleration structures unavailable")
+                : RHITestResult::fail(std::string("createDevice returned ") + render::resultToString(deviceResult));
         }
         auto device = std::move(*deviceResult);
         auto accelerationStructureResult = device->createRayTracingAccelerationStructure({
@@ -50,28 +50,28 @@ public:
             .size = 4096,
         });
         if (!accelerationStructureResult) {
-            return RhiTestResult::fail("failed to create AS barrier resource");
+            return RHITestResult::fail("failed to create AS barrier resource");
         }
         auto accelerationStructure = std::move(*accelerationStructureResult);
         if (!accelerationStructure->memoryInfo().allocationId ||
             !accelerationStructure->supportsQueueAccess(render::QueueAccessBits::Graphics | render::QueueAccessBits::Compute) ||
             accelerationStructure->supportsQueueAccess(render::QueueAccessBits::None)) {
-            return RhiTestResult::fail("AS allocation metadata or compute queue sharing is invalid");
+            return RHITestResult::fail("AS allocation metadata or compute queue sharing is invalid");
         }
         auto* queue = device->getQueue(render::QueueType::Compute);
         if (!queue) { queue = device->getQueue(render::QueueType::Graphics); }
-        if (!queue) { return RhiTestResult::fail("no AS build queue is available"); }
+        if (!queue) { return RHITestResult::fail("no AS build queue is available"); }
         auto poolResult = device->createCommandPool(*queue);
-        if (!poolResult) { return RhiTestResult::fail("failed to create AS barrier command pool"); }
+        if (!poolResult) { return RHITestResult::fail("failed to create AS barrier command pool"); }
         auto pool = std::move(*poolResult);
         auto commandsResult = pool->createCommandBuffer();
-        if (!commandsResult) { return RhiTestResult::fail("failed to create AS barrier commands"); }
+        if (!commandsResult) { return RHITestResult::fail("failed to create AS barrier commands"); }
         auto commands = std::move(*commandsResult);
-        if (!commands->begin()) { return RhiTestResult::fail("failed to begin AS barrier commands"); }
+        if (!commands->begin()) { return RHITestResult::fail("failed to begin AS barrier commands"); }
         const render::AccelerationStructureBarrierDesc invalidBarrier;
         if (!render::hasError(commands->synchronize({.accelerationStructures = std::span(&invalidBarrier, 1)}),
                 render::Error::InvalidArgument) || commands->synchronizationStats().calls != 0) {
-            return RhiTestResult::fail("invalid AS barriers must be rejected before recording");
+            return RHITestResult::fail("invalid AS barriers must be rejected before recording");
         }
         const render::AccelerationStructureBarrierDesc barriers[]{
             {.accelerationStructure = accelerationStructure.get(),
@@ -82,32 +82,32 @@ public:
                 .after = {render::PipelineStageBits::ComputeShader, render::AccessBits::AccelerationStructureRead}},
         };
         if (!commands->synchronize({.accelerationStructures = barriers})) {
-            return RhiTestResult::fail("compute AS build-to-read barriers were rejected");
+            return RHITestResult::fail("compute AS build-to-read barriers were rejected");
         }
         const auto stats = commands->synchronizationStats();
         if (stats.calls != 1 || stats.memoryBarriers != 1 || stats.coalescedResources != 2 || stats.imageTransitions != 0) {
-            return RhiTestResult::fail("AS dependencies were not coalesced into a memory barrier");
+            return RHITestResult::fail("AS dependencies were not coalesced into a memory barrier");
         }
         const std::weak_ptr<void> allocation = accelerationStructure->retainAllocation();
         accelerationStructure.reset();
-        if (allocation.expired()) { return RhiTestResult::fail("AS barrier commands did not retain the allocation"); }
-        if (!commands->end()) { return RhiTestResult::fail("failed to end AS barrier commands"); }
+        if (allocation.expired()) { return RHITestResult::fail("AS barrier commands did not retain the allocation"); }
+        if (!commands->end()) { return RHITestResult::fail("failed to end AS barrier commands"); }
         commands.reset();
         pool.reset();
-        if (!allocation.expired()) { return RhiTestResult::fail("cancelled AS barrier recording leaked the allocation"); }
-        return RhiTestResult::pass("Validated compute AS barriers, allocation metadata, coalescing and retention");
+        if (!allocation.expired()) { return RHITestResult::fail("cancelled AS barrier recording leaked the allocation"); }
+        return RHITestResult::pass("Validated compute AS barriers, allocation metadata, coalescing and retention");
     }
 };
 
-class SceneAccelerationStructureBuildTest : public RhiTest {
+class SceneAccelerationStructureBuildTest : public RHITest {
 public:
     explicit SceneAccelerationStructureBuildTest(bool partitioned = false) : partitioned_(partitioned)
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = partitioned ? "scene_partitioned_acceleration_structure_build" : "scene_acceleration_structure_build";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> result = render::createDevice(render::DeviceDesc{
@@ -119,22 +119,22 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
         if (!device->capabilities().rayTracingAccelerationStructure) {
-            return RhiTestResult::skip("ray tracing acceleration structure capability is unavailable");
+            return RHITestResult::skip("ray tracing acceleration structure capability is unavailable");
         }
 
         if (partitioned_ && !device->capabilities().partitionedAccelerationStructure) {
-            return RhiTestResult::skip("partitioned acceleration structures unavailable");
+            return RHITestResult::skip("partitioned acceleration structures unavailable");
         }
         const render::SceneAccelerationStructureBuildOptions options{
             .topLevelBackend = partitioned_ ? render::RayTracingTopLevelBackend::Partitioned : render::RayTracingTopLevelBackend::Standard};
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail("scene acceleration structure test device has no graphics queue");
+            return RHITestResult::fail("scene acceleration structure test device has no graphics queue");
         }
         render::Queue* accelerationQueue = device->getQueue(render::QueueType::Compute);
         if (accelerationQueue == nullptr) {
@@ -146,7 +146,7 @@ public:
             std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
         if (!loadedScene.load(scenePath)) {
             const scene::LoadResult& loadResult = loadedScene.lastLoadResult();
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 loadResult.error.empty() ? "failed to load Stanford Bunny scene" : loadResult.error);
         }
 
@@ -157,12 +157,12 @@ public:
                 {.topLevelBackend = render::RayTracingTopLevelBackend::Partitioned});
             if (!render::hasError(unsupported, render::Error::Unsupported) || builder.valid() ||
                 builder.buildState() != render::SceneAccelerationStructureBuildState::Idle) {
-                return RhiTestResult::fail("disabled PTLAS must fail before starting BLAS/OMM work");
+                return RHITestResult::fail("disabled PTLAS must fail before starting BLAS/OMM work");
             }
         }
         result = builder.beginBuild(*device, *accelerationQueue, loadedScene, log, options);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("SceneAccelerationStructureBuilder::beginBuild returned ") +
                 toString(result) +
                 ": " +
@@ -170,7 +170,7 @@ public:
         }
         if (builder.buildState() != render::SceneAccelerationStructureBuildState::Building ||
             builder.valid()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "SceneAccelerationStructureBuilder did not enter its asynchronous build state");
         }
 
@@ -181,7 +181,7 @@ public:
                std::chrono::steady_clock::now() < clearDeadline) {
             result = builder.pollBuild(log).transform([&](auto value) { clearProbeComplete = std::move(value); });
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("SceneAccelerationStructureBuilder clear probe returned ") +
                     toString(result) +
                     ": " +
@@ -193,7 +193,7 @@ public:
         }
         if (clearProbeComplete || builder.stats().compactedBlasBytes == 0 ||
             builder.buildState() != render::SceneAccelerationStructureBuildState::Building) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "SceneAccelerationStructureBuilder did not expose an in-flight compaction phase");
         }
 
@@ -207,7 +207,7 @@ public:
             inFlightStats.peakAccelerationStructureBytes <
                 inFlightStats.accelerationStructureBytes +
                     inFlightStats.compactionSavedBytes) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "SceneAccelerationStructureBuilder exposed inconsistent in-flight compaction statistics");
         }
 
@@ -220,13 +220,13 @@ public:
             builder.stats().compactedBlasBytes != 0 ||
             builder.stats().compactionSavedBytes != 0 ||
             builder.stats().peakAccelerationStructureBytes != 0) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "SceneAccelerationStructureBuilder clear did not retire an in-flight build");
         }
 
         result = builder.beginBuild(*device, *accelerationQueue, loadedScene, log, options);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("SceneAccelerationStructureBuilder::beginBuild after clear returned ") +
                 toString(result) +
                 ": " +
@@ -238,7 +238,7 @@ public:
         while (!buildComplete && std::chrono::steady_clock::now() < deadline) {
             result = builder.pollBuild(log).transform([&](auto value) { buildComplete = std::move(value); });
             if (!result) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("SceneAccelerationStructureBuilder::pollBuild returned ") +
                     toString(result) +
                     ": " +
@@ -248,7 +248,7 @@ public:
                 observedIncompletePoll = true;
                 if (builder.buildState() !=
                     render::SceneAccelerationStructureBuildState::Building) {
-                    return RhiTestResult::fail(
+                    return RHITestResult::fail(
                         "SceneAccelerationStructureBuilder left Building before compaction completed");
                 }
                 std::this_thread::yield();
@@ -257,13 +257,13 @@ public:
         if (!buildComplete || !observedIncompletePoll ||
             builder.buildState() != render::SceneAccelerationStructureBuildState::Ready ||
             !builder.valid()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "SceneAccelerationStructureBuilder asynchronous multi-stage build did not produce a valid TLAS");
         }
 
         if (builder.accelerationStructure()->desc().topLevelBackend != options.topLevelBackend ||
             (partitioned_ && (builder.stats().partitionCount == 0 || builder.stats().operationBytes == 0))) {
-            return RhiTestResult::fail("incorrect scene top-level strategy");
+            return RHITestResult::fail("incorrect scene top-level strategy");
         }
         const render::SceneAccelerationStructureStats& stats = builder.stats();
         if (stats.blasCount == 0 || stats.instanceCount == 0 || stats.triangleCount == 0 ||
@@ -274,23 +274,23 @@ public:
             stats.accelerationStructureBytes <= stats.compactedBlasBytes ||
             stats.peakAccelerationStructureBytes <
                 stats.accelerationStructureBytes + stats.compactionSavedBytes) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "SceneAccelerationStructureBuilder produced inconsistent compaction statistics");
         }
 
         const render::SceneAccelerationStructureStats statsBeforeUpdate = stats;
         const int32_t movedNodeIndex = loadedScene.renderNodes().front().nodeIndex;
         if (movedNodeIndex < 0 || static_cast<size_t>(movedNodeIndex) >= loadedScene.nodes().size()) {
-            return RhiTestResult::fail("SceneAccelerationStructureBuilder test scene has no editable instance owner");
+            return RHITestResult::fail("SceneAccelerationStructureBuilder test scene has no editable instance owner");
         }
         float4x4 movedLocal = loadedScene.nodes()[static_cast<size_t>(movedNodeIndex)].localMatrix;
         movedLocal.a03 += 2.0f;
         if (!loadedScene.setNodeLocalMatrix(movedNodeIndex, movedLocal)) {
-            return RhiTestResult::fail("failed to move the RTAS test instance");
+            return RHITestResult::fail("failed to move the RTAS test instance");
         }
         result = builder.updateInstanceTransforms(*device, *accelerationQueue, loadedScene, log);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("SceneAccelerationStructureBuilder::updateInstanceTransforms returned ") +
                 toString(result) + ": " + log);
         }
@@ -305,7 +305,7 @@ public:
                 statsBeforeUpdate.accelerationStructureBytes ||
             statsAfterUpdate.peakAccelerationStructureBytes !=
                 statsBeforeUpdate.peakAccelerationStructureBytes) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "TLAS refit changed BLAS topology or compaction statistics");
         }
 
@@ -321,12 +321,12 @@ public:
                 loadedScene.renderNodes().begin(),
                 loadedScene.renderNodes().end(),
                 [](const scene::RenderNode& node) { return node.visible; })) {
-            return RhiTestResult::fail("failed to hide every RTAS test instance");
+            return RHITestResult::fail("failed to hide every RTAS test instance");
         }
 
         result = builder.build(*device, *accelerationQueue, loadedScene, log, options);
         if (!result || !builder.valid()) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("SceneAccelerationStructureBuilder empty-scene build returned ") +
                 toString(result) + ": " + log);
         }
@@ -334,18 +334,18 @@ public:
         if (emptyStats.blasCount == 0 ||
             emptyStats.instanceCount != 0 ||
             emptyStats.triangleCount == 0) {
-            return RhiTestResult::fail("empty TLAS did not preserve geometry with zero visible instances");
+            return RHITestResult::fail("empty TLAS did not preserve geometry with zero visible instances");
         }
 
         float4x4 hiddenMovedLocal =
             loadedScene.nodes()[static_cast<size_t>(movedNodeIndex)].localMatrix;
         hiddenMovedLocal.a13 += 1.0f;
         if (!loadedScene.setNodeLocalMatrix(movedNodeIndex, hiddenMovedLocal)) {
-            return RhiTestResult::fail("failed to move a hidden RTAS test instance");
+            return RHITestResult::fail("failed to move a hidden RTAS test instance");
         }
         result = builder.updateInstanceTransforms(*device, *accelerationQueue, loadedScene, log);
         if (!result || builder.stats().instanceCount != 0) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("empty TLAS transform sync returned ") +
                 toString(result) + ": " + log);
         }
@@ -359,7 +359,7 @@ public:
             builder.stats().compactedBlasBytes != 0 ||
             builder.stats().compactionSavedBytes != 0 ||
             builder.stats().peakAccelerationStructureBytes != 0) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "SceneAccelerationStructureBuilder clear did not reset a completed compact build");
         }
 
@@ -397,20 +397,20 @@ public:
                     resourceStats.originalBlasBytes - resourceStats.compactedBlasBytes ||
                 resources.instanceBuffer() == nullptr ||
                 resources.instanceBuffer()->desc().size == 0) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("ScenePathTraceResources empty-scene preparation failed: ") + log);
             }
 
             const uint64_t resourcesRevision = resources.revision();
             hiddenMovedLocal.a23 += 1.0f;
             if (!loadedScene.setNodeLocalMatrix(movedNodeIndex, hiddenMovedLocal)) {
-                return RhiTestResult::fail("failed to move a hidden path-trace instance");
+                return RHITestResult::fail("failed to move a hidden path-trace instance");
             }
             result = resources.syncRuntimeScene(&loadedScene, log);
             if (!result || !resources.valid() ||
                 resources.revision() <= resourcesRevision ||
                 resources.accelerationStructure().stats().instanceCount != 0) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("ScenePathTraceResources empty-scene sync failed: ") + log);
             }
 
@@ -431,7 +431,7 @@ public:
                     loadedScene.renderNodes().begin(),
                     loadedScene.renderNodes().end(),
                     [](const scene::RenderNode& node) { return node.visible; })) {
-                return RhiTestResult::fail("failed to restore path-trace instance visibility");
+                return RHITestResult::fail("failed to restore path-trace instance visibility");
             }
 
             const uint64_t topologyRevision = resources.revision();
@@ -448,7 +448,7 @@ public:
                 rebuiltResourceStats.compactionSavedBytes !=
                     rebuiltResourceStats.originalBlasBytes -
                         rebuiltResourceStats.compactedBlasBytes) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     std::string("ScenePathTraceResources topology rebuild failed: ") + log);
             }
 
@@ -457,24 +457,24 @@ public:
 
         result = device->waitIdle();
         if (!result) {
-            return RhiTestResult::fail("failed to wait for empty-scene resource retirement");
+            return RHITestResult::fail("failed to wait for empty-scene resource retirement");
         }
 
-        return RhiTestResult::pass(log);
+        return RHITestResult::pass(log);
     }
 private:
     bool partitioned_ = false;
 };
 
-class SceneNonGeometryTransformSyncTest final : public RhiTest {
+class SceneNonGeometryTransformSyncTest final : public RHITest {
 public:
     SceneNonGeometryTransformSyncTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "scene_path_trace_non_geometry_transform_sync";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         auto result = render::createDevice({
@@ -484,12 +484,12 @@ public:
         }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             return render::hasError(result, render::Error::Unsupported)
-                ? RhiTestResult::skip("ray tracing acceleration structures unavailable")
-                : RhiTestResult::fail(std::string("device creation failed: ") + toString(result));
+                ? RHITestResult::skip("ray tracing acceleration structures unavailable")
+                : RHITestResult::fail(std::string("device creation failed: ") + toString(result));
         }
         auto* queue = device->getQueue(render::QueueType::Graphics);
         auto* accelerationQueue = device->getQueue(render::QueueType::Compute);
-        if (queue == nullptr) { return RhiTestResult::fail("graphics queue unavailable"); }
+        if (queue == nullptr) { return RHITestResult::fail("graphics queue unavailable"); }
         if (accelerationQueue == nullptr) { accelerationQueue = queue; }
 
         const auto directory = context.outputDirectory / "non-geometry-transform";
@@ -519,7 +519,7 @@ public:
             })json";
         }
         scene::Scene scene;
-        if (!scene.load(path)) { return RhiTestResult::fail(scene.lastLoadResult().error); }
+        if (!scene.load(path)) { return RHITestResult::fail(scene.lastLoadResult().error); }
         render::ScenePathTraceResources resources;
         std::string log;
         result = resources.beginPrepareAsync(*device, *queue, {{"path", path.string()}}, scene, log);
@@ -531,7 +531,7 @@ public:
             if (!complete) { std::this_thread::yield(); }
         }
         if (!result || !complete || !resources.valid()) {
-            return RhiTestResult::fail("resource preparation failed: " + log);
+            return RHITestResult::fail("resource preparation failed: " + log);
         }
         const uint64_t revision = resources.revision();
         auto* const instances = resources.instanceBuffer();
@@ -543,18 +543,18 @@ public:
                 auto moved = scene.nodes()[node].worldMatrix;
                 moved.a03 += 0.1f;
                 if (!scene.setObjectWorldMatrix(scene.objectForNode(node).entity(), moved)) {
-                    return RhiTestResult::fail("non-geometry node edit failed");
+                    return RHITestResult::fail("non-geometry node edit failed");
                 }
                 result = resources.syncRuntimeScene(&scene, log);
                 if (!result || resources.revision() != revision ||
                     resources.instanceBuffer() != instances || resources.shadingVertexBuffer() != vertices ||
                     resources.accelerationStructure().accelerationStructure() != tlas) {
-                    return RhiTestResult::fail("light/camera drag rebuilt geometry resources: " + log);
+                    return RHITestResult::fail("light/camera drag rebuilt geometry resources: " + log);
                 }
                 result = resources.accelerationStructure().updateInstanceTransforms(
                     *device, *accelerationQueue, scene, log);
                 if (!result || !log.empty()) {
-                    return RhiTestResult::fail("light/camera drag submitted a redundant TLAS refit: " + log);
+                    return RHITestResult::fail("light/camera drag submitted a redundant TLAS refit: " + log);
                 }
             }
         }
@@ -562,29 +562,29 @@ public:
         auto parent = scene.nodes()[2].localMatrix;
         parent.a03 += 3.0f;
         if (!scene.setNodeLocalMatrix(2, parent)) {
-            return RhiTestResult::fail("light parent edit failed");
+            return RHITestResult::fail("light parent edit failed");
         }
         result = resources.syncRuntimeScene(&scene, log);
         if (!result || resources.revision() <= revision || resources.shadingVertexBuffer() != vertices ||
             std::abs(resources.bounds().min.x - oldMinX - 3.0f) > 1e-5f ||
             log.find("Updated scene acceleration-structure instance transforms") == std::string::npos) {
-            return RhiTestResult::fail("light parent failed to update its geometry child: " + log);
+            return RHITestResult::fail("light parent failed to update its geometry child: " + log);
         }
-        return RhiTestResult::pass("32 light/camera drag steps reused geometry; geometry-parent move updated TLAS");
+        return RHITestResult::pass("32 light/camera drag steps reused geometry; geometry-parent move updated TLAS");
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(SceneNonGeometryTransformSyncTest);
 
-class SceneClusterAccelerationStructureBuildTest : public RhiTest {
+class SceneClusterAccelerationStructureBuildTest : public RHITest {
 public:
     SceneClusterAccelerationStructureBuildTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "scene_cluster_acceleration_structure_build";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> result = render::createDevice(render::DeviceDesc{
@@ -594,17 +594,17 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
         if (!device->capabilities().clusterAccelerationStructure) {
-            return RhiTestResult::skip("cluster acceleration structure capability is unavailable");
+            return RHITestResult::skip("cluster acceleration structure capability is unavailable");
         }
 
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail("scene cluster RTAS test device has no graphics queue");
+            return RHITestResult::fail("scene cluster RTAS test device has no graphics queue");
         }
         render::Queue* accelerationQueue = device->getQueue(render::QueueType::Compute);
         if (accelerationQueue == nullptr) {
@@ -616,7 +616,7 @@ public:
             std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
         if (!loadedScene.load(scenePath)) {
             const scene::LoadResult& loadResult = loadedScene.lastLoadResult();
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 loadResult.error.empty() ? "failed to load Stanford Bunny scene" : loadResult.error);
         }
 
@@ -625,20 +625,20 @@ public:
         result = builder.build(*device, *accelerationQueue, loadedScene, log);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(
+                return RHITestResult::skip(
                     std::string("SceneClusterAccelerationStructureBuilder::build returned ") +
                     toString(result) +
                     ": " +
                     log);
             }
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("SceneClusterAccelerationStructureBuilder::build returned ") +
                 toString(result) +
                 ": " +
                 log);
         }
         if (!builder.valid()) {
-            return RhiTestResult::fail("SceneClusterAccelerationStructureBuilder did not produce a valid TLAS");
+            return RHITestResult::fail("SceneClusterAccelerationStructureBuilder did not produce a valid TLAS");
         }
 
         const render::SceneClusterAccelerationStructureStats& stats = builder.stats();
@@ -647,10 +647,10 @@ public:
             stats.instanceCount == 0 ||
             stats.clusterTriangleCount == 0 ||
             stats.accelerationStructureBytes == 0) {
-            return RhiTestResult::fail("SceneClusterAccelerationStructureBuilder produced empty cluster RTAS stats");
+            return RHITestResult::fail("SceneClusterAccelerationStructureBuilder produced empty cluster RTAS stats");
         }
 
-        return RhiTestResult::pass(log);
+        return RHITestResult::pass(log);
     }
 };
 
@@ -659,15 +659,15 @@ public:
     ScenePartitionedAccelerationStructureBuildTest() : SceneAccelerationStructureBuildTest(true) {}
 };
 
-class MeshletStreamClasPoolBuildTest : public RhiTest {
+class MeshletStreamCLASPoolBuildTest : public RHITest {
 public:
-    MeshletStreamClasPoolBuildTest()
+    MeshletStreamCLASPoolBuildTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "meshlet_stream_clas_pool_build";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> result = render::createDevice(render::DeviceDesc{
@@ -677,24 +677,24 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
         if (!device->capabilities().clusterAccelerationStructure) {
-            return RhiTestResult::skip("cluster acceleration structure capability is unavailable");
+            return RHITestResult::skip("cluster acceleration structure capability is unavailable");
         }
 
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::fail("stream CLAS pool test device has no graphics queue");
+            return RHITestResult::fail("stream CLAS pool test device has no graphics queue");
         }
 
         const std::filesystem::path scenePath =
             std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/StandfordBunny/scene.gltf";
         scene::Scene loadedScene;
         if (!loadedScene.load(scenePath)) {
-            return RhiTestResult::fail("failed to load Stanford Bunny scene: " + loadedScene.lastLoadResult().error);
+            return RHITestResult::fail("failed to load Stanford Bunny scene: " + loadedScene.lastLoadResult().error);
         }
         const std::filesystem::path streamAssetPath =
             context.outputDirectory / "meshlet_stream_clas_pool.meshstream.bin";
@@ -707,12 +707,12 @@ public:
                     .compressionMode = scene::MeshletStreamPayloadCompression::ByteRle,
                 },
                 log)) {
-            return RhiTestResult::fail("buildMeshletStreamAsset failed: " + log);
+            return RHITestResult::fail("buildMeshletStreamAsset failed: " + log);
         }
 
         scene::MeshletStreamAsset asset;
         if (!asset.open(streamAssetPath, log)) {
-            return RhiTestResult::fail("MeshletStreamAsset::open failed: " + log);
+            return RHITestResult::fail("MeshletStreamAsset::open failed: " + log);
         }
         uint32_t pageIndex = UINT32_MAX;
         for (const scene::MeshletStreamGroupInfo& group : asset.groups()) {
@@ -722,7 +722,7 @@ public:
             }
         }
         if (pageIndex == UINT32_MAX) {
-            return RhiTestResult::fail("streamasset has no fallback page for CLAS pool build");
+            return RHITestResult::fail("streamasset has no fallback page for CLAS pool build");
         }
 
         std::vector<uint8_t> decodedStorage;
@@ -733,7 +733,7 @@ public:
                 decodedStorage,
                 decodedPayload,
                 log)) {
-            return RhiTestResult::fail("streamasset fallback page decode failed: " + log);
+            return RHITestResult::fail("streamasset fallback page decode failed: " + log);
         }
 
         std::unique_ptr<render::Buffer> pageBuffer;
@@ -745,20 +745,20 @@ public:
                 .memoryLocation = render::MemoryLocation::HostUpload,
             }).transform([&](auto rhiValue) { pageBuffer = std::move(rhiValue); });
         if (!result || pageBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createBuffer(stream CLAS page) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBuffer(stream CLAS page) returned ") + toString(result));
         }
         void* mapped = pageBuffer->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("stream CLAS page buffer did not map");
+            return RHITestResult::fail("stream CLAS page buffer did not map");
         }
         std::memcpy(mapped, decodedPayload.data(), decodedPayload.size());
         pageBuffer->flush({0, decodedPayload.size()});
         pageBuffer->unmap();
 
-        render::MeshletStreamClasPool pool;
+        render::MeshletStreamCLASPool pool;
         result = pool.initialize(
             *device,
-            render::MeshletStreamClasPoolDesc{
+            render::MeshletStreamCLASPoolDesc{
                 .asset = &asset,
                 .maxStorageBytes = 64ull * 1024ull * 1024ull,
                 .maxBuildClusters = asset.maxPageClusters(),
@@ -767,54 +767,54 @@ public:
             log);
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip("MeshletStreamClasPool::initialize returned Unsupported: " + log);
+                return RHITestResult::skip("MeshletStreamCLASPool::initialize returned Unsupported: " + log);
             }
-            return RhiTestResult::fail(
-                std::string("MeshletStreamClasPool::initialize returned ") + toString(result) + ": " + log);
+            return RHITestResult::fail(
+                std::string("MeshletStreamCLASPool::initialize returned ") + toString(result) + ": " + log);
         }
         if (pool.stats().trackedPageCount != 0) {
-            return RhiTestResult::fail("stream CLAS pool eagerly tracked empty scene pages");
+            return RHITestResult::fail("stream CLAS pool eagerly tracked empty scene pages");
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
         result = device->createCommandPool(*graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
         std::unique_ptr<render::Fence> fence;
         result = device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
-            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
+            return RHITestResult::fail(std::string("createFence returned ") + toString(result));
         }
 
         pool.beginFrame();
         result = commandBuffer->begin();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
-        render::MeshletStreamClasPagePlan uploadPlan;
+        render::MeshletStreamCLASPagePlan uploadPlan;
         if (!render::buildMeshletStreamClasPagePlan(asset.pages()[pageIndex], decodedPayload, pageIndex,
                 pageIndex * asset.maxPageClusters(), uploadPlan, log)) {
-            return RhiTestResult::fail("Upload CLAS plan: " + log);
+            return RHITestResult::fail("Upload CLAS plan: " + log);
         }
-        const render::MeshletStreamClasPageBuild pageBuild{
+        const render::MeshletStreamCLASPageBuild pageBuild{
             .pageIndex = pageIndex,
             .deviceOffsetBytes = 0,
             .plan = &uploadPlan,
         };
         result = pool.cmdBuildPages(*commandBuffer, *pageBuffer, std::span(&pageBuild, 1), log);
         if (!result) {
-            return RhiTestResult::fail(
-                std::string("MeshletStreamClasPool::cmdBuildPages returned ") + toString(result) + ": " + log);
+            return RHITestResult::fail(
+                std::string("MeshletStreamCLASPool::cmdBuildPages returned ") + toString(result) + ": " + log);
         }
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = graphicsQueue->submit(render::QueueSubmitDesc{
@@ -822,14 +822,14 @@ public:
             .signalFence = fence.get(),
         });
         if (!result) {
-            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+            return RHITestResult::fail(std::string("Queue::submit returned ") + toString(result));
         }
         result = fence->wait(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+            return RHITestResult::fail(std::string("Fence::wait returned ") + toString(result));
         }
 
-        const render::MeshletStreamClasPoolStats builtStats = pool.stats();
+        const render::MeshletStreamCLASPoolStats builtStats = pool.stats();
         if (!pool.pageHasClas(pageIndex) ||
             pool.pageClasAddressOffset(pageIndex) == UINT32_MAX ||
             pool.clusterAddress(pageIndex, 0) == 0 ||
@@ -837,19 +837,19 @@ public:
             pool.pageTableBuffer() == nullptr ||
             pool.pageTableBuffer()->desc().size !=
                 static_cast<uint64_t>(asset.pageCount()) *
-                    sizeof(render::MeshletStreamClasPageEntry) ||
+                    sizeof(render::MeshletStreamCLASPageEntry) ||
             builtStats.builtPageCount != 1 ||
             builtStats.trackedPageCount != 1 ||
             builtStats.builtClusterCount != asset.pages()[pageIndex].clusterCount ||
             builtStats.frameBuiltPageCount != 1 ||
             builtStats.usedStorageBytes == 0 ||
             builtStats.usedStorageBytes > builtStats.storageBytes) {
-            return RhiTestResult::fail("stream CLAS pool did not retain the built fallback page");
+            return RHITestResult::fail("stream CLAS pool did not retain the built fallback page");
         }
-        render::MeshletStreamClasPageEntry gpuPageEntry;
+        render::MeshletStreamCLASPageEntry gpuPageEntry;
         mapped = pool.pageTableBuffer()->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("stream CLAS page table did not map");
+            return RHITestResult::fail("stream CLAS page table did not map");
         }
         std::memcpy(
             &gpuPageEntry,
@@ -860,21 +860,21 @@ public:
         if (render::meshletStreamClasPageAddressOffset(gpuPageEntry) !=
                 pool.pageClasAddressOffset(pageIndex) ||
             render::meshletStreamClasPageState(gpuPageEntry) !=
-                render::MeshletStreamClasPageState::Active) {
-            return RhiTestResult::fail("stream CLAS GPU page table did not expose the built page");
+                render::MeshletStreamCLASPageState::Active) {
+            return RHITestResult::fail("stream CLAS GPU page table did not expose the built page");
         }
 
         pool.retirePages(std::span(&pageIndex, 1));
-        const render::MeshletStreamClasPoolStats retiringStats = pool.stats();
+        const render::MeshletStreamCLASPoolStats retiringStats = pool.stats();
         if (!pool.pageHasClas(pageIndex) ||
             retiringStats.builtPageCount != 0 ||
             retiringStats.trackedPageCount != 1 ||
             retiringStats.retiringPageCount != 1) {
-            return RhiTestResult::fail("stream CLAS pool did not defer retired page storage");
+            return RHITestResult::fail("stream CLAS pool did not defer retired page storage");
         }
         mapped = pool.pageTableBuffer()->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("stream CLAS page table did not map after retirement");
+            return RHITestResult::fail("stream CLAS page table did not map after retirement");
         }
         std::memcpy(
             &gpuPageEntry,
@@ -883,32 +883,32 @@ public:
             sizeof(gpuPageEntry));
         pool.pageTableBuffer()->unmap();
         if (render::meshletStreamClasPageState(gpuPageEntry) !=
-            render::MeshletStreamClasPageState::Retiring) {
-            return RhiTestResult::fail("stream CLAS GPU page table did not hide the retired page");
+            render::MeshletStreamCLASPageState::Retiring) {
+            return RHITestResult::fail("stream CLAS GPU page table did not hide the retired page");
         }
         const auto retainedAddress = pool.clusterAddress(pageIndex, 0);
-        if (!commandPool->reset() || !commandBuffer->begin()) { return RhiTestResult::fail("Cannot reset reactivation commands"); }
+        if (!commandPool->reset() || !commandBuffer->begin()) { return RHITestResult::fail("Cannot reset reactivation commands"); }
         result = pool.cmdBuildPages(*commandBuffer, *pageBuffer, std::span(&pageBuild, 1), log);
-        if (!commandBuffer->end()) { return RhiTestResult::fail("Cannot end reactivation commands"); }
+        if (!commandBuffer->end()) { return RHITestResult::fail("Cannot end reactivation commands"); }
         if (!result || pool.stats().retiringPageCount != 0 || pool.stats().builtPageCount != 1 ||
             pool.stats().totalBuiltPageCount != 1 || pool.clusterAddress(pageIndex, 0) != retainedAddress) {
-            return RhiTestResult::fail("Retiring CLAS was rebuilt instead of reactivated");
+            return RHITestResult::fail("Retiring CLAS was rebuilt instead of reactivated");
         }
         pool.retirePages(std::span(&pageIndex, 1));
         pool.beginFrame();
         if (!pool.pageHasClas(pageIndex)) {
-            return RhiTestResult::fail("stream CLAS pool released a retired page before the queued-frame delay");
+            return RHITestResult::fail("stream CLAS pool released a retired page before the queued-frame delay");
         }
         pool.beginFrame();
         if (pool.pageHasClas(pageIndex) ||
             pool.stats().retiringPageCount != 0 ||
             pool.stats().trackedPageCount != 0 ||
             pool.stats().usedStorageBytes != 0) {
-            return RhiTestResult::fail("stream CLAS pool did not release retired storage after the queued-frame delay");
+            return RHITestResult::fail("stream CLAS pool did not release retired storage after the queued-frame delay");
         }
         mapped = pool.pageTableBuffer()->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("stream CLAS page table did not map after release");
+            return RHITestResult::fail("stream CLAS page table did not map after release");
         }
         std::memcpy(
             &gpuPageEntry,
@@ -917,13 +917,13 @@ public:
             sizeof(gpuPageEntry));
         pool.pageTableBuffer()->unmap();
         if (render::meshletStreamClasPageAddressOffset(gpuPageEntry) !=
-                render::kInvalidMeshletStreamClasAddressOffset ||
+                render::kInvalidMeshletStreamCLASAddressOffset ||
             render::meshletStreamClasPageState(gpuPageEntry) !=
-                render::MeshletStreamClasPageState::Empty) {
-            return RhiTestResult::fail("stream CLAS GPU page table did not clear the released page");
+                render::MeshletStreamCLASPageState::Empty) {
+            return RHITestResult::fail("stream CLAS GPU page table did not clear the released page");
         }
 
-        return RhiTestResult::pass("Built and retired persistent stream CLAS page storage");
+        return RHITestResult::pass("Built and retired persistent stream CLAS page storage");
     }
 };
 
@@ -931,7 +931,7 @@ METALLIC_REGISTER_RHI_TEST(SceneAccelerationStructureBuildTest);
 METALLIC_REGISTER_RHI_TEST(RayTracingAccelerationStructureBarrierTest);
 METALLIC_REGISTER_RHI_TEST(SceneClusterAccelerationStructureBuildTest);
 METALLIC_REGISTER_RHI_TEST(ScenePartitionedAccelerationStructureBuildTest);
-METALLIC_REGISTER_RHI_TEST(MeshletStreamClasPoolBuildTest);
+METALLIC_REGISTER_RHI_TEST(MeshletStreamCLASPoolBuildTest);
 
 } // namespace
 } // namespace metallic::tests

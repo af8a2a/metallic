@@ -1,5 +1,5 @@
 #include "Runtime/Render/Core/RenderFrameContext.h"
-#include "Runtime/Render/Profiling/CpuPhaseTrace.h"
+#include "Runtime/Render/Profiling/CPUPhaseTrace.h"
 #include "Runtime/Render/Profiling/SchedulingDiagnostics.h"
 
 #include <algorithm>
@@ -111,7 +111,7 @@ Result<> CommandBuffer::retainResource(std::shared_ptr<void> resource)
     return {};
 }
 
-struct GpuCompletionPoint::State {
+struct GPUCompletionPoint::State {
     enum class Status { Recording, Submitted, Cancelled };
     // Signals are coordinator-owned until release publication. Readers never
     // inspect the growing aggregate while its status is Recording.
@@ -123,29 +123,29 @@ struct GpuCompletionPoint::State {
     std::vector<Signal> signals;
 };
 
-bool GpuCompletionPoint::isSubmitted() const
+bool GPUCompletionPoint::isSubmitted() const
 {
     return state_ != nullptr && state_->status == State::Status::Submitted;
 }
 
-bool GpuCompletionPoint::isCancelled() const
+bool GPUCompletionPoint::isCancelled() const
 {
     return state_ != nullptr && state_->status == State::Status::Cancelled;
 }
 
-bool GpuCompletionPoint::isComplete() const
+bool GPUCompletionPoint::isComplete() const
 {
     return state_ == nullptr || isCancelled() ||
         (isSubmitted() && std::all_of(state_->signals.begin(), state_->signals.end(),
             [](const auto& signal) { return signal.timeline->currentValue() >= signal.value; }));
 }
 
-uint64_t GpuCompletionPoint::value() const
+uint64_t GPUCompletionPoint::value() const
 {
     return isSubmitted() && state_->signals.size() == 1 ? state_->signals.front().value : 0;
 }
 
-Result<> GpuCompletionPoint::wait(uint64_t timeoutNanoseconds) const
+Result<> GPUCompletionPoint::wait(uint64_t timeoutNanoseconds) const
 {
     if (state_ == nullptr || isCancelled()) {
         return {};
@@ -167,7 +167,7 @@ Result<> GpuCompletionPoint::wait(uint64_t timeoutNanoseconds) const
     return {};
 }
 
-Result<> GpuCompletionPoint::appendWaits(std::vector<SemaphoreSubmitDesc>& waits) const
+Result<> GPUCompletionPoint::appendWaits(std::vector<SemaphoreSubmitDesc>& waits) const
 {
     if (state_ == nullptr || isCancelled()) { return {}; }
     if (!isSubmitted()) { return makeError(Error::InvalidArgument); }
@@ -185,7 +185,7 @@ Result<> GpuCompletionPoint::appendWaits(std::vector<SemaphoreSubmitDesc>& waits
     return {};
 }
 
-Result<> CommandBuffer::addDependency(const GpuCompletionPoint& completion)
+Result<> CommandBuffer::addDependency(const GPUCompletionPoint& completion)
 {
     if (!recording_) { return makeError(Error::InvalidArgument); }
     Result<> result = completion.appendWaits(dependencyWaits_);
@@ -203,7 +203,7 @@ RenderFrameContext::~RenderFrameContext()
 
 Result<> RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanoseconds, FrameSubmissionMode mode)
 {
-    profiling::CpuPhase phase("frame.wait", frameIndex);
+    profiling::CPUPhase phase("frame.wait", frameIndex);
     if (recording()) {
         return makeError(Error::InvalidArgument);
     }
@@ -216,7 +216,7 @@ Result<> RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanoseco
     phase.next("frame.releaseDependencies", dependencies_.size());
     dependencies_.clear();
     phase.next("frame.newState");
-    completion_.state_ = std::make_shared<GpuCompletionPoint::State>();
+    completion_.state_ = std::make_shared<GPUCompletionPoint::State>();
     frameIndex_ = frameIndex;
     submissionMode_ = mode;
     recordingOpen_.store(true, std::memory_order_release);
@@ -328,9 +328,9 @@ void RenderFrameContext::cancel()
     recordingOpen_.store(false, std::memory_order_release);
     if (completion_.state_ && !completion_.isSubmitted() && !completion_.isCancelled()) {
         if (hasAcceptedWork()) {
-            completion_.state_->status = GpuCompletionPoint::State::Status::Submitted;
+            completion_.state_->status = GPUCompletionPoint::State::Status::Submitted;
         } else {
-            completion_.state_->status = GpuCompletionPoint::State::Status::Cancelled;
+            completion_.state_->status = GPUCompletionPoint::State::Status::Cancelled;
             resources_.clear();
             dependencies_.clear();
         }
@@ -343,13 +343,13 @@ Result<> RenderFrameContext::finishSubmission()
     auto result = sealRecording();
     if (!result) { return result; }
     recordings_.cancel();
-    completion_.state_->status = GpuCompletionPoint::State::Status::Submitted;
+    completion_.state_->status = GPUCompletionPoint::State::Status::Submitted;
     return {};
 }
 
 Result<> RenderFrameContext::reset()
 {
-    profiling::CpuPhase phase("frame.resetWait");
+    profiling::CPUPhase phase("frame.resetWait");
     cancel();
     Result<> result = wait();
     if (!result && !hasError(result, Error::DeviceLost)) {
@@ -373,7 +373,7 @@ void RenderFrameContext::retain(std::shared_ptr<void> resource)
     }
 }
 
-Result<> RenderFrameContext::addDependency(GpuCompletionPoint completion)
+Result<> RenderFrameContext::addDependency(GPUCompletionPoint completion)
 {
     if (!recording() || (completion.valid() && !completion.isSubmitted() && !completion.isCancelled())) {
         return makeError(Error::InvalidArgument);
@@ -413,7 +413,7 @@ Result<> QueueSubmissionTracker::submit(const QueueSubmitDesc& desc, RenderFrame
     return frame.finishSubmission();
 }
 
-Result<GpuCompletionPoint> QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame)
+Result<GPUCompletionPoint> QueueSubmissionTracker::submitSegment(const QueueSubmitDesc& desc, RenderFrameContext& frame)
 {
     if (desc.commandBuffers.size() > UINT32_MAX) { return makeError(Error::InvalidArgument); }
     RecordedBatch batch;
@@ -468,7 +468,7 @@ Result<SubmissionReceipt> QueueSubmissionTracker::submitBatch(
     RenderFrameContext& frame)
 {
     profiling::SchedulingPhase diagnostic(&profiling::SchedulingMetrics::submitNs);
-    using State = GpuCompletionPoint::State;
+    using State = GPUCompletionPoint::State;
     if (!batch.valid() || batch.frame_ != &frame || !batch.generation_.sameSubmission(frame.completion()) ||
         !synchronization.commandBuffers.empty()) { return makeError(Error::InvalidArgument); }
     QueueSubmitDesc desc = synchronization;
@@ -552,7 +552,7 @@ DeferredReleaseQueue::~DeferredReleaseQueue()
     (void)drain();
 }
 
-void DeferredReleaseQueue::retire(GpuCompletionPoint completion, std::shared_ptr<void> resource)
+void DeferredReleaseQueue::retire(GPUCompletionPoint completion, std::shared_ptr<void> resource)
 {
     if (resource != nullptr && !completion.isComplete()) {
         entries_.push_back(Entry{std::move(completion), std::move(resource)});

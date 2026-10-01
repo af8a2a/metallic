@@ -9,8 +9,8 @@
 namespace {
 
 constexpr const char* kPathTracingSampleId = "pathtracing-sample";
-constexpr const char* kPathTracingDlssSrSampleId = "pathtracing-sample-dlss-sr";
-constexpr const char* kPathTracingDlssRrSampleId = "pathtracing-sample-dlss-rr";
+constexpr const char* kPathTracingDLSSSRSampleId = "pathtracing-sample-dlss-sr";
+constexpr const char* kPathTracingDLSSRRSampleId = "pathtracing-sample-dlss-rr";
 
 void printUsage()
 {
@@ -47,11 +47,11 @@ int main(int argc, char** argv)
             continue;
         }
         if (argument == "--dlss-rr") {
-            sampleId = kPathTracingDlssRrSampleId;
+            sampleId = kPathTracingDLSSRRSampleId;
             continue;
         }
         if (argument == "--dlss-sr") {
-            sampleId = kPathTracingDlssSrSampleId;
+            sampleId = kPathTracingDLSSSRSampleId;
             continue;
         }
         if (argument == "--wait-for-graphics-debugger") {

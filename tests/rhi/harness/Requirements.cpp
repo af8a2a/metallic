@@ -45,7 +45,7 @@ const char* name(Status value)
 const char* name(Layer value)
 {
     switch (value) {
-    case Layer::Rhi: return "Rhi";
+    case Layer::RHI: return "RHI";
     case Layer::Core: return "Core";
     case Layer::RenderGraph: return "RenderGraph";
     case Layer::Backend: return "Backend";

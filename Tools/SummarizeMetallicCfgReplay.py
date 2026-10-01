@@ -15,7 +15,7 @@ def gpu_competition(directory):
     with path.open(encoding="utf-8-sig") as stream:
         for row in csv.DictReader(stream):
             sample_count += 1
-            if row["process"] == "MetallicRhiTests" or not row["engine"].endswith("engtype_3d"):
+            if row["process"] == "MetallicRHITests" or not row["engine"].endswith("engtype_3d"):
                 continue
             samples.setdefault(row["process"], []).append(float(row["utilization"]))
     error_path = directory / "GpuProcesses.stderr.txt"

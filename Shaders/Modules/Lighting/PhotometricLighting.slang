@@ -6,7 +6,7 @@ using Metallic;
 
 namespace Metallic.Lighting
 {
-public struct GpuPunctualLight
+public struct GPUPunctualLight
 {
     public float4 positionRange;
     public float4 directionType;
@@ -15,8 +15,8 @@ public struct GpuPunctualLight
 };
 
 
-public uint punctualLightCount(StructuredBuffer<GpuPunctualLight> lights) { return uint(lights[0].positionRange.x); }
-public float lightingExposure(StructuredBuffer<GpuPunctualLight> lights) { return lights[0].positionRange.y; }
+public uint punctualLightCount(StructuredBuffer<GPUPunctualLight> lights) { return uint(lights[0].positionRange.x); }
+public float lightingExposure(StructuredBuffer<GPUPunctualLight> lights) { return lights[0].positionRange.y; }
 
 public struct PunctualLightSample
 {
@@ -27,7 +27,7 @@ public struct PunctualLightSample
 
 // Delta lights supply incident illuminance before the surface cosine/BSDF.
 // Point/spot intensity is cd, distance is m: E = I / r^2 (lux).
-public PunctualLightSample samplePunctualLightData(GpuPunctualLight light, float3 position)
+public PunctualLightSample samplePunctualLightData(GPUPunctualLight light, float3 position)
 {
     PunctualLightSample sample;
     sample.direction = -light.directionType.xyz;
@@ -54,7 +54,7 @@ public PunctualLightSample samplePunctualLightData(GpuPunctualLight light, float
     return sample;
 }
 
-public PunctualLightSample samplePunctualLight(StructuredBuffer<GpuPunctualLight> lights, uint index, float3 position)
+public PunctualLightSample samplePunctualLight(StructuredBuffer<GPUPunctualLight> lights, uint index, float3 position)
 {
     return samplePunctualLightData(lights[index + 1u], position);
 }

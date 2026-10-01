@@ -61,7 +61,7 @@
 
 本轮持续测试为 180 秒；上一轮的 660 秒报告属于旧需求策略，不当作新版本十分钟验收。
 
-最终 **35 项相关回归通过**，其中 GPU/CPU cut 对照扩展为 292 组，覆盖完整/部分驻留、共享父组、相机切换、正交/透视/窄视口、剪切、手动 LOD、稀疏状态复用与容量回退；完整 MiniZorah VBuffer 和需求审计亦通过。`Metallic`、`MetallicGPUDrivenSample`、`MetallicRhiTests` 构建成功。结构化结果与原始报告哈希见 [MiniZorahQualityResult.json](MiniZorahQualityResult.json)。
+最终 **35 项相关回归通过**，其中 GPU/CPU cut 对照扩展为 292 组，覆盖完整/部分驻留、共享父组、相机切换、正交/透视/窄视口、剪切、手动 LOD、稀疏状态复用与容量回退；完整 MiniZorah VBuffer 和需求审计亦通过。`Metallic`、`MetallicGPUDrivenSample`、`MetallicRHITests` 构建成功。结构化结果与原始报告哈希见 [MiniZorahQualityResult.json](MiniZorahQualityResult.json)。
 
 ## 下一步
 
@@ -81,7 +81,7 @@ $env:METALLIC_MINIZORAH_ROAM_MIB='1024'
 $env:METALLIC_MINIZORAH_ROAM_SECONDS='30'
 $env:METALLIC_MINIZORAH_FIXED_VIEW='15' # 0 / 15 / 35
 $env:METALLIC_MINIZORAH_VIEW_DEMAND='1' # 0 为原需求规则
-build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/minizorah-quality/repro
+build-relwithdebinfo/tests/MetallicRHITests.exe --gtest_filter=RHIRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/minizorah-quality/repro
 ```
 
 固定相机在至少 1 GiB 时默认强制 5 秒收敛期限；`METALLIC_MINIZORAH_CONVERGENCE_SECONDS` 可显式指定期限。移除 `METALLIC_MINIZORAH_FIXED_VIEW` 后运行原 60 秒循环路线。64 MiB 压力测试只验收完整回退和预算，不自动套用固定视角质量期限。

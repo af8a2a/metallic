@@ -71,7 +71,7 @@ Full 内置预设，RTX 5070 Ti；输出 1797×660，DLSS Quality 内部 1198×4
 
 ## 验证与实现
 
-- Release `MetallicGPUDrivenSample`、`MetallicRhiTests` 构建通过。
+- Release `MetallicGPUDrivenSample`、`MetallicRHITests` 构建通过。
 - `stream_cluster_cull_classify_equivalence`：validation + bindless，通过 11 组 early/late 夹具，覆盖全 HW、HZB、空候选及超过 65535 的调度；检查稳定分桶和可见性 ID。
 - `ktx2_texture_streaming`：validation + bindless，通过；增加 120 帧冻结后 mip/驻留/升级降级计数不变检查，并继续原冷回收测试。
 - `stream_blas_cut_cache` validation 回归通过。

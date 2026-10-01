@@ -9,5 +9,5 @@ __include "GPUDriven/HybridClusterBins.slang";
 __include "GPUDriven/HybridRasterCommon.slang";
 __include "GPUDriven/HybridRasterTriangle.slang";
 __include "GPUDriven/MaterialBinningCommon.slang";
-__include "GPUDriven/MeshletLod.slang";
-__include "GPUDriven/MeshletLodMetric.slang";
+__include "GPUDriven/MeshletLOD.slang";
+__include "GPUDriven/MeshletLODMetric.slang";

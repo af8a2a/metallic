@@ -29,16 +29,16 @@
 
 ## 验证
 
-- Release MetallicGPUDrivenSample、MetallicRhiTests 构建通过；最终源码仅在采样后做了缩进整理，并重新构建。
+- Release MetallicGPUDrivenSample、MetallicRHITests 构建通过；最终源码仅在采样后做了缩进整理，并重新构建。
 - 6 项核心回归通过：streamer_ordered_publication_retry、stream_blas_cut_cache、frame_output_consumer_gpu_dependencies，以及 3 项 editor_profiler 测试。
 - 2 项补充 CLAS 回归通过：stream_clas_runtime_lifecycle、stream_clas_eviction_reupload。
 - 覆盖：首次 fallback BLAS 取消后重建并就绪；未提交/已取消时不发布 ready；1000 次稳定查询与帧推进不增加扫描；普通 CLAS 页退休不破坏根缓存；根 CLAS 退休立即失效；非 RT 初始发布取消/重试；reset 后及重新初始化时不复用旧就绪/进度；每 pass overlap 检查次数为一次；同/跨队列输出消费者与重建生命周期继续有效。
 - Vulkan validation 开启的回归日志无 VUID/validation error。git diff --check 通过。
 
 ```powershell
-cmake --build build-release --target MetallicGPUDrivenSample MetallicRhiTests -j 6
-.\build-release\tests\MetallicRhiTests.exe --gtest_filter="*streamer_ordered_publication_retry:*stream_blas_cut_cache:*frame_output_consumer_gpu_dependencies:*editor_profiler*" --output-dir build-release/readiness-cache-tests-final
-.\build-release\tests\MetallicRhiTests.exe --gtest_filter="*stream_clas_runtime_lifecycle:*stream_clas_eviction_reupload" --output-dir build-release/readiness-cache-clas-tests
+cmake --build build-release --target MetallicGPUDrivenSample MetallicRHITests -j 6
+.\build-release\tests\MetallicRHITests.exe --gtest_filter="*streamer_ordered_publication_retry:*stream_blas_cut_cache:*frame_output_consumer_gpu_dependencies:*editor_profiler*" --output-dir build-release/readiness-cache-tests-final
+.\build-release\tests\MetallicRHITests.exe --gtest_filter="*stream_clas_runtime_lifecycle:*stream_clas_eviction_reupload" --output-dir build-release/readiness-cache-clas-tests
 pwsh -NoProfile -File Tools/RunZorahFullRoam.ps1 -OutputRoot build-release/<new-directory> -Runs 3 -DurationSeconds 30 -WarmupSeconds 10 -Width 1797 -Height 660 -TimeoutSeconds 900
 ```
 

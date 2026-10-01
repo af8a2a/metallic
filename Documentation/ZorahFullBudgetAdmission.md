@@ -35,15 +35,15 @@
 
 ## 验证
 
-- Release 的 MetallicGPUDrivenSample、MetallicRhiTests 构建通过。
+- Release 的 MetallicGPUDrivenSample、MetallicRHITests 构建通过。
 - 15 项 meshlet / joint cold reclaim RHI 测试全部通过，启用默认 Vulkan validation，日志无 VUID / validation error。
 - 强化年龄延迟回收测试：10000 次重复请求仅增加抑制计数；实际分配失败和候选扫描各一次；年龄到期恢复回收、延迟释放后重新加载。
 - 新增 budget_admission：高优先级大页失败后低优先级小页仍能加载；根页不被回收；下一帧重新评估；reset/initialize 清除受阻状态。
 - 强化 demand_cache：同帧受阻后收到明确冷页反馈即可恢复回收，截断反馈仍保护未明确标记 unused 的页面。
 
 ```powershell
-cmake --build build-release --target MetallicGPUDrivenSample MetallicRhiTests -j 6
-.\build-release\tests\MetallicRhiTests.exe --gtest_filter="*streamer_meshlet*:*streamer_joint_cold_reclaim*" --output-dir build-release/budget-admission-tests
+cmake --build build-release --target MetallicGPUDrivenSample MetallicRHITests -j 6
+.\build-release\tests\MetallicRHITests.exe --gtest_filter="*streamer_meshlet*:*streamer_joint_cold_reclaim*" --output-dir build-release/budget-admission-tests
 pwsh -NoProfile -File Tools/RunZorahFullRoam.ps1 -OutputRoot build-release/<new-directory> -Runs 3 -DurationSeconds 30 -WarmupSeconds 10 -Width 1797 -Height 660 -TimeoutSeconds 900
 python Tools/AnalyzeZorahFullSlowFrames.py build-release/<new-directory>
 ```

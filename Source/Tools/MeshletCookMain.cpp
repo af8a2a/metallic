@@ -232,13 +232,13 @@ Json inspectAsset(const MeshletStreamAsset& asset, bool validatePayloads)
         {"payloadValidation", validatePayloads ? "all-pages" : "not-requested"}, {"geometries", geometries}};
 }
 
-Json inspectLodStats(const MeshletLodBuildStats& stats)
+Json inspectLodStats(const MeshletLODBuildStats& stats)
 {
-    const auto differences = [](const MeshletLodAttributeDifferenceStats& value) {
+    const auto differences = [](const MeshletLODAttributeDifferenceStats& value) {
         return Json{{"differentVertices", value.differentVertexCount},
             {"nonFiniteDifferences", value.nonFiniteDifferenceVertexCount},
             {"maxComponentAbsoluteDifference", value.maxComponentAbsoluteDifference},
-            {"thresholds", MeshletLodAttributeDifferenceStats::kThresholds},
+            {"thresholds", MeshletLODAttributeDifferenceStats::kThresholds},
             {"nonzeroDifferencesAtOrBelowThreshold", value.atOrBelowThresholdCounts}};
     };
     Json depths = Json::array();
@@ -252,7 +252,7 @@ Json inspectLodStats(const MeshletLodBuildStats& stats)
             {"emptyResultGroups", depth.emptyResultGroupCount}, {"noReductionGroups", depth.noReductionGroupCount}});
     }
     return {{"comparison", "source vertex versus canonical vertex at exactly equal position; cumulative nonzero difference buckets"},
-        {"normalSeamNormalizedComponentTolerance", kMeshletLodNormalSeamTolerance},
+        {"normalSeamNormalizedComponentTolerance", kMeshletLODNormalSeamTolerance},
         {"sourceVertices", stats.sourceVertexCount}, {"sourceTriangles", stats.sourceTriangleCount},
         {"referencedSourceVertices", stats.referencedSourceVertexCount},
         {"uniqueAttributeVertices", stats.uniqueAttributeVertexCount},
@@ -323,7 +323,7 @@ int run(int argc, char** argv)
     std::ofstream events(manifestPath.string() + ".events.jsonl", std::ios::app);
     if (!events) { throw std::runtime_error("Cannot open cook events"); }
     const auto started = Clock::now();
-    MeshletLodBuildStats lodStats;
+    MeshletLODBuildStats lodStats;
     Json lodReports = Json::array();
     if (lodDiagnostics) { desc.meshletOptions.lodStats = &lodStats; }
     desc.progress = [&](const MeshletStreamCookProgress& progress) {

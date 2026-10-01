@@ -35,16 +35,16 @@ void reGIRVirtualLightProbeMain(uint3 id : SV_DispatchThreadID)
     uint lightIndex = 0xffffffffu;
     float inverseSourcePdf = 0.0;
     float3 estimate = 0.0;
-    if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GpuPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), push.position, seed, lightIndex, inverseSourcePdf)) {
-        estimate = samplePunctualLight(getResource<StructuredBuffer<GpuPunctualLight>>(50), lightIndex, push.position).illuminance * inverseSourcePdf;
+    if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), push.position, seed, lightIndex, inverseSourcePdf)) {
+        estimate = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), lightIndex, push.position).illuminance * inverseSourcePdf;
     } else {
         lightIndex = 0xffffffffu;
     }
     gProbeOutput[id.x] = float4(estimate, asfloat(lightIndex));
     if (id.x == 0u) {
         float3 exact = 0.0;
-        for (uint i = 0; i < punctualLightCount(getResource<StructuredBuffer<GpuPunctualLight>>(50)); ++i) {
-            exact += samplePunctualLight(getResource<StructuredBuffer<GpuPunctualLight>>(50), i, push.position).illuminance;
+        for (uint i = 0; i < punctualLightCount(getResource<StructuredBuffer<GPUPunctualLight>>(50)); ++i) {
+            exact += samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), i, push.position).illuminance;
         }
         gProbeOutput[push.sampleCount] = float4(exact, 0.0);
         uint width, height, mipCount;
@@ -52,8 +52,8 @@ void reGIRVirtualLightProbeMain(uint3 id : SV_DispatchThreadID)
         gProbeOutput[push.sampleCount + 1u] = float4(
             getResource<Texture2D<float>>(53).Load(int3(0, 0, int(mipCount) - 1)), 0, 0, 0);
         for (uint i = 0; i < 16; ++i) {
-            float power = i < punctualLightCount(getResource<StructuredBuffer<GpuPunctualLight>>(50))
-                ? punctualLightPower(getResource<StructuredBuffer<GpuPunctualLight>>(50)[i + 1u]) : 0.0;
+            float power = i < punctualLightCount(getResource<StructuredBuffer<GPUPunctualLight>>(50))
+                ? punctualLightPower(getResource<StructuredBuffer<GPUPunctualLight>>(50)[i + 1u]) : 0.0;
             uint2 texel = probeMortonPosition(i);
             float weight = texel.x < width && texel.y < height
                 ? getResource<Texture2D<float>>(53).Load(int3(texel, 0)) : 0.0;

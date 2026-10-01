@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "ImGuiTestSnapshot.h"
 #include "Editor/EditorProfiler.h"
 #include "Runtime/Render/RenderSample.h"
@@ -26,10 +26,10 @@ void checkProfile(bool condition, const std::string& message)
 bool saveProfilerPanel(EditorProfiler& profiler, const char* tab, const std::filesystem::path& path,
     std::string& message, bool sortGpu);
 
-class EditorProfilerHistoryTest final : public RhiTest {
+class EditorProfilerHistoryTest final : public RHITest {
 public:
-    EditorProfilerHistoryTest() { type = RhiTestType::Command; name = "editor_profiler_history"; }
-    RhiTestResult run(RhiTestContext&) override
+    EditorProfilerHistoryTest() { type = RHITestType::Command; name = "editor_profiler_history"; }
+    RHITestResult run(RHITestContext&) override
     {
         try {
             EditorProfiler profiler;
@@ -85,8 +85,8 @@ public:
             { auto frame = profiler.beginFrame(); }
             checkProfile(profiler.streamingHistory().empty() && profiler.displayFrame().nodes.size() == 1,
                 "leaving streaming scene retained stale data");
-            return RhiTestResult::pass("Delayed GPU backfill, nested zero duration, bounded histories, reload and scene removal");
-        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Delayed GPU backfill, nested zero duration, bounded histories, reload and scene removal");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerHistoryTest);
@@ -150,10 +150,10 @@ size_t profilerChild(const EditorProfiler::Frame& frame, size_t parent, const ch
     throw std::runtime_error(std::string("Missing fixture scope: ") + name);
 }
 
-class EditorProfilerIncrementalStatisticsTest final : public RhiTest {
+class EditorProfilerIncrementalStatisticsTest final : public RHITest {
 public:
-    EditorProfilerIncrementalStatisticsTest() { type = RhiTestType::Command; name = "editor_profiler_incremental_statistics"; }
-    RhiTestResult run(RhiTestContext&) override
+    EditorProfilerIncrementalStatisticsTest() { type = RHITestType::Command; name = "editor_profiler_incremental_statistics"; }
+    RHITestResult run(RHITestContext&) override
     {
         try {
             const double nan = std::numeric_limits<double>::quiet_NaN();
@@ -394,16 +394,16 @@ public:
                     actual.average == expected.average && actual.minimum == 5 && actual.maximum == 7,
                     "Catalog overflow stopped updating a known scope or counted rejected names");
             }
-            return RhiTestResult::pass("Raw-history CPU/GPU aggregates, 500-sample extrema eviction, occurrence identities, missing/nonfinite/zero samples, shared-execution GPU corrections, resets and bounded scope catalog");
-        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Raw-history CPU/GPU aggregates, 500-sample extrema eviction, occurrence identities, missing/nonfinite/zero samples, shared-execution GPU corrections, resets and bounded scope catalog");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerIncrementalStatisticsTest);
 
-class EditorProfilerCaptureTest final : public RhiTest {
+class EditorProfilerCaptureTest final : public RHITest {
 public:
-    EditorProfilerCaptureTest() { type = RhiTestType::Command; name = "editor_profiler_capture_attribution"; }
-    RhiTestResult run(RhiTestContext&) override
+    EditorProfilerCaptureTest() { type = RHITestType::Command; name = "editor_profiler_capture_attribution"; }
+    RHITestResult run(RHITestContext&) override
     {
         EditorProfiler profiler;
         profiler.beginCapture();
@@ -437,15 +437,15 @@ public:
         profiler.updateRenderGraphGpuStats(completed);
         checkProfile(profiler.capturedFrames().size()==1 && !profiler.capturedFrames()[0].nodes.back().gpuTimingAvailable,
             "Restarted capture retained stale GPU mappings");
-        return RhiTestResult::pass("Unbounded capture retains frame/stream identity beyond UI history and accepts only matching delayed GPU results");
+        return RHITestResult::pass("Unbounded capture retains frame/stream identity beyond UI history and accepts only matching delayed GPU results");
     }
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerCaptureTest);
 
-class EditorProfilerIntermittentScopesTest final : public RhiTest {
+class EditorProfilerIntermittentScopesTest final : public RHITest {
 public:
-    EditorProfilerIntermittentScopesTest() { type = RhiTestType::Command; name = "editor_profiler_intermittent_scopes"; }
-    RhiTestResult run(RhiTestContext& context) override
+    EditorProfilerIntermittentScopesTest() { type = RHITestType::Command; name = "editor_profiler_intermittent_scopes"; }
+    RHITestResult run(RHITestContext& context) override
     {
         try {
             EditorProfiler profiler;
@@ -497,16 +497,16 @@ public:
                 "Graph generation retained stale UI topology");
             { auto frame = profiler.beginFrame(); }
             checkProfile(profiler.presentationFrame().nodes.size() == 1, "Scene exit retained old graph rows");
-            return RhiTestResult::pass("Stable intermittent topology and identities, missing last values, history rollover, raw capture isolation and reset");
-        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Stable intermittent topology and identities, missing last values, history rollover, raw capture isolation and reset");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerIntermittentScopesTest);
 
-class EditorProfilerSortingTest final : public RhiTest {
+class EditorProfilerSortingTest final : public RHITest {
 public:
-    EditorProfilerSortingTest() { type = RhiTestType::Command; name = "editor_profiler_column_sorting"; }
-    RhiTestResult run(RhiTestContext& testContext) override
+    EditorProfilerSortingTest() { type = RHITestType::Command; name = "editor_profiler_column_sorting"; }
+    RHITestResult run(RHITestContext& testContext) override
     {
         auto* previous = ImGui::GetCurrentContext();
         auto* context = ImGui::CreateContext();
@@ -631,8 +631,8 @@ public:
             }
             std::filesystem::create_directories(testContext.outputDirectory);
             std::ofstream(testContext.outputDirectory / "ProfilerSortedTable.txt") << text;
-            return RhiTestResult::pass("Real column clicks: tri-state, all timing/name/queue columns, missing/zero/ties, subtree ordering, GPU backfill and collapsed identity");
-        } catch (const std::exception& error) { return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass("Real column clicks: tri-state, all timing/name/queue columns, missing/zero/ties, subtree ordering, GPU backfill and collapsed identity");
+        } catch (const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(EditorProfilerSortingTest);
@@ -683,12 +683,12 @@ bool saveProfilerPanel(EditorProfiler& profiler, const char* tab, const std::fil
     return saveImGuiTestDrawDataPng(*data, atlas, tw, th, width, height, path, message);
 }
 
-class MiniZorahProfilerTest final : public RhiTest {
+class MiniZorahProfilerTest final : public RHITest {
 public:
-    MiniZorahProfilerTest() { type = RhiTestType::Rendering; name = "minizorah_profiler_streaming"; }
-    RhiTestResult run(RhiTestContext& context) override
+    MiniZorahProfilerTest() { type = RHITestType::Rendering; name = "minizorah_profiler_streaming"; }
+    RHITestResult run(RHITestContext& context) override
     {
-        if (!std::getenv("METALLIC_TEST_MINIZORAH")) { return RhiTestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for full scene profiler validation"); }
+        if (!std::getenv("METALLIC_TEST_MINIZORAH")) { return RHITestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for full scene profiler validation"); }
         std::filesystem::create_directories(context.outputDirectory);
         const bool stress = std::getenv("METALLIC_TEST_CLAS_ROAM_STRESS") != nullptr;
         const uint32_t frameCount = stress ? 2400u : 360u;
@@ -838,8 +838,8 @@ public:
             report["status"] = "passed"; report["asyncComputeTimed"] = sawCompute;
             report["uploadBytesObserved"] = bytes; report["peakRequests"] = peakRequests;
             save();
-            return RhiTestResult::pass(std::to_string(frameCount) + " MiniZorah frames: nested GPU timings, asynchronous software raster, streaming telemetry and offscreen Profiler UI");
-        } catch (const std::exception& error) { report["status"] = "failed"; report["error"] = error.what(); save(); return RhiTestResult::fail(error.what()); }
+            return RHITestResult::pass(std::to_string(frameCount) + " MiniZorah frames: nested GPU timings, asynchronous software raster, streaming telemetry and offscreen Profiler UI");
+        } catch (const std::exception& error) { report["status"] = "failed"; report["error"] = error.what(); save(); return RHITestResult::fail(error.what()); }
     }
 };
 METALLIC_REGISTER_RHI_TEST(MiniZorahProfilerTest);

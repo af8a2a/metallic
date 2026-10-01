@@ -14,7 +14,7 @@ blocks account for 9,239,179,872 bytes. The original executable reproduced the
 same failure during capture with a 1,280-byte publication upload. This is a
 budget admission failure, not evidence of a native access violation.
 
-`MeshletStreamCompactClasPool::flushPublications` incorrectly inherited the
+`MeshletStreamCompactCLASPool::flushPublications` incorrectly inherited the
 generic CLAS buffer usage, including acceleration-structure storage and shader
 input. The buffer is actually only CPU-written data copied into the address
 and page tables. That usage selected device-local host-visible memory and
@@ -36,11 +36,11 @@ capture does not bypass the device-local budget.
 
 ## Regression coverage
 
-`RhiResource.clas_compact_lifecycle` now revives and GPU-publishes an existing
+`RHIResource.clas_compact_lifecycle` now revives and GPU-publishes an existing
 CLAS after setting the device-local heap limit to one byte. It reads back the
 published page-table state and checks that no device-local admission was
 denied. This case runs on devices with a separate host heap. Normal validation
-and Nsight-injected runs passed; `RhiResource.unified_memory_budget` also passed.
+and Nsight-injected runs passed; `RHIResource.unified_memory_budget` also passed.
 
 The editor capture regression now waits for streamed root geometry and CLAS
 readiness (up to 1,200 frames), rather than assuming 90 frames is enough for
@@ -52,9 +52,9 @@ Run from an x64 MSVC developer shell:
 
 ```powershell
 cmake --build build-relwithdebinfo --target MetallicGPUDrivenSample Metallic -j 8
-cmake --build build-scheduling-release --target MetallicRhiTests -j 8
-& build-scheduling-release/tests/MetallicRhiTests.exe '--gtest_filter=*clas_compact_lifecycle:*unified_memory_budget' --output-dir build-relwithdebinfo/zorah-nsight-regression
-& build-scheduling-release/tests/MetallicRhiTests.exe --rhi-nsight-capture --rhi-no-validation '--gtest_filter=*clas_compact_lifecycle' --output-dir build-relwithdebinfo/zorah-nsight-injected
+cmake --build build-scheduling-release --target MetallicRHITests -j 8
+& build-scheduling-release/tests/MetallicRHITests.exe '--gtest_filter=*clas_compact_lifecycle:*unified_memory_budget' --output-dir build-relwithdebinfo/zorah-nsight-regression
+& build-scheduling-release/tests/MetallicRHITests.exe --rhi-nsight-capture --rhi-no-validation '--gtest_filter=*clas_compact_lifecycle' --output-dir build-relwithdebinfo/zorah-nsight-injected
 $env:METALLIC_SMOKE_TEST_NSIGHT_CAPTURE = '1'
 & build-relwithdebinfo/Source/MetallicGPUDrivenSample.exe --zorah-full --smoke-test
 Remove-Item Env:METALLIC_SMOKE_TEST_NSIGHT_CAPTURE

@@ -90,6 +90,6 @@ pwsh -NoProfile -File Tools/RunZorahFullRoam.ps1 -OutputRoot build-release/<new-
 定向回归：
 
 ```powershell
-build-release/tests/MetallicRhiTests.exe --filter frame_output_consumer_gpu_dependencies --rhi-validation
-build-release/tests/MetallicRhiTests.exe '--gtest_filter=*frame_*-*frame_self_submit_two_slots' --rhi-validation
+build-release/tests/MetallicRHITests.exe --filter frame_output_consumer_gpu_dependencies --rhi-validation
+build-release/tests/MetallicRHITests.exe '--gtest_filter=*frame_*-*frame_self_submit_two_slots' --rhi-validation
 ```

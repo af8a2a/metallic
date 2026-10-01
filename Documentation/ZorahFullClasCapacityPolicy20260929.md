@@ -37,17 +37,17 @@ Profiler / 漫游 JSON 新增 `clasStartBytes`、`clasGrowBytes`、`clasEmptyByt
 
 ## 验证
 
-MSVC Release 构建 `MetallicGPUDrivenSample`、`MetallicRhiTests` 通过，沿用既有构建树及 SDK。
+MSVC Release 构建 `MetallicGPUDrivenSample`、`MetallicRHITests` 通过，沿用既有构建树及 SDK。
 
 7 项 GPU 测试通过，无跳过，启用 Vulkan 验证：
 
-- `RhiResource.clas_actual_sizes_and_move`
-- `RhiResource.clas_compact_lifecycle`（最终二进制重跑）
-- `RhiRendering.minizorah_clas_in_flight`（1,200 帧）
-- `RhiRendering.stream_clas_runtime_lifecycle`
-- `RhiRendering.stream_clas_eviction_reupload`
-- `RhiRendering.zorah_full_first_frame`（一次 MiniZorah→Full 切换）
-- `RhiRendering.streamed_realtime_pipeline`
+- `RHIResource.clas_actual_sizes_and_move`
+- `RHIResource.clas_compact_lifecycle`（最终二进制重跑）
+- `RHIRendering.minizorah_clas_in_flight`（1,200 帧）
+- `RHIRendering.stream_clas_runtime_lifecycle`
+- `RHIRendering.stream_clas_eviction_reupload`
+- `RHIRendering.zorah_full_first_frame`（一次 MiniZorah→Full 切换）
+- `RHIRendering.streamed_realtime_pipeline`
 
 新增生命周期断言覆盖独立 start/grow/max、未到期保留、到期释放初始块、非法参数、容量压力下提前释放小空块以容纳实际 CLAS 页、增长/释放统计。既有断言继续覆盖实际尺寸 MOVE、跨块增长、活页地址稳定、未提交帧阻止释放、取消/复活/重上传及预算不足。
 

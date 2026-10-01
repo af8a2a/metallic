@@ -10,7 +10,7 @@ CPU 参考实现及 GPU 的线性、BVH、cooperative 遍历都按误差和可�
 
 因此，缺少中间级几何时可以一次发出多个级别的需求；中间级尚未到达的细页也不会成为孤立的绘制片段。容量不足时仍退回完整 terminal cut。预取继续承担视锥和误差范围之外的前瞻，不再替正式需求承担绕过父级驻留等待的职责。
 
-涉及 `MeshletLod.cpp`、`GPUDrivenStreamAsset.slang`。
+涉及 `MeshletLOD.cpp`、`GPUDrivenStreamAsset.slang`。
 
 ### Streamer 提供首屏就绪状态
 
@@ -49,10 +49,10 @@ Release，RTX 5060，当前配置未启用 NRD。
 复现命令：
 
 ```powershell
-cmake --build build-release --target MetallicRhiTests MetallicGPUDrivenSample
-build-release/tests/MetallicRhiTests.exe --rhi-no-validation '--gtest_filter=*meshlet_lod_stream*:*streamer_meshlet_upload_completion*:*streamer_ordered_publication_retry*'
+cmake --build build-release --target MetallicRHITests MetallicGPUDrivenSample
+build-release/tests/MetallicRHITests.exe --rhi-no-validation '--gtest_filter=*meshlet_lod_stream*:*streamer_meshlet_upload_completion*:*streamer_ordered_publication_retry*'
 $env:METALLIC_TEST_MINIZORAH = '1'
-build-release/tests/MetallicRhiTests.exe --rhi-realtime --rhi-no-validation '--gtest_filter=*streamed_realtime_pipeline*:*minizorah_realtime_pipeline*'
+build-release/tests/MetallicRHITests.exe --rhi-realtime --rhi-no-validation '--gtest_filter=*streamed_realtime_pipeline*:*minizorah_realtime_pipeline*'
 ```
 
 本机需在 MSVC 开发环境中构建。日志保留在 `.cache/streaming-convergence/`。

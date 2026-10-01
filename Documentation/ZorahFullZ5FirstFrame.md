@@ -48,7 +48,7 @@
 
 最终入口验收没有与全量 CPU 页面校验并行；缓存已由此前测试预热，且原生分辨率逐帧 readback 会改变帧调度。这些秒数是可复跑的功能验收结果，不是严格冷启动或与 vk_lod_clusters 的等条件性能基准。
 
-`RunZorahFullFirstFrame.ps1` 执行可选的 `RhiRendering.zorah_full_first_frame`，默认在同一个 GPU device 上加载/释放两次，分别覆盖独立 asset 入口和编辑器 world 绑定入口。960×540 原生分辨率，不启用 DLSS；交互式图保留 DLSS-SR。因此这份带逐帧 readback 的结果不是编辑器 FPS。
+`RunZorahFullFirstFrame.ps1` 执行可选的 `RHIRendering.zorah_full_first_frame`，默认在同一个 GPU device 上加载/释放两次，分别覆盖独立 asset 入口和编辑器 world 绑定入口。960×540 原生分辨率，不启用 DLSS；交互式图保留 DLSS-SR。因此这份带逐帧 readback 的结果不是编辑器 FPS。
 
 测试核对 cook/metadata 实例数、无全量常驻 vertex/index upload、全部终止页的 geometry/CLAS 与 fallback BLAS readiness、512 cap 的 4418 张纹理、页加载错误、geometry/CLAS 预算，以及切走空图后的 stream retirement。首次 ready 和其后 120 帧保存 PNG；另保存 baseColor 图并检查有效覆盖，避免仅天空背景通过。
 

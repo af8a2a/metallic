@@ -1,5 +1,5 @@
 #pragma once
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include <volk.h>
 
 namespace metallic::render::vulkan {

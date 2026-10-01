@@ -3,7 +3,7 @@
 #include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
@@ -698,7 +698,7 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             }},
         };
     }
-    if (type == "NrdDenoisePass") {
+    if (type == "NRDDenoisePass") {
         return render::RenderGraphProperties{
             {"denoiser", "REBLUR"},
             {"enableValidation", true},
@@ -722,7 +722,7 @@ render::RenderGraphProperties defaultPropertiesForPass(const std::string& type)
             }},
         };
     }
-    if (type == "RtxdiCompositePass") {
+    if (type == "RTXDICompositePass") {
         return render::RenderGraphProperties{{"exposure", 1.0f}};
     }
     return render::RenderGraphProperties::object();
@@ -1712,28 +1712,28 @@ const char* renderGraphFormatName(render::Format format)
         return "R8Uint";
     case render::Format::R8Sint:
         return "R8Sint";
-    case render::Format::Rg8Unorm:
-        return "Rg8Unorm";
-    case render::Format::Rg8Snorm:
-        return "Rg8Snorm";
-    case render::Format::Rg8Uint:
-        return "Rg8Uint";
-    case render::Format::Rg8Sint:
-        return "Rg8Sint";
-    case render::Format::Bgra8Unorm:
-        return "Bgra8Unorm";
-    case render::Format::Bgra8Srgb:
-        return "Bgra8Srgb";
-    case render::Format::Rgba8Unorm:
-        return "Rgba8Unorm";
-    case render::Format::Rgba8Snorm:
-        return "Rgba8Snorm";
-    case render::Format::Rgba8Srgb:
-        return "Rgba8Srgb";
-    case render::Format::Rgba8Uint:
-        return "Rgba8Uint";
-    case render::Format::Rgba8Sint:
-        return "Rgba8Sint";
+    case render::Format::RG8Unorm:
+        return "RG8Unorm";
+    case render::Format::RG8Snorm:
+        return "RG8Snorm";
+    case render::Format::RG8Uint:
+        return "RG8Uint";
+    case render::Format::RG8Sint:
+        return "RG8Sint";
+    case render::Format::BGRA8Unorm:
+        return "BGRA8Unorm";
+    case render::Format::BGRA8sRGB:
+        return "BGRA8sRGB";
+    case render::Format::RGBA8Unorm:
+        return "RGBA8Unorm";
+    case render::Format::RGBA8Snorm:
+        return "RGBA8Snorm";
+    case render::Format::RGBA8sRGB:
+        return "RGBA8sRGB";
+    case render::Format::RGBA8Uint:
+        return "RGBA8Uint";
+    case render::Format::RGBA8Sint:
+        return "RGBA8Sint";
     case render::Format::R16Unorm:
         return "R16Unorm";
     case render::Format::R16Snorm:
@@ -1744,50 +1744,50 @@ const char* renderGraphFormatName(render::Format format)
         return "R16Sint";
     case render::Format::R16Sfloat:
         return "R16Sfloat";
-    case render::Format::Rg16Unorm:
-        return "Rg16Unorm";
-    case render::Format::Rg16Snorm:
-        return "Rg16Snorm";
-    case render::Format::Rg16Uint:
-        return "Rg16Uint";
-    case render::Format::Rg16Sint:
-        return "Rg16Sint";
-    case render::Format::Rg16Sfloat:
-        return "Rg16Sfloat";
-    case render::Format::Rgba16Unorm:
-        return "Rgba16Unorm";
-    case render::Format::Rgba16Snorm:
-        return "Rgba16Snorm";
-    case render::Format::Rgba16Uint:
-        return "Rgba16Uint";
-    case render::Format::Rgba16Sint:
-        return "Rgba16Sint";
-    case render::Format::Rgba16Sfloat:
-        return "Rgba16Sfloat";
+    case render::Format::RG16Unorm:
+        return "RG16Unorm";
+    case render::Format::RG16Snorm:
+        return "RG16Snorm";
+    case render::Format::RG16Uint:
+        return "RG16Uint";
+    case render::Format::RG16Sint:
+        return "RG16Sint";
+    case render::Format::RG16Sfloat:
+        return "RG16Sfloat";
+    case render::Format::RGBA16Unorm:
+        return "RGBA16Unorm";
+    case render::Format::RGBA16Snorm:
+        return "RGBA16Snorm";
+    case render::Format::RGBA16Uint:
+        return "RGBA16Uint";
+    case render::Format::RGBA16Sint:
+        return "RGBA16Sint";
+    case render::Format::RGBA16Sfloat:
+        return "RGBA16Sfloat";
     case render::Format::R32Uint:
         return "R32Uint";
     case render::Format::R32Sint:
         return "R32Sint";
     case render::Format::R32Sfloat:
         return "R32Sfloat";
-    case render::Format::Rg32Uint:
-        return "Rg32Uint";
-    case render::Format::Rg32Sint:
-        return "Rg32Sint";
-    case render::Format::Rg32Sfloat:
-        return "Rg32Sfloat";
-    case render::Format::Rgb32Uint:
-        return "Rgb32Uint";
-    case render::Format::Rgb32Sint:
-        return "Rgb32Sint";
-    case render::Format::Rgb32Sfloat:
-        return "Rgb32Sfloat";
-    case render::Format::Rgba32Uint:
-        return "Rgba32Uint";
-    case render::Format::Rgba32Sint:
-        return "Rgba32Sint";
-    case render::Format::Rgba32Sfloat:
-        return "Rgba32Sfloat";
+    case render::Format::RG32Uint:
+        return "RG32Uint";
+    case render::Format::RG32Sint:
+        return "RG32Sint";
+    case render::Format::RG32Sfloat:
+        return "RG32Sfloat";
+    case render::Format::RGB32Uint:
+        return "RGB32Uint";
+    case render::Format::RGB32Sint:
+        return "RGB32Sint";
+    case render::Format::RGB32Sfloat:
+        return "RGB32Sfloat";
+    case render::Format::RGBA32Uint:
+        return "RGBA32Uint";
+    case render::Format::RGBA32Sint:
+        return "RGBA32Sint";
+    case render::Format::RGBA32Sfloat:
+        return "RGBA32Sfloat";
     case render::Format::A2B10G10R10UnormPack32:
         return "A2B10G10R10UnormPack32";
     case render::Format::A2R10G10B10UintPack32:
@@ -2184,7 +2184,7 @@ int EditorApplication::run(
         }
         if (environmentFlagEnabled("METALLIC_SMOKE_TEST_STREAMLINE_DEBUG")) {
             const auto status = render::vulkan::streamlineDebugStatus();
-            const auto valid = [](const render::vulkan::StreamlineDlssDebugStatus& feature) {
+            const auto valid = [](const render::vulkan::StreamlineDLSSDebugStatus& feature) {
                 if (!feature.attempts) { return true; }
                 return feature.succeeded && feature.successes <= feature.attempts &&
                     feature.successes > 0 && feature.renderWidth > 0 && feature.outputWidth > 0 &&
@@ -2610,19 +2610,19 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
 
     render::Result<> result = device_->createSwapchain(render::SwapchainDesc{
             .window = render::WindowHandle{
-                .system = render::WindowSystem::Sdl3,
+                .system = render::WindowSystem::SDL3,
                 .nativeWindow = window_,
             },
             .width = width,
             .height = height,
             .imageCount = kSwapchainImageCount,
             .framesInFlight = kFrameSlotCount,
-            .format = render::Format::Bgra8Unorm,
+            .format = render::Format::BGRA8Unorm,
             .vsync = !(std::getenv("METALLIC_FULL_ROAM_OUTPUT") != nullptr &&
                 std::getenv("METALLIC_FULL_ROAM_NO_VSYNC") != nullptr &&
                 std::string_view(std::getenv("METALLIC_FULL_ROAM_NO_VSYNC")) == "1"),
             .outputMode = hdrOutputRequested_ && displayHdrEnabled_
-                ? render::DisplayOutputMode::HdrScRgb : render::DisplayOutputMode::Sdr,
+                ? render::DisplayOutputMode::HDRscRGB : render::DisplayOutputMode::SDR,
         }).transform([&](auto rhiValue) { swapchain_ = std::move(rhiValue); });
     if (!result || swapchain_ == nullptr) {
         spdlog::error("createSwapchain failed with Result {}", render::resultToString(result));
@@ -2680,7 +2680,7 @@ bool EditorApplication::createOrResizeSwapchain(uint32_t width, uint32_t height)
             ImGui_ImplVulkan_CreateMainPipeline(&pipelineInfo);
         }
         if (!displayRenderer_.initialize(render::vulkan::nativeDevice(*device_).device, colorFormat,
-                displayOutput_.mode == render::DisplayOutputMode::HdrScRgb, displayOutput_.paperWhiteNits)) {
+                displayOutput_.mode == render::DisplayOutputMode::HDRscRGB, displayOutput_.paperWhiteNits)) {
             return false;
         }
     }
@@ -2748,7 +2748,7 @@ bool EditorApplication::initializeImGuiBackends()
         return false;
     }
     return displayRenderer_.initialize(nativeDevice.device, colorFormat,
-        displayOutput_.mode == render::DisplayOutputMode::HdrScRgb, displayOutput_.paperWhiteNits);
+        displayOutput_.mode == render::DisplayOutputMode::HDRscRGB, displayOutput_.paperWhiteNits);
 }
 
 bool EditorApplication::createViewportSampler()
@@ -2975,7 +2975,7 @@ bool EditorApplication::waitForFrameSlotBeforeInput()
     if (maintenanceBeforePacing && !frozen && (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) == 0) {
         if (auto* streamer = subsystemHost_.get<render::StreamerSubsystem>()) {
             auto profileScope = profiler_.scope("Streamer maintenance before pacing");
-            render::CpuProfileRecorder profile;
+            render::CPUProfileRecorder profile;
             streamer->prepareBeforePacing(&profile);
             profiler_.addCpuProfile(profile.sections);
         }
@@ -3237,9 +3237,9 @@ void EditorApplication::drawDockspace()
 
         if (ImGui::BeginMenu("Display Output")) {
             if (ImGui::MenuItem("Enable scRGB HDR", nullptr, &hdrOutputRequested_)) { swapchainOutOfDate_ = true; }
-            ImGui::Text("Active: %s", displayOutput_.mode == render::DisplayOutputMode::HdrScRgb ? "scRGB HDR (FP16)" : "SDR");
+            ImGui::Text("Active: %s", displayOutput_.mode == render::DisplayOutputMode::HDRscRGB ? "scRGB HDR (FP16)" : "SDR");
             if (!displayHdrEnabled_) { ImGui::TextDisabled("Enable HDR in Windows display settings to use HDR output"); }
-            else if (hdrOutputRequested_ && displayOutput_.mode == render::DisplayOutputMode::Sdr) {
+            else if (hdrOutputRequested_ && displayOutput_.mode == render::DisplayOutputMode::SDR) {
                 ImGui::TextDisabled("scRGB surface unavailable; using SDR fallback");
             }
             if (ImGui::Checkbox("Follow system SDR white", &followSystemPaperWhite_)) { swapchainOutOfDate_ = true; }
@@ -6372,7 +6372,7 @@ void EditorApplication::drawViewportPanel()
     if (hasRhiPreview) {
         const auto* preview = graphExecutor_->outputResource(activePreviewOutput_.empty()
             ? renderGraph_.firstOutputName() : activePreviewOutput_);
-        const bool scRgbImage = preview && preview->colorEncoding == render::DisplayColorEncoding::ScRgb;
+        const bool scRgbImage = preview && preview->colorEncoding == render::DisplayColorEncoding::scRGB;
         if (scRgbImage) {
             displayRenderer_.beginScRgbImage(*drawList, ImGui::GetWindowViewport());
         }
@@ -6975,7 +6975,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
     };
     const bool viewportsEnabled = (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) != 0;
     const bool hasPlatformWindows = viewportsEnabled && ImGui::GetPlatformIO().Viewports.Size > 1;
-    render::GpuCompletionPoint segmentCompletion;
+    render::GPUCompletionPoint segmentCompletion;
     {
         auto profileScope = profiler_.scope("Submit Frame");
         const render::QueueSubmitDesc submitDesc{
@@ -7570,7 +7570,7 @@ void EditorApplication::pollSceneLoad()
         pendingSceneResourcePreparation_ = true;
         pendingSceneResourceProgress_ = progress;
         pendingSceneResourceProgress_.status = scene::SceneLoadStatus::Running;
-        pendingSceneResourceProgress_.phase = scene::SceneLoadPhase::GpuUpload;
+        pendingSceneResourceProgress_.phase = scene::SceneLoadPhase::GPUUpload;
         pendingSceneResourceProgress_.fraction = 0.65f;
         sceneStatus_ = "Preparing scene GPU resources while the current scene remains active.";
         return;
@@ -8019,7 +8019,7 @@ void EditorApplication::drawRenderGraphEditorWindow()
 
             ImGui::SameLine();
 
-            ImGui::BeginChild("RenderUiPanel", ImVec2(0.0f, topHeight), true);
+            ImGui::BeginChild("RenderUIPanel", ImVec2(0.0f, topHeight), true);
             ImGui::TextUnformatted("Render UI");
             ImGui::Separator();
             drawRenderGraphRenderUiPanel();

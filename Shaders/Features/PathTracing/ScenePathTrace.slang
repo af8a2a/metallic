@@ -109,8 +109,8 @@ typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathT
 
 #define gNrcTrainingPathVertices getResource<RWStructuredBuffer<NrcPackedPathVertex>>(26)
 
-typedef RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> NrcQueryRadianceBuffer;
-#define gNrcQueryRadianceParams getResource<NrcQueryRadianceBuffer>(27)
+typedef RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> NRCQueryRadianceBuffer;
+#define gNrcQueryRadianceParams getResource<NRCQueryRadianceBuffer>(27)
 
 #define gNrcCounters getResource<RWStructuredBuffer<uint>>(28)
 #endif
@@ -1616,8 +1616,8 @@ float3 pathTrace(
 
             uint hairLightIndex;
             float hairInverseSourcePdf;
-            if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GpuPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, hairLightIndex, hairInverseSourcePdf)) {
-                PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GpuPunctualLight>>(50), hairLightIndex, hit.position);
+            if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, hairLightIndex, hairInverseSourcePdf)) {
+                PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), hairLightIndex, hit.position);
                 float3 hairBsdf = max(RTXCR_HairChiangBsdfEval(
                     hairMaterial, hairSurface, light.direction), 0.0);
                 if (luminanceMax(hairBsdf * light.illuminance) > 0.0) {
@@ -1791,8 +1791,8 @@ float3 pathTrace(
         EnvironmentLightSample lightSample;
         uint punctualLightIndex;
         float punctualInverseSourcePdf;
-        if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GpuPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
-            PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GpuPunctualLight>>(50), punctualLightIndex, hit.position);
+        if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
+            PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), punctualLightIndex, hit.position);
             float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
                 baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
             if (luminanceMax(bsdf * light.illuminance) > 0.0) {
@@ -2072,7 +2072,7 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 #endif
 
     if (push.outputLinear == 0u) {
-        color *= lightingExposure(getResource<StructuredBuffer<GpuPunctualLight>>(50));
+        color *= lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50));
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
         color = saturate(color);

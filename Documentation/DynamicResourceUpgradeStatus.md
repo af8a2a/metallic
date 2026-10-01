@@ -17,7 +17,7 @@
 
 GPU 回读发现 `PathTraceMaterial` 的嵌套纹理索引读成了首个 float 的位模式；原先 material binning 的材质分类也错误。改用 raw byte-address load 得到正确数据，普通 SPIR-V 验证却无法检测这种 GPU 结果错误。
 
-`NativeDescriptorHeapSpirv.h` 将 typed `OpBufferPointerEXT` 及其访问链转换为 KHR untyped pointers，每个访问链显式保留原始 pointee 布局类型，同时处理 runtime array length。保留资源索引、数组 stride、成员 offset 和 NonUniform 等装饰。mapped 输出保持字节一致。
+`NativeDescriptorHeapSPIRV.h` 将 typed `OpBufferPointerEXT` 及其访问链转换为 KHR untyped pointers，每个访问链显式保留原始 pointee 布局类型，同时处理 runtime array length。保留资源索引、数组 stride、成员 offset 和 NonUniform 等装饰。mapped 输出保持字节一致。
 
 转换在写入 shader cache 前执行，检查指令边界、能力和指针流；不支持的指针逃逸会产生编译诊断，不向 GPU 提交部分转换结果。不能以普通 spirv-val 通过代替 GPU 回读。
 
@@ -39,7 +39,7 @@ Slang 默认 native AS 路径从 `ResourceHeapEXT` 读取 uint64，再转换为 
 - 新增 `scene_ray_tracing_position_fetch_native`：普通测试运行中也显式启用 native，覆盖 authored tangent、fetch/fallback、back face、miss、BLAS compaction 和 TLAS refit。
 - `.cache/native-devicelost/resolve.json`：原先失败的五项关键用例全部通过，日志无 Vulkan validation 报告。
 - `.cache/native-devicelost/regression.json`：新增两项用例通过；导出的 mapped/native 字节码均通过独立 `spirv-val --target-env vulkan1.3`。
-- `cmake --build build --target Metallic MetallicRhiTests -j 12`：MSVC Debug 构建通过。
+- `cmake --build build --target Metallic MetallicRHITests -j 12`：MSVC Debug 构建通过。
 - `.cache/native-devicelost/final-native.json`、`final-mapped.json`：两种运行模式各 20/20 通过，日志均无 Vulkan validation 报告。包含 buffer/atomics、曝光、frame snapshots、材质分桶、OpenPBR VBuffer、RTXDI、guides 编译、光追和新增回归。
 - `.cache/native-devicelost/final-smoke.log`：native 环境下 `Metallic.exe --smoke-test` 退出码 0，实际提交并呈现编辑器帧；这是启动 smoke，不是 DLSS 或长期交互验证。
 - 测试生成的 `meet_mat.glb.meshlets.bin` 仅改变版本与 padding，逐字节确认几何一致后备份并恢复。原有 `External/microprofile` 工作区内容未修改。
@@ -52,11 +52,11 @@ Slang 默认 native AS 路径从 `ResourceHeapEXT` 读取 uint64，再转换为 
 
 ```powershell
 # 不修改全局模式，也会显式覆盖 native 修复
-& .\build\tests\MetallicRhiTests.exe --rhi-validation '--gtest_filter=*native_descriptor_heap_nested_layout*:*scene_ray_tracing_position_fetch_native*'
+& .\build\tests\MetallicRHITests.exe --rhi-validation '--gtest_filter=*native_descriptor_heap_nested_layout*:*scene_ray_tracing_position_fetch_native*'
 
 # 完整渲染 native 回归
 $env:METALLIC_SLANG_DESCRIPTOR_MODE = 'native'
-& .\build\tests\MetallicRhiTests.exe --rhi-validation '--gtest_filter=*material_binning_indirect_coverage*:*visibility_buffer_deferred_openpbr*:*render_graph_rtxdi_preview*:*scene_ray_tracing_position_fetch*'
+& .\build\tests\MetallicRHITests.exe --rhi-validation '--gtest_filter=*material_binning_indirect_coverage*:*visibility_buffer_deferred_openpbr*:*render_graph_rtxdi_preview*:*scene_ray_tracing_position_fetch*'
 Remove-Item Env:METALLIC_SLANG_DESCRIPTOR_MODE
 ```
 
@@ -70,11 +70,11 @@ Remove-Item Env:METALLIC_SLANG_DESCRIPTOR_MODE
 
 这一轮不改变资源所有权：最终 index 仍属于具体 view/descriptor 和所属 heap。AS 的 buffer-address-cell 方案仍是独立 PoC，当前正式 AS handle 继续携带 device address。
 
-扩大验证时还修复了 `DlssNrPass::reflect` 的失效引用：新增字段导致 `fields_` 扩容后，再读取先前的 input 引用可能生成非法输出 format。现在保存独立的 colorFormat 值，避免 resize 后进入驱动的无效格式路径。
+扩大验证时还修复了 `DLSSNRPass::reflect` 的失效引用：新增字段导致 `fields_` 扩容后，再读取先前的 input 引用可能生成非法输出 format。现在保存独立的 colorFormat 值，避免 resize 后进入驱动的无效格式路径。
 
 ### 本轮验证
 
-- `Metallic` 与 `MetallicRhiTests` 的 MSVC Debug 构建通过。
+- `Metallic` 与 `MetallicRHITests` 的 MSVC Debug 构建通过。
 - 默认 mapped：基础回归 47 项通过、1 项因未启用 Streamline 跳过；DLSS bypass、contract、DebugControl 状态恢复及 frame reuse 补充回归 6/6 通过。
 - Native：最终回归 50 项通过、1 项因未启用 Streamline 跳过；三个复杂流式光栅/细分用例受下述已复现限制阻断。
 - 单独启用 `--rhi-streamline` 后，两种模式的 `dlss_nr_runtime` 和 `dlss_nr_runtime_scene` 均为 2/2 通过，包括路径追踪、DLSS-RR/NR、GPU 回读及 slider 验证。

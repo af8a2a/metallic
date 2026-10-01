@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanGeneratedCommands.h"
@@ -68,11 +68,11 @@ struct ProbeResources {
     }
 };
 
-class GeneratedCommandsComputeTest final : public RhiTest {
+class GeneratedCommandsComputeTest final : public RHITest {
 public:
     GeneratedCommandsComputeTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "device_generated_commands_compute_readback";
     }
 
@@ -82,20 +82,20 @@ public:
             "binding", {"binding-dgc", "dgc", bench::Capability::GeneratedCommands});
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         auto& device = context.device;
         const bool useGenerated = !context.deviceDesc || context.deviceDesc->enableDeviceGeneratedCommands;
-        if (useGenerated && !device.capabilities().deviceGeneratedCommands) { return RhiTestResult::skip("DGC unsupported"); }
+        if (useGenerated && !device.capabilities().deviceGeneratedCommands) { return RHITestResult::skip("DGC unsupported"); }
         const auto properties = rv::queryGeneratedCommandsProperties(device);
         if (useGenerated && (!properties ||
             !(properties->supportedIndirectCommandsShaderStagesPipelineBinding & VK_SHADER_STAGE_COMPUTE_BIT))) {
-            return RhiTestResult::skip("DGC compute pipeline binding unsupported");
+            return RHITestResult::skip("DGC compute pipeline binding unsupported");
         }
         const auto native = rv::nativeDevice(device);
         ProbeResources resources{native.device};
-#define DGC_VK(expr) if ((expr) != VK_SUCCESS) { return RhiTestResult::fail(#expr); }
-#define DGC_RHI(expr) if (!(expr)) { return RhiTestResult::fail(#expr); }
+#define DGC_VK(expr) if ((expr) != VK_SUCCESS) { return RHITestResult::fail(#expr); }
+#define DGC_RHI(expr) if (!(expr)) { return RHITestResult::fail(#expr); }
         const VkDescriptorSetLayoutBinding binding{.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT};
         const VkDescriptorSetLayoutCreateInfo setInfo{.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -178,7 +178,7 @@ public:
             const uint32_t stream[] = {2, 0, 0, 0, 7, 1, 1, 1, 1, 1, 9, 1, 1, 1, 0, 2, 999, 1, 1, 1};
             auto* mappedArguments = arguments->map();
             auto* mappedOutput = output->map();
-            if (!mappedArguments || !mappedOutput) { return RhiTestResult::fail("Map failed"); }
+            if (!mappedArguments || !mappedOutput) { return RHITestResult::fail("Map failed"); }
             std::memcpy(mappedArguments, stream, sizeof(stream));
             std::memset(mappedOutput, 0, 16);
             arguments->flush(); output->flush();
@@ -200,7 +200,7 @@ public:
                 auto invalid = args;
                 invalid.offset = 1;
                 if (!render::hasError(generated.execute(*commands, invalid, mode == 2), render::Error::InvalidArgument)) {
-                    return RhiTestResult::fail("Misaligned indirect stream was accepted");
+                    return RHITestResult::fail("Misaligned indirect stream was accepted");
                 }
                 if (mode == 2) {
                     DGC_RHI(generated.preprocess(*commands, args, *commands));
@@ -239,13 +239,13 @@ public:
                 observations.insert(observations.end(), values, values + 4);
             }
             output->unmap();
-            if (!correct) { return RhiTestResult::fail("DGC pipeline/push/count readback mismatch"); }
+            if (!correct) { return RHITestResult::fail("DGC pipeline/push/count readback mismatch"); }
         }
         bench::comparisonEvidence(context, {{"modes", {"fixed", "pipelineSet", "preprocess"}}, {"count", 2},
             {"maximumCount", 3}, {"values", {7, 9, 999}}, {"rebind", 777}}, observations, useGenerated);
 #undef DGC_RHI
 #undef DGC_VK
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 

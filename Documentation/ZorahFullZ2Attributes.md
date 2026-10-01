@@ -38,7 +38,7 @@
 | StoneUdim | 20 | 357,120 | 476,160 | 238,080 | 476,160 |
 | InstancingNoTangent | 1 | 48 | 64 | 32 | 64 |
 | MaskedLeaves | 3 | 10,284 | 13,712 | 6,856 | 13,712 |
-| TextureTransformBc4 | 8 | 18,204 | 24,272 | 12,136 | 24,272 |
+| TextureTransformBC4 | 8 | 18,204 | 24,272 | 12,136 | 24,272 |
 | Glass | 15 | 395,664 | 527,552 | 263,776 | 527,552 |
 | Blend | 1 | 48 | 64 | 32 | 64 |
 | Unlit | 17 | 304,200 | 0 | 202,800 | 0 |
@@ -68,9 +68,9 @@ MaskedLeaves 从 399 个源顶点变成 403 个准备后顶点，新增 4 个切
 
 ## 回归与复跑
 
-- Release 构建通过：`MetallicSceneTests`、`MetallicMeshletCook`、`MetallicGPUDrivenSample`、`MetallicRhiTests`。
+- Release 构建通过：`MetallicSceneTests`、`MetallicMeshletCook`、`MetallicGPUDrivenSample`、`MetallicRHITests`。
 - **37 项 Scene 回归通过**，含 6 项新属性测试、Full metadata/实例化、小探针独立 resident 对照、UV 缓存失效、同键复用和断点恢复、损坏属性/morph 拒绝，以及原有 glTF/GLB、材质、场景层级测试。
-- `RhiRendering.stream_metadata_contract` 通过，验证已有小场景的 metadata → GPUScene、HW/SW coverage 和材质解析兼容性；它不是 Full 贴图像素验收。
+- `RHIRendering.stream_metadata_contract` 通过，验证已有小场景的 metadata → GPUScene、HW/SW coverage 和材质解析兼容性；它不是 Full 贴图像素验收。
 - 日志与逐探针原始报告位于 [zorah-z2](E:/metallic/build-release/zorah-z2)。Scene 回归在独立 `regression` 目录执行，避开仓库根的旧测试输出。
 
 在仓库根生成和验证小探针：

@@ -17,7 +17,7 @@ public struct ClusterLightGridParams
     public uint4 counts;
 };
 
-// Same 64-byte physical-light ABI as GpuPunctualLight. The grid's light buffer is
+// Same 64-byte physical-light ABI as GPUPunctualLight. The grid's light buffer is
 // indexed by stable source slot and does not contain a metadata element at zero.
 public struct ClusterLightData
 {

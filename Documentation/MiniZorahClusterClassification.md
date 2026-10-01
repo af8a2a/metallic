@@ -39,7 +39,7 @@ GPU 一度回落到约 2% 后启动了配对复测，但后台负载随后恢复
 
 ## 验证
 
-- `Metallic`、`MetallicGPUDrivenSample`、`MetallicRhiTests` 构建通过。
+- `Metallic`、`MetallicGPUDrivenSample`、`MetallicRHITests` 构建通过。
 - [stream_cluster_cull_classify_equivalence](E:/metallic/tests/rhi/StreamClusterClassificationTests.cpp:18)：8 个 fixture × early/late，新旧 GPU 调度输出逐项相等。比较原始候选标签、最终稳定箱列表、完整 visible records、retry masks，并验证存活项 indirect 参数。覆盖 73,760 个存活项、空列表复用、部分块、HZB 遮挡后恢复、正交/透视、普通/反向 Z、1/8/32 px、独立 render camera 和 jitter、非均匀缩放、双面实例、空三角形、无效页面/顶点数/索引范围及 malformed-index fallback。
 - 候选展开的 14 个 GPU/CPU 用例通过。
 - 18 项相关回归全部通过，107 秒：MiniZorah 首帧/VBuffer/质量审计、StreamAsset、LOD cut、混合光栅、异步队列、两帧槽、resize/reload、持久 LOD PSO cache。日志无 VUID 或 validation error。
@@ -48,8 +48,8 @@ GPU 一度回落到约 2% 后启动了配对复测，但后台负载随后恢复
 复现：
 
 ```powershell
-& E:/metallic/build-relwithdebinfo/tests/MetallicRhiTests.exe `
-  '--gtest_filter=RhiRendering.stream_cluster_cull_classify_equivalence:RhiRendering.stream_cluster_candidates_stable_parallel' `
+& E:/metallic/build-relwithdebinfo/tests/MetallicRHITests.exe `
+  '--gtest_filter=RHIRendering.stream_cluster_cull_classify_equivalence:RHIRendering.stream_cluster_candidates_stable_parallel' `
   --rhi-validation --output-dir E:/metallic/build-relwithdebinfo/minizorah-classification/recheck
 & E:/metallic/build-relwithdebinfo/minizorah-classification/RunCase.ps1 `
   -Name recheck-fixed-0 -Seconds 10 -FixedView 0 -LatencyOnly 0 -Transitions 0

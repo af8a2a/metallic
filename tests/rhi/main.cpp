@@ -1,6 +1,6 @@
 #include "harness/GTestHtmlReport.h"
 #include "harness/VulkanDiagnostics.h"
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/Runner.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Task/TaskSystem.h"
@@ -25,16 +25,16 @@ const char* toString(render::Result<> result)
     return render::resultToString(result);
 }
 
-const char* toString(RhiTestType type)
+const char* toString(RHITestType type)
 {
     switch (type) {
-    case RhiTestType::Validation:
+    case RHITestType::Validation:
         return "validation";
-    case RhiTestType::Resource:
+    case RHITestType::Resource:
         return "resource";
-    case RhiTestType::Command:
+    case RHITestType::Command:
         return "command";
-    case RhiTestType::Rendering:
+    case RHITestType::Rendering:
         return "rendering";
     }
 
@@ -176,25 +176,25 @@ std::vector<char*> makeMutableArgv(std::vector<std::string>& arguments)
     return argv;
 }
 
-const char* suiteNameFor(metallic::tests::RhiTestType type)
+const char* suiteNameFor(metallic::tests::RHITestType type)
 {
     switch (type) {
-    case metallic::tests::RhiTestType::Validation:
-        return "RhiValidation";
-    case metallic::tests::RhiTestType::Resource:
-        return "RhiResource";
-    case metallic::tests::RhiTestType::Command:
-        return "RhiCommand";
-    case metallic::tests::RhiTestType::Rendering:
-        return "RhiRendering";
+    case metallic::tests::RHITestType::Validation:
+        return "RHIValidation";
+    case metallic::tests::RHITestType::Resource:
+        return "RHIResource";
+    case metallic::tests::RHITestType::Command:
+        return "RHICommand";
+    case metallic::tests::RHITestType::Rendering:
+        return "RHIRendering";
     }
 
-    return "RhiUnknown";
+    return "RHIUnknown";
 }
 
-class RhiTestEnvironment : public ::testing::Environment {
+class RHITestEnvironment : public ::testing::Environment {
 public:
-    explicit RhiTestEnvironment(Options options, render::profiling::NsightGraphicsCapture* capture)
+    explicit RHITestEnvironment(Options options, render::profiling::NsightGraphicsCapture* capture)
         : options_(std::move(options)), nsightCapture_(capture)
     {
     }
@@ -246,8 +246,8 @@ public:
             return;
         }
 
-        context_ = std::make_unique<metallic::tests::RhiTestContext>(
-            metallic::tests::RhiTestContext{
+        context_ = std::make_unique<metallic::tests::RHITestContext>(
+            metallic::tests::RHITestContext{
                 .device = *device_,
                 .graphicsQueue = *graphicsQueue_,
                 .outputDirectory = options_.outputDirectory,
@@ -271,7 +271,7 @@ public:
         }
     }
 
-    metallic::tests::RhiTestContext* context() const
+    metallic::tests::RHITestContext* context() const
     {
         return context_.get();
     }
@@ -293,16 +293,16 @@ private:
     std::atomic_uint validationMessageCount_ = 0;
     std::unique_ptr<render::Device> device_;
     render::Queue* graphicsQueue_ = nullptr;
-    std::unique_ptr<metallic::tests::RhiTestContext> context_;
+    std::unique_ptr<metallic::tests::RHITestContext> context_;
     std::string skipReason_;
     std::string setupFailure_;
 };
 
-RhiTestEnvironment* gEnvironment = nullptr;
+RHITestEnvironment* gEnvironment = nullptr;
 
-class RhiGTestAdapter : public ::testing::Test {
+class RHIGTestAdapter : public ::testing::Test {
 public:
-    explicit RhiGTestAdapter(std::unique_ptr<metallic::tests::RhiTest> test)
+    explicit RHIGTestAdapter(std::unique_ptr<metallic::tests::RHITest> test)
         : test_(std::move(test))
     {
     }
@@ -322,32 +322,32 @@ protected:
             GTEST_SKIP() << gEnvironment->skipReason();
         }
 
-        metallic::tests::RhiTestContext* context = gEnvironment->context();
+        metallic::tests::RHITestContext* context = gEnvironment->context();
         if (context == nullptr) {
             FAIL() << "RHI test context is unavailable";
             return;
         }
 
-        metallic::tests::RhiTestResult result;
+        metallic::tests::RHITestResult result;
         try {
             test_->init(*context);
             result = test_->run(*context);
         } catch (const std::exception& exception) {
-            result = metallic::tests::RhiTestResult::fail(exception.what());
+            result = metallic::tests::RHITestResult::fail(exception.what());
         } catch (...) {
-            result = metallic::tests::RhiTestResult::fail("unknown exception");
+            result = metallic::tests::RHITestResult::fail("unknown exception");
         }
 
         try {
             test_->cleanup(*context);
         } catch (const std::exception& exception) {
             if (result.passed || result.skipped) {
-                result = metallic::tests::RhiTestResult::fail(
+                result = metallic::tests::RHITestResult::fail(
                     std::string("cleanup failed: ") + exception.what());
             }
         } catch (...) {
             if (result.passed || result.skipped) {
-                result = metallic::tests::RhiTestResult::fail("cleanup failed with unknown exception");
+                result = metallic::tests::RHITestResult::fail("cleanup failed with unknown exception");
             }
         }
 
@@ -361,15 +361,15 @@ protected:
     }
 
 private:
-    std::unique_ptr<metallic::tests::RhiTest> test_;
+    std::unique_ptr<metallic::tests::RHITest> test_;
 };
 
 void registerRhiTests()
 {
-    using metallic::tests::RhiTestRegistry;
+    using metallic::tests::RHITestRegistry;
 
-    for (const RhiTestRegistry::Factory& factory : RhiTestRegistry::factories()) {
-        std::unique_ptr<metallic::tests::RhiTest> prototype = factory();
+    for (const RHITestRegistry::Factory& factory : RHITestRegistry::factories()) {
+        std::unique_ptr<metallic::tests::RHITest> prototype = factory();
         if (prototype == nullptr || prototype->name == nullptr) {
             continue;
         }
@@ -383,8 +383,8 @@ void registerRhiTests()
             nullptr,
             __FILE__,
             __LINE__,
-            [factory]() -> RhiGTestAdapter* {
-                return new RhiGTestAdapter(factory());
+            [factory]() -> RHIGTestAdapter* {
+                return new RHIGTestAdapter(factory());
             });
     }
 }
@@ -417,7 +417,7 @@ int main(int argc, char** argv)
 
     registerRhiTests();
 
-    auto* environment = new RhiTestEnvironment(options, options.exportNsightCapture ? &nsightCapture : nullptr);
+    auto* environment = new RHITestEnvironment(options, options.exportNsightCapture ? &nsightCapture : nullptr);
     gEnvironment = environment;
     ::testing::AddGlobalTestEnvironment(environment);
 

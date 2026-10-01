@@ -95,16 +95,16 @@ bool readKtx2TextureInfo(const std::filesystem::path& path, Ktx2TextureInfo& inf
     const auto u32 = [&](size_t offset) { return little<uint32_t>(h.data() + offset); };
     switch (u32(12)) {
     case 139:
-        info.format = Format::Bc4Unorm;
+        info.format = Format::BC4Unorm;
         break;
     case 141:
-        info.format = Format::Bc5Unorm;
+        info.format = Format::BC5Unorm;
         break;
     case 145:
-        info.format = Format::Bc7Unorm;
+        info.format = Format::BC7Unorm;
         break;
     case 146:
-        info.format = Format::Bc7Srgb;
+        info.format = Format::BC7sRGB;
         break;
     default:
         return fail("unsupported KTX2 format (expected BC4/BC5/BC7)");

@@ -24,7 +24,7 @@ cmake --build cmake-build-debug-visual-studio --target LookDev --parallel 8
 ```powershell
 .\cmake-build-debug-visual-studio\Source\LookDev.exe --list-samples
 .\cmake-build-debug-visual-studio\Source\LookDev.exe --sample openpbr-lookdev
-.\cmake-build-debug-visual-studio\Source\LookDev.exe --scene Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf
+.\cmake-build-debug-visual-studio\Source\LookDev.exe --scene Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf
 ```
 
 另提供 [SliderDebugPass 着色路径比较](SliderDebugPass.md)：
@@ -69,7 +69,7 @@ VBuffer 当前跳过 BLEND 表面；Double sided 控制光栅背面剔除，光�
 
 | 项目 | 值 |
 | --- | --- |
-| 场景 | `Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf`，自动加载同名 scene sidecar |
+| 场景 | `Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf`，自动加载同名 scene sidecar |
 | 渲染图 | `Pipelines/Samples/openpbr_lookdev.metallic_graph.json` |
 | 几何 | MaterialX `shaderball.glb` 的两个原始网格，88,264 个三角形 |
 | Base color | 线性 Rec.709 `(0.8, 0.8, 0.8)`，不是 sRGB 贴图值 |
@@ -128,7 +128,7 @@ LOD 切换后的第一帧与显式清除累计后的第一帧完全一致。
 资源已随场景提供，正常加载无需联网。重新生成资源只需 Python 标准库：
 
 ```powershell
-python Tools/BuildOpenPbrLookDev.py
+python Tools/BuildOpenPBRLookDev.py
 ```
 
 脚本从 `Reference.json` 记录的固定 MaterialX 提交下载，校验源资源
@@ -137,13 +137,13 @@ scene sidecar 和渲染图。也可用 `--source-dir <已下载的源文件目�
 离线生成。脚本会覆盖此示例的生成文件。
 
 ```powershell
-cmake --build cmake-build-debug-visual-studio --target LookDev MetallicRhiTests --parallel 8
-.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter openpbr_lookdev --rhi-validation --output-dir rhi-test-output/openpbr-lookdev
-.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --filter auto_exposure --rhi-validation
+cmake --build cmake-build-debug-visual-studio --target LookDev MetallicRHITests --parallel 8
+.\cmake-build-debug-visual-studio\tests\MetallicRHITests.exe --filter openpbr_lookdev --rhi-validation --output-dir rhi-test-output/openpbr-lookdev
+.\cmake-build-debug-visual-studio\tests\MetallicRHITests.exe --filter auto_exposure --rhi-validation
 ```
 
 LookDev 测试绑定与编辑器相同的 SceneDocument，输出
-`rhi-test-output/openpbr-lookdev/OpenPbrDefault.png`（768²，1024 spp）。
+`rhi-test-output/openpbr-lookdev/OpenPBRDefault.png`（768²，1024 spp）。
 测试检查参考配置加载、OpenPBR 选择、主体曝光，并关闭所有光源确认
 输出为黑色。预览必须绑定该场景，不能把 scene sidecar 中的灯光再作为
 独立 world 灯光追加一次。sRGB 测试覆盖暗部线性段、18% 灰、0.8、白色、
@@ -183,4 +183,4 @@ LookDev 测试绑定与编辑器相同的 SceneDocument，输出
 glTF 的 Lambert 漫反射使用 `base_diffuse_roughness = 0`，高光粗糙度
 仍来自 glTF roughness。该修正也会影响其他使用 glTF 的 OpenPBR 场景。
 
-源资源和许可证见 [资源说明](../Asset/LookDev/OpenPbrDefault/README.md)。
+源资源和许可证见 [资源说明](../Asset/LookDev/OpenPBRDefault/README.md)。

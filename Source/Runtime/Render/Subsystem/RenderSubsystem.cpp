@@ -1,5 +1,5 @@
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
-#include "Runtime/Render/Profiling/CpuPhaseTrace.h"
+#include "Runtime/Render/Profiling/CPUPhaseTrace.h"
 
 #include "Runtime/Render/Core/HistoryResources.h"
 
@@ -348,7 +348,7 @@ Result<> RenderSubsystemHost::reloadShaders(std::string& log)
 
 void RenderSubsystemHost::endFrame()
 {
-    profiling::CpuPhase phase("subsystems.endFrame");
+    profiling::CPUPhase phase("subsystems.endFrame");
     if (!frameActive_) {
         return;
     }

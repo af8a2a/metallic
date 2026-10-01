@@ -1,7 +1,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "harness/GraphEvidence.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -27,7 +27,7 @@ namespace {
 
 #define FRAME_REQUIRE(expression) do { \
     const render::Result<> frameResult = (expression); \
-    if (!frameResult) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(frameResult)); } \
+    if (!frameResult) { return RHITestResult::fail(std::string(#expression) + ": " + toString(frameResult)); } \
 } while (false)
 
 constexpr uint64_t kWaitTimeout = 5'000'000'000ull;
@@ -133,15 +133,15 @@ void storageBarrier(render::CommandBuffer& commandBuffer, render::Buffer& buffer
     if (auto commandResult = commandBuffer.synchronize({.buffers = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
 }
 
-class FrameCompletionLifecycleTest : public RhiTest {
+class FrameCompletionLifecycleTest : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"frame.completion.transaction.contract"}, bench::Layer::RenderGraph, "async", "sync");
     }
 
-    FrameCompletionLifecycleTest() { type = RhiTestType::Command; name = "frame_completion_lifecycle"; }
-    RhiTestResult run(RhiTestContext& context) override
+    FrameCompletionLifecycleTest() { type = RHITestType::Command; name = "frame_completion_lifecycle"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::QueueSubmissionTracker tracker;
         Commands commands;
@@ -154,26 +154,26 @@ public:
         FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         QueueDrain drain{context.graphicsQueue, gate.get()};
         FRAME_REQUIRE(commands.begin(0));
-        const render::GpuCompletionPoint cancelled = commands.frame.completion();
+        const render::GPUCompletionPoint cancelled = commands.frame.completion();
         if (cancelled.isComplete() || cancelled.isSubmitted() || cancelled.wait(0)) {
-            return RhiTestResult::fail("recording was reported as completed/waitable");
+            return RHITestResult::fail("recording was reported as completed/waitable");
         }
         if (tracker.submit({.signalSemaphores = std::array<render::SemaphoreSubmitDesc, 1>{}}, commands.frame) || cancelled.isSubmitted()) {
-            return RhiTestResult::fail("invalid submission committed a completion point");
+            return RHITestResult::fail("invalid submission committed a completion point");
         }
         FRAME_REQUIRE(commands.pool->reset());
         commands.frame.cancel();
         if (!cancelled.isCancelled() || !cancelled.isComplete()) {
-            return RhiTestResult::fail("cancelled recording did not retire");
+            return RHITestResult::fail("cancelled recording did not retire");
         }
 
         FRAME_REQUIRE(commands.frame.begin(1));
         render::CommandBuffer* staleBuffers[] = {commands.buffer.get()};
         if (tracker.submit({.commandBuffers = {staleBuffers, 1}}, commands.frame)) {
-            return RhiTestResult::fail("cancelled command recording was accepted by a new frame generation");
+            return RHITestResult::fail("cancelled command recording was accepted by a new frame generation");
         }
         FRAME_REQUIRE(commands.buffer->begin(&commands.frame));
-        const render::GpuCompletionPoint point = commands.frame.completion();
+        const render::GPUCompletionPoint point = commands.frame.completion();
         auto retained = std::make_shared<uint32_t>(17);
         std::weak_ptr<uint32_t> retainedWeak = retained;
         commands.frame.retain(std::move(retained));
@@ -200,36 +200,36 @@ public:
         host.endFrame();
         abandonedSlot.cancel();
         if (replacedWeak.expired()) {
-            return RhiTestResult::fail("cancelling a replacement released a resource still used by another slot");
+            return RHITestResult::fail("cancelling a replacement released a resource still used by another slot");
         }
         deferred.collect();
         if (!point.isSubmitted() || point.isComplete() || point.value() != 1 ||
             commands.frame.begin(2, 0) || retainedWeak.expired() || retiredWeak.expired() || outsideWeak.expired()) {
-            return RhiTestResult::fail("pending submission allowed reuse or premature release");
+            return RHITestResult::fail("pending submission allowed reuse or premature release");
         }
         FRAME_REQUIRE(gate->signal(1));
         FRAME_REQUIRE(point.wait(kWaitTimeout));
         deferred.collect();
         if (!retiredWeak.expired() || retainedWeak.expired()) {
-            return RhiTestResult::fail("completion retirement or frame retention was incorrect");
+            return RHITestResult::fail("completion retirement or frame retention was incorrect");
         }
         FRAME_REQUIRE(commands.begin(2));
         FRAME_REQUIRE(host.beginFrame(2, 0, nullptr, log, &commands.frame));
         host.endFrame();
         if (!retainedWeak.expired() || !outsideWeak.expired() || !replacedWeak.expired() || !point.isComplete()) {
-            return RhiTestResult::fail("completed resources were not reclaimed on reuse");
+            return RHITestResult::fail("completed resources were not reclaimed on reuse");
         }
         FRAME_REQUIRE(commands.pool->reset());
         commands.frame.cancel();
         host.shutdown();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class FrameDeviceLostCleanupTest final : public RhiTest {
+class FrameDeviceLostCleanupTest final : public RHITest {
 public:
-    FrameDeviceLostCleanupTest() { type = RhiTestType::Command; name = "frame_device_lost_cleanup"; }
-    RhiTestResult run(RhiTestContext& context) override
+    FrameDeviceLostCleanupTest() { type = RHITestType::Command; name = "frame_device_lost_cleanup"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::QueueSubmissionTracker tracker;
         Commands commands;
@@ -256,7 +256,7 @@ public:
         ScopedTimelineWaitResult::result = VK_TIMEOUT;
         if (commands.frame.reset() || tracker.reset() || deferred.drain() ||
             !commands.frame.completion().valid() || retainedWeak.expired() || retiredWeak.expired()) {
-            return RhiTestResult::fail("Retryable wait failure discarded pending lifetimes");
+            return RHITestResult::fail("Retryable wait failure discarded pending lifetimes");
         }
         ScopedTimelineWaitResult::result = VK_ERROR_DEVICE_LOST;
         if (!render::hasError(commands.frame.reset(), render::Error::DeviceLost) ||
@@ -264,25 +264,25 @@ public:
             !render::hasError(deferred.drain(), render::Error::DeviceLost) ||
             commands.frame.completion().valid() || deferred.size() != 0 ||
             !retainedWeak.expired() || !retiredWeak.expired()) {
-            return RhiTestResult::fail("Device loss did not release lifetimes while preserving the error");
+            return RHITestResult::fail("Device loss did not release lifetimes while preserving the error");
         }
         const uint32_t waits = ScopedTimelineWaitResult::calls;
         FRAME_REQUIRE(commands.frame.reset());
         FRAME_REQUIRE(tracker.reset());
         FRAME_REQUIRE(deferred.drain());
         if (ScopedTimelineWaitResult::calls != waits) {
-            return RhiTestResult::fail("Repeated teardown accessed a discarded timeline");
+            return RHITestResult::fail("Repeated teardown accessed a discarded timeline");
         }
-        return RhiTestResult::pass("Timeout preserves resources; device loss releases them and teardown is idempotent");
+        return RHITestResult::pass("Timeout preserves resources; device loss releases them and teardown is idempotent");
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(FrameDeviceLostCleanupTest);
 
-class FrameUploadLifetimeTest : public RhiTest {
+class FrameUploadLifetimeTest : public RHITest {
 public:
-    FrameUploadLifetimeTest() { type = RhiTestType::Resource; name = "frame_upload_lifetime"; }
-    RhiTestResult run(RhiTestContext& context) override
+    FrameUploadLifetimeTest() { type = RHITestType::Resource; name = "frame_upload_lifetime"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::QueueSubmissionTracker tracker;
         Commands commands;
@@ -310,7 +310,7 @@ public:
         std::vector<uint32_t> constant(1024, 0x12345678);
         if (streamer->streamConstantData(constant.data(), 4096) != 0 ||
             streamer->streamConstantData(constant.data(), 4) != UINT64_MAX) {
-            return RhiTestResult::fail("constant arena overwrote an earlier allocation when full");
+            return RHITestResult::fail("constant arena overwrote an earlier allocation when full");
         }
         const uint32_t first = 0x11223344;
         std::vector<uint32_t> large(kLargeWordCount, 0x55667788);
@@ -326,14 +326,14 @@ public:
             .dstOffset = sizeof(first),
         });
         if (firstUpload.buffer == nullptr || secondUpload.buffer == nullptr || firstUpload.buffer == secondUpload.buffer) {
-            return RhiTestResult::fail("upload growth did not create the expected old/new allocations");
+            return RHITestResult::fail("upload growth did not create the expected old/new allocations");
         }
-        if (auto commandResult = streamer->copyStreamedData(*commands.buffer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = streamer->copyStreamedData(*commands.buffer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         streamer->endFrame();
         FRAME_REQUIRE(commands.submit(tracker, gate.get()));
         FRAME_REQUIRE(conflictingSlot.begin(1));
         if (streamer->beginFrame(conflictingSlot)) {
-            return RhiTestResult::fail("upload arena allowed reuse of an incomplete slot");
+            return RHITestResult::fail("upload arena allowed reuse of an incomplete slot");
         }
         conflictingSlot.cancel();
         // Neither CPU frame advancement nor destruction of the uploader may
@@ -345,16 +345,16 @@ public:
         std::vector<uint32_t> readback(kLargeWordCount + 1);
         if (!readWords(*output, readback.data(), readback.size()) || readback.front() != first ||
             !std::all_of(readback.begin() + 1, readback.end(), [](uint32_t word) { return word == 0x55667788; })) {
-            return RhiTestResult::fail("pending upload data did not survive buffer growth/endFrame/destruction");
+            return RHITestResult::fail("pending upload data did not survive buffer growth/endFrame/destruction");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class FrameUploadGrowthBurstTest : public RhiTest {
+class FrameUploadGrowthBurstTest : public RHITest {
 public:
-    FrameUploadGrowthBurstTest() { type = RhiTestType::Resource; name = "frame_upload_growth_burst"; }
-    RhiTestResult run(RhiTestContext& context) override
+    FrameUploadGrowthBurstTest() { type = RHITestType::Resource; name = "frame_upload_growth_burst"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::QueueSubmissionTracker tracker;
         Commands commands(1);
@@ -387,7 +387,7 @@ public:
                 .dstBuffer = output.get(),
                 .dstOffset = uint64_t(page) * chunk.size,
             });
-            if (!upload.valid()) { return RhiTestResult::fail("burst upload failed"); }
+            if (!upload.valid()) { return RHITestResult::fail("burst upload failed"); }
             if (upload.buffer != previous) {
                 ++allocations;
                 allocatedBytes += streamer->stats().dynamicBufferSizePerFrame * 2;
@@ -396,9 +396,9 @@ public:
         }
         const auto capacity = streamer->stats().dynamicBufferSizePerFrame;
         if (allocations > 8 || capacity < kBytes || capacity >= 2 * kBytes || allocatedBytes >= capacity * 4) {
-            return RhiTestResult::fail("burst uploads amplified retained staging allocations");
+            return RHITestResult::fail("burst uploads amplified retained staging allocations");
         }
-        if (auto commandResult = streamer->copyStreamedData(*commands.buffer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = streamer->copyStreamedData(*commands.buffer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
         streamer->endFrame();
         FRAME_REQUIRE(commands.submit(tracker, gate.get()));
         for (int index = 0; index < 8; ++index) { streamer->endFrame(); }
@@ -407,15 +407,15 @@ public:
         FRAME_REQUIRE(commands.frame.wait(kWaitTimeout));
         std::vector<uint32_t> actual(expected.size());
         if (!readWords(*output, actual.data(), actual.size()) || actual != expected) {
-            return RhiTestResult::fail("slot 1 burst copies lost data across staging growth/destruction");
+            return RHITestResult::fail("slot 1 burst copies lost data across staging growth/destruction");
         }
         // Reject capacities whose alignment or queued-frame multiplication
         // would overflow before attempting any Vulkan allocation.
         if (context.device.createStreamer({.dynamicBufferSizePerFrame = UINT64_MAX,
                 .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) {
-            return RhiTestResult::fail("overflowing staging capacity was accepted");
+            return RHITestResult::fail("overflowing staging capacity was accepted");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
@@ -438,15 +438,15 @@ render::Result<> createProbe(render::Device& device, const char* entry,
     }, log);
 }
 
-class FrameDescriptorSnapshotTest : public RhiTest {
+class FrameDescriptorSnapshotTest : public RHITest {
 public:
-    FrameDescriptorSnapshotTest() { type = RhiTestType::Rendering; name = "frame_descriptor_snapshots"; }
-    RhiTestResult run(RhiTestContext& context) override
+    FrameDescriptorSnapshotTest() { type = RHITestType::Rendering; name = "frame_descriptor_snapshots"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> setup = render::createDevice({.applicationName = "Frame descriptors",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (!setup && render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("descriptor heap unsupported"); }
+        if (!setup && render::hasError(setup, render::Error::Unsupported)) { return RHITestResult::skip("descriptor heap unsupported"); }
         FRAME_REQUIRE(setup);
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         render::QueueSubmissionTracker tracker;
@@ -464,7 +464,7 @@ public:
             FRAME_REQUIRE(device->createBuffer({.size = 4, .structureStride = 4,
                 .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[index] = std::move(rhiValue); }));
             void* mapped = inputs[index]->map();
-            if (mapped == nullptr) { return RhiTestResult::fail("input map failed"); }
+            if (mapped == nullptr) { return RHITestResult::fail("input map failed"); }
             std::memcpy(mapped, &expected[index], 4);
             inputs[index]->flush(); inputs[index]->unmap();
         }
@@ -499,21 +499,21 @@ public:
         FRAME_REQUIRE(second.frame.wait(kWaitTimeout));
         std::array<uint32_t, 3> actual{};
         if (!readWords(*output, actual.data(), actual.size()) || actual != expected) {
-            return RhiTestResult::fail("dispatch descriptors were overwritten within/across frames or pipeline clear invalidated work");
+            return RHITestResult::fail("dispatch descriptors were overwritten within/across frames or pipeline clear invalidated work");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class FrameSampledImageCacheTest : public RhiTest {
+class FrameSampledImageCacheTest : public RHITest {
 public:
-    FrameSampledImageCacheTest() { type = RhiTestType::Rendering; name = "frame_sampled_image_cache"; }
-    RhiTestResult run(RhiTestContext& context) override
+    FrameSampledImageCacheTest() { type = RHITestType::Rendering; name = "frame_sampled_image_cache"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         auto setup = render::createDevice({.applicationName = "Sampled image cache",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (!setup && render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("descriptor heap unsupported"); }
+        if (!setup && render::hasError(setup, render::Error::Unsupported)) { return RHITestResult::skip("descriptor heap unsupported"); }
         FRAME_REQUIRE(setup);
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         render::QueueSubmissionTracker tracker;
@@ -535,7 +535,7 @@ public:
         for (size_t i = 0; i < 3; ++i) {
             render::TextureDesc desc;
             desc.width = 1; desc.height = 1;
-            desc.format = render::Format::Rgba32Sfloat;
+            desc.format = render::Format::RGBA32Sfloat;
             desc.usage = render::TextureUsageBits::Sampled | render::TextureUsageBits::TransferDestination;
             FRAME_REQUIRE(device->createTexture(desc).transform([&](auto rhiValue) { images->textures[i] = std::move(rhiValue); }));
             std::unique_ptr<render::TextureView> view;
@@ -568,12 +568,12 @@ public:
                         .before = {},
                         .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
                     };
-                    if (auto commandResult = commands.buffer->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands.buffer->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     commands.buffer->clearColorTexture(*images->textures[j], render::ResourceState::TransferDestination,
                         {float((j + 1) * 10), 0, 0, 0});
                     barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
                     barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
-                    if (auto commandResult = commands.buffer->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands.buffer->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
             }
             storageBarrier(*commands.buffer, *output);
@@ -595,7 +595,7 @@ public:
                 .stats = &stats,
             }));
             if (stats.sampledImageWrites != writes[i] || stats.sampledImageCacheHits != 2 - writes[i]) {
-                return RhiTestResult::fail("incorrect sampled-image generation reuse at step " + std::to_string(i));
+                return RHITestResult::fail("incorrect sampled-image generation reuse at step " + std::to_string(i));
             }
             FRAME_REQUIRE(commands.submit(tracker));
             FRAME_REQUIRE(commands.frame.wait(kWaitTimeout));
@@ -620,30 +620,30 @@ public:
         }
         std::weak_ptr<Images> lifetime = images;
         images.reset(); a.reset(); b.reset();
-        if (lifetime.expired()) { return RhiTestResult::fail("in-flight sampled images released early"); }
+        if (lifetime.expired()) { return RHITestResult::fail("in-flight sampled images released early"); }
         FRAME_REQUIRE(gate->signal(1));
         FRAME_REQUIRE(pending.frame.wait(kWaitTimeout));
         FRAME_REQUIRE(commands.frame.reset());
         FRAME_REQUIRE(pending.frame.reset());
-        if (!lifetime.expired()) { return RhiTestResult::fail("completed descriptor cache retains retired images"); }
+        if (!lifetime.expired()) { return RHITestResult::fail("completed descriptor cache retains retired images"); }
         std::array<uint32_t, 8> actual{};
         if (!readWords(*output, actual.data(), actual.size()) || actual != expected) {
-            return RhiTestResult::fail("sampled descriptors returned stale/overwritten image values");
+            return RHITestResult::fail("sampled descriptors returned stale/overwritten image values");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(FrameSampledImageCacheTest);
 
-class FrameHistoryDependencyTest : public RhiTest {
+class FrameHistoryDependencyTest : public RHITest {
 public:
-    FrameHistoryDependencyTest() { type = RhiTestType::Rendering; name = "frame_history_dependencies"; }
-    RhiTestResult run(RhiTestContext& context) override
+    FrameHistoryDependencyTest() { type = RHITestType::Rendering; name = "frame_history_dependencies"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> setup = render::createDevice({.applicationName = "Frame history",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (!setup && render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("descriptor heap unsupported"); }
+        if (!setup && render::hasError(setup, render::Error::Unsupported)) { return RHITestResult::skip("descriptor heap unsupported"); }
         FRAME_REQUIRE(setup);
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         render::QueueSubmissionTracker tracker;
@@ -661,7 +661,7 @@ public:
         textureDesc.usage = render::TextureUsageBits::Storage;
         textureDesc.width = 1;
         textureDesc.height = 1;
-        textureDesc.format = render::Format::Rgba32Sfloat;
+        textureDesc.format = render::Format::RGBA32Sfloat;
         FRAME_REQUIRE(history.ensureTexture("history", textureDesc));
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
@@ -701,16 +701,16 @@ public:
         FRAME_REQUIRE(frames.back().frame.wait(kWaitTimeout));
         std::array<uint32_t, 3> actual{};
         if (!readWords(*output, actual.data(), actual.size()) || actual != std::array<uint32_t, 3>{41, 42, 43}) {
-            return RhiTestResult::fail("General history dependencies or resized history lifetime failed");
+            return RHITestResult::fail("General history dependencies or resized history lifetime failed");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class FrameTwoSlotGraphTest : public RhiTest {
+class FrameTwoSlotGraphTest : public RHITest {
 public:
-    FrameTwoSlotGraphTest() { type = RhiTestType::Rendering; name = "frame_two_slot_graph_reuse"; }
-    RhiTestResult run(RhiTestContext& context) override
+    FrameTwoSlotGraphTest() { type = RHITestType::Rendering; name = "frame_two_slot_graph_reuse"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::QueueSubmissionTracker tracker;
         std::array<Commands, 2> slots{Commands{0}, Commands{1}};
@@ -744,11 +744,11 @@ public:
         FRAME_REQUIRE(host.initialize(context.device, 2, log));
         FRAME_REQUIRE(executor.compile(context.device, graph, kWidth, kWidth, options, log));
         if (host.frameSlotCount() != 2) {
-            return RhiTestResult::fail("graph compile replaced the caller's two-slot capacity");
+            return RHITestResult::fail("graph compile replaced the caller's two-slot capacity");
         }
         QueueDrain drain{context.graphicsQueue, gate.get(), rebuildGate.get()};
         GateWatchdog watchdog(*gate);
-        render::GpuCompletionPoint firstPoint;
+        render::GPUCompletionPoint firstPoint;
         for (uint32_t index = 0; index < 6; ++index) {
             Commands& commands = slots[index % slots.size()];
             FRAME_REQUIRE(commands.begin(index));
@@ -760,15 +760,15 @@ public:
                 .dstBuffer = uploadReadback.get(),
                 .dstOffset = index * sizeof(value),
             });
-            if (upload.buffer == nullptr) { return RhiTestResult::fail("slot upload allocation failed"); }
-            if (auto commandResult = streamer->copyStreamedData(*commands.buffer); !commandResult) { return RhiTestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+            if (upload.buffer == nullptr) { return RHITestResult::fail("slot upload allocation failed"); }
+            if (auto commandResult = streamer->copyStreamedData(*commands.buffer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
             streamer->endFrame();
             FRAME_REQUIRE(executor.execute(*commands.buffer));
             if (executor.streamingStats().streamer.queuedFrameCount != 2) {
-                return RhiTestResult::fail("graph uploader did not use the host's two-slot capacity");
+                return RHITestResult::fail("graph uploader did not use the host's two-slot capacity");
             }
             if (index == 1 && firstPoint.isComplete()) {
-                return RhiTestResult::fail("recording slot 1 waited for slot 0 instead of overlapping it");
+                return RHITestResult::fail("recording slot 1 waited for slot 0 instead of overlapping it");
             }
             // Leave the shared attachment in ColorAttachment on alternate frames
             // so the graph also exercises a same-state write-after-write barrier.
@@ -783,38 +783,38 @@ public:
             if (index == 0) { firstPoint = commands.frame.completion(); }
             if (index == 1) {
                 if (slots[0].frame.begin(2, 0) || slots[1].frame.completion().isComplete()) {
-                    return RhiTestResult::fail("two-slot ring reused an incomplete slot");
+                    return RHITestResult::fail("two-slot ring reused an incomplete slot");
                 }
                 FRAME_REQUIRE(gate->signal(1));
                 watchdog.worker.request_stop();
             }
         }
         if (executor.waitForSubmittedWork(0) || slots[1].frame.completion().isComplete()) {
-            return RhiTestResult::fail("graph did not track its externally submitted pending work");
+            return RHITestResult::fail("graph did not track its externally submitted pending work");
         }
         FRAME_REQUIRE(rebuildGate->signal(1));
         // Rebuild must wait before replacing graph images, passes and query pools.
         FRAME_REQUIRE(executor.compile(context.device, graph, 48, 48, options, log));
         if (!firstPoint.isComplete() || firstPoint.value() != 1 ||
             !slots[1].frame.completion().isComplete() || slots[1].frame.completion().value() != 6) {
-            return RhiTestResult::fail("completion generations were not preserved through slot reuse/rebuild");
+            return RHITestResult::fail("completion generations were not preserved through slot reuse/rebuild");
         }
         std::array<uint32_t, 6> words{};
         if (!readWords(*uploadReadback, words.data(), words.size()) ||
             words != std::array<uint32_t, 6>{100, 101, 102, 103, 104, 105}) {
-            return RhiTestResult::fail("upload data was overwritten while alternating two slots");
+            return RHITestResult::fail("upload data was overwritten while alternating two slots");
         }
         std::array<uint32_t, kPixelCount> reference{}, pixels{};
         if (!readWords(*imageReadbacks[0], reference.data(), reference.size()) ||
             reference[0] == reference[kPixelCount / 2 + kWidth / 2]) {
-            return RhiTestResult::fail("triangle readback did not contain rendered geometry");
+            return RHITestResult::fail("triangle readback did not contain rendered geometry");
         }
         for (uint32_t index : {2u, 4u, 5u}) {
             if (!readWords(*imageReadbacks[index], pixels.data(), pixels.size()) || pixels != reference) {
-                return RhiTestResult::fail("overlapped graph rendering differed after slot reuse");
+                return RHITestResult::fail("overlapped graph rendering differed after slot reuse");
             }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
@@ -833,7 +833,7 @@ struct DeviceDrain {
     }
 };
 
-class FrameMultiQueueCompletionTest : public RhiTest {
+class FrameMultiQueueCompletionTest : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -843,11 +843,11 @@ public:
         return metadata;
     }
 
-    FrameMultiQueueCompletionTest() { type = RhiTestType::Command; name = "frame_multi_queue_completion"; }
-    RhiTestResult run(RhiTestContext& context) override
+    FrameMultiQueueCompletionTest() { type = RHITestType::Command; name = "frame_multi_queue_completion"; }
+    RHITestResult run(RHITestContext& context) override
     {
         auto* copyQueue = context.device.getQueue(render::QueueType::Copy);
-        if (copyQueue == nullptr) { return RhiTestResult::skip("independent copy queue unavailable"); }
+        if (copyQueue == nullptr) { return RHITestResult::skip("independent copy queue unavailable"); }
         render::QueueSubmissionTracker graphics, copy;
         render::RenderFrameContext frame;
         render::DeferredReleaseQueue retired;
@@ -863,39 +863,39 @@ public:
         frame.retain(resource);
         retired.retire(frame.completion(), std::move(resource));
         const auto batch = frame.completion();
-        render::GpuCompletionPoint graphicsPoint, copyPoint;
+        render::GPUCompletionPoint graphicsPoint, copyPoint;
         render::SemaphoreSubmitDesc graphicsWait{.semaphore = graphicsGate.get(), .value = 1};
         render::SemaphoreSubmitDesc copyWait{.semaphore = copyGate.get(), .value = 1};
         FRAME_REQUIRE(graphics.submitSegment({.waitSemaphores = {&graphicsWait, 1}}, frame).transform([&](auto value) { graphicsPoint = std::move(value); }));
         FRAME_REQUIRE(copy.submitSegment({.waitSemaphores = {&copyWait, 1}}, frame).transform([&](auto value) { copyPoint = std::move(value); }));
         std::vector<render::SemaphoreSubmitDesc> waits;
         if (batch.isSubmitted() || batch.isComplete() || batch.wait(0) || batch.appendWaits(waits) || frame.begin(1, 0)) {
-            return RhiTestResult::fail("open submission batch was reusable or waitable");
+            return RHITestResult::fail("open submission batch was reusable or waitable");
         }
         // Simulate a later submission rejected before reaching the driver.
-        render::GpuCompletionPoint failed;
+        render::GPUCompletionPoint failed;
         if (copy.submitSegment({.commandBuffers = std::array<render::CommandBuffer*, 1>{nullptr}}, frame).transform([&](auto value) { failed = std::move(value); }) || failed.valid()) {
-            return RhiTestResult::fail("failed segment acquired a completion value");
+            return RHITestResult::fail("failed segment acquired a completion value");
         }
         frame.cancel();
         if (!batch.isSubmitted() || batch.isCancelled() || batch.value() != 0) {
-            return RhiTestResult::fail("partial multi-queue batch was cancelled instead of sealed");
+            return RHITestResult::fail("partial multi-queue batch was cancelled instead of sealed");
         }
         FRAME_REQUIRE(batch.appendWaits(waits));
         FRAME_REQUIRE(batch.appendWaits(waits));
-        if (waits.size() != 2) { return RhiTestResult::fail("composite waits were not coalesced per queue"); }
+        if (waits.size() != 2) { return RHITestResult::fail("composite waits were not coalesced per queue"); }
         FRAME_REQUIRE(graphicsGate->signal(1));
         FRAME_REQUIRE(graphicsPoint.wait(kWaitTimeout));
         retired.collect();
         if (batch.isComplete() || batch.wait(0) || copyPoint.isComplete() || weak.expired()) {
-            return RhiTestResult::fail("graphics completion prematurely retired copy-queue resources");
+            return RHITestResult::fail("graphics completion prematurely retired copy-queue resources");
         }
         FRAME_REQUIRE(copyGate->signal(1));
         FRAME_REQUIRE(batch.wait(kWaitTimeout));
         FRAME_REQUIRE(frame.begin(1));
         retired.collect();
         if (!weak.expired() || !batch.isComplete()) {
-            return RhiTestResult::fail("completed partial batch failed to release resources");
+            return RHITestResult::fail("completed partial batch failed to release resources");
         }
         // Two signals from one queue collapse to the final value, while old
         // segment points continue identifying their original submission.
@@ -905,9 +905,9 @@ public:
         FRAME_REQUIRE(frame.finishSubmission());
         FRAME_REQUIRE(frame.wait(kWaitTimeout));
         if (oldCopy.value() != 2 || copyPoint.value() != 3 || frame.completion().value() != 3) {
-            return RhiTestResult::fail("failed segment consumed a timeline value or rewrote old completion");
+            return RHITestResult::fail("failed segment consumed a timeline value or rewrote old completion");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
@@ -973,15 +973,15 @@ private:
     std::unique_ptr<render::Buffer> input_;
 };
 
-class FrameParallelBranchTest final : public RhiTest {
+class FrameParallelBranchTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::gpuMetadata({"graph.forkJoin.cancel.readback"}, bench::Layer::RenderGraph, "async", "sync");
     }
 
-    FrameParallelBranchTest() { type = RhiTestType::Rendering; name = "frame_parallel_compute_join_and_cancellation"; }
-    RhiTestResult run(RhiTestContext& context) override
+    FrameParallelBranchTest() { type = RHITestType::Rendering; name = "frame_parallel_compute_join_and_cancellation"; }
+    RHITestResult run(RHITestContext& context) override
     {
         bench::TestDevice device;
         FRAME_REQUIRE(bench::createTestDevice(context, {.applicationName = "Async branch lifetime regression",
@@ -1004,7 +1004,7 @@ public:
                 if (fail != 0) {
                     const std::vector<int> expected = fail == 2 ? std::vector<int>{-2, -1} : std::vector<int>{-3, -2, -1};
                     if (result || executor.compiled() || asyncBranchEvents != expected) {
-                        return RhiTestResult::fail("Failed branch submitted work or did not roll back the entire recording");
+                        return RHITestResult::fail("Failed branch submitted work or did not roll back the entire recording");
                     }
                     continue;
                 }
@@ -1015,25 +1015,25 @@ public:
                 if (device->capabilities().timestampQueries) {
                     if (timings.size() != 1 || !timings[0].gpuTimingAvailable || timings[0].nodes.size() != 1 ||
                         timings[0].nodes[0].sections.size() != 4) {
-                        return RhiTestResult::fail("fork/join timings missing or cancelled recording leaked a sample");
+                        return RHITestResult::fail("fork/join timings missing or cancelled recording leaked a sample");
                     }
                     const auto& sections = timings[0].nodes[0].sections;
                     const auto expectedQueue = parallel ? compute->type() : graphics->type();
                     if (sections[1].queue != expectedQueue || sections[2].queue != graphics->type() ||
                         sections[0].parent != UINT32_MAX || sections[1].parent != 0 || sections[2].parent != 0 ||
                         sections[3].name != "Upload flush" || sections[3].parent != UINT32_MAX) {
-                        return RhiTestResult::fail("fork/join profiling lost queue or parent identity");
+                        return RHITestResult::fail("fork/join profiling lost queue or parent identity");
                     }
                     for (const auto& section : sections) {
                         if (!section.gpuTimingAvailable || section.gpuMilliseconds < 0 ||
                             section.gpuMilliseconds > timings[0].gpuMilliseconds + 0.01) {
-                            return RhiTestResult::fail("fork/join section timing unavailable or outside graph envelope");
+                            return RHITestResult::fail("fork/join section timing unavailable or outside graph envelope");
                         }
                     }
                 }
                 if (asyncBranchEvents != std::vector<int>{1, 2, 3, 4} || executor.executionStats().asyncComputeBranches !=
                     (parallel && device->capabilities().independentComputeQueue ? 1u : 0u)) {
-                    return RhiTestResult::fail("Parallel/aliased queue topology or transaction commit order was incorrect");
+                    return RHITestResult::fail("Parallel/aliased queue topology or transaction commit order was incorrect");
                 }
                 Commands consumer;
                 render::QueueSubmissionTracker tracker;
@@ -1046,20 +1046,20 @@ public:
                 FRAME_REQUIRE(executor.transitionOutput(*consumer.buffer, "Branches.data", render::ResourceState::TransferSource));
                 {
                     auto sourceSlice = (executor.outputResource("Branches.data")->buffer)->slice({0, 16});
-                    if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                    if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
                     auto destinationSlice = readback.get()->slice({0, 16});
-                    if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                    if (auto commandResult = consumer.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                    if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                    if (auto commandResult = consumer.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                 }
                 FRAME_REQUIRE(consumer.submit(tracker)); FRAME_REQUIRE(consumer.frame.wait(kWaitTimeout));
                 readback->invalidate(); const auto* words = static_cast<const uint32_t*>(readback->map());
                 const bool correct = words && words[0] == 11 && words[1] == 12 && words[2] == 21 && words[3] == 22;
                 if (words) { bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(words, 4)); }
                 readback->unmap();
-                if (!correct) { return RhiTestResult::fail("Join did not make both branch writes visible"); }
+                if (!correct) { return RHITestResult::fail("Join did not make both branch writes visible"); }
             }
         }
-        return RhiTestResult::pass("Independent and aliased queues, fork/join visibility, compute/HW recording failure and reverse transaction cancellation");
+        return RHITestResult::pass("Independent and aliased queues, fork/join visibility, compute/HW recording failure and reverse transaction cancellation");
     }
 };
 METALLIC_REGISTER_RHI_TEST(FrameParallelBranchTest);
@@ -1073,7 +1073,7 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addTextureOutput("color").transferWrite().format = render::Format::Rgba8Unorm;
+        reflection.addTextureOutput("color").transferWrite().format = render::Format::RGBA8Unorm;
         return reflection;
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -1194,10 +1194,10 @@ void registerFrameGraphTransferPass()
 // Hold the output reader on a GPU gate while recording the next producer.
 // Checking old frame contents catches missing WAR ordering across queues; a
 // zero host timeout catches accidentally serializing CPU recording again.
-class FrameOutputConsumerOverlapTest final : public RhiTest {
+class FrameOutputConsumerOverlapTest final : public RHITest {
 public:
-    FrameOutputConsumerOverlapTest() { type = RhiTestType::Rendering; name = "frame_output_consumer_gpu_dependencies"; }
-    RhiTestResult run(RhiTestContext& context) override
+    FrameOutputConsumerOverlapTest() { type = RHITestType::Rendering; name = "frame_output_consumer_gpu_dependencies"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         FRAME_REQUIRE(render::createDevice({.applicationName = "Graph output consumer overlap",
@@ -1237,23 +1237,23 @@ public:
                 FRAME_REQUIRE(executor.transitionOutput(*reader.buffer, "Output.data", render::ResourceState::TransferSource));
                 {
                     auto sourceSlice = (executor.outputResource("Output.data")->buffer)->slice({0, 16});
-                    if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                    if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
                     auto destinationSlice = readback.get()->slice({0, 16});
-                    if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                    if (auto commandResult = reader.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                    if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                    if (auto commandResult = reader.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                 }
                 FRAME_REQUIRE(reader.submit(readerTracker, gate.get()));
                 const uint32_t queries = FrameGraphTransferPass::overlapQueryCount;
                 FRAME_REQUIRE(executor.execute(submit));
                 if (FrameGraphTransferPass::overlapQueryCount != queries + 1) {
-                    return RhiTestResult::fail("Preflight evaluated the same overlap contract more than once");
+                    return RHITestResult::fail("Preflight evaluated the same overlap contract more than once");
                 }
                 if (executor.executionStats().drainReasonMask != 0 || executor.executionStats().externalCompletionCount != 1 ||
                     gate->currentValue() != 0 || reader.frame.completion().isComplete()) {
-                    return RhiTestResult::fail("External consumer blocked CPU recording or dependency generations accumulated");
+                    return RHITestResult::fail("External consumer blocked CPU recording or dependency generations accumulated");
                 }
                 if (executor.lastSubmittedCompletion().wait(100'000'000ull) || executor.waitForSubmittedWork(0)) {
-                    return RhiTestResult::fail("Graph overwrite/drain ignored the gated output reader");
+                    return RHITestResult::fail("Graph overwrite/drain ignored the gated output reader");
                 }
                 FRAME_REQUIRE(gate->signal(1));
                 watchdog.worker.request_stop();
@@ -1262,7 +1262,7 @@ public:
                 std::array<uint32_t, 4> actual{};
                 if (!readWords(*readback, actual.data(), actual.size()) ||
                     actual != std::array<uint32_t, 4>{expected, expected + 1, expected + 2, expected + 3}) {
-                    return RhiTestResult::fail("Next graph overwrote the output before its consumer read it");
+                    return RHITestResult::fail("Next graph overwrote the output before its consumer read it");
                 }
             }
             // Destructive graph changes must still wait even though recording no
@@ -1274,32 +1274,32 @@ public:
             FRAME_REQUIRE(executor.transitionOutput(*reader.buffer, "Output.data", render::ResourceState::TransferSource));
             {
                 auto sourceSlice = (executor.outputResource("Output.data")->buffer)->slice({0, 16});
-                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
                 auto destinationSlice = readback.get()->slice({0, 16});
-                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                if (auto commandResult = reader.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = reader.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             FRAME_REQUIRE(reader.submit(readerTracker, gate.get()));
-            if (executor.waitForSubmittedWork(0)) { return RhiTestResult::fail("Lost pending consumer before rebuild"); }
+            if (executor.waitForSubmittedWork(0)) { return RHITestResult::fail("Lost pending consumer before rebuild"); }
             std::jthread release([&] {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 (void)gate->signal(1);
             });
             FRAME_REQUIRE(executor.compile(*device, graph, 2, 2, log));
             if (!reader.frame.completion().isComplete()) {
-                return RhiTestResult::fail("Rebuild released an output still used by an external consumer");
+                return RHITestResult::fail("Rebuild released an output still used by an external consumer");
             }
         }
-        return RhiTestResult::pass("Same/cross queue output reads, two-slot reuse, GPU WAR ordering and rebuild lifetime");
+        return RHITestResult::pass("Same/cross queue output reads, two-slot reuse, GPU WAR ordering and rebuild lifetime");
     }
 };
 METALLIC_REGISTER_RHI_TEST(FrameOutputConsumerOverlapTest);
 
-class FrameSelfSubmitTwoSlotTest : public RhiTest {
+class FrameSelfSubmitTwoSlotTest : public RHITest {
 public:
     explicit FrameSelfSubmitTwoSlotTest(bool joined = false) : joined_(joined)
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = joined ? "frame_self_submit_two_slots_joined" : "frame_self_submit_two_slots";
     }
     std::optional<bench::Metadata> metadata() const override
@@ -1309,10 +1309,10 @@ public:
                 .queues = {render::QueueType::Graphics, render::QueueType::Copy}},
             .coverage = {"graph.independentCopy.progress", "graph.frameCompletion.join", "graph.backend.diagnostics"}, .artifacts = {"readback.bin", "graph.json"}};
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         auto* copyQueue = context.device.getQueue(render::QueueType::Copy);
-        if (copyQueue == nullptr) { return RhiTestResult::skip("independent copy queue unavailable"); }
+        if (copyQueue == nullptr) { return RHITestResult::skip("independent copy queue unavailable"); }
         registerFrameGraphTransferPass();
         render::RenderGraph graph;
         graph.addNode("FrameGraphDiagnosticClearPass", "Graphics");
@@ -1346,25 +1346,25 @@ public:
         FRAME_REQUIRE(executor.execute(submit));
         const auto snapshot = executor.executionSnapshot();
         const uint32_t uploadId = graph.findNode("Upload")->id;
-        if (!snapshot) { return RhiTestResult::fail("missing independent-queue execution snapshot"); }
+        if (!snapshot) { return RHITestResult::fail("missing independent-queue execution snapshot"); }
         if (snapshot->pipelinedSubmission != !joined_) {
-            return RhiTestResult::fail("actual graph submission mode differs from the requested test path");
+            return RHITestResult::fail("actual graph submission mode differs from the requested test path");
         }
         const auto uploadSegment = std::find_if(snapshot->segments.begin(), snapshot->segments.end(),
             [uploadId](const auto& segment) { return segment.passId == uploadId; });
         if (uploadSegment == snapshot->segments.end() || !uploadSegment->predecessors.empty()) {
-            return RhiTestResult::fail("independent copy segment acquired an unrelated prologue dependency");
+            return RHITestResult::fail("independent copy segment acquired an unrelated prologue dependency");
         }
         if (context.device.capabilities().timestampQueries) {
             const auto join = std::find_if(snapshot->segments.begin(), snapshot->segments.end(),
                 [](const auto& segment) { return segment.role == render::RenderGraphSegmentRole::Epilogue; });
             if (join == snapshot->segments.end() ||
                 std::find(join->predecessors.begin(), join->predecessors.end(), uploadSegment->id) == join->predecessors.end()) {
-                return RhiTestResult::fail("graph timing epilogue no longer joins the independent copy branch");
+                return RHITestResult::fail("graph timing epilogue no longer joins the independent copy branch");
             }
         }
         if (const auto error = bench::graphEvidence(context, executor, *snapshot); !error.empty()) {
-            return RhiTestResult::fail(error);
+            return RHITestResult::fail(error);
         }
         const auto first = executor.lastSubmittedCompletion();
         std::vector<render::SemaphoreSubmitDesc> waits;
@@ -1374,12 +1374,12 @@ public:
             if (wait.semaphore->wait(wait.value, 300'000'000ull)) { ++finished; }
         }
         if (waits.size() != 2 || finished != 1 || first.isComplete()) {
-            return RhiTestResult::fail("independent copy branch was blocked by the graphics branch");
+            return RHITestResult::fail("independent copy branch was blocked by the graphics branch");
         }
         std::array<uint32_t, 4> actual{};
         if (!readWords(*executor.outputResource("Upload.data")->buffer, actual.data(), actual.size()) ||
             actual != std::array<uint32_t, 4>{100, 101, 102, 103}) {
-            return RhiTestResult::fail("copy-queue upload did not finish while graphics was blocked");
+            return RHITestResult::fail("copy-queue upload did not finish while graphics was blocked");
         }
         bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(actual));
         FRAME_REQUIRE(executor.execute(submit));
@@ -1387,7 +1387,7 @@ public:
         const uint64_t recorded = executor.streamingStats().frameIndex;
         if (first.isComplete() || second.isComplete() || executor.execute(submit) ||
             !executor.compiled() || executor.streamingStats().frameIndex != recorded || executor.waitForSubmittedWork(0)) {
-            return RhiTestResult::fail("self submission failed two-slot overlap/backpressure contract");
+            return RHITestResult::fail("self submission failed two-slot overlap/backpressure contract");
         }
         // Consume the pending graph on an externally recorded command buffer.
         // transitionOutput attaches the aggregate wait to Queue::submit.
@@ -1396,21 +1396,21 @@ public:
         FRAME_REQUIRE(consumer.buffer->addDependency(second)); // Duplicate is coalesced.
         {
             auto sourceSlice = (executor.outputResource("Upload.data")->buffer)->slice({0, 16});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = consumerReadback.get()->slice({0, 16});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = consumer.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = consumer.buffer->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         FRAME_REQUIRE(consumer.submit(consumerTracker));
         if (consumer.frame.completion().isComplete()) {
-            return RhiTestResult::fail("external consumer ignored pending graph completion");
+            return RHITestResult::fail("external consumer ignored pending graph completion");
         }
         FRAME_REQUIRE(gate->signal(1));
         watchdog.worker.request_stop();
         FRAME_REQUIRE(consumer.frame.wait(kWaitTimeout));
         if (!readWords(*consumerReadback, actual.data(), actual.size()) ||
             actual != std::array<uint32_t, 4>{101, 102, 103, 104}) {
-            return RhiTestResult::fail("pending self-to-external handoff copied the wrong frame");
+            return RHITestResult::fail("pending self-to-external handoff copied the wrong frame");
         }
         bench::readbackEvidence(context, "readback.bin", std::span<const uint32_t>(actual));
         submit.slotWaitTimeoutNanoseconds = kWaitTimeout;
@@ -1419,10 +1419,10 @@ public:
         if (!first.isComplete() || !second.isComplete() ||
             !readWords(*executor.outputResource("Upload.data")->buffer, actual.data(), actual.size()) ||
             actual != std::array<uint32_t, 4>{105, 106, 107, 108}) {
-            return RhiTestResult::fail("self-submitted upload data was corrupted through slot reuse");
+            return RHITestResult::fail("self-submitted upload data was corrupted through slot reuse");
         }
         FRAME_REQUIRE(executor.compile(context.device, graph, 24, 24, log));
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 private:
     bool joined_;
@@ -1433,9 +1433,9 @@ public:
     FrameSelfSubmitTwoSlotJoinedTest() : FrameSelfSubmitTwoSlotTest(true) {}
 };
 
-class FrameCrossQueueGraphTest : public RhiTest {
+class FrameCrossQueueGraphTest : public RHITest {
 public:
-    FrameCrossQueueGraphTest() { type = RhiTestType::Rendering; name = "frame_cross_queue_graph_dependencies"; }
+    FrameCrossQueueGraphTest() { type = RHITestType::Rendering; name = "frame_cross_queue_graph_dependencies"; }
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::Metadata{.suite = "async", .profile = "async", .layer = bench::Layer::RenderGraph,
@@ -1445,12 +1445,12 @@ public:
             .coverage = {"graph.crossQueue.dependencies", "query.ring.reuse", "history.frame.readback"},
             .artifacts = {"query-ring.json", "history.bin", "texture.bin"}};
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         const auto validationBefore = context.validationMessageCount ? context.validationMessageCount->load() : 0u;
         auto* compute = context.device.getQueue(render::QueueType::Compute);
         auto* copy = context.device.getQueue(render::QueueType::Copy);
-        if (compute == nullptr || copy == nullptr) { return RhiTestResult::skip("compute/copy queue unavailable"); }
+        if (compute == nullptr || copy == nullptr) { return RHITestResult::skip("compute/copy queue unavailable"); }
         registerFrameGraphTransferPass();
         render::RenderGraph graph;
         graph.addNode("FrameGraphTransferPass", "Upload", {{"queue", "copy"}});
@@ -1493,19 +1493,19 @@ public:
             context.evidence->json("query-ring.json", frames);
         }
         if (context.device.capabilities().timestampQueries) {
-            if (timings.size() != 6) { return RhiTestResult::fail("mixed queue query ring lost completed frames"); }
+            if (timings.size() != 6) { return RHITestResult::fail("mixed queue query ring lost completed frames"); }
             for (const auto& frame : timings) {
                 if (!frame.gpuTimingAvailable || frame.cpuMilliseconds <= 0) {
-                    return RhiTestResult::fail("mixed queue graph frame timings missing");
+                    return RHITestResult::fail("mixed queue graph frame timings missing");
                 }
                 for (const auto& node : frame.nodes) {
                     const auto* queue = context.device.getQueue(node.queue);
                     if (queue->timestampValidBits() && (!node.gpuTimingAvailable || node.gpuMilliseconds > frame.gpuMilliseconds + 0.01)) {
-                        return RhiTestResult::fail("mixed queue pass timing missing or outside frame envelope");
+                        return RHITestResult::fail("mixed queue pass timing missing or outside frame envelope");
                     }
                     for (const auto& section : node.sections) {
                         if (queue->timestampValidBits() && !section.gpuTimingAvailable) {
-                            return RhiTestResult::fail("mixed queue inner scope timing missing");
+                            return RHITestResult::fail("mixed queue inner scope timing missing");
                         }
                     }
                 }
@@ -1515,13 +1515,13 @@ public:
             std::array<uint32_t, 4> actual{};
             if (!readWords(*executor.outputResource(name)->buffer, actual.data(), actual.size()) ||
                 actual != std::array<uint32_t, 4>{105, 106, 107, 108}) {
-                return RhiTestResult::fail("cross-queue dependency chain/fan-out copied stale data");
+                return RHITestResult::fail("cross-queue dependency chain/fan-out copied stale data");
             }
         }
         std::array<uint32_t, 4> previous{};
         if (!readWords(*executor.outputResource("History.data")->buffer, previous.data(), previous.size()) ||
             previous != std::array<uint32_t, 4>{104, 105, 106, 107}) {
-            return RhiTestResult::fail("self-submitted history was not advanced/ordered across frames");
+            return RHITestResult::fail("self-submitted history was not advanced/ordered across frames");
         }
         bench::readbackEvidence(context, "history.bin", std::span<const uint32_t>(previous));
         // Switching to caller-owned graphics commands requires a drain and an
@@ -1542,7 +1542,7 @@ public:
         FRAME_REQUIRE(readback.frame.wait(kWaitTimeout));
         std::array<uint32_t, 256> image{};
         if (!readWords(*pixels, image.data(), image.size()) || image[0] == image[136]) {
-            return RhiTestResult::fail("graphics-to-copy texture transition lost rendered contents");
+            return RHITestResult::fail("graphics-to-copy texture transition lost rendered contents");
         }
         bench::readbackEvidence(context, "texture.bin", std::span<const uint32_t>(image));
         // A recording failure must cancel the new slot and require recompilation,
@@ -1552,16 +1552,16 @@ public:
         graph.markOutput("Failure.data");
         FRAME_REQUIRE(executor.compile(context.device, graph, 16, 16, log));
         if (executor.execute(submit) || executor.compiled() || !executor.lastSubmittedCompletion().sameSubmission(good)) {
-            return RhiTestResult::fail("failed graph recording remained executable or published a false completion");
+            return RHITestResult::fail("failed graph recording remained executable or published a false completion");
         }
         FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
         FRAME_REQUIRE(executor.compile(context.device, render::RenderGraph::createDefaultTriangleGraph(), 16, 16, log));
         FRAME_REQUIRE(executor.execute(submit));
         FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
         if (context.validationMessageCount && context.validationMessageCount->load() != validationBefore) {
-            return RhiTestResult::fail("mixed queue profiling emitted Vulkan validation messages");
+            return RHITestResult::fail("mixed queue profiling emitted Vulkan validation messages");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
@@ -1576,7 +1576,7 @@ METALLIC_REGISTER_RHI_TEST(FrameUploadLifetimeTest);
 METALLIC_REGISTER_RHI_TEST(FrameDescriptorSnapshotTest);
 METALLIC_REGISTER_RHI_TEST(FrameHistoryDependencyTest);
 
-class FrameSubmissionTransactionsTest final : public RhiTest {
+class FrameSubmissionTransactionsTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
@@ -1585,14 +1585,14 @@ public:
 
     FrameSubmissionTransactionsTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "frame_submission_transactions";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         auto* queue = context.device.getQueue(render::QueueType::Graphics);
-        if (queue == nullptr) { return RhiTestResult::skip("requires a graphics queue"); }
+        if (queue == nullptr) { return RHITestResult::skip("requires a graphics queue"); }
         std::vector<int> events;
         Commands commands;
         FRAME_REQUIRE(commands.initialize(context.device, *queue));
@@ -1612,12 +1612,12 @@ public:
         FRAME_REQUIRE(registerEvent(*commands.buffer, 1));
         FRAME_REQUIRE(commands.buffer->end());
         if (queue->submit({.commandBuffers = std::array<render::CommandBuffer*, 1>{nullptr}}) || !events.empty()) {
-            return RhiTestResult::fail("rejected submit resolved a transaction");
+            return RHITestResult::fail("rejected submit resolved a transaction");
         }
         FRAME_REQUIRE(queue->submit(submit));
         FRAME_REQUIRE(queue->waitIdle());
         FRAME_REQUIRE(commands.pool->reset());
-        if (events != std::vector<int>{1}) { return RhiTestResult::fail("external submit did not commit exactly once"); }
+        if (events != std::vector<int>{1}) { return RHITestResult::fail("external submit did not commit exactly once"); }
 
         // Pool reset and implicit command-buffer re-record discard pending work.
         FRAME_REQUIRE(commands.buffer->begin());
@@ -1626,14 +1626,14 @@ public:
         FRAME_REQUIRE(commands.buffer->end());
         FRAME_REQUIRE(commands.pool->reset());
         if (queue->submit(submit) || events != std::vector<int>{1, -3, -2}) {
-            return RhiTestResult::fail("pool reset did not cancel in reverse order or allowed resubmission");
+            return RHITestResult::fail("pool reset did not cancel in reverse order or allowed resubmission");
         }
         FRAME_REQUIRE(commands.buffer->begin());
         FRAME_REQUIRE(registerEvent(*commands.buffer, 4));
         FRAME_REQUIRE(commands.buffer->end());
         FRAME_REQUIRE(commands.buffer->begin());
         FRAME_REQUIRE(commands.buffer->end());
-        if (events.back() != -4) { return RhiTestResult::fail("re-record left an unresolved publication"); }
+        if (events.back() != -4) { return RHITestResult::fail("re-record left an unresolved publication"); }
 
         // endFrame does not resolve GPU publication; frame cancellation does.
         FRAME_REQUIRE(commands.begin(0));
@@ -1641,13 +1641,13 @@ public:
         FRAME_REQUIRE(registerEvent(*commands.buffer, 5));
         FRAME_REQUIRE(commands.buffer->end());
         host.endFrame();
-        if (events.back() != -4) { return RhiTestResult::fail("endFrame committed unsubmitted work"); }
+        if (events.back() != -4) { return RHITestResult::fail("endFrame committed unsubmitted work"); }
         if (host.beginFrame(1, 1, nullptr, log)) {
-            return RhiTestResult::fail("next CPU frame consumed an unresolved subsystem publication");
+            return RHITestResult::fail("next CPU frame consumed an unresolved subsystem publication");
         }
         commands.frame.cancel();
         if (events.back() != -5 || queue->submit(submit)) {
-            return RhiTestResult::fail("cancelled frame remained submittable");
+            return RHITestResult::fail("cancelled frame remained submittable");
         }
 
         // A partial batch must commit its accepted prefix and cancel only the tail.
@@ -1661,12 +1661,12 @@ public:
         FRAME_REQUIRE(tail->begin(&commands.frame));
         FRAME_REQUIRE(registerEvent(*tail, 7));
         FRAME_REQUIRE(tail->end());
-        render::GpuCompletionPoint prefix;
+        render::GPUCompletionPoint prefix;
         FRAME_REQUIRE(tracker.submitSegment(submit, commands.frame).transform([&](auto value) { prefix = std::move(value); }));
         commands.frame.cancel();
         FRAME_REQUIRE(commands.frame.wait(kWaitTimeout));
         if (!commands.frame.completion().isSubmitted() || events != std::vector<int>{1, -3, -2, -4, -5, 6, -7}) {
-            return RhiTestResult::fail("partial batch rolled back its submitted prefix or retained its tail");
+            return RHITestResult::fail("partial batch rolled back its submitted prefix or retained its tail");
         }
 
         // Host teardown cancels before destroying callback owners, even when an
@@ -1678,9 +1678,9 @@ public:
         host.shutdown();
         FRAME_REQUIRE(commands.pool->reset());
         if (events.back() != -8 || events.size() != 8 || queue->submit(submit)) {
-            return RhiTestResult::fail("host shutdown did not cancel exactly once");
+            return RHITestResult::fail("host shutdown did not cancel exactly once");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
@@ -1740,19 +1740,19 @@ private:
     render::ComputeProgram program_;
 };
 
-class FrameEnvironmentRecoveryTest final : public RhiTest {
+class FrameEnvironmentRecoveryTest final : public RHITest {
 public:
     FrameEnvironmentRecoveryTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "frame_environment_submission_recovery";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         const auto result = render::createDevice({.applicationName = "Environment submission recovery",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("requires bindless descriptors"); }
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("requires bindless descriptors"); }
         FRAME_REQUIRE(result);
         render::registerRenderGraphPassType("FrameEnvironmentProbePass", "Environment submission probe",
             [] { return std::make_unique<FrameEnvironmentProbePass>(); });
@@ -1771,19 +1771,19 @@ public:
             FRAME_REQUIRE(executor.compile(*device, graph, 1, 1, log));
             const render::RenderGraphSubmitDesc submit{.graphicsQueue = device->getQueue(render::QueueType::Graphics)};
             if (executor.execute(submit) || executor.compiled()) {
-                return RhiTestResult::fail("failed graph remained compiled");
+                return RHITestResult::fail("failed graph remained compiled");
             }
             if (executor.lastSubmittedCompletion().isSubmitted() != partialSubmission) {
-                return RhiTestResult::fail("graph lost its partial-submission completion");
+                return RHITestResult::fail("graph lost its partial-submission completion");
             }
             FRAME_REQUIRE(executor.waitForSubmittedWork(kWaitTimeout));
             if (FrameEnvironmentProbePass::publicationCount != (partialSubmission ? 1 : 0)) {
-                return RhiTestResult::fail("graph did not roll back its unsubmitted tail in reverse recording order");
+                return RHITestResult::fail("graph did not roll back its unsubmitted tail in reverse recording order");
             }
             auto* environment = executor.subsystemHost()->get<render::EnvironmentLightingSubsystem>();
             if (environment->snapshot().valid() != partialSubmission ||
                 environment->snapshot().resourceRevision != (partialSubmission ? 1u : 0u)) {
-                return RhiTestResult::fail("environment publication does not match the accepted graph prefix");
+                return RHITestResult::fail("environment publication does not match the accepted graph prefix");
             }
             render::RenderGraph recovered;
             recovered.addNode("FrameEnvironmentProbePass", "Probe");
@@ -1795,10 +1795,10 @@ public:
             std::array<uint32_t, 4> words{};
             if (!readWords(*buffer, words.data(), words.size()) || words[3] != 0x3f800000u ||
                 environment->snapshot().resourceRevision != 1) {
-                return RhiTestResult::fail("environment retry did not restore the uploaded alpha=1 pixel exactly once");
+                return RHITestResult::fail("environment retry did not restore the uploaded alpha=1 pixel exactly once");
             }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 

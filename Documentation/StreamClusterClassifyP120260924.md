@@ -65,11 +65,11 @@ Live streaming 仍存在小幅工作量差异：exact 总量相差 30（约 0.00
 
 ## 复现与数据
 
-在 x64 VS Developer PowerShell 构建 `MetallicRhiTests` 和 `MetallicGPUDrivenSample`，然后运行：
+在 x64 VS Developer PowerShell 构建 `MetallicRHITests` 和 `MetallicGPUDrivenSample`，然后运行：
 
 ```powershell
 $env:METALLIC_TEST_MINIZORAH='1'
-& build-release/tests/MetallicRhiTests.exe --rhi-no-validation '--gtest_filter=*stream_cluster_cull_classify_equivalence:*stream_metadata_vbuffer:*minizorah_vbuffer' --gtest_repeat=2 --output-dir build/p1-acceptance
+& build-release/tests/MetallicRHITests.exe --rhi-no-validation '--gtest_filter=*stream_cluster_cull_classify_equivalence:*stream_metadata_vbuffer:*minizorah_vbuffer' --gtest_repeat=2 --output-dir build/p1-acceptance
 
 & Tools/RunMiniZorahClassifyComparison.ps1 -OutputRoot E:/metallic/build/p1-roam-new -Frames 360 -WarmupSeconds 5 -IncludeDiagnostics
 python Tools/AnalyzeMiniZorahClassifyComparison.py E:/metallic/build/p1-roam-new

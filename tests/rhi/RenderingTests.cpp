@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/Fixtures.h"
 
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -34,7 +34,7 @@ constexpr const char* kMaterialVertexEntryPoint = "materialShaderObjectVertexMai
 constexpr const char* kMaterialFragmentEntryPoint = "materialShaderObjectFragmentMain";
 constexpr const char* kMaterialAlternateFragmentEntryPoint = "materialShaderObjectAlternateFragmentMain";
 
-struct MaterialGpuParams {
+struct MaterialGPUParams {
     float eye[4] = {};
     float center[4] = {};
     float upProjection[4] = {};
@@ -53,7 +53,7 @@ struct MaterialUserPush {
     uint32_t padding1 = 0;
 };
 
-RhiTestResult createTriangleShaderModule(
+RHITestResult createTriangleShaderModule(
     render::Device& device,
     const char* entryPointName,
     std::unique_ptr<render::ShaderModule>& outShaderModule)
@@ -70,20 +70,20 @@ RhiTestResult createTriangleShaderModule(
             message += ": ";
             message += compileResult.diagnostics;
         }
-        return RhiTestResult::fail(std::move(message));
+        return RHITestResult::fail(std::move(message));
     }
 
     result = device.createShaderModule(render::ShaderModuleDesc{
         .spirv = compileResult.spirv,
     }).transform([&](auto rhiValue) { outShaderModule = std::move(rhiValue); });
     if (!result || outShaderModule == nullptr) {
-        return RhiTestResult::fail(std::string("createShaderModule returned ") + toString(result));
+        return RHITestResult::fail(std::string("createShaderModule returned ") + toString(result));
     }
 
-    return RhiTestResult::pass();
+    return RHITestResult::pass();
 }
 
-RhiTestResult compileMaterialShader(
+RHITestResult compileMaterialShader(
     const char* entryPointName,
     render::ShaderCompileResult& outCompileResult)
 {
@@ -99,12 +99,12 @@ RhiTestResult compileMaterialShader(
             message += ": ";
             message += outCompileResult.diagnostics;
         }
-        return RhiTestResult::fail(std::move(message));
+        return RHITestResult::fail(std::move(message));
     }
-    return RhiTestResult::pass();
+    return RHITestResult::pass();
 }
 
-RhiTestResult createUploadStorageBuffer(
+RHITestResult createUploadStorageBuffer(
     render::Device& device,
     const void* data,
     uint64_t byteSize,
@@ -117,36 +117,36 @@ RhiTestResult createUploadStorageBuffer(
             .memoryLocation = render::MemoryLocation::HostUpload,
         }).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
     if (!result || outBuffer == nullptr) {
-        return RhiTestResult::fail(std::string("createBuffer(") + label + ") returned " + toString(result));
+        return RHITestResult::fail(std::string("createBuffer(") + label + ") returned " + toString(result));
     }
 
     void* mapped = outBuffer->map();
     if (mapped == nullptr) {
-        return RhiTestResult::fail(std::string("map(") + label + ") returned null");
+        return RHITestResult::fail(std::string("map(") + label + ") returned null");
     }
     std::memcpy(mapped, data, static_cast<size_t>(byteSize));
     outBuffer->flush({0, byteSize});
     outBuffer->unmap();
-    return RhiTestResult::pass();
+    return RHITestResult::pass();
 }
 
-class OffscreenTriangleTest : public RhiTest {
+class OffscreenTriangleTest : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
-        return bench::gpuMetadata({"graphics.pipeline.triangle.readback"}, bench::Layer::Rhi, "core", "core", {"readback.bin"});
+        return bench::gpuMetadata({"graphics.pipeline.triangle.readback"}, bench::Layer::RHI, "core", "core", {"readback.bin"});
     }
 
     OffscreenTriangleTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "offscreen_triangle_readback";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::ShaderModule> vertexShader;
-        RhiTestResult testResult = createTriangleShaderModule(
+        RHITestResult testResult = createTriangleShaderModule(
             context.device,
             kTriangleVertexEntryPoint,
             vertexShader);
@@ -167,18 +167,18 @@ public:
         render::Result<> result = context.device.createGraphicsPipeline(render::GraphicsPipelineDesc{
             .vertexShader = {vertexShader.get()},
             .fragmentShader = {fragmentShader.get()},
-            .colorFormat = render::Format::Rgba8Unorm,
+            .colorFormat = render::Format::RGBA8Unorm,
             .topology = render::PrimitiveTopology::TriangleList,
         }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
         if (!result || pipeline == nullptr) {
-            return RhiTestResult::fail(std::string("createGraphicsPipeline returned ") + toString(result));
+            return RHITestResult::fail(std::string("createGraphicsPipeline returned ") + toString(result));
         }
 
         std::unique_ptr<render::Texture> colorTexture;
         result = context.device.createTexture(render::TextureDesc{
                 .type = render::TextureType::Texture2D,
                 .usage = render::TextureUsageBits::ColorAttachment | render::TextureUsageBits::TransferSource,
-                .format = render::Format::Rgba8Unorm,
+                .format = render::Format::RGBA8Unorm,
                 .width = kWidth,
                 .height = kHeight,
                 .depth = 1,
@@ -187,17 +187,17 @@ public:
                 .memoryLocation = render::MemoryLocation::Device,
             }).transform([&](auto rhiValue) { colorTexture = std::move(rhiValue); });
         if (!result || colorTexture == nullptr) {
-            return RhiTestResult::fail(std::string("createTexture returned ") + toString(result));
+            return RHITestResult::fail(std::string("createTexture returned ") + toString(result));
         }
 
         std::unique_ptr<render::TextureView> colorTextureView;
         result = context.device.createTextureView(*colorTexture,
             render::TextureViewDesc{
-                .format = render::Format::Rgba8Unorm,
+                .format = render::Format::RGBA8Unorm,
                 .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { colorTextureView = std::move(rhiValue); });
         if (!result || colorTextureView == nullptr) {
-            return RhiTestResult::fail(std::string("createTextureView returned ") + toString(result));
+            return RHITestResult::fail(std::string("createTextureView returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> readbackBuffer;
@@ -207,24 +207,24 @@ public:
                 .memoryLocation = render::MemoryLocation::HostReadback,
             }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
         if (!result || readbackBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
         result = context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
 
         result = commandBuffer->begin();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
 
         render::TextureBarrierDesc toColor{
@@ -235,7 +235,7 @@ public:
             .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toColor, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toColor, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         const render::Rect renderArea{
             .x = 0,
@@ -254,7 +254,7 @@ public:
             render::RenderingDesc{
                 .renderArea = renderArea,
                 .colorAttachments = {&colorAttachment, 1},
-            }); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
+            }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commandBuffer->setViewport(
             render::Viewport{
                 .x = 0.0f,
@@ -265,7 +265,7 @@ public:
                 .maxDepth = 1.0f,
             });
         commandBuffer->setScissor(renderArea);
-        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         commandBuffer->draw(3);
         commandBuffer->endRendering();
 
@@ -277,7 +277,7 @@ public:
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
             .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(
             render::TextureBufferCopyDesc{
                 .texture = colorTexture.get(),
@@ -291,13 +291,13 @@ public:
 
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
         std::unique_ptr<render::Fence> fence;
         result = context.device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
-            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
+            return RHITestResult::fail(std::string("createFence returned ") + toString(result));
         }
 
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
@@ -307,18 +307,18 @@ public:
                 .signalFence = fence.get(),
             });
         if (!result) {
-            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+            return RHITestResult::fail(std::string("Queue::submit returned ") + toString(result));
         }
 
         result = fence->wait(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+            return RHITestResult::fail(std::string("Fence::wait returned ") + toString(result));
         }
 
         readbackBuffer->invalidate();
         const void* mapped = readbackBuffer->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("readback buffer did not map");
+            return RHITestResult::fail("readback buffer did not map");
         }
 
         std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * 4u);
@@ -329,7 +329,7 @@ public:
         std::string outputMessage;
         const std::filesystem::path outputPath = context.outputDirectory / "offscreen_triangle_readback.png";
         if (!saveRgba8Png(outputPath, pixels.data(), kWidth, kHeight, outputMessage)) {
-            return RhiTestResult::fail(outputMessage);
+            return RHITestResult::fail(outputMessage);
         }
 
         const auto* bytes = pixels.data();
@@ -344,32 +344,32 @@ public:
         }
 
         if (brightPixelCount < 128) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("triangle readback found too few bright pixels: ") +
                 std::to_string(brightPixelCount));
         }
 
-        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+        return RHITestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
 
-class ReversedZDepthRenderingTest : public RhiTest {
+class ReversedZDepthRenderingTest : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
-        return bench::gpuMetadata({"graphics.depth.readback"}, bench::Layer::Rhi, "core", "core", {"readback.bin"});
+        return bench::gpuMetadata({"graphics.depth.readback"}, bench::Layer::RHI, "core", "core", {"readback.bin"});
     }
 
     ReversedZDepthRenderingTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "reversed_z_depth_readback";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::ShaderModule> nearVertexShader;
-        RhiTestResult testResult = createTriangleShaderModule(
+        RHITestResult testResult = createTriangleShaderModule(
             context.device,
             kReversedDepthNearVertexEntryPoint,
             nearVertexShader);
@@ -407,11 +407,11 @@ public:
         auto createDepthPipeline =
             [&](render::ShaderModule& vertexShader,
                 render::ShaderModule& fragmentShader,
-                std::unique_ptr<render::GraphicsPipeline>& outPipeline) -> RhiTestResult {
+                std::unique_ptr<render::GraphicsPipeline>& outPipeline) -> RHITestResult {
             render::Result<> result = context.device.createGraphicsPipeline(render::GraphicsPipelineDesc{
                 .vertexShader = {&vertexShader},
                 .fragmentShader = {&fragmentShader},
-                .colorFormat = render::Format::Rgba8Unorm,
+                .colorFormat = render::Format::RGBA8Unorm,
                 .depthStencilFormat = render::Format::D32Sfloat,
                 .topology = render::PrimitiveTopology::TriangleList,
                 .depthStencil = render::DepthStencilState{
@@ -421,9 +421,9 @@ public:
                     },
             }).transform([&](auto rhiValue) { outPipeline = std::move(rhiValue); });
             if (!result || outPipeline == nullptr) {
-                return RhiTestResult::fail(std::string("createGraphicsPipeline(depth) returned ") + toString(result));
+                return RHITestResult::fail(std::string("createGraphicsPipeline(depth) returned ") + toString(result));
             }
-            return RhiTestResult::pass();
+            return RHITestResult::pass();
         };
 
         std::unique_ptr<render::GraphicsPipeline> nearGreenPipeline;
@@ -442,7 +442,7 @@ public:
         render::Result<> result = context.device.createTexture(render::TextureDesc{
                 .type = render::TextureType::Texture2D,
                 .usage = render::TextureUsageBits::ColorAttachment | render::TextureUsageBits::TransferSource,
-                .format = render::Format::Rgba8Unorm,
+                .format = render::Format::RGBA8Unorm,
                 .width = kWidth,
                 .height = kHeight,
                 .depth = 1,
@@ -451,17 +451,17 @@ public:
                 .memoryLocation = render::MemoryLocation::Device,
             }).transform([&](auto rhiValue) { colorTexture = std::move(rhiValue); });
         if (!result || colorTexture == nullptr) {
-            return RhiTestResult::fail(std::string("createTexture(color) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createTexture(color) returned ") + toString(result));
         }
 
         std::unique_ptr<render::TextureView> colorTextureView;
         result = context.device.createTextureView(*colorTexture,
             render::TextureViewDesc{
-                .format = render::Format::Rgba8Unorm,
+                .format = render::Format::RGBA8Unorm,
                 .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { colorTextureView = std::move(rhiValue); });
         if (!result || colorTextureView == nullptr) {
-            return RhiTestResult::fail(std::string("createTextureView(color) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createTextureView(color) returned ") + toString(result));
         }
 
         std::unique_ptr<render::Texture> depthTexture;
@@ -477,7 +477,7 @@ public:
                 .memoryLocation = render::MemoryLocation::Device,
             }).transform([&](auto rhiValue) { depthTexture = std::move(rhiValue); });
         if (!result || depthTexture == nullptr) {
-            return RhiTestResult::fail(std::string("createTexture(depth) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createTexture(depth) returned ") + toString(result));
         }
 
         std::unique_ptr<render::TextureView> depthTextureView;
@@ -487,7 +487,7 @@ public:
                 .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
             }).transform([&](auto rhiValue) { depthTextureView = std::move(rhiValue); });
         if (!result || depthTextureView == nullptr) {
-            return RhiTestResult::fail(std::string("createTextureView(depth) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createTextureView(depth) returned ") + toString(result));
         }
 
         std::unique_ptr<render::Buffer> readbackBuffer;
@@ -497,24 +497,24 @@ public:
                 .memoryLocation = render::MemoryLocation::HostReadback,
             }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
         if (!result || readbackBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
         result = context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
 
         result = commandBuffer->begin();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
 
         render::TextureBarrierDesc renderBarriers[] = {
@@ -537,7 +537,7 @@ public:
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .textures = {renderBarriers, 2},
-        }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         const render::Rect renderArea{
             .x = 0,
@@ -564,7 +564,7 @@ public:
                 .renderArea = renderArea,
                 .colorAttachments = {&colorAttachment, 1},
                 .depthStencilAttachment = &depthAttachment,
-            }); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
+            }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commandBuffer->setViewport(
             render::Viewport{
                 .x = 0.0f,
@@ -575,9 +575,9 @@ public:
                 .maxDepth = 1.0f,
             });
         commandBuffer->setScissor(renderArea);
-        if (auto commandResult = commandBuffer->bindExecution((nearGreenPipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->bindExecution((nearGreenPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         commandBuffer->draw(3);
-        if (auto commandResult = commandBuffer->bindExecution((farRedPipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->bindExecution((farRedPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         commandBuffer->draw(3);
         commandBuffer->endRendering();
 
@@ -589,7 +589,7 @@ public:
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
             .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(
             render::TextureBufferCopyDesc{
                 .texture = colorTexture.get(),
@@ -603,13 +603,13 @@ public:
 
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
         std::unique_ptr<render::Fence> fence;
         result = context.device.createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
-            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
+            return RHITestResult::fail(std::string("createFence returned ") + toString(result));
         }
 
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
@@ -619,18 +619,18 @@ public:
                 .signalFence = fence.get(),
             });
         if (!result) {
-            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+            return RHITestResult::fail(std::string("Queue::submit returned ") + toString(result));
         }
 
         result = fence->wait(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+            return RHITestResult::fail(std::string("Fence::wait returned ") + toString(result));
         }
 
         readbackBuffer->invalidate();
         const void* mapped = readbackBuffer->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("readback buffer did not map");
+            return RHITestResult::fail("readback buffer did not map");
         }
 
         std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * 4u);
@@ -644,7 +644,7 @@ public:
         const uint8_t g = pixels[centerIndex + 1];
         const uint8_t b = pixels[centerIndex + 2];
         if (g < 180 || r > 80 || b > 80) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "reversed-z center pixel was not preserved by depth test: rgba=(" +
                 std::to_string(r) +
                 ", " +
@@ -657,27 +657,27 @@ public:
         std::string outputMessage;
         const std::filesystem::path outputPath = context.outputDirectory / "reversed_z_depth_readback.png";
         if (!saveRgba8Png(outputPath, pixels.data(), kWidth, kHeight, outputMessage)) {
-            return RhiTestResult::fail(outputMessage);
+            return RHITestResult::fail(outputMessage);
         }
 
-        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+        return RHITestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
 
-class ShaderObjectMaterialRenderingTest : public RhiTest {
+class ShaderObjectMaterialRenderingTest : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
     {
-        return bench::gpuMetadata({"graphics.shaderObject.materialSwitch.readback"}, bench::Layer::Rhi, "binding", "binding", {"readback.bin"});
+        return bench::gpuMetadata({"graphics.shaderObject.materialSwitch.readback"}, bench::Layer::RHI, "binding", "binding", {"readback.bin"});
     }
 
     ShaderObjectMaterialRenderingTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "shader_object_material_readback";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         bench::TestDevice device;
         render::Result<> result = bench::createTestDevice(context, render::DeviceDesc{
@@ -688,21 +688,21 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             if (render::hasError(result, render::Error::Unsupported)) {
-                return RhiTestResult::skip(std::string("createDevice returned ") + toString(result));
+                return RHITestResult::skip(std::string("createDevice returned ") + toString(result));
             }
-            return RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+            return RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
         if (!device->capabilities().shaderObject || !device->capabilities().bindlessDescriptorHeap) {
-            return RhiTestResult::skip("shaderObject or bindlessDescriptorHeap capability is unavailable");
+            return RHITestResult::skip("shaderObject or bindlessDescriptorHeap capability is unavailable");
         }
 
         render::Queue* graphicsQueue = device->getQueue(render::QueueType::Graphics);
         if (graphicsQueue == nullptr) {
-            return RhiTestResult::skip("shader object test device has no graphics queue");
+            return RHITestResult::skip("shader object test device has no graphics queue");
         }
 
         render::ShaderCompileResult vertexCompile;
-        RhiTestResult testResult = compileMaterialShader(kMaterialVertexEntryPoint, vertexCompile);
+        RHITestResult testResult = compileMaterialShader(kMaterialVertexEntryPoint, vertexCompile);
         if (!testResult.passed) {
             return testResult;
         }
@@ -718,11 +718,11 @@ public:
         }
 
         auto vertexModule = device->createShaderModule({.spirv = vertexCompile.spirv});
-        if (!vertexModule) { return RhiTestResult::fail("createShaderModule(vertex) failed"); }
+        if (!vertexModule) { return RHITestResult::fail("createShaderModule(vertex) failed"); }
         auto fragmentModule = device->createShaderModule({.spirv = fragmentCompile.spirv});
-        if (!fragmentModule) { return RhiTestResult::fail("createShaderModule(fragment) failed"); }
+        if (!fragmentModule) { return RHITestResult::fail("createShaderModule(fragment) failed"); }
         auto alternateFragmentModule = device->createShaderModule({.spirv = alternateFragmentCompile.spirv});
-        if (!alternateFragmentModule) { return RhiTestResult::fail("createShaderModule(alternateFragment) failed"); }
+        if (!alternateFragmentModule) { return RHITestResult::fail("createShaderModule(alternateFragment) failed"); }
 
         std::unique_ptr<render::GraphicsShaderObjectProgram> defaultProgram;
         result = device->createGraphicsShaderObjectProgram(render::GraphicsShaderObjectProgramDesc{
@@ -732,7 +732,7 @@ public:
                 .bindlessUserPushDataSize = sizeof(MaterialUserPush),
             }).transform([&](auto rhiValue) { defaultProgram = std::move(rhiValue); });
         if (!result || defaultProgram == nullptr) {
-            return RhiTestResult::fail(std::string("createGraphicsShaderObjectProgram(default) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createGraphicsShaderObjectProgram(default) returned ") + toString(result));
         }
 
         std::unique_ptr<render::GraphicsShaderObjectProgram> alternateProgram;
@@ -743,7 +743,7 @@ public:
                 .bindlessUserPushDataSize = sizeof(MaterialUserPush),
             }).transform([&](auto rhiValue) { alternateProgram = std::move(rhiValue); });
         if (!result || alternateProgram == nullptr) {
-            return RhiTestResult::fail(std::string("createGraphicsShaderObjectProgram(alternate) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createGraphicsShaderObjectProgram(alternate) returned ") + toString(result));
         }
 
         constexpr std::array<float, 24> kPositions{
@@ -759,7 +759,7 @@ public:
             1.0f, 0.0f, 0.0f, 1.0f,
             0.0f, 0.0f, 1.0f, 1.0f,
         };
-        const MaterialGpuParams params{
+        const MaterialGPUParams params{
             .eye = {0.0f, 0.0f, 2.0f, 0.0f},
             .center = {0.0f, 0.0f, 0.0f, 0.0f},
             .upProjection = {0.0f, 1.0f, 0.0f, 0.0f},
@@ -816,7 +816,7 @@ public:
         std::unique_ptr<render::BindlessHeap> bindlessHeap;
         result = device->createBindlessHeap(render::BindlessHeapDesc{.maxBuffers = 4}).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
         if (!result || bindlessHeap == nullptr) {
-            return RhiTestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
         }
 
         render::BindlessHandle positionHandle;
@@ -825,58 +825,58 @@ public:
         render::BindlessHandle paramsHandle;
         result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { positionHandle = std::move(rhiValue); });
         if (!result) {
-            return RhiTestResult::fail(std::string("allocateBuffer(position) returned ") + toString(result));
+            return RHITestResult::fail(std::string("allocateBuffer(position) returned ") + toString(result));
         }
         result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { materialIndexHandle = std::move(rhiValue); });
         if (!result) {
-            return RhiTestResult::fail(std::string("allocateBuffer(materialIndex) returned ") + toString(result));
+            return RHITestResult::fail(std::string("allocateBuffer(materialIndex) returned ") + toString(result));
         }
         result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { materialHandle = std::move(rhiValue); });
         if (!result) {
-            return RhiTestResult::fail(std::string("allocateBuffer(material) returned ") + toString(result));
+            return RHITestResult::fail(std::string("allocateBuffer(material) returned ") + toString(result));
         }
         result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { paramsHandle = std::move(rhiValue); });
         if (!result) {
-            return RhiTestResult::fail(std::string("allocateBuffer(params) returned ") + toString(result));
+            return RHITestResult::fail(std::string("allocateBuffer(params) returned ") + toString(result));
         }
 
         result = bindlessHeap->writeStorageBuffer(positionHandle, *positionBuffer);
         if (!result) {
-            return RhiTestResult::fail(std::string("writeStorageBuffer(position) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeStorageBuffer(position) returned ") + toString(result));
         }
         result = bindlessHeap->writeStorageBuffer(materialIndexHandle, *materialIndexBuffer);
         if (!result) {
-            return RhiTestResult::fail(std::string("writeStorageBuffer(materialIndex) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeStorageBuffer(materialIndex) returned ") + toString(result));
         }
         result = bindlessHeap->writeStorageBuffer(materialHandle, *materialBuffer);
         if (!result) {
-            return RhiTestResult::fail(std::string("writeStorageBuffer(material) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeStorageBuffer(material) returned ") + toString(result));
         }
         result = bindlessHeap->writeStorageBuffer(paramsHandle, *paramsBuffer);
         if (!result) {
-            return RhiTestResult::fail(std::string("writeStorageBuffer(params) returned ") + toString(result));
+            return RHITestResult::fail(std::string("writeStorageBuffer(params) returned ") + toString(result));
         }
 
         std::unique_ptr<render::Texture> colorTexture;
         result = device->createTexture(render::TextureDesc{
                 .type = render::TextureType::Texture2D,
                 .usage = render::TextureUsageBits::ColorAttachment | render::TextureUsageBits::TransferSource,
-                .format = render::Format::Rgba8Unorm,
+                .format = render::Format::RGBA8Unorm,
                 .width = kWidth,
                 .height = kHeight,
                 .memoryLocation = render::MemoryLocation::Device,
             }).transform([&](auto rhiValue) { colorTexture = std::move(rhiValue); });
         if (!result || colorTexture == nullptr) {
-            return RhiTestResult::fail(std::string("createTexture returned ") + toString(result));
+            return RHITestResult::fail(std::string("createTexture returned ") + toString(result));
         }
         std::unique_ptr<render::TextureView> colorTextureView;
         result = device->createTextureView(*colorTexture,
             render::TextureViewDesc{
-                .format = render::Format::Rgba8Unorm,
+                .format = render::Format::RGBA8Unorm,
                 .range = {.mipCount = 1, .layerCount = 1},
             }).transform([&](auto rhiValue) { colorTextureView = std::move(rhiValue); });
         if (!result || colorTextureView == nullptr) {
-            return RhiTestResult::fail(std::string("createTextureView returned ") + toString(result));
+            return RHITestResult::fail(std::string("createTextureView returned ") + toString(result));
         }
         std::unique_ptr<render::Buffer> readbackBuffer;
         result = device->createBuffer(render::BufferDesc{
@@ -885,23 +885,23 @@ public:
                 .memoryLocation = render::MemoryLocation::HostReadback,
             }).transform([&](auto rhiValue) { readbackBuffer = std::move(rhiValue); });
         if (!result || readbackBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
+            return RHITestResult::fail(std::string("createBuffer(readback) returned ") + toString(result));
         }
 
         std::unique_ptr<render::CommandPool> commandPool;
         result = device->createCommandPool(*graphicsQueue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandPool returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandPool returned ") + toString(result));
         }
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr) {
-            return RhiTestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
+            return RHITestResult::fail(std::string("createCommandBuffer returned ") + toString(result));
         }
 
         result = commandBuffer->begin();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
 
         render::TextureBarrierDesc toColor{
@@ -912,7 +912,7 @@ public:
             .after = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite},
             .range = {.mipCount = 1, .layerCount = 1},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toColor, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toColor, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         const render::Rect renderArea{.x = 0, .y = 0, .width = kWidth, .height = kHeight};
         render::RenderingAttachmentDesc colorAttachment{
@@ -926,9 +926,9 @@ public:
             render::RenderingDesc{
                 .renderArea = renderArea,
                 .colorAttachments = {&colorAttachment, 1},
-            }); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
+            }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
         commandBuffer->bindBindlessHeap(*bindlessHeap);
-        if (auto commandResult = commandBuffer->bindExecution((defaultProgram)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->bindExecution((defaultProgram)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         commandBuffer->setViewport(
             render::Viewport{
                 .x = 0.0f,
@@ -950,7 +950,7 @@ public:
         commandBuffer->pushBindlessData(&push, sizeof(push));
         commandBuffer->draw(3);
 
-        if (auto commandResult = commandBuffer->bindExecution((alternateProgram)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->bindExecution((alternateProgram)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         push.vertexOffset = 3;
         push.materialVariant = 1;
         commandBuffer->pushBindlessData(&push, sizeof(push));
@@ -965,7 +965,7 @@ public:
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
             .range = {.mipCount = 1, .layerCount = 1},
         };
-        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(
             render::TextureBufferCopyDesc{
                 .texture = colorTexture.get(),
@@ -977,13 +977,13 @@ public:
 
         result = commandBuffer->end();
         if (!result) {
-            return RhiTestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
+            return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));
         }
 
         std::unique_ptr<render::Fence> fence;
         result = device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
-            return RhiTestResult::fail(std::string("createFence returned ") + toString(result));
+            return RHITestResult::fail(std::string("createFence returned ") + toString(result));
         }
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
         result = graphicsQueue->submit(
@@ -992,17 +992,17 @@ public:
                 .signalFence = fence.get(),
             });
         if (!result) {
-            return RhiTestResult::fail(std::string("Queue::submit returned ") + toString(result));
+            return RHITestResult::fail(std::string("Queue::submit returned ") + toString(result));
         }
         result = fence->wait(5'000'000'000ull);
         if (!result) {
-            return RhiTestResult::fail(std::string("Fence::wait returned ") + toString(result));
+            return RHITestResult::fail(std::string("Fence::wait returned ") + toString(result));
         }
 
         readbackBuffer->invalidate();
         const void* mapped = readbackBuffer->map();
         if (mapped == nullptr) {
-            return RhiTestResult::fail("readback buffer did not map");
+            return RHITestResult::fail("readback buffer did not map");
         }
 
         std::vector<uint8_t> pixels(static_cast<size_t>(kWidth) * static_cast<size_t>(kHeight) * 4u);
@@ -1025,7 +1025,7 @@ public:
         }
 
         if (redPixelCount < 64 || cyanPixelCount < 64) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "shader object material readback did not find both material colors: red=" +
                 std::to_string(redPixelCount) +
                 " cyan=" +
@@ -1035,35 +1035,35 @@ public:
         std::string outputMessage;
         const std::filesystem::path outputPath = context.outputDirectory / "shader_object_material_readback.png";
         if (!saveRgba8Png(outputPath, pixels.data(), kWidth, kHeight, outputMessage)) {
-            return RhiTestResult::fail(outputMessage);
+            return RHITestResult::fail(outputMessage);
         }
 
-        return RhiTestResult::pass(std::string("wrote ") + outputPath.string());
+        return RHITestResult::pass(std::string("wrote ") + outputPath.string());
     }
 };
 
-class PipelineCachePersistenceTest : public RhiTest {
+class PipelineCachePersistenceTest : public RHITest {
 public:
     PipelineCachePersistenceTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "pipeline_cache_persistence_and_shader_invalidation";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         const std::filesystem::path cachePath =
             context.outputDirectory / "pipeline_cache_persistence.pso";
         std::error_code fileError;
         std::filesystem::remove(cachePath, fileError);
         if (fileError) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "failed to remove previous .pso test file: " + fileError.message());
         }
         const std::string cachePathString = cachePath.string();
 
         std::unique_ptr<render::ShaderModule> vertexShader;
-        RhiTestResult testResult = createTriangleShaderModule(
+        RHITestResult testResult = createTriangleShaderModule(
             context.device,
             kTriangleVertexEntryPoint,
             vertexShader);
@@ -1089,7 +1089,7 @@ public:
         if (fragmentShader->contentHash() == 0 ||
             changedFragmentShader->contentHash() == 0 ||
             fragmentShader->contentHash() == changedFragmentShader->contentHash()) {
-            return RhiTestResult::fail("shader content hashes did not distinguish changed SPIR-V");
+            return RHITestResult::fail("shader content hashes did not distinguish changed SPIR-V");
         }
 
         const auto createPipeline = [&](
@@ -1100,7 +1100,7 @@ public:
             return context.device.createGraphicsPipeline(render::GraphicsPipelineDesc{
                 .vertexShader = {vertexShader.get()},
                 .fragmentShader = {&fragment},
-                .colorFormat = render::Format::Rgba8Unorm,
+                .colorFormat = render::Format::RGBA8Unorm,
                 .topology = render::PrimitiveTopology::TriangleList,
                 .rasterization = rasterization,
                 .pipelineCache = &cache,
@@ -1113,27 +1113,27 @@ public:
                 .saveOnDestroy = false,
             }).transform([&](auto rhiValue) { firstCache = std::move(rhiValue); });
         if (!result || firstCache == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createPipelineCache(first) returned ") + toString(result));
         }
         if (firstCache->stats().loadStatus != render::PipelineCacheLoadStatus::NotFound) {
-            return RhiTestResult::fail("first pipeline cache did not report a cold load");
+            return RHITestResult::fail("first pipeline cache did not report a cold load");
         }
 
         std::unique_ptr<render::GraphicsPipeline> firstPipeline;
         result = createPipeline(*firstCache, *fragmentShader, firstPipeline);
         if (!result || firstPipeline == nullptr || firstPipeline->psoHash() == 0) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createGraphicsPipeline(first) returned ") + toString(result));
         }
         if (firstPipeline->pipelineCacheHit()) {
-            return RhiTestResult::fail("cold pipeline creation unexpectedly reported a cache hit");
+            return RHITestResult::fail("cold pipeline creation unexpectedly reported a cache hit");
         }
         const uint64_t originalPsoHash = firstPipeline->psoHash();
         result = firstCache->save();
         if (!result || !std::filesystem::exists(cachePath) ||
             std::filesystem::file_size(cachePath) <= 80u) {
-            return RhiTestResult::fail("pipeline cache did not save a non-empty .pso file");
+            return RHITestResult::fail("pipeline cache did not save a non-empty .pso file");
         }
         firstPipeline.reset();
         firstCache.reset();
@@ -1146,7 +1146,7 @@ public:
         std::filesystem::copy_file(
             cachePath, legacyCachePath, std::filesystem::copy_options::overwrite_existing, fileError);
         if (fileError) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "failed to create a legacy .pso test file: " + fileError.message());
         }
         {
@@ -1159,7 +1159,7 @@ public:
                 reinterpret_cast<const char*>(&kLegacyVulkanBackendTag), sizeof(kLegacyVulkanBackendTag));
             legacyStream.flush();
             if (!legacyStream) {
-                return RhiTestResult::fail("failed to set the legacy Vulkan .pso backend tag");
+                return RHITestResult::fail("failed to set the legacy Vulkan .pso backend tag");
             }
         }
         const std::string legacyCachePathString = legacyCachePath.string();
@@ -1169,13 +1169,13 @@ public:
                 .saveOnDestroy = false,
             }).transform([&](auto rhiValue) { legacyCache = std::move(rhiValue); });
         if (!result || legacyCache == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createPipelineCache(legacy Vulkan backend) returned ") + toString(result));
         }
         const render::PipelineCacheStats legacyStats = legacyCache->stats();
         if (legacyStats.loadStatus != render::PipelineCacheLoadStatus::Incompatible ||
             legacyStats.storedPsoCount != 0 || legacyStats.backendDataSize != 0) {
-            return RhiTestResult::fail("pre-Shader-Object Vulkan .pso data was not rejected before native cache load");
+            return RHITestResult::fail("pre-Shader-Object Vulkan .pso data was not rejected before native cache load");
         }
         legacyCache.reset();
 
@@ -1185,13 +1185,13 @@ public:
                 .saveOnDestroy = false,
             }).transform([&](auto rhiValue) { loadedCache = std::move(rhiValue); });
         if (!result || loadedCache == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createPipelineCache(loaded) returned ") + toString(result));
         }
         const render::PipelineCacheStats loadedStats = loadedCache->stats();
         if (loadedStats.loadStatus != render::PipelineCacheLoadStatus::Loaded ||
             loadedStats.storedPsoCount != 1) {
-            return RhiTestResult::fail("saved .pso file did not reload its PSO hash table");
+            return RHITestResult::fail("saved .pso file did not reload its PSO hash table");
         }
 
         std::unique_ptr<render::GraphicsPipeline> cachedPipeline;
@@ -1199,7 +1199,7 @@ public:
         if (!result || cachedPipeline == nullptr ||
             !cachedPipeline->pipelineCacheHit() ||
             cachedPipeline->psoHash() != originalPsoHash) {
-            return RhiTestResult::fail("unchanged shader did not reuse the saved PSO cache entry");
+            return RHITestResult::fail("unchanged shader did not reuse the saved PSO cache entry");
         }
 
         std::unique_ptr<render::GraphicsPipeline> explicitDefaultPipeline;
@@ -1214,7 +1214,7 @@ public:
         if (!result || explicitDefaultPipeline == nullptr ||
             !explicitDefaultPipeline->pipelineCacheHit() ||
             explicitDefaultPipeline->psoHash() != originalPsoHash) {
-            return RhiTestResult::fail("explicit default rasterization state changed the PSO hash");
+            return RHITestResult::fail("explicit default rasterization state changed the PSO hash");
         }
 
         std::unique_ptr<render::GraphicsPipeline> frontCullPipeline;
@@ -1228,7 +1228,7 @@ public:
             });
         if (!result || frontCullPipeline == nullptr || frontCullPipeline->pipelineCacheHit() ||
             frontCullPipeline->psoHash() == originalPsoHash) {
-            return RhiTestResult::fail("front-face culling did not invalidate the PSO hash");
+            return RHITestResult::fail("front-face culling did not invalidate the PSO hash");
         }
 
         std::unique_ptr<render::GraphicsPipeline> backCullPipeline;
@@ -1243,7 +1243,7 @@ public:
         if (!result || backCullPipeline == nullptr || backCullPipeline->pipelineCacheHit() ||
             backCullPipeline->psoHash() == originalPsoHash ||
             backCullPipeline->psoHash() == frontCullPipeline->psoHash()) {
-            return RhiTestResult::fail("back-face culling did not produce a distinct PSO hash");
+            return RHITestResult::fail("back-face culling did not produce a distinct PSO hash");
         }
 
         std::unique_ptr<render::GraphicsPipeline> clockwisePipeline;
@@ -1257,25 +1257,25 @@ public:
             });
         if (!result || clockwisePipeline == nullptr || clockwisePipeline->pipelineCacheHit() ||
             clockwisePipeline->psoHash() == backCullPipeline->psoHash()) {
-            return RhiTestResult::fail("front-face winding did not invalidate the PSO hash");
+            return RHITestResult::fail("front-face winding did not invalidate the PSO hash");
         }
 
         std::unique_ptr<render::GraphicsPipeline> changedPipeline;
         result = createPipeline(*loadedCache, *changedFragmentShader, changedPipeline);
         if (!result || changedPipeline == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createGraphicsPipeline(changed shader) returned ") + toString(result));
         }
         if (changedPipeline->pipelineCacheHit() ||
             changedPipeline->psoHash() == originalPsoHash) {
-            return RhiTestResult::fail("changed shader did not invalidate the PSO hash");
+            return RHITestResult::fail("changed shader did not invalidate the PSO hash");
         }
 
         result = loadedCache->save();
         const render::PipelineCacheStats finalStats = loadedCache->stats();
         if (!result || finalStats.hitCount != 2 || finalStats.missCount != 4 ||
             finalStats.storedPsoCount != 5) {
-            return RhiTestResult::fail("pipeline cache hit/miss statistics are inconsistent");
+            return RHITestResult::fail("pipeline cache hit/miss statistics are inconsistent");
         }
 
         changedPipeline.reset();
@@ -1289,7 +1289,7 @@ public:
             std::ofstream corruptStream(cachePath, std::ios::binary | std::ios::trunc);
             corruptStream.put('\0');
             if (!corruptStream) {
-                return RhiTestResult::fail("failed to create a corrupt .pso test file");
+                return RHITestResult::fail("failed to create a corrupt .pso test file");
             }
         }
 
@@ -1300,16 +1300,16 @@ public:
             }).transform([&](auto rhiValue) { recoveredCache = std::move(rhiValue); });
         if (!result || recoveredCache == nullptr ||
             recoveredCache->stats().loadStatus != render::PipelineCacheLoadStatus::Invalid) {
-            return RhiTestResult::fail("corrupt .pso file did not fall back to an empty cache");
+            return RHITestResult::fail("corrupt .pso file did not fall back to an empty cache");
         }
         std::unique_ptr<render::GraphicsPipeline> recoveredPipeline;
         result = createPipeline(*recoveredCache, *fragmentShader, recoveredPipeline);
         if (!result || recoveredPipeline == nullptr || recoveredPipeline->pipelineCacheHit()) {
-            return RhiTestResult::fail("recovered cache did not rebuild the PSO after corruption");
+            return RHITestResult::fail("recovered cache did not rebuild the PSO after corruption");
         }
         result = recoveredCache->save();
         if (!result || std::filesystem::file_size(cachePath) <= 80u) {
-            return RhiTestResult::fail("recovered cache did not replace the corrupt .pso file");
+            return RHITestResult::fail("recovered cache did not replace the corrupt .pso file");
         }
         recoveredPipeline.reset();
         recoveredCache.reset();
@@ -1321,12 +1321,12 @@ public:
             }).transform([&](auto rhiValue) { repairedCache = std::move(rhiValue); });
         if (!result || repairedCache == nullptr ||
             repairedCache->stats().loadStatus != render::PipelineCacheLoadStatus::Loaded) {
-            return RhiTestResult::fail("repaired .pso file could not be loaded");
+            return RHITestResult::fail("repaired .pso file could not be loaded");
         }
         std::unique_ptr<render::GraphicsPipeline> repairedPipeline;
         result = createPipeline(*repairedCache, *fragmentShader, repairedPipeline);
         if (!result || repairedPipeline == nullptr || !repairedPipeline->pipelineCacheHit()) {
-            return RhiTestResult::fail("repaired .pso file did not contain the rebuilt PSO hash");
+            return RHITestResult::fail("repaired .pso file did not contain the rebuilt PSO hash");
         }
 
         const std::string invalidPath =
@@ -1334,10 +1334,10 @@ public:
         std::unique_ptr<render::PipelineCache> invalidCache;
         result = context.device.createPipelineCache(render::PipelineCacheDesc{.filePath = invalidPath.c_str()}).transform([&](auto rhiValue) { invalidCache = std::move(rhiValue); });
         if (!render::hasError(result, render::Error::InvalidArgument) || invalidCache != nullptr) {
-            return RhiTestResult::fail("pipeline cache accepted a file without the .pso extension");
+            return RHITestResult::fail("pipeline cache accepted a file without the .pso extension");
         }
 
-        return RhiTestResult::pass(
+        return RHITestResult::pass(
             "validated raster state hashing, cold miss, warm hit, shader invalidation, legacy device-contract rejection, corruption recovery, and .pso persistence");
     }
 };

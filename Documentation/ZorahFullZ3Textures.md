@@ -34,7 +34,7 @@ Allocation 指各 image 的 VMA 子分配大小，**不是整卡显存、VMA hea
 
 ## 验证与复现
 
-`MetallicGPUDrivenSample`、`MetallicRhiTests` Release 构建通过。最终一轮 12 项测试全部通过、无 skip，进程正常退出，日志无 Vulkan validation 错误。原始结果：[final-tests.json](E:/metallic/build-release/zorah-z3/final-tests.json)，[日志](E:/metallic/build-release/zorah-z3/final-tests.log)。覆盖：
+`MetallicGPUDrivenSample`、`MetallicRHITests` Release 构建通过。最终一轮 12 项测试全部通过、无 skip，进程正常退出，日志无 Vulkan validation 错误。原始结果：[final-tests.json](E:/metallic/build-release/zorah-z3/final-tests.json)，[日志](E:/metallic/build-release/zorah-z3/final-tests.log)。覆盖：
 
 1. 300 张合成 KTX2：NPOT 7×5→3×2→1×1，BC4 `111r`、BC5 `1rg1`、normal Z，BC7 sRGB/线性、索引 >255、共享 owner、尺寸策略切换和错误 mip 长度拒绝。
 2. 1 MiB 预算：初始上限 1024 自动降到 512，实际分配 987,136 B，采样正确。
@@ -43,11 +43,11 @@ Allocation 指各 image 的 VMA 子分配大小，**不是整卡显存、VMA hea
 
 ```powershell
 cmake -S . -B build-release -DMETALLIC_BUILD_TESTS=ON
-cmake --build build-release --target MetallicRhiTests MetallicGPUDrivenSample -j 4
+cmake --build build-release --target MetallicRHITests MetallicGPUDrivenSample -j 4
 New-Item -ItemType Directory -Force build-release/zorah-z3/rhi | Out-Null
-build-release/tests/MetallicRhiTests.exe --rhi-bindless --filter ktx2_texture_resources --output-dir build-release/zorah-z3/rhi
+build-release/tests/MetallicRHITests.exe --rhi-bindless --filter ktx2_texture_resources --output-dir build-release/zorah-z3/rhi
 $env:METALLIC_ZORAH_Z3_FULL='1'
-build-release/tests/MetallicRhiTests.exe --rhi-bindless --filter zorah_texture_resources --output-dir build-release/zorah-z3/rhi
+build-release/tests/MetallicRHITests.exe --rhi-bindless --filter zorah_texture_resources --output-dir build-release/zorah-z3/rhi
 ```
 
 在 MSVC 开发环境中构建。离线构建可用 `FETCHCONTENT_SOURCE_DIR_METALLIC_ZSTD` 指向已解压的 1.5.7 源码。新增 `--rhi-bindless` 可独立启用 heap，不启动 Streamline；本机早期 `--rhi-realtime` 测试断言通过后曾停在 Streamline teardown，最终验收使用独立入口并正常退出。

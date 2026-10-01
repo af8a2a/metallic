@@ -19,7 +19,7 @@ namespace {
 
 constexpr std::array<char, 8> kPipelineCacheMagic{'M', 'T', 'L', 'P', 'S', 'O', '0', '1'};
 constexpr uint32_t kPipelineCacheFileVersion = 1;
-constexpr uint64_t kMaxPsoHashCount = 1'048'576;
+constexpr uint64_t kMaxPSOHashCount = 1'048'576;
 constexpr uint64_t kMaxBackendDataSize = 1ull << 32u;
 constexpr uint64_t kFnvOffset = 14695981039346656037ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
@@ -152,7 +152,7 @@ PipelineCacheFileLoadStatus loadPipelineCacheFile(
         reason = ".pso backend or device compatibility key changed";
         return PipelineCacheFileLoadStatus::Incompatible;
     }
-    if (header.psoHashCount > kMaxPsoHashCount ||
+    if (header.psoHashCount > kMaxPSOHashCount ||
         header.backendDataSize > kMaxBackendDataSize ||
         header.psoHashCount > std::numeric_limits<uint64_t>::max() / sizeof(uint64_t)) {
         reason = ".pso payload sizes exceed supported limits";
@@ -206,7 +206,7 @@ bool savePipelineCacheFile(
         reason = "pipeline cache path must use the .pso extension";
         return false;
     }
-    if (psoHashes.size() > kMaxPsoHashCount || backendData.size() > kMaxBackendDataSize) {
+    if (psoHashes.size() > kMaxPSOHashCount || backendData.size() > kMaxBackendDataSize) {
         reason = ".pso payload exceeds supported limits";
         return false;
     }

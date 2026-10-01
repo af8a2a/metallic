@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Task/TaskSystem.h"
@@ -17,10 +17,10 @@ namespace {
 
 #define RECORD_REQUIRE(expression) do { \
     const render::Result<> checked = (expression); \
-    if (!checked) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(checked)); } \
+    if (!checked) { return RHITestResult::fail(std::string(#expression) + ": " + toString(checked)); } \
 } while (false)
 #define RECORD_CHECK(condition) do { \
-    if (!(condition)) { return RhiTestResult::fail(#condition); } \
+    if (!(condition)) { return RHITestResult::fail(#condition); } \
 } while (false)
 
 constexpr uint64_t kTimeout = 5'000'000'000ull;
@@ -35,10 +35,10 @@ struct QueueDrain {
     }
 };
 
-class RecordingContextTest final : public RhiTest {
+class RecordingContextTest final : public RHITest {
 public:
-    RecordingContextTest() { type = RhiTestType::Command; name = "parallel_recording_context_lifetime"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RecordingContextTest() { type = RHITestType::Command; name = "parallel_recording_context_lifetime"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderFrameContext frame;
         render::CommandRecordingContext first, second;
@@ -90,7 +90,7 @@ public:
         RECORD_CHECK(exclusive && rejectedEarlySubmit);
         RECORD_REQUIRE(workerResult);
         render::SemaphoreSubmitDesc wait{.semaphore = gate.get(), .value = 1};
-        render::GpuCompletionPoint prefix;
+        render::GPUCompletionPoint prefix;
         RECORD_REQUIRE(tracker.submitSegment({
             .waitSemaphores = {&wait, 1},
             .commandBuffers = {&a, 1},
@@ -138,7 +138,7 @@ public:
         unsealed.reset();
         RECORD_CHECK(prefix.isComplete() && !frame.completion().isSubmitted());
         frame.cancel();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
@@ -168,9 +168,9 @@ public:
     bool supportsFrameOverlap() const override { return true; }
     bool supportsAsyncQueue() const override { return true; }
     bool supportsPipelinedSubmission() const override { return properties().value("pipeline", false); }
-    render::CpuRecordingPolicy cpuRecordingPolicy() const override
+    render::CPURecordingPolicy cpuRecordingPolicy() const override
     {
-        return properties().value("serial", false) ? render::CpuRecordingPolicy::Serial : render::CpuRecordingPolicy::ParallelJoined;
+        return properties().value("serial", false) ? render::CPURecordingPolicy::Serial : render::CPURecordingPolicy::ParallelJoined;
     }
     uint32_t recordingWorkload() const override { return properties().value("work", 1u); }
     render::QueueType queueType() const override
@@ -297,13 +297,13 @@ private:
     render::Device* device_ = nullptr;
 };
 
-class RecordingGraphTest final : public RhiTest {
+class RecordingGraphTest final : public RHITest {
 public:
-    RecordingGraphTest() { type = RhiTestType::Rendering; name = "parallel_recording_workload_and_order"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RecordingGraphTest() { type = RHITestType::Rendering; name = "parallel_recording_workload_and_order"; }
+    RHITestResult run(RHITestContext& context) override
     {
         auto* tasks = task::tryGetTaskSystem();
-        if (!tasks || tasks->workerCount() < 3) { return RhiTestResult::skip("three TaskSystem workers required"); }
+        if (!tasks || tasks->workerCount() < 3) { return RHITestResult::skip("three TaskSystem workers required"); }
         static const bool registered = [] {
             render::registerRenderGraphPassType("RecordingProbePass", "Parallel recording regression",
                 [] { return std::make_unique<RecordingProbePass>(); });
@@ -392,17 +392,17 @@ public:
             }
         }
         recordingProbe = nullptr;
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RecordingSlotsTest final : public RhiTest {
+class RecordingSlotsTest final : public RHITest {
 public:
-    RecordingSlotsTest() { type = RhiTestType::Rendering; name = "parallel_recording_two_slots"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RecordingSlotsTest() { type = RHITestType::Rendering; name = "parallel_recording_two_slots"; }
+    RHITestResult run(RHITestContext& context) override
     {
         auto* tasks = task::tryGetTaskSystem();
-        if (!tasks || tasks->workerCount() < 3) { return RhiTestResult::skip("three TaskSystem workers required"); }
+        if (!tasks || tasks->workerCount() < 3) { return RHITestResult::skip("three TaskSystem workers required"); }
         render::registerRenderGraphPassType("RecordingSlotProbePass", "Parallel recording slot regression",
             [] { return std::make_unique<RecordingProbePass>(); });
         RecordingProbe probe;
@@ -473,17 +473,17 @@ public:
         RECORD_REQUIRE(executor.waitForSubmittedWork(kTimeout));
         RECORD_CHECK(probe.events.size() == 15 && !probe.prematureSubmit);
         recordingProbe = nullptr;
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class RecordingBuiltinPixelsTest final : public RhiTest {
+class RecordingBuiltinPixelsTest final : public RHITest {
 public:
-    RecordingBuiltinPixelsTest() { type = RhiTestType::Rendering; name = "parallel_recording_builtin_pixels"; }
-    RhiTestResult run(RhiTestContext& context) override
+    RecordingBuiltinPixelsTest() { type = RHITestType::Rendering; name = "parallel_recording_builtin_pixels"; }
+    RHITestResult run(RHITestContext& context) override
     {
         auto* tasks = task::tryGetTaskSystem();
-        if (!tasks || tasks->workerCount() < 2) { return RhiTestResult::skip("two TaskSystem workers required"); }
+        if (!tasks || tasks->workerCount() < 2) { return RHITestResult::skip("two TaskSystem workers required"); }
         for (uint32_t workers : {1u, 4u}) {
             render::RenderGraph graph;
             graph.addNode("ClearColorPass", "Red", {{"color", {1.0f, 0.0f, 0.0f, 1.0f}}});
@@ -543,17 +543,17 @@ public:
             readback->unmap();
             RECORD_CHECK(correct);
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class PreparationGraphTest final : public RhiTest {
+class PreparationGraphTest final : public RHITest {
 public:
-    PreparationGraphTest() { type = RhiTestType::Rendering; name = "parallel_preparation_join_failure_and_batching"; }
-    RhiTestResult run(RhiTestContext& context) override
+    PreparationGraphTest() { type = RHITestType::Rendering; name = "parallel_preparation_join_failure_and_batching"; }
+    RHITestResult run(RHITestContext& context) override
     {
         auto* system = task::tryGetTaskSystem();
-        if (!system || system->workerCount() < 3) { return RhiTestResult::skip("three preparation workers required"); }
+        if (!system || system->workerCount() < 3) { return RHITestResult::skip("three preparation workers required"); }
         render::registerRenderGraphPassType("PreparationProbePass", "Pure preparation regression",
             [] { return std::make_unique<RecordingProbePass>(); });
         // Inline, joined batches, Result failure, exception, nested-worker fallback,
@@ -589,15 +589,15 @@ public:
             }
             RECORD_CHECK(executor.executionStats().preparationTaskCount == (mode >= 1 && mode <= 3 ? 3u : 0u));
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(PreparationGraphTest);
 
-class PipelinedBatchTest final : public RhiTest {
+class PipelinedBatchTest final : public RHITest {
 public:
-    PipelinedBatchTest() { type = RhiTestType::Command; name = "pipelined_batch_receipt_and_frame_completion"; }
-    RhiTestResult run(RhiTestContext& context) override
+    PipelinedBatchTest() { type = RHITestType::Command; name = "pipelined_batch_receipt_and_frame_completion"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderFrameContext frame;
         render::CommandRecordingContext first, second;
@@ -724,18 +724,18 @@ public:
         RECORD_REQUIRE(frame.begin(2));
         RECORD_CHECK(!tracker.submitBatch(last, {}, frame).transform([&](auto value) { receipt = std::move(value); }));
         frame.cancel();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-class PipelinedGraphTest final : public RhiTest {
+class PipelinedGraphTest final : public RHITest {
 public:
-    PipelinedGraphTest() { type = RhiTestType::Rendering; name = "pipelined_graph_gpu_progress_and_failure"; }
-    RhiTestResult run(RhiTestContext& context) override
+    PipelinedGraphTest() { type = RHITestType::Rendering; name = "pipelined_graph_gpu_progress_and_failure"; }
+    RHITestResult run(RHITestContext& context) override
     {
         auto* tasks = task::tryGetTaskSystem();
         if (!tasks || tasks->workerCount() < 3 || !context.device.capabilities().timestampQueries) {
-            return RhiTestResult::skip("three workers and timestamps required");
+            return RHITestResult::skip("three workers and timestamps required");
         }
         render::registerRenderGraphPassType("PipelinedProbePass", "Pipeline regression",
             [] { return std::make_unique<RecordingProbePass>(); });
@@ -813,7 +813,7 @@ public:
             for (auto& owner : probe.owners) { RECORD_CHECK(owner.expired()); }
         }
         recordingProbe = nullptr;
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 METALLIC_REGISTER_RHI_TEST(PipelinedBatchTest);

@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
@@ -12,21 +12,21 @@ namespace {
 
 // With one surface bounce, the caches must preserve the directly visible
 // surface's lighting instead of replacing it with a voxel or an NRC prediction.
-class RadianceCacheLightingTest : public RhiTest {
+class RadianceCacheLightingTest : public RHITest {
 public:
     RadianceCacheLightingTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "radiance_cache_lighting";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         // Match the editor: switch graphs while retaining one Vulkan device.
         render::RenderGraphPreviewRenderer preview;
         auto result = preview.initialize(context.enableValidation, true);
         if (!result) {
-            return RhiTestResult::skip("Ray-query preview is unavailable");
+            return RHITestResult::skip("Ray-query preview is unavailable");
         }
         for (uint32_t maxDepth : {1u, 3u}) {
             const auto tested = runDepth(context, preview, maxDepth);
@@ -34,11 +34,11 @@ public:
                 return tested;
             }
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 
 private:
-    RhiTestResult runDepth(RhiTestContext& context,
+    RHITestResult runDepth(RHITestContext& context,
         render::RenderGraphPreviewRenderer& preview, uint32_t maxDepth)
     {
         constexpr uint32_t kSize = 256;
@@ -78,7 +78,7 @@ private:
             for (uint32_t frame = 0; frame < kFrames; ++frame) {
                 const auto result = preview.render(graph, kSize, kSize);
                 if (!result) {
-                    return RhiTestResult::fail(std::string(mode) + ": " + preview.lastLog());
+                    return RHITestResult::fail(std::string(mode) + ": " + preview.lastLog());
                 }
             }
             const auto& pixels = preview.pixels();
@@ -86,7 +86,7 @@ private:
             if (!saveRgba8Png(context.outputDirectory /
                     (std::string(name) + "_depth" + std::to_string(maxDepth) + "_" + mode + ".png"),
                     reinterpret_cast<const uint8_t*>(pixels.data()), kSize, kSize, message)) {
-                return RhiTestResult::fail(message);
+                return RHITestResult::fail(message);
             }
             if (reference.empty()) {
                 reference = pixels;
@@ -111,7 +111,7 @@ private:
                 }
             }
             if (channelCount < 3000 || referenceEnergy < 100.0) {
-                return RhiTestResult::fail("Reference surface is missing or unlit");
+                return RHITestResult::fail("Reference surface is missing or unlit");
             }
             const double rmse = std::sqrt(squaredError / channelCount);
             const double ratio = energy / referenceEnergy;
@@ -121,7 +121,7 @@ private:
                     " energy ratio=" + std::to_string(ratio) + "; ";
             }
         }
-        return failures.empty() ? RhiTestResult::pass() : RhiTestResult::fail(failures);
+        return failures.empty() ? RHITestResult::pass() : RHITestResult::fail(failures);
     }
 };
 

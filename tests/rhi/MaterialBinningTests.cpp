@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -14,7 +14,7 @@ namespace {
 
 constexpr uint32_t kBinCount = render::kMaterialClassCount;
 constexpr uint32_t kProbeHeader = kBinCount * 5 + 2;
-constexpr uint64_t kProbeAbi = 0x4d42505200000002ull;
+constexpr uint64_t kProbeABI = 0x4d42505200000002ull;
 struct MaterialProbeParams {
     render::ShaderDataSpan bins, tiles, arguments, output;
     uint32_t width, height, binCount, bin;
@@ -61,7 +61,7 @@ public:
                 }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
                 if (!result) { log = shader.diagnostics; return result; }
                 result = kernels_[i].initialize(*device_, {.spirv = shader.spirv,
-                    .parameters = render::parameterAbi<MaterialProbeParams>(kProbeAbi)}, log);
+                    .parameters = render::parameterAbi<MaterialProbeParams>(kProbeABI)}, log);
                 if (!result) { return result; }
             }
             return {};
@@ -214,7 +214,7 @@ private:
         // Ordinary data, including the output, never allocates descriptors.
         if (registry->stats().descriptorWrites != writes) { return render::makeError(render::Error::Failure); }
         render::EncodedParameters encoded;
-        result = writer.encode(params, kProbeAbi).transform([&](auto value) { encoded = std::move(value); });
+        result = writer.encode(params, kProbeABI).transform([&](auto value) { encoded = std::move(value); });
         if (!result) { return result; }
         render::BufferBarrierDesc argumentBarrier{
             .buffer = bins.arguments,
@@ -231,7 +231,7 @@ private:
                 render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
         }
         render::EncodedParameters wrongAbi;
-        result = writer.encode(params, kProbeAbi + 1).transform([&](auto value) { wrongAbi = std::move(value); });
+        result = writer.encode(params, kProbeABI + 1).transform([&](auto value) { wrongAbi = std::move(value); });
         if (!result) { return result; }
         if (!render::hasError(kernels_[1].dispatchIndirect(commands, wrongAbi, *bins.arguments),
             render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
@@ -242,7 +242,7 @@ private:
         };
         for (uint32_t bin = 0; bin < bins.binCount; ++bin) {
             params.bin = bin;
-            result = writer.encode(params, kProbeAbi).transform([&](auto value) { encoded = std::move(value); });
+            result = writer.encode(params, kProbeABI).transform([&](auto value) { encoded = std::move(value); });
             if (!result) { return result; }
             if (auto commandResult = commands.synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return commandResult; }
             const size_t permutation = (context.frameIndex() & 1u) && (bin & 1u) ? 2 : 1;
@@ -260,23 +260,23 @@ private:
     render::MaterialBinning binning_;
 };
 
-class MaterialBinningTest : public RhiTest {
+class MaterialBinningTest : public RHITest {
 public:
     explicit MaterialBinningTest(bool typed = false) : typed_(typed)
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = typed ? "material_binning_typed_indirect_coverage" : "material_binning_indirect_coverage";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         auto result = render::createDevice({.applicationName = "Material binning probe",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
-        if (!result) { return RhiTestResult::fail("Device creation failed"); }
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("Requires bindless descriptors"); }
+        if (!result) { return RHITestResult::fail("Device creation failed"); }
         if (!device->capabilities().computeSubgroupBallotArithmetic || device->capabilities().subgroupSize != 32) {
-            return RhiTestResult::skip("Requires native wave32 with subgroup ballot and arithmetic");
+            return RHITestResult::skip("Requires native wave32 with subgroup ballot and arithmetic");
         }
         render::registerRenderGraphPassType("MaterialBinFixture", "Fixture",
             [] { return std::make_unique<MaterialBinningProbePass>(true); });
@@ -293,20 +293,20 @@ public:
         std::string log;
         for (auto extent : {std::array<uint32_t, 2>{63, 37}, {17, 9}, {1, 1}, {8, 4}, {193, 157}, {4097, 1025}}) {
             const auto [width, height] = extent;
-            if (!executor.compile(*device, graph, width, height, log)) { return RhiTestResult::fail(log); }
+            if (!executor.compile(*device, graph, width, height, log)) { return RHITestResult::fail(log); }
             // Repeat without recompiling: pooled scratch must reset counts each frame.
             for (uint32_t frame = 0; frame < 3; ++frame) {
                 result = executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)});
-                if (!result) { return RhiTestResult::fail(std::string("Binning dispatch: ") + toString(result)); }
-                if (!executor.waitForSubmittedWork(5'000'000'000ull)) { return RhiTestResult::fail("Binning wait failed"); }
+                if (!result) { return RHITestResult::fail(std::string("Binning dispatch: ") + toString(result)); }
+                if (!executor.waitForSubmittedWork(5'000'000'000ull)) { return RHITestResult::fail("Binning wait failed"); }
                 auto* buffer = executor.outputResource("Probe.data")->buffer;
                 buffer->invalidate();
                 void* mapped = buffer->map();
-                if (mapped == nullptr) { return RhiTestResult::fail("Binning readback failed"); }
+                if (mapped == nullptr) { return RHITestResult::fail("Binning readback failed"); }
                 std::vector<uint32_t> values(buffer->desc().size / 4);
                 std::memcpy(values.data(), mapped, buffer->desc().size);
                 buffer->unmap();
-                if (values[kProbeHeader - 1] != 0) { return RhiTestResult::fail("Invalid tile index, empty task mask or out-of-bounds active lane"); }
+                if (values[kProbeHeader - 1] != 0) { return RHITestResult::fail("Invalid tile index, empty task mask or out-of-bounds active lane"); }
                 const uint32_t phase = values[kProbeHeader - 2];
                 const uint32_t columns = (width + 7) / 8, rows = (height + 3) / 4;
                 std::vector<uint32_t> tileClasses(columns * rows, 0);
@@ -317,7 +317,7 @@ public:
                     if (expected != 0 && (source == 1 || source == 2)) { expected = 3; }
                     const uint32_t offset = kProbeHeader + pixel * 3;
                     if (values[offset] != expected || values[offset + 1] != 1 || values[offset + 2] != 32u + (((phase & 1u) != 0 && (expected & 1u) != 0) ? 100u : 0u)) {
-                        return RhiTestResult::fail("Pixel missing, duplicated, non-wave32 or in wrong feature class: " + std::to_string(pixel) +
+                        return RHITestResult::fail("Pixel missing, duplicated, non-wave32 or in wrong feature class: " + std::to_string(pixel) +
                             " expectedClass=" + std::to_string(expected) + " actualClass=" + std::to_string(values[offset]) +
                             " writes=" + std::to_string(values[offset + 1]) + " wave=" + std::to_string(values[offset + 2]));
                     }
@@ -330,12 +330,12 @@ public:
                     if (offset != bin * columns * rows || count != expectedTasks ||
                         values[bin * 5 + 2] != std::min(count, 65535u) ||
                         values[bin * 5 + 3] != (count + 65534) / 65535 || values[bin * 5 + 4] != 1) {
-                        return RhiTestResult::fail("Invalid tile list, duplicate class tasks or indirect groups");
+                        return RHITestResult::fail("Invalid tile list, duplicate class tasks or indirect groups");
                     }
                 }
             }
         }
-        return RhiTestResult::pass("257 materials in five feature classes; exact wave32 tile masks, edges, background, texture/NTC conservatism, feature edits, resize/reuse and 2D indirect coverage");
+        return RHITestResult::pass("257 materials in five feature classes; exact wave32 tile masks, edges, background, texture/NTC conservatism, feature edits, resize/reuse and 2D indirect coverage");
     }
 private:
     bool typed_;

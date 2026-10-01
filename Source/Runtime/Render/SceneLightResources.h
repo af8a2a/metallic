@@ -18,20 +18,20 @@ class RenderWorld;
 scene::LightingSettings resolveSceneLighting(const scene::Scene* actualScene, const RenderWorld* world);
 
 // Shared C++/Slang ABI. Element zero contains count and exposure; lights start at 1.
-struct GpuPunctualLight {
+struct GPUPunctualLight {
     float positionRange[4] = {};
     float directionType[4] = {};
     float colorIntensity[4] = {};
     float spot[4] = {};
 };
-static_assert(sizeof(GpuPunctualLight) == 64);
+static_assert(sizeof(GPUPunctualLight) == 64);
 
 // Stable source slots: imported lights first, then virtual world lights. Inactive
 // or invalid sources retain their slot and provenance, with enabled=false.
 // Document-owned imports emit only from their native virtual slot, whose pose
 // and visibility are resolved against the matching current RenderLight source.
 struct SceneLightRecord {
-    GpuPunctualLight gpu;
+    GPUPunctualLight gpu;
     int32_t sourceRenderLightIndex = scene::kInvalidSceneIndex;
     int32_t sourceVirtualLightIndex = scene::kInvalidSceneIndex;
     scene::SceneEntity sourceObject = scene::kNullSceneEntity;
@@ -42,7 +42,7 @@ std::vector<SceneLightRecord> buildSceneLightRecords(
     std::span<const scene::RenderLight> renderLights,
     std::span<const scene::PunctualLight> virtualLights);
 
-std::vector<GpuPunctualLight> buildPunctualLightRecords(
+std::vector<GPUPunctualLight> buildPunctualLightRecords(
     const scene::Scene* scene, const scene::LightingSettings& settings);
 
 class SceneLightResources {
@@ -63,7 +63,7 @@ public:
 private:
     struct SamplingState;
     std::shared_ptr<SamplingState> sampling_;
-    std::vector<GpuPunctualLight> records_;
+    std::vector<GPUPunctualLight> records_;
     std::shared_ptr<Buffer> buffer_;
     uint64_t revision_ = 0;
 };

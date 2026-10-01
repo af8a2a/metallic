@@ -70,7 +70,7 @@ Release 构建通过；最终 `validation.log` 的 9 项测试全部通过，并
 ## 复现
 
 ```powershell
-cmake --build build-release --target MetallicRhiTests MetallicGPUDrivenSample --parallel 6
-./build-release/tests/MetallicRhiTests.exe '--gtest_filter=*stream_wave_work_distribution:*meshlet_lod_stream*:*hybrid_raster_scene_equivalence:*render_graph_gpu_driven_mixed_producer_render' --rhi-validation --output-dir .cache/stream-waveops/validation
+cmake --build build-release --target MetallicRHITests MetallicGPUDrivenSample --parallel 6
+./build-release/tests/MetallicRHITests.exe '--gtest_filter=*stream_wave_work_distribution:*meshlet_lod_stream*:*hybrid_raster_scene_equivalence:*render_graph_gpu_driven_mixed_producer_render' --rhi-validation --output-dir .cache/stream-waveops/validation
 ./Tools/RunMetallicCfgReplay.ps1 -Replay .cache/gpudriven-four/Replay.json -OutputRoot .cache/stream-waveops/final -Realtime -QualityWithoutValidation
 ```

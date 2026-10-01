@@ -37,7 +37,7 @@ shader 原本没有读取的资源，不为了输出而重新计算一次生产�
 | WorkControl 使用 128 threads/group；小 wave 分支会走 fallback | 记录实际路径；未注册的 fallback 站点返回 UnsupportedPath，而非输出空集成功 |
 | `WorkloadCase.analyze_run` 无条件拒绝 validationRequested | 抽出共享 workload 身份检查，再分别实现 timing 与 shader-trace 校验；不能全局放宽原门槛 |
 
-关键源码：[Vulkan RHI](../Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp)、
+关键源码：[Vulkan RHI](../Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp)、
 [RenderDebug](../Source/Runtime/Render/Debug/RenderDebug.cpp)、
 [DebugCore](../Source/Runtime/Debug/DebugCore.cpp)、
 [SlangCompiler](../Source/Runtime/Render/Core/SlangCompiler.cpp)、

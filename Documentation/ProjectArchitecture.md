@@ -99,7 +99,7 @@ flowchart LR
     Samples["4 个 Sample 可执行文件"]
     TaskTests["MetallicTaskTests"]
     SceneTests["MetallicSceneTests"]
-    RhiTests["MetallicRhiTests"]
+    RhiTests["MetallicRHITests"]
 
     TaskLib --> RenderLib
     SceneLib --> RenderLib
@@ -122,11 +122,11 @@ flowchart LR
 | `Metallic` | 可执行文件 | 通用编辑器与工具入口 |
 | `MetallicMaterialVisualizationSample` | 可执行文件 | 材质诊断样例 |
 | `MetallicPathTracingSample` | 可执行文件 | OpenPBR 路径追踪，可切换 DLSS-RR |
-| `MetallicRtxdiSample` | 可执行文件 | RTXDI/ReSTIR DI 样例 |
+| `MetallicRTXDISample` | 可执行文件 | RTXDI/ReSTIR DI 样例 |
 | `MetallicGPUDrivenSample` | 可执行文件 | MiniZorah 流式实时延迟渲染（默认），显式选择诊断 Sample |
 | `MetallicTaskTests` | 测试可执行文件 | TaskSystem GoogleTest |
 | `MetallicSceneTests` | 测试可执行文件 | Scene GoogleTest |
-| `MetallicRhiTests` | 测试可执行文件 | 自定义 RHI 用例注册表适配到 GoogleTest |
+| `MetallicRHITests` | 测试可执行文件 | 自定义 RHI 用例注册表适配到 GoogleTest |
 
 ## 5. 程序入口与编辑器层
 
@@ -268,10 +268,10 @@ Pass 通过 `executeStages()` 声明 compute、raster、transfer 或 Unsafe 内�
 | Ray Query | `SceneMaterialVisualizationPass` | 材质参数诊断 |
 | Ray Query | `SceneRayQueryVisualizationPass` | 加速结构可视化 |
 | 路径追踪 | `ScenePathTracePass` | glTF/OpenPBR Ray Query 路径追踪、累积及可选 DLSS-RR guides |
-| RTXDI | `SceneRtxdiPass` | 多灯光 ReSTIR DI，输出 NRD 所需 noisy radiance/guides |
-| RTXDI | `RtxdiCompositePass` | 合成去噪 diffuse/specular、材质和 emissive |
-| 去噪 | `NrdDenoisePass` | NRD RELAX 去噪 |
-| 去噪 | `StreamlineDlssRrPass` | NVIDIA Streamline DLSS Ray Reconstruction |
+| RTXDI | `SceneRTXDIPass` | 多灯光 ReSTIR DI，输出 NRD 所需 noisy radiance/guides |
+| RTXDI | `RTXDICompositePass` | 合成去噪 diffuse/specular、材质和 emissive |
+| 去噪 | `NRDDenoisePass` | NRD RELAX 去噪 |
+| 去噪 | `StreamlineDLSSRRPass` | NVIDIA Streamline DLSS Ray Reconstruction |
 | GPU-driven | `VisibilityBufferPass` | 原始 Visibility Buffer / depth、两阶段 HZB 实例剔除、meshlet 剔除、可锁存的独立剔除相机，以及可选的 ID / depth / coverage 可视化；不执行材质着色 |
 | GPU-driven | `GPUDrivenStreamAssetPass` | 分页 StreamAsset、GPU LOD/遍历和 Mesh Shader 绘制 |
 | 测试 | `RenderGraphBufferWritePass`、`RenderGraphBufferCopyPass` | 缓冲、Bindless 和拷贝路径验证 |
@@ -347,7 +347,7 @@ TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进�
 
 `Runtime/Render/Core` 收纳供 RenderGraph、Pass、编辑器和工具复用的图形基础封装：
 `ComputeKernel` / `ComputeProgram`、`ResourceRegistry` / `ResourceSynchronization`、
-`SlangCompiler` / `NativeDescriptorHeapSpirv`、`RenderFrameContext`、`HistoryResources`、
+`SlangCompiler` / `NativeDescriptorHeapSPIRV`、`RenderFrameContext`、`HistoryResources`、
 `RenderView` 和 `DisplayOutput`。公共类型继续使用 `metallic::render` 命名空间，
 调用方直接包含 `Runtime/Render/Core/...`，旧路径不保留转发头。
 
@@ -358,7 +358,7 @@ shader warmup 仍为手动目标。
 
 ### 10.1 公共 RHI
 
-[`Rhi.h`](../Source/Runtime/Render/GAPI/Rhi.h) 提供 move-only RAII 对象：
+[`RHI.h`](../Source/Runtime/Render/GAPI/RHI.h) 提供 move-only RAII 对象：
 
 - `Device`、Graphics/Compute/Copy `Queue`；
 - `Swapchain`、`CommandPool`、`CommandBuffer`；
@@ -387,14 +387,14 @@ buffer 的视图、barrier、切片及 flush/invalidate 共用 `BufferRange`，�
 
 ### 10.2 Vulkan 实现
 
-`VulkanRhi.cpp` 使用 Volk 加载 Vulkan，并用 VMA 管理资源内存。PImpl 隔离大多数 Vulkan 类型，但以下位置仍显式依赖 Vulkan：
+`VulkanRHI.cpp` 使用 Volk 加载 Vulkan，并用 VMA 管理资源内存。PImpl 隔离大多数 Vulkan 类型，但以下位置仍显式依赖 Vulkan：
 
 - `SceneRtx.h` 直接把公共光追类型别名到 `vulkan::*`；
 - 编辑器通过 `VulkanNative.h` 把原生命令缓冲交给 ImGui；
 - 编辑器视口 sampler/descriptor 使用 `VkSampler`、`VkDescriptorSet`；
 - NRD、Streamline、CLAS 和 partitioned acceleration structure 均在 Vulkan 目录实现。
 
-因此增加第二后端时，仅实现 `Rhi.h` 还不够，还需要拆分编辑器呈现桥接与场景光追接口。
+因此增加第二后端时，仅实现 `RHI.h` 还不够，还需要拆分编辑器呈现桥接与场景光追接口。
 
 ### 10.3 光追能力
 
@@ -403,7 +403,7 @@ buffer 的视图、barrier、切片及 flush/invalidate 共用 `BufferRange`，�
 - `SceneAccelerationStructureBuilder`：共享的三角形 BLAS、OMM、压缩和异步提交，顶层选择 Standard TLAS 或 Partitioned TLAS；
 - `SceneClusterAccelerationStructureBuilder`：cluster acceleration structure、cluster BLAS + TLAS；
 - `ComputeProgram`：SPIR-V、descriptor binding 和 compute dispatch 封装；
-- `MeshletStreamClasPool`：面向驻留 page 的 CLAS 分配和更新。
+- `MeshletStreamCLASPool`：面向驻留 page 的 CLAS 分配和更新。
 
 这些能力均必须先检查扩展/设备能力。普通场景路径与 StreamAsset 路径分别维护加速结构，避免强迫所有场景进入同一种驻留模型。
 
@@ -462,7 +462,7 @@ Metallic 的 CPU 侧 NVTX 标记由 `Source/Runtime/Render/Profiling/NsightEvent
 - `Metallic.Editor`：编辑器主循环的 `Frame` range（payload 为帧序号）。
 - `Metallic.Render`：渲染侧 range，包括 `Render Graph Execute`（payload 为执行帧序号）、每个 Render Pass（payload 为节点 ID，颜色按 pass 类型哈希）、`Submit`（payload 为命令缓冲数量）、`Fence Wait`（payload 为超时时间）、`Semaphore Wait`（payload 为 timeline 值），以及 Streamer 的 `Buffer Upload`/`Texture Upload`/`Constant Upload`（payload 为字节数）与 `Upload Copies`（payload 为拷贝数量）。
 
-category 使用 `NsightCategory` 枚举的固定数值（Frame=1、EditorUi=2、RenderGraph=3、RenderPass=4、QueueSubmit=5、FenceWait=6、ResourceUpload=7），数值保持稳定以便工具跨会话过滤；颜色按 category 固定分配，Render Pass 例外地按 pass 类型着色。用 Nsight Systems 的 Timeline 视图按 domain/category 过滤即可看到上述 CPU range 分层。
+category 使用 `NsightCategory` 枚举的固定数值（Frame=1、EditorUI=2、RenderGraph=3、RenderPass=4、QueueSubmit=5、FenceWait=6、ResourceUpload=7），数值保持稳定以便工具跨会话过滤；颜色按 category 固定分配，Render Pass 例外地按 pass 类型着色。用 Nsight Systems 的 Timeline 视图按 domain/category 过滤即可看到上述 CPU range 分层。
 
 NsightEvents.h 在包含 `<nvtx3/nvToolsExt.h>` 时对 Windows 临时定义 `WIN32_LEAN_AND_MEAN`：NVTX 实现头会包含 `<windows.h>`，完整版会带入 `winspool.h`，其 ANSI/WIDE 别名宏 `#define DeviceCapabilities DeviceCapabilitiesA` 会破坏 RHI 同名类型。若翻译单元此前已完整包含 `windows.h`，封装头也会 `#undef DeviceCapabilities` 兜底。
 
@@ -532,7 +532,7 @@ Pass 类型名会写入 Pipeline JSON，应视为资产兼容性标识，不能�
 
 ### 13.3 修改共享 RHI 接口
 
-修改 `Rhi.h` 前应同时检查：Vulkan PImpl、RenderGraph 状态映射、Scene RTX、Streamer、编辑器 native bridge 和 `tests/rhi/`。RHI 对象是 move-only 且由 owner 控制生命周期，新增 API 应保持这一约束。
+修改 `RHI.h` 前应同时检查：Vulkan PImpl、RenderGraph 状态映射、Scene RTX、Streamer、编辑器 native bridge 和 `tests/rhi/`。RHI 对象是 move-only 且由 owner 控制生命周期，新增 API 应保持这一约束。
 
 ## 14. 测试与验证
 
@@ -573,8 +573,8 @@ RHI 测试支持原有便捷参数 `--list`/`--filter`，并会转换到 GoogleT
 - RenderGraph 模型：[`Source/Runtime/Render/RenderGraph/RenderGraphNode.h`](../Source/Runtime/Render/RenderGraph/RenderGraphNode.h)
 - Pass/反射接口：[`Source/Runtime/Render/RenderGraph/RenderGraphTypes.h`](../Source/Runtime/Render/RenderGraph/RenderGraphTypes.h)
 - 图编译与执行：[`Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp`](../Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp)
-- RHI 公共接口：[`Source/Runtime/Render/GAPI/Rhi.h`](../Source/Runtime/Render/GAPI/Rhi.h)
-- Vulkan 后端：[`Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp`](../Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp)
+- RHI 公共接口：[`Source/Runtime/Render/GAPI/RHI.h`](../Source/Runtime/Render/GAPI/RHI.h)
+- Vulkan 后端：[`Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp`](../Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp)
 - 场景数据：[`Source/Runtime/Scene/Scene.h`](../Source/Runtime/Scene/Scene.h)
 - StreamAsset 格式：[`Source/Runtime/Scene/MeshletStreamAsset.h`](../Source/Runtime/Scene/MeshletStreamAsset.h)
 - 分页运行时：[`Source/Runtime/Render/Streamer/MeshletStreamRuntime.h`](../Source/Runtime/Render/Streamer/MeshletStreamRuntime.h)

@@ -5,7 +5,7 @@
 #include "Editor/EditorDisplayRenderer.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Debug/WorkControlShaderTrace.h"
-#include "Editor/NvmlMonitor.h"
+#include "Editor/NVMLMonitor.h"
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructure.h"
@@ -275,7 +275,7 @@ private:
     std::unique_ptr<render::SceneAccelerationStructureBuilder> sceneAccelerationStructure_;
     EditorProfiler profiler_;
     editor::RenderGraphExecutionViewer graphExecutionViewer_;
-    NvmlMonitor nvmlMonitor_;
+    NVMLMonitor nvmlMonitor_;
     render::profiling::NsightGraphicsCapture nsightGraphicsCapture_;
     render::RenderGraph renderGraph_;
     scene::SceneDocument scene_;

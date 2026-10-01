@@ -33,7 +33,7 @@ struct ClusterBuildInput {
     bool opaque = true;
 };
 
-struct ClusterBlasInstanceInput {
+struct ClusterBLASInstanceInput {
     uint32_t renderPrimitiveIndex = 0;
     ClusterPrimitiveRange clusters;
     float4x4 worldMatrix = float4x4::Identity();
@@ -43,7 +43,7 @@ struct ClusterSceneInputs {
     std::vector<RayTracingVertex> vertices;
     std::vector<uint8_t> indices;
     std::vector<ClusterBuildInput> clusters;
-    std::vector<ClusterBlasInstanceInput> instances;
+    std::vector<ClusterBLASInstanceInput> instances;
     std::vector<ClusterPrimitiveRange> primitiveSelectedRanges;
     uint64_t triangleCount = 0;
 };
@@ -256,7 +256,7 @@ ClusterPrimitiveRange selectLowestLodRange(
     }
 
     for (size_t reverseIndex = primitive.meshletLodLevels.size(); reverseIndex > 0; --reverseIndex) {
-        const scene::MeshletLodLevel& level = primitive.meshletLodLevels[reverseIndex - 1u];
+        const scene::MeshletLODLevel& level = primitive.meshletLodLevels[reverseIndex - 1u];
         if (level.clusterCount != 0) {
             return ClusterPrimitiveRange{
                 .firstCluster = firstPrimitiveCluster + level.clusterOffset,
@@ -335,7 +335,7 @@ bool buildClusterSceneInputs(const scene::Scene& scene, ClusterSceneInputs& outI
         if (selectedRange.clusterCount == 0) {
             continue;
         }
-        outInputs.instances.push_back(ClusterBlasInstanceInput{
+        outInputs.instances.push_back(ClusterBLASInstanceInput{
             .renderPrimitiveIndex = static_cast<uint32_t>(renderNode.renderPrimitiveIndex),
             .clusters = selectedRange,
             .worldMatrix = renderNode.worldMatrix,
@@ -470,7 +470,7 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
             .minPositionTruncateBitCount = 0,
             .maxTotalTriangleCount = maxClusterTriangleCount,
             .maxTotalVertexCount = maxClusterVertexCount,
-            .vertexFormat = Format::Rgb32Sfloat,
+            .vertexFormat = Format::RGB32Sfloat,
             .maxAccelerationStructureCount = 1,
         }).transform([&](auto rhiValue) { singleClasSizes = std::move(rhiValue); });
     if (!result || singleClasSizes.accelerationStructureSize == 0) {
@@ -490,7 +490,7 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
             .minPositionTruncateBitCount = 0,
             .maxTotalTriangleCount = totalClusterTriangleCount,
             .maxTotalVertexCount = totalClusterVertexCount,
-            .vertexFormat = Format::Rgb32Sfloat,
+            .vertexFormat = Format::RGB32Sfloat,
             .maxAccelerationStructureCount = clusterCount,
         }).transform([&](auto rhiValue) { clasBatchSizes = std::move(rhiValue); });
     if (!result || clasBatchSizes.buildScratchSize == 0) {
@@ -503,7 +503,7 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
 
     uint32_t maxClustersPerBlas = 0;
     uint64_t selectedClusterReferenceCount = 0;
-    for (const ClusterBlasInstanceInput& instance : inputs.instances) {
+    for (const ClusterBLASInstanceInput& instance : inputs.instances) {
         maxClustersPerBlas = std::max(
             maxClustersPerBlas,
             instance.clusters.clusterCount);
@@ -712,7 +712,7 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
     clusterReferences.reserve(static_cast<size_t>(selectedClusterReferenceCount));
     std::vector<ClusterAccelerationStructureBottomLevelBuildInfo> clusterBlasBuildInfos;
     clusterBlasBuildInfos.reserve(instanceCount);
-    for (const ClusterBlasInstanceInput& instance : inputs.instances) {
+    for (const ClusterBLASInstanceInput& instance : inputs.instances) {
         const uint64_t firstReference = clusterReferences.size();
         for (uint32_t clusterOffset = 0;
              clusterOffset < instance.clusters.clusterCount;
@@ -846,10 +846,10 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
         return result;
     }
 
-    std::vector<RayTracingGpuInstance> tlasInstances(instanceCount);
+    std::vector<RayTracingGPUInstance> tlasInstances(instanceCount);
     for (uint32_t instanceIndex = 0; instanceIndex < instanceCount; ++instanceIndex) {
-        const ClusterBlasInstanceInput& source = inputs.instances[instanceIndex];
-        RayTracingGpuInstance& destination = tlasInstances[instanceIndex];
+        const ClusterBLASInstanceInput& source = inputs.instances[instanceIndex];
+        RayTracingGPUInstance& destination = tlasInstances[instanceIndex];
         copyTransform(destination.transform, source.worldMatrix);
         destination.customIndexAndMask =
             (source.renderPrimitiveIndex & 0x00ffffffu) | (0xffu << 24u);
@@ -862,7 +862,7 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
     result = createBuffer(
         device,
         "createBuffer(cluster TLAS instances)",
-        checkedByteSize(instanceCount, sizeof(RayTracingGpuInstance)),
+        checkedByteSize(instanceCount, sizeof(RayTracingGPUInstance)),
         BufferUsageBits::AccelerationStructureBuildInput |
             BufferUsageBits::ShaderDeviceAddress,
         MemoryLocation::HostUpload,
@@ -955,7 +955,7 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
                         .maxClusterUniqueGeometryCount = 1,
                         .maxGeometryIndexValue = 0,
                         .minPositionTruncateBitCount = 0,
-                        .vertexFormat = Format::Rgb32Sfloat,
+                        .vertexFormat = Format::RGB32Sfloat,
                         .scratchBuffer = impl_->scratchBuffer.get(),
                         .scratchBufferOffset = scratchOffset,
                         .buildInfoBuffer = impl_->clasBuildInfoBuffer.get(),
@@ -1014,7 +1014,7 @@ Result<> SceneClusterAccelerationStructureBuilder::build(
         checkedByteSize(inputs.vertices.size(), sizeof(RayTracingVertex)) +
         inputs.indices.size() +
         checkedByteSize(clusterReferences.size(), sizeof(uint64_t)) +
-        checkedByteSize(instanceCount, sizeof(RayTracingGpuInstance));
+        checkedByteSize(instanceCount, sizeof(RayTracingGPUInstance));
     impl_->stats = SceneClusterAccelerationStructureStats{
         .clasCount = clusterCount,
         .clusterBlasCount = instanceCount,

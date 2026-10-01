@@ -7,7 +7,7 @@ namespace metallic::render {
 
 struct ComputeKernel::Impl {
     const void* device = nullptr;
-    ParameterAbi parameters;
+    ParameterABI parameters;
     std::unique_ptr<ShaderModule> shader;
     std::unique_ptr<ComputePipeline> pipeline;
     PreparedExecution execution;

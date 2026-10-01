@@ -56,14 +56,14 @@ All observed upload records maintained requestFrame <= submitFrame <= completion
 
 Three real Vulkan tests passed without skips, using bindless descriptors and Vulkan validation:
 
-- `RhiRendering.ktx2_texture_streaming`: cancelled unsubmitted work, shared budget, visible refinement, MASK policy, logical IDs, frozen publication/resume and cold downgrade/retirement.
-- `RhiRendering.ktx2_texture_streaming_sampling_stability`: actual GPU texture sampling through mip transitions and reveal.
-- `RhiRendering.ktx2_texture_feedback_submission_contract`: accepted prefix with cancelled readback tail does not trigger refinement; two independent consumers share demand and the epilogue includes the later consumer's finer request.
+- `RHIRendering.ktx2_texture_streaming`: cancelled unsubmitted work, shared budget, visible refinement, MASK policy, logical IDs, frozen publication/resume and cold downgrade/retirement.
+- `RHIRendering.ktx2_texture_streaming_sampling_stability`: actual GPU texture sampling through mip transitions and reveal.
+- `RHIRendering.ktx2_texture_feedback_submission_contract`: accepted prefix with cancelled readback tail does not trigger refinement; two independent consumers share demand and the epilogue includes the later consumer's finer request.
 
-Builds used the existing x64 MSVC/Ninja Release configurations: `Metallic` and `MetallicGPUDrivenSample` in `build-release`, and `MetallicRhiTests` in `build-scheduling-release`. Test command:
+Builds used the existing x64 MSVC/Ninja Release configurations: `Metallic` and `MetallicGPUDrivenSample` in `build-release`, and `MetallicRHITests` in `build-scheduling-release`. Test command:
 
 ```powershell
-.\build-scheduling-release\tests\MetallicRhiTests.exe --rhi-bindless --rhi-validation `
+.\build-scheduling-release\tests\MetallicRHITests.exe --rhi-bindless --rhi-validation `
   '--gtest_filter=*ktx2_texture_streaming*:*ktx2_texture_feedback_submission_contract*' `
   --output-dir build/nsight-fix-evaluation-20260930-03/rhi-normal
 ```

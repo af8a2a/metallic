@@ -55,20 +55,20 @@ materialTextures(const scene::RenderMaterial& material)
     };
 }
 
-struct GPUSceneCpuUploadData {
-    std::vector<GPUSceneGpuGeometryRecord> geometries;
-    std::vector<GPUSceneGpuMaterialRecord> materials;
-    std::vector<GPUSceneGpuInstanceRecord> instances;
-    std::vector<GPUSceneGpuDrawKeyRecord> drawKeys;
+struct GPUSceneCPUUploadData {
+    std::vector<GPUSceneGPUGeometryRecord> geometries;
+    std::vector<GPUSceneGPUMaterialRecord> materials;
+    std::vector<GPUSceneGPUInstanceRecord> instances;
+    std::vector<GPUSceneGPUDrawKeyRecord> drawKeys;
     std::vector<uint32_t> drawInstanceIds;
-    std::vector<GPUSceneGpuVertexRecord> vertices;
+    std::vector<GPUSceneGPUVertexRecord> vertices;
     std::vector<uint32_t> indices;
-    std::vector<GPUSceneGpuMeshletRecord> meshlets;
-    std::vector<MeshletLodGroupRecord> lodGroups;
-    std::vector<GPUSceneGpuMeshletDrawRecord> meshletDraws;
+    std::vector<GPUSceneGPUMeshletRecord> meshlets;
+    std::vector<MeshletLODGroupRecord> lodGroups;
+    std::vector<GPUSceneGPUMeshletDrawRecord> meshletDraws;
     std::vector<uint32_t> meshletVertices;
     std::vector<uint32_t> meshletTriangleWords;
-    std::vector<GPUSceneGpuDescriptorRemapRecord> descriptorRemap;
+    std::vector<GPUSceneGPUDescriptorRemapRecord> descriptorRemap;
     GPUSceneRasterDrawLayout rasterDrawLayout;
 };
 
@@ -78,13 +78,13 @@ struct GPUSceneGeometryRasterRanges {
     std::vector<GPUSceneRasterDrawRange> lodRanges;
 };
 
-std::vector<GPUSceneGpuInstanceRecord> buildGpuInstanceRecords(
+std::vector<GPUSceneGPUInstanceRecord> buildGpuInstanceRecords(
     const GPUScene& gpuScene)
 {
-    std::vector<GPUSceneGpuInstanceRecord> records;
+    std::vector<GPUSceneGPUInstanceRecord> records;
     records.reserve(gpuScene.instances().size());
     for (const GPUSceneInstanceRecord& instance : gpuScene.instances()) {
-        GPUSceneGpuInstanceRecord gpu;
+        GPUSceneGPUInstanceRecord gpu;
         std::copy_n(instance.worldMatrix.a, 16, gpu.worldMatrix.begin());
         std::copy_n(instance.previousWorldMatrix.a, 16, gpu.previousWorldMatrix.begin());
         gpu.localBoundingSphere = {
@@ -93,18 +93,18 @@ std::vector<GPUSceneGpuInstanceRecord> buildGpuInstanceRecords(
             instance.localBoundingSphere.z,
             instance.localBoundingSphere.w,
         };
-        uint32_t flags = instance.visible ? GPUSceneGpuInstanceVisible : 0u;
+        uint32_t flags = instance.visible ? GPUSceneGPUInstanceVisible : 0u;
         const GPUSceneDrawBucket bucket = instance.drawKey.bucket;
         if (bucket == GPUSceneDrawBucket::OpaqueDoubleSided ||
             bucket == GPUSceneDrawBucket::MaskedDoubleSided ||
             bucket == GPUSceneDrawBucket::Blend) {
-            flags |= GPUSceneGpuInstanceDoubleSided;
+            flags |= GPUSceneGPUInstanceDoubleSided;
         }
         if (bucket == GPUSceneDrawBucket::MaskedSingleSided ||
             bucket == GPUSceneDrawBucket::MaskedDoubleSided) {
-            flags |= GPUSceneGpuInstanceMasked;
+            flags |= GPUSceneGPUInstanceMasked;
         } else if (bucket == GPUSceneDrawBucket::Blend) {
-            flags |= GPUSceneGpuInstanceBlend;
+            flags |= GPUSceneGPUInstanceBlend;
         }
         gpu.identity = {
             instance.geometry.index,
@@ -138,8 +138,8 @@ GPUSceneRasterDrawRange appendMeshletRange(
     std::span<const uint8_t> meshletTriangles,
     uint32_t firstCluster,
     uint32_t clusterCount,
-    GPUSceneCpuUploadData& data,
-    uint32_t groupOffset = kMeshletLodInvalidGroup)
+    GPUSceneCPUUploadData& data,
+    uint32_t groupOffset = kMeshletLODInvalidGroup)
 {
     GPUSceneRasterDrawRange range{
         .offset = gpuCount(data.meshlets.size()),
@@ -190,7 +190,7 @@ GPUSceneRasterDrawRange appendMeshletRange(
         const uint32_t triangleWordOffset =
             appendMeshletTriangleWords(localTriangles, data.meshletTriangleWords);
 
-        GPUSceneGpuMeshletRecord meshlet;
+        GPUSceneGPUMeshletRecord meshlet;
         meshlet.ranges = {
             vertexOffset,
             cluster.vertexCount,
@@ -199,10 +199,10 @@ GPUSceneRasterDrawRange appendMeshletRange(
         };
         meshlet.lod = {
             cluster.lodLevel,
-            groupOffset == kMeshletLodInvalidGroup ? kMeshletLodInvalidGroup :
+            groupOffset == kMeshletLODInvalidGroup ? kMeshletLODInvalidGroup :
                 groupOffset + static_cast<uint32_t>(cluster.lodGroupIndex),
-            groupOffset == kMeshletLodInvalidGroup || cluster.refinedGroupIndex < 0 ?
-                kMeshletLodInvalidGroup : groupOffset + static_cast<uint32_t>(cluster.refinedGroupIndex),
+            groupOffset == kMeshletLODInvalidGroup || cluster.refinedGroupIndex < 0 ?
+                kMeshletLODInvalidGroup : groupOffset + static_cast<uint32_t>(cluster.refinedGroupIndex),
             0,
         };
         meshlet.boundingSphere = {
@@ -229,13 +229,13 @@ GPUSceneRasterDrawRange appendMeshletRange(
     return range;
 }
 
-GPUSceneGpuMaterialTextureInfo buildGpuMaterialTextureInfo(
+GPUSceneGPUMaterialTextureInfo buildGpuMaterialTextureInfo(
     const scene::RenderTextureInfo& source,
     uint32_t materialIndex,
     uint32_t textureSlot,
-    GPUSceneCpuUploadData& data)
+    GPUSceneCPUUploadData& data)
 {
-    GPUSceneGpuMaterialTextureInfo texture;
+    GPUSceneGPUMaterialTextureInfo texture;
     texture.textureIndex = gpuCount(data.descriptorRemap.size());
     texture.texCoord = static_cast<uint32_t>(std::max(source.texCoord, 0));
     texture.transform0 = {
@@ -250,7 +250,7 @@ GPUSceneGpuMaterialTextureInfo buildGpuMaterialTextureInfo(
         source.uvTransform[5],
         0.0f,
     };
-    data.descriptorRemap.push_back(GPUSceneGpuDescriptorRemapRecord{
+    data.descriptorRemap.push_back(GPUSceneGPUDescriptorRemapRecord{
         .logicalTextureId = source.textureIndex,
         .descriptorIndex = std::numeric_limits<uint32_t>::max(),
         .materialIndex = materialIndex,
@@ -259,10 +259,10 @@ GPUSceneGpuMaterialTextureInfo buildGpuMaterialTextureInfo(
     return texture;
 }
 
-GPUSceneCpuUploadData buildGpuUploadData(
+GPUSceneCPUUploadData buildGpuUploadData(
     const GPUScene& gpuScene)
 {
-    GPUSceneCpuUploadData data;
+    GPUSceneCPUUploadData data;
     data.geometries.reserve(gpuScene.geometries().size());
     data.materials.reserve(gpuScene.materials().size());
     data.instances.reserve(gpuScene.instances().size());
@@ -271,7 +271,7 @@ GPUSceneCpuUploadData buildGpuUploadData(
     geometryRanges.resize(gpuScene.geometries().size());
 
     for (const GPUSceneGeometryRecord& geometry : gpuScene.geometries()) {
-        GPUSceneGpuGeometryRecord gpu;
+        GPUSceneGPUGeometryRecord gpu;
         gpu.source = {
             gpuUint(geometry.sourceRenderPrimitiveIndex),
             gpuUint(geometry.meshIndex),
@@ -329,7 +329,7 @@ GPUSceneCpuUploadData buildGpuUploadData(
                 const float2 texcoord = vertexIndex < primitive.texcoords0.size()
                     ? primitive.texcoords0[vertexIndex]
                     : float2(0.0f, 0.0f);
-                GPUSceneGpuVertexRecord vertex;
+                GPUSceneGPUVertexRecord vertex;
                 vertex.position = {position.x, position.y, position.z, 1.0f};
                 vertex.normal = {normal.x, normal.y, normal.z, 0.0f};
                 vertex.tangent = {tangent.x, tangent.y, tangent.z, tangent.w};
@@ -362,17 +362,17 @@ GPUSceneCpuUploadData buildGpuUploadData(
                 0,
                 gpuCount(primitive.meshletClusters.size()),
                 data);
-            std::vector<MeshletLodGroupRecord> groups;
+            std::vector<MeshletLODGroupRecord> groups;
             std::string lodReason;
             const bool validLod = buildMeshletLodMetadata(primitive, groups, lodReason);
-            const uint32_t groupOffset = validLod ? gpuCount(data.lodGroups.size()) : kMeshletLodInvalidGroup;
+            const uint32_t groupOffset = validLod ? gpuCount(data.lodGroups.size()) : kMeshletLODInvalidGroup;
             if (validLod) { data.lodGroups.insert(data.lodGroups.end(), groups.begin(), groups.end()); }
             ranges.adaptiveRange.offset = gpuCount(data.meshlets.size());
             ranges.lodRanges.resize(primitive.meshletLodLevels.size());
             for (uint32_t lodLevel = 0;
                  lodLevel < primitive.meshletLodLevels.size();
                  ++lodLevel) {
-                const scene::MeshletLodLevel& level =
+                const scene::MeshletLODLevel& level =
                     primitive.meshletLodLevels[lodLevel];
                 ranges.lodRanges[lodLevel] = appendMeshletRange(
                     primitive,
@@ -406,7 +406,7 @@ GPUSceneCpuUploadData buildGpuUploadData(
 
     for (const GPUSceneMaterialRecord& material : gpuScene.materials()) {
         const scene::RenderMaterial& source = material.material;
-        GPUSceneGpuMaterialRecord gpu;
+        GPUSceneGPUMaterialRecord gpu;
         gpu.baseColor = {
             source.baseColorFactor.x,
             source.baseColorFactor.y,
@@ -450,7 +450,7 @@ GPUSceneCpuUploadData buildGpuUploadData(
             source.diffuseTransmissionFactor,
         };
         const auto textures = materialTextures(source);
-        std::array<GPUSceneGpuMaterialTextureInfo*, kGPUSceneMaterialTextureSlotCount>
+        std::array<GPUSceneGPUMaterialTextureInfo*, kGPUSceneMaterialTextureSlotCount>
             gpuTextures{
                 &gpu.baseColorTexture,
                 &gpu.metallicRoughnessTexture,
@@ -471,13 +471,13 @@ GPUSceneCpuUploadData buildGpuUploadData(
         }
         uint32_t flags = material.fallback ? 1u << 4 : 0u;
         if (source.doubleSided) {
-            flags |= GPUSceneGpuInstanceDoubleSided;
+            flags |= GPUSceneGPUInstanceDoubleSided;
         }
         if (material.bucket == GPUSceneDrawBucket::MaskedSingleSided ||
             material.bucket == GPUSceneDrawBucket::MaskedDoubleSided) {
-            flags |= GPUSceneGpuInstanceMasked;
+            flags |= GPUSceneGPUInstanceMasked;
         } else if (material.bucket == GPUSceneDrawBucket::Blend) {
-            flags |= GPUSceneGpuInstanceBlend;
+            flags |= GPUSceneGPUInstanceBlend;
         }
         gpu.identity = {
             material.id.index,
@@ -498,7 +498,7 @@ GPUSceneCpuUploadData buildGpuUploadData(
             continue;
         }
         if (!data.drawKeys.empty()) {
-            GPUSceneGpuDrawKeyRecord& last = data.drawKeys.back();
+            GPUSceneGPUDrawKeyRecord& last = data.drawKeys.back();
             if (last.key[0] == static_cast<uint32_t>(instance->drawKey.bucket) &&
                 last.key[1] == instance->material.index &&
                 last.key[2] == instance->geometry.index) {
@@ -506,7 +506,7 @@ GPUSceneCpuUploadData buildGpuUploadData(
                 continue;
             }
         }
-        GPUSceneGpuDrawKeyRecord key;
+        GPUSceneGPUDrawKeyRecord key;
         key.key = {
             static_cast<uint32_t>(instance->drawKey.bucket),
             instance->material.index,
@@ -580,7 +580,7 @@ GPUSceneCpuUploadData buildGpuUploadData(
 
 } // namespace
 
-struct GPUSceneSubsystem::GpuBufferResource {
+struct GPUSceneSubsystem::GPUBufferResource {
     std::unique_ptr<Buffer> buffer;
     ResourceLease resource;
     uint64_t byteSize = 0;
@@ -603,17 +603,17 @@ struct GPUSceneSubsystem::GpuBufferResource {
     }
 };
 
-struct GPUSceneSubsystem::GpuResources {
-    std::array<GpuBufferResource, kGPUSceneGlobalBufferKindCount> buffers;
+struct GPUSceneSubsystem::GPUResources {
+    std::array<GPUBufferResource, kGPUSceneGlobalBufferKindCount> buffers;
     uint32_t generation = 0;
     uint64_t revision = 0;
 
-    GpuBufferResource& resource(GPUSceneGlobalBufferKind kind)
+    GPUBufferResource& resource(GPUSceneGlobalBufferKind kind)
     {
         return buffers[static_cast<size_t>(kind)];
     }
 
-    const GpuBufferResource& resource(GPUSceneGlobalBufferKind kind) const
+    const GPUBufferResource& resource(GPUSceneGlobalBufferKind kind) const
     {
         return buffers[static_cast<size_t>(kind)];
     }
@@ -633,36 +633,36 @@ struct GPUSceneSubsystem::GpuResources {
         result.meshletVertices = resource(GPUSceneGlobalBufferKind::MeshletVertices).sceneView(generation, revision);
         result.meshletTriangleWords = resource(GPUSceneGlobalBufferKind::MeshletTriangleWords).sceneView(generation, revision);
         result.descriptorRemap = resource(GPUSceneGlobalBufferKind::DescriptorRemap).sceneView(generation, revision);
-        result.lodGroups = resource(GPUSceneGlobalBufferKind::LodGroups).sceneView(generation, revision);
+        result.lodGroups = resource(GPUSceneGlobalBufferKind::LODGroups).sceneView(generation, revision);
         result.drawSetGeneration = generation;
         result.drawSetRevision = revision;
         return result;
     }
 };
 
-struct GPUSceneSubsystem::ViewGpuResources {
+struct GPUSceneSubsystem::ViewGPUResources {
     struct FrameSlotResources {
-        GpuBufferResource instanceVisibilityStates;
-        GpuBufferResource visibleInstanceIds;
-        GpuBufferResource visibleInstanceCounter;
-        std::array<GpuBufferResource, kGPUSceneCullPhaseCount> visibleMeshletIds;
-        std::array<GpuBufferResource, kGPUSceneCullPhaseCount> indirectArguments;
+        GPUBufferResource instanceVisibilityStates;
+        GPUBufferResource visibleInstanceIds;
+        GPUBufferResource visibleInstanceCounter;
+        std::array<GPUBufferResource, kGPUSceneCullPhaseCount> visibleMeshletIds;
+        std::array<GPUBufferResource, kGPUSceneCullPhaseCount> indirectArguments;
         bool initialized = false;
     };
 
     GPUSceneViewId sourceView;
     GPUSceneViewDesc desc;
     std::vector<FrameSlotResources> frameSlots;
-    std::array<GpuBufferResource, 2> hzbHistory;
+    std::array<GPUBufferResource, 2> hzbHistory;
     uint64_t allocationId = 0;
     bool hzbInitialized = false;
 
-    GPUSceneViewGpuResourcesView view(
+    GPUSceneViewGPUResourcesView view(
         uint32_t frameSlot,
         uint32_t generation,
         uint64_t revision) const
     {
-        GPUSceneViewGpuResourcesView result;
+        GPUSceneViewGPUResourcesView result;
         if (frameSlot >= frameSlots.size()) {
             return result;
         }
@@ -683,7 +683,7 @@ struct GPUSceneSubsystem::ViewGpuResources {
         for (size_t phaseIndex = 0;
              phaseIndex < kGPUSceneCullPhaseCount;
              ++phaseIndex) {
-            GPUSceneCullPhaseGpuView& phase = result.phases[phaseIndex];
+            GPUSceneCullPhaseGPUView& phase = result.phases[phaseIndex];
             phase.visibleMeshletIds =
                 slot.visibleMeshletIds[phaseIndex].sceneView(generation, revision);
             const GPUSceneBufferView indirect =
@@ -692,7 +692,7 @@ struct GPUSceneSubsystem::ViewGpuResources {
             for (size_t bucketIndex = 0;
                  bucketIndex < kGPUSceneRasterDrawBucketCount;
                  ++bucketIndex) {
-                GPUSceneBucketGpuView& bucket = phase.buckets[bucketIndex];
+                GPUSceneBucketGPUView& bucket = phase.buckets[bucketIndex];
                 bucket.indirectArguments = indirect;
                 bucket.indirectArguments.offset = bucketIndex * 4u * sizeof(uint32_t);
                 bucket.indirectArguments.size = 3u * sizeof(uint32_t);
@@ -737,7 +737,7 @@ uint64_t GPUSceneSubsystem::viewResourceKey(GPUSceneViewId view)
 }
 
 void GPUSceneSubsystem::retireViewGpuResources(
-    std::shared_ptr<ViewGpuResources> resources)
+    std::shared_ptr<ViewGPUResources> resources)
 {
     if (resources != nullptr && host_ != nullptr) {
         host_->retire(std::static_pointer_cast<void>(std::move(resources)));
@@ -786,7 +786,7 @@ bool GPUSceneSubsystem::destroyView(GPUSceneViewId view)
     }
     const auto resources = viewGpuResources_.find(viewResourceKey(view));
     if (resources != viewGpuResources_.end()) {
-        std::shared_ptr<ViewGpuResources> retired = std::move(resources->second);
+        std::shared_ptr<ViewGPUResources> retired = std::move(resources->second);
         viewGpuResources_.erase(resources);
         retireViewGpuResources(std::move(retired));
     }
@@ -892,7 +892,7 @@ Result<> GPUSceneSubsystem::ensureViewGpuResources(
         return makeError(Error::InvalidArgument);
     }
 
-    auto next = std::make_shared<ViewGpuResources>();
+    auto next = std::make_shared<ViewGPUResources>();
     next->sourceView = view;
     next->desc = desc;
     next->frameSlots.resize(desc.frameSlotCount);
@@ -905,7 +905,7 @@ Result<> GPUSceneSubsystem::ensureViewGpuResources(
                                     uint64_t byteSize,
                                     uint32_t structureStride,
                                     BufferUsageBits usage,
-                                    GpuBufferResource& resource,
+                                    GPUBufferResource& resource,
                                     const char* label) -> Result<> {
         Result<> result = device_->createBuffer(BufferDesc{
                 .size = byteSize,
@@ -940,7 +940,7 @@ Result<> GPUSceneSubsystem::ensureViewGpuResources(
     for (uint32_t frameSlot = 0;
          frameSlot < desc.frameSlotCount && result;
          ++frameSlot) {
-        ViewGpuResources::FrameSlotResources& slot = next->frameSlots[frameSlot];
+        ViewGPUResources::FrameSlotResources& slot = next->frameSlots[frameSlot];
         result = createBufferResource(
             instanceByteSize,
             sizeof(uint32_t),
@@ -1000,7 +1000,7 @@ Result<> GPUSceneSubsystem::ensureViewGpuResources(
     // published raw views before the old bundle enters deferred retirement.
     scene_.invalidateViewGpuResources(view, true);
     if (current != viewGpuResources_.end()) {
-        std::shared_ptr<ViewGpuResources> retired = std::move(current->second);
+        std::shared_ptr<ViewGPUResources> retired = std::move(current->second);
         current->second = next;
         retireViewGpuResources(std::move(retired));
     } else {
@@ -1012,7 +1012,7 @@ Result<> GPUSceneSubsystem::ensureViewGpuResources(
 bool GPUSceneSubsystem::viewGpuResources(
     GPUSceneViewId view,
     uint32_t frameSlot,
-    GPUSceneViewGpuResourcesView& resources) const
+    GPUSceneViewGPUResourcesView& resources) const
 {
     resources = {};
     const auto found = viewGpuResources_.find(viewResourceKey(view));
@@ -1041,8 +1041,8 @@ Result<> GPUSceneSubsystem::recordInitialize(
         log = "GPUSceneSubsystem recordInitialize requires a live View GPU bundle and frame slot";
         return makeError(Error::InvalidArgument);
     }
-    ViewGpuResources& resources = *found->second;
-    ViewGpuResources::FrameSlotResources& slot = resources.frameSlots[frameSlot];
+    ViewGPUResources& resources = *found->second;
+    ViewGPUResources::FrameSlotResources& slot = resources.frameSlots[frameSlot];
     const auto owned = found->second;
     const bool initialized = slot.initialized;
     const bool hzbInitialized = resources.hzbInitialized;
@@ -1059,7 +1059,7 @@ Result<> GPUSceneSubsystem::recordInitialize(
     host_->retire(std::static_pointer_cast<void>(owned));
     std::vector<BufferBarrierDesc> barriers;
     barriers.reserve(9);
-    auto initializeResource = [&barriers](const GpuBufferResource& resource) {
+    auto initializeResource = [&barriers](const GPUBufferResource& resource) {
         barriers.push_back(BufferBarrierDesc{
             .buffer = resource.buffer.get(),
             .before = {},
@@ -1079,7 +1079,7 @@ Result<> GPUSceneSubsystem::recordInitialize(
         }
     }
     if (!resources.hzbInitialized) {
-        for (const GpuBufferResource& history : resources.hzbHistory) {
+        for (const GPUBufferResource& history : resources.hzbHistory) {
             initializeResource(history);
         }
     }
@@ -1104,13 +1104,13 @@ Result<> GPUSceneSubsystem::publishViewGpuResources(
         return makeError(Error::InvalidArgument);
     }
     const GPUSceneVisibleDrawSet* visible = scene_.visibleDrawSet(view, frameSlot);
-    GPUSceneViewGpuResourcesView owned;
+    GPUSceneViewGPUResourcesView owned;
     if (visible == nullptr || !viewGpuResources(view, frameSlot, owned)) {
         log = "GPUSceneSubsystem publishViewGpuResources requires a prepared live View frame slot";
         return makeError(Error::InvalidArgument);
     }
 
-    GPUSceneVisibleGpuResources published;
+    GPUSceneVisibleGPUResources published;
     published.sourceView = view;
     published.frameSlot = frameSlot;
     published.sourceDrawSetGeneration = scene_.drawSet().generation;
@@ -1395,7 +1395,7 @@ Result<> GPUSceneSubsystem::uploadFullScene(
     const RenderSubsystemFrameContext& context,
     std::string& log)
 {
-    GPUSceneCpuUploadData data = buildGpuUploadData(scene_);
+    GPUSceneCPUUploadData data = buildGpuUploadData(scene_);
     if (!visibilityRecordCapacityFitsId(data.meshletDraws.size())) {
         log = "GPUScene resident meshlet draw count exceeds the common visibility ID record limit";
         return makeError(Error::InvalidArgument);
@@ -1415,7 +1415,7 @@ Result<> GPUSceneSubsystem::uploadFullScene(
         data.drawKeys.emplace_back();
     }
 
-    auto next = std::make_shared<GpuResources>();
+    auto next = std::make_shared<GPUResources>();
     next->generation = scene_.drawSet().generation;
     next->revision = scene_.drawSet().revision;
     auto uploads = std::make_shared<UploadResources>();
@@ -1439,7 +1439,7 @@ Result<> GPUSceneSubsystem::uploadFullScene(
             return makeError(Error::InvalidArgument);
         }
         const uint64_t byteSize = static_cast<uint64_t>(records.size()) * sizeof(T);
-        GpuBufferResource& resource = next->resource(kind);
+        GPUBufferResource& resource = next->resource(kind);
         Result<> result = device_->createBuffer(BufferDesc{
                 .size = byteSize,
                 .structureStride = sizeof(T),
@@ -1549,7 +1549,7 @@ Result<> GPUSceneSubsystem::uploadFullScene(
             "descriptor remap");
     }
     if (result) {
-        result = createResource(GPUSceneGlobalBufferKind::LodGroups, data.lodGroups, "LOD groups");
+        result = createResource(GPUSceneGlobalBufferKind::LODGroups, data.lodGroups, "LOD groups");
     }
     if (!result) {
         return result;
@@ -1632,17 +1632,17 @@ Result<> GPUSceneSubsystem::uploadInstances(
         gpuResources_->generation != scene_.drawSet().generation) {
         return uploadFullScene(context, log);
     }
-    std::vector<GPUSceneGpuInstanceRecord> instances = buildGpuInstanceRecords(scene_);
+    std::vector<GPUSceneGPUInstanceRecord> instances = buildGpuInstanceRecords(scene_);
     if (instances.empty()) {
         instances.emplace_back();
     }
     const uint64_t byteSize =
-        static_cast<uint64_t>(instances.size()) * sizeof(GPUSceneGpuInstanceRecord);
-    GpuBufferResource& resource =
+        static_cast<uint64_t>(instances.size()) * sizeof(GPUSceneGPUInstanceRecord);
+    GPUBufferResource& resource =
         gpuResources_->resource(GPUSceneGlobalBufferKind::Instances);
     if (resource.buffer == nullptr || !resource.resource.valid() ||
         resource.byteSize != byteSize ||
-        resource.structureStride != sizeof(GPUSceneGpuInstanceRecord)) {
+        resource.structureStride != sizeof(GPUSceneGPUInstanceRecord)) {
         return uploadFullScene(context, log);
     }
 
@@ -1650,7 +1650,7 @@ Result<> GPUSceneSubsystem::uploadInstances(
     std::unique_ptr<Buffer> staging;
     Result<> result = device_->createBuffer(BufferDesc{
             .size = byteSize,
-            .structureStride = sizeof(GPUSceneGpuInstanceRecord),
+            .structureStride = sizeof(GPUSceneGPUInstanceRecord),
             .usage = BufferUsageBits::TransferSource,
             .memoryLocation = MemoryLocation::HostUpload,
             .queueAccess = QueueAccessBits::Graphics,
@@ -1795,12 +1795,12 @@ Result<std::unique_ptr<RenderSubsystemShaderReload>> GPUSceneSubsystem::prepareS
 }
 
 void GPUSceneSubsystem::publishVisibilityStream(GPUSceneViewId view, uint64_t frameIndex,
-    uint64_t sceneIdentity, MeshletStreamDeferredGpuResourcesView resources)
+    uint64_t sceneIdentity, MeshletStreamDeferredGPUResourcesView resources)
 {
     visibilityStreams_[viewResourceKey(view)] = {frameIndex, sceneIdentity, resources};
 }
 
-const MeshletStreamDeferredGpuResourcesView* GPUSceneSubsystem::visibilityStream(
+const MeshletStreamDeferredGPUResourcesView* GPUSceneSubsystem::visibilityStream(
     GPUSceneViewId view, uint64_t frameIndex, uint64_t sceneIdentity) const
 {
     const auto found = visibilityStreams_.find(viewResourceKey(view));
@@ -1891,7 +1891,7 @@ Result<> GPUSceneSubsystem::recordCull(
         return makeError(Error::InvalidArgument);
     }
 
-    const GPUSceneCullPhaseGpuView& phase = visible->gpu.phases[phaseIndex];
+    const GPUSceneCullPhaseGPUView& phase = visible->gpu.phases[phaseIndex];
     Buffer* indirectBuffer = phase.buckets.front().indirectArguments.buffer;
     Buffer* instanceVisibilityBuffer = visible->gpu.instanceVisibilityStates.buffer;
     Buffer* visibleMeshletBuffer = phase.visibleMeshletIds.buffer;
@@ -1901,7 +1901,7 @@ Result<> GPUSceneSubsystem::recordCull(
         log = "GPUScene recordCull found an incomplete VisibleDrawSet GPU bundle";
         return makeError(Error::InvalidArgument);
     }
-    for (const GPUSceneBucketGpuView& bucket : phase.buckets) {
+    for (const GPUSceneBucketGPUView& bucket : phase.buckets) {
         if (bucket.indirectArguments.buffer != indirectBuffer ||
             bucket.overflow.buffer != indirectBuffer) {
             log = "GPUScene recordCull requires all bucket arguments and overflow counters in one buffer";
@@ -2080,7 +2080,7 @@ Result<> GPUSceneSubsystem::recordBuildHzb(
     CommandBuffer& commandBuffer,
     GPUSceneViewId view,
     uint32_t frameSlot,
-    const GPUSceneHzbRecordDesc& desc,
+    const GPUSceneHZBRecordDesc& desc,
     std::string& log)
 {
     const GPUSceneVisibleDrawSet* visible = scene_.visibleDrawSet(view, frameSlot);
@@ -2100,7 +2100,7 @@ Result<> GPUSceneSubsystem::recordBuildHzb(
         return makeError(Error::InvalidArgument);
     }
 
-    const GPUSceneHzbGpuView& hzb = visible->gpu.hzb;
+    const GPUSceneHZBGPUView& hzb = visible->gpu.hzb;
     Buffer* writeBuffer = hzb.history[hzb.writeIndex].buffer;
     if (writeBuffer == nullptr || desc.dispatches.size() != (desc.singleDispatch ? 1u : hzb.mipCount) ||
         (desc.singleDispatch && (desc.counterBuffer == nullptr || desc.counterResetSource == nullptr))) {

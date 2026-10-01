@@ -123,7 +123,7 @@ struct EnvironmentLightingSubsystem::DecodeJob {
     std::future<DecodedEnvironment> future;
 };
 
-struct EnvironmentLightingSubsystem::GpuPrecompute {
+struct EnvironmentLightingSubsystem::GPUPrecompute {
     ComputeProgram program;
 
     Result<> initialize(Device& device, std::string& log)
@@ -251,7 +251,7 @@ public:
     ShaderReload(
         EnvironmentLightingSubsystem& owner,
         ImportancePdfCompute pdfCompute,
-        std::unique_ptr<GpuPrecompute> gpuPrecompute)
+        std::unique_ptr<GPUPrecompute> gpuPrecompute)
         : owner_(owner)
         , pdfCompute_(std::move(pdfCompute))
         , gpuPrecompute_(std::move(gpuPrecompute))
@@ -268,7 +268,7 @@ public:
 private:
     EnvironmentLightingSubsystem& owner_;
     ImportancePdfCompute pdfCompute_;
-    std::unique_ptr<GpuPrecompute> gpuPrecompute_;
+    std::unique_ptr<GPUPrecompute> gpuPrecompute_;
 };
 
 struct EnvironmentLightingSubsystem::Resources {
@@ -298,7 +298,7 @@ Result<> EnvironmentLightingSubsystem::initialize(
     if (!result) {
         return result;
     }
-    gpuPrecompute_ = std::make_unique<GpuPrecompute>();
+    gpuPrecompute_ = std::make_unique<GPUPrecompute>();
     return gpuPrecompute_->initialize(context.device, log);
 }
 
@@ -511,7 +511,7 @@ Result<std::unique_ptr<RenderSubsystemShaderReload>> EnvironmentLightingSubsyste
     if (!result) {
         return makeError(result.error());
     }
-    auto nextGpuPrecompute = std::make_unique<GpuPrecompute>();
+    auto nextGpuPrecompute = std::make_unique<GPUPrecompute>();
     result = nextGpuPrecompute->initialize(context.device, log);
     if (!result) {
         return makeError(result.error());
@@ -549,7 +549,7 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
     Result<> result = device_->createTexture(TextureDesc{
             .type = TextureType::Texture2D,
             .usage = TextureUsageBits::Sampled | TextureUsageBits::TransferDestination,
-            .format = Format::Rgba32Sfloat,
+            .format = Format::RGBA32Sfloat,
             .width = next->width,
             .height = next->height,
             .depth = 1,
@@ -564,7 +564,7 @@ Result<> EnvironmentLightingSubsystem::publishDecoded(
     }
     result = device_->createTextureView(*next->radiance,
         TextureViewDesc{
-            .format = Format::Rgba32Sfloat,
+            .format = Format::RGBA32Sfloat,
             .range = {.baseMip = 0, .mipCount = mipCount, .baseLayer = 0, .layerCount = 1},
         }).transform([&](auto rhiValue) { next->radianceView = std::move(rhiValue); });
     if (!result || next->radianceView == nullptr) {

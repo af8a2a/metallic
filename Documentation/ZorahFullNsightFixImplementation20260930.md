@@ -109,7 +109,7 @@ and counters are in `ImplementationComparison.json/.md`.
 ## Validation and actual capture
 
 Final MSVC/Ninja Release builds succeeded for `Metallic`,
-`MetallicGPUDrivenSample` and `MetallicRhiTests` in their existing configured trees.
+`MetallicGPUDrivenSample` and `MetallicRHITests` in their existing configured trees.
 Seven real Vulkan tests passed with bindless descriptors and core validation,
 without skips:
 

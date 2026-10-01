@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 
 #include <span>
 #include <volk.h>
@@ -23,13 +23,13 @@ inline bool selectSurfaceFormat(std::span<const VkSurfaceFormatKHR> available,
         }
         return false;
     };
-    if (requestedMode == DisplayOutputMode::HdrScRgb) {
+    if (requestedMode == DisplayOutputMode::HDRscRGB) {
         if (findPair(VK_FORMAT_R16G16B16A16_SFLOAT, VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT)) {
-            actualMode = DisplayOutputMode::HdrScRgb;
+            actualMode = DisplayOutputMode::HDRscRGB;
             return true;
         }
         if (!allowSdrFallback) { return false; }
-    } else if (requestedMode != DisplayOutputMode::Sdr) {
+    } else if (requestedMode != DisplayOutputMode::SDR) {
         return false;
     }
     const VkFormat sdrFormats[] = {requestedSdrFormat, VK_FORMAT_B8G8R8A8_UNORM,
@@ -38,7 +38,7 @@ inline bool selectSurfaceFormat(std::span<const VkSurfaceFormatKHR> available,
         if (format != VK_FORMAT_B8G8R8A8_UNORM && format != VK_FORMAT_R8G8B8A8_UNORM &&
             format != VK_FORMAT_B8G8R8A8_SRGB && format != VK_FORMAT_R8G8B8A8_SRGB) { continue; }
         if (findPair(format, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)) {
-            actualMode = DisplayOutputMode::Sdr;
+            actualMode = DisplayOutputMode::SDR;
             return true;
         }
     }

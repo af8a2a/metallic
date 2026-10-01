@@ -95,35 +95,35 @@ void registerBuiltInRenderGraphPasses()
         "Path trace a glTF scene with RayQuery",
         []() { return builtin_pass::createScenePathTracePass(); });
     registerRenderGraphPassType(
-        "SceneRtxdiPass",
+        "SceneRTXDIPass",
         "Render many-light direct illumination with ReSTIR DI reservoir resampling",
         []() { return builtin_pass::createSceneRtxdiPass(); });
     registerRenderGraphPassType(
-        "RtxdiConfidencePass",
+        "RTXDIConfidencePass",
         "Convert RTXDI temporal lighting gradients into NRD confidence inputs",
         []() { return builtin_pass::createRtxdiConfidencePass(); });
     registerRenderGraphPassType(
-        "RtxdiCompositePass",
+        "RTXDICompositePass",
         "Composite NRD-denoised RTXDI diffuse and specular lighting",
         []() { return builtin_pass::createRtxdiCompositePass(); });
     registerRenderGraphPassType(
-        "RtxcrMaterialSamplePass",
+        "RTXCRMaterialSamplePass",
         "Visualize RTXCR Chiang hair, far-field hair, and subsurface material models",
         []() { return builtin_pass::createRtxcrMaterialSamplePass(); });
     registerRenderGraphPassType(
-        "NrdDenoisePass",
+        "NRDDenoisePass",
         "Denoise connected NRD radiance resources",
         []() { return builtin_pass::createNrdDenoisePass(); });
     registerRenderGraphPassType(
-        "StreamlineDlssSrPass",
+        "StreamlineDLSSSRPass",
         "Upscale an HDR color target with NVIDIA DLSS Super Resolution",
         []() { return builtin_pass::createStreamlineDlssSrPass(); });
     registerRenderGraphPassType(
-        "StreamlineDlssRrPass",
+        "StreamlineDLSSRRPass",
         "Denoise a path traced HDR color target with NVIDIA DLSS Ray Reconstruction",
         []() { return builtin_pass::createStreamlineDlssRrPass(); });
     registerRenderGraphPassType(
-        "DlssNrPass",
+        "DLSSNRPass",
         "Experimental NVIDIA DLSS Neural Rendering at native resolution",
         []() { return builtin_pass::createDlssNrPass(); });
     registerRenderGraphPassType(

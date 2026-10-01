@@ -19,7 +19,7 @@
 
 ## 验收方法
 
-`RhiRendering.minizorah_roaming` 使用完整 cook 与 metadata GPUScene，1920×1080、自动 LOD 1.5 px、异步 HW/SW、法线锥关闭。每个 60 秒周期包含局部移动、左右转向，以及第 20/25、50/55 秒的远近瞬移。
+`RHIRendering.minizorah_roaming` 使用完整 cook 与 metadata GPUScene，1920×1080、自动 LOD 1.5 px、异步 HW/SW、法线锥关闭。每个 60 秒周期包含局部移动、左右转向，以及第 20/25、50/55 秒的远近瞬移。
 
 每五秒读取同一帧的 active cut、实例可见性和分箱计数，独立从 terminal clusters 重建 DAG 覆盖：未选的粗 cluster 必须有完整替代，共享子组的各父组必须一致，不允许重复或不可达的 selected group。可见/待复测实例必须拥有 cut；同时检查所有根页仍驻留、页池不超预算、无加载失败/非法请求，且紧凑候选数等于 mask 的 popcount。
 
@@ -33,7 +33,7 @@
 $env:METALLIC_TEST_MINIZORAH = '1'
 $env:METALLIC_MINIZORAH_ROAM_SECONDS = '660'
 $env:METALLIC_MINIZORAH_ROAM_MIB = '1024'
-build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir E:/metallic/build-relwithdebinfo/minizorah-m4/cruise
+build-relwithdebinfo/tests/MetallicRHITests.exe --gtest_filter=RHIRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir E:/metallic/build-relwithdebinfo/minizorah-m4/cruise
 ```
 
 压力测试使用同一路线，将时长改为 60 秒、页池改为 64 MiB。降低预算会保留更粗的覆盖，较低帧时必须连同质量计数一起比较。
@@ -56,7 +56,7 @@ build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.mini
 
 长测的旧 CPU 采样从 GPU timing slot 读取了尚未更新的 CPU 字段，原始 JSON 中的全零数据无效。测试已改为直接读取当帧 `executionStats().cpuMilliseconds`；表中的两项 60 秒运行使用修正后的采样。长测之后还补了独立 shader fixture 的可选 raster binding 哨兵检查；MiniZorah 始终绑定该资源，实际漫游分支不变。最终 31 项回归和阶段诊断使用修正后的代码。
 
-最终回归 **31 项全部通过**（159.96 s）：涵盖 streamer 年龄保护/批量卸载、BVH 与暴力遍历对照、共享父组/容量回退、稳定混合分箱、GPUScene、混合 producer、scene binding、异步场景切换、完整 MiniZorah M3 和 64 MiB 漫游。预算年龄保护测试同帧重复 10,000 次请求，只构建一次淘汰候选表；批量卸载测试验证八页共用一个延迟任务。`MetallicRhiTests`、`MetallicGPUDrivenSample`、`Metallic` 均构建成功。
+最终回归 **31 项全部通过**（159.96 s）：涵盖 streamer 年龄保护/批量卸载、BVH 与暴力遍历对照、共享父组/容量回退、稳定混合分箱、GPUScene、混合 producer、scene binding、异步场景切换、完整 MiniZorah M3 和 64 MiB 漫游。预算年龄保护测试同帧重复 10,000 次请求，只构建一次淘汰候选表；批量卸载测试验证八页共用一个延迟任务。`MetallicRHITests`、`MetallicGPUDrivenSample`、`Metallic` 均构建成功。
 
 ### GPU 阶段诊断
 

@@ -39,7 +39,7 @@
 
 ## 验证
 
-Release 构建 `MetallicGPUDrivenSample` 与 `MetallicRhiTests` 成功。4 项测试全部通过，日志未见 Vulkan validation error：
+Release 构建 `MetallicGPUDrivenSample` 与 `MetallicRHITests` 成功。4 项测试全部通过，日志未见 Vulkan validation error：
 
 - `ktx2_texture_resources`：BC4/5/7 各 mip GPU 采样、NPOT、swizzle/sRGB、描述符顺序；1/2/4/8 线程逐 mip CPU 字节对照、字节及任务限额、生产者等待时销毁、坏帧后恢复；异步取消重载；加载末尾 payload 损坏时失败且不发布，清理后成功重载。
 - `bc_texture_padded_upload`：BC 上传对齐和压力预算路径。
@@ -53,7 +53,7 @@ Release 构建 `MetallicGPUDrivenSample` 与 `MetallicRhiTests` 成功。4 项�
 ```powershell
 $env:METALLIC_ZORAH_Z3_FULL = '1'
 $env:METALLIC_KTX_LOAD_WORKERS = '4'
-& build-release/tests/MetallicRhiTests.exe --rhi-bindless --rhi-validation `
+& build-release/tests/MetallicRHITests.exe --rhi-bindless --rhi-validation `
   '--gtest_filter=*zorah_texture_resources' `
   --output-dir build-release/zorah-upload-parallel/recheck
 ```

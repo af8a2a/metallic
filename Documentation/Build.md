@@ -156,7 +156,7 @@ retained by their OMM; ordinary KHR behavior is unchanged. Restart the rebuilt
 application and create a fresh capture, since existing files keep their original
 build parameters. See [replay evidence and removal TODO](NsightCaptureReplayInvestigation.md).
 To export a warmed-up Sponza frame without a window, run
-`MetallicRhiTests --rhi-realtime --rhi-async-compute --rhi-aftermath --rhi-nsight-export --rhi-no-validation --gtest_filter='*gpu_driven_sponza_realtime_pipeline' --output-dir .tmp/nsight-replay`.
+`MetallicRHITests --rhi-realtime --rhi-async-compute --rhi-aftermath --rhi-nsight-export --rhi-no-validation --gtest_filter='*gpu_driven_sponza_realtime_pipeline' --output-dir .tmp/nsight-replay`.
 The runner prints the capture path under the output directory's `nsight` folder;
 verify it with `ngfx-replay --present-hidden --loop-count 3 --no-block-on-incompatibility <capture>`.
 
@@ -167,7 +167,7 @@ debug information remain available; ordinary runs keep automatic checkpoints.
 TODO(Nsight Aftermath): Restore checkpoints after a fixed capture runtime passes
 the regression. `METALLIC_AFTERMATH_AUTOMATIC_CHECKPOINTS=1` forces them on for
 that verification (`0` forces them off). The editor-equivalent headless check is
-`MetallicRhiTests --rhi-realtime --rhi-async-compute --rhi-aftermath --rhi-nsight-capture --rhi-no-validation --gtest_filter='*sponza_async_scene_rtas*:*gpu_driven_sponza_realtime_pipeline*'`.
+`MetallicRHITests --rhi-realtime --rhi-async-compute --rhi-aftermath --rhi-nsight-capture --rhi-no-validation --gtest_filter='*sponza_async_scene_rtas*:*gpu_driven_sponza_realtime_pipeline*'`.
 See the investigation document for the before/after evidence and cleanup fix.
 
 To disable this launch default, configure with
@@ -218,7 +218,7 @@ all shader permutations. Kernels compile on first use through the Slang disk
 cache. This also allows `cmake --preset metallic-dev -DMETALLIC_ENABLE_NRD=ON`
 without initializing the NRD submodule. See the
 [NRD integration notes](../Shaders/Interop/Denoising/NRD/README.md) for ownership,
-upgrades, and the `MetallicNrdTests` validation target.
+upgrades, and the `MetallicNRDTests` validation target.
 
 The hash includes compiler identity/version/target, platform, Windows SDK,
 CRT, configuration, compile/link flags, toolchain file, dependency Git revisions,
@@ -305,7 +305,7 @@ Validated on Windows x64 with MSVC 19.51.36256 and CMake 4.2.1, Debug:
 `METALLIC_RHI_DIAGNOSTICS` defaults to `OFF`. Enable it in a compatible existing
 build tree to compile the same Vulkan barrier/submit observation hooks into the
 shared render runtime, editor, and tests. It does not change public RHI object
-layouts or enable capture by itself. `MetallicRhiTests --tb-trace` installs the
+layouts or enable capture by itself. `MetallicRHITests --tb-trace` installs the
 bounded recorder; requesting it in an OFF build fails explicitly. See
 [RHI Testbench](RhiTestbench.md#m4-诊断与合法序列) for trace A/B, sequence replay,
 and shrinking commands. The property and shrinker tests do not require this flag.

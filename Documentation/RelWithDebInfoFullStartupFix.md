@@ -12,7 +12,7 @@ VisibilityBufferPass 原来只在宽高完全相等时复用 VisibilityHybridRas
 
 ## 验证
 
-- `cmake --preset metallic-relwithdebinfo -DMETALLIC_BUILD_TESTS=ON`，构建 `MetallicGPUDrivenSample`、`MetallicRhiTests` 成功。
+- `cmake --preset metallic-relwithdebinfo -DMETALLIC_BUILD_TESTS=ON`，构建 `MetallicGPUDrivenSample`、`MetallicRHITests` 成功。
 - 3/3 Vulkan validation 光栅测试通过：深度/覆盖/队列溢出、稳定 cluster 分桶与间接参数、场景等价。新增检查模拟先按大尺寸分配再缩小/恢复，验证缓冲身份不变、拒绝零尺寸/超容量且不改变当前尺寸，并继续对照 HW 深度与覆盖结果。测试日志没有 Validation Error / VUID。
 - 保持默认 `nsightCapture=true`、`shaderDebugMode=capture-symbols`，隐藏编辑器启动 ZorahFull；1797×660 输出、1198×440 内部，2 秒预热和 5 秒短程漫游。`capture_complete`，51 帧，GPU timing 无缺失，退出码 0，无 OOM。DLSS 首次初始化后可用预算为 2,290,220,432 字节（约 2.13 GiB）。这是捕获注入模式的启动验证，没有导出新的 `.ngfx-capture`，也不将其帧耗时当作常规性能基准。
 

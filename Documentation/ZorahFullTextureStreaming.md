@@ -49,7 +49,7 @@ Profiler → Streaming → **Texture Residency**（折叠 scope）：常驻/待�
 
 真实编辑器隐藏窗口也通过两轮 MiniZorah→Full、1404×674 完整 DLSS/HDR：两轮分别已有 522 / 677 次升级；第二轮隐藏背景后的实际输出有 603250 / 946296 个有效着色像素。随后主动注入一次预算拒绝，自动重试暂停与显式恢复均通过。[Editor 日志](../build-release/texture-streaming/editor.log)。计数由共享纹理 owner 累计，第二轮可复用同一 owner；不是每轮清零的升级次数。
 
-复现 Full 路线：设置 `METALLIC_TEST_ZORAH_FULL=1`、`METALLIC_ZORAH_FULL_CYCLES=1`、`METALLIC_TEST_TEXTURE_ROAM=1`，运行 `MetallicRhiTests.exe --rhi-validation --rhi-bindless --gtest_filter=*zorah_full_first_frame --output-dir <目录>`。
+复现 Full 路线：设置 `METALLIC_TEST_ZORAH_FULL=1`、`METALLIC_ZORAH_FULL_CYCLES=1`、`METALLIC_TEST_TEXTURE_ROAM=1`，运行 `MetallicRHITests.exe --rhi-validation --rhi-bindless --gtest_filter=*zorah_full_first_frame --output-dir <目录>`。
 
 最终定向回归共 6 项通过：KTX2 资源与 streaming、流式材质着色、透射、MASK 阴影、metadata/material preview。新增压力阶段强制 device-local heap 上限为 1 B，已有底图保持可用且没有升级；解除限制后正常细化与冷回收。初版测试误把 graphReserveBytes 配置当作已生效的 reservation，已改用实际 heap 上限注入。
 

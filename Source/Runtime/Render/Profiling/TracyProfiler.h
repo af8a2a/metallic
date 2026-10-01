@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 
 #include <source_location>
 #include <string>
@@ -20,15 +20,15 @@ namespace metallic::render::profiling {
 // Recording metadata stays engine-owned until its submission completes. Emitting
 // complete frames together prevents cancelled recordings from leaving open Tracy
 // zones, and lets the adapter reuse the editor's timestamp queries.
-struct GpuProfileZone {
+struct GPUProfileZone {
     std::string name;
     std::source_location location;
     int64_t cpuBegin = 0;
     int64_t cpuEnd = 0;
 };
 
-struct GpuProfileFrame {
-    GpuClockCalibration calibration;
+struct GPUProfileFrame {
+    GPUClockCalibration calibration;
     int64_t calibrationCpuTime = 0;
     int64_t cpuBegin = 0;
     int64_t cpuEnd = 0;
@@ -36,18 +36,18 @@ struct GpuProfileFrame {
     uint64_t connection = 0;
     bool active = false;
     bool calibrated = false;
-    std::vector<GpuProfileZone> zones;
+    std::vector<GPUProfileZone> zones;
 };
 
-class TracyGpuProfiler {
+class TracyGPUProfiler {
 public:
-    void beginFrame(Queue& queue, GpuProfileFrame& frame);
-    void beginZone(GpuProfileFrame& frame, std::string_view name,
+    void beginFrame(Queue& queue, GPUProfileFrame& frame);
+    void beginZone(GPUProfileFrame& frame, std::string_view name,
         std::source_location location = std::source_location::current());
-    void endZone(GpuProfileFrame& frame);
-    void endFrame(GpuProfileFrame& frame);
+    void endZone(GPUProfileFrame& frame);
+    void endFrame(GPUProfileFrame& frame);
     // Query layout: frame begin/end, followed by a begin/end pair per pass.
-    void publish(const GpuProfileFrame& frame, std::span<const TimestampQueryResult> timestamps,
+    void publish(const GPUProfileFrame& frame, std::span<const TimestampQueryResult> timestamps,
         double timestampPeriodNanoseconds);
 
 private:
@@ -56,8 +56,8 @@ private:
     bool exhausted_ = false;
     uint8_t context_ = 0;
     uint64_t connection_ = 0;
-    GpuClockCalibration initialCalibration_;
-    GpuClockCalibration previousCalibration_;
+    GPUClockCalibration initialCalibration_;
+    GPUClockCalibration previousCalibration_;
 };
 
 } // namespace metallic::render::profiling

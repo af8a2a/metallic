@@ -45,7 +45,7 @@
 
 ## 最终验收
 
-最终版本构建 `MetallicRhiTests`、`MetallicGPUDrivenSample` 和 `Metallic` 成功。33 项回归全部通过（163.809 秒），覆盖流式 residency、元数据、混合 producer、场景切换、统一 VBuffer、异步 HW/SW 与 MiniZorah。线性、BVH、协作三个实现共 219 组 GPU/reference cut 对照通过；新增测试覆盖冷页缓存、空/截断反馈、热页保护、延迟释放以及碎片池连续失败、合并与对齐溢出。回归和长测日志均无 Vulkan validation error 或 device loss。
+最终版本构建 `MetallicRHITests`、`MetallicGPUDrivenSample` 和 `Metallic` 成功。33 项回归全部通过（163.809 秒），覆盖流式 residency、元数据、混合 producer、场景切换、统一 VBuffer、异步 HW/SW 与 MiniZorah。线性、BVH、协作三个实现共 219 组 GPU/reference cut 对照通过；新增测试覆盖冷页缓存、空/截断反馈、热页保护、延迟释放以及碎片池连续失败、合并与对齐溢出。回归和长测日志均无 Vulkan validation error 或 device loss。
 
 64 MiB、60 秒压力路线通过 12 个检查点和 5,805 个计时帧：GPU P95 9.99 ms，同步帧 P95 13.93 ms，第 55 秒累计上传 258,321,440 B、完成卸载 13,763 次。此档依赖较粗 cut，不能据此宣称 1.5 px 质量收敛。
 
@@ -72,13 +72,13 @@ GPU P95 下降 61.1%，同步帧 P95 下降 52.6%，累计上传下降 69.2%，�
 $env:METALLIC_TEST_MINIZORAH = '1'
 $env:METALLIC_MINIZORAH_ROAM_SECONDS = '660'
 $env:METALLIC_MINIZORAH_ROAM_MIB = '1024'
-& .\build-relwithdebinfo\tests\MetallicRhiTests.exe --gtest_filter=RhiRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir E:/metallic/build-relwithdebinfo/minizorah-m4-opt/recheck
+& .\build-relwithdebinfo\tests\MetallicRHITests.exe --gtest_filter=RHIRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir E:/metallic/build-relwithdebinfo/minizorah-m4-opt/recheck
 ```
 
 将秒数和预算分别设为 `60`、`64`，使用下面的 filter 可复现本轮 33 项回归；将输出目录另设以保留长测结果。
 
 ```text
-*streamer_meshlet*:*meshlet_lod_stream*:*hybrid_*:*gpu_scene*:RhiRendering.stream_metadata_*:RhiRendering.render_graph_gpu_driven_mixed_producer_render:RhiRendering.render_graph_scene_binding_contract:RhiRendering.visibility_buffer_async_scene_handoff:RhiRendering.minizorah_vbuffer:RhiRendering.minizorah_roaming
+*streamer_meshlet*:*meshlet_lod_stream*:*hybrid_*:*gpu_scene*:RHIRendering.stream_metadata_*:RHIRendering.render_graph_gpu_driven_mixed_producer_render:RHIRendering.render_graph_scene_binding_contract:RHIRendering.visibility_buffer_async_scene_handoff:RHIRendering.minizorah_vbuffer:RHIRendering.minizorah_roaming
 ```
 
 ## 后续边界

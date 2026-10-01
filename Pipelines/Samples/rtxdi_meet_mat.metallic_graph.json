@@ -3,27 +3,27 @@
         {
             "dst": "Relax.noisySpecular",
             "id": 2,
-            "src": "Rtxdi.noisySpecular"
+            "src": "RTXDI.noisySpecular"
         },
         {
             "dst": "Relax.normalRoughness",
             "id": 3,
-            "src": "Rtxdi.normalRoughness"
+            "src": "RTXDI.normalRoughness"
         },
         {
             "dst": "Relax.motionVectors",
             "id": 4,
-            "src": "Rtxdi.motionVectors"
+            "src": "RTXDI.motionVectors"
         },
         {
             "dst": "Relax.viewZ",
             "id": 5,
-            "src": "Rtxdi.viewZ"
+            "src": "RTXDI.viewZ"
         },
         {
             "dst": "Relax.baseColorMetalness",
             "id": 6,
-            "src": "Rtxdi.baseColorMetalness"
+            "src": "RTXDI.baseColorMetalness"
         },
         {
             "dst": "Composite.denoisedDiffuse",
@@ -38,37 +38,37 @@
         {
             "dst": "Composite.baseColorMetalness",
             "id": 9,
-            "src": "Rtxdi.baseColorMetalness"
+            "src": "RTXDI.baseColorMetalness"
         },
         {
             "dst": "Composite.emissive",
             "id": 10,
-            "src": "Rtxdi.emissive"
+            "src": "RTXDI.emissive"
         },
         {
             "dst": "Relax.noisyDiffuse",
             "id": 11,
-            "src": "Rtxdi.noisyDiffuse"
+            "src": "RTXDI.noisyDiffuse"
         },
         {
             "dst": "Confidence.noisyDiffuse",
             "id": 12,
-            "src": "Rtxdi.noisyDiffuse"
+            "src": "RTXDI.noisyDiffuse"
         },
         {
             "dst": "Confidence.noisySpecular",
             "id": 13,
-            "src": "Rtxdi.noisySpecular"
+            "src": "RTXDI.noisySpecular"
         },
         {
             "dst": "Confidence.baseColorMetalness",
             "id": 14,
-            "src": "Rtxdi.baseColorMetalness"
+            "src": "RTXDI.baseColorMetalness"
         },
         {
             "dst": "Confidence.motionVectors",
             "id": 15,
-            "src": "Rtxdi.motionVectors"
+            "src": "RTXDI.motionVectors"
         },
         {
             "dst": "Relax.diffuseConfidence",
@@ -95,7 +95,7 @@
     "nodes": [
         {
             "id": 1,
-            "name": "Rtxdi",
+            "name": "RTXDI",
             "position": {
                 "x": -151.0,
                 "y": 267.0000305175781
@@ -146,7 +146,7 @@
                 "visualization": "shaded",
                 "outputLinear": true
             },
-            "type": "SceneRtxdiPass"
+            "type": "SceneRTXDIPass"
         },
         {
             "id": 2,
@@ -193,7 +193,7 @@
                 "relaxSpecularPrepassRadius": 50.0,
                 "resetSerial": 0
             },
-            "type": "NrdDenoisePass"
+            "type": "NRDDenoisePass"
         },
         {
             "id": 4,
@@ -209,7 +209,7 @@
                 "gradientSensitivity": 8.0,
                 "resetSerial": 0
             },
-            "type": "RtxdiConfidencePass"
+            "type": "RTXDIConfidencePass"
         },
         {
             "id": 3,
@@ -222,7 +222,7 @@
                 "exposure": 1.0,
                 "outputLinear": true
             },
-            "type": "RtxdiCompositePass"
+            "type": "RTXDICompositePass"
         },
         {
             "id": 6,

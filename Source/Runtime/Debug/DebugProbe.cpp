@@ -42,7 +42,7 @@ DebugResult<void> validateProbeSpecification(const DebugValue& specification)
 
 DebugTypeDesc probePartialLayout()
 {
-    return {"GpuProbePartial", 32, {{"finiteCount", "u32", 0}, {"matchedCount", "u32", 4},
+    return {"GPUProbePartial", 32, {{"finiteCount", "u32", 0}, {"matchedCount", "u32", 4},
         {"nanCount", "u32", 8}, {"infCount", "u32", 12}, {"minBits", "u32", 16},
         {"maxBits", "u32", 20}, {"firstIndex", "u32", 24}, {"firstBits", "u32", 28}}};
 }

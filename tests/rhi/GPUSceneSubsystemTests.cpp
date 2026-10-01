@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 
 #include "Runtime/Render/Subsystem/BuiltinRenderSubsystems.h"
 #include "Runtime/Render/Subsystem/GPUSceneLightFrustum.h"
@@ -20,18 +20,18 @@ namespace {
 static_assert(sizeof(render::VisibleClusterRecord) == 16u);
 static_assert(alignof(render::VisibleClusterRecord) == 16u);
 static_assert(std::is_same_v<
-    render::GPUSceneGpuMeshletDrawRecord,
+    render::GPUSceneGPUMeshletDrawRecord,
     render::VisibleClusterRecord>);
 
-class GPUDrivenRasterVisibilityIdContractTest final : public RhiTest {
+class GPUDrivenRasterVisibilityIdContractTest final : public RHITest {
 public:
     GPUDrivenRasterVisibilityIdContractTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "gpu_driven_raster_visibility_id_contract";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const uint32_t highestVisibilityId =
             ((render::kVisibilityMaxRecordIndex + 1u) <<
@@ -46,10 +46,10 @@ public:
                 render::kVisibilityMaxRecordCount) ||
             render::visibilityRecordCapacityFitsId(
                 static_cast<uint64_t>(render::kVisibilityMaxRecordCount) + 1u)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "common visibility ID record capacity contract is incorrect");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
@@ -123,13 +123,13 @@ scene::RenderPrimitive makeCanonicalRasterPrimitive()
     primitive.meshletVertices = {0, 1, 2};
     primitive.meshletTriangles = {0, 1, 2};
     primitive.meshletLodLevels = {
-        scene::MeshletLodLevel{
+        scene::MeshletLODLevel{
             .groupOffset = 0,
             .groupCount = 1,
             .clusterOffset = 0,
             .clusterCount = 1,
         },
-        scene::MeshletLodLevel{
+        scene::MeshletLODLevel{
             .groupOffset = 1,
             .groupCount = 1,
             .clusterOffset = 1,
@@ -188,15 +188,15 @@ render::GPUSceneSourceView makeSourceView(
     };
 }
 
-class GPUSceneCpuCoreTest final : public RhiTest {
+class GPUSceneCPUCoreTest final : public RHITest {
 public:
-    GPUSceneCpuCoreTest()
+    GPUSceneCPUCoreTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "gpu_scene_cpu_core";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::vector<scene::RenderPrimitive> primitives{
             makeTrianglePrimitive(),
@@ -237,18 +237,18 @@ public:
             makeSourceView(primitives, nodes, materials, 1, 1, 1),
             log);
         if (!result) {
-            return RhiTestResult::fail("GPUScene rebuild failed: " + log);
+            return RHITestResult::fail("GPUScene rebuild failed: " + log);
         }
 
         const render::GPUSceneStats& stats = gpuScene.stats();
         if (stats.geometryCount != 2 || stats.materialCount != 5 ||
             stats.instanceCount != 5 || stats.deduplicatedGeometryCount != 1 ||
             stats.geometryPayloadConflictCount != 1 || stats.skippedRenderNodeCount != 1) {
-            return RhiTestResult::fail("GPUScene build/deduplication stats are incorrect");
+            return RHITestResult::fail("GPUScene build/deduplication stats are incorrect");
         }
         for (uint32_t count : stats.bucketInstanceCounts) {
             if (count != 1) {
-                return RhiTestResult::fail("GPUScene did not classify one instance into every draw bucket");
+                return RHITestResult::fail("GPUScene did not classify one instance into every draw bucket");
             }
         }
 
@@ -260,7 +260,7 @@ public:
         if (!geometry0 || geometry0 != geometry1 || geometry0 == geometry2 ||
             !material0 || !instance0 || gpuScene.instanceForRenderNode(5) ||
             gpuScene.instancesForObject(objectA).size() != 2) {
-            return RhiTestResult::fail("GPUScene source mappings are incorrect");
+            return RHITestResult::fail("GPUScene source mappings are incorrect");
         }
         const uint32_t initialDrawSetGeneration = gpuScene.drawSet().generation;
         const uint64_t initialDrawSetRevision = gpuScene.drawSet().revision;
@@ -273,23 +273,23 @@ public:
             std::abs(initialInstance->localBoundingSphere.y - 0.5f) > 0.00001f ||
             std::abs(initialInstance->localBoundingSphere.z) > 0.00001f ||
             std::abs(initialInstance->localBoundingSphere.w - std::sqrt(0.5f)) > 0.00001f) {
-            return RhiTestResult::fail("GPUScene generation, transform history, or local bounds sphere is incorrect");
+            return RHITestResult::fail("GPUScene generation, transform history, or local bounds sphere is incorrect");
         }
 
         const render::GPUSceneViewId view = gpuScene.createView();
         if (!view || !gpuScene.prepareView(view, 0, [](const render::GPUSceneInstanceRecord& instance) {
                 return instance.sourceNodeIndex < 3;
             })) {
-            return RhiTestResult::fail("GPUScene failed to create or prepare a View");
+            return RHITestResult::fail("GPUScene failed to create or prepare a View");
         }
         const render::GPUSceneVisibleDrawSet* visible = gpuScene.visibleDrawSet(view, 0);
         if (visible == nullptr || visible->instances.size() != 3 ||
             visible->stats.sourceInstanceCount != 5 || visible->stats.prepareCount != 1) {
-            return RhiTestResult::fail("GPUScene View predicate or VisibleDrawSet stats are incorrect");
+            return RHITestResult::fail("GPUScene View predicate or VisibleDrawSet stats are incorrect");
         }
         if (!gpuScene.prepareView(view, 1) ||
             gpuScene.visibleDrawSet(view, 1)->instances.size() != 4) {
-            return RhiTestResult::fail("GPUScene visibility filtering is incorrect");
+            return RHITestResult::fail("GPUScene visibility filtering is incorrect");
         }
 
         const render::GPUSceneViewId secondView = gpuScene.createView();
@@ -300,7 +300,7 @@ public:
         if (!secondView ||
             !gpuScene.prepareView(view, 0, initialViewInfo) ||
             !gpuScene.prepareView(secondView, 0, initialViewInfo)) {
-            return RhiTestResult::fail("GPUScene failed to prepare two isolated View histories");
+            return RHITestResult::fail("GPUScene failed to prepare two isolated View histories");
         }
         const uint64_t initialHzbEpoch =
             gpuScene.visibleDrawSet(view, 0)->stats.hzbHistoryEpoch;
@@ -308,7 +308,7 @@ public:
             !gpuScene.prepareView(view, 0, initialViewInfo) ||
             !gpuScene.visibleDrawSet(view, 0)->stats.hzbValid ||
             gpuScene.visibleDrawSet(secondView, 0)->stats.hzbValid) {
-            return RhiTestResult::fail("GPUScene View HZB validity leaked between Views");
+            return RHITestResult::fail("GPUScene View HZB validity leaked between Views");
         }
         const render::GPUSceneViewPrepareInfo resizedViewInfo{
             .width = 800,
@@ -317,7 +317,7 @@ public:
         if (!gpuScene.prepareView(view, 0, resizedViewInfo) ||
             gpuScene.visibleDrawSet(view, 0)->stats.hzbValid ||
             gpuScene.visibleDrawSet(view, 0)->stats.hzbHistoryEpoch <= initialHzbEpoch) {
-            return RhiTestResult::fail("GPUScene resize did not invalidate the View HZB history");
+            return RHITestResult::fail("GPUScene resize did not invalidate the View HZB history");
         }
         if (!gpuScene.markViewHzbValid(view, 0) ||
             !gpuScene.prepareView(
@@ -340,11 +340,11 @@ public:
                     .freezeCullingCamera = true,
                 }) ||
             gpuScene.visibleDrawSet(view, 0)->stats.hzbValid) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene freeze toggle or camera cut did not invalidate HZB history");
         }
         if (!gpuScene.destroyView(secondView)) {
-            return RhiTestResult::fail("GPUScene failed to destroy the second isolated View");
+            return RHITestResult::fail("GPUScene failed to destroy the second isolated View");
         }
 
         const float4x4 initialWorldMatrix = nodes[0].worldMatrix;
@@ -364,7 +364,7 @@ public:
             !sameMatrix(gpuScene.instance(instance0)->previousWorldMatrix, initialWorldMatrix) ||
             gpuScene.visibleDrawSet(view, 0) != nullptr ||
             gpuScene.visibleDrawSet(view, 1) != nullptr) {
-            return RhiTestResult::fail("GPUScene incremental transform/visibility sync is incorrect");
+            return RHITestResult::fail("GPUScene incremental transform/visibility sync is incorrect");
         }
         const uint64_t updatedDrawSetRevision = gpuScene.drawSet().revision;
         if (gpuScene.sync(makeSourceView(primitives, nodes, materials, 2, 2, 1)) !=
@@ -374,17 +374,17 @@ public:
             !sameMatrix(
                 gpuScene.instance(instance0)->previousWorldMatrix,
                 updatedWorldMatrix)) {
-            return RhiTestResult::fail("GPUScene previous transform did not converge on the next frame");
+            return RHITestResult::fail("GPUScene previous transform did not converge on the next frame");
         }
         const uint64_t convergedDrawSetRevision = gpuScene.drawSet().revision;
         if (gpuScene.sync(makeSourceView(primitives, nodes, materials, 2, 2, 1)) !=
                 render::GPUSceneSyncResult::Unchanged ||
             gpuScene.drawSet().revision != convergedDrawSetRevision) {
-            return RhiTestResult::fail("GPUScene transform history did not settle after convergence");
+            return RHITestResult::fail("GPUScene transform history did not settle after convergence");
         }
         if (!gpuScene.prepareView(view, 0) ||
             gpuScene.visibleDrawSet(view, 0)->instances.size() != 5) {
-            return RhiTestResult::fail("GPUScene did not refresh VisibleDrawSet after incremental sync");
+            return RHITestResult::fail("GPUScene did not refresh VisibleDrawSet after incremental sync");
         }
 
         std::unique_ptr<render::Buffer> gpuViewBuffer;
@@ -395,12 +395,12 @@ public:
                     render::BufferUsageBits::Indirect,
             }).transform([&](auto rhiValue) { gpuViewBuffer = std::move(rhiValue); });
         if (!result || gpuViewBuffer == nullptr) {
-            return RhiTestResult::fail("GPUScene buffer-view test buffer creation failed");
+            return RHITestResult::fail("GPUScene buffer-view test buffer creation failed");
         }
         const uint32_t currentGeneration = gpuScene.drawSet().generation;
         const uint64_t currentRevision = gpuScene.drawSet().revision;
         auto makeVisibleGpuResources = [&]() {
-            render::GPUSceneVisibleGpuResources resources;
+            render::GPUSceneVisibleGPUResources resources;
             resources.instanceVisibilityStates = render::GPUSceneBufferView{
                 .buffer = gpuViewBuffer.get(),
                 .offset = 0,
@@ -410,7 +410,7 @@ public:
             for (uint32_t phaseIndex = 0;
                  phaseIndex < render::kGPUSceneCullPhaseCount;
                  ++phaseIndex) {
-                render::GPUSceneCullPhaseGpuView& phase = resources.phases[phaseIndex];
+                render::GPUSceneCullPhaseGPUView& phase = resources.phases[phaseIndex];
                 phase.visibleMeshletIds = render::GPUSceneBufferView{
                     .buffer = gpuViewBuffer.get(),
                     .offset = 0,
@@ -465,26 +465,26 @@ public:
             !gpuScene.visibleDrawSet(view, 0)->gpu.validFor(
                 currentGeneration,
                 currentRevision)) {
-            return RhiTestResult::fail("GPUScene rejected valid visible GPU buffer views");
+            return RHITestResult::fail("GPUScene rejected valid visible GPU buffer views");
         }
-        render::GPUSceneVisibleGpuResources staleVisible = makeVisibleGpuResources();
+        render::GPUSceneVisibleGPUResources staleVisible = makeVisibleGpuResources();
         staleVisible.sourceDrawSetGeneration = currentGeneration;
         staleVisible.sourceDrawSetRevision = currentRevision;
         staleVisible.instanceVisibilityStates.generation = currentGeneration + 1;
         staleVisible.instanceVisibilityStates.revision = currentRevision;
         if (gpuScene.setVisibleGpuResources(view, 0, std::move(staleVisible))) {
-            return RhiTestResult::fail("GPUScene accepted a stale visible GPU buffer view");
+            return RHITestResult::fail("GPUScene accepted a stale visible GPU buffer view");
         }
-        render::GPUSceneVisibleGpuResources outOfRangeVisible = makeVisibleGpuResources();
+        render::GPUSceneVisibleGPUResources outOfRangeVisible = makeVisibleGpuResources();
         outOfRangeVisible.instanceVisibilityStates.offset = 252;
         outOfRangeVisible.instanceVisibilityStates.size = 8;
         if (gpuScene.setVisibleGpuResources(view, 0, std::move(outOfRangeVisible))) {
-            return RhiTestResult::fail("GPUScene accepted an out-of-range visible GPU buffer view");
+            return RHITestResult::fail("GPUScene accepted an out-of-range visible GPU buffer view");
         }
-        render::GPUSceneVisibleGpuResources invalidStrideVisible = makeVisibleGpuResources();
+        render::GPUSceneVisibleGPUResources invalidStrideVisible = makeVisibleGpuResources();
         invalidStrideVisible.instanceVisibilityStates.structureStride = 3;
         if (gpuScene.setVisibleGpuResources(view, 0, std::move(invalidStrideVisible))) {
-            return RhiTestResult::fail("GPUScene accepted an invalid visible GPU buffer stride");
+            return RHITestResult::fail("GPUScene accepted an invalid visible GPU buffer stride");
         }
 
         render::GPUSceneGlobalBufferViews globalViews;
@@ -514,44 +514,44 @@ public:
         };
         if (!gpuScene.setGlobalBufferViews(globalViews) ||
             !gpuScene.globalBufferViews().validFor(currentGeneration, currentRevision)) {
-            return RhiTestResult::fail("GPUScene rejected valid global GPU buffer views");
+            return RHITestResult::fail("GPUScene rejected valid global GPU buffer views");
         }
         render::GPUSceneGlobalBufferViews staleGlobal = gpuScene.globalBufferViews();
         staleGlobal.geometries.generation = currentGeneration + 1;
         if (gpuScene.setGlobalBufferViews(std::move(staleGlobal)) ||
             !gpuScene.globalBufferViews().validFor(currentGeneration, currentRevision)) {
-            return RhiTestResult::fail("GPUScene accepted a stale global GPU buffer view");
+            return RHITestResult::fail("GPUScene accepted a stale global GPU buffer view");
         }
         render::GPUSceneGlobalBufferViews outOfRangeGlobal = gpuScene.globalBufferViews();
         outOfRangeGlobal.geometries.offset = 252;
         outOfRangeGlobal.geometries.size = 8;
         if (gpuScene.setGlobalBufferViews(std::move(outOfRangeGlobal)) ||
             !gpuScene.globalBufferViews().validFor(currentGeneration, currentRevision)) {
-            return RhiTestResult::fail("GPUScene accepted an out-of-range global GPU buffer view");
+            return RHITestResult::fail("GPUScene accepted an out-of-range global GPU buffer view");
         }
 
         materials[0].alphaMode = "MASK";
         if (gpuScene.sync(makeSourceView(primitives, nodes, materials, 2, 2, 2)) !=
             render::GPUSceneSyncResult::RebuildRequired) {
-            return RhiTestResult::fail("GPUScene did not request rebuild after a material change");
+            return RHITestResult::fail("GPUScene did not request rebuild after a material change");
         }
         result = gpuScene.rebuild(makeSourceView(primitives, nodes, materials, 2, 2, 2), log);
         if (!result || gpuScene.geometry(geometry0) != nullptr ||
             gpuScene.material(material0) != nullptr || gpuScene.instance(instance0) != nullptr ||
             gpuScene.drawSet().generation == initialDrawSetGeneration ||
             gpuScene.stats().drawSetGeneration != gpuScene.drawSet().generation) {
-            return RhiTestResult::fail("GPUScene generational source IDs survived a full rebuild");
+            return RHITestResult::fail("GPUScene generational source IDs survived a full rebuild");
         }
         if (!gpuScene.prepareView(view, 0)) {
-            return RhiTestResult::fail("GPUScene View did not survive a source rebuild");
+            return RHITestResult::fail("GPUScene View did not survive a source rebuild");
         }
 
         if (!gpuScene.destroyView(view) || gpuScene.prepareView(view, 0)) {
-            return RhiTestResult::fail("GPUScene accepted a destroyed View ID");
+            return RHITestResult::fail("GPUScene accepted a destroyed View ID");
         }
         const render::GPUSceneViewId replacementView = gpuScene.createView();
         if (replacementView.index != view.index || replacementView.generation == view.generation) {
-            return RhiTestResult::fail("GPUScene did not increment the reused View generation");
+            return RHITestResult::fail("GPUScene did not increment the reused View generation");
         }
 
         std::vector<scene::RenderPrimitive> invalidPrimitives{
@@ -591,7 +591,7 @@ public:
             diagnostics[1].reason != render::GPUSceneInvalidPrimitiveReason::IndexOutOfRange ||
             diagnostics[1].indexOffset != 2 || diagnostics[1].vertexIndex != 9 ||
             invalidLog.find("invalid triangle primitive") == std::string::npos) {
-            return RhiTestResult::fail("GPUScene invalid triangle diagnostics are incorrect");
+            return RHITestResult::fail("GPUScene invalid triangle diagnostics are incorrect");
         }
 
         const uint32_t generationBeforeClear = gpuScene.drawSet().generation;
@@ -600,29 +600,29 @@ public:
             gpuScene.drawSet().generation == 0 ||
             gpuScene.stats().drawSetGeneration != gpuScene.drawSet().generation ||
             gpuScene.stats().instanceCount != 0) {
-            return RhiTestResult::fail("GPUScene clearSource did not advance DrawSet generation");
+            return RHITestResult::fail("GPUScene clearSource did not advance DrawSet generation");
         }
 
         render::RenderSubsystemHost host;
         if (!render::registerBuiltInRenderSubsystems(host, log) ||
             !host.isRegistered(render::GPUSceneSubsystem::kSubsystemId)) {
-            return RhiTestResult::fail("GPUSceneSubsystem was not registered as a built-in subsystem: " + log);
+            return RHITestResult::fail("GPUSceneSubsystem was not registered as a built-in subsystem: " + log);
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(GPUSceneCpuCoreTest);
+METALLIC_REGISTER_RHI_TEST(GPUSceneCPUCoreTest);
 
-class GPUSceneCompositeFlatSourceTest final : public RhiTest {
+class GPUSceneCompositeFlatSourceTest final : public RHITest {
 public:
     GPUSceneCompositeFlatSourceTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "gpu_scene_composite_flat_source";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         std::vector<scene::RenderPrimitive> primitives{
             makeTrianglePrimitive(),
@@ -664,7 +664,7 @@ public:
             makeSourceView(primitives, nodes, materials, 1, 1, 1),
             log);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene failed to build a flattened composite source: " + log);
         }
 
@@ -699,7 +699,7 @@ public:
             gpuScene.instance(instanceA)->sourceObject != objectA ||
             gpuScene.instance(instanceB) == nullptr ||
             gpuScene.instance(instanceB)->sourceObject != objectB) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene flattened composite identity or duplicate local primitive handling is incorrect");
         }
 
@@ -719,7 +719,7 @@ public:
             gpuScene.instance(instanceB) == nullptr ||
             !sameMatrix(gpuScene.instance(instanceB)->worldMatrix, updatedWorldB) ||
             !sameMatrix(gpuScene.instance(instanceB)->previousWorldMatrix, previousWorldB)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene composite transform sync did not preserve IDs and transform history");
         }
 
@@ -732,7 +732,7 @@ public:
             !sameMatrix(
                 gpuScene.instance(instanceB)->previousWorldMatrix,
                 updatedWorldB)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene composite transform history did not converge on the next sync");
         }
 
@@ -741,7 +741,7 @@ public:
                 render::GPUSceneSyncResult::Unchanged ||
             gpuScene.drawSet().generation != initialGeneration ||
             gpuScene.drawSet().revision != convergedRevision) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene composite transform history did not settle after convergence");
         }
 
@@ -754,7 +754,7 @@ public:
             gpuScene.instance(instanceA)->visible ||
             gpuScene.instance(instanceB) == nullptr ||
             !gpuScene.instance(instanceB)->visible) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene composite visibility update did not remain incremental");
         }
         const render::GPUSceneViewId view = gpuScene.createView();
@@ -762,7 +762,7 @@ public:
             gpuScene.visibleDrawSet(view, 0) == nullptr ||
             gpuScene.visibleDrawSet(view, 0)->instances.size() != 1 ||
             gpuScene.visibleDrawSet(view, 0)->instances.front() != instanceB) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene composite visibility did not refresh the visible DrawSet");
         }
 
@@ -787,7 +787,7 @@ public:
         expandedSource.structuralRevision = 2;
         if (gpuScene.sync(expandedSource) !=
             render::GPUSceneSyncResult::RebuildRequired) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene did not request a rebuild after adding a composite source");
         }
 
@@ -805,25 +805,25 @@ public:
             gpuScene.instance(instanceC)->sourceObject != objectC ||
             gpuScene.instancesForObject(objectC).size() != 1 ||
             !gpuScene.prepareView(view, 0)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene composite topology rebuild did not replace generations and mappings");
         }
 
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(GPUSceneCompositeFlatSourceTest);
 
-class GPUSceneSourceOverrideLeaseTest final : public RhiTest {
+class GPUSceneSourceOverrideLeaseTest final : public RHITest {
 public:
     GPUSceneSourceOverrideLeaseTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "gpu_scene_source_override_lease";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::GPUSceneSubsystem subsystem;
         scene::Scene sceneA;
@@ -835,54 +835,54 @@ public:
 
         if (!subsystem.acquireSourceOverride(&sceneA, log).transform([&](auto value) { first = std::move(value); }) || !first ||
             subsystem.sourceOverride() != &sceneA) {
-            return RhiTestResult::fail("GPUScene failed to acquire the first source override lease: " + log);
+            return RHITestResult::fail("GPUScene failed to acquire the first source override lease: " + log);
         }
         if (!subsystem.acquireSourceOverride(&sceneA, log).transform([&](auto value) { second = std::move(value); }) || !second ||
             second == first) {
-            return RhiTestResult::fail("GPUScene failed to share a source override lease for the same Scene: " + log);
+            return RHITestResult::fail("GPUScene failed to share a source override lease for the same Scene: " + log);
         }
         if (subsystem.acquireSourceOverride(&sceneB, log).transform([&](auto value) { conflict = std::move(value); }) || conflict ||
             subsystem.sourceOverride() != &sceneA) {
-            return RhiTestResult::fail("GPUScene accepted concurrent source override leases for different Scenes");
+            return RHITestResult::fail("GPUScene accepted concurrent source override leases for different Scenes");
         }
 
         subsystem.setSourceOverride(&sceneB);
         if (subsystem.sourceOverride() != &sceneA) {
-            return RhiTestResult::fail("Legacy source override replaced an active lease");
+            return RHITestResult::fail("Legacy source override replaced an active lease");
         }
         if (!subsystem.releaseSourceOverride(first) ||
             subsystem.sourceOverride() != &sceneA) {
-            return RhiTestResult::fail("Releasing one shared lease cleared another consumer's lease");
+            return RHITestResult::fail("Releasing one shared lease cleared another consumer's lease");
         }
         if (subsystem.releaseSourceOverride(first)) {
-            return RhiTestResult::fail("GPUScene accepted a stale source override lease token");
+            return RHITestResult::fail("GPUScene accepted a stale source override lease token");
         }
         if (!subsystem.releaseSourceOverride(second) ||
             subsystem.sourceOverride() != &sceneB) {
-            return RhiTestResult::fail("GPUScene did not restore the compatible legacy override after the last lease");
+            return RHITestResult::fail("GPUScene did not restore the compatible legacy override after the last lease");
         }
         if (!subsystem.clearSourceOverride(&sceneB) || subsystem.sourceOverride() != nullptr) {
-            return RhiTestResult::fail("GPUScene failed to clear the legacy source override after lease release");
+            return RHITestResult::fail("GPUScene failed to clear the legacy source override after lease release");
         }
         if (subsystem.releaseSourceOverride({}) ||
             subsystem.releaseSourceOverride(second)) {
-            return RhiTestResult::fail("GPUScene accepted an invalid or stale source override lease token");
+            return RHITestResult::fail("GPUScene accepted an invalid or stale source override lease token");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(GPUSceneSourceOverrideLeaseTest);
 
-class GPUSceneGpuResourcesTest final : public RhiTest {
+class GPUSceneGPUResourcesTest final : public RHITest {
 public:
-    GPUSceneGpuResourcesTest()
+    GPUSceneGPUResourcesTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "gpu_scene_global_gpu_resources";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> result = render::createDevice(render::DeviceDesc{
@@ -892,34 +892,34 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             return render::hasError(result, render::Error::Unsupported)
-                ? RhiTestResult::skip(std::string("createDevice returned ") + toString(result))
-                : RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+                ? RHITestResult::skip(std::string("createDevice returned ") + toString(result))
+                : RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
         if (!device->capabilities().bindlessDescriptorHeap) {
-            return RhiTestResult::skip("GPUScene binding test requires bindless buffers");
+            return RHITestResult::skip("GPUScene binding test requires bindless buffers");
         }
         render::Queue* queue = device->getQueue(render::QueueType::Graphics);
         if (queue == nullptr) {
-            return RhiTestResult::skip("GPUScene GPU resources test requires a graphics queue");
+            return RHITestResult::skip("GPUScene GPU resources test requires a graphics queue");
         }
 
         std::string log;
         render::RenderSubsystemHost host;
         if (!render::registerBuiltInRenderSubsystems(host, log)) {
-            return RhiTestResult::fail("GPUScene built-in registration failed: " + log);
+            return RHITestResult::fail("GPUScene built-in registration failed: " + log);
         }
         result = host.initialize(*device, 3, log);
         if (!result || !host.activate(render::GPUSceneSubsystem::kSubsystemId, log)) {
-            return RhiTestResult::fail("GPUScene subsystem activation failed: " + log);
+            return RHITestResult::fail("GPUScene subsystem activation failed: " + log);
         }
         auto* subsystem = host.get<render::GPUSceneSubsystem>();
         if (subsystem == nullptr) {
-            return RhiTestResult::fail("GPUScene subsystem lookup failed after activation");
+            return RHITestResult::fail("GPUScene subsystem lookup failed after activation");
         }
 
         std::shared_ptr<render::ResourceRegistry> registry;
         result = device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
-        if (!result) { return RhiTestResult::fail("Device registry unavailable"); }
+        if (!result) { return RHITestResult::fail("Device registry unavailable"); }
 
         std::vector<scene::RenderPrimitive> primitives{
             makeCanonicalRasterPrimitive(),
@@ -958,24 +958,24 @@ public:
         std::unique_ptr<render::CommandPool> commandPool;
         result = device->createCommandPool(*queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("createCommandPool returned ") + toString(result));
         }
 
         auto submitFrame = [&]<typename Check>(
                                uint64_t frameIndex,
                                uint32_t frameSlot,
-                               Check&& check) -> RhiTestResult {
+                               Check&& check) -> RHITestResult {
             log.clear();
             render::Result<> frameResult = host.beginFrame(frameIndex, frameSlot, nullptr, log);
             if (!frameResult) {
-                return RhiTestResult::fail("GPUScene beginFrame failed: " + log);
+                return RHITestResult::fail("GPUScene beginFrame failed: " + log);
             }
             std::unique_ptr<render::CommandBuffer> commandBuffer;
             frameResult = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
             if (!frameResult || commandBuffer == nullptr || !commandBuffer->begin()) {
                 host.endFrame();
-                return RhiTestResult::fail("GPUScene command-buffer creation/begin failed");
+                return RHITestResult::fail("GPUScene command-buffer creation/begin failed");
             }
             constexpr std::array<render::RenderSubsystemId, 1> kRequired{
                 render::GPUSceneSubsystem::kSubsystemId,
@@ -987,9 +987,9 @@ public:
                 log);
             if (!frameResult) {
                 host.endFrame();
-                return RhiTestResult::fail("GPUScene recordPreGraph failed: " + log);
+                return RHITestResult::fail("GPUScene recordPreGraph failed: " + log);
             }
-            RhiTestResult checkResult = [&]() {
+            RHITestResult checkResult = [&]() {
                 if constexpr (requires { check(*commandBuffer); }) {
                     return check(*commandBuffer);
                 } else {
@@ -1007,13 +1007,13 @@ public:
                 log);
             if (!frameResult || !commandBuffer->end()) {
                 host.endFrame();
-                return RhiTestResult::fail("GPUScene command recording failed: " + log);
+                return RHITestResult::fail("GPUScene command recording failed: " + log);
             }
             std::unique_ptr<render::Fence> fence;
             frameResult = device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
             if (!frameResult || fence == nullptr) {
                 host.endFrame();
-                return RhiTestResult::fail("GPUScene fence creation failed");
+                return RHITestResult::fail("GPUScene fence creation failed");
             }
             render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
             frameResult = queue->submit(render::QueueSubmitDesc{
@@ -1025,19 +1025,19 @@ public:
             }
             host.endFrame();
             return frameResult
-                ? RhiTestResult::pass()
-                : RhiTestResult::fail(
+                ? RHITestResult::pass()
+                : RHITestResult::fail(
                     std::string("GPUScene submit/wait returned ") + toString(frameResult));
         };
 
         // A newly activated subsystem with no World/Scene must remain a valid
         // no-op until a non-zero DrawSet generation exists.
-        RhiTestResult emptyFrameResult = submitFrame(0, 0, [&]() {
+        RHITestResult emptyFrameResult = submitFrame(0, 0, [&]() {
             if (subsystem->globalBufferViews().validFor(0, 0) ||
                 subsystem->gpuUploadStats().fullUploadCount != 0) {
-                return RhiTestResult::fail("GPUScene uploaded invalid generation-zero resources");
+                return RHITestResult::fail("GPUScene uploaded invalid generation-zero resources");
             }
-            return RhiTestResult::pass();
+            return RHITestResult::pass();
         });
         if (!emptyFrameResult.passed) {
             return emptyFrameResult;
@@ -1046,7 +1046,7 @@ public:
             makeSourceView(primitives, nodes, materials, 1, 1, 1),
             log);
         if (!result) {
-            return RhiTestResult::fail("GPUScene test DrawSet rebuild failed: " + log);
+            return RHITestResult::fail("GPUScene test DrawSet rebuild failed: " + log);
         }
         const render::GPUSceneGeometryId canonicalGeometry =
             subsystem->scene().geometryForRenderPrimitive(0);
@@ -1055,20 +1055,20 @@ public:
         if (!canonicalGeometry || canonicalSource == nullptr ||
             canonicalSource->meshletClusters.size() != 1 ||
             canonicalSource->meshletLodLevels.size() != 2) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene did not retain generational canonical geometry backing");
         }
         if (subsystem->instances().size() != 3 ||
             subsystem->instanceForRenderNode(3) ||
             subsystem->stats().skippedRenderNodeCount != 1) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene did not skip the invalid RenderNode without creating an instance hole");
         }
         for (uint32_t instanceIndex = 0;
              instanceIndex < subsystem->instances().size();
              ++instanceIndex) {
             if (subsystem->instances()[instanceIndex].id.index != instanceIndex) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene global instance IDs are not dense after skipped nodes");
             }
         }
@@ -1081,27 +1081,27 @@ public:
         std::unique_ptr<render::Buffer> canonicalReadback;
         constexpr uint64_t kGeometryReadbackOffset = 0;
         constexpr uint64_t kMeshletReadbackOffset =
-            kGeometryReadbackOffset + 2u * sizeof(render::GPUSceneGpuGeometryRecord);
+            kGeometryReadbackOffset + 2u * sizeof(render::GPUSceneGPUGeometryRecord);
         constexpr uint64_t kMeshletDrawReadbackOffset =
-            kMeshletReadbackOffset + 3u * sizeof(render::GPUSceneGpuMeshletRecord);
+            kMeshletReadbackOffset + 3u * sizeof(render::GPUSceneGPUMeshletRecord);
         constexpr uint64_t kMaterialReadbackOffset =
             kMeshletDrawReadbackOffset +
-            10u * sizeof(render::GPUSceneGpuMeshletDrawRecord);
+            10u * sizeof(render::GPUSceneGPUMeshletDrawRecord);
         constexpr uint64_t kMeshletVertexReadbackOffset = kMaterialReadbackOffset;
-        constexpr uint64_t kOpenPbrMaterialReadbackOffset =
+        constexpr uint64_t kOpenPBRMaterialReadbackOffset =
             kMeshletVertexReadbackOffset + 9u * sizeof(uint32_t);
         constexpr uint64_t kDescriptorRemapReadbackOffset =
-            kOpenPbrMaterialReadbackOffset +
-            2u * sizeof(render::GPUSceneGpuMaterialRecord);
+            kOpenPBRMaterialReadbackOffset +
+            2u * sizeof(render::GPUSceneGPUMaterialRecord);
         constexpr uint64_t kTriangleWordReadbackOffset =
             kDescriptorRemapReadbackOffset +
             2u * render::kGPUSceneMaterialTextureSlotCount *
-                sizeof(render::GPUSceneGpuDescriptorRemapRecord);
+                sizeof(render::GPUSceneGPUDescriptorRemapRecord);
         constexpr uint64_t kCanonicalReadbackSize =
             kTriangleWordReadbackOffset + 3u * sizeof(uint32_t);
         uint32_t firstGeneration = 0;
         uint64_t firstRevision = 0;
-        RhiTestResult frameResult = submitFrame(1, 1, [&](render::CommandBuffer& commandBuffer) {
+        RHITestResult frameResult = submitFrame(1, 1, [&](render::CommandBuffer& commandBuffer) {
             const render::GPUSceneGlobalBufferViews& views = subsystem->globalBufferViews();
             firstGeneration = subsystem->drawSet().generation;
             firstRevision = subsystem->drawSet().revision;
@@ -1113,7 +1113,7 @@ public:
                 !views.meshletDraws.valid() || !views.meshletVertices.valid() ||
                 !views.meshletTriangleWords.valid() ||
                 !views.descriptorRemap.valid()) {
-                return RhiTestResult::fail("GPUScene did not publish all mandatory global buffer views");
+                return RHITestResult::fail("GPUScene did not publish all mandatory global buffer views");
             }
             const std::array mandatory{
                 views.geometries.buffer,
@@ -1136,14 +1136,14 @@ public:
                     !render::hasFlag(
                         buffer->desc().usage,
                         render::BufferUsageBits::TransferDestination)) {
-                    return RhiTestResult::fail("GPUScene global buffer is not device-local Storage|TransferDestination");
+                    return RHITestResult::fail("GPUScene global buffer is not device-local Storage|TransferDestination");
                 }
             }
-            if (views.lodGroups.size != 2u * sizeof(render::MeshletLodGroupRecord) ||
-                views.geometries.size != 2u * sizeof(render::GPUSceneGpuGeometryRecord) ||
-                views.vertices.size != 6u * sizeof(render::GPUSceneGpuVertexRecord) ||
+            if (views.lodGroups.size != 2u * sizeof(render::MeshletLODGroupRecord) ||
+                views.geometries.size != 2u * sizeof(render::GPUSceneGPUGeometryRecord) ||
+                views.vertices.size != 6u * sizeof(render::GPUSceneGPUVertexRecord) ||
                 views.indices.size != 6u * sizeof(uint32_t) ||
-                views.meshlets.size != 3u * sizeof(render::GPUSceneGpuMeshletRecord) ||
+                views.meshlets.size != 3u * sizeof(render::GPUSceneGPUMeshletRecord) ||
                 views.meshletDraws.size !=
                     10u * sizeof(render::VisibleClusterRecord) ||
                 views.meshletDraws.structureStride !=
@@ -1152,11 +1152,11 @@ public:
                 // Three local u8 triangle triplets pack into three uint words.
                 views.meshletTriangleWords.size != 3u * sizeof(uint32_t) ||
                 views.materials.size !=
-                    2u * sizeof(render::GPUSceneGpuMaterialRecord) ||
+                    2u * sizeof(render::GPUSceneGPUMaterialRecord) ||
                 views.descriptorRemap.size !=
                     2u * render::kGPUSceneMaterialTextureSlotCount *
-                        sizeof(render::GPUSceneGpuDescriptorRemapRecord)) {
-                return RhiTestResult::fail(
+                        sizeof(render::GPUSceneGPUDescriptorRemapRecord)) {
+                return RHITestResult::fail(
                     "GPUScene canonical raster payload was duplicated or has an invalid ABI size");
             }
             const render::GPUSceneRasterDrawLayout& rasterLayout =
@@ -1168,7 +1168,7 @@ public:
                 rasterLayout.lodRanges[1] != render::GPUSceneRasterDrawRange{4, 2} ||
                 rasterLayout.adaptiveRange != render::GPUSceneRasterDrawRange{6, 4} ||
                 rasterLayout.maxRangeCount != 4) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene base/LOD meshlet draw ranges are not stable or omitted BLEND");
             }
             firstGeometry = views.geometries.buffer;
@@ -1183,18 +1183,18 @@ public:
                 !bindings[render::GPUSceneGlobalBufferKind::Instances].valid() ||
                 !bindings[render::GPUSceneGlobalBufferKind::MeshletDraws].valid() ||
                 !bindings[render::GPUSceneGlobalBufferKind::DescriptorRemap].valid()) {
-                return RhiTestResult::fail("GPUScene consumer binding creation failed: " + log);
+                return RHITestResult::fail("GPUScene consumer binding creation failed: " + log);
             }
             const auto writesBeforeConsumer = registry->stats().descriptorWrites;
             render::GPUSceneConsumerBindings secondConsumer;
             if (!subsystem->createBindings(log).transform([&](auto value) { secondConsumer = std::move(value); }) ||
                 registry->stats().descriptorWrites != writesBeforeConsumer ||
                 secondConsumer[render::GPUSceneGlobalBufferKind::Instances].shaderValue() != views.instances.resource.shaderValue()) {
-                return RhiTestResult::fail("GPUScene consumers duplicated the producer's descriptor identity");
+                return RHITestResult::fail("GPUScene consumers duplicated the producer's descriptor identity");
             }
             if (subsystem->gpuUploadStats().fullUploadCount != 1 ||
                 subsystem->gpuUploadStats().instanceUploadCount != 0) {
-                return RhiTestResult::fail("GPUScene full-upload statistics are incorrect");
+                return RHITestResult::fail("GPUScene full-upload statistics are incorrect");
             }
 
             render::Result<> readbackResult = device->createBuffer(render::BufferDesc{
@@ -1204,7 +1204,7 @@ public:
                     .queueAccess = render::QueueAccessBits::Graphics,
                 }).transform([&](auto rhiValue) { canonicalReadback = std::move(rhiValue); });
             if (!readbackResult || canonicalReadback == nullptr) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene canonical payload readback allocation failed");
             }
 
@@ -1241,32 +1241,32 @@ public:
             };
             if (auto commandResult = commandBuffer.synchronize(render::BarrierDesc{
                 .buffers = {&readbackDestination, 1},
-            }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             if (auto commandResult = commandBuffer.synchronize(render::BarrierDesc{
                 .buffers = toCopy,
-            }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             const std::array destinationOffsets{
                 kGeometryReadbackOffset,
                 kMeshletReadbackOffset,
                 kMeshletDrawReadbackOffset,
                 kMeshletVertexReadbackOffset,
-                kOpenPbrMaterialReadbackOffset,
+                kOpenPBRMaterialReadbackOffset,
                 kDescriptorRemapReadbackOffset,
                 kTriangleWordReadbackOffset,
             };
             for (size_t index = 0; index < sourceViews.size(); ++index) {
                 {
                     auto sourceSlice = (sourceViews[index]->buffer)->slice({0, sourceViews[index]->size});
-                    if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                    if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
                     auto destinationSlice = canonicalReadback.get()->slice({destinationOffsets[index], sourceViews[index]->size});
-                    if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                    if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                    if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                    if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
                 }
             }
             if (auto commandResult = commandBuffer.synchronize(render::BarrierDesc{
                 .buffers = toRead,
-            }); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            return RhiTestResult::pass();
+            }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            return RHITestResult::pass();
         });
         if (!frameResult.passed) {
             return frameResult;
@@ -1275,16 +1275,16 @@ public:
         canonicalReadback->invalidate({0, kCanonicalReadbackSize});
         const void* canonicalMapped = canonicalReadback->map();
         if (canonicalMapped == nullptr) {
-            return RhiTestResult::fail("GPUScene canonical payload readback did not map");
+            return RHITestResult::fail("GPUScene canonical payload readback did not map");
         }
         const auto* canonicalBytes = static_cast<const uint8_t*>(canonicalMapped);
-        std::array<render::GPUSceneGpuGeometryRecord, 2> geometryRecords;
-        std::array<render::GPUSceneGpuMeshletRecord, 3> meshletRecords;
-        std::array<render::GPUSceneGpuMeshletDrawRecord, 10> meshletDrawRecords;
+        std::array<render::GPUSceneGPUGeometryRecord, 2> geometryRecords;
+        std::array<render::GPUSceneGPUMeshletRecord, 3> meshletRecords;
+        std::array<render::GPUSceneGPUMeshletDrawRecord, 10> meshletDrawRecords;
         std::array<uint32_t, 9> meshletVertexRecords;
-        std::array<render::GPUSceneGpuMaterialRecord, 2> materialRecords;
+        std::array<render::GPUSceneGPUMaterialRecord, 2> materialRecords;
         std::array<
-            render::GPUSceneGpuDescriptorRemapRecord,
+            render::GPUSceneGPUDescriptorRemapRecord,
             2u * render::kGPUSceneMaterialTextureSlotCount>
             descriptorRemapRecords;
         std::array<uint32_t, 3> triangleWordRecords;
@@ -1306,7 +1306,7 @@ public:
             sizeof(meshletVertexRecords));
         std::memcpy(
             materialRecords.data(),
-            canonicalBytes + kOpenPbrMaterialReadbackOffset,
+            canonicalBytes + kOpenPBRMaterialReadbackOffset,
             sizeof(materialRecords));
         std::memcpy(
             descriptorRemapRecords.data(),
@@ -1323,11 +1323,11 @@ public:
             geometryRecords[1].payload[0] != 3 ||
             geometryRecords[1].payload[2] != 3 ||
             geometryRecords[1].payload[3] != 0) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene geometry records do not expose the canonical vertex/base-meshlet ranges");
         }
         for (uint32_t meshletIndex = 0; meshletIndex < meshletRecords.size(); ++meshletIndex) {
-            const render::GPUSceneGpuMeshletRecord& meshlet =
+            const render::GPUSceneGPUMeshletRecord& meshlet =
                 meshletRecords[meshletIndex];
             if (meshlet.ranges != std::array<uint32_t, 4>{
                     meshletIndex * 3u,
@@ -1340,7 +1340,7 @@ public:
                 meshlet.lod[2] != (meshletIndex == 2 ? 0u : UINT32_MAX) ||
                 meshlet.boundingSphere[3] <= 0.0f ||
                 meshlet.coneAxisLodError[2] != 1.0f) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene canonical base/LOD meshlet metadata is incorrect");
             }
         }
@@ -1355,15 +1355,15 @@ public:
                 0x00020100u,
                 0x00020100u,
             }) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene meshlet vertices are not geometry-local or triangle bytes are not packed");
         }
         for (uint32_t rangeIndex = 0; rangeIndex < 3; ++rangeIndex) {
             const uint32_t firstDraw = rangeIndex * 2u;
             const uint32_t expectedMeshlet = rangeIndex;
-            const render::GPUSceneGpuMeshletDrawRecord& opaque =
+            const render::GPUSceneGPUMeshletDrawRecord& opaque =
                 meshletDrawRecords[firstDraw];
-            const render::GPUSceneGpuMeshletDrawRecord& blend =
+            const render::GPUSceneGPUMeshletDrawRecord& blend =
                 meshletDrawRecords[firstDraw + 1u];
             if (opaque.clusterIndex != expectedMeshlet || opaque.instanceIndex != 0 ||
                 opaque.dataIndex != 0 ||
@@ -1377,7 +1377,7 @@ public:
                     static_cast<uint32_t>(render::GPUSceneDrawBucket::Blend) ||
                 render::visibleClusterSource(blend.flags) !=
                     render::VisibleClusterSource::Resident) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene MeshletDraws do not use dense global instance IDs or retain BLEND");
             }
         }
@@ -1391,18 +1391,18 @@ public:
             materialRecords[0].identity[0] != 0 ||
             materialRecords[1].baseColorTexture.textureIndex != 9 ||
             materialRecords[1].identity[0] != 1) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene OpenPBR material ABI or texture-remap indices are incorrect");
         }
         for (uint32_t textureSlot = 0;
              textureSlot < render::kGPUSceneMaterialTextureSlotCount;
              ++textureSlot) {
-            const render::GPUSceneGpuDescriptorRemapRecord& remap =
+            const render::GPUSceneGPUDescriptorRemapRecord& remap =
                 descriptorRemapRecords[textureSlot];
             if (remap.logicalTextureId != static_cast<int32_t>(7 + textureSlot) ||
                 remap.descriptorIndex != std::numeric_limits<uint32_t>::max() ||
                 remap.materialIndex != 0 || remap.textureSlot != textureSlot) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene descriptor remap lost a logical material texture reference");
             }
         }
@@ -1411,7 +1411,7 @@ public:
                 std::numeric_limits<uint32_t>::max() ||
             descriptorRemapRecords[9].materialIndex != 1 ||
             descriptorRemapRecords[9].textureSlot != 0) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene invalid logical textures were written back as consumer descriptors");
         }
 
@@ -1420,7 +1420,7 @@ public:
         if (subsystem->scene().sync(
                 makeSourceView(primitives, nodes, materials, 2, 1, 1)) !=
             render::GPUSceneSyncResult::Updated) {
-            return RhiTestResult::fail("GPUScene incremental test did not update the CPU instance");
+            return RHITestResult::fail("GPUScene incremental test did not update the CPU instance");
         }
         frameResult = submitFrame(2, 2, [&]() {
             const render::GPUSceneGlobalBufferViews& views = subsystem->globalBufferViews();
@@ -1429,24 +1429,24 @@ public:
                 views.materials.buffer != firstMaterial ||
                 views.instances.buffer != firstInstance ||
                 views.drawKeys.buffer != firstDrawKeys) {
-                return RhiTestResult::fail("GPUScene incremental sync recreated a global device buffer");
+                return RHITestResult::fail("GPUScene incremental sync recreated a global device buffer");
             }
             if (!subsystem->rasterDrawLayout().validFor(
                     subsystem->drawSet().generation,
                     subsystem->drawSet().revision) ||
                 subsystem->rasterDrawLayout().baseRange.count != 2) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene incremental sync invalidated its generation-scoped raster layout");
             }
             if (!bindings.validFor(views)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene invalidated generation-scoped bindings after an in-place instance update");
             }
             if (subsystem->gpuUploadStats().fullUploadCount != 1 ||
                 subsystem->gpuUploadStats().instanceUploadCount != 1) {
-                return RhiTestResult::fail("GPUScene instance-only upload statistics are incorrect");
+                return RHITestResult::fail("GPUScene instance-only upload statistics are incorrect");
             }
-            return RhiTestResult::pass();
+            return RHITestResult::pass();
         });
         if (!frameResult.passed) {
             return frameResult;
@@ -1455,19 +1455,19 @@ public:
         if (subsystem->scene().sync(
                 makeSourceView(primitives, nodes, materials, 2, 1, 1)) !=
             render::GPUSceneSyncResult::HistoryUpdated) {
-            return RhiTestResult::fail("GPUScene incremental test did not advance transform history");
+            return RHITestResult::fail("GPUScene incremental test did not advance transform history");
         }
         frameResult = submitFrame(3, 0, [&]() {
             const render::GPUSceneGlobalBufferViews& views = subsystem->globalBufferViews();
             if (views.instances.buffer != firstInstance ||
                 subsystem->gpuUploadStats().instanceUploadCount != 2) {
-                return RhiTestResult::fail("GPUScene history-only upload did not reuse the instance buffer");
+                return RHITestResult::fail("GPUScene history-only upload did not reuse the instance buffer");
             }
             if (!bindings.validFor(views)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene invalidated generation-scoped bindings after a history-only update");
             }
-            return RhiTestResult::pass();
+            return RHITestResult::pass();
         });
         if (!frameResult.passed) {
             return frameResult;
@@ -1478,7 +1478,7 @@ public:
             makeSourceView(primitives, nodes, materials, 2, 1, 2),
             log);
         if (!result || subsystem->drawSet().generation == firstGeneration) {
-            return RhiTestResult::fail("GPUScene full rebuild did not advance generation");
+            return RHITestResult::fail("GPUScene full rebuild did not advance generation");
         }
         frameResult = submitFrame(4, 1, [&]() {
             const render::GPUSceneGlobalBufferViews& views = subsystem->globalBufferViews();
@@ -1488,18 +1488,18 @@ public:
                 views.instances.buffer == firstInstance ||
                 views.drawKeys.buffer == firstDrawKeys ||
                 bindings.validFor(views)) {
-                return RhiTestResult::fail("GPUScene full rebuild did not replace resources and stale bindings");
+                return RHITestResult::fail("GPUScene full rebuild did not replace resources and stale bindings");
             }
             if (subsystem->gpuUploadStats().fullUploadCount != 2) {
-                return RhiTestResult::fail("GPUScene rebuild upload statistics are incorrect");
+                return RHITestResult::fail("GPUScene rebuild upload statistics are incorrect");
             }
             subsystem->releaseBindings(bindings);
             log.clear();
             if (!subsystem->createBindings(log).transform([&](auto value) { bindings = std::move(value); }) ||
                 !bindings.validFor(views)) {
-                return RhiTestResult::fail("GPUScene rebuild binding creation failed: " + log);
+                return RHITestResult::fail("GPUScene rebuild binding creation failed: " + log);
             }
-            return RhiTestResult::pass();
+            return RHITestResult::pass();
         });
         if (!frameResult.passed) {
             return frameResult;
@@ -1509,22 +1509,22 @@ public:
         host.shutdown();
         result = device->waitIdle();
         return result
-            ? RhiTestResult::pass()
-            : RhiTestResult::fail(std::string("GPUScene device waitIdle returned ") + toString(result));
+            ? RHITestResult::pass()
+            : RHITestResult::fail(std::string("GPUScene device waitIdle returned ") + toString(result));
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(GPUSceneGpuResourcesTest);
+METALLIC_REGISTER_RHI_TEST(GPUSceneGPUResourcesTest);
 
-class GPUSceneViewGpuResourcesTest final : public RhiTest {
+class GPUSceneViewGPUResourcesTest final : public RHITest {
 public:
-    GPUSceneViewGpuResourcesTest()
+    GPUSceneViewGPUResourcesTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "gpu_scene_view_gpu_resources";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         render::Result<> result = render::createDevice(render::DeviceDesc{
@@ -1534,34 +1534,34 @@ public:
             }).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (!result) {
             return render::hasError(result, render::Error::Unsupported)
-                ? RhiTestResult::skip(std::string("createDevice returned ") + toString(result))
-                : RhiTestResult::fail(std::string("createDevice returned ") + toString(result));
+                ? RHITestResult::skip(std::string("createDevice returned ") + toString(result))
+                : RHITestResult::fail(std::string("createDevice returned ") + toString(result));
         }
         render::Queue* queue = device->getQueue(render::QueueType::Graphics);
         if (queue == nullptr) {
-            return RhiTestResult::skip(
+            return RHITestResult::skip(
                 "GPUScene View resource test requires a graphics queue");
         }
 
         std::string log;
         render::RenderSubsystemHost host;
         if (!render::registerBuiltInRenderSubsystems(host, log)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene View resource registration failed: " + log);
         }
         result = host.initialize(*device, 3, log);
         if (!result || !host.activate(render::GPUSceneSubsystem::kSubsystemId, log)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene View resource subsystem activation failed: " + log);
         }
         auto* subsystem = host.get<render::GPUSceneSubsystem>();
         if (subsystem == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene View resource subsystem lookup failed");
         }
         result = host.beginFrame(0, 0, nullptr, log);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene View resource warm-up beginFrame failed: " + log);
         }
         host.endFrame();
@@ -1578,7 +1578,7 @@ public:
             makeSourceView(primitives, nodes, materials, 1, 1, 1),
             log);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene View resource DrawSet rebuild failed: " + log);
         }
 
@@ -1598,28 +1598,28 @@ public:
             result = subsystem->createView(viewDesc, log).transform([&](auto value) { secondView = std::move(value); });
         }
         if (!result || !firstView || !secondView) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene failed to allocate two GPU-backed Views: " + log);
         }
 
-        std::array<render::GPUSceneViewGpuResourcesView, 3> firstSlots;
+        std::array<render::GPUSceneViewGPUResourcesView, 3> firstSlots;
         for (uint32_t frameSlot = 0; frameSlot < firstSlots.size(); ++frameSlot) {
             if (!subsystem->viewGpuResources(
                     firstView,
                     frameSlot,
                     firstSlots[frameSlot])) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene did not expose all three View frame-slot bundles");
             }
         }
-        render::GPUSceneViewGpuResourcesView secondSlot;
+        render::GPUSceneViewGPUResourcesView secondSlot;
         if (!subsystem->viewGpuResources(secondView, 0, secondSlot)) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene did not expose the second View GPU bundle");
         }
         constexpr std::array<uint32_t, 4> kExpectedOffsets{0, 11, 24, 41};
         for (uint32_t frameSlot = 0; frameSlot < firstSlots.size(); ++frameSlot) {
-            const render::GPUSceneViewGpuResourcesView& slot = firstSlots[frameSlot];
+            const render::GPUSceneViewGPUResourcesView& slot = firstSlots[frameSlot];
             if (slot.instanceVisibilityStates.buffer == nullptr ||
                 !slot.instanceVisibilityStates.resource.valid() ||
                 slot.instanceVisibilityStates.size != 8u * sizeof(uint32_t) ||
@@ -1630,23 +1630,23 @@ public:
                 slot.hzbHistory[0].buffer != firstSlots[0].hzbHistory[0].buffer ||
                 slot.hzbHistory[1].buffer != firstSlots[0].hzbHistory[1].buffer ||
                 slot.hzbHistory[0].size != 43u * sizeof(float)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene View resource sizes or per-View HZB sharing are incorrect");
             }
             for (uint32_t phaseIndex = 0;
                  phaseIndex < render::kGPUSceneCullPhaseCount;
                  ++phaseIndex) {
-                const render::GPUSceneCullPhaseGpuView& phase =
+                const render::GPUSceneCullPhaseGPUView& phase =
                     slot.phases[phaseIndex];
                 if (phase.visibleMeshletIds.buffer == nullptr ||
                     phase.visibleMeshletIds.size != 60u * sizeof(uint32_t)) {
-                    return RhiTestResult::fail(
+                    return RHITestResult::fail(
                         "GPUScene visible-meshlet worklist size is incorrect");
                 }
                 for (uint32_t bucketIndex = 0;
                      bucketIndex < render::kGPUSceneRasterDrawBucketCount;
                      ++bucketIndex) {
-                    const render::GPUSceneBucketGpuView& bucket =
+                    const render::GPUSceneBucketGPUView& bucket =
                         phase.buckets[bucketIndex];
                     if (bucket.visibleMeshletOffset != kExpectedOffsets[bucketIndex] ||
                         bucket.visibleMeshletCapacity !=
@@ -1659,7 +1659,7 @@ public:
                         !render::hasFlag(
                             bucket.indirectArguments.buffer->desc().usage,
                             render::BufferUsageBits::Indirect)) {
-                        return RhiTestResult::fail(
+                        return RHITestResult::fail(
                             "GPUScene bucket worklist or 16-byte indirect layout is incorrect");
                     }
                 }
@@ -1677,7 +1677,7 @@ public:
                         firstSlots[rhs].phases[0].visibleMeshletIds.buffer ||
                     firstSlots[lhs].phases[1].buckets[0].indirectArguments.buffer ==
                         firstSlots[rhs].phases[1].buckets[0].indirectArguments.buffer) {
-                    return RhiTestResult::fail(
+                    return RHITestResult::fail(
                         "GPUScene frame-slot GPU resources alias each other");
                 }
             }
@@ -1686,7 +1686,7 @@ public:
                 secondSlot.instanceVisibilityStates.buffer ||
             firstSlots[0].hzbHistory[0].buffer == secondSlot.hzbHistory[0].buffer ||
             firstSlots[0].allocationId == secondSlot.allocationId) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene resources alias between two independent Views");
         }
 
@@ -1696,7 +1696,7 @@ public:
         };
         for (uint32_t frameSlot = 0; frameSlot < firstSlots.size(); ++frameSlot) {
             if (!subsystem->prepareView(firstView, frameSlot, prepareInfo)) {
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene failed to prepare a GPU-backed View frame slot");
             }
         }
@@ -1704,19 +1704,19 @@ public:
         std::unique_ptr<render::CommandPool> commandPool;
         result = device->createCommandPool(*queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
         if (!result || commandPool == nullptr) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene View resource command-pool creation failed");
         }
         result = host.beginFrame(1, 0, nullptr, log);
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene View resource beginFrame failed: " + log);
         }
         std::unique_ptr<render::CommandBuffer> commandBuffer;
         result = commandPool->createCommandBuffer().transform([&](auto rhiValue) { commandBuffer = std::move(rhiValue); });
         if (!result || commandBuffer == nullptr || !commandBuffer->begin()) {
             host.endFrame();
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene View resource command-buffer begin failed");
         }
 
@@ -1729,7 +1729,7 @@ public:
                 log);
             if (!result) {
                 host.endFrame();
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene View resource initialization failed: " + log);
             }
             // The second call must be a state-tracked no-op, not another
@@ -1739,7 +1739,7 @@ public:
                 firstView,
                 frameSlot,
                 log);
-            render::GPUSceneViewGpuResourcesView initialized;
+            render::GPUSceneViewGPUResourcesView initialized;
             if (!result || !subsystem->viewGpuResources(
                     firstView,
                     frameSlot,
@@ -1747,7 +1747,7 @@ public:
                 !initialized.frameSlotInitialized ||
                 !initialized.hzbInitialized) {
                 host.endFrame();
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene did not track initialized slot/HZB resources");
             }
             result = subsystem->publishViewGpuResources(
@@ -1767,7 +1767,7 @@ public:
                     initialized.visibleInstanceCounter.buffer ||
                 visible->gpu.hzb.writeIndex != (frameSlot & 1u)) {
                 host.endFrame();
-                return RhiTestResult::fail(
+                return RHITestResult::fail(
                     "GPUScene failed to publish its owned View GPU resources: " + log);
             }
         }
@@ -1784,7 +1784,7 @@ public:
         grownDesc.hzbMipCount = 5;
         grownDesc.hzbElementCount = 171;
         result = subsystem->ensureViewGpuResources(firstView, grownDesc, log);
-        render::GPUSceneViewGpuResourcesView grown;
+        render::GPUSceneViewGPUResourcesView grown;
         const render::GPUSceneVisibleDrawSet* invalidatedVisible =
             subsystem->visibleDrawSet(firstView, 0);
         if (!result || !subsystem->viewGpuResources(firstView, 0, grown) ||
@@ -1797,7 +1797,7 @@ public:
             invalidatedVisible == nullptr || invalidatedVisible->gpu.sourceView.valid() ||
             invalidatedVisible->stats.hzbValid) {
             host.endFrame();
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene View resize/growth did not replace and invalidate the stale bundle: " +
                 log);
         }
@@ -1806,7 +1806,7 @@ public:
         if (retiredInstance->desc().size != 8u * sizeof(uint32_t) ||
             retiredHzb->desc().size != 43u * sizeof(float)) {
             host.endFrame();
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene destroyed a resized View bundle before deferred retirement");
         }
 
@@ -1820,7 +1820,7 @@ public:
                 }) ||
             !subsystem->publishViewGpuResources(firstView, 0, 1, log)) {
             host.endFrame();
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene failed to initialize/publish resized View resources: " + log);
         }
 
@@ -1832,20 +1832,20 @@ public:
             subsystem->visibleDrawSet(firstView, 0) != nullptr ||
             destroyedInstance->desc().size != destroyedInstanceSize) {
             host.endFrame();
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene destroyView did not invalidate and defer-retire its GPU bundle");
         }
 
         if (!commandBuffer->end()) {
             host.endFrame();
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene View resource command-buffer end failed");
         }
         std::unique_ptr<render::Fence> fence;
         result = device->createFence(false).transform([&](auto rhiValue) { fence = std::move(rhiValue); });
         if (!result || fence == nullptr) {
             host.endFrame();
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 "GPUScene View resource fence creation failed");
         }
         render::CommandBuffer* commandBuffers[] = {commandBuffer.get()};
@@ -1858,7 +1858,7 @@ public:
         }
         host.endFrame();
         if (!result) {
-            return RhiTestResult::fail(
+            return RHITestResult::fail(
                 std::string("GPUScene View resource submit/wait returned ") +
                 toString(result));
         }
@@ -1866,35 +1866,35 @@ public:
         host.shutdown();
         result = device->waitIdle();
         return result
-            ? RhiTestResult::pass()
-            : RhiTestResult::fail(
+            ? RHITestResult::pass()
+            : RHITestResult::fail(
                 std::string("GPUScene View resource waitIdle returned ") +
                 toString(result));
     }
 };
 
-METALLIC_REGISTER_RHI_TEST(GPUSceneViewGpuResourcesTest);
+METALLIC_REGISTER_RHI_TEST(GPUSceneViewGPUResourcesTest);
 
 #define SUBMISSION_CHECK(expression) do { \
-    if (!(expression)) { return RhiTestResult::fail(#expression); } \
+    if (!(expression)) { return RHITestResult::fail(#expression); } \
 } while (false)
 
-class GPUSceneSubmissionRecoveryTest final : public RhiTest {
+class GPUSceneSubmissionRecoveryTest final : public RHITest {
 public:
     GPUSceneSubmissionRecoveryTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "gpu_scene_submission_recovery";
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         const auto result = render::createDevice({.applicationName = "GPUScene submission recovery",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("requires bindless buffers"); }
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("requires bindless buffers"); }
         SUBMISSION_CHECK(result);
         auto* queue = device->getQueue(render::QueueType::Graphics);
-        if (queue == nullptr) { return RhiTestResult::skip("requires a graphics queue"); }
+        if (queue == nullptr) { return RHITestResult::skip("requires a graphics queue"); }
         std::string log;
         render::RenderSubsystemHost host;
         SUBMISSION_CHECK(host.registerSubsystem<render::GPUSceneSubsystem>(log));
@@ -1925,7 +1925,7 @@ public:
         std::unique_ptr<render::Buffer> readback;
         SUBMISSION_CHECK(device->createCommandPool(*queue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }));
         SUBMISSION_CHECK(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
-        SUBMISSION_CHECK(device->createBuffer({.size = sizeof(render::GPUSceneGpuInstanceRecord),
+        SUBMISSION_CHECK(device->createBuffer({.size = sizeof(render::GPUSceneGPUInstanceRecord),
             .usage = render::BufferUsageBits::TransferDestination,
             .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
         struct Drain {
@@ -1964,20 +1964,20 @@ public:
                     .before = {},
                     .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
                 }};
-            if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {barriers.data(), 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
-                auto sourceSlice = instances->slice({0, sizeof(render::GPUSceneGpuInstanceRecord)});
-                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
-                auto destinationSlice = readback.get()->slice({0, sizeof(render::GPUSceneGpuInstanceRecord)});
-                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                auto sourceSlice = instances->slice({0, sizeof(render::GPUSceneGPUInstanceRecord)});
+                if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                auto destinationSlice = readback.get()->slice({0, sizeof(render::GPUSceneGPUInstanceRecord)});
+                if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             const render::BufferBarrierDesc restore{
                 .buffer = instances,
                 .before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
             };
-            if (auto commandResult = commands->synchronize({.buffers = {&restore, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {&restore, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             SUBMISSION_CHECK(host.recordPostGraph(*commands, nullptr, required, log));
             SUBMISSION_CHECK(commands->end());
             host.endFrame();
@@ -1991,7 +1991,7 @@ public:
                 SUBMISSION_CHECK(subsystem->gpuUploadStats().uploadedByteCount == previousStats.uploadedByteCount);
                 SUBMISSION_CHECK(!subsystem->globalBufferViews().validFor(
                     subsystem->drawSet().generation, subsystem->drawSet().revision));
-                render::GPUSceneViewGpuResourcesView resources;
+                render::GPUSceneViewGPUResourcesView resources;
                 SUBMISSION_CHECK(subsystem->viewGpuResources(view, 0, resources));
                 SUBMISSION_CHECK(resources.frameSlotInitialized == (index != 0));
                 SUBMISSION_CHECK(resources.hzbInitialized == (index != 0));
@@ -2008,12 +2008,12 @@ public:
             readback->invalidate();
             const void* mapped = readback->map();
             SUBMISSION_CHECK(mapped != nullptr);
-            render::GPUSceneGpuInstanceRecord instance;
+            render::GPUSceneGPUInstanceRecord instance;
             std::memcpy(&instance, mapped, sizeof(instance));
             readback->unmap();
             SUBMISSION_CHECK(std::memcmp(instance.worldMatrix.data(), nodes[0].worldMatrix.a, sizeof(float) * 16) == 0);
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
@@ -2041,15 +2041,15 @@ bool containsLight(
     return std::find(lights.begin(), lights.end(), id) != lights.end();
 }
 
-class GPUSceneLightCollectionTest final : public RhiTest {
+class GPUSceneLightCollectionTest final : public RHITest {
 public:
     GPUSceneLightCollectionTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "gpu_scene_light_collection";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         std::vector<scene::RenderPrimitive> primitives{makeTrianglePrimitive()};
         std::vector<scene::RenderNode> nodes(1);
@@ -2081,7 +2081,7 @@ public:
         gpuScene.setDefaultFrameSlotCount(2);
         std::string log;
         if (!gpuScene.rebuild(source, log)) {
-            return RhiTestResult::fail("light collection rebuild failed: " + log);
+            return RHITestResult::fail("light collection rebuild failed: " + log);
         }
         const auto records = gpuScene.lights();
         if (records.size() != 5 || gpuScene.drawSet().lights.size() != 2 ||
@@ -2094,7 +2094,7 @@ public:
             records[2].source.gpu.colorIntensity[3] != 25.0f ||
             records[1].source.enabled || records[3].source.enabled ||
             records[4].source.enabled) {
-            return RhiTestResult::fail("light source provenance, SI intensity or inactive slots are incorrect");
+            return RHITestResult::fail("light source provenance, SI intensity or inactive slots are incorrect");
         }
         const auto directionalId = records[0].id;
         const auto pointId = records[2].id;
@@ -2104,7 +2104,7 @@ public:
         const uint64_t geometryRevision = gpuScene.drawSet().revision;
         if (lightGeneration == 0 || lightRevision == 0 ||
             gpuScene.light(directionalId) == nullptr || gpuScene.light(pointId) == nullptr) {
-            return RhiTestResult::fail("light collection did not establish generational source IDs");
+            return RHITestResult::fail("light collection did not establish generational source IDs");
         }
         const auto firstView = gpuScene.createView();
         const auto secondView = gpuScene.createView();
@@ -2114,7 +2114,7 @@ public:
             !gpuScene.prepareView(firstView, 1, info) ||
             !gpuScene.prepareView(secondView, 0, info) ||
             !gpuScene.markViewHzbValid(firstView, 0)) {
-            return RhiTestResult::fail("light collection could not prepare isolated views and frame slots");
+            return RHITestResult::fail("light collection could not prepare isolated views and frame slots");
         }
         const auto* visible = gpuScene.visibleLights(firstView, 0);
         const auto* drawSet = gpuScene.visibleDrawSet(firstView, 0);
@@ -2124,7 +2124,7 @@ public:
             visible->directionalLights != std::vector{directionalId} ||
             visible->localLights != std::vector{pointId} ||
             !visible->unboundedLocalLights.empty()) {
-            return RhiTestResult::fail("mesh predicate incorrectly affected independent light collection");
+            return RHITestResult::fail("mesh predicate incorrectly affected independent light collection");
         }
         const uint64_t hzbEpoch = drawSet->stats.hzbHistoryEpoch;
         virtualLights[0].properties.intensity = 50.0;
@@ -2141,19 +2141,19 @@ public:
             gpuScene.visibleLights(firstView, 0) != nullptr ||
             gpuScene.visibleLights(firstView, 1) != nullptr ||
             gpuScene.visibleLights(secondView, 0) != nullptr) {
-            return RhiTestResult::fail("light-only sync lost stable IDs or failed to invalidate light snapshots");
+            return RHITestResult::fail("light-only sync lost stable IDs or failed to invalidate light snapshots");
         }
         drawSet = gpuScene.visibleDrawSet(firstView, 0);
         if (drawSet == nullptr || !drawSet->stats.hzbValid ||
             drawSet->stats.hzbHistoryEpoch != hzbEpoch) {
-            return RhiTestResult::fail("light-only sync invalidated geometry visibility or HZB history");
+            return RHITestResult::fail("light-only sync invalidated geometry visibility or HZB history");
         }
         const uint64_t updatedLightRevision = gpuScene.drawSet().lightRevision;
         if (gpuScene.sync(source) != render::GPUSceneSyncResult::Unchanged ||
             gpuScene.syncLights(imported, virtualLights) ||
             gpuScene.drawSet().lightRevision != updatedLightRevision ||
             !gpuScene.prepareView(firstView, 0, info)) {
-            return RhiTestResult::fail("unchanged light sources advanced revisions or could not be recollected");
+            return RHITestResult::fail("unchanged light sources advanced revisions or could not be recollected");
         }
         visible = gpuScene.visibleLights(firstView, 0);
         if (visible == nullptr || visible->localLights.size() != 2 ||
@@ -2161,7 +2161,7 @@ public:
             gpuScene.visibleLights(firstView, 1) != nullptr ||
             gpuScene.visibleLights(secondView, 0) != nullptr ||
             !gpuScene.visibleDrawSet(firstView, 0)->stats.hzbValid) {
-            return RhiTestResult::fail("light collection refresh leaked across frame slots or views");
+            return RHITestResult::fail("light collection refresh leaked across frame slots or views");
         }
         virtualLights.push_back(makeCullingTestLight(
             "directional", float3(0.0f, 0.0f, 0.0f), 0.0));
@@ -2171,13 +2171,13 @@ public:
             gpuScene.drawSet().generation != geometryGeneration ||
             gpuScene.drawSet().revision != geometryRevision ||
             !gpuScene.prepareView(firstView, 0, info)) {
-            return RhiTestResult::fail("light source topology did not invalidate only light IDs");
+            return RHITestResult::fail("light source topology did not invalidate only light IDs");
         }
         const auto lastId = gpuScene.lights().back().id;
         visible = gpuScene.visibleLights(firstView, 0);
         if (visible == nullptr || visible->directionalLights.size() != 2 ||
             visible->sourceLightCount != 4) {
-            return RhiTestResult::fail("added light was not included in the next view collection");
+            return RHITestResult::fail("added light was not included in the next view collection");
         }
         gpuScene.clearSource();
         if (!gpuScene.lights().empty() || !gpuScene.drawSet().lights.empty() ||
@@ -2185,23 +2185,23 @@ public:
             gpuScene.visibleLights(firstView, 0) != nullptr ||
             gpuScene.visibleLights(firstView, 1) != nullptr ||
             gpuScene.visibleLights(secondView, 0) != nullptr) {
-            return RhiTestResult::fail("clearSource retained stale light records or view collections");
+            return RHITestResult::fail("clearSource retained stale light records or view collections");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(GPUSceneLightCollectionTest);
 
-class GPUSceneLightFrustumTest final : public RhiTest {
+class GPUSceneLightFrustumTest final : public RHITest {
 public:
     GPUSceneLightFrustumTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "gpu_scene_light_frustum";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         std::vector<scene::PunctualLight> lights{
             makeCullingTestLight("directional", float3(1000.0f, 0.0f, 0.0f), 0.0),
@@ -2242,7 +2242,7 @@ public:
         gpuScene.setDefaultFrameSlotCount(2);
         if (!gpuScene.syncLights({}, lights) || gpuScene.lights().size() != lights.size() ||
             gpuScene.drawSet().lights.size() != 11) {
-            return RhiTestResult::fail("standalone light collection did not filter inactive sources");
+            return RHITestResult::fail("standalone light collection did not filter inactive sources");
         }
         const auto records = gpuScene.lights();
         const auto near = [](float actual, double expected) {
@@ -2256,7 +2256,7 @@ public:
             !near(records[9].boundingSphere.w, 2.0 / std::sqrt(3.0)) ||
             !near(records[10].boundingSphere.z, 1.0) ||
             !near(records[10].boundingSphere.w, std::sqrt(3.0))) {
-            return RhiTestResult::fail("finite spot light spherical-sector bounds are incorrect");
+            return RHITestResult::fail("finite spot light spherical-sector bounds are incorrect");
         }
         render::GPUSceneViewPrepareInfo firstInfo;
         // A box [-1,1]^3; intentionally non-unit normals test plane scaling.
@@ -2271,7 +2271,7 @@ public:
         const auto firstView = gpuScene.createView();
         const auto secondView = gpuScene.createView();
         if (!gpuScene.prepareView(firstView, 0, firstInfo)) {
-            return RhiTestResult::fail("standalone light frustum view preparation failed");
+            return RHITestResult::fail("standalone light frustum view preparation failed");
         }
         const auto* visible = gpuScene.visibleLights(firstView, 0);
         if (visible == nullptr || visible->sourceLightCount != 11 ||
@@ -2279,7 +2279,7 @@ public:
             visible->unboundedLocalLights != std::vector{records[1].id, records[2].id} ||
             visible->localLights != std::vector{
                 records[3].id, records[5].id, records[6].id, records[9].id, records[10].id}) {
-            return RhiTestResult::fail("light frustum lost tangent/intersecting bounds or retained outside spheres");
+            return RHITestResult::fail("light frustum lost tangent/intersecting bounds or retained outside spheres");
         }
         const auto firstLocalIds = visible->localLights;
         auto secondInfo = firstInfo;
@@ -2287,7 +2287,7 @@ public:
         secondInfo.lightFrustumPlanes[1] = float4(-1.0f, 0.0f, 0.0f, 6.0f);
         if (!gpuScene.prepareView(firstView, 1, secondInfo) ||
             !gpuScene.prepareView(secondView, 0, secondInfo)) {
-            return RhiTestResult::fail("alternate light frusta could not be prepared");
+            return RHITestResult::fail("alternate light frusta could not be prepared");
         }
         visible = gpuScene.visibleLights(firstView, 1);
         const auto* secondVisible = gpuScene.visibleLights(secondView, 0);
@@ -2298,12 +2298,12 @@ public:
             visible->localLights != secondVisible->localLights ||
             gpuScene.visibleLights(firstView, 0)->localLights != firstLocalIds ||
             visible->unboundedLocalLights.size() != 2 || visible->directionalLights.size() != 1) {
-            return RhiTestResult::fail("light frustum collection leaked between cameras or frame slots");
+            return RHITestResult::fail("light frustum collection leaked between cameras or frame slots");
         }
         if (!gpuScene.prepareView(secondView, 1) ||
             gpuScene.visibleLights(secondView, 1) == nullptr ||
             gpuScene.visibleLights(secondView, 1)->localLights.size() != 8) {
-            return RhiTestResult::fail("default zero planes should retain every bounded light");
+            return RHITestResult::fail("default zero planes should retain every bounded light");
         }
         render::GPUSceneViewPrepareInfo invalidPlanes;
         invalidPlanes.lightFrustumPlanes[0] = float4(
@@ -2315,28 +2315,28 @@ public:
             gpuScene.visibleLights(secondView, 1)->localLights.size() != 8 ||
             gpuScene.visibleLights(firstView, 0)->localLights != firstLocalIds ||
             gpuScene.prepareView(firstView, 2) || gpuScene.visibleLights(firstView, 2) != nullptr) {
-            return RhiTestResult::fail("invalid frustum planes or invalid frame slots violated conservative collection");
+            return RHITestResult::fail("invalid frustum planes or invalid frame slots violated conservative collection");
         }
         if (!gpuScene.destroyView(secondView) ||
             gpuScene.visibleLights(secondView, 0) != nullptr ||
             gpuScene.prepareView(secondView, 0)) {
-            return RhiTestResult::fail("destroyed view retained a visible light collection");
+            return RHITestResult::fail("destroyed view retained a visible light collection");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(GPUSceneLightFrustumTest);
 
-class GPUSceneLightCameraFrustumTest final : public RhiTest {
+class GPUSceneLightCameraFrustumTest final : public RHITest {
 public:
     GPUSceneLightCameraFrustumTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "gpu_scene_light_camera_frustum";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         const float3 eye(10.0f, 5.0f, 3.0f);
         const std::array positions{
@@ -2363,23 +2363,23 @@ public:
             eye, eye + float3(0.0f, 0.0f, -1.0f), float3(0.0f, 1.0f, 0.0f),
             1.0f, float(std::acos(-1.0) * 0.5), 1.0f, 10.0f);
         if (!gpuScene.prepareView(view, 0, info)) {
-            return RhiTestResult::fail("perspective light camera could not be prepared");
+            return RHITestResult::fail("perspective light camera could not be prepared");
         }
         const auto* visible = gpuScene.visibleLights(view, 0);
         if (visible == nullptr || visible->localLights != std::vector{
                 records[0].id, records[5].id, records[7].id, records[8].id}) {
-            return RhiTestResult::fail("translated perspective camera planes lost clip tangencies or accepted outside lights");
+            return RHITestResult::fail("translated perspective camera planes lost clip tangencies or accepted outside lights");
         }
         info.lightFrustumPlanes = render::gpuSceneLightFrustumPlanes(
             eye, eye + float3(0.0f, 0.0f, -1.0f), float3(0.0f, 1.0f, 0.0f),
             1.0f, float(std::acos(-1.0) * 0.5), 1.0f, 10.0f, 2.0f);
         if (!gpuScene.prepareView(view, 0, info)) {
-            return RhiTestResult::fail("orthographic light camera could not be prepared");
+            return RHITestResult::fail("orthographic light camera could not be prepared");
         }
         visible = gpuScene.visibleLights(view, 0);
         if (visible == nullptr || visible->localLights != std::vector{
                 records[0].id, records[7].id, records[8].id}) {
-            return RhiTestResult::fail("orthographic light camera did not use a fixed-width clip volume");
+            return RHITestResult::fail("orthographic light camera did not use a fixed-width clip volume");
         }
         info.lightFrustumPlanes = render::gpuSceneLightFrustumPlanes(
             float3(std::numeric_limits<float>::quiet_NaN(), eye.y, eye.z),
@@ -2388,23 +2388,23 @@ public:
         if (!gpuScene.prepareView(view, 0, info) ||
             gpuScene.visibleLights(view, 0) == nullptr ||
             gpuScene.visibleLights(view, 0)->localLights.size() != lights.size()) {
-            return RhiTestResult::fail("invalid camera input should conservatively disable light frustum culling");
+            return RHITestResult::fail("invalid camera input should conservatively disable light frustum culling");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(GPUSceneLightCameraFrustumTest);
 
-class GPUSceneWorldLightSyncTest final : public RhiTest {
+class GPUSceneWorldLightSyncTest final : public RHITest {
 public:
     GPUSceneWorldLightSyncTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "gpu_scene_world_light_sync";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         // beginFrame performs only source synchronization: no GPU initialization
         // or command recording is needed to validate this integration boundary.
@@ -2415,7 +2415,7 @@ public:
         settings.lights.push_back(makeCullingTestLight(
             "point", float3(1.0f, 2.0f, 3.0f), 5.0));
         if (!world.setLighting(settings)) {
-            return RhiTestResult::fail("world light fixture was rejected");
+            return RHITestResult::fail("world light fixture was rejected");
         }
         render::RenderSubsystemFrameContext frame{
             .device = context.device,
@@ -2434,7 +2434,7 @@ public:
             subsystem.lights().size() != 1 || subsystem.drawSet().lights.size() != 1 ||
             subsystem.scene().stats().geometryCount != 0 ||
             subsystem.scene().stats().instanceCount != 0) {
-            return RhiTestResult::fail("GPUScene beginFrame did not collect virtual lights without a scene: " + log);
+            return RHITestResult::fail("GPUScene beginFrame did not collect virtual lights without a scene: " + log);
         }
         const auto lightId = subsystem.lights().front().id;
         const uint32_t geometryGeneration = subsystem.drawSet().generation;
@@ -2443,7 +2443,7 @@ public:
         const uint64_t lightRevision = subsystem.drawSet().lightRevision;
         const auto view = subsystem.scene().createView();
         if (!subsystem.prepareView(view, 0) || subsystem.visibleLights(view, 0) == nullptr) {
-            return RhiTestResult::fail("GPUScene could not prepare a light-only world view");
+            return RHITestResult::fail("GPUScene could not prepare a light-only world view");
         }
         settings.lights[0].properties.intensity *= 2.0;
         world.setLighting(settings);
@@ -2460,7 +2460,7 @@ public:
             subsystem.visibleDrawSet(view, 0) == nullptr ||
             subsystem.gpuUploadStats().fullUploadCount != 0 ||
             subsystem.gpuUploadStats().instanceUploadCount != 0) {
-            return RhiTestResult::fail("world lighting-only update churned geometry state or missed light invalidation");
+            return RHITestResult::fail("world lighting-only update churned geometry state or missed light invalidation");
         }
         const uint64_t updatedRevision = subsystem.drawSet().lightRevision;
         changes = render::RenderChangeBits::None;
@@ -2468,7 +2468,7 @@ public:
         if (!subsystem.beginFrame(frame, changes, log) ||
             changes != render::RenderChangeBits::None ||
             subsystem.drawSet().lightRevision != updatedRevision) {
-            return RhiTestResult::fail("unchanged world lights published repeated subsystem changes");
+            return RHITestResult::fail("unchanged world lights published repeated subsystem changes");
         }
 
         render::RenderWorld replacement;
@@ -2488,7 +2488,7 @@ public:
             subsystem.lights().front().source.gpu.directionType[3] != 2.0f ||
             subsystem.lights().front().source.gpu.positionRange[0] != 9.0f ||
             subsystem.visibleLights(view, 0) != nullptr) {
-            return RhiTestResult::fail("world replacement kept the previous world's virtual light snapshot");
+            return RHITestResult::fail("world replacement kept the previous world's virtual light snapshot");
         }
         const auto replacementId = subsystem.lights().front().id;
         frame.world = nullptr;
@@ -2500,7 +2500,7 @@ public:
             subsystem.drawSet().generation != geometryGeneration ||
             subsystem.drawSet().revision != geometryRevision ||
             subsystem.scene().light(replacementId) != nullptr) {
-            return RhiTestResult::fail("removing a world retained its virtual lights");
+            return RHITestResult::fail("removing a world retained its virtual lights");
         }
 
         // A scene override chooses imported geometry/lights, but must retain the
@@ -2508,7 +2508,7 @@ public:
         scene::Scene overrideScene;
         render::GPUSceneSourceOverrideToken token;
         if (!subsystem.acquireSourceOverride(&overrideScene, log).transform([&](auto value) { token = std::move(value); })) {
-            return RhiTestResult::fail("light sync could not acquire a source override: " + log);
+            return RHITestResult::fail("light sync could not acquire a source override: " + log);
         }
         frame.world = &replacement;
         subsystem.onWorldChanged(&replacement);
@@ -2519,7 +2519,7 @@ public:
             subsystem.lights().front().source.sourceVirtualLightIndex != 0 ||
             subsystem.lights().front().source.gpu.positionRange[0] != 9.0f ||
             !subsystem.releaseSourceOverride(token)) {
-            return RhiTestResult::fail("source override dropped the active world's virtual lights");
+            return RHITestResult::fail("source override dropped the active world's virtual lights");
         }
         changes = render::RenderChangeBits::None;
         ++frame.frameIndex;
@@ -2528,23 +2528,23 @@ public:
             subsystem.drawSet().lights.size() != 1 ||
             subsystem.lights().front().source.sourceVirtualLightIndex != 0 ||
             subsystem.lights().front().source.gpu.positionRange[0] != 9.0f) {
-            return RhiTestResult::fail("releasing the source override did not retain the active world's virtual lights");
+            return RHITestResult::fail("releasing the source override did not retain the active world's virtual lights");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(GPUSceneWorldLightSyncTest);
 
-class RenderWorldScopedSceneChangesTest final : public RhiTest {
+class RenderWorldScopedSceneChangesTest final : public RHITest {
 public:
     RenderWorldScopedSceneChangesTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "render_world_scoped_scene_changes";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderWorld world;
         const uint64_t revision = world.sceneRevision();
@@ -2555,21 +2555,21 @@ public:
         if (world.sceneRevision() != revision + 1 ||
             world.sceneContentRevision() != contentRevision || world.consumeChanges() != lightingChanges ||
             world.consumeChanges() != render::RenderChangeBits::None) {
-            return RhiTestResult::fail("light/camera transform notification dirtied geometry or material");
+            return RHITestResult::fail("light/camera transform notification dirtied geometry or material");
         }
         world.notifySceneChanged(lightingChanges);
         world.notifySceneChanged(render::RenderChangeBits::Geometry);
         if (world.sceneContentRevision() != contentRevision + 1 ||
             world.consumeChanges() != (lightingChanges | render::RenderChangeBits::Geometry)) {
-            return RhiTestResult::fail("scoped notifications did not accumulate changes within a frame");
+            return RHITestResult::fail("scoped notifications did not accumulate changes within a frame");
         }
         world.notifySceneChanged();
         if (world.sceneContentRevision() != contentRevision + 2 ||
             world.consumeChanges() != (lightingChanges | render::RenderChangeBits::Geometry |
                 render::RenderChangeBits::Material)) {
-            return RhiTestResult::fail("default scene notification lost its full invalidation contract");
+            return RHITestResult::fail("default scene notification lost its full invalidation contract");
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 };
 

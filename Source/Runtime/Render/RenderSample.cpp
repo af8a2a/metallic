@@ -69,7 +69,7 @@ bool applySampleScenePath(RenderGraph& graph, const RenderSampleDesc& desc, std:
     return true;
 }
 
-class HdrCalibrationSample final : public RenderSample {
+class HDRCalibrationSample final : public RenderSample {
 public:
     std::string_view id() const override { return "hdr-calibration"; }
     std::string_view name() const override { return "HDR / scRGB Calibration"; }
@@ -143,7 +143,7 @@ public:
     std::string graphPath() const override { return "Pipelines/Samples/gpu_driven_tessellation.metallic_graph.json"; }
 };
 
-class OpenPbrLookDevSample final : public RenderSample {
+class OpenPBRLookDevSample final : public RenderSample {
 public:
     std::string_view id() const override { return "openpbr-lookdev"; }
     std::string_view name() const override { return "LookDev / OpenPBR Default"; }
@@ -155,7 +155,7 @@ public:
     }
     std::string scenePath() const override
     {
-        return "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf";
+        return "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf";
     }
     std::string graphPath() const override
     {
@@ -175,7 +175,7 @@ public:
         return "OpenPBR / Standard BSDF comparison with a draggable divider, linked cameras and shared HDR exposure. "
             "See Documentation/SliderDebugPass.md.";
     }
-    std::string scenePath() const override { return "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf"; }
+    std::string scenePath() const override { return "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf"; }
     std::string graphPath() const override { return "Pipelines/Samples/lookdev_shading_compare.metallic_graph.json"; }
     std::vector<std::string> scenePathTargets() const override { return {"OpenPBR", "Standard"}; }
     std::string previewOutput() const override { return "FinalBlit.color"; }
@@ -191,7 +191,7 @@ public:
         return "OpenPBR on both paths: GPUDriven visibility and deferred lighting versus progressive path tracing, "
             "with linked cameras and shared exposure. See Documentation/VisibilityBufferDeferred.md.";
     }
-    std::string scenePath() const override { return "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf"; }
+    std::string scenePath() const override { return "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf"; }
     std::string graphPath() const override { return "Pipelines/Samples/lookdev_vbuffer.metallic_graph.json"; }
     std::vector<std::string> scenePathTargets() const override { return {"Reference", "VBuffer", "Deferred"}; }
     std::string previewOutput() const override { return "FinalBlit.color"; }
@@ -274,7 +274,7 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
-class PathTracingNrcMeetMatSample final : public RenderSample {
+class PathTracingNRCMeetMatSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-nrc-meet-mat"; }
     std::string_view name() const override { return "Path Tracing / meet_mat / NRC"; }
@@ -330,7 +330,7 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
-class PathTracingDlssRrSample final : public RenderSample {
+class PathTracingDLSSRRSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-sample-dlss-rr"; }
     std::string_view name() const override { return "PathTracingSample / DLSS-RR"; }
@@ -359,7 +359,7 @@ public:
     bool requiresStreamline() const override { return true; }
 };
 
-class PathTracingDlssSrSample final : public RenderSample {
+class PathTracingDLSSSRSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-sample-dlss-sr"; }
     std::string_view name() const override { return "PathTracingSample / DLSS-SR"; }
@@ -388,7 +388,7 @@ public:
     bool requiresStreamline() const override { return true; }
 };
 
-class PathTracingDlssNrSample final : public RenderSample {
+class PathTracingDLSSNRSample final : public RenderSample {
 public:
     std::string_view id() const override { return "pathtracing-sample-dlss-nr"; }
     std::string_view name() const override { return "PathTracingSample / DLSS-NR (Experimental)"; }
@@ -413,7 +413,7 @@ public:
     bool requiresStreamline() const override { return true; }
 };
 
-class RtxdiSample final : public RenderSample {
+class RTXDISample final : public RenderSample {
 public:
     std::string_view id() const override { return "rtxdi-sample"; }
     std::string_view name() const override { return "RTXDI / ReSTIR DI"; }
@@ -427,7 +427,7 @@ public:
     {
         return "Pipelines/Samples/rtxdi_meet_mat.metallic_graph.json";
     }
-    std::vector<std::string> scenePathTargets() const override { return {"Rtxdi"}; }
+    std::vector<std::string> scenePathTargets() const override { return {"RTXDI"}; }
     std::optional<RenderSampleEnvironmentDesc> environment() const override
     {
         return RenderSampleEnvironmentDesc{
@@ -441,7 +441,7 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
-class RtxcrMaterialSample final : public RenderSample {
+class RTXCRMaterialSample final : public RenderSample {
 public:
     std::string_view id() const override { return "rtxcr-material-sample"; }
     std::string_view name() const override { return "RTXCR Claire Ponytail"; }
@@ -539,7 +539,7 @@ public:
     std::string previewOutput() const override { return "FinalBlit.color"; }
 };
 
-class GPUDrivenUsdSample final : public RenderSample {
+class GPUDrivenUSDSample final : public RenderSample {
 public:
     std::string_view id() const override { return "gpu-driven-usd"; }
     std::string_view name() const override { return "GPUDrivenSample / USD"; }
@@ -701,7 +701,7 @@ const RenderSample& pathTracingSharcMeetMatSample()
 
 const RenderSample& pathTracingNrcMeetMatSample()
 {
-    static const PathTracingNrcMeetMatSample sample;
+    static const PathTracingNRCMeetMatSample sample;
     return sample;
 }
 
@@ -713,13 +713,13 @@ const RenderSample& pathTracingSample()
 
 const RenderSample& pathTracingDlssRrSample()
 {
-    static const PathTracingDlssRrSample sample;
+    static const PathTracingDLSSRRSample sample;
     return sample;
 }
 
 const RenderSample& pathTracingDlssSrSample()
 {
-    static const PathTracingDlssSrSample sample;
+    static const PathTracingDLSSSRSample sample;
     return sample;
 }
 
@@ -731,13 +731,13 @@ const RenderSample& materialVisualizationABeautifulGameSample()
 
 const RenderSample& rtxdiSample()
 {
-    static const RtxdiSample sample;
+    static const RTXDISample sample;
     return sample;
 }
 
 const RenderSample& rtxcrMaterialSample()
 {
-    static const RtxcrMaterialSample sample;
+    static const RTXCRMaterialSample sample;
     return sample;
 }
 
@@ -749,7 +749,7 @@ const RenderSample& gpuDrivenSample()
 
 const RenderSample& gpuDrivenUsdSample()
 {
-    static const GPUDrivenUsdSample sample;
+    static const GPUDrivenUSDSample sample;
     return sample;
 }
 
@@ -782,12 +782,12 @@ std::vector<const RenderSample*> builtInRenderSamples()
     static const RealtimeLightingSample realtimeLighting;
     static const GPUDrivenTessellationSample gpuDrivenTessellation;
     static const LightGridDebugSample lightGridDebug;
-    static const HdrCalibrationSample hdrCalibration;
-    static const OpenPbrLookDevSample openPbrLookDev;
+    static const HDRCalibrationSample hdrCalibration;
+    static const OpenPBRLookDevSample openPbrLookDev;
     static const LookDevShadingCompareSample lookDevShadingCompare;
     static const LookDevVisibilityBufferSample lookDevVisibilityBuffer;
     static const LookDevABeautifulGameSample lookDevABeautifulGame;
-    static const PathTracingDlssNrSample pathTracingDlssNr;
+    static const PathTracingDLSSNRSample pathTracingDlssNr;
     static const GPUDrivenVisibilitySample gpuDrivenVisibility;
     static const GPUDrivenZorahFullSample gpuDrivenZorahFull;
     static const GPUDrivenMiniZorahSample gpuDrivenMiniZorah;

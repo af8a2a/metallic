@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Task/TaskSystem.h"
 
@@ -12,7 +12,7 @@ namespace {
 using namespace render;
 using Json = nlohmann::json;
 
-Result<> verifyRed(RenderGraphExecutor& executor, RhiTestContext& context, const std::string& output)
+Result<> verifyRed(RenderGraphExecutor& executor, RHITestContext& context, const std::string& output)
 {
     RenderFrameContext frame;
     CommandRecordingContext recording;
@@ -46,17 +46,17 @@ Result<> verifyRed(RenderGraphExecutor& executor, RhiTestContext& context, const
     return correct ? Result<>{} : makeError(Error::Failure);
 }
 
-class SchedulingDiagnosticsTest final : public RhiTest {
+class SchedulingDiagnosticsTest final : public RHITest {
 public:
-    SchedulingDiagnosticsTest() { type = RhiTestType::Rendering; name = "scheduling_diagnostics_and_benchmark"; }
-    RhiTestResult run(RhiTestContext& context) override
+    SchedulingDiagnosticsTest() { type = RHITestType::Rendering; name = "scheduling_diagnostics_and_benchmark"; }
+    RHITestResult run(RHITestContext& context) override
     {
         const bool benchmark = std::getenv("METALLIC_TEST_SCHEDULING_BENCHMARK") != nullptr;
         const uint32_t repeats = benchmark ? 3 : 1;
         const uint32_t warmup = benchmark ? 30 : 0;
         const uint32_t frames = benchmark ? 120 : 2;
         const auto* tasks = task::tryGetTaskSystem();
-        if (!tasks || tasks->workerCount() < 4) { return RhiTestResult::skip("four workers required"); }
+        if (!tasks || tasks->workerCount() < 4) { return RHITestResult::skip("four workers required"); }
         struct Mode { uint32_t workers, workload; FrameSubmissionMode submission; bool diagnostics; };
         const std::array modes{
             Mode{1, 4, FrameSubmissionMode::Joined, true}, Mode{4, 4, FrameSubmissionMode::Joined, true},
@@ -76,7 +76,7 @@ public:
             RenderGraphExecutor executor;
             std::string log;
             auto result = executor.compile(context.device, graph, 32, 32, log);
-            if (!result) { return RhiTestResult::fail(log); }
+            if (!result) { return RHITestResult::fail(log); }
             for (uint32_t repeat = 0; repeat < repeats; ++repeat) {
                 // Rotate/reverse configurations to reduce systematic order bias.
                 for (uint32_t step = 0; step < modes.size(); ++step) {
@@ -91,7 +91,7 @@ public:
                             .recordingWorkerLimit = mode.workers, .recordingBatchWorkload = mode.workload,
                             .submissionMode = mode.submission, .schedulingDiagnostics = mode.diagnostics});
                         const double wall = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
-                        if (!result) { return RhiTestResult::fail(toString(result)); }
+                        if (!result) { return RHITestResult::fail(toString(result)); }
                         const auto& stats = executor.executionStats();
                         const auto& metrics = stats.scheduling;
                         if (metrics.enabled != mode.diagnostics || (mode.diagnostics &&
@@ -99,13 +99,13 @@ public:
                              metrics.drawCalls != 0 || metrics.dispatchCalls != 0 || metrics.nativeSubmitNs > metrics.submitNs ||
                              metrics.firstPassSubmitNs < metrics.firstSubmitNs || metrics.firstPassSubmitNs > metrics.executeNs ||
                              metrics.recordingEndNs > metrics.executeNs || metrics.maxRenderingNs > metrics.renderingNs))) {
-                            return RhiTestResult::fail("Scheduling metric domain/count invariant failed");
+                            return RHITestResult::fail("Scheduling metric domain/count invariant failed");
                         }
                         if (frame >= warmup) { samples.push_back({stats, wall}); }
                     }
                     result = executor.waitForSubmittedWork(5'000'000'000ull);
                     if (result) { result = verifyRed(executor, context, output); }
-                    if (!result) { return RhiTestResult::fail(std::string("Benchmark readback: ") + toString(result)); }
+                    if (!result) { return RHITestResult::fail(std::string("Benchmark readback: ") + toString(result)); }
                     for (uint32_t i = 0; i < samples.size(); ++i) {
                         const auto& sample = samples[i];
                         rows.push_back({{"passCount", count}, {"repeat", repeat}, {"mode", index}, {"frame", i},
@@ -122,7 +122,7 @@ public:
             {"validation", context.enableValidation}, {"workerCount", tasks->workerCount()},
             {"scope", "CPU execute wall time, including slot wait; 32x32 red texture copy chain, output verified after each mode. No presentation."},
             {"rows", std::move(rows)}}.dump(2);
-        return output.good() ? RhiTestResult::pass() : RhiTestResult::fail("Cannot save scheduling results");
+        return output.good() ? RHITestResult::pass() : RHITestResult::fail("Cannot save scheduling results");
     }
 };
 METALLIC_REGISTER_RHI_TEST(SchedulingDiagnosticsTest);

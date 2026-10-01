@@ -38,7 +38,7 @@ LOD Level 还存在另一处问题：只有 resident 路径读取了真实 `lod.
 
 ## 验证
 
-RelWithDebInfo 的 Metallic、MetallicGPUDrivenSample、MetallicRhiTests 构建成功。最终 13 项回归全部通过，耗时 52.822 秒，无跳过项，Vulkan 验证日志无告警/错误。覆盖可视化、混合 resident/stream、Alpha Mask、冻结相机、异步软硬光栅、双帧槽、resize、shader reload、MiniZorah VBuffer 和唯一顶点光栅对照。
+RelWithDebInfo 的 Metallic、MetallicGPUDrivenSample、MetallicRHITests 构建成功。最终 13 项回归全部通过，耗时 52.822 秒，无跳过项，Vulkan 验证日志无告警/错误。覆盖可视化、混合 resident/stream、Alpha Mask、冻结相机、异步软硬光栅、双帧槽、resize、shader reload、MiniZorah VBuffer 和唯一顶点光栅对照。
 
 [合成 GPU 测试](E:/metallic/tests/rhi/VisibilityDebugStabilityTests.cpp:16) 实际绘制 composite shader 的六种显示模式。保持几何相同，同时更换记录槽位、active group 槽位、resident/stream 命名空间分界和页面物理偏移，输出逐位相同；另验证不同 cluster/triangle 的区分、真实 LOD、实例共享颜色及无效记录回退。页面搬迁在此测试中通过修改物理偏移模拟。
 
@@ -66,7 +66,7 @@ Meshlet 模式中，相邻视角共有身份占上一视角采样身份的 74.8%
 
 ```powershell
 $env:METALLIC_TEST_MINIZORAH='1'
-./build-relwithdebinfo/tests/MetallicRhiTests.exe '--gtest_filter=*visibility_debug_stable_geometry_identity:*minizorah_debug_identity_stability' --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/visibility-stability/repeat
+./build-relwithdebinfo/tests/MetallicRHITests.exe '--gtest_filter=*visibility_debug_stable_geometry_identity:*minizorah_debug_identity_stability' --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/visibility-stability/repeat
 ```
 
 修复后入口视角：

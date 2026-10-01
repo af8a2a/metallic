@@ -1,5 +1,5 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
@@ -12,28 +12,28 @@ namespace metallic::tests {
 namespace {
 using namespace render;
 #define DEBUG_REQUIRE(expr) do { const auto checked = (expr); if (!checked) { \
-    return RhiTestResult::fail(std::string(#expr) + ": " + toString(checked) + " " + log); } } while (false)
+    return RHITestResult::fail(std::string(#expr) + ": " + toString(checked) + " " + log); } } while (false)
 
-class VisibilityDebugStabilityTest final : public RhiTest {
+class VisibilityDebugStabilityTest final : public RHITest {
 public:
     VisibilityDebugStabilityTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "visibility_debug_stable_geometry_identity";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::string log;
         std::unique_ptr<Device> device;
         const Result<> created = createDevice({.applicationName = "Visibility debug stability",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless heap"); }
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless heap"); }
         DEBUG_REQUIRE(created);
         constexpr uint32_t width = 12, capacity = 32;
         enum Input { Params, Resident, Clusters, Stream, Groups, InputCount };
-        const uint32_t strides[] = {sizeof(builtin_pass::GPUDrivenPreviewGpuParams), sizeof(VisibleClusterRecord),
-            80, sizeof(CompactStreamVisibleRecord), sizeof(MeshletStreamGpuActiveGroup)};
+        const uint32_t strides[] = {sizeof(builtin_pass::GPUDrivenPreviewGPUParams), sizeof(VisibleClusterRecord),
+            80, sizeof(CompactStreamVisibleRecord), sizeof(MeshletStreamGPUActiveGroup)};
         const uint32_t counts[] = {1, capacity, 8, capacity, 8};
         std::unique_ptr<BindlessHeap> heap;
         DEBUG_REQUIRE(device->createBindlessHeap({.maxSampledImages = 2, .maxBuffers = InputCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
@@ -64,7 +64,7 @@ public:
         DEBUG_REQUIRE(device->createGraphicsPipeline({
             .vertexShader = {vertex.get()},
             .fragmentShader = {fragment.get()},
-            .colorFormat = Format::Rgba8Unorm,
+            .colorFormat = Format::RGBA8Unorm,
             .rasterization = {.cullMode = CullMode::None},
             .usesBindlessHeap = true,
         }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
@@ -73,7 +73,7 @@ public:
         std::array<std::unique_ptr<Buffer>, 2> uploads;
         std::array<BindlessHandle, 2> images;
         for (uint32_t i = 0; i < 3; ++i) {
-            const Format format = i == 0 ? Format::R32Uint : i == 1 ? Format::R32Sfloat : Format::Rgba8Unorm;
+            const Format format = i == 0 ? Format::R32Uint : i == 1 ? Format::R32Sfloat : Format::RGBA8Unorm;
             DEBUG_REQUIRE(device->createTexture({.usage = i < 2 ? TextureUsageBits::Sampled | TextureUsageBits::TransferDestination :
                 TextureUsageBits::ColorAttachment | TextureUsageBits::TransferSource,
                 .format = format, .width = width, .height = 1}).transform([&](auto rhiValue) { textures[i] = std::move(rhiValue); }));
@@ -108,7 +108,7 @@ public:
                 const auto groupSlot = [permutation](uint32_t i) { return permutation == 0 ? i : 7u - i; };
                 std::array<VisibleClusterRecord, capacity> resident{};
                 std::array<CompactStreamVisibleRecord, capacity> stream{};
-                std::array<MeshletStreamGpuActiveGroup, 8> groups{};
+                std::array<MeshletStreamGPUActiveGroup, 8> groups{};
                 std::array<std::array<uint32_t, 20>, 8> meshlets{};
                 meshlets[2][4] = 3; meshlets[4][4] = 1;
                 resident[slot(0)] = {.clusterIndex = 2, .instanceIndex = 7};
@@ -132,7 +132,7 @@ public:
                 const std::array<uint32_t, width> visibility{ id(slot(0)), id(slot(1)), id(slot(2), 1),
                     id(base + slot(0)), id(base + slot(1)), id(base + slot(0), 1),
                     id(base + slot(2)), id(base + slot(3)), 0, id(base + slot(4)), id(base + slot(5)), id(base + capacity) };
-                builtin_pass::GPUDrivenPreviewGpuParams params;
+                builtin_pass::GPUDrivenPreviewGPUParams params;
                 params.width = width; params.height = 1; params.mode = mode; params.clearColor[3] = 1;
                 DEBUG_REQUIRE(upload(*buffers[Params], &params, sizeof(params)));
                 DEBUG_REQUIRE(upload(*buffers[Resident], resident.data(), sizeof(resident)));
@@ -150,10 +150,10 @@ public:
                         .before = metallic::render::resourceSyncScope(submitted ? ResourceState::ShaderRead : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
                         .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                     };
-                    if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     commands->copyBufferToTexture({.buffer = uploads[i].get(), .texture = textures[i].get(), .width = width, .height = 1});
                     barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite}; barrier.newLayout = TextureLayout::ShaderRead; barrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
-                    if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
                 TextureBarrierDesc barrier{
                     .texture = textures[2].get(),
@@ -162,46 +162,46 @@ public:
                     .before = metallic::render::resourceSyncScope(submitted ? ResourceState::TransferSource : ResourceState::Undefined, metallic::render::PipelineStageBits::AllCommands),
                     .after = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite},
                 };
-                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 const RenderingAttachmentDesc color{.view = views[2].get(), .state = ResourceState::ColorAttachment,
                     .loadOp = LoadOp::Clear, .storeOp = StoreOp::Store};
-                if (auto commandResult = commands->beginRendering({.renderArea = {.width = width, .height = 1}, .colorAttachments = {&color, 1}}); !commandResult) { return RhiTestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->beginRendering({.renderArea = {.width = width, .height = 1}, .colorAttachments = {&color, 1}}); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                 commands->setViewport({.width = float(width), .height = 1.f, .maxDepth = 1.f});
                 commands->setScissor({.width = width, .height = 1});
-                commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 const VisibilityBufferCompositeUserPush push{.paramsBuffer = handles[Params].shaderIndex, .visibilityImage = images[0].shaderIndex,
                     .depthImage = images[1].shaderIndex, .residentRecords = handles[Resident].shaderIndex, .meshletBuffer = handles[Clusters].shaderIndex,
                     .residentRecordCapacity = base, .streamRecords = handles[Stream].shaderIndex, .streamGroups = handles[Groups].shaderIndex};
                 commands->pushBindlessData(&push, sizeof(push)); commands->draw(3); commands->endRendering();
                 barrier.oldLayout = TextureLayout::ColorAttachment; barrier.before = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite}; barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
-                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 commands->copyTextureToBuffer({.texture = textures[2].get(), .buffer = readback.get(), .width = width, .height = 1});
                 DEBUG_REQUIRE(commands->end());
                 CommandBuffer* list[] = {commands.get()};
                 DEBUG_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
                 DEBUG_REQUIRE(fence->wait()); submitted = true;
                 readback->invalidate(); const void* mapped = readback->map();
-                if (!mapped) { return RhiTestResult::fail("Cannot read debug attachment"); }
+                if (!mapped) { return RHITestResult::fail("Cannot read debug attachment"); }
                 std::array<uint32_t, width> actual;
                 std::memcpy(actual.data(), mapped, sizeof(actual)); readback->unmap();
                 if (permutation == 0) { reference = actual; }
-                else if (actual != reference) { return RhiTestResult::fail("Debug color changed after record/group/page relocation, mode=" + std::to_string(mode)); }
+                else if (actual != reference) { return RHITestResult::fail("Debug color changed after record/group/page relocation, mode=" + std::to_string(mode)); }
                 if (mode <= 3) {
                     if (actual[0] != actual[1] || actual[3] != actual[4] || actual[0] == actual[8] || actual[3] == actual[8] ||
                         actual[9] != actual[8] || actual[10] != actual[8] || actual[11] != actual[8]) {
-                        return RhiTestResult::fail("Invalid identity coverage or instance-dependent color");
+                        return RHITestResult::fail("Invalid identity coverage or instance-dependent color");
                     }
                     if (mode == 1 && (actual[3] != actual[5] || actual[3] == actual[6] || actual[3] == actual[7])) {
-                        return RhiTestResult::fail("Meshlet color does not distinguish page/local cluster independently of triangle");
+                        return RHITestResult::fail("Meshlet color does not distinguish page/local cluster independently of triangle");
                     }
                     if (mode == 2 && (actual[0] != actual[3] || actual[3] != actual[5] || actual[3] != actual[7] || actual[3] == actual[6])) {
-                        return RhiTestResult::fail("Stream LOD colors do not use actual LOD shared with resident geometry");
+                        return RHITestResult::fail("Stream LOD colors do not use actual LOD shared with resident geometry");
                     }
-                    if (mode == 3 && actual[3] == actual[5]) { return RhiTestResult::fail("Triangle ID not distinguished"); }
+                    if (mode == 3 && actual[3] == actual[5]) { return RHITestResult::fail("Triangle ID not distinguished"); }
                 }
             }
         }
-        return RhiTestResult::pass("Six actual composite modes stable across record/group/base/page relocation; meshlet, triangle and true stream LOD identities verified");
+        return RHITestResult::pass("Six actual composite modes stable across record/group/base/page relocation; meshlet, triangle and true stream LOD identities verified");
     }
 };
 METALLIC_REGISTER_RHI_TEST(VisibilityDebugStabilityTest);

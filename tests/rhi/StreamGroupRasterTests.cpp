@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
@@ -11,12 +11,12 @@ namespace metallic::tests {
 namespace {
 using namespace render;
 #define GROUP_REQUIRE(expr) do { const auto checked = (expr); if (!checked) { \
-    return RhiTestResult::fail(std::string(#expr) + ": " + toString(checked)); } } while (false)
+    return RHITestResult::fail(std::string(#expr) + ": " + toString(checked)); } } while (false)
 
-class StreamGroupRasterTest final : public RhiTest {
+class StreamGroupRasterTest final : public RHITest {
 public:
-    StreamGroupRasterTest() { type = RhiTestType::Rendering; name = "stream_group_raster_boundaries"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamGroupRasterTest() { type = RHITestType::Rendering; name = "stream_group_raster_boundaries"; }
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<Device> device;
         GROUP_REQUIRE(createDevice({.applicationName = "Stream group raster boundaries",
@@ -24,13 +24,13 @@ public:
             .transform([&](auto value) { device = std::move(value); }));
         const auto& caps = device->capabilities();
         if (!caps.shaderBufferInt64Atomics || caps.subgroupSize != 32 || caps.minSubgroupSize != 32 || caps.maxSubgroupSize != 32) {
-            return RhiTestResult::skip("Requires fixed wave32 and 64-bit buffer atomics");
+            return RHITestResult::skip("Requires fixed wave32 and 64-bit buffer atomics");
         }
         constexpr uint32_t extent = 64, pixelCount = extent * extent, pageBytes = 4096;
         enum Input { Header, Groups, Params, Pages, PageTable, Bindings, Bins, Pixels, Instances, Count };
-        const uint32_t strides[] = {sizeof(MeshletStreamGpuActiveHeader), sizeof(MeshletStreamGpuActiveGroup),
-            sizeof(MeshletStreamGpuParams), 4, sizeof(StreamPageTableEntry), sizeof(MeshletStreamGpuRasterBindings),
-            4, 8, sizeof(GPUSceneGpuInstanceRecord)};
+        const uint32_t strides[] = {sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUActiveGroup),
+            sizeof(MeshletStreamGPUParams), 4, sizeof(StreamPageTableEntry), sizeof(MeshletStreamGPURasterBindings),
+            4, 8, sizeof(GPUSceneGPUInstanceRecord)};
         const uint32_t counts[] = {1, 1, 1, pageBytes / 4, 1, 1, 21, pixelCount + 16, 1};
         std::unique_ptr<BindlessHeap> heap;
         GROUP_REQUIRE(device->createBindlessHeap({.maxBuffers = Count}).transform([&](auto v) { heap = std::move(v); }));
@@ -58,7 +58,7 @@ public:
                 .moduleName = i ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : "Features/GPUDriven/GPUDrivenStreamWorkRaster",
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled.diagnostics)
                 .transform([&](auto v) { compiled = std::move(v); });
-            if (!result) { return RhiTestResult::fail(compiled.diagnostics); }
+            if (!result) { return RHITestResult::fail(compiled.diagnostics); }
             GROUP_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto v) { shaders[i] = std::move(v); }));
             GROUP_REQUIRE(device->createComputePipeline({.computeShader = {shaders[i].get()}, .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto v) { pipelines[i] = std::move(v); }));
@@ -111,20 +111,20 @@ public:
             if (test.triangles) {
                 for (uint32_t i=0; i<3; ++i) { page[header.triangleOffsetBytes+test.selected*3+i] = uint8_t(test.vertices-3+i); }
             }
-            MeshletStreamGpuActiveHeader active{.activeGroupCount = 1, .activeGroupCapacity = 1, .maxActiveGroupClusters = 1};
-            MeshletStreamGpuActiveGroup group;
+            MeshletStreamGPUActiveHeader active{.activeGroupCount = 1, .activeGroupCapacity = 1, .maxActiveGroupClusters = 1};
+            MeshletStreamGPUActiveGroup group;
             group.clusterCount = 1; group.clusterSelectionMask = test.fault == 5 ? 0 : 1; group.gpuSceneInstanceIndex = 0;
             group.world0[0] = test.reflected ? -1.f : 1.f; group.world1[1] = group.world2[2] = group.world3[3] = 1;
-            MeshletStreamGpuParams params;
+            MeshletStreamGPUParams params;
             params.center[2]=1; params.upProjection[1]=1; params.upProjection[3]=1;
             params.viewport[0]=1; params.viewport[1]=params.viewport[2]=extent; params.viewport[3]=1.5707963f;
             params.clipOrtho[0]=.01f; params.clipOrtho[1]=10; params.clipOrtho[2]=2; params.clipOrtho[3]=test.reversed ? 1.f : 0.f;
             params.pageBufferBytes=pageBytes; params.drawTaskCount=2; params.scenePageCount=1;
             StreamPageTableEntry table;
             table.deviceOffsetAndState=packStreamPageTableEntry(0,test.fault == 4 ? MeshletStreamPageResidencyState::Unloaded : MeshletStreamPageResidencyState::Resident);
-            MeshletStreamGpuRasterBindings bindings{.visibleRecordBase=371, .visibleRecordCapacity=1,
+            MeshletStreamGPURasterBindings bindings{.visibleRecordBase=371, .visibleRecordCapacity=1,
                 .gpuSceneInstanceBuffer=handles[Instances].shaderIndex};
-            GPUSceneGpuInstanceRecord instance;
+            GPUSceneGPUInstanceRecord instance;
             instance.identity[3]=2; // two-sided; reflected winding must preserve coverage
             std::array<uint32_t,21> bins{};
             bins[4]=bins[5]=1; bins[6]=bins[7]=extent; bins[9]=test.reversed ? 1 : 0;
@@ -152,29 +152,29 @@ public:
                     .after={PipelineStageBits::Transfer,AccessBits::TransferRead}};
                 GROUP_REQUIRE(commands->synchronize({.buffers={&barrier,1}}));
                 auto src=buffers[Pixels]->slice({0,readback->desc().size}); auto dst=readback->slice({0,readback->desc().size});
-                if (!src || !dst) { return RhiTestResult::fail("Invalid readback slice"); } GROUP_REQUIRE(commands->copyBuffer(*src,*dst));
+                if (!src || !dst) { return RHITestResult::fail("Invalid readback slice"); } GROUP_REQUIRE(commands->copyBuffer(*src,*dst));
                 GROUP_REQUIRE(commands->end()); CommandBuffer* list[]={commands.get()};
                 GROUP_REQUIRE(queue->submit({.commandBuffers={list,1},.signalFence=fence.get()}));
                 GROUP_REQUIRE(fence->wait()); submitted=true; readback->invalidate();
                 const void* mapped=readback->map();
-                if (!mapped) { return RhiTestResult::fail("Readback map failed"); }
+                if (!mapped) { return RHITestResult::fail("Readback map failed"); }
                 std::memcpy(pixels.data(),mapped,pixels.size()*8); readback->unmap();
                 const auto covered=std::count_if(pixels.begin(),pixels.begin()+pixelCount,[](uint64_t v){return v!=0;});
                 const bool expected = test.triangles && !test.fault;
                 if ((covered>0)!=expected || !std::all_of(pixels.begin()+pixelCount,pixels.end(),[](uint64_t v){return v==0x1234567887654321ull;})) {
-                    return RhiTestResult::fail("Missing coverage or guard corruption case="+std::to_string(index)+" variant="+entries[variant]);
+                    return RHITestResult::fail("Missing coverage or guard corruption case="+std::to_string(index)+" variant="+entries[variant]);
                 }
                 for (size_t i=0; i<pixelCount; ++i) {
                     if (pixels[i] && uint32_t(pixels[i]) != ((372u<<7u)|test.selected)) {
-                        return RhiTestResult::fail("Unexpected triangle/stable record ID case="+std::to_string(index));
+                        return RHITestResult::fail("Unexpected triangle/stable record ID case="+std::to_string(index));
                     }
                 }
                 if (!variant) { reference=pixels; }
-                else if (pixels!=reference) { return RhiTestResult::fail("Packed depth/visibility mismatch case="+std::to_string(index)+" variant="+entries[variant]); }
+                else if (pixels!=reference) { return RHITestResult::fail("Packed depth/visibility mismatch case="+std::to_string(index)+" variant="+entries[variant]); }
             }
             ++index;
         }
-        return RhiTestResult::pass(std::to_string(cases.size())+" cases x four production entrypoints: tail vertices/triangles, each triangle ID, float3/4, normal/reversed Z, reflected transforms, rejected pages and guard pixels; packed output byte-equal");
+        return RHITestResult::pass(std::to_string(cases.size())+" cases x four production entrypoints: tail vertices/triangles, each triangle ID, float3/4, normal/reversed Z, reflected transforms, rejected pages and guard pixels; packed output byte-equal");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamGroupRasterTest);

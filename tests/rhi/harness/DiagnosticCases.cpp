@@ -7,20 +7,20 @@
 namespace metallic::tests {
 namespace {
 using namespace render;
-class SynchronizationContractTest final : public RhiTest {
+class SynchronizationContractTest final : public RHITest {
 public:
-    SynchronizationContractTest() { type = RhiTestType::Validation; name = "synchronization_encoding_cpu"; }
+    SynchronizationContractTest() { type = RHITestType::Validation; name = "synchronization_encoding_cpu"; }
     std::optional<bench::Metadata> metadata() const override
     {
         return bench::Metadata{.suite = "contract", .requirements = {.requiresDevice = false,
             .validation = bench::Validation::Off, .queues = {}},
             .coverage = {"sync.productionEncoding", "trace.bounded.protocol", "sequence.legal.contract"}, .artifacts = {"encoding.json"}};
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         bench::Evidence evidence(context.outputDirectory / "encoding"); return runCpu(evidence);
     }
-    RhiTestResult runCpu(bench::Evidence& evidence) override
+    RHITestResult runCpu(bench::Evidence& evidence) override
     {
         bench::Json checks = bench::Json::array();
         bool valid = true;
@@ -155,7 +155,7 @@ public:
         rejected = false; try { bench::validateBufferSequence(invalid); } catch (...) { rejected = true; }
         check(rejected, "sequence rejects negative seed");
         evidence.json("encoding.json", checks);
-        return valid ? RhiTestResult::pass() : RhiTestResult::fail("encoding/trace/sequence contract failed; see encoding.json");
+        return valid ? RHITestResult::pass() : RHITestResult::fail("encoding/trace/sequence contract failed; see encoding.json");
     }
 };
 METALLIC_REGISTER_RHI_TEST(SynchronizationContractTest);

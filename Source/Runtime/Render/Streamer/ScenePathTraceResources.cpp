@@ -38,7 +38,7 @@ namespace metallic::render {
 namespace {
 
 constexpr const char* kDefaultPathTraceScenePath = PROJECT_SOURCE_DIR "/Asset/meet_mat.glb";
-constexpr int32_t kGltfTriangleListMode = 4;
+constexpr int32_t kglTFTriangleListMode = 4;
 constexpr uint32_t kInvalidMaterialTextureIndex = std::numeric_limits<uint32_t>::max();
 constexpr uint32_t kPrimitiveHasAuthoredTangents = 1u << 0u;
 
@@ -49,10 +49,10 @@ double sceneResourceElapsedMilliseconds(SceneResourceLogClock::time_point begin)
     return std::chrono::duration<double, std::milli>(SceneResourceLogClock::now() - begin).count();
 }
 
-struct UploadCpuTimer {
+struct UploadCPUTimer {
     double& elapsed;
     SceneResourceLogClock::time_point begin = SceneResourceLogClock::now();
-    ~UploadCpuTimer() { elapsed += sceneResourceElapsedMilliseconds(begin); }
+    ~UploadCPUTimer() { elapsed += sceneResourceElapsedMilliseconds(begin); }
 };
 
 class SceneResourceLogScope {
@@ -73,7 +73,7 @@ private:
     SceneResourceLogClock::time_point begin_ = SceneResourceLogClock::now();
 };
 
-struct ScenePathTraceGpuPrimitive {
+struct ScenePathTraceGPUPrimitive {
     uint32_t firstVertex = 0;
     uint32_t vertexCount = 0;
     uint32_t firstIndex = 0;
@@ -84,14 +84,14 @@ struct ScenePathTraceGpuPrimitive {
     uint32_t padding2 = 0;
 };
 
-struct ScenePathTraceGpuInstance {
+struct ScenePathTraceGPUInstance {
     uint32_t primitiveIndex = 0;
     uint32_t materialIndex = 0;
     uint32_t flags = 0;
     float rayConeLodConstant = 0.0f;
 };
 
-struct ScenePathTraceGpuMaterial {
+struct ScenePathTraceGPUMaterial {
     float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float emissive[4] = {};
     float params[4] = {};
@@ -124,16 +124,16 @@ struct ScenePathTraceGpuMaterial {
     TextureInfo specularTexture;
     TextureInfo specularColorTexture;
 };
-static_assert(sizeof(ScenePathTraceGpuMaterial) == 720);
-static_assert(offsetof(ScenePathTraceGpuMaterial, specular) == 608);
+static_assert(sizeof(ScenePathTraceGPUMaterial) == 720);
+static_assert(offsetof(ScenePathTraceGPUMaterial, specular) == 608);
 
-struct ScenePathTraceGpuScene {
+struct ScenePathTraceGPUScene {
     std::vector<SceneShadingVertex> vertices;
     std::vector<std::array<float, 3>> positions;
     std::vector<uint32_t> indices;
-    std::vector<ScenePathTraceGpuPrimitive> primitives;
-    std::vector<ScenePathTraceGpuInstance> instances;
-    std::vector<ScenePathTraceGpuMaterial> materials;
+    std::vector<ScenePathTraceGPUPrimitive> primitives;
+    std::vector<ScenePathTraceGPUInstance> instances;
+    std::vector<ScenePathTraceGPUMaterial> materials;
 };
 
 struct ScenePathTraceTextureMipUpload {
@@ -154,7 +154,7 @@ struct ScenePathTraceMaterialTexture {
     uint32_t height = 1;
     uint32_t mipCount = 1;
     uint64_t byteSize = 4;
-    Format format = Format::Rgba8Unorm;
+    Format format = Format::RGBA8Unorm;
     ResourceState state = ResourceState::Undefined;
     bool uploaded = false;
 };
@@ -664,7 +664,7 @@ Result<> createMaterialTexture(
     outTexture = ScenePathTraceMaterialTexture{};
     outTexture.width = width;
     outTexture.height = height;
-    outTexture.format = Format::Rgba8Unorm;
+    outTexture.format = Format::RGBA8Unorm;
     std::vector<DecodedMaterialTexture> generatedMipChain;
     if (preparedMips == nullptr || preparedMips->empty()) {
         generatedMipChain = buildMaterialMipChain(pixels, width, height, label);
@@ -772,7 +772,7 @@ Result<> createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena
     const Ktx2TextureInfo& info, uint32_t firstMip, ScenePathTraceMaterialTexture& texture, std::string& log,
     const Ktx2PrefetchResult* prefetched = nullptr)
 {
-    UploadCpuTimer totalTimer{timing.totalMs};
+    UploadCPUTimer totalTimer{timing.totalMs};
     timing.path = info.path.string();
     texture = {};
     const auto desc = info.textureDesc(firstMip);
@@ -803,7 +803,7 @@ Result<> createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena
     for (uint32_t i = 0; i < desc.mipCount; ++i) {
         if (!prefetched && !reader.decode(firstMip+i,bytes,log)) { reader.close(); return makeError(Error::Failure); }
         const auto& source = prefetched ? prefetched->mips[i] : bytes;
-        UploadCpuTimer copyTimer{timing.copyMs};
+        UploadCPUTimer copyTimer{timing.copyMs};
         std::memcpy(static_cast<uint8_t*>(mapped)+texture.mipUploads[i].bufferOffset,source.data(),source.size());
     }
     reader.close();
@@ -818,7 +818,7 @@ Result<> createKtxMaterialTexture(Device& device, SceneUploadStagingArena& arena
     return {};
 }
 
-void stampTextureFormats(std::vector<ScenePathTraceGpuMaterial>& materials,
+void stampTextureFormats(std::vector<ScenePathTraceGPUMaterial>& materials,
     const std::vector<ScenePathTraceMaterialTexture>& textures)
 {
     for (auto& material : materials) {
@@ -831,7 +831,7 @@ void stampTextureFormats(std::vector<ScenePathTraceGpuMaterial>& materials,
             // hardware, while UNORM KTX2 is already linear. Legacy PNG views
             // retain their existing shader-side sRGB conversion.
             uint32_t flags = compressedBlockBytes(textures[index].format) != 0 ? 1u : 0u;
-            if (info == &material.normalTexture && textures[index].format == Format::Bc5Unorm) { flags |= 2u; }
+            if (info == &material.normalTexture && textures[index].format == Format::BC5Unorm) { flags |= 2u; }
             info->transform0[3] = float(flags);
         }
     }
@@ -847,7 +847,7 @@ uint32_t materialTextureIndex(
     return textureIndexMap[static_cast<size_t>(textureIndex)];
 }
 
-ScenePathTraceGpuMaterial::TextureInfo makeGpuTextureInfo(
+ScenePathTraceGPUMaterial::TextureInfo makeGpuTextureInfo(
     const scene::RenderTextureInfo& textureInfo,
     const scene::Scene& loadedScene,
     const std::vector<uint32_t>& textureIndexMap,
@@ -855,7 +855,7 @@ ScenePathTraceGpuMaterial::TextureInfo makeGpuTextureInfo(
     std::string& log,
     std::string_view textureLabel)
 {
-    ScenePathTraceGpuMaterial::TextureInfo gpuTextureInfo;
+    ScenePathTraceGPUMaterial::TextureInfo gpuTextureInfo;
     gpuTextureInfo.textureIndex = materialTextureIndex(textureInfo.textureIndex, textureIndexMap);
     if (textureInfo.textureIndex >= 0 &&
         static_cast<size_t>(textureInfo.textureIndex) < loadedScene.textures().size() &&
@@ -906,14 +906,14 @@ float alphaModeCode(const std::string& alphaMode)
     return 0.0f;
 }
 
-ScenePathTraceGpuMaterial makeMaterial(
+ScenePathTraceGPUMaterial makeMaterial(
     const scene::RenderMaterial& material,
     const scene::Scene& loadedScene,
     const std::vector<uint32_t>& textureIndexMap,
     const std::vector<uint32_t>& neuralTextureSetIndexMap,
     std::string& log)
 {
-    ScenePathTraceGpuMaterial gpuMaterial;
+    ScenePathTraceGPUMaterial gpuMaterial;
     gpuMaterial.baseColor[0] = material.baseColorFactor.x;
     gpuMaterial.baseColor[1] = material.baseColorFactor.y;
     gpuMaterial.baseColor[2] = material.baseColorFactor.z;
@@ -1054,7 +1054,7 @@ float rayConeLodConstantForPrimitive(
     const uint64_t sourceIndexCount = primitive.indices.empty()
         ? (primitive.positions.size() / 3) * 3
         : (primitive.indices.size() / 3) * 3;
-    if (primitive.mode != kGltfTriangleListMode ||
+    if (primitive.mode != kglTFTriangleListMode ||
         primitive.positions.size() < 3 ||
         primitive.texcoords0.empty() ||
         sourceIndexCount < 3) {
@@ -1107,13 +1107,13 @@ float rayConeLodConstantForPrimitive(
 bool appendPrimitiveGeometry(
     const scene::RenderPrimitive& primitive,
     bool includePositions,
-    ScenePathTraceGpuScene& outScene,
-    ScenePathTraceGpuPrimitive& outPrimitive)
+    ScenePathTraceGPUScene& outScene,
+    ScenePathTraceGPUPrimitive& outPrimitive)
 {
     const uint64_t sourceIndexCount = primitive.indices.empty()
         ? (primitive.positions.size() / 3) * 3
         : (primitive.indices.size() / 3) * 3;
-    if (primitive.mode != kGltfTriangleListMode ||
+    if (primitive.mode != kglTFTriangleListMode ||
         primitive.positions.size() < 3 ||
         sourceIndexCount < 3 ||
         sourceIndexCount > std::numeric_limits<uint32_t>::max() ||
@@ -1121,7 +1121,7 @@ bool appendPrimitiveGeometry(
         return false;
     }
 
-    outPrimitive = ScenePathTraceGpuPrimitive{
+    outPrimitive = ScenePathTraceGPUPrimitive{
         .firstVertex = static_cast<uint32_t>(outScene.vertices.size()),
         .vertexCount = static_cast<uint32_t>(primitive.positions.size()),
         .firstIndex = static_cast<uint32_t>(outScene.indices.size()),
@@ -1168,16 +1168,16 @@ bool appendPrimitiveGeometry(
     return true;
 }
 
-std::vector<ScenePathTraceGpuMaterial> buildGpuMaterials(
+std::vector<ScenePathTraceGPUMaterial> buildGpuMaterials(
     const scene::Scene& loadedScene,
     const std::vector<uint32_t>& textureIndexMap,
     const std::vector<uint32_t>& neuralTextureSetIndexMap,
     std::string& log)
 {
-    std::vector<ScenePathTraceGpuMaterial> materials;
+    std::vector<ScenePathTraceGPUMaterial> materials;
     materials.reserve(std::max<size_t>(loadedScene.materials().size(), 1));
     if (loadedScene.materials().empty()) {
-        materials.push_back(ScenePathTraceGpuMaterial{});
+        materials.push_back(ScenePathTraceGPUMaterial{});
     } else {
         for (const scene::RenderMaterial& material : loadedScene.materials()) {
             materials.push_back(makeMaterial(
@@ -1197,11 +1197,11 @@ bool buildGpuScene(
     bool includePositions,
     const std::vector<uint32_t>& textureIndexMap,
     const std::vector<uint32_t>& neuralTextureSetIndexMap,
-    ScenePathTraceGpuScene& outScene,
+    ScenePathTraceGPUScene& outScene,
     std::string& log,
     bool materialsOnly = false)
 {
-    outScene = ScenePathTraceGpuScene{};
+    outScene = ScenePathTraceGPUScene{};
     outScene.materials = buildGpuMaterials(
         loadedScene, textureIndexMap, neuralTextureSetIndexMap, log);
     if (materialsOnly || loadedScene.hasStreamGeometry()) {
@@ -1215,7 +1215,7 @@ bool buildGpuScene(
         loadedScene.renderPrimitives().size(),
         kInvalidPrimitiveIndex);
     for (uint32_t primitiveIndex = 0; primitiveIndex < loadedScene.renderPrimitives().size(); ++primitiveIndex) {
-        ScenePathTraceGpuPrimitive gpuPrimitive;
+        ScenePathTraceGPUPrimitive gpuPrimitive;
         if (!appendPrimitiveGeometry(loadedScene.renderPrimitives()[primitiveIndex], includePositions, outScene, gpuPrimitive)) {
             continue;
         }
@@ -1235,7 +1235,7 @@ bool buildGpuScene(
             continue;
         }
 
-        outScene.instances.push_back(ScenePathTraceGpuInstance{
+        outScene.instances.push_back(ScenePathTraceGPUInstance{
             .primitiveIndex = primitiveIndex,
             .materialIndex = materialIndexForNode(
                 renderNode,
@@ -1257,7 +1257,7 @@ bool buildGpuScene(
     if (outScene.instances.empty()) {
         // Storage buffers cannot be empty, while an empty TLAS guarantees that
         // this placeholder is never addressed by a committed ray-query hit.
-        outScene.instances.push_back(ScenePathTraceGpuInstance{});
+        outScene.instances.push_back(ScenePathTraceGPUInstance{});
     }
     return true;
 }
@@ -1348,12 +1348,12 @@ struct ScenePathTraceResources::Impl {
     enum class AsyncPrepareStage : uint8_t {
         Idle,
         MaterialTextures,
-        GpuPayload,
+        GPUPayload,
         AccelerationStructure,
         Buffers,
         SubmitPartialUploads,
         SubmitUploads,
-        WaitForGpu,
+        WaitForGPU,
         Ready,
         Failed,
     };
@@ -1390,7 +1390,7 @@ struct ScenePathTraceResources::Impl {
     using TextureGeneration = std::vector<TextureImageOwner>;
     std::shared_ptr<TextureGeneration> textureGeneration;
     std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot;
-    GpuCompletionPoint texturePublication;
+    GPUCompletionPoint texturePublication;
     struct TextureFeedbackBuffers {
         std::shared_ptr<Buffer> seed;
         std::shared_ptr<Buffer> device;
@@ -1398,7 +1398,7 @@ struct ScenePathTraceResources::Impl {
     };
     struct TextureFeedback {
         TextureFeedbackBuffers buffers;
-        GpuCompletionPoint completion;
+        GPUCompletionPoint completion;
         std::shared_ptr<SubmissionTransaction> readbackSubmission;
         uint64_t frame = 0;
         bool captureDemand = true;
@@ -1530,9 +1530,9 @@ struct ScenePathTraceResources::Impl {
         for (const auto& retired : retiredTextures) { textureStats.retiredAllocationBytes += retired.bytes; }
     }
 
-    Result<> pumpTextureMigration(CpuProfileRecorder* profiler)
+    Result<> pumpTextureMigration(CPUProfileRecorder* profiler)
     {
-        CpuProfileScope phase(profiler, "Poll migration completion");
+        CPUProfileScope phase(profiler, "Poll migration completion");
         if (!textureMigration) { return {}; }
         auto& migration = *textureMigration;
         if (migration.submitted) {
@@ -1647,14 +1647,14 @@ struct ScenePathTraceResources::Impl {
         return {};
     }
 
-    void scheduleTextureMigration(CpuProfileRecorder* profiler)
+    void scheduleTextureMigration(CPUProfileRecorder* profiler)
     {
         if (textureMigration || streamingFrame < nextTextureRetry) { return; }
         constexpr uint64_t maxBatchBytes = 4ull * 1024 * 1024;
         // Keep real headroom for replacement tails; old + new coexist until retire.
         const uint64_t reserve = std::min<uint64_t>(16ull * 1024 * 1024, textureStats.budgetBytes / 8);
         const uint64_t steadyBudget = textureStats.budgetBytes - reserve;
-        CpuProfileScope phase(profiler, "Candidates and allocation queries");
+        CPUProfileScope phase(profiler, "Candidates and allocation queries");
         const auto budget = device->memoryBudget();
         const bool pressure = textureStats.residentAllocationBytes > steadyBudget ||
             (budget.policy.enabled && budget.availableBytes < reserve);
@@ -1719,7 +1719,7 @@ struct ScenePathTraceResources::Impl {
         CommandBuffer& commands,
         uint64_t frameIndex,
         Buffer*& feedback,
-        CpuProfileRecorder* profiler,
+        CPUProfileRecorder* profiler,
         bool freezePublication)
     {
         if (!emptyTextureFeedback) {
@@ -1754,7 +1754,7 @@ struct ScenePathTraceResources::Impl {
         }
         textureTransitionLastTime = now;
         textureTransitionsFrozen = freezePublication;
-        CpuProfileScope phase(profiler, "Consume texture feedback");
+        CPUProfileScope phase(profiler, "Consume texture feedback");
         Result<> result;
         consumeTextureFeedback(!freezePublication);
         if (!freezePublication) {
@@ -1847,7 +1847,7 @@ struct ScenePathTraceResources::Impl {
     Result<> endTextureStreaming(
         CommandBuffer& commands,
         uint64_t frameIndex,
-        CpuProfileRecorder* profiler)
+        CPUProfileRecorder* profiler)
     {
         auto* frame = commands.frameContext();
         if (!frame) { return {}; }
@@ -1855,7 +1855,7 @@ struct ScenePathTraceResources::Impl {
             return value.frame == frameIndex && value.completion.sameSubmission(frame->completion());
         });
         if (entry == textureFeedback.end() || !entry->captureDemand || entry->readbackSubmission) { return {}; }
-        CpuProfileScope phase(profiler, "Copy texture feedback readback");
+        CPUProfileScope phase(profiler, "Copy texture feedback readback");
         const BufferBarrierDesc copy[] = {
             {.buffer = entry->buffers.device.get(),
                 .before = {PipelineStageBits::AllCommands, AccessBits::ShaderRead | AccessBits::ShaderWrite},
@@ -2320,7 +2320,7 @@ struct ScenePathTraceResources::Impl {
         textureStats.maskImageCount = uint32_t(std::count(protectedImages.begin(), protectedImages.end(), true));
         textureStats.maskMaxDimension = textureMaskMaxDimension;
         uploadStats.textureHeaderMs += sceneResourceElapsedMilliseconds(phaseBegin);
-        UploadCpuTimer planTimer{uploadStats.texturePlanMs};
+        UploadCPUTimer planTimer{uploadStats.texturePlanMs};
         const auto sharedBudget = device.memoryBudget();
         // Dedicated images consume more driver heap space than the sum of
         // VkMemoryRequirements (observed with thousands of small BC tails).
@@ -2341,7 +2341,7 @@ struct ScenePathTraceResources::Impl {
         textureStats.sharedAvailableBytes = sharedBudget.availableBytes;
         textureStats.plannedHeapOverheadBytes = heapOverhead;
         const TextureDesc fallback{.usage=TextureUsageBits::Sampled|TextureUsageBits::TransferDestination,
-            .format=Format::Rgba8Unorm,.queueAccess=QueueAccessBits::Graphics|QueueAccessBits::Copy};
+            .format=Format::RGBA8Unorm,.queueAccess=QueueAccessBits::Graphics|QueueAccessBits::Copy};
         uint64_t fallbackBytes = 0;
         auto result = device.textureAllocationSize(fallback).transform([&](auto rhiValue) { fallbackBytes = std::move(rhiValue); });
         if (!result) { return result; }
@@ -2399,7 +2399,7 @@ struct ScenePathTraceResources::Impl {
         while (result && !complete) {
             retireCompletedTextureUploads();
             if (uploadBatches.size() >= kMaxUploadBatchesInFlight) {
-                UploadCpuTimer waitTimer{uploadStats.backpressureMs};
+                UploadCPUTimer waitTimer{uploadStats.backpressureMs};
                 result = uploadBatches.front()->timeline->wait(uploadBatches.front()->completionValue);
                 continue;
             }
@@ -2775,7 +2775,7 @@ struct ScenePathTraceResources::Impl {
         asyncSourceGeometryTransformRevision = 0;
         asyncSourceVisibilityRevision = 0;
         asyncSourceMaterialRevision = 0;
-        asyncGpuScene = ScenePathTraceGpuScene{};
+        asyncGpuScene = ScenePathTraceGPUScene{};
         asyncReferencedTextures.clear();
         asyncBufferStep = 0;
     }
@@ -2888,7 +2888,7 @@ struct ScenePathTraceResources::Impl {
     uint64_t asyncSourceGeometryTransformRevision = 0;
     uint64_t asyncSourceVisibilityRevision = 0;
     uint64_t asyncSourceMaterialRevision = 0;
-    ScenePathTraceGpuScene asyncGpuScene;
+    ScenePathTraceGPUScene asyncGpuScene;
     uint32_t asyncBufferStep = 0;
 };
 ScenePathTraceResources::ScenePathTraceResources() :
@@ -3000,7 +3000,7 @@ Result<> ScenePathTraceResources::prepare(
         return result;
     }
     impl_->textureIndexMap = textureIndexMap;
-    ScenePathTraceGpuScene gpuScene;
+    ScenePathTraceGPUScene gpuScene;
     {
         SceneResourceLogScope scope("build GPU scene payload");
         if (!buildGpuScene(
@@ -3079,8 +3079,8 @@ Result<> ScenePathTraceResources::prepare(
         result = uploadStorageBuffer(
             device,
             gpuScene.primitives.data(),
-            static_cast<uint64_t>(gpuScene.primitives.size() * sizeof(ScenePathTraceGpuPrimitive)),
-            sizeof(ScenePathTraceGpuPrimitive),
+            static_cast<uint64_t>(gpuScene.primitives.size() * sizeof(ScenePathTraceGPUPrimitive)),
+            sizeof(ScenePathTraceGPUPrimitive),
             impl_->primitiveBuffer,
             log,
             "ScenePathTracePass primitives",
@@ -3093,8 +3093,8 @@ Result<> ScenePathTraceResources::prepare(
         result = uploadStorageBuffer(
             device,
             gpuScene.instances.data(),
-            static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGpuInstance)),
-            sizeof(ScenePathTraceGpuInstance),
+            static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGPUInstance)),
+            sizeof(ScenePathTraceGPUInstance),
             impl_->instanceBuffer,
             log,
             "ScenePathTracePass instances",
@@ -3108,8 +3108,8 @@ Result<> ScenePathTraceResources::prepare(
         result = uploadStorageBuffer(
             device,
             gpuScene.materials.data(),
-            static_cast<uint64_t>(gpuScene.materials.size() * sizeof(ScenePathTraceGpuMaterial)),
-            sizeof(ScenePathTraceGpuMaterial),
+            static_cast<uint64_t>(gpuScene.materials.size() * sizeof(ScenePathTraceGPUMaterial)),
+            sizeof(ScenePathTraceGPUMaterial),
             impl_->materialBuffer,
             log,
             "ScenePathTracePass materials",
@@ -3274,24 +3274,24 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
                 return result.transform([&] { return std::move(complete); });
             }
-            progress.phase = scene::SceneLoadPhase::GpuUpload;
+            progress.phase = scene::SceneLoadPhase::GPUUpload;
             if (impl_->textureDecodePending) { return complete; }
             progress.completedUnits = impl_->asyncTextureCursor;
             progress.totalUnits = impl_->asyncScene->textures().size();
             progress.fraction = 0.65f + 0.10f * static_cast<float>(impl_->asyncTextureCursor) /
                 static_cast<float>(std::max<size_t>(impl_->asyncScene->textures().size(), 1u));
             if (texturesComplete) {
-                impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::GpuPayload;
+                impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::GPUPayload;
                 impl_->asyncPrepareStage = impl_->pendingUploadByteSize() > 0
                     ? Impl::AsyncPrepareStage::SubmitPartialUploads
-                    : Impl::AsyncPrepareStage::GpuPayload;
+                    : Impl::AsyncPrepareStage::GPUPayload;
             } else if (impl_->uploadBatchLimitReached()) {
                 impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::MaterialTextures;
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::SubmitPartialUploads;
             }
             continue;
         }
-        case Impl::AsyncPrepareStage::GpuPayload:
+        case Impl::AsyncPrepareStage::GPUPayload:
             if (!buildGpuScene(
                     *impl_->asyncScene,
                     !impl_->device->capabilities().rayTracingPositionFetch,
@@ -3303,7 +3303,7 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
                 return makeError(Error::Failure);
             }
             impl_->asyncPrepareStage = Impl::AsyncPrepareStage::AccelerationStructure;
-            progress.phase = scene::SceneLoadPhase::GpuUpload;
+            progress.phase = scene::SceneLoadPhase::GPUUpload;
             progress.fraction = 0.82f;
             return complete;
         case Impl::AsyncPrepareStage::AccelerationStructure: {
@@ -3358,23 +3358,23 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
                 break;
             case 2:
                 data = impl_->asyncGpuScene.primitives.data();
-                byteSize = impl_->asyncGpuScene.primitives.size() * sizeof(ScenePathTraceGpuPrimitive);
-                stride = sizeof(ScenePathTraceGpuPrimitive);
+                byteSize = impl_->asyncGpuScene.primitives.size() * sizeof(ScenePathTraceGPUPrimitive);
+                stride = sizeof(ScenePathTraceGPUPrimitive);
                 destination = &impl_->primitiveBuffer;
                 label = "ScenePathTracePass primitives";
                 break;
             case 3:
                 data = impl_->asyncGpuScene.instances.data();
-                byteSize = impl_->asyncGpuScene.instances.size() * sizeof(ScenePathTraceGpuInstance);
-                stride = sizeof(ScenePathTraceGpuInstance);
+                byteSize = impl_->asyncGpuScene.instances.size() * sizeof(ScenePathTraceGPUInstance);
+                stride = sizeof(ScenePathTraceGPUInstance);
                 destination = &impl_->instanceBuffer;
                 label = "ScenePathTracePass instances";
                 break;
             case 4:
                 stampTextureFormats(impl_->asyncGpuScene.materials,impl_->materialTextures);
                 data = impl_->asyncGpuScene.materials.data();
-                byteSize = impl_->asyncGpuScene.materials.size() * sizeof(ScenePathTraceGpuMaterial);
-                stride = sizeof(ScenePathTraceGpuMaterial);
+                byteSize = impl_->asyncGpuScene.materials.size() * sizeof(ScenePathTraceGPUMaterial);
+                stride = sizeof(ScenePathTraceGPUMaterial);
                 destination = &impl_->materialBuffer;
                 label = "ScenePathTracePass materials";
                 break;
@@ -3413,7 +3413,7 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
                 return result.transform([&] { return std::move(complete); });
             }
             ++impl_->asyncBufferStep;
-            progress.phase = scene::SceneLoadPhase::GpuUpload;
+            progress.phase = scene::SceneLoadPhase::GPUUpload;
             progress.fraction = 0.88f + 0.03f * static_cast<float>(impl_->asyncBufferStep) / 5.0f;
             if (impl_->uploadBatchLimitReached()) {
                 impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::Buffers;
@@ -3434,7 +3434,7 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
                 return result.transform([&] { return std::move(complete); });
             }
-            progress.phase = scene::SceneLoadPhase::GpuUpload;
+            progress.phase = scene::SceneLoadPhase::GPUUpload;
             impl_->asyncPrepareStage = impl_->partialUploadResumeStage;
             impl_->partialUploadResumeStage = Impl::AsyncPrepareStage::Idle;
             continue;
@@ -3450,12 +3450,12 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
                 impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
                 return result.transform([&] { return std::move(complete); });
             }
-            impl_->asyncPrepareStage = Impl::AsyncPrepareStage::WaitForGpu;
+            impl_->asyncPrepareStage = Impl::AsyncPrepareStage::WaitForGPU;
             impl_->finalWaitBegin = SceneResourceLogClock::now();
             progress.phase = scene::SceneLoadPhase::AccelerationStructures;
             progress.fraction = 0.94f;
             return complete;
-        case Impl::AsyncPrepareStage::WaitForGpu:
+        case Impl::AsyncPrepareStage::WaitForGPU:
             progress.phase = scene::SceneLoadPhase::AccelerationStructures;
             progress.fraction = 0.97f;
             {
@@ -3495,7 +3495,7 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
             impl_->prepared = true;
             ++impl_->revision;
             impl_->asyncScene = nullptr;
-            impl_->asyncGpuScene = ScenePathTraceGpuScene{};
+            impl_->asyncGpuScene = ScenePathTraceGPUScene{};
             impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Ready;
             complete = true;
             progress.status = scene::SceneLoadStatus::Succeeded;
@@ -3598,7 +3598,7 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
         return {};
     }
     if (impl_->sourceMaterialRevision != boundScene->materialRevision()) {
-        std::vector<ScenePathTraceGpuMaterial> materials = buildGpuMaterials(
+        std::vector<ScenePathTraceGPUMaterial> materials = buildGpuMaterials(
             *boundScene,
             impl_->textureIndexMap,
             impl_->neuralTextures.logicalTextureSetIndices(),
@@ -3607,8 +3607,8 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
         const Result<> result = uploadStorageBuffer(
             *impl_->device,
             materials.data(),
-            static_cast<uint64_t>(materials.size() * sizeof(ScenePathTraceGpuMaterial)),
-            sizeof(ScenePathTraceGpuMaterial),
+            static_cast<uint64_t>(materials.size() * sizeof(ScenePathTraceGPUMaterial)),
+            sizeof(ScenePathTraceGPUMaterial),
             impl_->materialBuffer,
             log,
             "ScenePathTracePass updated materials");
@@ -3633,7 +3633,7 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
         ++impl_->revision;
         return {};
     }
-    ScenePathTraceGpuScene gpuScene;
+    ScenePathTraceGPUScene gpuScene;
     if (!buildGpuScene(
             *boundScene,
             false, // Only the instance payload is uploaded during a transform edit.
@@ -3659,8 +3659,8 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
     result = uploadStorageBuffer(
         *impl_->device,
         gpuScene.instances.data(),
-        static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGpuInstance)),
-        sizeof(ScenePathTraceGpuInstance),
+        static_cast<uint64_t>(gpuScene.instances.size() * sizeof(ScenePathTraceGPUInstance)),
+        sizeof(ScenePathTraceGPUInstance),
         impl_->instanceBuffer,
         log,
         "ScenePathTracePass updated instances");
@@ -3698,7 +3698,7 @@ Result<> ScenePathTraceResources::beginTextureStreaming(
     CommandBuffer& commands,
     uint64_t frameIndex,
     Buffer*& feedback,
-    CpuProfileRecorder* profiler,
+    CPUProfileRecorder* profiler,
     bool freezePublication)
 {
     return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler, freezePublication);
@@ -3707,7 +3707,7 @@ Result<> ScenePathTraceResources::beginTextureStreaming(
 Result<> ScenePathTraceResources::endTextureStreaming(
     CommandBuffer& commands,
     uint64_t frameIndex,
-    CpuProfileRecorder* profiler)
+    CPUProfileRecorder* profiler)
 {
     return impl_->endTextureStreaming(commands, frameIndex, profiler);
 }

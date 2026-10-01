@@ -13,7 +13,7 @@
 ## 修复
 
 - 共享几何解码函数改为接收流送页池的明确容量，不再依赖大 buffer 的维度查询。保留页表、页面范围、cluster/triangle 和顶点范围检查。
-- 从已有每帧 `MeshletStreamGpuParams` 读取 `pageBufferBytes`；CPU 用 `offsetof` 静态断言对应偏移 100。复用既有每帧缓冲和 owner 生命周期。
+- 从已有每帧 `MeshletStreamGPUParams` 读取 `pageBufferBytes`；CPU 用 `offsetof` 静态断言对应偏移 100。复用既有每帧缓冲和 owner 生命周期。
 - Deferred、简单材质预览以及流式 ray query / 阴影共同传入这一容量，避免只有主着色修好、其他路径仍漏几何。
 - Statistics 在编辑器传统 scene 为空时读取 GPUScene 的流式 source metadata，避免显示误导性的 “No scene loaded”；常驻页数据仍在 Profiler / Streaming。
 

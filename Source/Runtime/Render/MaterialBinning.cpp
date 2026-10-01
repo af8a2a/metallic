@@ -7,7 +7,7 @@ namespace metallic::render {
 
 struct MaterialBinning::Allocation {
     std::array<std::unique_ptr<Buffer>, 3> buffers; // bins, tile tasks, arguments
-    GpuCompletionPoint completion;
+    GPUCompletionPoint completion;
     uint32_t tileCount = 0;
     bool initialized = false;
 };
@@ -58,7 +58,7 @@ Result<MaterialBinningResult> MaterialBinning::record(
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result.transform([&] { return std::move(output); }); }
         result = programs_[i].initialize(device, {.spirv = shader.spirv,
-            .parameters = parameterAbi<MaterialBinningParams>(kMaterialBinningAbi), .debugName = entries[i]}, log);
+            .parameters = parameterAbi<MaterialBinningParams>(kMaterialBinningABI), .debugName = entries[i]}, log);
         if (!result) { return makeError(result.error()); }
     }
 
@@ -130,7 +130,7 @@ Result<MaterialBinningResult> MaterialBinning::record(
         .residentRecordCount = desc.residentRecordCount,
     };
     EncodedParameters encoded;
-    result = writer.encode(params, kMaterialBinningAbi).transform([&](auto value) { encoded = std::move(value); });
+    result = writer.encode(params, kMaterialBinningABI).transform([&](auto value) { encoded = std::move(value); });
     if (!result) { return makeError(result.error()); }
     for (size_t i = 0; i < programs_.size(); ++i) {
         result = recordGraphAccessBarriers(commands, plan->passes[i], bindings);

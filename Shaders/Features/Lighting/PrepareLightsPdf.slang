@@ -54,8 +54,8 @@ void prepareLocalLightPdf(uint2 dispatchPosition, PrepareLightsPdfPush push)
     if (any(pdfPosition >= push.destinationSize)) {
         return;
     }
-    gLocalPdfMips(0)[pdfPosition] = linearIndex < min(push.lightCount, punctualLightCount(getResource<StructuredBuffer<GpuPunctualLight>>(50)))
-        ? punctualLightPower(getResource<StructuredBuffer<GpuPunctualLight>>(50)[linearIndex + 1u])
+    gLocalPdfMips(0)[pdfPosition] = linearIndex < min(push.lightCount, punctualLightCount(getResource<StructuredBuffer<GPUPunctualLight>>(50)))
+        ? punctualLightPower(getResource<StructuredBuffer<GPUPunctualLight>>(50)[linearIndex + 1u])
         : 0.0;
 }
 

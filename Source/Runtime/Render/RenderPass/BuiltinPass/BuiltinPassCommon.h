@@ -85,7 +85,7 @@ inline constexpr const char* kVisibilityBufferMaskedFragmentEntryPoint =
     "visibilityBufferMaskedFragmentMain";
 inline constexpr const char* kGPUDrivenPreviewResetEntryPoint = "gpuDrivenPreviewResetMain";
 inline constexpr const char* kGPUDrivenPreviewInstanceCullEntryPoint = "gpuDrivenPreviewInstanceCullMain";
-inline constexpr const char* kGPUDrivenPreviewHzbEntryPoint = "gpuDrivenPreviewHzbMain";
+inline constexpr const char* kGPUDrivenPreviewHZBEntryPoint = "gpuDrivenPreviewHzbMain";
 inline constexpr const char* kVisibilityBufferCompositeVertexEntryPoint =
     "visibilityBufferCompositeVertexMain";
 inline constexpr const char* kVisibilityBufferCompositeFragmentEntryPoint =
@@ -98,12 +98,12 @@ inline constexpr const char* kSceneMaterialVisualizationShaderModuleName = "Feat
 inline constexpr const char* kSceneMaterialVisualizationEntryPoint = "sceneMaterialVisualizeMain";
 inline constexpr const char* kScenePathTraceShaderModuleName = "Features/PathTracing/ScenePathTrace";
 inline constexpr const char* kScenePathTraceEntryPoint = "scenePathTraceMain";
-inline constexpr const char* kSceneRtxdiShaderModuleName = "Features/ReSTIR/SceneRtxdi";
-inline constexpr const char* kSceneRtxdiEntryPoint = "sceneRtxdiMain";
-inline constexpr const char* kRtxdiConfidenceShaderModuleName = "Features/ReSTIR/RtxdiConfidence";
-inline constexpr const char* kRtxdiConfidenceEntryPoint = "rtxdiConfidenceMain";
-inline constexpr const char* kRtxdiCompositeShaderModuleName = "Features/ReSTIR/RtxdiComposite";
-inline constexpr const char* kRtxdiCompositeEntryPoint = "rtxdiCompositeMain";
+inline constexpr const char* kSceneRTXDIShaderModuleName = "Features/ReSTIR/SceneRTXDI";
+inline constexpr const char* kSceneRTXDIEntryPoint = "sceneRtxdiMain";
+inline constexpr const char* kRTXDIConfidenceShaderModuleName = "Features/ReSTIR/RTXDIConfidence";
+inline constexpr const char* kRTXDIConfidenceEntryPoint = "rtxdiConfidenceMain";
+inline constexpr const char* kRTXDICompositeShaderModuleName = "Features/ReSTIR/RTXDIComposite";
+inline constexpr const char* kRTXDICompositeEntryPoint = "rtxdiCompositeMain";
 inline constexpr const char* kScenePathTraceGuidesShaderModuleName = "Features/PathTracing/ScenePathTraceGuides";
 inline constexpr const char* kScenePathTraceGuidesEntryPoint = "scenePathTraceGuidesMain";
 inline constexpr const char* kSceneSharcMaintenanceShaderModuleName = "Features/PathTracing/SceneSharcMaintenance";
@@ -122,13 +122,13 @@ inline constexpr const char* kDefaultMaterialScenePath = PROJECT_SOURCE_DIR "/As
 inline constexpr const char* kDefaultGPUDrivenScenePath =
     PROJECT_SOURCE_DIR "/Asset/SuperSponza/NewSponza_Main_glTF_003.gltf";
 inline constexpr uint64_t kRenderGraphBufferByteSize = 16;
-inline constexpr int32_t kGltfTriangleListMode = 4;
+inline constexpr int32_t kglTFTriangleListMode = 4;
 inline constexpr uint32_t kRayQueryVisualizationGranularityInstance = 0;
 inline constexpr uint32_t kRayQueryVisualizationGranularityPrimitive = 1;
 inline constexpr uint32_t kRayQueryVisualizationGranularityClusterId = 2;
 inline constexpr uint32_t kGPUDrivenPreviewModeMeshlet = 0;
 inline constexpr uint32_t kGPUDrivenPreviewModePrimitive = 1;
-inline constexpr uint32_t kGPUDrivenPreviewModeLod = 2;
+inline constexpr uint32_t kGPUDrivenPreviewModeLOD = 2;
 inline constexpr uint32_t kGPUDrivenPreviewModeShaded = 3;
 inline constexpr uint32_t kGPUDrivenPreviewModeBaseColor = 4;
 inline constexpr uint32_t kGPUDrivenPreviewAmplificationGroupSize = 32;
@@ -138,12 +138,12 @@ inline constexpr uint32_t kGPUDrivenPreviewMeshletAlphaMasked = 1u << 1u;
 inline constexpr uint32_t kGPUDrivenPreviewMeshletAlphaBlend = 1u << 2u;
 inline constexpr uint32_t kGPUDrivenPreviewInstanceVisible = 1u << 0u;
 inline constexpr uint32_t kGPUDrivenPreviewCullInstanceFrustum = 1u << 0u;
-inline constexpr uint32_t kGPUDrivenPreviewCullInstanceHzb = 1u << 1u;
+inline constexpr uint32_t kGPUDrivenPreviewCullInstanceHZB = 1u << 1u;
 inline constexpr uint32_t kGPUDrivenPreviewCullMeshletFrustum = 1u << 2u;
 inline constexpr uint32_t kGPUDrivenPreviewCullMeshletNormalCone = 1u << 3u;
-inline constexpr uint32_t kGPUDrivenPreviewCullMeshletHzb = 1u << 4u;
+inline constexpr uint32_t kGPUDrivenPreviewCullMeshletHZB = 1u << 4u;
 inline constexpr uint32_t kGPUDrivenStreamAssetDebugPage = 0;
-inline constexpr uint32_t kGPUDrivenStreamAssetDebugLod = 1;
+inline constexpr uint32_t kGPUDrivenStreamAssetDebugLOD = 1;
 inline constexpr uint32_t kGPUDrivenStreamAssetDebugPrimitive = 2;
 inline constexpr uint32_t kSceneMaterialVisualizationModeMaterial = 0;
 inline constexpr uint32_t kSceneMaterialVisualizationModeBaseColor = 1;
@@ -156,38 +156,38 @@ inline constexpr uint32_t kSceneMaterialVisualizationModeVertexNormal = 7;
 inline constexpr uint32_t kSceneMaterialVisualizationModeNormalTexture = 8;
 inline constexpr uint32_t kSceneMaterialVisualizationModeTangent = 9;
 inline constexpr uint32_t kSceneMaterialVisualizationModeBitangent = 10;
-inline constexpr uint32_t kSceneMaterialVisualizationModeNrdNormalRoughness = 11;
+inline constexpr uint32_t kSceneMaterialVisualizationModeNRDNormalRoughness = 11;
 inline constexpr uint32_t kSceneMaterialVisualizationModeNormalDeviation = 12;
 inline constexpr uint32_t kDefaultPathTraceMaxDepth = 3;
 inline constexpr uint32_t kDefaultPathTraceSamples = 2;
 inline constexpr uint32_t kMaxPathTraceMaxDepth = 32;
 inline constexpr uint32_t kMaxPathTraceSamples = 16;
-inline constexpr uint32_t kDefaultRtxdiLightCount = 256;
-inline constexpr uint32_t kDefaultRtxdiInitialSamples = 8;
-inline constexpr uint32_t kDefaultRtxdiSpatialSamples = 1;
-inline constexpr uint32_t kMaxRtxdiLightCount = 4096;
-inline constexpr uint32_t kMaxRtxdiInitialSamples = 32;
-inline constexpr uint32_t kMaxRtxdiSpatialSamples = 16;
+inline constexpr uint32_t kDefaultRTXDILightCount = 256;
+inline constexpr uint32_t kDefaultRTXDIInitialSamples = 8;
+inline constexpr uint32_t kDefaultRTXDISpatialSamples = 1;
+inline constexpr uint32_t kMaxRTXDILightCount = 4096;
+inline constexpr uint32_t kMaxRTXDIInitialSamples = 32;
+inline constexpr uint32_t kMaxRTXDISpatialSamples = 16;
 inline constexpr uint32_t kDefaultReGIRGridSize = 12;
 inline constexpr uint32_t kDefaultReGIRLightsPerCell = 64;
 inline constexpr uint32_t kDefaultReGIRBuildSamples = 8;
 inline constexpr uint32_t kMaxReGIRGridSize = 24;
 inline constexpr uint32_t kMaxReGIRLightsPerCell = 128;
 inline constexpr uint32_t kMaxReGIRBuildSamples = 32;
-inline constexpr uint32_t kRtxdiVisualizationShaded = 0;
-inline constexpr uint32_t kRtxdiVisualizationLightId = 1;
-inline constexpr uint32_t kRtxdiVisualizationHistory = 2;
-inline constexpr uint32_t kRtxdiVisualizationReGIRCells = 3;
-inline constexpr uint32_t kRtxdiBehaviorTemporalReuse = 1u << 0u;
-inline constexpr uint32_t kRtxdiBehaviorSpatialReuse = 1u << 1u;
-inline constexpr uint32_t kRtxdiBehaviorAnimateLights = 1u << 2u;
-inline constexpr uint32_t kRtxdiBehaviorInitialVisibility = 1u << 3u;
-inline constexpr uint32_t kRtxdiBehaviorLocalLightImportance = 1u << 4u;
-inline constexpr uint32_t kRtxdiBehaviorEnvironmentEnabled = 1u << 5u;
-inline constexpr uint32_t kRtxdiBehaviorEnvironmentVisible = 1u << 6u;
-inline constexpr uint32_t kRtxdiBehaviorEnvironmentImportance = 1u << 7u;
-inline constexpr uint32_t kRtxdiBehaviorVisualizationShift = 8u;
-inline constexpr uint32_t kRtxdiBehaviorReGIR = 1u << 10u;
+inline constexpr uint32_t kRTXDIVisualizationShaded = 0;
+inline constexpr uint32_t kRTXDIVisualizationLightId = 1;
+inline constexpr uint32_t kRTXDIVisualizationHistory = 2;
+inline constexpr uint32_t kRTXDIVisualizationReGIRCells = 3;
+inline constexpr uint32_t kRTXDIBehaviorTemporalReuse = 1u << 0u;
+inline constexpr uint32_t kRTXDIBehaviorSpatialReuse = 1u << 1u;
+inline constexpr uint32_t kRTXDIBehaviorAnimateLights = 1u << 2u;
+inline constexpr uint32_t kRTXDIBehaviorInitialVisibility = 1u << 3u;
+inline constexpr uint32_t kRTXDIBehaviorLocalLightImportance = 1u << 4u;
+inline constexpr uint32_t kRTXDIBehaviorEnvironmentEnabled = 1u << 5u;
+inline constexpr uint32_t kRTXDIBehaviorEnvironmentVisible = 1u << 6u;
+inline constexpr uint32_t kRTXDIBehaviorEnvironmentImportance = 1u << 7u;
+inline constexpr uint32_t kRTXDIBehaviorVisualizationShift = 8u;
+inline constexpr uint32_t kRTXDIBehaviorReGIR = 1u << 10u;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeProcedural = 0;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeMap = 1;
 inline constexpr uint32_t kScenePathTraceEnvironmentModeDisabled = 2;
@@ -219,21 +219,21 @@ inline constexpr uint32_t kScenePathTraceDebugStochasticTextureFiltering = 1u <<
 // Radiance cache modes (RTXGI SHaRC / NVIDIA NRC reference integrations).
 inline constexpr uint32_t kScenePathTraceCacheModeOff = 0;
 inline constexpr uint32_t kScenePathTraceCacheModeSharc = 1;
-inline constexpr uint32_t kScenePathTraceCacheModeNrc = 2;
+inline constexpr uint32_t kScenePathTraceCacheModeNRC = 2;
 // Extra descriptor bindings used by the radiance-cache permutations of
 // ScenePathTrace.slang. Must match its getResource<T>() application slots.
 inline constexpr uint32_t kScenePathTraceCacheParamsBinding = 20;
 inline constexpr uint32_t kScenePathTraceSharcHashEntriesBinding = 21;
 inline constexpr uint32_t kScenePathTraceSharcAccumulationBinding = 22;
 inline constexpr uint32_t kScenePathTraceSharcResolvedBinding = 23;
-inline constexpr uint32_t kScenePathTraceNrcQueryPathInfoBinding = 24;
-inline constexpr uint32_t kScenePathTraceNrcTrainingPathInfoBinding = 25;
-inline constexpr uint32_t kScenePathTraceNrcTrainingPathVerticesBinding = 26;
-inline constexpr uint32_t kScenePathTraceNrcQueryRadianceParamsBinding = 27;
-inline constexpr uint32_t kScenePathTraceNrcCountersBinding = 28;
-inline constexpr uint32_t kNrdDenoiserModeReblur = 0;
-inline constexpr uint32_t kNrdDenoiserModeRelax = 1;
-inline constexpr uint32_t kNrdDenoiserModeReference = 2;
+inline constexpr uint32_t kScenePathTraceNRCQueryPathInfoBinding = 24;
+inline constexpr uint32_t kScenePathTraceNRCTrainingPathInfoBinding = 25;
+inline constexpr uint32_t kScenePathTraceNRCTrainingPathVerticesBinding = 26;
+inline constexpr uint32_t kScenePathTraceNRCQueryRadianceParamsBinding = 27;
+inline constexpr uint32_t kScenePathTraceNRCCountersBinding = 28;
+inline constexpr uint32_t kNRDDenoiserModeReblur = 0;
+inline constexpr uint32_t kNRDDenoiserModeRelax = 1;
+inline constexpr uint32_t kNRDDenoiserModeReference = 2;
 inline constexpr const char* kScenePathTraceHistoryPrefix = "ScenePathTracePass.";
 inline constexpr bool kDefaultReversedZ = true;
 
@@ -391,7 +391,7 @@ struct RenderGraphBufferUserPush {
     uint32_t padding = 0;
 };
 
-struct SceneGpuTransform {
+struct SceneGPUTransform {
     float world[16] = {
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
@@ -400,9 +400,9 @@ struct SceneGpuTransform {
     };
 };
 
-inline std::vector<SceneGpuTransform> buildSceneGpuTransforms(const scene::Scene& loadedScene)
+inline std::vector<SceneGPUTransform> buildSceneGpuTransforms(const scene::Scene& loadedScene)
 {
-    std::vector<SceneGpuTransform> transforms(loadedScene.renderNodes().size());
+    std::vector<SceneGPUTransform> transforms(loadedScene.renderNodes().size());
     for (size_t index = 0; index < loadedScene.renderNodes().size(); ++index) {
         std::memcpy(
             transforms[index].world,
@@ -412,14 +412,14 @@ inline std::vector<SceneGpuTransform> buildSceneGpuTransforms(const scene::Scene
     return transforms;
 }
 
-struct BunnyWireframeGpuPosition {
+struct BunnyWireframeGPUPosition {
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
     float w = 1.0f;
 };
 
-struct BunnyWireframeGpuParams {
+struct BunnyWireframeGPUParams {
     float eye[4] = {};
     float center[4] = {};
     float upProjection[4] = {};
@@ -437,18 +437,18 @@ struct BunnyWireframeUserPush {
     uint32_t padding = 0;
 };
 
-struct MaterialShaderObjectGpuPosition {
+struct MaterialShaderObjectGPUPosition {
     float x = 0.0f;
     float y = 0.0f;
     float z = 0.0f;
     float w = 1.0f;
 };
 
-struct MaterialShaderObjectGpuMaterial {
+struct MaterialShaderObjectGPUMaterial {
     float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 };
 
-struct MaterialShaderObjectGpuParams {
+struct MaterialShaderObjectGPUParams {
     float eye[4] = {};
     float center[4] = {};
     float upProjection[4] = {};
@@ -485,14 +485,14 @@ struct SceneRayQueryVisualizationPush {
     uint32_t padding = 0;
 };
 
-struct GPUDrivenPreviewGpuVertex {
+struct GPUDrivenPreviewGPUVertex {
     float position[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     float normal[4] = {0.0f, 0.0f, 1.0f, 0.0f};
     float tangent[4] = {1.0f, 0.0f, 0.0f, 1.0f};
     float texcoord[4] = {};
 };
 
-struct GPUDrivenPreviewGpuTextureInfo {
+struct GPUDrivenPreviewGPUTextureInfo {
     uint32_t textureIndex = UINT32_MAX;
     uint32_t texCoord = 0;
     uint32_t padding0 = 0;
@@ -501,7 +501,7 @@ struct GPUDrivenPreviewGpuTextureInfo {
     float transform1[4] = {0.0f, 1.0f, 0.0f, 0.0f};
 };
 
-struct GPUDrivenPreviewGpuMaterial {
+struct GPUDrivenPreviewGPUMaterial {
     float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     float emissive[4] = {};
     float params[4] = {1.0f, 1.0f, 0.5f, 0.0f};
@@ -509,19 +509,19 @@ struct GPUDrivenPreviewGpuMaterial {
     float glassParams[4] = {0.0f, 1.5f, 0.0f, 0.0f};
     float attenuationColor[4] = {1.0f, 1.0f, 1.0f, 0.0f};
     float diffuseTransmission[4] = {1.0f, 1.0f, 1.0f, 0.0f};
-    GPUDrivenPreviewGpuTextureInfo baseColorTexture;
-    GPUDrivenPreviewGpuTextureInfo metallicRoughnessTexture;
-    GPUDrivenPreviewGpuTextureInfo normalTexture;
-    GPUDrivenPreviewGpuTextureInfo occlusionTexture;
-    GPUDrivenPreviewGpuTextureInfo emissiveTexture;
-    GPUDrivenPreviewGpuTextureInfo transmissionTexture;
-    GPUDrivenPreviewGpuTextureInfo thicknessTexture;
-    GPUDrivenPreviewGpuTextureInfo diffuseTransmissionTexture;
-    GPUDrivenPreviewGpuTextureInfo diffuseTransmissionColorTexture;
+    GPUDrivenPreviewGPUTextureInfo baseColorTexture;
+    GPUDrivenPreviewGPUTextureInfo metallicRoughnessTexture;
+    GPUDrivenPreviewGPUTextureInfo normalTexture;
+    GPUDrivenPreviewGPUTextureInfo occlusionTexture;
+    GPUDrivenPreviewGPUTextureInfo emissiveTexture;
+    GPUDrivenPreviewGPUTextureInfo transmissionTexture;
+    GPUDrivenPreviewGPUTextureInfo thicknessTexture;
+    GPUDrivenPreviewGPUTextureInfo diffuseTransmissionTexture;
+    GPUDrivenPreviewGPUTextureInfo diffuseTransmissionColorTexture;
     uint32_t identity[4] = {};
 };
 
-struct GPUDrivenPreviewGpuMeshlet {
+struct GPUDrivenPreviewGPUMeshlet {
     uint32_t vertexOffset = 0;
     uint32_t vertexCount = 0;
     uint32_t triangleOffset = 0;
@@ -536,8 +536,8 @@ struct GPUDrivenPreviewGpuMeshlet {
 };
 
 // Per-instance draw metadata. Geometry payload, including meshlet bounds and
-// topology offsets, lives in GPUDrivenPreviewGpuMeshlet and is uploaded once.
-struct GPUDrivenPreviewGpuMeshletDraw {
+// topology offsets, lives in GPUDrivenPreviewGPUMeshlet and is uploaded once.
+struct GPUDrivenPreviewGPUMeshletDraw {
     uint32_t geometryMeshletIndex = 0;
     uint32_t primitiveIndex = 0;
     uint32_t materialIndex = 0;
@@ -649,7 +649,7 @@ inline GPUDrivenPreviewGeometryDedupPlan buildGPUDrivenPreviewGeometryDedupPlan(
     return result;
 }
 
-struct GPUDrivenPreviewGpuInstance {
+struct GPUDrivenPreviewGPUInstance {
     float boundingSphere[4] = {};
     uint32_t transformIndex = 0;
     uint32_t primitiveIndex = 0;
@@ -657,7 +657,7 @@ struct GPUDrivenPreviewGpuInstance {
     uint32_t padding1 = 0;
 };
 
-struct GPUDrivenPreviewGpuParams {
+struct GPUDrivenPreviewGPUParams {
     // Culling camera. This matches the render camera unless culling is frozen.
     float eye[4] = {};
     float center[4] = {};
@@ -688,10 +688,10 @@ struct GPUDrivenPreviewGpuParams {
     uint32_t hzbValid = 0;
     uint32_t cullingFlags =
         kGPUDrivenPreviewCullInstanceFrustum |
-        kGPUDrivenPreviewCullInstanceHzb |
+        kGPUDrivenPreviewCullInstanceHZB |
         kGPUDrivenPreviewCullMeshletFrustum |
         kGPUDrivenPreviewCullMeshletNormalCone |
-        kGPUDrivenPreviewCullMeshletHzb;
+        kGPUDrivenPreviewCullMeshletHZB;
     uint32_t materialTextureCount = 0;
     float environmentIntensity = 1.0f;
     float environmentRotationRadians = 0.0f;
@@ -742,20 +742,20 @@ struct GPUDrivenPreviewUserPush {
     uint32_t tessellationMaxSplitDepth = 2;
 };
 
-static_assert(sizeof(GPUDrivenPreviewGpuVertex) == 64);
-static_assert(sizeof(GPUDrivenPreviewGpuTextureInfo) == 48);
-static_assert(sizeof(GPUDrivenPreviewGpuMaterial) == sizeof(GPUSceneGpuMaterialRecord));
-static_assert(offsetof(GPUDrivenPreviewGpuMaterial, identity) ==
-    offsetof(GPUSceneGpuMaterialRecord, identity));
-static_assert(sizeof(GPUDrivenPreviewGpuMeshlet) == 80);
-static_assert(sizeof(GPUDrivenPreviewGpuMeshletDraw) == 32);
-static_assert(sizeof(GPUDrivenPreviewGpuInstance) == 32);
-static_assert(sizeof(GPUDrivenPreviewGpuVertex) == sizeof(GPUSceneGpuVertexRecord));
-static_assert(sizeof(GPUDrivenPreviewGpuMeshlet) == sizeof(GPUSceneGpuMeshletRecord));
-static_assert(sizeof(GPUSceneGpuMeshletDrawRecord) == 16);
-static_assert(sizeof(GPUSceneGpuInstanceRecord) == 160);
-static_assert(sizeof(GPUSceneGpuGeometryRecord) == 96);
-static_assert(sizeof(GPUDrivenPreviewGpuParams) == 352);
+static_assert(sizeof(GPUDrivenPreviewGPUVertex) == 64);
+static_assert(sizeof(GPUDrivenPreviewGPUTextureInfo) == 48);
+static_assert(sizeof(GPUDrivenPreviewGPUMaterial) == sizeof(GPUSceneGPUMaterialRecord));
+static_assert(offsetof(GPUDrivenPreviewGPUMaterial, identity) ==
+    offsetof(GPUSceneGPUMaterialRecord, identity));
+static_assert(sizeof(GPUDrivenPreviewGPUMeshlet) == 80);
+static_assert(sizeof(GPUDrivenPreviewGPUMeshletDraw) == 32);
+static_assert(sizeof(GPUDrivenPreviewGPUInstance) == 32);
+static_assert(sizeof(GPUDrivenPreviewGPUVertex) == sizeof(GPUSceneGPUVertexRecord));
+static_assert(sizeof(GPUDrivenPreviewGPUMeshlet) == sizeof(GPUSceneGPUMeshletRecord));
+static_assert(sizeof(GPUSceneGPUMeshletDrawRecord) == 16);
+static_assert(sizeof(GPUSceneGPUInstanceRecord) == 160);
+static_assert(sizeof(GPUSceneGPUGeometryRecord) == 96);
+static_assert(sizeof(GPUDrivenPreviewGPUParams) == 352);
 static_assert(sizeof(GPUDrivenPreviewUserPush) == 132);
 
 struct SceneMaterialVisualizationPush {
@@ -858,7 +858,7 @@ static_assert(sizeof(ScenePathTraceCacheParams) == 172);
 static_assert(offsetof(ScenePathTraceCacheParams, nrcFrameDimensions) == 76);
 static_assert(sizeof(ScenePathTracePush) == 256);
 
-struct SceneRtxdiPush {
+struct SceneRTXDIPush {
     float eye[4] = {};
     float center[4] = {};
     float upProjection[4] = {};
@@ -874,18 +874,18 @@ struct SceneRtxdiPush {
     uint32_t height = 1;
     uint32_t frameIndex = 0;
     uint32_t hasHistory = 0;
-    uint32_t lightCount = kDefaultRtxdiLightCount;
-    uint32_t initialSampleCount = kDefaultRtxdiInitialSamples;
-    uint32_t spatialSampleCount = kDefaultRtxdiSpatialSamples;
+    uint32_t lightCount = kDefaultRTXDILightCount;
+    uint32_t initialSampleCount = kDefaultRTXDIInitialSamples;
+    uint32_t spatialSampleCount = kDefaultRTXDISpatialSamples;
     uint32_t maxHistoryLength = 20;
     uint32_t behaviorFlags =
-        kRtxdiBehaviorTemporalReuse |
-        kRtxdiBehaviorSpatialReuse |
-        kRtxdiBehaviorAnimateLights |
-        kRtxdiBehaviorInitialVisibility |
-        kRtxdiBehaviorLocalLightImportance |
-        kRtxdiBehaviorEnvironmentVisible |
-        kRtxdiBehaviorEnvironmentImportance;
+        kRTXDIBehaviorTemporalReuse |
+        kRTXDIBehaviorSpatialReuse |
+        kRTXDIBehaviorAnimateLights |
+        kRTXDIBehaviorInitialVisibility |
+        kRTXDIBehaviorLocalLightImportance |
+        kRTXDIBehaviorEnvironmentVisible |
+        kRTXDIBehaviorEnvironmentImportance;
     float environmentIntensity = 1.0f;
     float environmentRotationRadians = 0.0f;
     uint32_t environmentSampleCount = 0;
@@ -899,9 +899,9 @@ struct SceneRtxdiPush {
     uint32_t outputLinear = 0;
 };
 
-static_assert(sizeof(SceneRtxdiPush) == 256);
+static_assert(sizeof(SceneRTXDIPush) == 256);
 
-struct RtxdiConfidencePush {
+struct RTXDIConfidencePush {
     uint32_t mode = 0;
     uint32_t width = 1;
     uint32_t height = 1;
@@ -916,16 +916,16 @@ struct RtxdiConfidencePush {
     float padding1 = 0.0f;
 };
 
-static_assert(sizeof(RtxdiConfidencePush) == 48);
+static_assert(sizeof(RTXDIConfidencePush) == 48);
 
-struct RtxdiCompositePush {
+struct RTXDICompositePush {
     uint32_t width = 1;
     uint32_t height = 1;
     float exposure = 1.0f;
     uint32_t outputLinear = 0;
 };
 
-static_assert(sizeof(RtxdiCompositePush) == 16);
+static_assert(sizeof(RTXDICompositePush) == 16);
 
 inline std::string resultMessage(std::string_view label, const Result<>& result)
 {

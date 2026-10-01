@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
@@ -81,24 +81,24 @@ private:
     render::ComputeProgram program_;
 };
 
-class SphericalHarmonicsMathTest final : public RhiTest {
+class SphericalHarmonicsMathTest final : public RHITest {
 public:
-    SphericalHarmonicsMathTest() { type = RhiTestType::Rendering; name = "spherical_harmonics_math_and_packing"; }
+    SphericalHarmonicsMathTest() { type = RHITestType::Rendering; name = "spherical_harmonics_math_and_packing"; }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         // Validate fp16 generic specialization without requiring fp16 execution
         // support from the test device. Runtime readback below uses fp32.
         render::ShaderCompileResult halfShader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "SphericalHarmonicsProbe",
             .entryPointName = "sphericalHarmonicsHalfCompileMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, halfShader.diagnostics).transform([&](auto value) { halfShader = std::move(value); });
-        if (!result) { return RhiTestResult::fail(halfShader.diagnostics); }
+        if (!result) { return RHITestResult::fail(halfShader.diagnostics); }
 
         std::unique_ptr<render::Device> device;
         result = render::createDevice({.applicationName = "SH math probe", .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (render::hasError(result, render::Error::Unsupported)) { return RhiTestResult::skip("requires bindless descriptors"); }
-        if (!result) { return RhiTestResult::fail("SH probe device creation failed"); }
+        if (render::hasError(result, render::Error::Unsupported)) { return RHITestResult::skip("requires bindless descriptors"); }
+        if (!result) { return RHITestResult::fail("SH probe device creation failed"); }
         render::registerRenderGraphPassType("SphericalHarmonicsProbePass", "SH math probe",
             [] { return std::make_unique<SphericalHarmonicsProbePass>(); });
         render::RenderGraph graph;
@@ -107,15 +107,15 @@ public:
         render::RenderGraphExecutor executor;
         std::string log;
         result = executor.compile(*device, graph, 1, 1, log);
-        if (!result) { return RhiTestResult::fail(log); }
+        if (!result) { return RHITestResult::fail(log); }
         result = executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)});
-        if (!result) { return RhiTestResult::fail("SH probe dispatch failed: " + std::string(toString(result))); }
+        if (!result) { return RHITestResult::fail("SH probe dispatch failed: " + std::string(toString(result))); }
         result = executor.waitForSubmittedWork(5'000'000'000ull);
-        if (!result) { return RhiTestResult::fail("SH probe wait failed"); }
+        if (!result) { return RHITestResult::fail("SH probe wait failed"); }
         auto* buffer = executor.outputResource("Probe.data")->buffer;
         buffer->invalidate();
         void* mapped = buffer->map();
-        if (mapped == nullptr) { return RhiTestResult::fail("SH probe readback failed"); }
+        if (mapped == nullptr) { return RHITestResult::fail("SH probe readback failed"); }
         std::array<ProbeValue, kOutputCount> values;
         std::memcpy(values.data(), mapped, sizeof(values));
         buffer->unmap();
@@ -157,12 +157,12 @@ public:
             if (i >= 27 && i < 32) { continue; } // Unwritten padding between result groups.
             for (size_t c = 0; c < 4; ++c) {
                 if (!std::isfinite(values[i][c]) || std::abs(values[i][c] - expected[i][c]) > 0.00002f) {
-                    return RhiTestResult::fail("SH result " + std::to_string(i) + ", channel " + std::to_string(c) +
+                    return RHITestResult::fail("SH result " + std::to_string(i) + ", channel " + std::to_string(c) +
                         ": expected " + std::to_string(expected[i][c]) + ", got " + std::to_string(values[i][c]));
                 }
             }
         }
-        return RhiTestResult::pass("L1/L2 projection, operators, interpolation, rotation, irradiance units, fp16 compilation and float4 packing");
+        return RHITestResult::pass("L1/L2 projection, operators, interpolation, rotation, irradiance units, fp16 compilation and float4 packing");
     }
 };
 

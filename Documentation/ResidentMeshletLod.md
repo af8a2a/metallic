@@ -18,10 +18,10 @@
 
 ## 数据契约
 
-- `MeshletLodGroupRecord`：32 字节，包含共享 LOD sphere、替换误差（对象空间长度）、层级和 terminal 标记。终止组由 DAG 引用关系确定，可在不同深度结束。
-- `GPUSceneGpuMeshletRecord::lod`：`{level, globalOwnerGroup, globalRefinedGroup, reserved}`，无 LOD 引用使用 `UINT32_MAX`。group 索引在 GPUScene 内全局化。
+- `MeshletLODGroupRecord`：32 字节，包含共享 LOD sphere、替换误差（对象空间长度）、层级和 terminal 标记。终止组由 DAG 引用关系确定，可在不同深度结束。
+- `GPUSceneGPUMeshletRecord::lod`：`{level, globalOwnerGroup, globalRefinedGroup, reserved}`，无 LOD 引用使用 `UINT32_MAX`。group 索引在 GPUScene 内全局化。
 - `GPUSceneRasterDrawLayout::adaptiveRange`：所有有效 LOD cluster 的常驻候选。没有有效层级的几何使用 base range。原有 base/整档范围保留，其他 GPUScene 使用者无需改变。
-- `MeshletLodSelection`：16 字节，`{instanceIndex, clusterIndex, recordIndex, geometryIndex}`。前两项是 GPU 选择结果，后两项保留既有 visibility 和几何解码关系。
+- `MeshletLODSelection`：16 字节，`{instanceIndex, clusterIndex, recordIndex, geometryIndex}`。前两项是 GPU 选择结果，后两项保留既有 visibility 和几何解码关系。
 - 选择缓冲前 16 字节为 `{count, capacity, candidateCount, overflow}`，后续前 `count` 项有效。容量按全部候选预留，最细 cut 也不会因输出容量不足丢失几何。
 - 间接参数缓冲为两组 `uint3`：偏移 0 用于 cluster 分类，偏移 12 用于每组 32 项的 task shader。二维 dispatch 使用 65535 的行宽。
 
@@ -62,9 +62,9 @@ ZorahFull 在 2560×1440 输出、1707×960 内部尺寸、DLSS Quality 下完�
 对应回归：
 
 ```powershell
-build/tests/MetallicRhiTests.exe --filter meshlet_lod
-build/tests/MetallicRhiTests.exe --filter hybrid_
-build/tests/MetallicRhiTests.exe --filter gpu_scene_global_gpu_resources
+build/tests/MetallicRHITests.exe --filter meshlet_lod
+build/tests/MetallicRHITests.exe --filter hybrid_
+build/tests/MetallicRHITests.exe --filter gpu_scene_global_gpu_resources
 ```
 
 覆盖 CPU 合法 cut、混合深度终止组、GPU 稳定顺序、空输出、多块前缀、相机/变换、手动/自动切换，以及真实 Bunny 的 CPU/GPU 对照和 VBuffer ID 有效性。混合光栅测试对覆盖和 cluster ID 作严格比较；同一 cluster 中近重合三角形允许固定功能插值与 compute 深度计算产生最多 8 ULP 的舍入差异。
@@ -72,7 +72,7 @@ build/tests/MetallicRhiTests.exe --filter gpu_scene_global_gpu_resources
 2026-09-12 在 RTX 5070 Ti 上验证：
 
 - 主程序与 RHI 测试构建通过；LOD/元数据/混合光栅 7 项回归通过，其中包含 24 组稳定 GPU/CPU 列表对照、16 组真实 Bunny cut 对照和 108 帧软硬光栅检查。
-- Bunny 在 193×157 透视视图中，最细 cut 为 550 个 cluster；1.5 px 自动 cut 为 73 个，eye Z 从 0.22 拉远至 0.8 后为 5 个。正交测试也覆盖了不同 LOD 混合的 cut。测试生成 `MeshletLodReport.json` 与对照 PNG。
+- Bunny 在 193×157 透视视图中，最细 cut 为 550 个 cluster；1.5 px 自动 cut 为 73 个，eye Z 从 0.22 拉远至 0.8 后为 5 个。正交测试也覆盖了不同 LOD 混合的 cut。测试生成 `MeshletLODReport.json` 与对照 PNG。
 - GPUScene、VBuffer 材质/场景切换、帧槽复用、共享相机和 Raytrace/SIGMA 回归通过。ray/raster 属性比较测试显式使用手动 LOD 0，保持几何基准一致。
 - Sponza 完整实时编辑器通过 120 帧烟测，验证了 VBuffer 观察模式、串行/异步一致性和 Off 恢复，进程正常退出。
 - `--rhi-realtime --filter realtime_clustered_dlss_pipeline` 的渲染断言通过（含 DLSS-SR、可选 NR 和 resize），但测试进程在 Streamline teardown 中抛出异常、退出码为 1；关闭验证层仍可复现。该测试的进程退出问题尚未解决，不能记为完整通过。

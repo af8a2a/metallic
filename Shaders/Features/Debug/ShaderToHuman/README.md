@@ -77,9 +77,9 @@ Scatter 需实现 `void onGfxForAllScatter(int2 pxPos, float4 color)`。回调�
 `Features/Debug/ShaderToHumanScatterExample`，搜索路径仍为 `PROJECT_SOURCE_DIR "/Shaders"`。
 
 ```powershell
-cmake --build cmake-build-debug-visual-studio --target MetallicRhiTests
+cmake --build cmake-build-debug-visual-studio --target MetallicRHITests
 $env:METALLIC_VK_INTERNAL_PIPELINE_CACHE = 'disabled'
-.\cmake-build-debug-visual-studio\tests\MetallicRhiTests.exe --gtest_filter=RhiResource.shader_to_human_shader_compile --rhi-validation
+.\cmake-build-debug-visual-studio\tests\MetallicRHITests.exe --gtest_filter=RHIResource.shader_to_human_shader_compile --rhi-validation
 ```
 
 测试通过运行时 Slang API 编译三个入口，并检查上游 HLSL 被纳入缓存/热重载依赖。

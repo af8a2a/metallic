@@ -1,5 +1,5 @@
 #include "Runtime/Render/Core/ComputeProgram.h"
-#include "Runtime/Render/Profiling/CpuProfile.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 
 #include <algorithm>
 #include <bit>
@@ -10,7 +10,7 @@ namespace metallic::render {
 namespace {
 
 constexpr uint32_t kMaxComputeResourceSlots = 256;
-constexpr uint64_t kComputeResourceAbi = 0x434f4d5055544503ull;
+constexpr uint64_t kComputeResourceABI = 0x434f4d5055544503ull;
 
 // ParameterRoot payload; matches Core.ComputeResourceParameters in Slang.
 struct ComputeResourceParameters {
@@ -112,7 +112,7 @@ Result<> ComputeProgram::initialize(Device& device, const ComputeProgramDesc& de
     impl->registry = std::move(*registry);
     auto result = impl->kernel.initialize(device, {
         .spirv = desc.spirv,
-        .parameters = parameterAbi<ComputeResourceParameters>(kComputeResourceAbi),
+        .parameters = parameterAbi<ComputeResourceParameters>(kComputeResourceABI),
         .debugName = desc.debugName,
         .pipelineCache = desc.pipelineCache,
     }, log);
@@ -190,7 +190,7 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         desc.commandBuffer->deviceIdentity() != impl_->device->identity()) {
         return makeError(Error::InvalidArgument);
     }
-    CpuProfileScope profile(desc.profiler, "Encode compute parameters");
+    CPUProfileScope profile(desc.profiler, "Encode compute parameters");
     auto prepared = prepare(desc.commandBuffer->frameContext(), desc, dispatches);
     if (!prepared) { return makeError(prepared.error()); }
     profile.next("Record dispatch commands");
@@ -337,7 +337,7 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
     items.reserve(count);
     for (size_t i = 0; i < count; ++i) {
         const ComputeResourceParameters parameters{push.resources, push.constants ? push.constants + stride * i : 0};
-        auto encoded = writer.encode(parameters, kComputeResourceAbi);
+        auto encoded = writer.encode(parameters, kComputeResourceABI);
         if (!encoded) { return makeError(encoded.error()); }
         if (!desc.indirectArguments) {
             return impl_->kernel.prepareDispatch(*encoded, desc.groupCountX, desc.groupCountY, desc.groupCountZ);

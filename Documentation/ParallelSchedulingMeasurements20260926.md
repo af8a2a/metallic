@@ -86,7 +86,7 @@
 
 ## 验证、失败记录与复现
 
-Release 构建 `Metallic`、`MetallicRhiTests`、`MetallicTaskTests` 成功。21 项相关 RHI 回归全部通过，无跳过、无 Vulkan 验证层错误；覆盖 pipeline GPU 前缀进度、接收失败/异常恢复、资源包寿命、参数追加与串行/并行准备像素一致性。检查了 `scheduling-regression/VisibilityPreparedMaterial.png` 的 Bunny 输出。TaskSystem CTest 与编辑器一次 acquire / submit / present smoke 通过。
+Release 构建 `Metallic`、`MetallicRHITests`、`MetallicTaskTests` 成功。21 项相关 RHI 回归全部通过，无跳过、无 Vulkan 验证层错误；覆盖 pipeline GPU 前缀进度、接收失败/异常恢复、资源包寿命、参数追加与串行/并行准备像素一致性。检查了 `scheduling-regression/VisibilityPreparedMaterial.png` 的 Bunny 输出。TaskSystem CTest 与编辑器一次 acquire / submit / present smoke 通过。
 
 三次 1500 帧 MiniZorah 性能运行全部通过，另有 600 帧静态视角 Vulkan 验证运行通过。尚未进行完整 realtime / NRD / DLSS、长时间路线、无外部负载条件下的端到端 A/B 或真实 non-coherent 内存验证。
 
@@ -96,17 +96,17 @@ Release 构建 `Metallic`、`MetallicRhiTests`、`MetallicTaskTests` 成功。21
 - MiniZorah 旧断言要求 Stream Begin 至少 7 个直接 CPU 子项，但维护阶段已移到 Residency completion 下，无上传的 CLAS 帧只有 6 项。诊断关闭时也复现；改成检查稳定的必需阶段名称，保留父子关系、非负时长和不重复计时检查，并在失败报告中保存原始 sections。
 - `minizorah-scheduling-workers4` 的 1200 帧 / 300 帧末尾驻留尝试未通过 CLAS 最终收敛：pending 为 0，但仍有 retiring 页面。没有放宽收敛断言；延长到 1500 帧 / 600 帧末尾驻留后重新采集三次有效运行。分析脚本拒绝纳入失败记录。
 
-所有日志、JSONL、图像和保留的旧测试二进制都在被忽略的 `build-scheduling-release/` 内。总结果为 `scheduling-summary.json`。改动前二进制 `tests/MetallicRhiTests-before-wait.exe` SHA256 为 `820069FA305DAE245700C6577974EBFA275D7EC04429546B89FFF9D3D6B8759D`；最终二进制为 `CD6028E4ED7CD02F3F6A82C673ECC51D8B9199F80D71608686CD3FAAACD2AD21`。
+所有日志、JSONL、图像和保留的旧测试二进制都在被忽略的 `build-scheduling-release/` 内。总结果为 `scheduling-summary.json`。改动前二进制 `tests/MetallicRHITests-before-wait.exe` SHA256 为 `820069FA305DAE245700C6577974EBFA275D7EC04429546B89FFF9D3D6B8759D`；最终二进制为 `CD6028E4ED7CD02F3F6A82C673ECC51D8B9199F80D71608686CD3FAAACD2AD21`。
 
 在 x64 VS developer shell 中复现，依次运行以避免测试自身竞争：
 
 ```powershell
-cmake --build build-scheduling-release --target Metallic MetallicRhiTests MetallicTaskTests --parallel 8
+cmake --build build-scheduling-release --target Metallic MetallicRHITests MetallicTaskTests --parallel 8
 
 # 小型对照；进程环境开关不能覆盖其中的 diagnostics-off 对照。
 Remove-Item Env:METALLIC_RENDER_SCHEDULING_DIAGNOSTICS -ErrorAction SilentlyContinue
 $env:METALLIC_TEST_SCHEDULING_BENCHMARK = '1'
-.\build-scheduling-release\tests\MetallicRhiTests.exe --rhi-no-validation --rhi-bindless --rhi-async-compute '--gtest_filter=*scheduling_diagnostics*' --output-dir build-scheduling-release/scheduling-repro
+.\build-scheduling-release\tests\MetallicRHITests.exe --rhi-no-validation --rhi-bindless --rhi-async-compute '--gtest_filter=*scheduling_diagnostics*' --output-dir build-scheduling-release/scheduling-repro
 Remove-Item Env:METALLIC_TEST_SCHEDULING_BENCHMARK
 
 $env:METALLIC_TEST_MINIZORAH = '1'
@@ -117,11 +117,11 @@ $env:METALLIC_MINIZORAH_BENCH_CLAS = '1'
 $env:METALLIC_MINIZORAH_BENCH_REALTIME = '0'
 $env:METALLIC_MINIZORAH_BENCH_QUALITY = '0'
 $env:METALLIC_RENDER_SCHEDULING_DIAGNOSTICS = '1'
-.\build-scheduling-release\tests\MetallicRhiTests.exe --rhi-no-validation --rhi-bindless --rhi-async-compute '--gtest_filter=*minizorah_fixed_baseline*' --output-dir build-scheduling-release/minizorah-repro
+.\build-scheduling-release\tests\MetallicRHITests.exe --rhi-no-validation --rhi-bindless --rhi-async-compute '--gtest_filter=*minizorah_fixed_baseline*' --output-dir build-scheduling-release/minizorah-repro
 python -X utf8 Tools/AnalyzeSchedulingDiagnostics.py --benchmark build-scheduling-release/scheduling-repro/SchedulingBenchmark.json --minizorah build-scheduling-release/minizorah-repro/Frames.jsonl --warmup 300 --output build-scheduling-release/repro-summary.json
 
 Remove-Item Env:METALLIC_RENDER_SCHEDULING_DIAGNOSTICS
-.\build-scheduling-release\tests\MetallicRhiTests.exe --rhi-bindless --rhi-async-compute '--gtest_filter=*parallel_*:*pipelined*:*scheduling_diagnostics*:*prepared_*:*visibility_preparation*:*registry_*:*submission*' --output-dir build-scheduling-release/scheduling-regression
+.\build-scheduling-release\tests\MetallicRHITests.exe --rhi-bindless --rhi-async-compute '--gtest_filter=*parallel_*:*pipelined*:*scheduling_diagnostics*:*prepared_*:*visibility_preparation*:*registry_*:*submission*' --output-dir build-scheduling-release/scheduling-regression
 ctest --test-dir build-scheduling-release -R '^MetallicTaskTests$' --output-on-failure
 .\build-scheduling-release\Source\Metallic.exe --smoke-test
 ```

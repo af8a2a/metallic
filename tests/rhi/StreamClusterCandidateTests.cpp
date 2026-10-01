@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
@@ -12,22 +12,22 @@ namespace metallic::tests {
 namespace {
 
 #define CANDIDATE_REQUIRE(expr) do { const auto checked = (expr); if (!checked) { \
-    return RhiTestResult::fail(std::string(#expr) + ": " + toString(checked) + " " + log); } } while (false)
+    return RHITestResult::fail(std::string(#expr) + ": " + toString(checked) + " " + log); } } while (false)
 
-class StreamClusterCandidatesTest final : public RhiTest {
+class StreamClusterCandidatesTest final : public RHITest {
 public:
-    StreamClusterCandidatesTest() { type = RhiTestType::Rendering; name = "stream_cluster_candidates_stable_parallel"; }
-    RhiTestResult run(RhiTestContext& context) override
+    StreamClusterCandidatesTest() { type = RHITestType::Rendering; name = "stream_cluster_candidates_stable_parallel"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         std::string log;
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Stream candidate regression",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless heap"); }
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless heap"); }
         CANDIDATE_REQUIRE(created);
         if (!device->capabilities().shaderBufferInt64Atomics || device->capabilities().subPixelPrecisionBits > 8) {
-            return RhiTestResult::skip("Requires hybrid raster capabilities");
+            return RHITestResult::skip("Requires hybrid raster capabilities");
         }
         constexpr uint32_t capacity = 65537, groupCapacity = 30001, instances = 97;
         constexpr uint32_t candidateBase = 16 + 5 * capacity;
@@ -40,8 +40,8 @@ public:
         std::array<BindlessHandle, 7> handles;
         for (auto& handle : handles) { CANDIDATE_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
         std::array<std::unique_ptr<Buffer>, 5> inputs;
-        const uint32_t strides[] = {sizeof(MeshletStreamGpuActiveHeader), sizeof(MeshletStreamGpuActiveGroup),
-            sizeof(MeshletStreamGpuRasterBindings), 4, 8};
+        const uint32_t strides[] = {sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUActiveGroup),
+            sizeof(MeshletStreamGPURasterBindings), 4, 8};
         const uint32_t counts[] = {1, groupCapacity, 1, instances, capacity};
         for (size_t i = 0; i < inputs.size(); ++i) {
             CANDIDATE_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
@@ -99,7 +99,7 @@ public:
             {16383, 0}, {16384, 1}, {16385, 0}, {30001, 1}, {30001, 0, false, true},
             {3001, 0, true}, {0, 1}, {129, 0}, {3001, 1, true},
             {2048, 0, true}, {2049, 0, true, false, 1u}, {2049, 0, true, false, 3u}};
-        std::vector<MeshletStreamGpuActiveGroup> groups(groupCapacity);
+        std::vector<MeshletStreamGPUActiveGroup> groups(groupCapacity);
         std::vector<std::array<uint32_t, 2>> retries(capacity);
         std::array<uint32_t, instances> visibility;
         bool submitted = false;
@@ -127,19 +127,19 @@ public:
             const uint32_t total = static_cast<uint32_t>(expected.size());
             const bool overflow = total > capacity;
             if (overflow) { expected.clear(); }
-            MeshletStreamGpuActiveHeader header{.activeGroupCount = test.count, .activeGroupCapacity = groupCapacity,
+            MeshletStreamGPUActiveHeader header{.activeGroupCount = test.count, .activeGroupCapacity = groupCapacity,
                 .maxActiveGroupClusters = 32};
-            MeshletStreamGpuRasterBindings bindings{.instanceVisibilityBuffer = handles[3].shaderIndex};
+            MeshletStreamGPURasterBindings bindings{.instanceVisibilityBuffer = handles[3].shaderIndex};
             if (!upload(0, &header, sizeof(header)) || !upload(1, groups.data(), groups.size() * sizeof(groups[0])) ||
                 !upload(2, &bindings, sizeof(bindings)) || !upload(3, visibility.data(), sizeof(visibility)) ||
                 !upload(4, retries.data(), retries.size() * sizeof(retries[0]))) {
-                return RhiTestResult::fail("Cannot upload candidate input");
+                return RHITestResult::fail("Cannot upload candidate input");
             }
             if (submitted) { CANDIDATE_REQUIRE(fence->reset()); CANDIDATE_REQUIRE(pool->reset()); }
             CANDIDATE_REQUIRE(commands->begin());
             CANDIDATE_REQUIRE(rasterizer.beginClusters(*commands, 8, true, 0, groupCapacity * 32, true, true));
             commands->bindBindlessHeap(*heap);
-            if (auto commandResult = commands->bindExecution((pipelines[1])->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->bindExecution((pipelines[1])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             const uint32_t seedPush[] = {handles[4].shaderIndex, handles[5].shaderIndex, capacity};
             commands->pushBindlessData(seedPush, sizeof(seedPush));
             commands->dispatch((capacity + 127) / 128);
@@ -148,7 +148,7 @@ public:
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                 .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             };
-            if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             MeshletStreamUserPush push{.activeGroupBuffer = handles[1].shaderIndex, .activeHeaderBuffer = handles[0].shaderIndex,
                 .traversalPhase = test.phase, .rasterBindingsBuffer = handles[2].shaderIndex,
                 .hybridQueueBuffer = handles[6].shaderIndex, .hybridClusterBuffer = handles[5].shaderIndex};
@@ -164,20 +164,20 @@ public:
                     .before = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                 }};
-            if (auto commandResult = commands->synchronize({.buffers = {copies, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {copies, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             {
                 auto sourceSlice = (&rasterizer.clusterBuffer())->slice({0, bytes});
-                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
                 auto destinationSlice = readback.get()->slice({0, bytes});
-                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             {
                 auto sourceSlice = (&rasterizer.candidateArguments())->slice({0, 36});
-                if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+                if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
                 auto destinationSlice = arguments.get()->slice({0, 36});
-                if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+                if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+                if (auto commandResult = commands->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
             }
             // Restore state and reuse scratch with real binning kernels. All
             // tags are deliberately culled; the copy retains the pre-bin state.
@@ -192,7 +192,7 @@ public:
                     .before = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                     .after = {PipelineStageBits::DrawIndirect, AccessBits::IndirectRead},
                 }};
-            if (auto commandResult = commands->synchronize({.buffers = {restore, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {restore, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             CANDIDATE_REQUIRE(rasterizer.finishClusterBins(*commands));
             const BufferBarrierDesc outputCopies[] = {
                 {.buffer = &rasterizer.clusterBuffer(),
@@ -207,7 +207,7 @@ public:
             auto drawSource = rasterizer.clusterArguments().slice({0, 60});
             auto drawDestination = drawArguments->slice({0, 60});
             if (!binSource || !binDestination || !drawSource || !drawDestination) {
-                return RhiTestResult::fail("Cannot slice fallback readback buffers");
+                return RHITestResult::fail("Cannot slice fallback readback buffers");
             }
             CANDIDATE_REQUIRE(commands->copyBuffer(*binSource, *binDestination));
             CANDIDATE_REQUIRE(commands->copyBuffer(*drawSource, *drawDestination));
@@ -222,7 +222,7 @@ public:
             readback->invalidate(); arguments->invalidate();
             const auto* bins = static_cast<const uint32_t*>(readback->map());
             const auto* args = static_cast<const uint32_t*>(arguments->map());
-            if (!bins || !args) { return RhiTestResult::fail("Cannot read candidate output"); }
+            if (!bins || !args) { return RHITestResult::fail("Cannot read candidate output"); }
             bool valid = bins[12] == expected.size() && bins[13] == 32 && bins[14] == (overflow ? total - capacity : 0u) && bins[15] == test.count;
             for (uint32_t i = 0; i < capacity; ++i) {
                 valid = valid && bins[candidateBase + i * 2] == (i < expected.size() ? expected[i] : poison) &&
@@ -238,7 +238,7 @@ public:
             binned->invalidate(); drawArguments->invalidate();
             const auto* finalBins = static_cast<const uint32_t*>(binned->map());
             const auto* drawArgs = static_cast<const uint32_t*>(drawArguments->map());
-            if (!finalBins || !drawArgs) { return RhiTestResult::fail("Cannot read fallback output"); }
+            if (!finalBins || !drawArgs) { return RHITestResult::fail("Cannot read fallback output"); }
             for (uint32_t bin = 0; bin < 5; ++bin) {
                 const uint32_t draws = overflow && bin == 0 ? test.count * 32 : 0u;
                 valid = valid && finalBins[bin] == draws && drawArgs[bin * 3] == std::min(draws, 65535u) &&
@@ -257,10 +257,10 @@ public:
             }
             binned->unmap(); drawArguments->unmap();
             readback->unmap(); arguments->unmap();
-            if (!valid) { return RhiTestResult::fail("Candidate order, mask, guard or arguments mismatch in case " + std::to_string(caseIndex)); }
+            if (!valid) { return RHITestResult::fail("Candidate order, mask, guard or arguments mismatch in case " + std::to_string(caseIndex)); }
             ++caseIndex;
         }
-        return RhiTestResult::pass("17 GPU/CPU cases: stable IDs, partial and >128 blocks, early/late recovery, empty/shrinking lists, overflow and 2D classify args");
+        return RHITestResult::pass("17 GPU/CPU cases: stable IDs, partial and >128 blocks, early/late recovery, empty/shrinking lists, overflow and 2D classify args");
     }
 };
 

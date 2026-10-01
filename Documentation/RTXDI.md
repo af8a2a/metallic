@@ -11,7 +11,7 @@ SDK-licensed code.
 
 ## What is implemented
 
-`SceneRtxdiPass` defaults to `lightSource = "scene"` and evaluates the same
+`SceneRTXDIPass` defaults to `lightSource = "scene"` and evaluates the same
 directional, point and spot virtual lights used by the real-time renderer and
 path tracers, including imported glTF lights. Source-node visibility and native
 light enablement are resolved during collection; converted import metadata
@@ -98,22 +98,22 @@ lighting retains its deterministic full-light evaluation.
 
 The sample graph then runs four passes:
 
-1. `SceneRtxdiPass` writes raw preview color plus demodulated diffuse and
+1. `SceneRTXDIPass` writes raw preview color plus demodulated diffuse and
    specular radiance/hit-distance signals, packed normal/roughness, screen-space
    motion vectors, linear view depth, base-color/metalness, and emissive data.
-2. `RtxdiConfidencePass` follows FullSample's confidence preprocessing flow.
+2. `RTXDIConfidencePass` follows FullSample's confidence preprocessing flow.
    It selects the brightest direct-light signal in each 3x3 gradient stratum,
    compares current and motion-reprojected previous diffuse/specular luminance,
    applies four A-trous filter iterations, converts the relative gradients to
    confidence, and applies the same `power = 0.25` non-linear short-history
    filter. The resulting diffuse and specular R8_UNORM textures are available
    as graph outputs.
-3. `NrdDenoisePass` runs `RELAX_DIFFUSE_SPECULAR`. It receives current and
+3. `NRDDenoisePass` runs `RELAX_DIFFUSE_SPECULAR`. It receives current and
    previous camera matrices, advances RELAX history across frames, and resets
    history when the camera or graph is reset. The confidence textures are bound
    as `IN_DIFF_CONFIDENCE` and `IN_SPEC_CONFIDENCE`, with
    `isHistoryConfidenceAvailable` enabled for RELAX.
-4. `RtxdiCompositePass` remodulates the denoised diffuse signal by diffuse
+4. `RTXDICompositePass` remodulates the denoised diffuse signal by diffuse
    albedo, remodulates the denoised specular signal by dielectric/metallic F0,
    adds emissive/background radiance, and performs exposure and tone mapping.
 
@@ -140,19 +140,19 @@ For a multi-configuration generator such as Visual Studio:
 
 ```powershell
 cmake -S . -B build -DMETALLIC_BUILD_TESTS=ON
-cmake --build build --target MetallicRtxdiSample --config Debug
-build\Source\Debug\MetallicRtxdiSample.exe
+cmake --build build --target MetallicRTXDISample --config Debug
+build\Source\Debug\MetallicRTXDISample.exe
 ```
 
 For a single-configuration Ninja build, the executable is instead
-`build\Source\MetallicRtxdiSample.exe` (without a `Debug` subdirectory).
+`build\Source\MetallicRTXDISample.exe` (without a `Debug` subdirectory).
 
 The standalone executable opens the editor with the `RTXDI / ReSTIR DI` sample
 selected. A non-interactive eight-frame path is also available; multiple frames
 are rendered so RELAX history is exercised:
 
 ```powershell
-build\Source\Debug\MetallicRtxdiSample.exe --smoke-test
+build\Source\Debug\MetallicRTXDISample.exe --smoke-test
 ```
 
 The sample graph is
@@ -178,22 +178,22 @@ threshold, denoising range, and validation mode. Confidence preprocessing
 exposes the FullSample defaults of four gradient A-trous passes, sensitivity 8,
 darkness bias -12 EV, and a 0.75-frame confidence history. The default sampling budget uses eight initial
 local-light candidates, four environment candidates, and one spatial neighbor.
-The graph presents `Composite.color` through `FinalBlit.color`. `Rtxdi.color`,
+The graph presents `Composite.color` through `FinalBlit.color`. `RTXDI.color`,
 `Confidence.diffuseConfidence`, and `Confidence.specularConfidence` can also be
 selected for inspecting the pre-denoise and confidence results.
 
-Build `MetallicRhiTests`, then select the executable path for the configured
+Build `MetallicRHITests`, then select the executable path for the configured
 generator. These Google Test wildcard filters include all six
 `regir_virtual_lights_*` tests: GPU power/edit/delete, empty-reservoir probability
 mass, cancelled-recording retry, standard PT, OpenPBR PT and RTXDI temporal
 rendering.
 
 ```powershell
-cmake --build build --target MetallicRhiTests --config Debug
+cmake --build build --target MetallicRHITests --config Debug
 # Ninja / single-configuration:
-$rtxdiTestExe = '.\build\tests\MetallicRhiTests.exe'
+$rtxdiTestExe = '.\build\tests\MetallicRHITests.exe'
 # Visual Studio / multi-configuration: use this path instead.
-# $rtxdiTestExe = '.\build\tests\Debug\MetallicRhiTests.exe'
+# $rtxdiTestExe = '.\build\tests\Debug\MetallicRHITests.exe'
 
 & $rtxdiTestExe --rhi-validation '--gtest_filter=*render_graph_rtxdi_shader_compile:*importance_pdf_size:*regir_grid_layout:*regir_virtual_lights_*'
 & $rtxdiTestExe --rhi-validation '--gtest_filter=*render_graph_rtxdi_preview'

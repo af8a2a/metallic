@@ -22,15 +22,15 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
     add({"RGBA16F", 8, {{"r", "f16", 0}, {"g", "f16", 2}, {"b", "f16", 4}, {"a", "f16", 6}}});
     add({"RGBA32F", 16, {{"r", "f32", 0}, {"g", "f32", 4}, {"b", "f32", 8}, {"a", "f32", 12}}});
 #define DEBUG_FIELD(T, F) DebugFieldDesc{#F, "u32", static_cast<uint32_t>(offsetof(T, F))}
-    add({"MeshletLodSelectionHeader", 16, {{"count", "u32", 0}, {"capacity", "u32", 4},
+    add({"MeshletLODSelectionHeader", 16, {{"count", "u32", 0}, {"capacity", "u32", 4},
         {"candidateCount", "u32", 8}, {"overflow", "u32", 12}}});
-    add({"MeshletLodSelection", sizeof(MeshletLodSelection), {
-        DEBUG_FIELD(MeshletLodSelection, instanceIndex), DEBUG_FIELD(MeshletLodSelection, clusterIndex),
-        DEBUG_FIELD(MeshletLodSelection, recordIndex), DEBUG_FIELD(MeshletLodSelection, geometryIndex)}});
-    add({"MeshletLodGroupRecord", sizeof(MeshletLodGroupRecord), {
-        {"sphere", "f32", offsetof(MeshletLodGroupRecord, sphere), 4},
-        {"error", "f32", offsetof(MeshletLodGroupRecord, error)},
-        DEBUG_FIELD(MeshletLodGroupRecord, level), DEBUG_FIELD(MeshletLodGroupRecord, flags)}});
+    add({"MeshletLODSelection", sizeof(MeshletLODSelection), {
+        DEBUG_FIELD(MeshletLODSelection, instanceIndex), DEBUG_FIELD(MeshletLODSelection, clusterIndex),
+        DEBUG_FIELD(MeshletLODSelection, recordIndex), DEBUG_FIELD(MeshletLODSelection, geometryIndex)}});
+    add({"MeshletLODGroupRecord", sizeof(MeshletLODGroupRecord), {
+        {"sphere", "f32", offsetof(MeshletLODGroupRecord, sphere), 4},
+        {"error", "f32", offsetof(MeshletLODGroupRecord, error)},
+        DEBUG_FIELD(MeshletLODGroupRecord, level), DEBUG_FIELD(MeshletLODGroupRecord, flags)}});
     add({"CompactStreamVisibleRecord", sizeof(CompactStreamVisibleRecord), {
         {"packed", "u32", 0}, {"clusterIndex", "u32", 0, 1, 0, 5},
         {"groupIndexPlusOne", "u32", 0, 1, 5, 25}, {"rasterFlags", "u32", 0, 1, 30, 2}}});
@@ -57,38 +57,38 @@ std::unordered_map<std::string, DebugTypeDesc> renderDebugLayouts()
         {"state", "u32", offsetof(StreamPageTableEntry, deviceOffsetAndState), 1, 0, 3, 1,
             {{"0", "Unloaded"}, {"1", "PendingUpload"}, {"2", "Resident"}, {"3", "LockedFallback"}, {"4", "PendingUnload"}}},
         {"deviceOffset", "u32", offsetof(StreamPageTableEntry, deviceOffsetAndState), 1, 3, 29, 8}}});
-    static_assert(sizeof(MeshletStreamGpuActiveHeader) == 32);
-    add({"MeshletStreamGpuActiveHeader", sizeof(MeshletStreamGpuActiveHeader), {
-        DEBUG_FIELD(MeshletStreamGpuActiveHeader, activeGroupCount), DEBUG_FIELD(MeshletStreamGpuActiveHeader, activeGroupCapacity),
-        DEBUG_FIELD(MeshletStreamGpuActiveHeader, maxActiveGroupClusters), DEBUG_FIELD(MeshletStreamGpuActiveHeader, overflowCount),
-        DEBUG_FIELD(MeshletStreamGpuActiveHeader, frameIndex),
-        {"terminalFallback", "u32", offsetof(MeshletStreamGpuActiveHeader, padding0)},
-        {"invalidCapacity", "u32", offsetof(MeshletStreamGpuActiveHeader, padding1)}}});
-    static_assert(sizeof(MeshletStreamGpuActiveGroup) == 112 && offsetof(MeshletStreamGpuActiveGroup, world0) == 48);
-    add({"MeshletStreamGpuActiveGroup", sizeof(MeshletStreamGpuActiveGroup), {
-        DEBUG_FIELD(MeshletStreamGpuActiveGroup, pageDeviceOffsetBytes), DEBUG_FIELD(MeshletStreamGpuActiveGroup, pageIndex),
-        DEBUG_FIELD(MeshletStreamGpuActiveGroup, clusterCount), DEBUG_FIELD(MeshletStreamGpuActiveGroup, primitiveIndex),
-        DEBUG_FIELD(MeshletStreamGpuActiveGroup, lodLevel), DEBUG_FIELD(MeshletStreamGpuActiveGroup, materialIndex),
-        DEBUG_FIELD(MeshletStreamGpuActiveGroup, clusterSelectionMask), DEBUG_FIELD(MeshletStreamGpuActiveGroup, flags),
-        DEBUG_FIELD(MeshletStreamGpuActiveGroup, instanceIndex), DEBUG_FIELD(MeshletStreamGpuActiveGroup, gpuSceneInstanceIndex),
-        {"world", "f32", offsetof(MeshletStreamGpuActiveGroup, world0), 16}}});
-    static_assert(sizeof(GPUSceneGpuGeometryRecord) == 96 && offsetof(GPUSceneGpuGeometryRecord, payload) == 32);
-    add({"GPUSceneGpuGeometryRecord", sizeof(GPUSceneGpuGeometryRecord), {
-        {"source", "u32", offsetof(GPUSceneGpuGeometryRecord, source), 4},
-        {"counts", "u32", offsetof(GPUSceneGpuGeometryRecord, counts), 4},
-        {"payload", "u32", offsetof(GPUSceneGpuGeometryRecord, payload), 4},
-        {"meshletPayload", "u32", offsetof(GPUSceneGpuGeometryRecord, meshletPayload), 4},
-        {"bounds", "f32", offsetof(GPUSceneGpuGeometryRecord, localBoundingSphere), 4},
-        {"identity", "u32", offsetof(GPUSceneGpuGeometryRecord, identity), 4}}});
-    add({"GPUSceneGpuInstanceRecord", sizeof(GPUSceneGpuInstanceRecord), {
-        {"world", "f32", offsetof(GPUSceneGpuInstanceRecord, worldMatrix), 16},
-        {"previousWorld", "f32", offsetof(GPUSceneGpuInstanceRecord, previousWorldMatrix), 16},
-        {"bounds", "f32", offsetof(GPUSceneGpuInstanceRecord, localBoundingSphere), 4},
-        {"identity", "u32", offsetof(GPUSceneGpuInstanceRecord, identity), 4}}});
-    add({"GPUSceneGpuMeshletRecord", sizeof(GPUSceneGpuMeshletRecord), {
-        {"ranges", "u32", offsetof(GPUSceneGpuMeshletRecord, ranges), 4},
-        {"lod", "u32", offsetof(GPUSceneGpuMeshletRecord, lod), 4},
-        {"bounds", "f32", offsetof(GPUSceneGpuMeshletRecord, boundingSphere), 4}}});
+    static_assert(sizeof(MeshletStreamGPUActiveHeader) == 32);
+    add({"MeshletStreamGPUActiveHeader", sizeof(MeshletStreamGPUActiveHeader), {
+        DEBUG_FIELD(MeshletStreamGPUActiveHeader, activeGroupCount), DEBUG_FIELD(MeshletStreamGPUActiveHeader, activeGroupCapacity),
+        DEBUG_FIELD(MeshletStreamGPUActiveHeader, maxActiveGroupClusters), DEBUG_FIELD(MeshletStreamGPUActiveHeader, overflowCount),
+        DEBUG_FIELD(MeshletStreamGPUActiveHeader, frameIndex),
+        {"terminalFallback", "u32", offsetof(MeshletStreamGPUActiveHeader, padding0)},
+        {"invalidCapacity", "u32", offsetof(MeshletStreamGPUActiveHeader, padding1)}}});
+    static_assert(sizeof(MeshletStreamGPUActiveGroup) == 112 && offsetof(MeshletStreamGPUActiveGroup, world0) == 48);
+    add({"MeshletStreamGPUActiveGroup", sizeof(MeshletStreamGPUActiveGroup), {
+        DEBUG_FIELD(MeshletStreamGPUActiveGroup, pageDeviceOffsetBytes), DEBUG_FIELD(MeshletStreamGPUActiveGroup, pageIndex),
+        DEBUG_FIELD(MeshletStreamGPUActiveGroup, clusterCount), DEBUG_FIELD(MeshletStreamGPUActiveGroup, primitiveIndex),
+        DEBUG_FIELD(MeshletStreamGPUActiveGroup, lodLevel), DEBUG_FIELD(MeshletStreamGPUActiveGroup, materialIndex),
+        DEBUG_FIELD(MeshletStreamGPUActiveGroup, clusterSelectionMask), DEBUG_FIELD(MeshletStreamGPUActiveGroup, flags),
+        DEBUG_FIELD(MeshletStreamGPUActiveGroup, instanceIndex), DEBUG_FIELD(MeshletStreamGPUActiveGroup, gpuSceneInstanceIndex),
+        {"world", "f32", offsetof(MeshletStreamGPUActiveGroup, world0), 16}}});
+    static_assert(sizeof(GPUSceneGPUGeometryRecord) == 96 && offsetof(GPUSceneGPUGeometryRecord, payload) == 32);
+    add({"GPUSceneGPUGeometryRecord", sizeof(GPUSceneGPUGeometryRecord), {
+        {"source", "u32", offsetof(GPUSceneGPUGeometryRecord, source), 4},
+        {"counts", "u32", offsetof(GPUSceneGPUGeometryRecord, counts), 4},
+        {"payload", "u32", offsetof(GPUSceneGPUGeometryRecord, payload), 4},
+        {"meshletPayload", "u32", offsetof(GPUSceneGPUGeometryRecord, meshletPayload), 4},
+        {"bounds", "f32", offsetof(GPUSceneGPUGeometryRecord, localBoundingSphere), 4},
+        {"identity", "u32", offsetof(GPUSceneGPUGeometryRecord, identity), 4}}});
+    add({"GPUSceneGPUInstanceRecord", sizeof(GPUSceneGPUInstanceRecord), {
+        {"world", "f32", offsetof(GPUSceneGPUInstanceRecord, worldMatrix), 16},
+        {"previousWorld", "f32", offsetof(GPUSceneGPUInstanceRecord, previousWorldMatrix), 16},
+        {"bounds", "f32", offsetof(GPUSceneGPUInstanceRecord, localBoundingSphere), 4},
+        {"identity", "u32", offsetof(GPUSceneGPUInstanceRecord, identity), 4}}});
+    add({"GPUSceneGPUMeshletRecord", sizeof(GPUSceneGPUMeshletRecord), {
+        {"ranges", "u32", offsetof(GPUSceneGPUMeshletRecord, ranges), 4},
+        {"lod", "u32", offsetof(GPUSceneGPUMeshletRecord, lod), 4},
+        {"bounds", "f32", offsetof(GPUSceneGPUMeshletRecord, boundingSphere), 4}}});
 #undef DEBUG_FIELD
     return result;
 }
@@ -108,13 +108,13 @@ void gpuDrivenDebugCheckpoint(RenderGraphExecutionContext& context, std::string_
                 .layout = std::move(layout), .allocation = buffer.generation,
                 .metadata = {{"drawSetGeneration", buffer.generation}, {"drawSetRevision", buffer.revision}, {"owner", "GPUScene global upload"}}});
         };
-        global("instances", globals.instances, "GPUSceneGpuInstanceRecord");
-        global("geometries", globals.geometries, "GPUSceneGpuGeometryRecord");
-        global("meshlets", globals.meshlets, "GPUSceneGpuMeshletRecord");
-        global("lodGroups", globals.lodGroups, "MeshletLodGroupRecord");
+        global("instances", globals.instances, "GPUSceneGPUInstanceRecord");
+        global("geometries", globals.geometries, "GPUSceneGPUGeometryRecord");
+        global("meshlets", globals.meshlets, "GPUSceneGPUMeshletRecord");
+        global("lodGroups", globals.lodGroups, "MeshletLODGroupRecord");
         global("meshletDraws", globals.meshletDraws, "VisibleClusterRecord");
         global("drawInstanceIds", globals.drawInstanceIds, "u32");
-        GPUSceneViewGpuResourcesView resources;
+        GPUSceneViewGPUResourcesView resources;
         if (phase < kGPUSceneCullPhaseCount && gpuScene->viewGpuResources(view, frameSlot, resources) && resources.frameSlotInitialized) {
             const auto add = [&](std::string name, const GPUSceneBufferView& buffer, std::string layout = "u32") {
                 if (!buffer.buffer) { return; }

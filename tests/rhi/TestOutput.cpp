@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 
 #include "stb/stb_image_write.h"
 

@@ -1,5 +1,5 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
-#include "RhiTest.h"
+#include "RHITest.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
@@ -18,7 +18,7 @@ namespace {
 #define LIGHT_DEBUG_CHECK(condition) \
     do { \
         if (!(condition)) { \
-            return RhiTestResult::fail(std::string("LightGridDebug: ") + #condition); \
+            return RHITestResult::fail(std::string("LightGridDebug: ") + #condition); \
         } \
     } while (false)
 
@@ -69,15 +69,15 @@ render::RenderGraphProperties debugProperties()
             {"orthoHeight", 4.0}, {"znear", 1.0}, {"zfar", 9.0}}}};
 }
 
-RhiTestResult initializePreview(render::RenderGraphPreviewRenderer& preview, RhiTestContext& context)
+RHITestResult initializePreview(render::RenderGraphPreviewRenderer& preview, RHITestContext& context)
 {
     const auto result = preview.initialize(context.enableValidation);
     if (render::hasError(result, render::Error::Unsupported)) {
-        return RhiTestResult::skip("LightGrid debug requires bindless compute support");
+        return RHITestResult::skip("LightGrid debug requires bindless compute support");
     }
-    if (!result) { return RhiTestResult::fail("LightGrid preview initialization: " + std::string(toString(result))); }
+    if (!result) { return RHITestResult::fail("LightGrid preview initialization: " + std::string(toString(result))); }
     preview.setEnvironment({.enabled = false});
-    return RhiTestResult::pass();
+    return RHITestResult::pass();
 }
 
 class EmptySceneDebugSample final : public render::RenderSample {
@@ -99,11 +99,11 @@ private:
     bool pathTarget_;
 };
 
-class LightGridDebugContractTest final : public RhiTest {
+class LightGridDebugContractTest final : public RHITest {
 public:
     LightGridDebugContractTest() { name = "render_graph_light_grid_debug_contract"; }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         render::RenderGraph graph;
         const auto pass = render::createRenderGraphPass("LightGridDebugPass");
@@ -111,7 +111,7 @@ public:
         const auto reflection = pass->reflect({.width = 127, .height = 73});
         const auto* color = reflection.findField("color", render::RenderGraphFieldVisibility::Output);
         LIGHT_DEBUG_CHECK(color != nullptr);
-        LIGHT_DEBUG_CHECK(color->format == render::Format::Rgba8Unorm);
+        LIGHT_DEBUG_CHECK(color->format == render::Format::RGBA8Unorm);
         const auto settings = pass->runtimeSettings();
         for (const auto& setting : settings) {
             if (setting.type == render::RenderGraphRuntimeSettingType::Int) {
@@ -150,15 +150,15 @@ public:
             LIGHT_DEBUG_CHECK(!render::loadRenderSample(EmptySceneDebugSample(loadScene, pathTarget), sample, log));
             LIGHT_DEBUG_CHECK(log.find("scenePath") != std::string::npos);
         }
-        return RhiTestResult::pass("Debug pass registration, runtime controls, asset-free sample and scene-path guards");
+        return RHITestResult::pass("Debug pass registration, runtime controls, asset-free sample and scene-path guards");
     }
 };
 
-class LightGridDebugPixelsTest final : public RhiTest {
+class LightGridDebugPixelsTest final : public RHITest {
 public:
-    LightGridDebugPixelsTest() { type = RhiTestType::Rendering; name = "render_graph_light_grid_debug_pixels"; }
+    LightGridDebugPixelsTest() { type = RHITestType::Rendering; name = "render_graph_light_grid_debug_pixels"; }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
         const auto initialized = initializePreview(preview, context);
@@ -167,19 +167,19 @@ public:
         const uint32_t node = graph.addNode("LightGridDebugPass", "Debug", debugProperties())->id;
         graph.markOutput("Debug.color");
         const auto render = [&]() { return preview.render(graph, 64, 64); };
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kBlack));
 
         scene::LightingSettings lighting;
         for (const auto [count, color] : {std::pair{1u, kCyan}, std::pair{2u, kGreen}, std::pair{4u, kRed}}) {
             lighting.lights.assign(count, debugPoint());
             LIGHT_DEBUG_CHECK(preview.setLighting(lighting));
-            if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+            if (!render()) { return RHITestResult::fail(preview.lastLog()); }
             LIGHT_DEBUG_CHECK(solidColor(preview, color));
         }
         // Do not turn a list-capacity overflow into a falsely low stored-count heatmap.
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "maxLightsPerCell", 1));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kOverflow));
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "maxLightsPerCell", 8));
 
@@ -191,35 +191,35 @@ public:
         directional.direction = float3(0.0f, 0.0f, -1.0f);
         lighting.lights.push_back(directional);
         LIGHT_DEBUG_CHECK(preview.setLighting(lighting));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kCyan));
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "includeGlobalLights", true));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kYellow));
         // Global lights do not occupy local-list capacity and must not report overflow.
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "maxLightsPerCell", 1));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kYellow));
 
         lighting.lights.assign(2, debugPoint());
         lighting.lights[0].enabled = false;
         lighting.lights[1].properties.intensity = 0.0;
         LIGHT_DEBUG_CHECK(preview.setLighting(lighting));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kBlack));
         lighting.lights.clear();
         LIGHT_DEBUG_CHECK(preview.setLighting(lighting));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kBlack));
-        return RhiTestResult::pass("GPU heatmap palette, live world-light edits, disabled lights, global lights and overflow");
+        return RHITestResult::pass("GPU heatmap palette, live world-light edits, disabled lights, global lights and overflow");
     }
 };
 
-class LightGridDebugSlicesTest final : public RhiTest {
+class LightGridDebugSlicesTest final : public RHITest {
 public:
-    LightGridDebugSlicesTest() { type = RhiTestType::Rendering; name = "render_graph_light_grid_debug_slices"; }
+    LightGridDebugSlicesTest() { type = RHITestType::Rendering; name = "render_graph_light_grid_debug_slices"; }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
         const auto initialized = initializePreview(preview, context);
@@ -234,7 +234,7 @@ public:
         lighting.lights.push_back(debugPoint(float3(-1.0f, 1.0f, -2.0f), 0.2));
         LIGHT_DEBUG_CHECK(preview.setLighting(lighting));
         const auto render = [&]() { return preview.render(graph, 64, 64); };
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels().size() == 64u * 64u);
         for (uint32_t y = 0; y < 64; ++y) {
             for (uint32_t x = 0; x < 64; ++x) {
@@ -243,57 +243,57 @@ public:
         }
         const auto covered = preview.pixels();
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "sliceIndex", 3));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kBlack));
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "visualization", "depth"));
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "viewDepth", 2.0));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() == covered);
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "viewDepth", 8.0));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kBlack));
         for (double depth : {0.0, 10.0}) {
             LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "viewDepth", depth));
-            if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+            if (!render()) { return RHITestResult::fail(preview.lastLog()); }
             LIGHT_DEBUG_CHECK(solidColor(preview, kBlack));
         }
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "visualization", "peak"));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() == covered);
 
         lighting.lights[0].position.z = -8.0f;
         LIGHT_DEBUG_CHECK(preview.setLighting(lighting));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() == covered);
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "visualization", "slice"));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() == covered);
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "sliceIndex", 255));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() == covered);
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "sliceIndex", 0));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kBlack));
 
         LIGHT_DEBUG_CHECK(graph.setNodeRuntimeProperty(node, "visualization", "peak"));
-        if (!preview.render(graph, 127, 73)) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!preview.render(graph, 127, 73)) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.width() == 127 && preview.height() == 73);
         LIGHT_DEBUG_CHECK(preview.pixels().size() == 127u * 73u);
         const auto litCount = std::ranges::count_if(preview.pixels(), [](uint32_t p) { return !pixelMatches(p, kBlack); });
         LIGHT_DEBUG_CHECK(litCount > 0 && static_cast<size_t>(litCount) < preview.pixels().size());
         LIGHT_DEBUG_CHECK(std::ranges::all_of(preview.pixels(), [](uint32_t p) { return (p >> 24u) == 255u; }));
         const auto resized = preview.pixels();
-        if (!preview.render(graph, 127, 73)) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!preview.render(graph, 127, 73)) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() == resized);
-        return RhiTestResult::pass("GPU tile coverage, explicit depth and Z slice, peak reduction, partial tiles and resize");
+        return RHITestResult::pass("GPU tile coverage, explicit depth and Z slice, peak reduction, partial tiles and resize");
     }
 };
 
-class LightGridDebugBenchTest final : public RhiTest {
+class LightGridDebugBenchTest final : public RHITest {
 public:
-    LightGridDebugBenchTest() { type = RhiTestType::Rendering; name = "render_graph_light_grid_debug_bench"; }
+    LightGridDebugBenchTest() { type = RHITestType::Rendering; name = "render_graph_light_grid_debug_bench"; }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
         const auto initialized = initializePreview(preview, context);
@@ -302,41 +302,41 @@ public:
         std::string log;
         LIGHT_DEBUG_CHECK(render::loadBuiltInRenderSample("light-grid-debug", sample, log));
         const auto render = [&]() { return preview.render(sample.graph, 640, 360); };
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         const auto reference = preview.pixels();
         LIGHT_DEBUG_CHECK(reference.size() == 640u * 360u);
         const std::set<uint32_t> colors(reference.begin(), reference.end());
         LIGHT_DEBUG_CHECK(colors.size() > 4);
         LIGHT_DEBUG_CHECK(saveRgba8Png(context.outputDirectory / "light_grid_debug_heatmap.png",
             reinterpret_cast<const uint8_t*>(reference.data()), 640, 360, log));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() == reference);
         // The bench owns its fixtures; unrelated editor/world lights must not leak into it.
         scene::LightingSettings lighting;
         lighting.lights.assign(20, debugPoint());
         LIGHT_DEBUG_CHECK(preview.setLighting(lighting));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() == reference);
 
         const uint32_t node = sample.graph.findNode("LightGridDebug")->id;
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "showCounts", true));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() != reference);
         LIGHT_DEBUG_CHECK(saveRgba8Png(context.outputDirectory / "light_grid_debug_counts.png",
             reinterpret_cast<const uint8_t*>(preview.pixels().data()), 640, 360, log));
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "showCounts", false));
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "spotFraction", 0.0));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         const auto pointsOnly = preview.pixels();
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "spotFraction", 1.0));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() != pointsOnly);
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "spotFraction", 0.25));
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "seed", 17));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() != reference);
         const auto seeded = preview.pixels();
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(preview.pixels() == seeded);
 
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "layout", "overlap"));
@@ -345,18 +345,18 @@ public:
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "showLegend", false));
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "showGrid", false));
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "showCounts", false));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(std::ranges::any_of(preview.pixels(), [](uint32_t p) { return pixelMatches(p, kOverflow); }));
         LIGHT_DEBUG_CHECK(saveRgba8Png(context.outputDirectory / "light_grid_debug_overflow.png",
             reinterpret_cast<const uint8_t*>(preview.pixels().data()), 640, 360, log));
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "lightCount", 0));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kBlack));
         // Switching back proves fixture creation/removal did not overwrite world lighting.
         LIGHT_DEBUG_CHECK(sample.graph.setNodeRuntimeProperty(node, "source", "world"));
-        if (!render()) { return RhiTestResult::fail(preview.lastLog()); }
+        if (!render()) { return RHITestResult::fail(preview.lastLog()); }
         LIGHT_DEBUG_CHECK(solidColor(preview, kOverflow));
-        return RhiTestResult::pass("Asset-free sample, deterministic GPU fixtures, seed changes, isolated bench and overflow image");
+        return RHITestResult::pass("Asset-free sample, deterministic GPU fixtures, seed changes, isolated bench and overflow image");
     }
 };
 
@@ -409,17 +409,17 @@ private:
     bool active_ = false;
 };
 
-class LightGridDebugReloadTest final : public RhiTest {
+class LightGridDebugReloadTest final : public RHITest {
 public:
-    LightGridDebugReloadTest() { type = RhiTestType::Rendering; name = "render_graph_light_grid_debug_reload"; }
+    LightGridDebugReloadTest() { type = RHITestType::Rendering; name = "render_graph_light_grid_debug_reload"; }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::unique_ptr<render::Device> device;
         const auto initialized = render::createDevice({.applicationName = "LightGrid debug reload test",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
         if (render::hasError(initialized, render::Error::Unsupported)) {
-            return RhiTestResult::skip("LightGrid debug reload requires bindless compute support");
+            return RHITestResult::skip("LightGrid debug reload requires bindless compute support");
         }
         LIGHT_DEBUG_CHECK(initialized);
         auto* queue = device->getQueue(render::QueueType::Graphics);
@@ -451,11 +451,11 @@ public:
         std::string log;
         auto result = executor.compile(*device, graph, kExtent, kExtent,
             {.enablePreviewOutputAccess = true}, log);
-        if (!result) { return RhiTestResult::fail("LightGrid reload graph compile: " + log); }
+        if (!result) { return RHITestResult::fail("LightGrid reload graph compile: " + log); }
         const auto* output = executor.outputResource("Debug.color");
         LIGHT_DEBUG_CHECK(output != nullptr && output->texture != nullptr);
         bool firstReadback = true;
-        const auto renderFrame = [&]() -> RhiTestResult {
+        const auto renderFrame = [&]() -> RHITestResult {
             LIGHT_DEBUG_CHECK(pool->reset());
             LIGHT_DEBUG_CHECK(commands->begin());
             // Exercise legacy, untracked recording as well as the tracked preview tests.
@@ -466,7 +466,7 @@ public:
                 .before = metallic::render::resourceSyncScope(firstReadback ? render::ResourceState::Undefined : render::ResourceState::TransferDestination, metallic::render::PipelineStageBits::AllCommands),
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             };
-            if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
             commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
                 .width = kExtent, .height = kExtent, .depth = 1});
             LIGHT_DEBUG_CHECK(commands->end());
@@ -481,12 +481,12 @@ public:
             readback->unmap();
             firstReadback = false;
             LIGHT_DEBUG_CHECK(std::ranges::all_of(pixels, [](uint32_t pixel) { return pixelMatches(pixel, kCyan); }));
-            return RhiTestResult::pass();
+            return RHITestResult::pass();
         };
         auto rendered = renderFrame();
         if (!rendered.passed) { return rendered; }
         result = executor.reloadShaders(log);
-        if (!result) { return RhiTestResult::fail("LightGrid successful reload: " + log); }
+        if (!result) { return RHITestResult::fail("LightGrid successful reload: " + log); }
         LIGHT_DEBUG_CHECK(executor.outputResource("Debug.color") == output);
         rendered = renderFrame();
         if (!rendered.passed) { return rendered; }
@@ -503,11 +503,11 @@ public:
         if (!rendered.passed) { return rendered; }
         LIGHT_DEBUG_CHECK(shaderFailure.restore());
         result = executor.reloadShaders(log);
-        if (!result) { return RhiTestResult::fail("LightGrid recovery reload: " + log); }
+        if (!result) { return RHITestResult::fail("LightGrid recovery reload: " + log); }
         rendered = renderFrame();
         if (!rendered.passed) { return rendered; }
         LIGHT_DEBUG_CHECK(pool->reset());
-        return RhiTestResult::pass("Raw recording, successful shader reload, failed-producer rollback and recovery preserve GPU pixels");
+        return RHITestResult::pass("Raw recording, successful shader reload, failed-producer rollback and recovery preserve GPU pixels");
     }
 };
 

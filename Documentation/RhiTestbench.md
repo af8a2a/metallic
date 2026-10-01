@@ -1,13 +1,13 @@
 # Metallic RHI Testbench 使用说明
 
-M1/M2/M3/M4 的执行入口已实现：在原 `MetallicRhiTests` 中增加声明式 requirements、设备配置、逐用例进程隔离、验证消息审查、完整产物检查和重放；M2 覆盖基础 RHI/Core/RenderGraph 和显式同步验证，M3 增加扩展的独立 reference/target 执行与父进程比较；M4 增加生产同步编码测试、可选有限 trace、合法 Buffer 序列和隔离缩减。旧 `--rhi-*` / GoogleTest 入口保持可用。设计背景见 [实现方案](RhiTestbenchPlan.md)。
+M1/M2/M3/M4 的执行入口已实现：在原 `MetallicRHITests` 中增加声明式 requirements、设备配置、逐用例进程隔离、验证消息审查、完整产物检查和重放；M2 覆盖基础 RHI/Core/RenderGraph 和显式同步验证，M3 增加扩展的独立 reference/target 执行与父进程比较；M4 增加生产同步编码测试、可选有限 trace、合法 Buffer 序列和隔离缩减。旧 `--rhi-*` / GoogleTest 入口保持可用。设计背景见 [实现方案](RhiTestbenchPlan.md)。
 
 ## 构建和首次运行
 
 复用已配置的 Windows x64 MSVC 构建树，先构建测试，再运行 CTest：
 
 ```powershell
-cmake --build build-pass-stages-nrd --target MetallicRhiTests Metallic --parallel 8
+cmake --build build-pass-stages-nrd --target MetallicRHITests Metallic --parallel 8
 ctest --test-dir build-pass-stages-nrd -R '^MetallicTestbench\.' --output-on-failure
 ```
 
@@ -28,12 +28,12 @@ ctest --test-dir build-pass-stages-nrd -R '^MetallicTestbench\.' --output-on-fai
 | `MetallicTestbench.Shrinker` | 显式注入 CPU oracle 故障；真实 GPU 执行、两次确认、缩减、最小序列重放 |
 | `MetallicTestbench.Trace` | 仅诊断构建注册；trace 开/关读回及图规划对照、溢出必须失败 |
 
-所有 GPU testbench 作业与当前目录中已有 rhi/editor CTest 使用 `MetallicGpu` 锁。外部手工启动的编辑器和其他项目不受 CTest 锁控制。Contract/Core 要求所有选择用例通过；Binding/Sync/Async 允许缺少声明能力或队列时显式 skip。参考 GPU 验收必须加 `--tb-require-all`，禁止将 skip 视为通过。Sync 自动包含 Async 的三个提交/query ring 回归。
+所有 GPU testbench 作业与当前目录中已有 rhi/editor CTest 使用 `MetallicGPU` 锁。外部手工启动的编辑器和其他项目不受 CTest 锁控制。Contract/Core 要求所有选择用例通过；Binding/Sync/Async 允许缺少声明能力或队列时显式 skip。参考 GPU 验收必须加 `--tb-require-all`，禁止将 skip 视为通过。Sync 自动包含 Async 的三个提交/query ring 回归。
 
 ## CLI
 
 ```powershell
-$test = '.\build-pass-stages-nrd\tests\MetallicRhiTests.exe'
+$test = '.\build-pass-stages-nrd\tests\MetallicRHITests.exe'
 & $test --tb-help
 & $test --tb-plan --tb-suite core
 & $test --tb-self-test
@@ -128,7 +128,7 @@ requirements 在运行用例前检查。profile 没有请求必要能力时为 S
 ## 重放
 
 ```powershell
-& $test --tb-replay .tmp/testbench/<run>/core/RhiCommand.buffer_copy_offset_readback/0
+& $test --tb-replay .tmp/testbench/<run>/core/RHICommand.buffer_copy_offset_readback/0
 ```
 
 恢复 case、profile、validation、seed 和 layerPath，并写入新的输出目录。可执行文件或 shader 输入指纹变化时拒绝；修复后用 `--tb-allow-version-mismatch` 明确允许新版本，原始输入保留在新 run.json 中供比较。不会使用原目录覆盖结果。
@@ -175,11 +175,11 @@ requirements 在运行用例前检查。profile 没有请求必要能力时为 S
 & $test --tb-plan --tb-suite extensions
 & $test --tb-run --tb-suite extensions --tb-layer-path C:/VulkanSDK/1.4.350.0/Bin
 # 参考机器：根据它应支持的范围填写 filter，skip 将导致非零退出。
-& $test --tb-run --tb-suite extensions --tb-filter '*-RhiRendering.opacity_micromap_ray_query' `
+& $test --tb-run --tb-suite extensions --tb-filter '*-RHIRendering.opacity_micromap_ray_query' `
     --tb-require-all --tb-layer-path C:/VulkanSDK/1.4.350.0/Bin
 # 可选 CTest 必测策略；这里只修改该构建树的新测试选项。
 cmake -S . -B build-pass-stages-nrd `
-    '-DMETALLIC_TESTBENCH_REQUIRED_EXTENSIONS=*-RhiRendering.opacity_micromap_ray_query'
+    '-DMETALLIC_TESTBENCH_REQUIRED_EXTENSIONS=*-RHIRendering.opacity_micromap_ray_query'
 ```
 
 上面的排除项仅适用于当前验证层环境：本机 1.4.350 被生产后端的 KHR OMM 版本检查禁用，后端要求至少 1.4.357。OMM reference 与 CPU bake 可以通过，但 target 为 SkipUnsupported，不能据此宣称 OMM GPU 路径已验证。安装兼容层后应将必测 filter 改为 `*`，重新执行 OMM pair；测试没有关闭 validation 绕过这个限制。
@@ -190,7 +190,7 @@ pair 不允许 `--tb-profile` 覆盖，防止两侧配置含义漂移。`--tb-re
 
 ### M3 本机验证记录（2026-09-27）
 
-已在 NVIDIA GeForce RTX 5070 Ti / 616.92、Release/MSVC、验证层 1.4.350 上构建 `MetallicRhiTests` 与 `Metallic`。全部 9 个 testbench CTest 作业通过；extensions 的 21 个 child 中 20 Pass、1 OMM target skip，9 个 comparison 中 8 Pass、1 OMM skip，全部 validation recorder 为零消息且无 overflow。必测策略排除上述 OMM pair 后 27 个执行/比较结果全部 Pass。
+已在 NVIDIA GeForce RTX 5070 Ti / 616.92、Release/MSVC、验证层 1.4.350 上构建 `MetallicRHITests` 与 `Metallic`。全部 9 个 testbench CTest 作业通过；extensions 的 21 个 child 中 20 Pass、1 OMM target skip，9 个 comparison 中 8 Pass、1 OMM skip，全部 validation recorder 为零消息且无 overflow。必测策略排除上述 OMM pair 后 27 个执行/比较结果全部 Pass。
 
 另外验证了 PTLAS target 单侧 replay（Pass，comparison 集合为空）、把不可用 OMM 设为 require-all（保留 reference Pass，整体退出 1），以及旧入口 14 个受影响用例（13 Pass、1 OMM skip）。编辑器 smoke 完成 recorded/submitted/presented frame；这只是启动与提交检查，不代表新做过长期视觉稳定性验收。
 
@@ -202,15 +202,15 @@ pair 不允许 `--tb-profile` 覆盖，防止两侧配置含义漂移。`--tb-re
 
 ```powershell
 cmake -S . -B build-pass-stages-nrd -DMETALLIC_RHI_DIAGNOSTICS=ON
-cmake --build build-pass-stages-nrd --target MetallicRhiTests Metallic --parallel 8
+cmake --build build-pass-stages-nrd --target MetallicRHITests Metallic --parallel 8
 ctest --test-dir build-pass-stages-nrd -R '^MetallicTestbench\.(Trace|Property|Shrinker|Contract)$' --output-on-failure
-& $test --tb-run --tb-suite async --tb-filter 'RhiRendering.frame_self_submit_two_slots*' `
+& $test --tb-run --tb-suite async --tb-filter 'RHIRendering.frame_self_submit_two_slots*' `
     --tb-validation sync --tb-trace --tb-require-all --tb-layer-path C:/VulkanSDK/1.4.350.0/Bin
 ```
 
 `METALLIC_RHI_DIAGNOSTICS` 是共享 runtime 的 PUBLIC 编译定义，编辑器和测试使用同一套后端。公共 RHI 对象布局不变。OFF 时观察 hook 内联为空，不在生产路径分配、加锁或增加等待；ON 但未安装 sink 时只检查观察指针。启用捕获会复制数据并在 recorder 内加锁，因此不用于性能结论。sink 按 Device 过滤，每个进程只允许一个会话，安装/卸载时调用线程必须静止。
 
-`trace.json` 的 schema 为 1，记录 CommandBuffer 录制代次、VulkanRhi/DGC helper 的实际 barrier 和最终 `vkQueueSubmit2` 的队列、commands、合并后的 semaphore waits/signals、stage/access/layout/range、返回码。句柄在回调内转换为本次捕获的逻辑 ID，退休后重用句柄会获得新 ID。默认最多 8192 个事件、8 MiB 序列化事件内容，单事件最多 1024 个 barrier/submit 元素；`--tb-trace-limit 1..8192` 可降低事件预算。溢出/捕获异常是 InfrastructureFailure；未编译时请求 trace 是 EnvironmentFailure，不能静默通过。输入和 replay 保留开关与预算。
+`trace.json` 的 schema 为 1，记录 CommandBuffer 录制代次、VulkanRHI/DGC helper 的实际 barrier 和最终 `vkQueueSubmit2` 的队列、commands、合并后的 semaphore waits/signals、stage/access/layout/range、返回码。句柄在回调内转换为本次捕获的逻辑 ID，退休后重用句柄会获得新 ID。默认最多 8192 个事件、8 MiB 序列化事件内容，单事件最多 1024 个 barrier/submit 元素；`--tb-trace-limit 1..8192` 可降低事件预算。溢出/捕获异常是 InfrastructureFailure；未编译时请求 trace 是 EnvironmentFailure，不能静默通过。输入和 replay 保留开关与预算。
 
 范围有明确边界：只观察这些 RHI 的同步与提交出口，不记录完整 draw/dispatch/bind、驱动内部工作或 SDK 直接发出的 native 命令。Buffer scope 当前编码为可合并的全局 `VkMemoryBarrier2`，相同 native layout 的图像也可能如此；trace 同时保存 requested range 与 actual global scope，不把它冒充原生逐 Buffer barrier。不同线程记录的事件顺序是 CPU 观察顺序，不是 GPU 执行时间线。
 
@@ -223,12 +223,12 @@ Trace 作业在同一 binary 下各运行 ON/OFF：Joined/Pipelined 图、Buffer
 ```powershell
 & $test --tb-run --tb-suite property --tb-validation sync --tb-seed 1592594996 `
     --tb-repeat 4 --tb-require-all --tb-layer-path C:/VulkanSDK/1.4.350.0/Bin
-& $test --tb-replay .tmp/testbench/<run>/core/RhiCommand.buffer_sequence/0
+& $test --tb-replay .tmp/testbench/<run>/core/RHICommand.buffer_sequence/0
 # 外部 concrete 文件先验证 schema/预算，再生成隔离执行计划。
 & $test --tb-run --tb-suite property --tb-validation sync --tb-sequence path/to/sequence.json `
     --tb-layer-path C:/VulkanSDK/1.4.350.0/Bin
 # 只接受已确认的 readback mismatch；路径是原失败 case 目录。
-& $test --tb-shrink .tmp/testbench/<run>/core/RhiCommand.buffer_sequence/0
+& $test --tb-shrink .tmp/testbench/<run>/core/RHICommand.buffer_sequence/0
 & $test --tb-replay .tmp/testbench/<shrink-run>/minimal
 ```
 
@@ -244,7 +244,7 @@ Trace 作业在同一 binary 下各运行 ON/OFF：Joined/Pipelined 图、Buffer
 
 ### M4 本机验证记录（2026-09-27）
 
-在上述 RTX 5070 Ti / 616.92 / validation 1.4.350 环境中完成诊断 OFF 和 ON 的 `MetallicRhiTests`、`Metallic` 构建。12 个 testbench CTest 作业通过；其中修复实际提交模式后的 Contract/Sync/Async/Property/Shrinker/Trace 6 个作业重新通过。8 个 trace A/B child 均 Pass、validation 零消息，实际 Pipelined/Joined 布尔值分别为 true/false；8192 事件正常捕获与 1 事件溢出失败均验证。
+在上述 RTX 5070 Ti / 616.92 / validation 1.4.350 环境中完成诊断 OFF 和 ON 的 `MetallicRHITests`、`Metallic` 构建。12 个 testbench CTest 作业通过；其中修复实际提交模式后的 Contract/Sync/Async/Property/Shrinker/Trace 6 个作业重新通过。8 个 trace A/B child 均 Pass、validation 零消息，实际 Pipelined/Joined 布尔值分别为 true/false；8192 事件正常捕获与 1 事件溢出失败均验证。
 
 注入的 49 条 Buffer 命令在 14 个隔离 child 内缩减为 1 条，报告逐条删除最小且预算未耗尽，最小输入再次重放相同故障。具体 sequence 文件导入的 seed 与计划一致，正常 replay 保留 trace，并与原例的 sequence/expected/readback 逐字节一致。DGC reference/target/comparison 带 trace 通过，实际 preprocess write→indirect read barrier 已被记录。
 
@@ -254,10 +254,10 @@ Trace 作业在同一 binary 下各运行 ON/OFF：Joined/Pipelined 图、Buffer
 
 ## 添加用例
 
-现有 `RhiTest` 默认无 metadata，仍走旧 runner。要迁移单个用例：
+现有 `RHITest` 默认无 metadata，仍走旧 runner。要迁移单个用例：
 
 1. 覆盖 `metadata()`，声明 suite、profile、责任层、requirements、timeout、coverage 和必须生成的 oracle 文件。
-2. 保留原有 name、type 和 `run(RhiTestContext&)`。通过 `context.evidence` 写原始结果；旧模式中它为空。
+2. 保留原有 name、type 和 `run(RHITestContext&)`。通过 `context.evidence` 写原始结果；旧模式中它为空。
 3. Device 由 harness 提供；迁移旧用例使用 `bench::createTestDevice`，必要的第二个 Device 明确指定 `additionalDevice=true`。不要在 run() 内另建未接 sink 的 Device。测试自己等待所提交工作的完成并安全释放本地对象；harness 的末尾 drain 不能修补测试内部提前释放资源。
 4. CPU-only 用例声明 `requiresDevice=false`、validation Off、空 queues，并实现 `runCpu(Evidence&)`；cleanup 用 `cleanupCpu()`。
 5. 用 `--tb-plan` 检查 requirements，再运行样板、对应旧过滤测试与 harness 自测。

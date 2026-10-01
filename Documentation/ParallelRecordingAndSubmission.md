@@ -36,10 +36,10 @@ Vulkan 要求同一个 command pool 的使用外部同步，包括其中 command
 | `RenderFrameContext.cpp:312` | 首次 submitSegment 成功后 frame 进入 Submitting | 现有类型不支持其他 worker 此后继续创建/绑定参数包 |
 | `ResourceRegistry.cpp:133,368` | packet 检查 frame.recording；upload 在 registry mutex 内分配、map/copy/flush/unmap | 保留共享 registry；参数分配迁入 lane 独占 arena，frame identity 与可变提交状态逐步分离 |
 | `ComputeProgram.cpp:171` 附近 | 兼容 descriptor tables/cache 仍有可变游标和容器 | PreparedExecution 不使整个 ComputeProgram 自动可重入 |
-| `NrdRuntime.cpp:349` 附近 | 录制时修改 scheduled/history/clearPending、纹理状态，并登记取消恢复 | 相同 NRD context 先保持串行；共享资源身份不等于 SDK 并发安全 |
-| `GAPI/Vulkan/VulkanRhi.cpp:8119` | 当前只分配 PRIMARY command buffer | 多个 primary 是最小扩展路径；secondary 需另建录制与继承契约 |
+| `NRDRuntime.cpp:349` 附近 | 录制时修改 scheduled/history/clearPending、纹理状态，并登记取消恢复 | 相同 NRD context 先保持串行；共享资源身份不等于 SDK 并发安全 |
+| `GAPI/Vulkan/VulkanRHI.cpp:8119` | 当前只分配 PRIMARY command buffer | 多个 primary 是最小扩展路径；secondary 需另建录制与继承契约 |
 | `Task/TaskSystem.cpp:676` | worker 内调用 TaskGraphRun::wait 被拒绝 | 用平坦任务图；不能在 pass worker 内创建子图后同步等待 |
-| `Profiling/CpuPhaseTrace.h:45` | active trace 是 thread_local，trace 内有可变 vector/depth | worker 本地采集后合并；直接共享主线程 trace 会有竞争 |
+| `Profiling/CPUPhaseTrace.h:45` | active trace 是 thread_local，trace 内有可变 vector/depth | worker 本地采集后合并；直接共享主线程 trace 会有竞争 |
 
 路径前缀除 Task 外均为 `Source/Runtime/Render/`；Task 为 `Source/Runtime/Task/`。
 
@@ -93,7 +93,7 @@ Recording lane 是可独占的上下文，不必绑定永久 OS thread。一个 
 建议新增独立 CPU 录制策略，默认串行。参考 UE 的寿命区分，目标接口分为三态；首版只启用 Serial / ParallelJoined，AsyncOwned 在后续拆分录制与提交状态后开放。以下只是形状示意，不要求把所有 pass 改成另一套类层次：
 
 ```cpp
-enum class CpuRecordingPolicy { Serial, ParallelJoined, AsyncOwned };
+enum class CPURecordingPolicy { Serial, ParallelJoined, AsyncOwned };
 
 // RenderGraph 内部：resource uses 直接引用已有 lease / slice / view 身份。
 struct PreparedRecordJob {
@@ -287,7 +287,7 @@ UE 5.7.4 源码对照还提供了另一候选：其 Vulkan dynamic rendering 并
 - [RenderFrameContext.h](E:/metallic/Source/Runtime/Render/Core/RenderFrameContext.h)：`CommandRecordingContext`、全帧录制完成检查。
 - [RenderFrameContext.cpp](E:/metallic/Source/Runtime/Render/Core/RenderFrameContext.cpp)：独占录制、重置与取消、本地资源保留。
 - [RenderGraphExecutor.cpp](E:/metallic/Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp)：协调线程准备、节点输入快照、工作量分批、TaskSystem 汇合和结果合并。
-- [VulkanRhi.cpp](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp)：原生命令录制完成发布及队列接受后的资源交接。
+- [VulkanRHI.cpp](E:/metallic/Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp)：原生命令录制完成发布及队列接受后的资源交接。
 
 ### 资源与事务寿命
 
@@ -299,7 +299,7 @@ UE 5.7.4 源码对照还提供了另一候选：其 Vulkan dynamic rendering 并
 
 ### Pass 契约和配置
 
-`CpuRecordingPolicy` 提供 `Serial` 和 `ParallelJoined`，默认 `Serial`，独立于 `supportsAsyncQueue()` 和 `supportsFrameOverlap()`。首批 opt-in 为 ClearColor、CopyColor、RenderGraphBufferWrite 和 RenderGraphBufferCopy。
+`CPURecordingPolicy` 提供 `Serial` 和 `ParallelJoined`，默认 `Serial`，独立于 `supportsAsyncQueue()` 和 `supportsFrameOverlap()`。首批 opt-in 为 ClearColor、CopyColor、RenderGraphBufferWrite 和 RenderGraphBufferCopy。
 
 `ParallelJoined` 的 execute 只能修改自己的私有状态和本地录制结果，读取已准备的输入；不能写帧列表、共享 scene/history/streamer 状态，也不能等待嵌套 TaskGraph。准备阶段不能依赖另一个并行节点 execute 后才产生的 CPU 数据。有场景准备资源、显式 subsystem 要求或首次外部 feature reservation 的节点仍走串行路径。GPUScene、streaming、NRD 和其他 SDK pass 尚未启用 CPU 并行。
 
@@ -316,7 +316,7 @@ UE 5.7.4 源码对照还提供了另一候选：其 Vulkan dynamic rendering 并
 
 ### 已运行的验证
 
-使用现有 `build-full` Debug / MSVC 配置构建 `Metallic`、`MetallicRhiTests`、`MetallicTaskTests`、`MetallicNrdTests`。新增 5 项 GPU 测试：
+使用现有 `build-full` Debug / MSVC 配置构建 `Metallic`、`MetallicRHITests`、`MetallicTaskTests`、`MetallicNRDTests`。新增 5 项 GPU 测试：
 
 - `parallel_recording_context_lifetime`：拒绝并发/重入所有权，拒绝整帧尚未录完时提交，取消尾部及时释放，接受前缀保留至完成，上下文可复用；未封口的已接受前缀在上下文析构前也必须完成。
 - `parallel_recording_workload_and_order`：用有超时的线程 rendezvous 证明 3 批实际同时执行；权重 `[3,1,2,2,1]`、目标 4 分成 3 批；串行/并行 GPU 结果一致，回调与逆序取消稳定，混合队列、串行节点边界和嵌套 TaskSystem 调用可用。
@@ -324,13 +324,13 @@ UE 5.7.4 源码对照还提供了另一候选：其 Vulkan dynamic rendering 并
 - `parallel_registry_packets`：4 个上下文同时共享一个 registry 和 ComputeKernel 编码/录制；Mapped、Native 两种 descriptor 模式均通过，提前销毁源 buffer wrapper 和 kernel 后 GPU 输出仍正确。
 - `parallel_recording_builtin_pixels`：实际 ClearColor/CopyColor pass 在串行与并行模式、graphics/copy 队列之间得到逐像素一致的红色和绿色输出。
 
-最终扩大回归执行 35 项，**34 项通过，1 项既有失败，无跳过项和 Vulkan 验证层消息**。失败为 `frame_self_submit_two_slots`，错误为 `independent copy branch was blocked by the graphics branch`；使用改动前、最后写入于 2026-09-24 的 `build-relwithdebinfo/tests/MetallicRhiTests.exe` 复现了相同失败。它对应第 10 节讨论的 graphics 计时 prologue 依赖，本次没有修改该 GPU 提交拓扑。不能将此结果称为整个 RHI 测试集全绿。
+最终扩大回归执行 35 项，**34 项通过，1 项既有失败，无跳过项和 Vulkan 验证层消息**。失败为 `frame_self_submit_two_slots`，错误为 `independent copy branch was blocked by the graphics branch`；使用改动前、最后写入于 2026-09-24 的 `build-relwithdebinfo/tests/MetallicRHITests.exe` 复现了相同失败。它对应第 10 节讨论的 graphics 计时 prologue 依赖，本次没有修改该 GPU 提交拓扑。不能将此结果称为整个 RHI 测试集全绿。
 
 扩大回归命令：
 
 ```powershell
-.\build-full\tests\MetallicRhiTests.exe --rhi-bindless --rhi-async-compute '--gtest_filter=*parallel_*:*registry_*:*frame_*:*submission*:*prepared_execution*:*buffer_slice*:*ordinary_data*:*synchronization*:*gpu_profiling*:*render_graph_buffer*' --gtest_color=no --output-dir build-full/rhi-parallel-output
-ctest --test-dir build-full -R '^Metallic(Task|Nrd)Tests$' --output-on-failure
+.\build-full\tests\MetallicRHITests.exe --rhi-bindless --rhi-async-compute '--gtest_filter=*parallel_*:*registry_*:*frame_*:*submission*:*prepared_execution*:*buffer_slice*:*ordinary_data*:*synchronization*:*gpu_profiling*:*render_graph_buffer*' --gtest_color=no --output-dir build-full/rhi-parallel-output
+ctest --test-dir build-full -R '^Metallic(Task|NRD)Tests$' --output-on-failure
 .\build-full\Source\Metallic.exe --smoke-test
 ```
 
@@ -368,7 +368,7 @@ VisibilityBufferMaterialPass 已拆为准备期捕获/验证 scene、rasterInfo�
 
 ### 验证与边界
 
-复用 `build-full` 的 MSVC Debug 配置，构建 Metallic、MetallicRhiTests、MetallicTaskTests、MetallicNrdTests。新增测试：
+复用 `build-full` 的 MSVC Debug 配置，构建 Metallic、MetallicRHITests、MetallicTaskTests、MetallicNRDTests。新增测试：
 
 - `parallel_preparation_join_failure_and_batching`：权重 `[3,1,2,2,1]`、目标 4 形成三批，带超时的会合证明三批同时运行；覆盖串行、失败、异常、嵌套回退与大目标合批。所有输出完成前不会发布，失败不提交。
 - `prepared_dispatch_parallel_snapshot_lifetime`：Mapped/Native 各自并行准备和录制同一 program；冻结 constants，保留 direct/indirect permutation，提前销毁 wrapper/program 后输出正确；GPU gate 保护寿命，下一代帧拒绝旧包，失败清空输出。
@@ -382,7 +382,7 @@ VisibilityBufferMaterialPass 已拆为准备期捕获/验证 scene、rasterInfo�
 
 ## 16. Batch seal、接收回执与按批流水提交
 
-本轮把录制窗口从 GPU 完成状态中拆出。帧 generation 的共享身份在整个录制/提交窗口内不变；`recording()` 读取独立原子状态，首批被接收不会关闭窗口。`GpuCompletionPoint` 的状态原子发布，读者只在 Submitted 后读取不可变 signals，避免 worker 检查旧参数包时读取 coordinator 正在扩展的队列完成列表。
+本轮把录制窗口从 GPU 完成状态中拆出。帧 generation 的共享身份在整个录制/提交窗口内不变；`recording()` 读取独立原子状态，首批被接收不会关闭窗口。`GPUCompletionPoint` 的状态原子发布，读者只在 Submitted 后读取不可变 signals，避免 worker 检查旧参数包时读取 coordinator 正在扩展的队列完成列表。
 
 | 接口 | 含义 | 不代表 |
 | --- | --- | --- |
@@ -420,11 +420,11 @@ worker Result 失败、异常或队列拒绝时停止接收新批次，先汇合
 - `pipelined_graph_gpu_progress_and_failure`：让后续 CPU 批次等待前批 copy 后的 GPU timestamp 可用，证明前批确实在整波录完前执行；覆盖失败、异常、混合队列、内联、显式 Joined 和未审计 pass 回退，并检查逐字 readback、回调线程和逆序取消。
 - `registry_pipelined_parameter_append`：Mapped/Native 两种参数 ABI，在前批等待及完成后继续追加包，检查地址不复用、旧包再次派发输出正确、关闭窗口后拒绝编码。
 
-最终复用 MSVC Debug `build-full`，构建 Metallic、MetallicRhiTests、MetallicTaskTests、MetallicNrdTests。相关 GPU 回归 47 项，46 通过、1 个已知基线失败，无跳过或 Vulkan 验证层错误；唯一失败仍为 `frame_self_submit_two_slots`，使用 2026-09-24 的 `build-relwithdebinfo/tests/MetallicRhiTests.exe` 再次复现相同的 copy 被 graphics 计时 prologue 阻塞问题。新流水测试、环境贴图部分提交恢复和原有 GPU fork/join 均通过。
+最终复用 MSVC Debug `build-full`，构建 Metallic、MetallicRHITests、MetallicTaskTests、MetallicNRDTests。相关 GPU 回归 47 项，46 通过、1 个已知基线失败，无跳过或 Vulkan 验证层错误；唯一失败仍为 `frame_self_submit_two_slots`，使用 2026-09-24 的 `build-relwithdebinfo/tests/MetallicRHITests.exe` 再次复现相同的 copy 被 graphics 计时 prologue 阻塞问题。新流水测试、环境贴图部分提交恢复和原有 GPU fork/join 均通过。
 
 ```powershell
-.\build-full\tests\MetallicRhiTests.exe --rhi-bindless --rhi-async-compute '--gtest_filter=*parallel_*:*pipelined*:*registry_*:*frame_*:*submission*:*prepared_*:*buffer_slice*:*ordinary_data*:*synchronization*:*gpu_profiling*:*render_graph_buffer*:*hybrid_*:*visibility_preparation*:*stream_metadata_vbuffer*:*visibility_buffer_material_edit_refresh*:*visibility_buffer_async_scene_handoff*' --gtest_color=no --output-dir build-full/rhi-pipeline-output
-ctest --test-dir build-full -R '^Metallic(Task|Nrd)Tests$' --output-on-failure
+.\build-full\tests\MetallicRHITests.exe --rhi-bindless --rhi-async-compute '--gtest_filter=*parallel_*:*pipelined*:*registry_*:*frame_*:*submission*:*prepared_*:*buffer_slice*:*ordinary_data*:*synchronization*:*gpu_profiling*:*render_graph_buffer*:*hybrid_*:*visibility_preparation*:*stream_metadata_vbuffer*:*visibility_buffer_material_edit_refresh*:*visibility_buffer_async_scene_handoff*' --gtest_color=no --output-dir build-full/rhi-pipeline-output
+ctest --test-dir build-full -R '^Metallic(Task|NRD)Tests$' --output-on-failure
 .\build-full\Source\Metallic.exe --smoke-test
 ```
 

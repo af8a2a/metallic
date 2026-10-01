@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
@@ -11,20 +11,20 @@
 namespace metallic::tests {
 namespace {
 
-class SlangShaderModuleTest : public RhiTest {
+class SlangShaderModuleTest : public RHITest {
 public:
     SlangShaderModuleTest()
     {
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
         name = "slang_shader_modules_and_vendor_interop";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::string invalidDiagnostics = "stale diagnostics";
         const auto invalid = render::compileSlangShaderToSpirv({}, invalidDiagnostics);
         if (!render::hasError(invalid, render::Error::InvalidArgument) || !invalidDiagnostics.empty()) {
-            return RhiTestResult::fail("invalid shader request did not return an error and clear stale diagnostics");
+            return RHITestResult::fail("invalid shader request did not return an error and clear stale diagnostics");
         }
         struct TrackingGuard {
             TrackingGuard()
@@ -74,7 +74,7 @@ public:
                 "RWStructuredBuffer<uint> outputBuffer;\n"
                 "[shader(\"compute\")] [numthreads(1, 1, 1)]\n"
                 "void main() { outputBuffer[0] = leftValue() + rightValue(); }\n")) {
-            return RhiTestResult::fail("could not create shader module fixtures");
+            return RHITestResult::fail("could not create shader module fixtures");
         }
 
         const std::string sourceRoot = root.string();
@@ -91,20 +91,20 @@ public:
         };
         render::ShaderCompileResult first;
         if (!render::compileSlangShaderToSpirv(desc, cache, first.diagnostics).transform([&](auto value) { first = std::move(value); })) {
-            return RhiTestResult::fail(first.diagnostics);
+            return RHITestResult::fail(first.diagnostics);
         }
         for (const char* dependency : {"Modules/ModuleMath.slang", "Modules/Math/Value.slang",
                  "Modules/ModuleLeft.slang", "Modules/ModuleRight.slang",
                  "Interop/VendorAdapter.slang", "Interop/Vendor/Value.hlsli", "Program.slang"}) {
             const std::string path = (root / dependency).lexically_normal().generic_string();
             if (std::count(first.dependencies.begin(), first.dependencies.end(), path) != 1) {
-                return RhiTestResult::fail("missing or duplicate transitive dependency: " + path);
+                return RHITestResult::fail("missing or duplicate transitive dependency: " + path);
             }
         }
         render::ShaderCompileResult cached;
         if (!render::compileSlangShaderToSpirv(desc, cache, cached.diagnostics).transform([&](auto value) { cached = std::move(value); }) || !cacheHit ||
             first.spirv != cached.spirv || first.dependencies != cached.dependencies) {
-            return RhiTestResult::fail("module dependency cache did not round trip");
+            return RHITestResult::fail("module dependency cache did not round trip");
         }
         for (const auto& [file, source] : {
                  std::pair{"Modules/Math/Value.slang",
@@ -112,16 +112,16 @@ public:
                  std::pair{"Interop/Vendor/Value.hlsli",
                      "uint vendorValue() { return VENDOR_SCALE * 11u; }\n"}}) {
             if (!write(file, source)) {
-                return RhiTestResult::fail("could not edit module dependency");
+                return RHITestResult::fail("could not edit module dependency");
             }
             const auto changes = render::pollSlangShaderChanges(0, 0);
             if (changes != std::vector<std::string>{(root / file).lexically_normal().generic_string()}) {
-                return RhiTestResult::fail("module or vendor edit was not tracked precisely");
+                return RHITestResult::fail("module or vendor edit was not tracked precisely");
             }
             render::ShaderCompileResult changed;
             if (!render::compileSlangShaderToSpirv(desc, cache, changed.diagnostics).transform([&](auto value) { changed = std::move(value); }) || cacheHit ||
                 changed.spirv == cached.spirv) {
-                return RhiTestResult::fail("module or vendor edit reused stale IR/SPIR-V: " + changed.diagnostics);
+                return RHITestResult::fail("module or vendor edit reused stale IR/SPIR-V: " + changed.diagnostics);
             }
             cached = std::move(changed);
             render::acknowledgeSlangShaderChanges();
@@ -135,26 +135,26 @@ public:
         render::ShaderCompileResult variant;
         if (!render::compileSlangShaderToSpirv(variantDesc, cache, variant.diagnostics).transform([&](auto value) { variant = std::move(value); }) ||
             variant.spirv == cached.spirv) {
-            return RhiTestResult::fail("SDK macro variant reused the wrong module: " + variant.diagnostics);
+            return RHITestResult::fail("SDK macro variant reused the wrong module: " + variant.diagnostics);
         }
         render::ShaderCompileResult variantCached;
         if (!render::compileSlangShaderToSpirv(variantDesc, cache, variantCached.diagnostics).transform([&](auto value) { variantCached = std::move(value); }) || !cacheHit ||
             variantCached.spirv != variant.spirv) {
-            return RhiTestResult::fail("SDK macro variant did not retain its own cache entry");
+            return RHITestResult::fail("SDK macro variant did not retain its own cache entry");
         }
         if (!write("Program.slang",
                 "import Core;\nusing Metallic;\nRWStructuredBuffer<float3> outputBuffer;\n"
                 "[shader(\"compute\")] [numthreads(1, 1, 1)]\n"
                 "void main() { outputBuffer[0] = decodeSceneOctahedron(float2(0)); }\n")) {
-            return RhiTestResult::fail("could not write access control probe");
+            return RHITestResult::fail("could not write access control probe");
         }
         std::string diagnostics;
         const auto inaccessible = render::compileSlangShaderToSpirv(desc, cache, diagnostics);
         if (!render::hasError(inaccessible, render::Error::Failure) ||
             diagnostics.find("not accessible") == std::string::npos) {
-            return RhiTestResult::fail("Core implementation detail escaped its module boundary");
+            return RHITestResult::fail("Core implementation detail escaped its module boundary");
         }
-        return RhiTestResult::pass("validated module ownership, visibility, SDK macro isolation, cache and hot reload");
+        return RHITestResult::pass("validated module ownership, visibility, SDK macro isolation, cache and hot reload");
     }
 };
 

@@ -19,11 +19,11 @@ bool isComparisonSource(TextureHandle source, uint32_t width, uint32_t height)
     }
     // Both inputs must contain color in the same space, at the same pixel resolution.
     switch (source.desc().format) {
-    case Format::Rgba8Unorm:
-    case Format::Bgra8Unorm:
-    case Format::Rgba16Sfloat:
-    case Format::Rgba32Sfloat:
-    case Format::Rg32Sfloat:
+    case Format::RGBA8Unorm:
+    case Format::BGRA8Unorm:
+    case Format::RGBA16Sfloat:
+    case Format::RGBA32Sfloat:
+    case Format::RG32Sfloat:
     case Format::R32Sfloat:
     case Format::B10G11R11UfloatPack32:
         return true;
@@ -43,7 +43,7 @@ public:
         reflection.addTextureInput("sourceA", "A: left / top; same extent and color space as B").sampledRead();
         reflection.addTextureInput("sourceB", "B: right / bottom; same extent and color space as A").sampledRead();
         reflection.addTextureOutput("color", "Pixel-aligned comparison; preserves HDR and alpha")
-            .storageWrite().format = Format::Rgba32Sfloat;
+            .storageWrite().format = Format::RGBA32Sfloat;
         return reflection;
     }
 

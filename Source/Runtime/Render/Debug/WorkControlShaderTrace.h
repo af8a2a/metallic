@@ -35,7 +35,7 @@ private:
     debug::DebugValue graph_, sites_, request_, evidence_;
     debug::DebugEvidenceStamp execution_;
     std::shared_ptr<Lease> lease_;
-    GpuCompletionPoint completion_;
+    GPUCompletionPoint completion_;
     std::filesystem::path output_;
     std::string job_, phase_;
     std::optional<std::string> previousSettings_;

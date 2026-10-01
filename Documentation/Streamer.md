@@ -6,7 +6,7 @@
 - `StreamingUploads`、`UploadStreamer`：按提交帧管理上传环、传输与完成状态。
 - `MeshletStreamRuntime`：按视图分配的流式会话，包含页表、GPU 反馈、LOD 遍历及活动 cluster。
 - `MeshletStreamResidency`、`MeshletStreamPageLoader`：预算内驻留、异步页面读取、上传与回收。
-- `MeshletStreamClas`、`MeshletStreamCompactClasPool`：驻留页面的 CLAS 和压缩池。
+- `MeshletStreamCLAS`、`MeshletStreamCompactCLASPool`：驻留页面的 CLAS 和压缩池。
 
 VisibilityBuffer 和保留的 StreamAsset 诊断 Pass 通过 `acquireStream()` 借用会话。子系统拥有会话；提交帧保留强引用以保护 GPU 使用中的资源。借用结束且提交帧释放引用后，子系统回收会话。不同视图使用独立遍历反馈；GPUScene 继续负责稳定的场景身份和绘制索引。应用关机仍须先等待 GPU 完成。
 
@@ -24,7 +24,7 @@ VisibilityBuffer 和保留的 StreamAsset 诊断 Pass 通过 `acquireStream()` �
 
 2026-09-14 验证（RTX 5060 8 GiB，RelWithDebInfo，NRD 开启）：
 
-- `MetallicRhiTests --rhi-no-validation --gtest_filter="*streamer*:*streaming_task_queue*:*meshlet_stream_page_load*:*gpu_scene*:*material_binning*:*stream_metadata*:*scene_upload_pipeline:*render_graph_sample*:*gpu_driven_sponza_culling_equivalence"`：39 项通过。
+- `MetallicRHITests --rhi-no-validation --gtest_filter="*streamer*:*streaming_task_queue*:*meshlet_stream_page_load*:*gpu_scene*:*material_binning*:*stream_metadata*:*scene_upload_pipeline:*render_graph_sample*:*gpu_driven_sponza_culling_equivalence"`：39 项通过。
 - `METALLIC_TEST_MINIZORAH=1`、`--rhi-realtime --rhi-async-compute --rhi-no-validation`：`streamed_realtime_pipeline`、`minizorah_realtime_pipeline`、`gpu_driven_sponza_realtime_pipeline` 的断言通过。MiniZorah 运行 180 帧并测试相机、resize 和释放；常驻顶点/索引资源为空。
 - `METALLIC_SMOKE_TEST_FRAMES=120`、`MetallicGPUDrivenSample --smoke-test`：默认窗口完成 120 帧，退出码 0。日志位于 `.cache/gpu-driven-unify/SampleFinalSmoke.log`。
 - 离屏 DLSS 测试仍在 Streamline 关闭时出现 SDK 异常，进程退出码 1；不能将该进程视为完整通过。Vulkan 验证层仍会在描述符堆范围检查中报告异常。原始日志保留于 `.cache/gpu-driven-unify/FinalRealtime.log` 和 `FirstTests.log`。

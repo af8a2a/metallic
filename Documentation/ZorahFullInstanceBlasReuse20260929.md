@@ -44,14 +44,14 @@ CLAS 页表增加 32 位发布代际，legacy 和 compact pool 均写入；退�
 
 Release sample 和 RHI tests 构建成功。开启 Vulkan validation，以下 8 项全部通过（78.3 秒），日志无 Validation Error、VUID 或 DeviceLost：
 
-- `RhiRendering.stream_blas_selected_allocation`：生产 shader 入口，137 个实例、多扫描块/尾块、稀疏 mask、精确容量、地址进位、区间不重叠、容量拒绝。连续 GPU 帧验证静止复用、无关发布/变换、单页代际变化、其他实例导致的区间位移、单实例增长、存储重排/不足、取消重置和重新发布。
-- `RhiRendering.stream_blas_cut_cache`：实际 runtime/CLAS，退休当前 cut 引用的非 root 页面后正确失效。原测试退休任意页面并期待全局失效的假设已移除。
-- `RhiResource.clas_actual_sizes_and_move`。
-- `RhiResource.clas_compact_lifecycle`：同时修正测试硬编码的 4 字节页表 stride。
-- `RhiRendering.minizorah_clas_in_flight`。
-- `RhiRendering.stream_clas_runtime_lifecycle`。
-- `RhiRendering.stream_clas_eviction_reupload`。
-- `RhiRendering.zorah_full_first_frame`：MiniZorah→Full、完整准备、后续渲染和材质覆盖检查。
+- `RHIRendering.stream_blas_selected_allocation`：生产 shader 入口，137 个实例、多扫描块/尾块、稀疏 mask、精确容量、地址进位、区间不重叠、容量拒绝。连续 GPU 帧验证静止复用、无关发布/变换、单页代际变化、其他实例导致的区间位移、单实例增长、存储重排/不足、取消重置和重新发布。
+- `RHIRendering.stream_blas_cut_cache`：实际 runtime/CLAS，退休当前 cut 引用的非 root 页面后正确失效。原测试退休任意页面并期待全局失效的假设已移除。
+- `RHIResource.clas_actual_sizes_and_move`。
+- `RHIResource.clas_compact_lifecycle`：同时修正测试硬编码的 4 字节页表 stride。
+- `RHIRendering.minizorah_clas_in_flight`。
+- `RHIRendering.stream_clas_runtime_lifecycle`。
+- `RHIRendering.stream_clas_eviction_reupload`。
+- `RHIRendering.zorah_full_first_frame`：MiniZorah→Full、完整准备、后续渲染和材质覆盖检查。
 
 已查看 Full settled/base-color 图，建筑、人物、植被及材质覆盖正常，保留既有单样本噪声。此图为 960×540 原生、DLSS 关闭的回归，不能代替编辑器 DLSS 漫游逐像素对照或长期稳定性验证。合成分配测试验证输入/地址和边界；真实 AS 构建由其他 runtime/场景测试覆盖。
 

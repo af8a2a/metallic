@@ -10,7 +10,7 @@ inline Json graphScope(render::SyncScope scope)
     return {{"stages", uint64_t(scope.stages)}, {"access", uint64_t(scope.access)}};
 }
 // Snapshot of the first submitted frame; excludes observation timing/completion polling.
-inline std::string graphEvidence(RhiTestContext& context, render::RenderGraphExecutor& executor,
+inline std::string graphEvidence(RHITestContext& context, render::RenderGraphExecutor& executor,
     const render::RenderGraphExecutionSnapshot& snapshot)
 {
     if (!context.evidence) { return {}; }

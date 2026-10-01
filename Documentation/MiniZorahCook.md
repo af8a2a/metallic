@@ -67,7 +67,7 @@ python Tools/VerifyMiniZorahCook.py --source Asset/MiniZorah/zorah_main_public.v
 在 `build-relwithdebinfo/minizorah-m1` 独立工作目录运行，避免复用旧任务拥有的根目录测试输出：
 
 ```powershell
-../tests/MetallicSceneTests.exe --gtest_filter=SceneImport.MeshletLod*:SceneImport.MeshletStream*:SceneImport.MeshoptCompressedMeshletStreamAsset
+../tests/MetallicSceneTests.exe --gtest_filter=SceneImport.MeshletLOD*:SceneImport.MeshletStream*:SceneImport.MeshoptCompressedMeshletStreamAsset
 ../tests/MetallicSceneTests.exe --gtest_filter=SceneImport.MeshletPersistence
 ```
 

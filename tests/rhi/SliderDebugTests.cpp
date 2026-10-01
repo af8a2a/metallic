@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -25,7 +25,7 @@ public:
                 .storageReadWrite();
         } else {
             auto& color = reflection.addTextureOutput("color").storageReadWrite();
-            color.format = properties().value("integer", false) ? render::Format::R32Uint : render::Format::Rgba32Sfloat;
+            color.format = properties().value("integer", false) ? render::Format::R32Uint : render::Format::RGBA32Sfloat;
             if (properties().value("wrongExtent", false)) { color.texture2D(7, 5); }
         }
         return reflection;
@@ -73,18 +73,18 @@ private:
     render::ComputeProgram program_;
 };
 
-class SliderDebugPixelsTest final : public RhiTest {
+class SliderDebugPixelsTest final : public RHITest {
 public:
-    SliderDebugPixelsTest() { type = RhiTestType::Rendering; name = "slider_debug_hdr_pixels"; }
-    RhiTestResult run(RhiTestContext& context) override
+    SliderDebugPixelsTest() { type = RHITestType::Rendering; name = "slider_debug_hdr_pixels"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::registerRenderGraphPassType("SliderFixture", "Test color", [] { return std::make_unique<SliderFixturePass>(); });
         render::registerRenderGraphPassType("SliderReadback", "Read pixels", [] { return std::make_unique<SliderFixturePass>(true); });
         std::unique_ptr<render::Device> device;
         const auto initialized = render::createDevice({.applicationName = "SliderDebug GPU test",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires bindless descriptors"); }
-        if (!initialized) { return RhiTestResult::fail("Device initialization failed"); }
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires bindless descriptors"); }
+        if (!initialized) { return RHITestResult::fail("Device initialization failed"); }
         render::RenderGraph graph;
         graph.addNode("SliderFixture", "A");
         graph.addNode("SliderFixture", "B", {{"path", 1}});
@@ -96,27 +96,27 @@ public:
         graph.markOutput("Readback.pixels");
         auto pass = render::createRenderGraphPass("SliderDebugPass");
         for (const auto& setting : pass->runtimeSettings()) {
-            if (setting.invalidateHistory || setting.rebuildGraph) { return RhiTestResult::fail("Slider must preserve producer histories"); }
+            if (setting.invalidateHistory || setting.rebuildGraph) { return RHITestResult::fail("Slider must preserve producer histories"); }
         }
         render::RenderGraphExecutor executor;
         std::string log;
         for (const auto extent : {std::array<uint32_t, 2>{63, 37}, {17, 9}, {1, 1}}) {
             const auto [width, height] = extent;
-            if (!executor.compile(*device, graph, width, height, log)) { return RhiTestResult::fail(log); }
+            if (!executor.compile(*device, graph, width, height, log)) { return RHITestResult::fail(log); }
             graph.clearDirty();
             for (bool horizontal : {false, true}) {
                 for (bool swap : {false, true}) {
                     for (float split : {-1.0f, 0.0f, 0.25f, 0.5f, 0.73f, 1.0f, 2.0f}) {
                         graph.setNodeRuntimeProperties(slider, {{"splitPosition", split},
                             {"orientation", horizontal ? "horizontal" : "vertical"}, {"swapSides", swap}});
-                        if (graph.dirty()) { return RhiTestResult::fail("Slider change rebuilt the graph"); }
+                        if (graph.dirty()) { return RHITestResult::fail("Slider change rebuilt the graph"); }
                         executor.syncRuntimeProperties(graph);
                         if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
-                            !executor.waitForSubmittedWork()) { return RhiTestResult::fail("Slider dispatch failed"); }
+                            !executor.waitForSubmittedWork()) { return RHITestResult::fail("Slider dispatch failed"); }
                         auto* buffer = executor.outputResource("Readback.pixels")->buffer;
                         buffer->invalidate();
                         const auto* mapped = static_cast<const std::array<float, 4>*>(buffer->map());
-                        if (mapped == nullptr) { return RhiTestResult::fail("Readback mapping failed"); }
+                        if (mapped == nullptr) { return RHITestResult::fail("Readback mapping failed"); }
                         bool matches = true;
                         for (uint32_t y = 0; y < height; ++y) {
                             for (uint32_t x = 0; x < width; ++x) {
@@ -128,66 +128,66 @@ public:
                             }
                         }
                         buffer->unmap();
-                        if (!matches) { return RhiTestResult::fail("Split, pixel alignment, HDR or alpha mismatch"); }
+                        if (!matches) { return RHITestResult::fail("Split, pixel alignment, HDR or alpha mismatch"); }
                     }
                 }
             }
         }
         graph.setNodeProperties(graph.findNode("B")->id, {{"integer", true}});
-        if (!executor.compile(*device, graph, 17, 9, log)) { return RhiTestResult::fail(log); }
+        if (!executor.compile(*device, graph, 17, 9, log)) { return RHITestResult::fail(log); }
         if (executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)})) {
-            return RhiTestResult::fail("Integer comparison input was accepted");
+            return RHITestResult::fail("Integer comparison input was accepted");
         }
-        if (!executor.waitForSubmittedWork()) { return RhiTestResult::fail("Failed-input cleanup failed"); }
+        if (!executor.waitForSubmittedWork()) { return RHITestResult::fail("Failed-input cleanup failed"); }
         graph.setNodeProperties(graph.findNode("B")->id, {{"wrongExtent", true}});
-        if (executor.compile(*device, graph, 17, 9, log)) { return RhiTestResult::fail("Mismatched extents were accepted"); }
+        if (executor.compile(*device, graph, 17, 9, log)) { return RHITestResult::fail("Mismatched extents were accepted"); }
         graph.removeNode(graph.findNode("B")->id);
-        if (executor.compile(*device, graph, 17, 9, log)) { return RhiTestResult::fail("Missing required B input was accepted"); }
-        return RhiTestResult::pass("Exact float4 comparison, both axes, swap, endpoints, runtime changes, resize and invalid inputs");
+        if (executor.compile(*device, graph, 17, 9, log)) { return RHITestResult::fail("Missing required B input was accepted"); }
+        return RHITestResult::pass("Exact float4 comparison, both axes, swap, endpoints, runtime changes, resize and invalid inputs");
     }
 };
 
-class SliderDebugLookDevTest final : public RhiTest {
+class SliderDebugLookDevTest final : public RHITest {
 public:
-    SliderDebugLookDevTest() { type = RhiTestType::Rendering; name = "slider_debug_lookdev_capture"; }
-    RhiTestResult run(RhiTestContext& context) override
+    SliderDebugLookDevTest() { type = RHITestType::Rendering; name = "slider_debug_lookdev_capture"; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderSampleLoadResult sample;
         std::string log;
-        if (!render::loadBuiltInRenderSample("lookdev-shading-compare", sample, log)) { return RhiTestResult::fail(log); }
+        if (!render::loadBuiltInRenderSample("lookdev-shading-compare", sample, log)) { return RHITestResult::fail(log); }
         const auto& a = sample.graph.findNode("OpenPBR")->properties;
         const auto& b = sample.graph.findNode("Standard")->properties;
         for (const char* key : {"path", "camera", "cameraSyncGroup", "samples", "maxDepth", "outputLinear", "accumulate"}) {
-            if (a.at(key) != b.at(key)) { return RhiTestResult::fail(std::string("Comparison differs in ") + key); }
+            if (a.at(key) != b.at(key)) { return RHITestResult::fail(std::string("Comparison differs in ") + key); }
         }
-        if (a.at("bsdf") != "openpbr" || b.at("bsdf") != "standard") { return RhiTestResult::fail("Wrong comparison BSDFs"); }
+        if (a.at("bsdf") != "openpbr" || b.at("bsdf") != "standard") { return RHITestResult::fail("Wrong comparison BSDFs"); }
         scene::SceneDocument document;
         if (!document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) {
-            return RhiTestResult::fail(document.lastLoadResult().error);
+            return RHITestResult::fail(document.lastLoadResult().error);
         }
-        if (document.lighting().autoExposure.enabled) { return RhiTestResult::fail("Comparison needs fixed exposure"); }
+        if (document.lighting().autoExposure.enabled) { return RHITestResult::fail("Comparison needs fixed exposure"); }
         render::RenderGraphPreviewRenderer preview;
         preview.bindRuntimeScene(&document);
         preview.setEnvironment(document.environment());
         preview.setLighting(document.lighting());
         const auto initialized = preview.initialize(context.enableValidation, true);
-        if (render::hasError(initialized, render::Error::Unsupported)) { return RhiTestResult::skip("Requires ray queries"); }
-        if (!initialized) { return RhiTestResult::fail("Preview initialization failed"); }
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires ray queries"); }
+        if (!initialized) { return RHITestResult::fail("Preview initialization failed"); }
         constexpr uint32_t kSize = 768;
         for (uint32_t frame = 0; frame < 256; ++frame) {
-            if (!preview.render(sample.graph, kSize, kSize)) { return RhiTestResult::fail(preview.lastLog()); }
+            if (!preview.render(sample.graph, kSize, kSize)) { return RHITestResult::fail(preview.lastLog()); }
         }
         const auto output = context.outputDirectory / "LookDevShadingComparison.png";
         if (!saveRgba8Png(output, reinterpret_cast<const uint8_t*>(preview.pixels().data()), kSize, kSize, log)) {
-            return RhiTestResult::fail(log);
+            return RHITestResult::fail(log);
         }
         // Scene overrides must reach both paths when testing a different material asset.
         if (!render::setRenderSampleScenePath(sample, "Asset/meet_mat.glb", log) ||
             sample.graph.findNode("OpenPBR")->properties["path"] != "Asset/meet_mat.glb" ||
             sample.graph.findNode("Standard")->properties["path"] != "Asset/meet_mat.glb") {
-            return RhiTestResult::fail("Scene override did not reach both paths: " + log);
+            return RHITestResult::fail("Scene override did not reach both paths: " + log);
         }
-        return RhiTestResult::pass("1024 spp A/B capture: " + output.string());
+        return RHITestResult::pass("1024 spp A/B capture: " + output.string());
     }
 };
 

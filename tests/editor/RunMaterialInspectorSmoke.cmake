@@ -4,7 +4,7 @@ endif()
 
 file(MAKE_DIRECTORY "${TEST_DIRECTORY}/scene")
 set(scene_directory "${TEST_DIRECTORY}/scene")
-set(source_scene_directory "${SOURCE_DIRECTORY}/Asset/LookDev/OpenPbrDefault")
+set(source_scene_directory "${SOURCE_DIRECTORY}/Asset/LookDev/OpenPBRDefault")
 # Save/reload exercises an isolated document; source-controlled LookDev assets
 # and the user's material sidecars must never be modified by this smoke test.
 file(READ "${source_scene_directory}/OpenPbrDefault.gltf" scene_json)

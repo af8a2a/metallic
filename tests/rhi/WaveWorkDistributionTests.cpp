@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 #include <algorithm>
@@ -10,21 +10,21 @@ namespace metallic::tests {
 namespace {
 
 #define WAVE_WORK_REQUIRE(expr) do { const auto result = (expr); if (!result) { \
-    return RhiTestResult::fail(std::string(#expr) + ": " + toString(result)); } } while (false)
+    return RHITestResult::fail(std::string(#expr) + ": " + toString(result)); } } while (false)
 
-class WaveWorkDistributionTest final : public RhiTest {
+class WaveWorkDistributionTest final : public RHITest {
 public:
-    WaveWorkDistributionTest() { type = RhiTestType::Rendering; name = "stream_wave_work_distribution"; }
-    RhiTestResult run(RhiTestContext& context) override
+    WaveWorkDistributionTest() { type = RHITestType::Rendering; name = "stream_wave_work_distribution"; }
+    RHITestResult run(RHITestContext& context) override
     {
         using namespace render;
         std::unique_ptr<Device> device;
         const auto created = createDevice({.applicationName = "Wave work distribution",
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("Requires bindless compute"); }
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless compute"); }
         WAVE_WORK_REQUIRE(created);
         if (!device->capabilities().computeSubgroupBallotArithmetic) {
-            return RhiTestResult::skip("Requires compute ballot and arithmetic");
+            return RHITestResult::skip("Requires compute ballot and arithmetic");
         }
         constexpr uint32_t groupCount = 48, threadCount = groupCount * 128, poison = 0xa5a5a5a5u;
         using Record = std::array<uint32_t, 4>;
@@ -58,14 +58,14 @@ public:
             WAVE_WORK_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
             WAVE_WORK_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
             void* mapped = buffers[i]->map();
-            if (!mapped) { return RhiTestResult::fail("Cannot map wave work input"); }
+            if (!mapped) { return RHITestResult::fail("Cannot map wave work input"); }
             std::memcpy(mapped, data[i], sizes[i]);
             buffers[i]->flush(); buffers[i]->unmap();
         }
         ShaderCompileResult compiled;
         const auto compilation = compileSlangShaderToSpirv({.moduleName = "WaveWorkProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
-        if (!compilation) { return RhiTestResult::fail(compiled.diagnostics); }
+        if (!compilation) { return RHITestResult::fail(compiled.diagnostics); }
         std::unique_ptr<ShaderModule> shader;
         WAVE_WORK_REQUIRE(device->createShaderModule({
             .spirv = compiled.spirv,
@@ -88,8 +88,8 @@ public:
         const BufferBarrierDesc barriers[] = {
             {.buffer = buffers[0].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}},
             {.buffer = buffers[1].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}}};
-        if (auto commandResult = commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RhiTestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         const uint32_t push[] = {handles[0].shaderIndex, handles[1].shaderIndex};
         commands->pushBindlessData(push, sizeof(push)); commands->dispatch(groupCount);
         WAVE_WORK_REQUIRE(commands->end());
@@ -98,7 +98,7 @@ public:
         WAVE_WORK_REQUIRE(fence->wait());
         buffers[1]->invalidate();
         const auto* mapped = buffers[1]->map();
-        if (!mapped) { return RhiTestResult::fail("Cannot read wave work output"); }
+        if (!mapped) { return RHITestResult::fail("Cannot read wave work output"); }
         std::memcpy(records.data(), mapped, sizes[1]); buffers[1]->unmap();
         // Recover actual subgroup membership from the shader. No assumption
         // about the mapping from workgroup IDs to subgroup IDs or lane order.
@@ -106,7 +106,7 @@ public:
         for (uint32_t i = 0; i < threadCount; ++i) {
             const auto& header = records[i * 65u];
             if (header[0] >= 128 || header[1] >= threadCount || header[2] != counts[i]) {
-                return RhiTestResult::fail("Invalid wave membership/header");
+                return RHITestResult::fail("Invalid wave membership/header");
             }
             waves[header[1]].push_back(i);
         }
@@ -120,13 +120,13 @@ public:
             uint32_t prefix = 0, lane = 0;
             for (uint32_t owner : members) {
                 if (records[owner * 65u][0] != lane || records[owner * 65u][3] != total) {
-                    return RhiTestResult::fail("Wave lane/total mismatch");
+                    return RHITestResult::fail("Wave lane/total mismatch");
                 }
                 for (uint32_t item = 0; item < 64; ++item) {
                     const Record expected = item < counts[owner] ? Record{prefix + item, owner, item, lane} :
                         Record{poison, poison, poison, poison};
                     if (records[owner * 65u + 1u + item] != expected) {
-                        return RhiTestResult::fail("Missing, duplicated, reordered or out-of-bounds wave work");
+                        return RHITestResult::fail("Missing, duplicated, reordered or out-of-bounds wave work");
                     }
                 }
                 prefix += counts[owner];
@@ -134,7 +134,7 @@ public:
             }
             expanded += total;
         }
-        return RhiTestResult::pass(std::to_string(waves.size()) + " waves / " + std::to_string(expanded) +
+        return RHITestResult::pass(std::to_string(waves.size()) + " waves / " + std::to_string(expanded) +
             " items match serial expansion; empty, sparse, dense, multi-batch, partial tail and multiple waves/workgroup");
     }
 };

@@ -94,7 +94,7 @@ static const uint kModeVertexNormal = 7u;
 static const uint kModeNormalTexture = 8u;
 static const uint kModeTangent = 9u;
 static const uint kModeBitangent = 10u;
-static const uint kModeNrdNormalRoughness = 11u;
+static const uint kModeNRDNormalRoughness = 11u;
 static const uint kModeNormalDeviation = 12u;
 static const uint kPrimitiveHasAuthoredTangents = 1u;
 
@@ -534,7 +534,7 @@ float3 visualizeHit(HitInfo hit, SceneMaterialVisualizationPush push)
     if (push.mode == kModeBitangent) {
         return saturate(safeNormalize(hit.bitangent, float3(0.0, 1.0, 0.0)) * 0.5 + 0.5);
     }
-    if (push.mode == kModeNrdNormalRoughness) {
+    if (push.mode == kModeNRDNormalRoughness) {
         float3 normal = applyNormalMap(hit.normal, hit.geometryNormal, hit.tangent, hit.bitangent, normalSample, material.textureParams.x);
         float roughness = saturate(material.params.y * metallicRoughnessSample.g);
         return packNrdNormalRoughnessForDisplay(normal, roughness);

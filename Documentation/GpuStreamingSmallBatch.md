@@ -4,7 +4,7 @@
 
 ## 策略和使用
 
-`enableGpuDecompression=true` 时，新增 `gpuDecompressionMinBatchBytes`，默认 **1 MiB**，单位为合格 GpuTiles 页的最终 device payload 字节。设为 `0` 可复现原来的全 GPU 策略。GPU 解压总开关默认仍为 false；本轮没有证明自适应策略稳定优于纯 CPU 解码，尚不调整总开关默认值。
+`enableGpuDecompression=true` 时，新增 `gpuDecompressionMinBatchBytes`，默认 **1 MiB**，单位为合格 GPUTiles 页的最终 device payload 字节。设为 `0` 可复现原来的全 GPU 策略。GPU 解压总开关默认仍为 false；本轮没有证明自适应策略稳定优于纯 CPU 解码，尚不调整总开关默认值。
 
 Residency 在提交 worker 前，按既有优先级检查当前可接纳的请求：受页数预算、剩余解码后上传字节预算、in-flight 空位和 prefetch 配额约束。达到阈值则允许该次调度使用 GPU；不足则让现有后台 worker 直接解码。不等凑批，不把解码搬到渲染线程。单个超预算页的进展规则保持不变。
 
@@ -73,12 +73,12 @@ RTX 5060，驱动 616.92。相同 v10 GDeflate 资产、参考相机路线、LOD
 
 ## 正确性与剩余限制
 
-- 四个目标构建通过：`MetallicGpuPageTests`、`MetallicRhiTests`、`MetallicMeshletTranscode`、`MetallicGPUDrivenSample`。
+- 四个目标构建通过：`MetallicGPUPageTests`、`MetallicRHITests`、`MetallicMeshletTranscode`、`MetallicGPUDrivenSample`。
 - 6 项独立测试通过：包含同一 PageLoader 混合 CPU/GPU 请求、重初始化、原生解压字节 oracle，以及墙钟吞吐、空闲归零和重置。
 - 3 项解压 RHI 测试通过：阈值为零、恰好一页大小和一页大小加一的边界；CPU/GPU 最终字节一致；未完成上传不计 Geometry ready；既有取消与 slot 复用用例仍通过。
 - 3000 帧质量回放通过，15 个安全 cut/预算检查点通过；第 29 帧仍在细化，第 59 帧起各采样点无可见超目标细化。最终 29,371 页、762,443,168 字节完成，19,076 页走小批次 CPU，10,295 页走 GPU；加载失败/非法请求为零。最终闲置窗口速率归零。
 - 7 轮性能数据的速率均有限且非负，累计计数单调，最终 Geometry-ready 页/字节与上传完成统计一致。
-- 额外 7 项 Streamer 回归中 **6 通过、1 失败**：上传字节预算、上传完成、有序发布重试、buffer、constant 和 render graph flush 通过；`streamer_texture_upload` 报纹理像素不匹配，单独执行也失败。2026-09-17 构建的 `build-dev/tests/MetallicRhiTests.exe` 在同驱动下出现同一失败，说明现象早于本次改动，但该旧二进制没有可核对的精确 source hash，尚未定位根因。没有将它计为通过或改动纹理路径掩盖结果。
+- 额外 7 项 Streamer 回归中 **6 通过、1 失败**：上传字节预算、上传完成、有序发布重试、buffer、constant 和 render graph flush 通过；`streamer_texture_upload` 报纹理像素不匹配，单独执行也失败。2026-09-17 构建的 `build-dev/tests/MetallicRHITests.exe` 在同驱动下出现同一失败，说明现象早于本次改动，但该旧二进制没有可核对的精确 source hash，尚未定位根因。没有将它计为通过或改动纹理路径掩盖结果。
 
 正确性检查使用进程级 `VK_LAYER_PATH` 指向本地 **VVL 1.4.357 + f6ff981**，开启同步校验，日志无 Vulkan validation error；系统 SDK 和 External 未修改。完整回放仍在结果落盘、GoogleTest 完成后遇到既有 Streamline teardown 停留，由脚本在 8 秒宽限后清理自己启动的进程，`Process.json` 有记录。检查点 oracle 不替代逐像素验证，也不证明实际首屏绘制延迟改善。
 
@@ -90,7 +90,7 @@ Tools/RunMetallicCfgReplay.ps1 `
   -OutputRoot .cache/fast-streaming/recheck-adaptive `
   -Cases m1 -Realtime `
   -StreamAsset .cache/fast-streaming/MiniZorah.gdeflate.meshstream.bin `
-  -GpuDecompression On -GpuDecompressionMinBatchBytes 1048576
+  -GPUDecompression On -GPUDecompressionMinBatchBytes 1048576
 ```
 
-全 GPU 对照把阈值改为 `0`；纯 CPU 对照使用 `-GpuDecompression Off`。质量检查使用 `-Cases quality` 并设置上述 `VK_LAYER_PATH` 和 `VK_LAYER_VALIDATE_SYNC=1`。
+全 GPU 对照把阈值改为 `0`；纯 CPU 对照使用 `-GPUDecompression Off`。质量检查使用 `-Cases quality` 并设置上述 `VK_LAYER_PATH` 和 `VK_LAYER_VALIDATE_SYNC=1`。

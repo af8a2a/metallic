@@ -49,7 +49,7 @@ Map / Unmap feedback、预算压力判断、请求任务选择和过期队列清
 - 冷页调度访问 **1,953 页**，执行同样数量的 CLAS 大小查询；约 **1,942 页年龄不达标**，实际保留期回收 **11.645 页**。年龄拒绝占 **99.40%**。
 - 两轮整条轨迹都没有预算压力触发的回收或调度失败。此路径主要在为尚未达到保留期的 unused 页反复排序、查找与检查。
 
-[各阶段工作量图](E:/metallic/build-release/stream-request-detail/analysis/CpuWork.png) 与 [CPU 时间分布](E:/metallic/build-release/stream-request-detail/analysis/CpuStreamBegin.png) 可对照查看。上述结论来自 CPU 耗时和工作量，不能将 0.123 ms 全部归因于 CLAS 查询；该 scope 也包含状态/年龄判断和成功卸载的操作。
+[各阶段工作量图](E:/metallic/build-release/stream-request-detail/analysis/CpuWork.png) 与 [CPU 时间分布](E:/metallic/build-release/stream-request-detail/analysis/CPUStreamBegin.png) 可对照查看。上述结论来自 CPU 耗时和工作量，不能将 0.123 ms 全部归因于 CLAS 查询；该 scope 也包含状态/年龄判断和成功卸载的操作。
 
 ## 优化顺序建议
 

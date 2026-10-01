@@ -122,7 +122,7 @@ def main():
         ax.legend()
         ax.text(0, -.2, "Bars: two-run mean; ticks: run means. Nested scopes overlap; do not sum rows.",
                 transform=ax.transAxes, fontsize=9)
-        fig.savefig(args.output / "CpuComparison.png", dpi=160)
+        fig.savefig(args.output / "CPUComparison.png", dpi=160)
 
 
 if __name__ == "__main__":

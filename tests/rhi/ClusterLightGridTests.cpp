@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -17,7 +17,7 @@ namespace {
 #define GRID_CHECK(condition) \
     do { \
         if (!(condition)) { \
-            return RhiTestResult::fail(std::string("ClusterLightGrid: ") + #condition); \
+            return RHITestResult::fail(std::string("ClusterLightGrid: ") + #condition); \
         } \
     } while (false)
 
@@ -67,7 +67,7 @@ struct GridReadback {
 
 class GridHarness {
 public:
-    explicit GridHarness(RhiTestContext& context)
+    explicit GridHarness(RHITestContext& context)
         : enableValidation_(context.enableValidation)
     {
     }
@@ -78,12 +78,12 @@ public:
         host_.shutdown();
     }
 
-    RhiTestResult initialize()
+    RHITestResult initialize()
     {
         const auto result = render::createDevice({.applicationName = "ClusterLightGrid GPU tests",
             .enableValidation = enableValidation_, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device_ = std::move(rhiValue); });
         if (render::hasError(result, render::Error::Unsupported)) {
-            return RhiTestResult::skip("ClusterLightGrid compute program requires bindless descriptors");
+            return RHITestResult::skip("ClusterLightGrid compute program requires bindless descriptors");
         }
         GRID_CHECK(result);
         queue_ = device_->getQueue(render::QueueType::Graphics);
@@ -95,10 +95,10 @@ public:
         for (uint32_t slot = 0; slot < frames_.size(); ++slot) {
             frames_[slot] = std::make_unique<render::RenderFrameContext>(slot);
         }
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 
-    RhiTestResult record(render::ClusterLightGrid& grid, render::GPUScene& scene,
+    RHITestResult record(render::ClusterLightGrid& grid, render::GPUScene& scene,
         render::GPUSceneViewId view, uint32_t slot, const render::ClusterLightGridDesc& desc)
     {
         GRID_CHECK(slot < frames_.size());
@@ -109,14 +109,14 @@ public:
         GRID_CHECK(host_.beginFrame(nextFrame_ - 1, slot, nullptr, log_, frames_[slot].get()));
         const auto result = grid.record(*device_, *commands_, host_, scene, view, slot, desc, log_);
         if (!result) {
-            return RhiTestResult::fail("ClusterLightGrid record failed: " + log_ + " (" + toString(result) + ")");
+            return RHITestResult::fail("ClusterLightGrid record failed: " + log_ + " (" + toString(result) + ")");
         }
         GRID_CHECK(grid.snapshot(scene) != nullptr);
         GRID_CHECK(grid.snapshot(scene)->valid());
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 
-    RhiTestResult run(render::ClusterLightGrid& grid, render::GPUScene& scene,
+    RHITestResult run(render::ClusterLightGrid& grid, render::GPUScene& scene,
         render::GPUSceneViewId view, uint32_t slot,
         const render::ClusterLightGridDesc& desc, GridReadback& output)
     {
@@ -130,7 +130,7 @@ public:
             const auto compiled = render::compileSlangShaderToSpirv({.moduleName = "ClusterLightGridLookupProbe",
                 .entryPointName = "clusterLightGridLookupProbeMain",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
-            if (!compiled) { return RhiTestResult::fail("ClusterLightGrid lookup probe: " + shader.diagnostics); }
+            if (!compiled) { return RHITestResult::fail("ClusterLightGrid lookup probe: " + shader.diagnostics); }
             const std::array<render::ComputeProgramBindingDesc, 6> bindings{{
                 {.binding = 0}, {.binding = 1}, {.binding = 2},
                 {.binding = 3}, {.binding = 4}, {.binding = 5}}};
@@ -149,7 +149,7 @@ public:
             .before = {},
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
         };
-        if (auto commandResult = commands_->synchronize({.buffers = {&probeToWrite, 1}}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands_->synchronize({.buffers = {&probeToWrite, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         const std::array<render::ComputeDispatchBinding, 6> probeBindings{{
             {.binding = 0, .buffer = output.snapshot.parameters},
             {.binding = 1, .buffer = output.snapshot.lights},
@@ -188,27 +188,27 @@ public:
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             },
         };
-        if (auto commandResult = commands_->synchronize({.buffers = barriers}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands_->synchronize({.buffers = barriers}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         {
             auto sourceSlice = output.snapshot.cells->slice({0, cellBytes});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = readback.get()->slice({0, cellBytes});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
             auto sourceSlice = output.snapshot.lightIndices->slice({0, indexBytes});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = readback.get()->slice({cellBytes, indexBytes});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         {
             auto sourceSlice = probe.get()->slice({0, sizeof(output.lookup)});
-            if (!sourceSlice) { return RhiTestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
+            if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
             auto destinationSlice = readback.get()->slice({cellBytes + indexBytes, sizeof(output.lookup)});
-            if (!destinationSlice) { return RhiTestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
-            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RhiTestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
+            if (!destinationSlice) { return RHITestResult::fail(std::string("destination slice failed: ") + render::resultToString(destinationSlice)); }
+            if (auto commandResult = commands_->copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return RHITestResult::fail(std::string("copyBuffer failed: ") + render::resultToString(commandResult)); }
         }
         const std::array restore{
             render::BufferBarrierDesc{
@@ -222,7 +222,7 @@ public:
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead},
             },
         };
-        if (auto commandResult = commands_->synchronize({.buffers = restore}); !commandResult) { return RhiTestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = commands_->synchronize({.buffers = restore}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         GRID_CHECK(commands_->end());
         host_.endFrame();
         render::CommandBuffer* submissions[] = {commands_.get()};
@@ -286,18 +286,18 @@ public:
         GRID_CHECK(output.lookup[8][1] == globalMask);
         GRID_CHECK(output.lookup[8][2] == UINT32_MAX);
         GRID_CHECK(output.lookup[8][3] == static_cast<uint32_t>(std::round(globalIntensity)));
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 
-    RhiTestResult cancel(uint32_t slot)
+    RHITestResult cancel(uint32_t slot)
     {
         GRID_CHECK(commands_->end());
         host_.endFrame();
         frames_[slot]->cancel();
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 
-    RhiTestResult acceptUntracked(render::ClusterLightGrid& grid, render::GPUScene& scene,
+    RHITestResult acceptUntracked(render::ClusterLightGrid& grid, render::GPUScene& scene,
         render::GPUSceneViewId view, const render::ClusterLightGridDesc& desc)
     {
         GRID_CHECK(scene.prepareView(view, 0, {.width = desc.width, .height = desc.height}));
@@ -335,10 +335,10 @@ public:
         GRID_CHECK(commands_->end());
         GRID_CHECK(pool_->reset());
         GRID_CHECK(grid.snapshot(scene) == nullptr);
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 
-    RhiTestResult reload(render::ClusterLightGrid& grid, const render::GPUScene& scene)
+    RHITestResult reload(render::ClusterLightGrid& grid, const render::GPUScene& scene)
     {
         GRID_CHECK(grid.snapshot(scene) != nullptr);
         const auto revision = grid.snapshot(scene)->buildRevision;
@@ -352,7 +352,7 @@ public:
         GRID_CHECK(staged != nullptr);
         staged->commit();
         GRID_CHECK(grid.snapshot(scene) == nullptr);
-        return RhiTestResult::pass();
+        return RHITestResult::pass();
     }
 
 private:
@@ -369,15 +369,15 @@ private:
     uint64_t nextFrame_ = 1;
 };
 
-class ClusterLightGridLayoutTest final : public RhiTest {
+class ClusterLightGridLayoutTest final : public RHITest {
 public:
     ClusterLightGridLayoutTest()
     {
-        type = RhiTestType::Validation;
+        type = RHITestType::Validation;
         name = "cluster_light_grid_layout";
     }
 
-    RhiTestResult run(RhiTestContext&) override
+    RHITestResult run(RHITestContext&) override
     {
         auto desc = gridDesc();
         desc.width = 129;
@@ -438,19 +438,19 @@ public:
         GRID_CHECK(invalid([](auto& d) { d.center = d.eye; }));
         GRID_CHECK(invalid([](auto& d) { d.up = d.center - d.eye; }));
         GRID_CHECK(invalid([](auto& d) { d.width = UINT32_MAX; d.height = UINT32_MAX; d.tileSize = 1; }));
-        return RhiTestResult::pass("partial tiles, perspective logarithmic/orthographic linear Z, lookup fallback and invalid limits");
+        return RHITestResult::pass("partial tiles, perspective logarithmic/orthographic linear Z, lookup fallback and invalid limits");
     }
 };
 
-class ClusterLightGridGpuCullTest final : public RhiTest {
+class ClusterLightGridGPUCullTest final : public RHITest {
 public:
-    ClusterLightGridGpuCullTest()
+    ClusterLightGridGPUCullTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "cluster_light_grid_gpu_culling";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         GridHarness harness(context);
         auto result = harness.initialize();
@@ -521,19 +521,19 @@ public:
         result = harness.run(grid, scene, view, 0, desc, data);
         if (!result.passed) { return result; }
         GRID_CHECK(data.cells[0].count == 1);
-        return RhiTestResult::pass("GPU light intersections, stable source slots, globals, camera invalidation and temporal jitter guard bands");
+        return RHITestResult::pass("GPU light intersections, stable source slots, globals, camera invalidation and temporal jitter guard bands");
     }
 };
 
-class ClusterLightGridGpuLifecycleTest final : public RhiTest {
+class ClusterLightGridGPULifecycleTest final : public RHITest {
 public:
-    ClusterLightGridGpuLifecycleTest()
+    ClusterLightGridGPULifecycleTest()
     {
-        type = RhiTestType::Command;
+        type = RHITestType::Command;
         name = "cluster_light_grid_gpu_overflow_lifecycle";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         GridHarness harness(context);
         auto result = harness.initialize();
@@ -614,13 +614,13 @@ public:
         GRID_CHECK(first.snapshot(scene) == nullptr);
         first.clear();
         GRID_CHECK(first.snapshot(scene) == nullptr);
-        return RhiTestResult::pass("GPU overflow flag/full-list fallback contract, empty reset, per-view/slot isolation and cancellation recovery");
+        return RHITestResult::pass("GPU overflow flag/full-list fallback contract, empty reset, per-view/slot isolation and cancellation recovery");
     }
 };
 
 METALLIC_REGISTER_RHI_TEST(ClusterLightGridLayoutTest);
-METALLIC_REGISTER_RHI_TEST(ClusterLightGridGpuCullTest);
-METALLIC_REGISTER_RHI_TEST(ClusterLightGridGpuLifecycleTest);
+METALLIC_REGISTER_RHI_TEST(ClusterLightGridGPUCullTest);
+METALLIC_REGISTER_RHI_TEST(ClusterLightGridGPULifecycleTest);
 
 #undef GRID_CHECK
 

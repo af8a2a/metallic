@@ -6,8 +6,8 @@ using Metallic.Lighting;
 // Reuse scene alpha-mask and neural-texture evaluation for closest-hit shadow rays.
 #include "../PathTracing/ScenePathTrace.slang"
 
-import NrdEncoding;
-using Metallic.Interop.NrdEncoding;
+import NRDEncoding;
+using Metallic.Interop.NRDEncoding;
 
 #define gShadowParameters getResource<StructuredBuffer<ShadowParameters>>(80)
 #define gDepth getResource<Texture2D<float>>(81)
@@ -26,7 +26,7 @@ struct ShadowGeometryPush
 float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
 {
 #if METALLIC_STREAM_SHADOWS && !METALLIC_STREAM_TLAS
-    return kNrdFp16Max;
+    return kNRDFP16Max;
 #else
     ShadowGeometryPush geometry = getConstants<ShadowGeometryPush>();
     ScenePathTracePush push = (ScenePathTracePush)0;
@@ -60,7 +60,7 @@ float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
     }
 #endif
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT
-        ? min(query.CommittedRayT(), kNrdFp16Max - 1.0) : kNrdFp16Max;
+        ? min(query.CommittedRayT(), kNRDFP16Max - 1.0) : kNRDFP16Max;
 #endif
 }
 
@@ -165,8 +165,8 @@ void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
         if (previous.z > p.view.previous.clipOrtho.x) { motion = previous.xy - currentUv; }
     }
     gMotion[pixel] = float4(motion, 0.0, 0.0);
-    float distance = kNrdFp16Max;
-    float penumbra = kNrdFp16Max;
+    float distance = kNRDFP16Max;
+    float penumbra = kNRDFP16Max;
     if (!background && p.control.x != 0u) {
         PunctualLightSample light = samplePunctualLightData(p.light, position);
         if (any(light.illuminance > 0.0)) {
@@ -200,5 +200,5 @@ void rayTracedShadowsMain(uint3 dispatchId : SV_DispatchThreadID)
     }
     gPenumbra[pixel] = penumbra;
     // SIGMA reads the previous encoded output during Copy; preserve it until denoising.
-    if (p.shape.y == 0.0 || background) { gShadow[pixel] = distance >= kNrdFp16Max ? 1.0 : 0.0; }
+    if (p.shape.y == 0.0 || background) { gShadow[pixel] = distance >= kNRDFP16Max ? 1.0 : 0.0; }
 }

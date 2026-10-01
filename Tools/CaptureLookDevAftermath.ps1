@@ -9,8 +9,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
 $buildRoot = if ([IO.Path]::IsPathRooted($BuildDirectory)) { $BuildDirectory } else { Join-Path $repoRoot $BuildDirectory }
-$executable = Join-Path $buildRoot 'tests/MetallicRhiTests.exe'
-if (!(Test-Path -LiteralPath $executable)) { $executable = Join-Path $buildRoot 'tests/Debug/MetallicRhiTests.exe' }
+$executable = Join-Path $buildRoot 'tests/MetallicRHITests.exe'
+if (!(Test-Path -LiteralPath $executable)) { $executable = Join-Path $buildRoot 'tests/Debug/MetallicRHITests.exe' }
 $executable = (Resolve-Path -LiteralPath $executable).Path
 $outputRoot = if ([IO.Path]::IsPathRooted($OutputDirectory)) { $OutputDirectory } else { Join-Path $repoRoot $OutputDirectory }
 $captureDirectory = Join-Path $outputRoot ((Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))

@@ -48,7 +48,7 @@
 
 此前上传批次先等待 `max(streamer.queuedFrameCount, residency.queuedFrameCount)` 帧，再排入下一帧的发布任务。即使 GPU 早已完成，页面仍停留在 `PendingUpload`；三个存储/发布任务槽位也继续被占用，阻碍后续批次。
 
-新增 Streamer 上传完成凭据：在暂存页面后取得凭据，在实际记录拷贝的命令上挂接 `SubmissionTransaction`，并关联该帧的 `GpuCompletionPoint`。只有拷贝命令已成功提交且整个批次 GPU 完成，驻留管理器才在下一次 `beginFrame` 直接发布页面，并回收存储及发布槽位。一次处理全部已完成的批次，不再额外排队一帧。检查是非阻塞的，不缩短 GPU 资源复用的帧队列。
+新增 Streamer 上传完成凭据：在暂存页面后取得凭据，在实际记录拷贝的命令上挂接 `SubmissionTransaction`，并关联该帧的 `GPUCompletionPoint`。只有拷贝命令已成功提交且整个批次 GPU 完成，驻留管理器才在下一次 `beginFrame` 直接发布页面，并回收存储及发布槽位。一次处理全部已完成的批次，不再额外排队一帧。检查是非阻塞的，不缩短 GPU 资源复用的帧队列。
 
 必须核对实际拷贝命令：异步 HW/SW 图可能已经提交前面的命令段，却取消了包含拷贝的尾段，此时整个帧的完成点仍可能显示已提交和完成。单独使用帧完成点会错误发布未上传的页面。未 flush、取消、无效录制归属和 Streamer 销毁会取消凭据；页面保留预算内的分配及请求优先级，重新排队上传，锁定根页同样重试。凭据不捕获驻留管理器，管理器重置不会留下悬空回调。
 
@@ -71,7 +71,7 @@
 - 180 秒：13,108 个计时帧、36 个检查点；60～175 秒的 24 个检查点均无可见超标，末次页面池 671.950 MiB、上传 701.757 MB、驱逐和取消均为 0。GPU P95 为 19.070 ms、同步帧 P95 为 29.381 ms。
 - 64 MiB、60 秒：末次使用 61.949 MiB、上传 205.474 MB、驱逐 12,207 页；没有无效 GPU 请求、页面加载错误和意外取消。完整回退通过，但末次仍有 3,631 个可见超标 refinement，**不算 1.5 px 质量验收**。
 - 上述长测及压力测试处于外部负载变化期间。测试退出后，14:40:33 的 `nvidia-smi` 仍显示 GPU 99%、76°C、232 W，进程列表已无测试程序，存在其他图形程序；14:41:14 又降到 3%。未改动其他程序。这两轮用于正确性、预算和稳定性验证，不据此认定吞吐回退，也不宣称性能无回退。
-- 60 项相关 RHI 回归全部通过，含 365 个 GPU cut/reference 案例、帧生命周期/提交、Streamer、GPUScene、完整 MiniZorah VBuffer、混合光栅和质量审计。`Metallic`、`MetallicSceneTests`、`MetallicRhiTests` 构建通过。
+- 60 项相关 RHI 回归全部通过，含 365 个 GPU cut/reference 案例、帧生命周期/提交、Streamer、GPUScene、完整 MiniZorah VBuffer、混合光栅和质量审计。`Metallic`、`MetallicSceneTests`、`MetallicRHITests` 构建通过。
 
 ```powershell
 $env:METALLIC_TEST_MINIZORAH='1'
@@ -81,7 +81,7 @@ $env:METALLIC_MINIZORAH_PREFETCH='1'
 $env:METALLIC_MINIZORAH_LOW_LATENCY='1'
 $env:METALLIC_MINIZORAH_COMPLETION_UPLOADS='1' # 对照组设为 0
 $env:METALLIC_MINIZORAH_LATENCY_ONLY='1'
-build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/minizorah-cold-start/repro
+build-relwithdebinfo/tests/MetallicRHITests.exe --gtest_filter=RHIRendering.minizorah_roaming --rhi-validation --rhi-async-compute --output-dir build-relwithdebinfo/minizorah-cold-start/repro
 ```
 
 质量组设 `LATENCY_ONLY=0` 和 `TRANSITION_CHECKS=1`。固定视角设 `METALLIC_MINIZORAH_FIXED_VIEW=0/15/35`；持续漫游移除该变量。压力组将页面池改为 64 MiB，只验收完整回退和预算。

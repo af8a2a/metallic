@@ -7,6 +7,7 @@
 #include <exception>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -24,6 +25,32 @@ std::unordered_map<std::string, RenderGraphPassRegistryEntry>& passRegistry()
 {
     static std::unordered_map<std::string, RenderGraphPassRegistryEntry> registry;
     return registry;
+}
+
+void normalizeSavedPassType(std::string& type)
+{
+    static constexpr std::pair<std::string_view, std::string_view> kLegacyPassTypes[] = {
+        {"GPUDrivenPreviewPass", "VisibilityBufferPass"},
+        {"SceneRtxdiPass", "SceneRTXDIPass"},
+        {"RtxdiConfidencePass", "RTXDIConfidencePass"},
+        {"RtxdiCompositePass", "RTXDICompositePass"},
+        {"RtxcrMaterialSamplePass", "RTXCRMaterialSamplePass"},
+        {"NrdDenoisePass", "NRDDenoisePass"},
+        {"StreamlineDlssSrPass", "StreamlineDLSSSRPass"},
+        {"StreamlineDlssRrPass", "StreamlineDLSSRRPass"},
+        {"DlssNrPass", "DLSSNRPass"},
+    };
+    for (const auto& [legacy, canonical] : kLegacyPassTypes) {
+        if (type == legacy) {
+            // Honor custom registrations while retaining the existing visibility
+            // pass migration, which always resolves to its canonical type.
+            if (legacy != "GPUDrivenPreviewPass" && passRegistry().contains(type)) {
+                return;
+            }
+            type = canonical;
+            return;
+        }
+    }
 }
 
 const RenderGraphProperties* findNestedProperty(
@@ -359,7 +386,7 @@ RenderGraphField& RenderPassReflection::addTextureInput(std::string name, std::s
         .resourceType = RenderGraphResourceType::Texture2D,
         .access = RenderGraphResourceAccess::TextureSampleRead,
         .bindlessAccess = RenderGraphBindlessAccess::None,
-        .format = Format::Rgba8Unorm,
+        .format = Format::RGBA8Unorm,
         .usage = TextureUsageBits::Sampled,
         .bufferUsage = BufferUsageBits::None,
         .bufferViewType = BufferViewType::Raw,
@@ -377,7 +404,7 @@ RenderGraphField& RenderPassReflection::addTextureOutput(std::string name, std::
         .resourceType = RenderGraphResourceType::Texture2D,
         .access = RenderGraphResourceAccess::TextureColorWrite,
         .bindlessAccess = RenderGraphBindlessAccess::None,
-        .format = Format::Rgba8Unorm,
+        .format = Format::RGBA8Unorm,
         .usage = TextureUsageBits::ColorAttachment,
         .bufferUsage = BufferUsageBits::None,
         .bufferViewType = BufferViewType::Raw,
@@ -1589,11 +1616,9 @@ bool deserializeRenderGraphFromString(
             node.id = nodeJson.value("id", 0u);
             node.name = nodeJson.value("name", "");
             node.type = nodeJson.value("type", "");
-            // Preserve saved graphs across the visibility pass rename without
-            // exposing a second, legacy pass type in the editor registry.
-            if (node.type == "GPUDrivenPreviewPass") {
-                node.type = "VisibilityBufferPass";
-            }
+            // Saved graphs use the current type without adding legacy entries
+            // to the editor registry or changing node names and connections.
+            normalizeSavedPassType(node.type);
             node.properties = nodeJson.value("properties", RenderGraphProperties::object());
             if (nodeJson.contains("position")) {
                 node.uiX = nodeJson["position"].value("x", 0.0f);

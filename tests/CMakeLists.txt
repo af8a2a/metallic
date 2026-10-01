@@ -3,26 +3,26 @@ include(GoogleTest)
 add_subdirectory(perf)
 
 if(METALLIC_ENABLE_NRD)
-    add_executable(MetallicNrdTests rhi/NrdTests.cpp)
-    target_link_libraries(MetallicNrdTests PRIVATE MetallicRuntimeRender MathLib GTest::gtest_main)
-    target_include_directories(MetallicNrdTests PRIVATE "${CMAKE_SOURCE_DIR}")
-    target_compile_definitions(MetallicNrdTests PRIVATE PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    add_executable(MetallicNRDTests rhi/NRDTests.cpp)
+    target_link_libraries(MetallicNRDTests PRIVATE MetallicRuntimeRender MathLib GTest::gtest_main)
+    target_include_directories(MetallicNRDTests PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_compile_definitions(MetallicNRDTests PRIVATE PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     if(WIN32)
-        target_compile_definitions(MetallicNrdTests PRIVATE NOMINMAX)
+        target_compile_definitions(MetallicNRDTests PRIVATE NOMINMAX)
         set(_nrd_test_slang_root "${CMAKE_SOURCE_DIR}/External/slang")
         if(DEFINED SLANG_ROOT)
             set(_nrd_test_slang_root "${SLANG_ROOT}")
         endif()
         file(GLOB _nrd_test_slang_dlls "${_nrd_test_slang_root}/bin/*.dll")
         foreach(_dll IN LISTS _nrd_test_slang_dlls)
-            add_custom_command(TARGET MetallicNrdTests POST_BUILD COMMAND ${CMAKE_COMMAND} -E
-                copy_if_different "${_dll}" "$<TARGET_FILE_DIR:MetallicNrdTests>")
+            add_custom_command(TARGET MetallicNRDTests POST_BUILD COMMAND ${CMAKE_COMMAND} -E
+                copy_if_different "${_dll}" "$<TARGET_FILE_DIR:MetallicNRDTests>")
         endforeach()
-        metallic_copy_spdlog_runtime(MetallicNrdTests)
-        metallic_copy_streamline_runtime(MetallicNrdTests)
+        metallic_copy_spdlog_runtime(MetallicNRDTests)
+        metallic_copy_streamline_runtime(MetallicNRDTests)
     endif()
-    add_test(NAME MetallicNrdTests COMMAND MetallicNrdTests --gtest_color=no)
-    set_tests_properties(MetallicNrdTests PROPERTIES LABELS "rhi;nrd" TIMEOUT 300)
+    add_test(NAME MetallicNRDTests COMMAND MetallicNRDTests --gtest_color=no)
+    set_tests_properties(MetallicNRDTests PROPERTIES LABELS "rhi;nrd" TIMEOUT 300)
 endif()
 
 add_executable(MetallicNsightLaunchOptionsTests editor/NsightLaunchOptionsTests.cpp)
@@ -43,14 +43,14 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)
 endif()
 
 if(WIN32)
-    add_test(NAME MetallicDlssNrConfiguration
+    add_test(NAME MetallicDLSSNRConfiguration
         COMMAND ${CMAKE_COMMAND}
             "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
             "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/dlss-nr-configuration"
             "-DTEST_GENERATOR=${CMAKE_GENERATOR}"
             "-DTEST_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DlssNrConfigurationTests.cmake")
-    set_tests_properties(MetallicDlssNrConfiguration PROPERTIES LABELS "build;dlss-nr" TIMEOUT 120)
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/DLSSNRConfigurationTests.cmake")
+    set_tests_properties(MetallicDLSSNRConfiguration PROPERTIES LABELS "build;dlss-nr" TIMEOUT 120)
     add_test(NAME MetallicStreamlineReflexConfiguration
         COMMAND ${CMAKE_COMMAND}
             "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
@@ -72,14 +72,14 @@ if(WIN32)
         endforeach()
     endif()
     if(METALLIC_ENABLE_STREAMLINE)
-        add_test(NAME MetallicEditorDlssCameraSmoke
+        add_test(NAME MetallicEditorDLSSCameraSmoke
             COMMAND ${CMAKE_COMMAND}
                 "-DEDITOR_EXECUTABLE=$<TARGET_FILE:Metallic>"
                 "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/editor-dlss-camera"
                 "-DSOURCE_DIRECTORY=${CMAKE_SOURCE_DIR}"
-                -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunDlssCameraSmoke.cmake"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunDLSSCameraSmoke.cmake"
         )
-        set_tests_properties(MetallicEditorDlssCameraSmoke PROPERTIES
+        set_tests_properties(MetallicEditorDLSSCameraSmoke PROPERTIES
             LABELS "editor;dlss" TIMEOUT 90 RESOURCE_LOCK MetallicEditor
         )
     endif()
@@ -181,7 +181,7 @@ set_tests_properties(MetallicTaskTests PROPERTIES
 )
 
 add_executable(MetallicSceneTests
-    scene/GltfInstancingTests.cpp
+    scene/glTFInstancingTests.cpp
     scene/GeometryAttributesTests.cpp
     scene/MeshletStreamReferenceCodecTests.cpp
     scene/MeshletStreamPrefetchTests.cpp
@@ -218,30 +218,30 @@ set_tests_properties(MetallicSceneTests PROPERTIES
     LABELS "scene"
 )
 
-add_executable(MetallicGpuPageTests
-    scene/GpuPageCodecTests.cpp
-    rhi/GpuMemoryDecompressionTests.cpp
-    ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Streamer/MeshletStreamClas.cpp
+add_executable(MetallicGPUPageTests
+    scene/GPUPageCodecTests.cpp
+    rhi/GPUMemoryDecompressionTests.cpp
+    ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Streamer/MeshletStreamCLAS.cpp
     ${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Streamer/MeshletStreamPageLoader.cpp
 )
-target_link_libraries(MetallicGpuPageTests PRIVATE MetallicRuntimeScene volk GTest::gtest_main)
-target_include_directories(MetallicGpuPageTests PRIVATE ${CMAKE_SOURCE_DIR}/External/volk)
-target_compile_definitions(MetallicGpuPageTests PRIVATE PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}" NOMINMAX)
-metallic_copy_spdlog_runtime(MetallicGpuPageTests)
-metallic_copy_openusd_runtime(MetallicGpuPageTests)
-add_test(NAME MetallicGpuPageTests COMMAND MetallicGpuPageTests)
-set_tests_properties(MetallicGpuPageTests PROPERTIES LABELS "scene;rhi")
+target_link_libraries(MetallicGPUPageTests PRIVATE MetallicRuntimeScene volk GTest::gtest_main)
+target_include_directories(MetallicGPUPageTests PRIVATE ${CMAKE_SOURCE_DIR}/External/volk)
+target_compile_definitions(MetallicGPUPageTests PRIVATE PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}" NOMINMAX)
+metallic_copy_spdlog_runtime(MetallicGPUPageTests)
+metallic_copy_openusd_runtime(MetallicGPUPageTests)
+add_test(NAME MetallicGPUPageTests COMMAND MetallicGPUPageTests)
+set_tests_properties(MetallicGPUPageTests PROPERTIES LABELS "scene;rhi")
 
 # Embed the offline report at build time; no server, Python or copied runtime assets.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/HtmlReport.html")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/HtmlReport.html" METALLIC_REPORT_HTML)
 configure_file(rhi/harness/HtmlReportTemplate.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/HtmlReportTemplate.h" @ONLY)
 
-add_executable(MetallicRhiTests
+add_executable(MetallicRHITests
     rhi/GeneratedCommandsTests.cpp
     rhi/DebugControlTests.cpp
     rhi/Main.cpp
-    rhi/RhiTest.h
+    rhi/RHITest.h
     rhi/harness/Requirements.cpp
     rhi/harness/Evidence.cpp
     rhi/harness/HtmlReport.cpp
@@ -260,14 +260,14 @@ add_executable(MetallicRhiTests
     rhi/harness/SampleCases.cpp
     rhi/harness/HarnessTests.cpp
     rhi/NativeDescriptorHeapTests.cpp
-    rhi/NativeDescriptorHeapSpirvTests.cpp
+    rhi/NativeDescriptorHeapSPIRVTests.cpp
     rhi/BindlessBufferTests.cpp
     rhi/DescriptorHeapCodePatternTests.cpp
-    rhi/DlssMotionVectorTests.cpp
+    rhi/DLSSMotionVectorTests.cpp
     rhi/TextureFootprintTests.cpp
-    rhi/DlssNrTests.cpp
+    rhi/DLSSNRTests.cpp
     rhi/AutoExposureTests.cpp
-    rhi/OpenPbrLookDevTests.cpp
+    rhi/OpenPBRLookDevTests.cpp
     rhi/SliderDebugTests.cpp
     rhi/VisibilityBufferDeferredTests.cpp
     rhi/StreamMaterialTests.cpp
@@ -278,7 +278,7 @@ add_executable(MetallicRhiTests
     rhi/DeferredTransmissionTests.cpp
     rhi/ClusterLightGridTests.cpp
     rhi/CommandSubmissionTests.cpp
-    rhi/GpuProfilingTests.cpp
+    rhi/GPUProfilingTests.cpp
     rhi/EditorProfilerTests.cpp
     rhi/RenderGraphViewerTests.cpp
     "${CMAKE_SOURCE_DIR}/Source/Editor/EditorProfiler.cpp"
@@ -291,12 +291,12 @@ add_executable(MetallicRhiTests
     rhi/EditorDisplayTests.cpp
     ../Source/Editor/EditorDisplayRenderer.cpp
     rhi/GPUSceneSubsystemTests.cpp
-    rhi/MeshletLodTests.cpp
-    rhi/StreamMeshletLodTests.cpp
+    rhi/MeshletLODTests.cpp
+    rhi/StreamMeshletLODTests.cpp
     rhi/WaveWorkDistributionTests.cpp
     rhi/TessellationTests.cpp
     rhi/TessellationSplitTests.cpp
-    rhi/StreamMeshletLodSceneTests.cpp
+    rhi/StreamMeshletLODSceneTests.cpp
     rhi/MiniZorahStreamAssetTests.cpp
     rhi/MiniZorahRoamingTests.cpp
     rhi/MiniZorahQualityTests.cpp
@@ -314,7 +314,7 @@ add_executable(MetallicRhiTests
     rhi/VisibilityDebugStabilityTests.cpp
     rhi/MiniZorahDebugStabilityTests.cpp
     rhi/GPUDrivenCullingTests.cpp
-    rhi/HzbSpdTests.cpp
+    rhi/HZBSPDTests.cpp
     rhi/RenderViewTests.cpp
     rhi/ShaderToHumanTests.cpp
     rhi/ShaderHotReloadTests.cpp
@@ -335,24 +335,24 @@ add_executable(MetallicRhiTests
     rhi/MemoryBudgetTests.cpp
     rhi/RayTracingAccelerationStructureTests.cpp
     rhi/UnifiedTopLevelTests.cpp
-        rhi/ClasCompactionTests.cpp
+        rhi/CLASCompactionTests.cpp
     rhi/RayTracingPositionFetchTests.cpp
     rhi/OpacityMicromapTests.cpp
     rhi/StreamerTests.cpp
-    rhi/StreamBlasAllocationTests.cpp
-    rhi/GpuDecompressionTests.cpp
+    rhi/StreamBLASAllocationTests.cpp
+    rhi/GPUDecompressionTests.cpp
     rhi/TestOutput.cpp
     rhi/ValidationTests.cpp
     rhi/stb/Stb.cpp
 )
 
-target_include_directories(MetallicRhiTests PRIVATE
+target_include_directories(MetallicRHITests PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}/generated"
     "${CMAKE_SOURCE_DIR}/Source"
     "${CMAKE_CURRENT_SOURCE_DIR}/rhi"
 )
 
-target_link_libraries(MetallicRhiTests PRIVATE
+target_link_libraries(MetallicRHITests PRIVATE
     libzstd_static
     imgui
     metallic::sdl3
@@ -360,13 +360,13 @@ target_link_libraries(MetallicRhiTests PRIVATE
     GTest::gtest
 )
 
-target_compile_definitions(MetallicRhiTests PRIVATE
+target_compile_definitions(MetallicRHITests PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
 execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
     OUTPUT_VARIABLE _testbench_revision OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-target_compile_definitions(MetallicRhiTests PRIVATE
+target_compile_definitions(MetallicRHITests PRIVATE
     METALLIC_TESTBENCH_REVISION="${_testbench_revision}"
     METALLIC_TESTBENCH_COMPILER="${CMAKE_CXX_COMPILER_ID}-${CMAKE_CXX_COMPILER_VERSION}"
 )
@@ -376,33 +376,33 @@ if(WIN32)
     if(METALLIC_TESTBENCH_LAYER_PATH)
         list(APPEND _testbench_layer_arguments --tb-layer-path "${METALLIC_TESTBENCH_LAYER_PATH}")
     endif()
-    add_test(NAME MetallicTestbench.Harness COMMAND MetallicRhiTests --tb-self-test)
-    add_test(NAME MetallicTestbench.Contract COMMAND MetallicRhiTests --tb-run --tb-suite contract --tb-require-all)
-    add_test(NAME MetallicTestbench.Core COMMAND MetallicRhiTests --tb-run --tb-suite core --tb-require-all ${_testbench_layer_arguments})
-    add_test(NAME MetallicTestbench.Binding COMMAND MetallicRhiTests --tb-run --tb-suite binding ${_testbench_layer_arguments})
-    add_test(NAME MetallicTestbench.Sync COMMAND MetallicRhiTests --tb-run --tb-suite sync --tb-validation sync ${_testbench_layer_arguments})
+    add_test(NAME MetallicTestbench.Harness COMMAND MetallicRHITests --tb-self-test)
+    add_test(NAME MetallicTestbench.Contract COMMAND MetallicRHITests --tb-run --tb-suite contract --tb-require-all)
+    add_test(NAME MetallicTestbench.Core COMMAND MetallicRHITests --tb-run --tb-suite core --tb-require-all ${_testbench_layer_arguments})
+    add_test(NAME MetallicTestbench.Binding COMMAND MetallicRHITests --tb-run --tb-suite binding ${_testbench_layer_arguments})
+    add_test(NAME MetallicTestbench.Sync COMMAND MetallicRHITests --tb-run --tb-suite sync --tb-validation sync ${_testbench_layer_arguments})
     add_test(NAME MetallicTestbench.SyncActivation COMMAND ${CMAKE_COMMAND}
-        "-DEXECUTABLE=$<TARGET_FILE:MetallicRhiTests>" "-DSOURCE=${CMAKE_SOURCE_DIR}"
+        "-DEXECUTABLE=$<TARGET_FILE:MetallicRHITests>" "-DSOURCE=${CMAKE_SOURCE_DIR}"
         "-DLAYER_PATH=${METALLIC_TESTBENCH_LAYER_PATH}" -P "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/VerifySyncProbe.cmake")
     set(METALLIC_TESTBENCH_REQUIRED_EXTENSIONS "" CACHE STRING "GoogleTest filter of extensions required on this reference machine")
     if(METALLIC_TESTBENCH_REQUIRED_EXTENSIONS)
-        add_test(NAME MetallicTestbench.ExtensionsRequired COMMAND MetallicRhiTests --tb-run --tb-suite extensions
+        add_test(NAME MetallicTestbench.ExtensionsRequired COMMAND MetallicRHITests --tb-run --tb-suite extensions
             --tb-filter "${METALLIC_TESTBENCH_REQUIRED_EXTENSIONS}" --tb-require-all ${_testbench_layer_arguments})
         set_tests_properties(MetallicTestbench.ExtensionsRequired PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            LABELS "testbench;extensions-required" TIMEOUT 600 RESOURCE_LOCK MetallicGpu)
+            LABELS "testbench;extensions-required" TIMEOUT 600 RESOURCE_LOCK MetallicGPU)
     endif()
-    add_test(NAME MetallicTestbench.Extensions COMMAND MetallicRhiTests --tb-run --tb-suite extensions ${_testbench_layer_arguments})
-    add_test(NAME MetallicTestbench.Async COMMAND MetallicRhiTests --tb-run --tb-suite async ${_testbench_layer_arguments})
+    add_test(NAME MetallicTestbench.Extensions COMMAND MetallicRHITests --tb-run --tb-suite extensions ${_testbench_layer_arguments})
+    add_test(NAME MetallicTestbench.Async COMMAND MetallicRHITests --tb-run --tb-suite async ${_testbench_layer_arguments})
     set_tests_properties(MetallicTestbench.Harness MetallicTestbench.Contract MetallicTestbench.Core MetallicTestbench.Async MetallicTestbench.Binding MetallicTestbench.Sync MetallicTestbench.SyncActivation MetallicTestbench.Extensions
         PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "testbench" TIMEOUT 180)
     set_tests_properties(MetallicTestbench.Extensions PROPERTIES TIMEOUT 600)
-    set_tests_properties(MetallicTestbench.Core MetallicTestbench.Async MetallicTestbench.Binding MetallicTestbench.Sync MetallicTestbench.SyncActivation MetallicTestbench.Extensions PROPERTIES RESOURCE_LOCK MetallicGpu)
+    set_tests_properties(MetallicTestbench.Core MetallicTestbench.Async MetallicTestbench.Binding MetallicTestbench.Sync MetallicTestbench.SyncActivation MetallicTestbench.Extensions PROPERTIES RESOURCE_LOCK MetallicGPU)
 endif()
 
 if(WIN32)
-    target_link_libraries(MetallicRhiTests PRIVATE dxgi shell32)
-    target_compile_definitions(MetallicRhiTests PRIVATE NOMINMAX)
-    target_compile_options(MetallicRhiTests PRIVATE /EHsc)
+    target_link_libraries(MetallicRHITests PRIVATE dxgi shell32)
+    target_compile_definitions(MetallicRHITests PRIVATE NOMINMAX)
+    target_compile_options(MetallicRHITests PRIVATE /EHsc)
 
     set(METALLIC_TEST_SLANG_ROOT "${CMAKE_SOURCE_DIR}/External/slang")
     if(DEFINED SLANG_ROOT)
@@ -411,20 +411,20 @@ if(WIN32)
 
     file(GLOB METALLIC_TEST_SLANG_RUNTIME_DLLS "${METALLIC_TEST_SLANG_ROOT}/bin/*.dll")
     foreach(METALLIC_TEST_SLANG_RUNTIME_DLL IN LISTS METALLIC_TEST_SLANG_RUNTIME_DLLS)
-        add_custom_command(TARGET MetallicRhiTests POST_BUILD
+        add_custom_command(TARGET MetallicRHITests POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${METALLIC_TEST_SLANG_RUNTIME_DLL}"
-                "$<TARGET_FILE_DIR:MetallicRhiTests>"
+                "$<TARGET_FILE_DIR:MetallicRHITests>"
         )
     endforeach()
 
-    metallic_copy_streamline_runtime(MetallicRhiTests)
-    metallic_copy_dlss_nr_runtime(MetallicRhiTests)
-    metallic_copy_aftermath_runtime(MetallicRhiTests)
-    metallic_copy_nrc_runtime(MetallicRhiTests)
+    metallic_copy_streamline_runtime(MetallicRHITests)
+    metallic_copy_dlss_nr_runtime(MetallicRHITests)
+    metallic_copy_aftermath_runtime(MetallicRHITests)
+    metallic_copy_nrc_runtime(MetallicRHITests)
 endif()
-metallic_copy_openusd_runtime(MetallicRhiTests)
-metallic_copy_spdlog_runtime(MetallicRhiTests)
+metallic_copy_openusd_runtime(MetallicRHITests)
+metallic_copy_spdlog_runtime(MetallicRHITests)
 
 if(WIN32)
     set(METALLIC_TEST_SDL_RUNTIME_TARGET "")
@@ -440,7 +440,7 @@ if(WIN32)
         # utility target is deliberately always out of date and is shared by
         # every test executable, so building any focused test target restores
         # SDL3.dll in the common configuration output directory.
-        add_custom_target(MetallicTestSdlRuntime
+        add_custom_target(MetallicTestSDLRuntime
             COMMAND ${CMAKE_COMMAND} -E make_directory
                 "$<TARGET_FILE_DIR:MetallicTaskTests>"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -450,32 +450,32 @@ if(WIN32)
             COMMENT "Deploying SDL3 runtime for Metallic tests"
             VERBATIM
         )
-        add_dependencies(MetallicTaskTests MetallicTestSdlRuntime)
-        add_dependencies(MetallicSceneTests MetallicTestSdlRuntime)
-        add_dependencies(MetallicRhiTests MetallicTestSdlRuntime)
-        if(TARGET MetallicNrdTests)
-            add_dependencies(MetallicNrdTests MetallicTestSdlRuntime)
+        add_dependencies(MetallicTaskTests MetallicTestSDLRuntime)
+        add_dependencies(MetallicSceneTests MetallicTestSDLRuntime)
+        add_dependencies(MetallicRHITests MetallicTestSDLRuntime)
+        if(TARGET MetallicNRDTests)
+            add_dependencies(MetallicNRDTests MetallicTestSDLRuntime)
         endif()
     endif()
 endif()
 
 add_test(
-    NAME MetallicRhiTests
-    COMMAND MetallicRhiTests
+    NAME MetallicRHITests
+    COMMAND MetallicRHITests
         --rhi-no-validation
-        --output-dir "$<TARGET_FILE_DIR:MetallicRhiTests>/rhi-test-output"
+        --output-dir "$<TARGET_FILE_DIR:MetallicRHITests>/rhi-test-output"
         --gtest_color=no
 )
-set_tests_properties(MetallicRhiTests PROPERTIES
+set_tests_properties(MetallicRHITests PROPERTIES
     LABELS "rhi"
     SKIP_RETURN_CODE 77
 )
 
 if(METALLIC_HAS_DLSS_NR)
-    add_test(NAME MetallicDlssNrRuntimeTests COMMAND MetallicRhiTests
+    add_test(NAME MetallicDLSSNRRuntimeTests COMMAND MetallicRHITests
         --rhi-streamline --filter dlss_nr_runtime --rhi-no-validation
-        --output-dir "$<TARGET_FILE_DIR:MetallicRhiTests>/dlss-nr-output")
-    set_tests_properties(MetallicDlssNrRuntimeTests PROPERTIES LABELS "rhi;dlss-nr" SKIP_RETURN_CODE 77 TIMEOUT 120)
+        --output-dir "$<TARGET_FILE_DIR:MetallicRHITests>/dlss-nr-output")
+    set_tests_properties(MetallicDLSSNRRuntimeTests PROPERTIES LABELS "rhi;dlss-nr" SKIP_RETURN_CODE 77 TIMEOUT 120)
 endif()
 
 # Small host-side tests for callback ownership and loss accounting; no Vulkan device.
@@ -509,24 +509,24 @@ get_property(_metallic_registered_tests DIRECTORY PROPERTY TESTS)
 foreach(_test IN LISTS _metallic_registered_tests)
     get_property(_labels TEST "${_test}" PROPERTY LABELS)
     if(_labels MATCHES "(^|;)(rhi|editor)(;|$)")
-        set_property(TEST "${_test}" APPEND PROPERTY RESOURCE_LOCK MetallicGpu)
+        set_property(TEST "${_test}" APPEND PROPERTY RESOURCE_LOCK MetallicGPU)
     endif()
 endforeach()
 
 if(WIN32)
     # M4 bounded, legal command sequences; no optional SDKs or Python dependency.
-    add_test(NAME MetallicTestbench.Property COMMAND MetallicRhiTests --tb-run --tb-suite property
+    add_test(NAME MetallicTestbench.Property COMMAND MetallicRHITests --tb-run --tb-suite property
         --tb-validation sync --tb-repeat 4 --tb-seed 1592594996 --tb-require-all ${_testbench_layer_arguments})
     add_test(NAME MetallicTestbench.Shrinker COMMAND ${CMAKE_COMMAND}
-        "-DEXECUTABLE=$<TARGET_FILE:MetallicRhiTests>" "-DSOURCE=${CMAKE_SOURCE_DIR}"
+        "-DEXECUTABLE=$<TARGET_FILE:MetallicRHITests>" "-DSOURCE=${CMAKE_SOURCE_DIR}"
         "-DLAYER_PATH=${METALLIC_TESTBENCH_LAYER_PATH}" -P "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/VerifySequenceShrinker.cmake")
     set_tests_properties(MetallicTestbench.Property MetallicTestbench.Shrinker PROPERTIES
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "testbench" RESOURCE_LOCK MetallicGpu TIMEOUT 240)
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" LABELS "testbench" RESOURCE_LOCK MetallicGPU TIMEOUT 240)
     if(METALLIC_RHI_DIAGNOSTICS)
         add_test(NAME MetallicTestbench.Trace COMMAND ${CMAKE_COMMAND}
-            "-DEXECUTABLE=$<TARGET_FILE:MetallicRhiTests>" "-DSOURCE=${CMAKE_SOURCE_DIR}"
+            "-DEXECUTABLE=$<TARGET_FILE:MetallicRHITests>" "-DSOURCE=${CMAKE_SOURCE_DIR}"
             "-DLAYER_PATH=${METALLIC_TESTBENCH_LAYER_PATH}" -P "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/VerifyTrace.cmake")
         set_tests_properties(MetallicTestbench.Trace PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-            LABELS "testbench" RESOURCE_LOCK MetallicGpu TIMEOUT 300)
+            LABELS "testbench" RESOURCE_LOCK MetallicGPU TIMEOUT 300)
     endif()
 endif()

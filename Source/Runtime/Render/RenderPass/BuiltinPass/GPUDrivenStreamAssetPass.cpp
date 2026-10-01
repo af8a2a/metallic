@@ -89,7 +89,7 @@ uint32_t debugColorModeFromProperties(const RenderGraphProperties& props)
     }
     const std::string mode = iter->get<std::string>();
     if (mode == "lod") {
-        return kMeshletStreamDebugLod;
+        return kMeshletStreamDebugLOD;
     }
     if (mode == "page") {
         return kMeshletStreamDebugPage;
@@ -303,7 +303,7 @@ public:
             "color",
             "Meshlet streamasset deferred color");
         if (boolProperty(properties(), "rtasVisualization", false)) {
-            color.texture2D().storageReadWrite().format = Format::Rgba8Unorm;
+            color.texture2D().storageReadWrite().format = Format::RGBA8Unorm;
             color.stageAccess(RenderGraphResourceAccess::TextureStorageWrite);
         } else {
             color.texture2D().colorWrite();
@@ -521,7 +521,7 @@ public:
         }
         result = createStreamShader(
             *context.device,
-            kMeshletStreamHzbEntryPoint,
+            kMeshletStreamHZBEntryPoint,
             hzbShader_,
             log);
         if (!result) {
@@ -679,7 +679,7 @@ public:
             return result;
         }
 
-        result = streamRuntime_->updateRasterBindings(MeshletStreamGpuRasterBindings{
+        result = streamRuntime_->updateRasterBindings(MeshletStreamGPURasterBindings{
             .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex(),
             .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
             .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
@@ -1136,7 +1136,7 @@ private:
         GPUSceneSubsystem& subsystem,
         TextureHandle depth)
     {
-        GPUSceneViewGpuResourcesView resources;
+        GPUSceneViewGPUResourcesView resources;
         if (!depth.valid() ||
             !subsystem.viewGpuResources(
                 gpuSceneView_,
@@ -1168,7 +1168,7 @@ private:
             return result;
         }
 
-        return streamRuntime_->updateRasterBindings(MeshletStreamGpuRasterBindings{
+        return streamRuntime_->updateRasterBindings(MeshletStreamGPURasterBindings{
             .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex(),
             .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
             .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
@@ -1247,7 +1247,7 @@ private:
             mipWidth = std::max(1u, (mipWidth + 1u) / 2u);
             mipHeight = std::max(1u, (mipHeight + 1u) / 2u);
         }
-        const GPUSceneHzbRecordDesc desc{
+        const GPUSceneHZBRecordDesc desc{
             .bindlessHeap = streamRuntime_->bindlessHeap(),
             .pipeline = hzbPipeline_.get(),
             .dispatches = dispatches,
@@ -1341,7 +1341,7 @@ private:
             .height = context.height(),
             .displayHeight = context.displayHeight(),
             .selectedLodLevel = enableGpuLodSelection
-                ? kMeshletStreamNoDebugLodOverride
+                ? kMeshletStreamNoDebugLODOverride
                 : selectedLodProperty(context.properties()),
             .enableGpuLodSelection = enableGpuLodSelection,
             .lodPixelError = cameraFloat(&context.properties(), "lodPixelError", 1.5f),
@@ -1585,7 +1585,7 @@ private:
     bool rtasVisualization_ = false;
     uint64_t compiledSourceIdentity_ = 0;
     uint64_t compiledSourceContentRevision_ = 0;
-    Format compiledColorFormat_ = Format::Rgba8Unorm;
+    Format compiledColorFormat_ = Format::RGBA8Unorm;
     bool compiledDebugReadback_ = false;
     bool compiledStreamAssetOnly_ = false;
     bool compiled_ = false;

@@ -77,7 +77,7 @@ if(METALLIC_RTXCR_MATERIAL_ROOT)
 else()
     set(METALLIC_RTXCR_SHADER_INCLUDE_DIR "")
     message(WARNING
-        "RTXCR Material Library was not found. MetallicRtxcrSample will build, "
+        "RTXCR Material Library was not found. MetallicRTXCRSample will build, "
         "but its shader cannot run until RTXCR_ROOT points to an RTXCR checkout "
         "or RTXCR-Material-Library is placed in External/RTXCR-Material.")
 endif()
@@ -161,13 +161,13 @@ endif()
 foreach(METALLIC_SETUP_MODULE IN ITEMS
     SetupSlang
     SetupStreamline
-    SetupDlssNr
+    SetupDLSSNR
     SetupNsight
     SetupNsightGraphicsCapture
     SetupNvPerf
     SetupAftermath
-    SetupNrc
-    SetupNtc
+    SetupNRC
+    SetupNTC
 )
     set(METALLIC_SETUP_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/${METALLIC_SETUP_MODULE}.cmake")
     if(EXISTS "${METALLIC_SETUP_MODULE_PATH}")

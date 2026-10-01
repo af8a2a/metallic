@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"
 
@@ -201,7 +201,7 @@ private:
     std::vector<std::vector<std::shared_ptr<void>>> retiredByFrameSlot_;
     std::vector<std::shared_ptr<SubmissionTransaction>> pendingTransactions_;
     DeferredReleaseQueue deferredReleases_;
-    std::vector<GpuCompletionPoint> pendingCompletions_;
+    std::vector<GPUCompletionPoint> pendingCompletions_;
     RenderFrameContext* frameResources_ = nullptr;
     Device* device_ = nullptr;
     RenderWorld* world_ = nullptr;

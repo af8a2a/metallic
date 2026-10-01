@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Scene/SceneDocument.h"
@@ -93,22 +93,22 @@ private:
     bool hasView_ = false;
 };
 
-class RenderGraphSceneBindingContractTest final : public RhiTest {
+class RenderGraphSceneBindingContractTest final : public RHITest {
 public:
-    RenderGraphSceneBindingContractTest() { name = "render_graph_scene_binding_contract"; type = RhiTestType::Rendering; }
-    RhiTestResult run(RhiTestContext& context) override
+    RenderGraphSceneBindingContractTest() { name = "render_graph_scene_binding_contract"; type = RHITestType::Rendering; }
+    RHITestResult run(RHITestContext& context) override
     {
         render::registerRenderGraphPassType("SceneBindingProbeRoot", "Scene source probe",
             [] { return std::make_unique<SceneBindingProbePass>(false); });
         render::registerRenderGraphPassType("SceneBindingProbeConsumer", "Inherited scene probe",
             [] { return std::make_unique<SceneBindingProbePass>(true); });
         if (render::renderGraphPassSceneDependency("SceneBindingProbeRoot").source != render::RenderGraphSceneSource::World) {
-            return RhiTestResult::fail("New pass scene dependency was not discoverable without an editor whitelist");
+            return RHITestResult::fail("New pass scene dependency was not discoverable without an editor whitelist");
         }
-        const auto firstPath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/LookDev/OpenPbrDefault/OpenPbrDefault.gltf";
+        const auto firstPath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf";
         const auto secondPath = std::filesystem::path(PROJECT_SOURCE_DIR) / "Asset/meet_mat.glb";
         scene::SceneDocument first, second;
-        if (!first.load(firstPath) || !second.load(secondPath)) { return RhiTestResult::fail("Probe scenes failed to load"); }
+        if (!first.load(firstPath) || !second.load(secondPath)) { return RHITestResult::fail("Probe scenes failed to load"); }
         for (bool managedSubmission : {false, true}) {
             probe = {};
             render::RenderGraph graph;
@@ -131,7 +131,7 @@ public:
             executor.bindRuntimeScene(&first);
             std::string log;
             auto result = executor.compile(context.device, graph, 8, 8, log);
-            if (!result) { return RhiTestResult::fail("Initial binding: " + log); }
+            if (!result) { return RHITestResult::fail("Initial binding: " + log); }
             graph.clearDirty();
             auto* originalOutput = executor.outputResource("Consumer.value");
             const auto* originalBuffer = originalOutput->buffer;
@@ -141,7 +141,7 @@ public:
             std::unique_ptr<render::CommandBuffer> commands;
             if (!submissions.initialize(context.device, context.graphicsQueue) ||
                 !context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }) || !pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); })) {
-                return RhiTestResult::fail("Probe command setup failed");
+                return RHITestResult::fail("Probe command setup failed");
             }
             uint64_t frameIndex = 0;
             const auto renderFrame = [&]() -> render::Result<> {
@@ -169,14 +169,14 @@ public:
                     probe.resources["Root"] != probe.resources["Independent"] &&
                     executor.outputResource("Consumer.value") == originalOutput && originalOutput->buffer == originalBuffer;
             };
-            if (!renderFrame() || !matches(first.resourceIdentity())) { return RhiTestResult::fail("Initial frame binding mismatch"); }
+            if (!renderFrame() || !matches(first.resourceIdentity())) { return RHITestResult::fail("Initial frame binding mismatch"); }
             if (!probe.views["Root"] || !probe.views["Consumer"] || probe.views["Independent"]) {
-                return RhiTestResult::fail("World and independent asset view bindings");
+                return RHITestResult::fail("World and independent asset view bindings");
             }
             if (!probe.views["ViewportAsset"] || !probe.views["ViewportConsumer"] ||
                 probe.identities["ViewportAsset"] != probe.identities["Independent"] ||
                 probe.identities["ViewportConsumer"] != probe.identities["Independent"]) {
-                return RhiTestResult::fail("Explicit global view must preserve asset scene ownership and consumer inheritance");
+                return RHITestResult::fail("Explicit global view must preserve asset scene ownership and consumer inheritance");
             }
             const uint32_t stableCompiles = probe.compiles;
             auto movedCamera = view.camera();
@@ -185,39 +185,39 @@ public:
             if (!view.setCamera(movedCamera) || !renderFrame() || probe.compiles != stableCompiles ||
                 probe.cameras["ViewportAsset"] != view.cameraProperties() ||
                 probe.cameras["ViewportConsumer"] != view.cameraProperties()) {
-                return RhiTestResult::fail("Asset and resolve must follow viewport translation/rotation without recompiling");
+                return RHITestResult::fail("Asset and resolve must follow viewport translation/rotation without recompiling");
             }
-            if (!renderFrame() || probe.compiles != stableCompiles) { return RhiTestResult::fail("Unchanged scene was recompiled"); }
+            if (!renderFrame() || probe.compiles != stableCompiles) { return RHITestResult::fail("Unchanged scene was recompiled"); }
             // Same object and path, new document identity, no graph dirty or rebind call.
             if (!first.load(firstPath) || !renderFrame() || !matches(first.resourceIdentity())) {
-                return RhiTestResult::fail("Same-address scene replacement was not refreshed automatically");
+                return RHITestResult::fail("Same-address scene replacement was not refreshed automatically");
             }
             auto material = first.materials().front();
             material.baseColorFactor.x *= 0.5f;
             if (!first.setMaterialProperties(0, material) || !renderFrame() || !matches(first.resourceIdentity())) {
-                return RhiTestResult::fail("Material generation was not refreshed automatically");
+                return RHITestResult::fail("Material generation was not refreshed automatically");
             }
             // Fail after the root has prepared the new source. No pass may execute.
             const uint32_t previousExecutions = probe.executions;
             executor.bindRuntimeScene(&second);
             probe.failConsumer = true;
             if (renderFrame() || probe.executions != previousExecutions) {
-                return RhiTestResult::fail("Partial scene preparation was exposed to a frame");
+                return RHITestResult::fail("Partial scene preparation was exposed to a frame");
             }
             // Return to the previous identity: all partially changed resources must
             // be restored, even though its published generation already matches.
             probe.failConsumer = false;
             executor.bindRuntimeScene(&first);
-            if (!renderFrame() || !matches(first.resourceIdentity())) { return RhiTestResult::fail("Preparation rollback did not restore resources"); }
+            if (!renderFrame() || !matches(first.resourceIdentity())) { return RHITestResult::fail("Preparation rollback did not restore resources"); }
             executor.bindRuntimeScene(&second);
-            if (!renderFrame() || !matches(second.resourceIdentity())) { return RhiTestResult::fail("Different-path world replacement failed"); }
+            if (!renderFrame() || !matches(second.resourceIdentity())) { return RHITestResult::fail("Different-path world replacement failed"); }
             const uint32_t worldCompiles = probe.compiles;
             graph.setNodeRuntimeProperty(graph.findNode("Consumer")->id, "path", "another-missing-asset.glb");
             executor.syncRuntimeProperties(graph);
             if (!renderFrame() || !matches(second.resourceIdentity()) || probe.compiles != worldCompiles) {
-                return RhiTestResult::fail("Authored consumer path overrode inherited binding");
+                return RHITestResult::fail("Authored consumer path overrode inherited binding");
             }
-            if (graph.dirty()) { return RhiTestResult::fail("Test unexpectedly relied on graph dirty"); }
+            if (graph.dirty()) { return RHITestResult::fail("Test unexpectedly relied on graph dirty"); }
             // Reject a mixed producer bundle before any pass prepares GPU resources.
             auto invalid = graph;
             for (const auto edge : invalid.edges()) {
@@ -229,7 +229,7 @@ public:
             const uint32_t beforeInvalid = probe.compiles;
             result = rejected.compile(context.device, invalid, 8, 8, log);
             if (result || probe.compiles != beforeInvalid || log.find("same scene producer") == std::string::npos) {
-                return RhiTestResult::fail("Mixed scene input bundle was not rejected before preparation: " + log);
+                return RHITestResult::fail("Mixed scene input bundle was not rejected before preparation: " + log);
             }
             auto assetView = graph;
             for (const auto edge : graph.edges()) {
@@ -239,10 +239,10 @@ public:
                 }
             }
             if (!executor.compile(context.device, assetView, 8, 8, log) || !renderFrame() || probe.views["Consumer"]) {
-                return RhiTestResult::fail("Scene inputs must inherit the independent asset view: " + log);
+                return RHITestResult::fail("Scene inputs must inherit the independent asset view: " + log);
             }
         }
-        return RhiTestResult::pass("Both execute APIs: generation refresh, independent asset, inherited inputs, stable handles and preparation failure recovery");
+        return RHITestResult::pass("Both execute APIs: generation refresh, independent asset, inherited inputs, stable handles and preparation failure recovery");
     }
 };
 METALLIC_REGISTER_RHI_TEST(RenderGraphSceneBindingContractTest);

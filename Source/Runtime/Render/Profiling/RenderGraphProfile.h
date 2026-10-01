@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Streamer/MeshletStreamThroughput.h"
 #include <cstdint>
 #include <string>
@@ -19,7 +19,7 @@ struct RenderGraphProfileSection {
 };
 
 // Per-frame work counts for aggregate CPU timings; no per-page clock reads.
-struct StreamCpuWorkCounters {
+struct StreamCPUWorkCounters {
     uint32_t allocationAttempts = 0;
     uint32_t budgetRetrySuppressed = 0;
     uint32_t requestDuplicatesMerged = 0;
@@ -166,7 +166,7 @@ struct SceneStreamingProfile {
     uint64_t textureFeedbackFrames = 0, textureUploadBytes = 0, textureMaxRequestFrames = 0;
     uint32_t textureRefinedImages = 0, textureRequestedImages = 0, texturePendingImages = 0;
     MeshletStreamThroughput throughput;
-    StreamCpuWorkCounters cpuWork;
+    StreamCPUWorkCounters cpuWork;
 };
 
 } // namespace metallic::render

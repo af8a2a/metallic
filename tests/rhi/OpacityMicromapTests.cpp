@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "harness/Fixtures.h"
 
 #include "Runtime/Render/RayTracing/OpacityMicromapBake.h"
@@ -6,7 +6,7 @@
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSpirv.h"
+#include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
 
 #include <array>
 #include <algorithm>
@@ -22,16 +22,16 @@ namespace {
 
 #define OMM_REQUIRE(expression) do { \
     const render::Result<> checked = (expression); \
-    if (!checked) { return RhiTestResult::fail(std::string(#expression) + ": " + toString(checked) + " " + log); } \
+    if (!checked) { return RHITestResult::fail(std::string(#expression) + ": " + toString(checked) + " " + log); } \
 } while (false)
-#define OMM_EXPECT(expression, message) do { if (!(expression)) { return RhiTestResult::fail(message); } } while (false)
+#define OMM_EXPECT(expression, message) do { if (!(expression)) { return RHITestResult::fail(message); } } while (false)
 
-class OpacityMicromapBakeTest final : public RhiTest {
+class OpacityMicromapBakeTest final : public RHITest {
 public:
     OpacityMicromapBakeTest()
     {
         name = "opacity_micromap_bake";
-        type = RhiTestType::Resource;
+        type = RHITestType::Resource;
     }
     std::optional<bench::Metadata> metadata() const override
     {
@@ -42,10 +42,10 @@ public:
         result.requirements.queues.clear();
         return result;
     }
-    RhiTestResult runCpu(bench::Evidence& evidence) override { return check(&evidence); }
-    RhiTestResult run(RhiTestContext&) override { return check(nullptr); }
+    RHITestResult runCpu(bench::Evidence& evidence) override { return check(&evidence); }
+    RHITestResult run(RHITestContext&) override { return check(nullptr); }
 private:
-    RhiTestResult check(bench::Evidence* evidence)
+    RHITestResult check(bench::Evidence* evidence)
     {
         bench::Json counts = bench::Json::array();
         scene::RenderPrimitive primitive;
@@ -95,17 +95,17 @@ private:
         std::vector<uint32_t> patched;
         OMM_EXPECT(!render::vulkan::enableOpacityMicromapSpirv(invalid, patched), "invalid SPIR-V instruction accepted");
         if (evidence) { evidence->json("bake.json", counts); }
-        return RhiTestResult::pass("coverage, packed bird order, cutoff equality, constant triangles, and partial-alpha states");
+        return RHITestResult::pass("coverage, packed bird order, cutoff equality, constant triangles, and partial-alpha states");
     }
 };
 METALLIC_REGISTER_RHI_TEST(OpacityMicromapBakeTest);
 
-class OpacityMicromapRayQueryTest : public RhiTest {
+class OpacityMicromapRayQueryTest : public RHITest {
 public:
     explicit OpacityMicromapRayQueryTest(bool partitioned = false) : partitioned_(partitioned)
     {
         name = partitioned ? "opacity_micromap_ray_query_partitioned" : "opacity_micromap_ray_query";
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
     }
     std::optional<bench::Metadata> metadata() const override
     {
@@ -114,7 +114,7 @@ public:
             "ray-query", {"ray-query-omm", "opacityMicromap", bench::Capability::OpacityMicromap, 0.0, 0.0, "alpha-candidates.json"});
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         std::string log;
         const auto directory = context.outputDirectory / name;
@@ -164,12 +164,12 @@ public:
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true,
                 .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
                 .enableOpacityMicromap = enable, .enablePartitionedAccelerationStructure = partitioned_, .enableAsyncCompute = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); });
-            if (render::hasError(setup, render::Error::Unsupported)) { return RhiTestResult::skip("ray queries unavailable"); }
+            if (render::hasError(setup, render::Error::Unsupported)) { return RHITestResult::skip("ray queries unavailable"); }
             OMM_REQUIRE(setup);
             if (partitioned_ && !device->capabilities().partitionedAccelerationStructure) {
-                return RhiTestResult::skip("PTLAS unavailable");
+                return RHITestResult::skip("PTLAS unavailable");
             }
-            if (enable && !device->capabilities().opacityMicromap) { return RhiTestResult::skip("fallback passed; OMM unavailable"); }
+            if (enable && !device->capabilities().opacityMicromap) { return RHITestResult::skip("fallback passed; OMM unavailable"); }
             if (!enable) {
                 render::RayTracingAccelerationStructureBuildSizes sizes;
                 const auto unavailable = device->queryRayTracingAccelerationStructureBuildSizes({.type = render::RayTracingAccelerationStructureType::OpacityMicromap}).transform([&](auto rhiValue) { sizes = std::move(rhiValue); });
@@ -363,11 +363,11 @@ public:
             context.deviceDesc && context.deviceDesc->enableOpacityMicromap);
         if (context.evidence) {
             context.evidence->json("alpha-candidates.json", {{"candidates", fallbackCandidates + ommCandidates}});
-            return RhiTestResult::pass("CPU bilinear alpha oracle passed for all material/transform steps");
+            return RHITestResult::pass("CPU bilinear alpha oracle passed for all material/transform steps");
         }
         OMM_EXPECT(ommCandidates < fallbackCandidates / 2, "OMM did not reduce shader alpha candidates: " +
             std::to_string(fallbackCandidates) + " -> " + std::to_string(ommCandidates));
-        return RhiTestResult::pass("OMM visibility equals fallback after compaction/cutoff/UV/alpha/BLEND edits, transforms and backend switches; candidates " +
+        return RHITestResult::pass("OMM visibility equals fallback after compaction/cutoff/UV/alpha/BLEND edits, transforms and backend switches; candidates " +
             std::to_string(fallbackCandidates) + " -> " + std::to_string(ommCandidates));
     }
 private:

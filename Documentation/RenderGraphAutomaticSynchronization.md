@@ -16,7 +16,7 @@ AS 现在使用 `RenderGraphResourceType::AccelerationStructure`，与 Buffer、
 
 编辑器预加载将当前图传给 `beginSceneResourcePreparation(..., &graph)`，预加载与 AS 生产节点使用相同配置和缓存身份，避免编译图时再分配一套场景 AS。`pathtracing_meet_mat` 样例加入 RTAS 节点及到 PathTrace 的 AS 连线；两个流送实时样例加入到 Shadows/Deferred 的 AS 连线。
 
-验证（2026-09-30）：复用 MSVC Release `build-scheduling-release` 构建 Metallic/MetallicRhiTests 成功；39 项聚焦测试全部通过。真实 GPU 使用 graphics family 0 / compute family 2，覆盖 TLAS/PTLAS 变换的解析 ray-query、取消重试、共享宿主及多生产节点隔离、预加载后 AS 分配数量/字节数不变、跨 pass 动态发布，以及流送异步开关的逐像素一致性。阶段、fork/join、查看器、场景绑定和样例加载回归通过。meet_mat 管线覆盖 Bunny 场景的编辑器 smoke test 完成提交与呈现。既有 `render_graph_final_blit_pipelines` 白名单缺少 `gpu_driven_realtime` 等样例，另行执行仍失败；该测试及原有呈现属性未修改。
+验证（2026-09-30）：复用 MSVC Release `build-scheduling-release` 构建 Metallic/MetallicRHITests 成功；39 项聚焦测试全部通过。真实 GPU 使用 graphics family 0 / compute family 2，覆盖 TLAS/PTLAS 变换的解析 ray-query、取消重试、共享宿主及多生产节点隔离、预加载后 AS 分配数量/字节数不变、跨 pass 动态发布，以及流送异步开关的逐像素一致性。阶段、fork/join、查看器、场景绑定和样例加载回归通过。meet_mat 管线覆盖 Bunny 场景的编辑器 smoke test 完成提交与呈现。既有 `render_graph_final_blit_pipelines` 白名单缺少 `gpu_driven_realtime` 等样例，另行执行仍失败；该测试及原有呈现属性未修改。
 
 同一 Bunny 160×96 场景，每种模式预热 24 帧后采样 32 帧；Shader/PSO cache 已预热。headless render + readback 的墙钟中位数为异步 2.600 ms、graphics 2.781 ms，原始记录在本地 `.tmp/rtas-async/final/StreamedAsyncRtasTiming.json`。该 preview 路径没有可用的 graph GPU envelope 时间；这些墙钟值含录制、提交、等待及回读，不能解释为 TLAS pass 或生产场景帧率收益。大型场景的长期稳定性和端到端性能尚未验证；验证层测试因本机 layer 版本较旧未启用 KHR OMM。
 
@@ -30,9 +30,9 @@ AS 现在使用 `RenderGraphResourceType::AccelerationStructure`，与 Buffer、
 | [RenderGraphExecutor.cpp](../Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp)，`transition`，约 1701 行 | 同状态写入也同步；读 stage 累积；识别换队列；生成整个纹理/缓冲的 barrier | 访问与 layout 仍通过 ResourceState 间接耦合；缺少独立 writer、reader 集合及可见性覆盖记录 |
 | 同文件 `prepareNode`，约 1788 行 | 遍历 reflection 的输入、输出，自动转换并批量调用 synchronize | 已能让简单 pass 不手写图资源 barrier；看不到 pass 内多阶段及私有资源 |
 | 同文件 `lastResourceUse`，约 3469 行 | 每个逻辑资源的所有使用串起来，包括 read/read；Unsafe pass 形成串行边界 | 队列依赖与 barrier 由两条独立路径构造，信息粒度不一致 |
-| [VulkanRhi.cpp](../Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp)，`CommandBuffer::synchronize`，约 5997 行 | 校验 scope；相同 stage pair 合并 global memory barrier；保留 image layout transition；选择 unified GENERAL / optimal fallback | 只能优化调用者已给出的单次 barrier 批；不能恢复未声明的资源访问或跨调用消除依赖 |
+| [VulkanRHI.cpp](../Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp)，`CommandBuffer::synchronize`，约 5997 行 | 校验 scope；相同 stage pair 合并 global memory barrier；保留 image layout transition；选择 unified GENERAL / optimal fallback | 只能优化调用者已给出的单次 barrier 批；不能恢复未声明的资源访问或跨调用消除依赖 |
 | [HistoryResources.cpp](../Source/Runtime/Render/Core/HistoryResources.cpp)，约 506 / 549 行 | HistoryManager 自己维护状态和 transition | 状态与 graph 的资源账本分离；需要进入同一访问计划 |
-| [NrdRuntime.cpp](../Source/Runtime/Render/RenderGraph/NrdRuntime.cpp)，`dispatch`，约 407 行 | 已有逐 dispatch resource 列表；每阶段显式转 GENERAL，并维护 pool state | 很适合映射为内部图阶段；不需要把 NRD 当作无法分析的黑盒 |
+| [NRDRuntime.cpp](../Source/Runtime/Render/RenderGraph/NRDRuntime.cpp)，`dispatch`，约 407 行 | 已有逐 dispatch resource 列表；每阶段显式转 GENERAL，并维护 pool state | 很适合映射为内部图阶段；不需要把 NRD 当作无法分析的黑盒 |
 
 因此，问题不是“现在完全没有自动 barrier”，而是自动化只覆盖 graph field 的 pass 边界，剩余同步分散在复杂 pass、history、GPUScene 和 streaming 中。
 
@@ -119,7 +119,7 @@ flowchart TD
 
 Metallic 当前 `acquireFromQueue` 只适用于已共享到目标 family 的资源，backend 使用 `VK_QUEUE_FAMILY_IGNORED`，并不是 exclusive ownership transfer。第一阶段继续遵守这一前提；将来支持 exclusive 跨 family 导入时，必须成对生成 release/acquire。相同 VkQueue 的逻辑 graphics/compute 标签应合并成一个实际队列域。
 
-`GpuCompletionPoint::appendWaits()` 当前统一使用 AllCommands。先保留这个安全边界，把必要的 hazard 边做对；再引入计划专用的 consumer scope wait，证明它覆盖 image transition/ownership 的完整依赖链。不能只将等待 stage 替换成 shader stage，而遗漏前置布局操作。
+`GPUCompletionPoint::appendWaits()` 当前统一使用 AllCommands。先保留这个安全边界，把必要的 hazard 边做对；再引入计划专用的 consumer scope wait，证明它覆盖 image transition/ownership 的完整依赖链。不能只将等待 stage 替换成 shader stage，而遗漏前置布局操作。
 
 ### 合并与“最优”的边界
 
@@ -157,7 +157,7 @@ phase.dispatch(applyProgram,
 
 后续优先对象：
 
-- **NRD**：`NrdPlan::schedule()` 已给出 dispatch 顺序、resource 类别和 pool index；sampled 输入标 Read，storage 输出先保守 ReadWrite，审计 shader 后才能收窄 Write。永久资源、临时资源和 ping-pong 统一作为 registry allocation 的图引用，逐步去掉 NrdRuntime 的独立 state 数组。
+- **NRD**：`NRDPlan::schedule()` 已给出 dispatch 顺序、resource 类别和 pool index；sampled 输入标 Read，storage 输出先保守 ReadWrite，审计 shader 后才能收窄 Write。永久资源、临时资源和 ping-pong 统一作为 registry allocation 的图引用，逐步去掉 NRDRuntime 的独立 state 数组。
 - **VisibilityBuffer**：将 reset、cull、classify、stable bins、software raster、hardware raster、merge、HZB 表达为内部阶段。保留 software/hardware GPU 分叉与 join；间接参数必须声明 IndirectRead，HZB 按 mip 声明，不能以一个整体“读写可见性输出”代替内部关系。
 - **GPUScene / streaming**：上传 copy、decompression、page table 更新、CLAS/BLAS/TLAS build 与消费分别声明；初期只迁移可确定的区域。GPU 驱动的动态索引集合用不可变可达资源集或保守合法范围，不能猜测运行时访问。
 - **History / external / SDK**：导入当前物理 slot、有效性、初始 access/layout/queue/completion；使用结束导出预定的最终契约。旧 Unsafe/SDK callback 可以作为声明边界的 opaque stage，适配器内部暂留必要的显式同步。若连入/出状态也未知，宽 memory barrier 不能修复未知 image layout，必须补齐契约。
@@ -252,7 +252,7 @@ Metallic 适合借鉴其声明与编译分离，不需要照搬宏系统、另�
 
 ### 验证记录
 
-复用 `build-scheduling-release` 的 MSVC/Ninja Release 配置，构建 `Metallic`、`MetallicRhiTests`、`MetallicTaskTests`。新增 [RenderGraphAccessPlanTests.cpp](../tests/rhi/RenderGraphAccessPlanTests.cpp)，输出与日志放在被忽略的 build 目录。
+复用 `build-scheduling-release` 的 MSVC/Ninja Release 配置，构建 `Metallic`、`MetallicRHITests`、`MetallicTaskTests`。新增 [RenderGraphAccessPlanTests.cpp](../tests/rhi/RenderGraphAccessPlanTests.cpp)，输出与日志放在被忽略的 build 目录。
 
 | 验证 | 结果 |
 | --- | --- |
@@ -298,7 +298,7 @@ Histogram 使用外层已经同步好的图资源边界。Reduce 前的计划合
 
 ### 验证
 
-复用 `build-scheduling-release` 构建 `Metallic`、`MetallicRhiTests` 和 `MetallicTaskTests`。所有 GPU 运行设置 `VK_LAYER_VALIDATE_SYNC=1`，日志未发现 VUID / SYNC-HAZARD，也没有测试跳过。
+复用 `build-scheduling-release` 构建 `Metallic`、`MetallicRHITests` 和 `MetallicTaskTests`。所有 GPU 运行设置 `VK_LAYER_VALIDATE_SYNC=1`，日志未发现 VUID / SYNC-HAZARD，也没有测试跳过。
 
 - 16 项专项测试通过：9 项访问 planner/GPU 分叉测试，3 项阶段 API 测试，以及 AutoExposure 的 3 项 GPU 测试和 HDR 输出测试。
 - 阶段 API 测试覆盖完整序列预验证、10 种错误声明、不同范围 slice 的 allocation 别名、重复/递归调用与 fork 拒绝。
@@ -328,7 +328,7 @@ Histogram 使用外层已经同步好的图资源边界。Reduce 前的计划合
 
 新增 5 项 CPU 回归和 1 项内部阶段编码统计回归。`writer → 6 个同队列同 scope reader` 从原算法的 6 道 RAW barrier 收敛到 1 道，仍保留每个 reader 到 writer 的依赖。内部 `write → 6 reads → write → 2 reads` 的原生 memory barrier 累计增量断言为 `[0,1,1,1,1,1,1,2,3,3]`：保留中间写入的 WAR/WAW 和新 writer 的首次 RAW。编码统计用例不执行 shader，GPU 数据正确性由实际 fanout、AutoExposure 和像素回归验证。
 
-复用 `build-scheduling-release`，构建 `Metallic`、`MetallicRhiTests`、`MetallicTaskTests` 通过；GPU 运行启用 `VK_LAYER_VALIDATE_SYNC=1`：
+复用 `build-scheduling-release`，构建 `Metallic`、`MetallicRHITests`、`MetallicTaskTests` 通过；GPU 运行启用 `VK_LAYER_VALIDATE_SYNC=1`：
 
 - 22 项访问计划、内部阶段、AutoExposure/HDR 专项通过；GPU fanout 覆盖 32 帧、6 消费者、1/4 workers、Joined/Pipelined、实际分离队列与显式别名，回读数据一致。
 - 20 项现有图/提交/取消恢复/像素回归通过，TaskTests 通过。

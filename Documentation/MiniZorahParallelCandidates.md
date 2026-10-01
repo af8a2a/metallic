@@ -53,14 +53,14 @@ GPU P95 降低 19.5%。全部检查点通过相机、参考 cut、覆盖、页�
 
 ## 回归与复现
 
-- `Metallic`、`MetallicGPUDrivenSample`、`MetallicRhiTests` 构建通过。
+- `Metallic`、`MetallicGPUDrivenSample`、`MetallicRHITests` 构建通过。
 - 新增 [stream_cluster_candidates_stable_parallel](E:/metallic/tests/rhi/StreamClusterCandidateTests.cpp:16)：14 组 GPU 与独立 CPU 参考比较，覆盖 0/1/127/128/129、超过 128 个块的前缀、四种实例状态、恢复与 retry 选择、高位 cluster bit、空/缩小列表、候选超容量截断和二维分类参数。预先污染 scratch 与列表尾部，检查稳定 ID、未写尾部与 retry 内容，并复用真实 stable-bin 阶段。
 - 另有 18 项相关回归全部通过（83 秒）：完整 MiniZorah 首帧/VBuffer/质量审计、GPU/reference LOD cut、StreamAsset、混合光栅的覆盖/等深/异步行为、两帧槽、resize/reload 和持久化 LOD PSO cache。日志没有 VUID 或 validation error。
 - 两个固定视角各 10 秒和 60 秒漫游完成。没有改动 cook、1.5 px 误差判定或分类/光栅算法。
 
 ```powershell
-& E:/metallic/build-relwithdebinfo/tests/MetallicRhiTests.exe `
-  --gtest_filter=RhiRendering.stream_cluster_candidates_stable_parallel --rhi-validation `
+& E:/metallic/build-relwithdebinfo/tests/MetallicRHITests.exe `
+  --gtest_filter=RHIRendering.stream_cluster_candidates_stable_parallel --rhi-validation `
   --output-dir E:/metallic/build-relwithdebinfo/minizorah-candidates/recheck
 & E:/metallic/build-relwithdebinfo/minizorah-candidates/RunCase.ps1 `
   -Name reproduce -Seconds 60 -LatencyOnly 0 -Transitions 1

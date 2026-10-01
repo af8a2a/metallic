@@ -14,7 +14,7 @@ For the local reference checkout:
 
 ```powershell
 cmake -S . -B build -DMETALLIC_BUILD_TESTS=ON -DRTXNTC_ROOT=E:/RTXNTC
-cmake --build build --target MetallicMaterialVisualizationSample MetallicPathTracingSample MetallicRtxdiSample --config Debug
+cmake --build build --target MetallicMaterialVisualizationSample MetallicPathTracingSample MetallicRTXDISample --config Debug
 ```
 
 Use `-DMETALLIC_ENABLE_NTC=OFF` to build without LibNTC. CUDA, DX12, and LibNTC's prebuilt decompression shaders are disabled. The LibNTC Vulkan backend is enabled for cooperative-vector capability discovery and weight-layout conversion; inference itself still runs through Metallic's Vulkan RHI and Slang shaders. A Vulkan SDK that provides `vulkan/vulkan.hpp` is required when NTC is enabled.
@@ -59,7 +59,7 @@ All three sample executables accept a scene override:
 ```powershell
 build\Source\MetallicMaterialVisualizationSample.exe --smoke-test --scene <scene.gltf>
 build\Source\MetallicPathTracingSample.exe --smoke-test --scene <scene.gltf>
-build\Source\MetallicRtxdiSample.exe --smoke-test --scene <scene.gltf>
+build\Source\MetallicRTXDISample.exe --smoke-test --scene <scene.gltf>
 ```
 
 The NTC resource log reports texture-set count, the CoopVec/Generic split, replaced logical textures, conventional byte estimate, resident neural bytes, saved bytes, and reduction percentage. On an RTX 5070 Ti with the RTXNTC FlightHelmet scene, all five texture sets selected CoopVec FP8. Reported material-texture residency changed from 285,212,652 bytes (272.0 MiB) to 11,969,568 bytes (11.4 MiB), saving 273,243,084 bytes (260.6 MiB, 95.8%). This measures texture payloads replaced by NTC; acceleration structures, geometry, render targets, and other renderer allocations are outside that figure.

@@ -107,14 +107,14 @@ BLAS/CLAS/TLAS still represent the **base mesh**. Ray-traced shadows, reflection
 
 ## Verification
 
-`RhiValidation.tessellation_pattern_coverage` checks all 512 patterns: positive winding, exact domain area, manifold interior edges, independent boundary sample counts, and mesh-output bounds.
+`RHIValidation.tessellation_pattern_coverage` checks all 512 patterns: positive winding, exact domain area, manifold interior edges, independent boundary sample counts, and mesh-output bounds.
 
-`RhiRendering.tessellation_displacement_render` compares GPU displacement against explicitly baked geometry, base color and flat microtriangle normals. It covers resident and streamed pages, perspective/orthographic views, both depth conventions, mirrored instances, unbinned drawing, and capped/adaptive independent edge factors (64 image comparisons); it also changes and restores material magnitude without rebuilding the graph. This oracle caught a repeat-seam sampling defect: using nonnegative integer texel coordinates avoids negative-remainder behavior at UV=0/1.
+`RHIRendering.tessellation_displacement_render` compares GPU displacement against explicitly baked geometry, base color and flat microtriangle normals. It covers resident and streamed pages, perspective/orthographic views, both depth conventions, mirrored instances, unbinned drawing, and capped/adaptive independent edge factors (64 image comparisons); it also changes and restores material magnitude without rebuilding the graph. This oracle caught a repeat-seam sampling defect: using nonnegative integer texel coordinates avoids negative-remainder behavior at UV=0/1.
 
-`RhiRendering.tessellation_recursive_render` adds **192 comparisons** using an independent CPU recursive baker, at depths 1, 2 and 3, with both saturated and adaptive rates. It also exercises live material disable/restore on the streamed recursive path. Its live-quality regression performs **40 edits** across resident/streamed and binned/unbinned rendering: depths 0/1/2/3, leaf factors 1/4/8 and edge targets 256/16/1. Every edit must affect the next frame without making the graph dirty or changing its compiled generation; restoring settings must reproduce the baseline image and surface coverage must remain intact. `RhiRendering.tessellation_recursive_topology` reads actual GPU leaves from **512 roots**: all eight split masks, depth budgets 0..3, near-plane crossing, exact positive domain coverage, paired interior edges/rates, identical rational samples on shared source edges, and poison-guarded unused output slots. It reaches the full 64-leaf budget. Runtime render tests exercise the fixed-capacity task payload and mesh interfaces with Vulkan validation.
+`RHIRendering.tessellation_recursive_render` adds **192 comparisons** using an independent CPU recursive baker, at depths 1, 2 and 3, with both saturated and adaptive rates. It also exercises live material disable/restore on the streamed recursive path. Its live-quality regression performs **40 edits** across resident/streamed and binned/unbinned rendering: depths 0/1/2/3, leaf factors 1/4/8 and edge targets 256/16/1. Every edit must affect the next frame without making the graph dirty or changing its compiled generation; restoring settings must reproduce the baseline image and surface coverage must remain intact. `RHIRendering.tessellation_recursive_topology` reads actual GPU leaves from **512 roots**: all eight split masks, depth budgets 0..3, near-plane crossing, exact positive domain coverage, paired interior edges/rates, identical rational samples on shared source edges, and poison-guarded unused output slots. It reaches the full 64-leaf budget. Runtime render tests exercise the fixed-capacity task payload and mesh interfaces with Vulkan validation.
 
 Runtime push-constant update (2026-09-17): Release builds of Metallic,
-MetallicGPUDrivenSample and MetallicRhiTests passed. Seven focused tests passed
+MetallicGPUDrivenSample and MetallicRHITests passed. Seven focused tests passed
 with Vulkan validation and no validation errors: both render oracles (256 image
 comparisons plus 40 live quality edits), recursive topology, pattern coverage,
 stream CPU/GPU LOD equivalence, hybrid raster equivalence and standalone stream
@@ -122,7 +122,7 @@ pass smoke. Build and test logs are `.cache/tessellation/runtime-settings-build.
 and `.cache/tessellation/runtime-settings-tests.log`.
 
 Generated-triangle visualization (2026-09-17): Release builds of Metallic,
-MetallicGPUDrivenSample and MetallicRhiTests passed. Eight focused RHI tests
+MetallicGPUDrivenSample and MetallicRHITests passed. Eight focused RHI tests
 passed across the validation runs: the two displacement render oracles (256
 comparisons, 40 live quality edits and the visualization checks above), recursive
 topology, pattern coverage, stream LOD equivalence, hybrid raster equivalence,
@@ -139,7 +139,7 @@ not need that color seed and cannot write the viewport MRTs.
 
 Recursive extension results on RTX 5060 / 610.47 (2026-09-16):
 
-- Release builds completed for Metallic, MetallicGPUDrivenSample and MetallicRhiTests. The 256 image comparisons, GPU recursive topology probe and original LUT coverage test passed with Vulkan validation.
+- Release builds completed for Metallic, MetallicGPUDrivenSample and MetallicRHITests. The 256 image comparisons, GPU recursive topology probe and original LUT coverage test passed with Vulkan validation.
 - Updating indirect arguments exposed two old standalone test allocations that still held a single command. Both GPU and readback allocations now hold both records; the CPU/GPU frontier oracle additionally verifies the tessellation dispatch. Frontier, stream traversal-demand and standalone stream-pass smoke tests passed with validation after this correction.
 - **Validation limitation:** `meshlet_lod_stream_scene_runtime_cut` and `render_graph_gpu_driven_mixed_producer_render` intermittently fault inside the local Vulkan 1.4.341 validation layer during `vkCmdBindResourceHeapEXT`, with tessellation disabled. An exception trace and link map identify `DescriptorHeap::bind` as the caller; the temporary tracing code is not retained. These two cases and three other stream regressions pass without the layer. The full validation-enabled suite is **not** reported as passing. Traces and failed runs remain under `.cache/tessellation/recursive-map.log`, `recursive-repeat.log` and `recursive-final.log`.
 - The example ran recursive displacement through deferred lighting, DLSS-SR and exposure. Its 1198x438 FinalBlit capture is `.cache/tessellation/recursive-demo-capture/RecursiveTessellation.png`.
@@ -148,7 +148,7 @@ Recursive extension results on RTX 5060 / 610.47 (2026-09-16):
 
 Material scene tests cover scalar validation and document round trips. The **initial bounded implementation** was validated as follows:
 
-- Release builds: Metallic, MetallicGPUDrivenSample, MetallicRhiTests and MetallicSceneTests.
+- Release builds: Metallic, MetallicGPUDrivenSample, MetallicRHITests and MetallicSceneTests.
 - 13 focused RHI tests passed with Vulkan validation: topology, displaced render oracle, wave distribution, stream cut/budget, hybrid raster equivalence, mixed producer, graph sample loading and PSO cache invalidation. After extending the oracle to adaptive factors, both tessellation tests passed again (64 comparisons plus live edit/restore).
 - Both material editing/document round-trip scene tests passed.
 - The editor sample ran the complete deferred / DLSS-SR / exposure pipeline; FinalBlit was captured via metallicctl at 1198x438 (799x292 internal render). The original procedural height image is embedded as a glTF bufferView. Raw capture and PNG are in `.cache/tessellation/demo-verified/`.
@@ -161,7 +161,7 @@ The original 3000-frame MiniZorah replay completed with tessellation disabled. T
 [GPUDrivenTessellationResults.json](GPUDrivenTessellationResults.json) retains all phase distributions, final cut data, manifest hashes and the process outcome. Raw artifacts are under `.cache/tessellation/`; no timing frames were removed.
 
 ```powershell
-./build-release/tests/MetallicRhiTests.exe '--gtest_filter=*tessellation*:*stream_wave_work_distribution:*meshlet_lod_stream*:*hybrid_raster_scene_equivalence:*render_graph_gpu_driven_mixed_producer_render:*render_graph_sample_load:*pipeline_cache_persistence_and_shader_invalidation' --rhi-validation --output-dir .cache/tessellation/validation
+./build-release/tests/MetallicRHITests.exe '--gtest_filter=*tessellation*:*stream_wave_work_distribution:*meshlet_lod_stream*:*hybrid_raster_scene_equivalence:*render_graph_gpu_driven_mixed_producer_render:*render_graph_sample_load:*pipeline_cache_persistence_and_shader_invalidation' --rhi-validation --output-dir .cache/tessellation/validation
 ./build-release/tests/MetallicSceneTests.exe '--gtest_filter=SceneEditing.Material*'
 ./Tools/RunMetallicCfgReplay.ps1 -Replay .cache/gpudriven-four/Replay.json -OutputRoot .cache/tessellation/roam -Cases m1 -Realtime -QualityWithoutValidation
 ./build-release/Source/Metallic.exe --debug-control

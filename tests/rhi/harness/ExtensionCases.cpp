@@ -45,11 +45,11 @@ uint64_t alignedOffset(const Buffer& buffer, uint64_t alignment)
     return (alignment - buffer.deviceAddress() % alignment) % alignment;
 }
 
-Json trace(RhiTestContext& context, uint64_t blasAddress)
+Json trace(RHITestContext& context, uint64_t blasAddress)
 {
     auto& device = context.device;
     auto& queue = context.graphicsQueue;
-    RayTracingGpuInstance instance;
+    RayTracingGPUInstance instance;
     instance.customIndexAndMask = 37 | (1u << 24);
     instance.shaderBindingTableRecordOffsetAndFlags = uint32_t(RayTracingInstanceFlags::TriangleFacingCullDisable) << 24;
     instance.accelerationStructureReference = blasAddress;
@@ -62,7 +62,7 @@ Json trace(RhiTestContext& context, uint64_t blasAddress)
     const auto properties = checked(device.queryRayTracingAccelerationStructureProperties());
     auto scratch = buffer(device, sizes.buildScratchSize + properties.scratchAlignment);
     {
-        GpuCommands build(queue); checked(build.initialize(device));
+        GPUCommands build(queue); checked(build.initialize(device));
         checked(build.commands->buildRayTracingAccelerationStructure({.destination = tlas.get(),
             .instanceBuffer = instances.get(), .instanceCount = 1, .scratchBuffer = scratch.get()}));
         checked(build.submitAndWait());
@@ -95,31 +95,31 @@ Json trace(RhiTestContext& context, uint64_t blasAddress)
     return rayOracle(actual);
 }
 
-class ClusterRayQueryTest final : public RhiTest {
+class ClusterRayQueryTest final : public RHITest {
 public:
-    ClusterRayQueryTest() { type = RhiTestType::Rendering; name = "clas_relocated_analytic_ray_query"; }
+    ClusterRayQueryTest() { type = RHITestType::Rendering; name = "clas_relocated_analytic_ray_query"; }
     std::optional<Metadata> metadata() const override
     {
         return comparisonMetadata({"clas.move.retire.traversal", "rayQuery.analytic.hit.miss.mask.distance.barycentric.frontFace"},
-            Layer::Rhi, "ray-query", {"ray-query-clas", "clusterAS", Capability::ClusterAS, 0.00001});
+            Layer::RHI, "ray-query", {"ray-query-clas", "clusterAS", Capability::ClusterAS, 0.00001});
     }
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         auto created = createTestDevice(context, {.applicationName = "CLAS analytic probe", .enableValidation = context.enableValidation,
             .enableBindlessDescriptorHeap = true, .enableRayTracingAccelerationStructure = true, .enableRayQuery = true,
             .enableRayTracingPositionFetch = false, .enableOpacityMicromap = false, .enableClusterAccelerationStructure = true});
-        if (hasError(created, Error::Unsupported)) { return RhiTestResult::skip("ray query/CLAS profile unavailable"); }
+        if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("ray query/CLAS profile unavailable"); }
         auto device = checked(std::move(created));
         if (!device->capabilities().rayQuery || !device->capabilities().bindlessDescriptorHeap ||
             (!context.evidence && !device->capabilities().clusterAccelerationStructure)) {
-            return RhiTestResult::skip("ray query/CLAS unavailable");
+            return RHITestResult::skip("ray query/CLAS unavailable");
         }
-        RhiTestContext active{*device, *device->getQueue(QueueType::Graphics), context.outputDirectory,
+        RHITestContext active{*device, *device->getQueue(QueueType::Graphics), context.outputDirectory,
             context.enableValidation, context.validationMessageCount, context.nsightCapture, context.evidence, context.deviceDesc};
         return runDevice(active);
     }
 private:
-    RhiTestResult runDevice(RhiTestContext& context)
+    RHITestResult runDevice(RHITestContext& context)
     {
         auto& device = context.device;
         const bool clusters = context.deviceDesc ? context.deviceDesc->enableClusterAccelerationStructure : device.capabilities().clusterAccelerationStructure;
@@ -133,7 +133,7 @@ private:
             auto blas = checked(device.createRayTracingAccelerationStructure({.size = sizes.accelerationStructureSize}));
             auto scratch = buffer(device, sizes.buildScratchSize + checked(device.queryRayTracingAccelerationStructureProperties()).scratchAlignment);
             {
-                GpuCommands build(context.graphicsQueue); checked(build.initialize(device));
+                GPUCommands build(context.graphicsQueue); checked(build.initialize(device));
                 checked(build.commands->buildRayTracingAccelerationStructure({.destination = blas.get(),
                     .geometries = {&geometry, 1}, .scratchBuffer = scratch.get()}));
                 checked(build.submitAndWait());
@@ -156,7 +156,7 @@ private:
                 const ClusterAccelerationStructureTriangleBuildInfo input{.triangleCount = 1, .vertexCount = 3,
                     .vertexBufferStride = 12, .indexBuffer = indices.get(), .vertexBuffer = vertices.get(),
                     .destinationBuffer = storage.get(), .destinationBufferOffset = offset, .destinationSize = sizes.accelerationStructureSize};
-                GpuCommands build(context.graphicsQueue); checked(build.initialize(device));
+                GPUCommands build(context.graphicsQueue); checked(build.initialize(device));
                 checked(build.commands->buildClusterAccelerationStructureTriangles({.clusters = {&input, 1},
                     .maxClusterTriangleCount = 128, .maxClusterVertexCount = 128,
                     .scratchBuffer = scratch.get(), .scratchBufferOffset = alignedOffset(*scratch, properties.scratchAlignment),
@@ -164,7 +164,7 @@ private:
                 checked(build.submitAndWait());
                 actualSize = read<uint32_t>(*encodedSize);
                 if (!actualSize || actualSize >= sizes.accelerationStructureSize || actualSize % properties.clusterStorageAlignment) {
-                    return RhiTestResult::fail("CLAS actual encoded size was not compact and aligned");
+                    return RHITestResult::fail("CLAS actual encoded size was not compact and aligned");
                 }
             }
             Json relocations = Json::array();
@@ -177,7 +177,7 @@ private:
                     auto sources = buffer(device, 8, MemoryLocation::HostUpload), destinations = buffer(device, 8, MemoryLocation::HostUpload);
                     const ClusterAccelerationStructureMoveInfo move{.sourceBuffer = storage.get(), .sourceOffset = offset,
                         .destinationBuffer = destination.get(), .destinationOffset = destinationOffset, .size = actualSize};
-                    GpuCommands commands(context.graphicsQueue); checked(commands.initialize(device));
+                    GPUCommands commands(context.graphicsQueue); checked(commands.initialize(device));
                     checked(commands.commands->moveClusterAccelerationStructures({.objects = {&move, 1},
                         .sourceAddressBuffer = sources.get(), .destinationAddressBuffer = destinations.get(),
                         .scratchBuffer = scratch.get(), .scratchBufferOffset = alignedOffset(*scratch, properties.scratchAlignment)}));
@@ -185,7 +185,7 @@ private:
                 }
                 std::weak_ptr<void> retired = storage->retainAllocation();
                 storage.reset();
-                if (!retired.expired()) { return RhiTestResult::fail("old CLAS allocation survived retirement"); }
+                if (!retired.expired()) { return RHITestResult::fail("old CLAS allocation survived retirement"); }
                 storage = std::move(destination); offset = destinationOffset;
                 const auto blasSizes = checked(device.queryClusterAccelerationStructureBottomLevelBuildSizes({
                     .maxClusterCountPerAccelerationStructure = 1, .maxTotalClusterCount = 1}));
@@ -199,7 +199,7 @@ private:
                     auto infos = buffer(device, sizeof(info), MemoryLocation::HostUpload); upload(*infos, info);
                     auto addresses = buffer(device, 8, MemoryLocation::HostUpload); upload(*addresses, blasAddress);
                     auto scratch = buffer(device, blasSizes.buildScratchSize + properties.scratchAlignment);
-                    GpuCommands commands(context.graphicsQueue); checked(commands.initialize(device));
+                    GPUCommands commands(context.graphicsQueue); checked(commands.initialize(device));
                     checked(commands.commands->buildClusterAccelerationStructureBottomLevels({
                         .destinationMode = ClusterAccelerationStructureDestinationMode::Explicit,
                         .maxClusterCountPerAccelerationStructure = 1, .maxTotalClusterCount = 1,
@@ -213,7 +213,7 @@ private:
         }
         auto fixture = rayFixture(); fixture["relocations"] = 2;
         comparisonEvidence(context, fixture, observations, clusters);
-        return RhiTestResult::pass("analytic rays passed after each completed relocation and old allocation retirement");
+        return RHITestResult::pass("analytic rays passed after each completed relocation and old allocation retirement");
     }
 };
 METALLIC_REGISTER_RHI_TEST(ClusterRayQueryTest);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Scene/MeshletStreamGpuCodec.h"
+#include "Runtime/Scene/MeshletStreamGPUCodec.h"
 
 #include <cstdint>
 #include <memory>
@@ -15,7 +15,7 @@ struct MeshletStreamPageLoadResult {
     uint32_t pageIndex = UINT32_MAX;
     std::vector<uint8_t> payload;
     bool gpuEncoded = false;
-    scene::MeshletStreamGpuPage gpuPage;
+    scene::MeshletStreamGPUPage gpuPage;
     std::string failureReason;
     uint64_t startedMicroseconds = 0;
     uint64_t completedMicroseconds = 0;

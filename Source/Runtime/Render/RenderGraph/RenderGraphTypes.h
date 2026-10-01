@@ -3,7 +3,7 @@
 #include "Runtime/Render/Profiling/RenderGraphProfile.h"
 #include <chrono>
 
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Core/DisplayOutput.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
@@ -135,7 +135,7 @@ struct RenderGraphField {
     RenderGraphResourceType resourceType = RenderGraphResourceType::Texture2D;
     RenderGraphResourceAccess access = RenderGraphResourceAccess::TextureColorWrite;
     RenderGraphBindlessAccess bindlessAccess = RenderGraphBindlessAccess::None;
-    Format format = Format::Rgba8Unorm;
+    Format format = Format::RGBA8Unorm;
     TextureUsageBits usage = TextureUsageBits::ColorAttachment;
     BufferUsageBits bufferUsage = BufferUsageBits::None;
     BufferViewType bufferViewType = BufferViewType::Raw;
@@ -143,7 +143,7 @@ struct RenderGraphField {
     bool optional = false;
     // Presentation outputs are execution roots without a manual markOutput().
     bool presentationOutput = false;
-    DisplayColorEncoding colorEncoding = DisplayColorEncoding::Srgb;
+    DisplayColorEncoding colorEncoding = DisplayColorEncoding::sRGB;
     // Disable for inputs that can be resampled to a different output extent.
     bool matchOutputExtent = true;
     uint32_t width = 0;
@@ -213,7 +213,7 @@ struct RenderGraphCompileContext {
     RenderSubsystemHost* subsystemHost = nullptr;
     uint32_t width = 1;
     uint32_t height = 1;
-    Format defaultFormat = Format::Rgba8Unorm;
+    Format defaultFormat = Format::RGBA8Unorm;
     bool debugReadback = false;
     RenderView* renderView = nullptr;
     DisplayOutputParameters displayOutput;
@@ -233,7 +233,7 @@ struct RenderGraphResource {
     Texture* texture = nullptr;
     TextureView* view = nullptr;
     TextureDesc desc;
-    DisplayColorEncoding colorEncoding = DisplayColorEncoding::Srgb;
+    DisplayColorEncoding colorEncoding = DisplayColorEncoding::sRGB;
     Buffer* buffer = nullptr;
     BufferView* bufferView = nullptr;
     BufferDesc bufferDesc;
@@ -518,7 +518,7 @@ struct RenderGraphSceneDependency {
     bool operator==(const RenderGraphSceneDependency&) const = default;
 };
 
-enum class CpuRecordingPolicy { Serial, ParallelJoined };
+enum class CPURecordingPolicy { Serial, ParallelJoined };
 
 class RenderGraphPass {
 public:
@@ -554,7 +554,7 @@ public:
     // command buffer. No frame/global mutation, SDK hooks or nested task waits.
     // prepareExecution remains on the coordinator. Each context is handed back
     // before its sealed batch submits; other contexts may still be recording.
-    virtual CpuRecordingPolicy cpuRecordingPolicy() const { return CpuRecordingPolicy::Serial; }
+    virtual CPURecordingPolicy cpuRecordingPolicy() const { return CPURecordingPolicy::Serial; }
     virtual uint32_t recordingWorkload() const { return 1; }
     virtual Result<> prepare(const RenderGraphCompileContext& context, std::string& log);
     virtual Result<> compile(const RenderGraphCompileContext& context, std::string& log);

@@ -44,8 +44,8 @@
         },
         {
             "id": 3,
-            "name": "DlssSr",
-            "type": "StreamlineDlssSrPass",
+            "name": "DLSSSR",
+            "type": "StreamlineDLSSSRPass",
             "position": {
                 "x": 1100,
                 "y": 250
@@ -67,8 +67,8 @@
         },
         {
             "id": 5,
-            "name": "DlssNr",
-            "type": "DlssNrPass",
+            "name": "DLSSNR",
+            "type": "DLSSNRPass",
             "position": {
                 "x": 1780,
                 "y": 250
@@ -112,41 +112,41 @@
         {
             "id": 4,
             "src": "Deferred.color",
-            "dst": "DlssSr.inputColor"
+            "dst": "DLSSSR.inputColor"
         },
         {
             "id": 5,
             "src": "Deferred.motionVectors",
-            "dst": "DlssSr.motionVectors"
+            "dst": "DLSSSR.motionVectors"
         },
         {
             "id": 6,
             "src": "Deferred.deviceDepth",
-            "dst": "DlssSr.depth"
+            "dst": "DLSSSR.depth"
         },
         {
             "id": 8,
-            "src": "DlssSr.color",
+            "src": "DLSSSR.color",
             "dst": "AutoExposure.source"
         },
         {
             "id": 9,
             "src": "AutoExposure.color",
-            "dst": "DlssNr.inputColor"
+            "dst": "DLSSNR.inputColor"
         },
         {
             "id": 10,
-            "src": "DlssSr.motionVectors",
-            "dst": "DlssNr.motionVectors"
+            "src": "DLSSSR.motionVectors",
+            "dst": "DLSSNR.motionVectors"
         },
         {
             "id": 11,
-            "src": "DlssSr.depth",
-            "dst": "DlssNr.depth"
+            "src": "DLSSSR.depth",
+            "dst": "DLSSNR.depth"
         },
         {
             "id": 12,
-            "src": "DlssNr.color",
+            "src": "DLSSNR.color",
             "dst": "FinalBlit.source"
         },
         {

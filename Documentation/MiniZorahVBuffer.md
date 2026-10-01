@@ -33,9 +33,9 @@ build-relwithdebinfo/Source/MetallicGPUDrivenSample.exe --minizorah-vbuffer
 ## 验证
 
 ```powershell
-build-relwithdebinfo/tests/MetallicRhiTests.exe --gtest_filter=RhiRendering.stream_metadata_* --rhi-validation --rhi-async-compute --output-dir E:/metallic/build-relwithdebinfo/minizorah-m3/bunny
+build-relwithdebinfo/tests/MetallicRHITests.exe --gtest_filter=RHIRendering.stream_metadata_* --rhi-validation --rhi-async-compute --output-dir E:/metallic/build-relwithdebinfo/minizorah-m3/bunny
 $env:METALLIC_TEST_MINIZORAH='1'
-build-relwithdebinfo/tests/MetallicRhiTests.exe --filter RhiRendering.minizorah_vbuffer --rhi-validation --rhi-async-compute --output-dir E:/metallic/build-relwithdebinfo/minizorah-m3/full
+build-relwithdebinfo/tests/MetallicRHITests.exe --filter RHIRendering.minizorah_vbuffer --rhi-validation --rhi-async-compute --output-dir E:/metallic/build-relwithdebinfo/minizorah-m3/full
 ```
 
 小场景覆盖缺失的 10 GB 外部 buffer、64 位 buffer offset、全局 ID 稳定性、材质分类变化、双面背面光栅、运行时材质修改、纯流式空 resident buffers、源 baseColor 核对、HW/异步混合 ID 对比、resize、释放及重新打开。全场景用例覆盖全部根实例、606 个有效不透明 BLEND 实例、三个视点和相同生命周期检查。结果与图片写到上述输出目录。

@@ -109,7 +109,7 @@ TEST(MeshletStreamReferenceCodec, SourceCanonicalAttributesAndExactTopology)
     }
 }
 
-TEST(MeshletStreamReferenceCodec, ZeroDiscardBitsPreservePositionAndUvBits)
+TEST(MeshletStreamReferenceCodec, ZeroDiscardBitsPreservePositionAndUVBits)
 {
     expectRoundTrip(31, false, false, 0);
     expectRoundTrip(31, true, true, 0);

@@ -1,9 +1,9 @@
 #include "Runtime/Render/GAPI/TextureFormat.h"
-#include "Runtime/Render/GAPI/Rhi.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/GAPI/StreamUploadCompletion.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
-#include "Runtime/Render/Profiling/CpuPhaseTrace.h"
+#include "Runtime/Render/Profiling/CPUPhaseTrace.h"
 
 #include <algorithm>
 #include <cstring>
@@ -41,28 +41,28 @@ uint32_t formatTexelByteSize(Format format)
     case Format::R8Uint:
     case Format::R8Sint:
         return 1;
-    case Format::Rg8Unorm:
-    case Format::Rg8Snorm:
-    case Format::Rg8Uint:
-    case Format::Rg8Sint:
+    case Format::RG8Unorm:
+    case Format::RG8Snorm:
+    case Format::RG8Uint:
+    case Format::RG8Sint:
     case Format::R16Unorm:
     case Format::R16Snorm:
     case Format::R16Uint:
     case Format::R16Sint:
     case Format::R16Sfloat:
         return 2;
-    case Format::Bgra8Unorm:
-    case Format::Bgra8Srgb:
-    case Format::Rgba8Unorm:
-    case Format::Rgba8Snorm:
-    case Format::Rgba8Srgb:
-    case Format::Rgba8Uint:
-    case Format::Rgba8Sint:
-    case Format::Rg16Unorm:
-    case Format::Rg16Snorm:
-    case Format::Rg16Uint:
-    case Format::Rg16Sint:
-    case Format::Rg16Sfloat:
+    case Format::BGRA8Unorm:
+    case Format::BGRA8sRGB:
+    case Format::RGBA8Unorm:
+    case Format::RGBA8Snorm:
+    case Format::RGBA8sRGB:
+    case Format::RGBA8Uint:
+    case Format::RGBA8Sint:
+    case Format::RG16Unorm:
+    case Format::RG16Snorm:
+    case Format::RG16Uint:
+    case Format::RG16Sint:
+    case Format::RG16Sfloat:
     case Format::R32Uint:
     case Format::R32Sint:
     case Format::R32Sfloat:
@@ -72,22 +72,22 @@ uint32_t formatTexelByteSize(Format format)
     case Format::E5B9G9R9UfloatPack32:
     case Format::D32Sfloat:
         return 4;
-    case Format::Rgba16Unorm:
-    case Format::Rgba16Snorm:
-    case Format::Rgba16Uint:
-    case Format::Rgba16Sint:
-    case Format::Rgba16Sfloat:
-    case Format::Rg32Uint:
-    case Format::Rg32Sint:
-    case Format::Rg32Sfloat:
+    case Format::RGBA16Unorm:
+    case Format::RGBA16Snorm:
+    case Format::RGBA16Uint:
+    case Format::RGBA16Sint:
+    case Format::RGBA16Sfloat:
+    case Format::RG32Uint:
+    case Format::RG32Sint:
+    case Format::RG32Sfloat:
         return 8;
-    case Format::Rgb32Uint:
-    case Format::Rgb32Sint:
-    case Format::Rgb32Sfloat:
+    case Format::RGB32Uint:
+    case Format::RGB32Sint:
+    case Format::RGB32Sfloat:
         return 12;
-    case Format::Rgba32Uint:
-    case Format::Rgba32Sint:
-    case Format::Rgba32Sfloat:
+    case Format::RGBA32Uint:
+    case Format::RGBA32Sint:
+    case Format::RGBA32Sfloat:
         return 16;
     case Format::Unknown:
         break;
@@ -125,7 +125,7 @@ struct StreamerImpl {
     };
 
     struct UploadSlot {
-        GpuCompletionPoint completion;
+        GPUCompletionPoint completion;
         uint64_t dynamicOffset = 0;
         uint64_t constantOffset = 0;
         std::shared_ptr<Buffer> compressed;
@@ -240,7 +240,7 @@ struct StreamerImpl {
         bufferDesc.usage = bufferDesc.usage | BufferUsageBits::TransferSource;
         bufferDesc.memoryLocation = desc.dynamicBufferMemoryLocation;
 
-        profiling::CpuPhase allocationPhase("stream.grow", bufferDesc.size);
+        profiling::CPUPhase allocationPhase("stream.grow", bufferDesc.size);
         std::unique_ptr<Buffer> newBuffer;
         Result<> result = device->createBuffer(bufferDesc).transform([&](auto rhiValue) { newBuffer = std::move(rhiValue); });
         if (!result || newBuffer == nullptr) {

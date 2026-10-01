@@ -150,14 +150,14 @@ void buildReGIRMain(
     uint selectedLight = 0xffffffffu;
     float selectedTarget = 0.0;
     float weightSum = 0.0;
-    uint lightCount = min(push.lightCount, punctualLightCount(getResource<StructuredBuffer<GpuPunctualLight>>(50)));
+    uint lightCount = min(push.lightCount, punctualLightCount(getResource<StructuredBuffer<GPUPunctualLight>>(50)));
     for (uint sampleIndex = 0u; lightCount > 0u && sampleIndex < push.buildSamples; ++sampleIndex) {
         uint candidateLight;
         float sourcePdf;
         if (!sampleLocalLightPdf(seed, lightCount, candidateLight, sourcePdf)) {
             continue;
         }
-        GpuPunctualLight light = getResource<StructuredBuffer<GpuPunctualLight>>(50)[candidateLight + 1u];
+        GPUPunctualLight light = getResource<StructuredBuffer<GPUPunctualLight>>(50)[candidateLight + 1u];
         float target = punctualLightTargetForVolume(light, cellCenter, cellRadius);
         float candidateWeight = target / (sourcePdf * float(push.buildSamples));
         if (!(candidateWeight > 0.0) || !isfinite(candidateWeight)) { continue; }

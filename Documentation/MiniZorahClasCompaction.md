@@ -7,7 +7,7 @@
 ## 实现
 
 - RHI 支持 CLAS 构建时输出每个对象的实际字节数，以及 `MOVE_OBJECTS_NV` 重定位。检查范围、对齐与搬移目标重叠，使用驱动搬移命令修复内部地址。
-- 新的 `MeshletStreamCompactClasPool` 使用已有固定槽池作为有界临时构建区。构建完成后异步读取尺寸，由已有 CPU 分配器按每个 CLAS 的实际尺寸及硬件对齐打包，再搬移到持久池。
+- 新的 `MeshletStreamCompactCLASPool` 使用已有固定槽池作为有界临时构建区。构建完成后异步读取尺寸，由已有 CPU 分配器按每个 CLAS 的实际尺寸及硬件对齐打包，再搬移到持久池。
 - 构建和搬移分别跟踪 `RenderFrameContext` 完成点与提交事务。只有搬移完成才发布共享页面/cluster 地址；运行时没有新增 fence/timeline 阻塞等待。没有新页时仍推进未完成批次，正在构建的页不重复消耗构建预算。
 - 处理构建或搬移录制取消、构建中卸载、快速重载和完成后的延迟释放。暂时无法分配的页留在队列等待空间；仍可由 VBuffer 绘制几何。
 - 联合回收从 GPU 明确报告未使用的页中选取，几何和该页 CLAS 使用同一个页面生命周期。保护锁定回退页、近期上传和近期使用页。CLAS 在几何卸载完成后退役，再经过 queued-frame 延迟释放。
@@ -57,7 +57,7 @@ Profiler Streaming 新增 encoded、相同 cluster 固定槽估算、build/move 
 
 ```powershell
 $env:METALLIC_TEST_MINIZORAH='1'
-.\build-relwithdebinfo\tests\MetallicRhiTests.exe '--gtest_filter=*minizorah_profiler_streaming:*clas_compact_lifecycle:*streamer_joint_cold_reclaim:*clas_actual_sizes_and_move' --rhi-validation --rhi-async-compute --output-dir E:/metallic/build-relwithdebinfo/clas-compact/verify
+.\build-relwithdebinfo\tests\MetallicRHITests.exe '--gtest_filter=*minizorah_profiler_streaming:*clas_compact_lifecycle:*streamer_joint_cold_reclaim:*clas_actual_sizes_and_move' --rhi-validation --rhi-async-compute --output-dir E:/metallic/build-relwithdebinfo/clas-compact/verify
 ```
 
 同轨迹旧实现对照设置 `METALLIC_TEST_CLAS_LEGACY=1`；压力测试设置 `METALLIC_TEST_CLAS_ROAM_STRESS=1`，并清除 legacy/off 开关。正常验证不要设置这些开关。

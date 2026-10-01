@@ -39,16 +39,16 @@ namespace {
 
 #if METALLIC_HAS_STREAMLINE
 
-struct DlssRrOptimalSettingsCacheEntry {
-    StreamlineDlssRrMode mode = StreamlineDlssRrMode::Off;
+struct DLSSRROptimalSettingsCacheEntry {
+    StreamlineDLSSRRMode mode = StreamlineDLSSRRMode::Off;
     uint32_t outputWidth = 0;
     uint32_t outputHeight = 0;
-    StreamlineDlssRrOptimalSettings settings;
+    StreamlineDLSSRROptimalSettings settings;
 };
 
 struct StreamlineState {
-    StreamlineDlssDebugStatus srDebug;
-    StreamlineDlssDebugStatus rrDebug;
+    StreamlineDLSSDebugStatus srDebug;
+    StreamlineDLSSDebugStatus rrDebug;
     std::chrono::steady_clock::time_point srDebugTime{};
     std::chrono::steady_clock::time_point rrDebugTime{};
     bool initialized = false;
@@ -81,8 +81,8 @@ struct StreamlineState {
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    std::vector<DlssRrOptimalSettingsCacheEntry> dlssSrOptimalSettingsCache;
-    std::vector<DlssRrOptimalSettingsCacheEntry> dlssRrOptimalSettingsCache;
+    std::vector<DLSSRROptimalSettingsCacheEntry> dlssSrOptimalSettingsCache;
+    std::vector<DLSSRROptimalSettingsCacheEntry> dlssRrOptimalSettingsCache;
 };
 
 std::mutex& streamlineMutex()
@@ -98,15 +98,15 @@ StreamlineState& streamlineState()
 }
 
 // Created after acquiring streamlineMutex; all early returns publish diagnostics.
-struct DlssDebugCapture {
-    StreamlineDlssDebugStatus& status;
+struct DLSSDebugCapture {
+    StreamlineDLSSDebugStatus& status;
     std::chrono::steady_clock::time_point& timestamp;
     std::string& log;
     size_t logStart;
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
 
     template <typename Desc>
-    DlssDebugCapture(StreamlineDlssDebugStatus& value,
+    DLSSDebugCapture(StreamlineDLSSDebugStatus& value,
         std::chrono::steady_clock::time_point& time, const Desc& desc, std::string& output)
         : status(value), timestamp(time), log(output), logStart(output.size())
     {
@@ -122,7 +122,7 @@ struct DlssDebugCapture {
         status.resourceCount = 0;
     }
 
-    void resource(const char* name, const StreamlineDlssRrTextureRef& ref)
+    void resource(const char* name, const StreamlineDLSSRRTextureRef& ref)
     {
         auto& entry = status.resources[status.resourceCount++];
         entry = {};
@@ -135,7 +135,7 @@ struct DlssDebugCapture {
         }
     }
 
-    ~DlssDebugCapture()
+    ~DLSSDebugCapture()
     {
         timestamp = std::chrono::steady_clock::now();
         status.cpuMs = std::chrono::duration<double, std::milli>(timestamp - start).count();
@@ -551,22 +551,22 @@ void streamlineLogCallback(sl::LogType type, const char* message)
         message);
 }
 
-sl::DLSSMode slMode(StreamlineDlssRrMode mode)
+sl::DLSSMode slMode(StreamlineDLSSRRMode mode)
 {
     switch (mode) {
-    case StreamlineDlssRrMode::Dlaa:
+    case StreamlineDLSSRRMode::DLAA:
         return sl::DLSSMode::eDLAA;
-    case StreamlineDlssRrMode::Quality:
+    case StreamlineDLSSRRMode::Quality:
         return sl::DLSSMode::eMaxQuality;
-    case StreamlineDlssRrMode::Balanced:
+    case StreamlineDLSSRRMode::Balanced:
         return sl::DLSSMode::eBalanced;
-    case StreamlineDlssRrMode::Performance:
+    case StreamlineDLSSRRMode::Performance:
         return sl::DLSSMode::eMaxPerformance;
-    case StreamlineDlssRrMode::UltraPerformance:
+    case StreamlineDLSSRRMode::UltraPerformance:
         return sl::DLSSMode::eUltraPerformance;
-    case StreamlineDlssRrMode::UltraQuality:
+    case StreamlineDLSSRRMode::UltraQuality:
         return sl::DLSSMode::eUltraQuality;
-    case StreamlineDlssRrMode::Off:
+    case StreamlineDLSSRRMode::Off:
         return sl::DLSSMode::eOff;
     }
     return sl::DLSSMode::eBalanced;
@@ -614,7 +614,7 @@ sl::float3 cameraArrayToFloat3(const float values[3])
 }
 
 void cameraBasis(
-    const StreamlineDlssRrCamera& camera,
+    const StreamlineDLSSRRCamera& camera,
     bool previous,
     sl::float3& outPosition,
     sl::float3& outRight,
@@ -692,7 +692,7 @@ struct SlCameraMatrices {
     bool orthographic = false;
 };
 
-SlCameraMatrices makeCameraMatrices(const StreamlineDlssRrCamera& camera, bool previous)
+SlCameraMatrices makeCameraMatrices(const StreamlineDLSSRRCamera& camera, bool previous)
 {
     SlCameraMatrices matrices;
     cameraBasis(camera, previous, matrices.position, matrices.right, matrices.up, matrices.forward);
@@ -719,7 +719,7 @@ SlCameraMatrices makeCameraMatrices(const StreamlineDlssRrCamera& camera, bool p
     return matrices;
 }
 
-sl::Constants makeConstants(const StreamlineDlssRrCamera& camera, bool reset)
+sl::Constants makeConstants(const StreamlineDLSSRRCamera& camera, bool reset)
 {
     const SlCameraMatrices currentCamera = makeCameraMatrices(camera, false);
     const SlCameraMatrices previousCamera = camera.previousValid
@@ -762,7 +762,7 @@ sl::Constants makeConstants(const StreamlineDlssRrCamera& camera, bool reset)
 }
 
 sl::DLSSOptions makeDlssSrBaseOptions(
-    StreamlineDlssSrMode mode,
+    StreamlineDLSSSRMode mode,
     uint32_t outputWidth,
     uint32_t outputHeight)
 {
@@ -777,7 +777,7 @@ sl::DLSSOptions makeDlssSrBaseOptions(
 }
 
 sl::DLSSDOptions makeDlssRrBaseOptions(
-    StreamlineDlssRrMode mode,
+    StreamlineDLSSRRMode mode,
     uint32_t outputWidth,
     uint32_t outputHeight)
 {
@@ -802,7 +802,7 @@ sl::DLSSDOptions makeDlssRrBaseOptions(
     return options;
 }
 
-sl::DLSSDOptions makeDlssRrOptions(const StreamlineDlssRrDesc& desc)
+sl::DLSSDOptions makeDlssRrOptions(const StreamlineDLSSRRDesc& desc)
 {
     sl::DLSSDOptions options = makeDlssRrBaseOptions(
         desc.mode,
@@ -814,13 +814,13 @@ sl::DLSSDOptions makeDlssRrOptions(const StreamlineDlssRrDesc& desc)
     return options;
 }
 
-bool validTextureRef(const StreamlineDlssRrTextureRef& ref)
+bool validTextureRef(const StreamlineDLSSRRTextureRef& ref)
 {
     return ref.texture != nullptr && ref.view != nullptr;
 }
 
 bool textureRefMatchesExtent(
-    const StreamlineDlssRrTextureRef& ref,
+    const StreamlineDLSSRRTextureRef& ref,
     uint32_t width,
     uint32_t height)
 {
@@ -831,7 +831,7 @@ bool textureRefMatchesExtent(
 
 bool appendResourceTag(
     CommandBuffer& commands,
-    const StreamlineDlssRrTextureRef& ref,
+    const StreamlineDLSSRRTextureRef& ref,
     sl::BufferType type,
     const sl::Extent& extent,
     std::vector<sl::Resource>& resources,
@@ -967,10 +967,10 @@ bool streamlineDlssRrSupported()
 }
 
 Result<> getStreamlineDlssSrOptimalSettings(
-    StreamlineDlssSrMode mode,
+    StreamlineDLSSSRMode mode,
     uint32_t outputWidth,
     uint32_t outputHeight,
-    StreamlineDlssSrOptimalSettings& settings,
+    StreamlineDLSSSROptimalSettings& settings,
     std::string& log)
 {
     settings = {};
@@ -987,7 +987,7 @@ Result<> getStreamlineDlssSrOptimalSettings(
         log = "DLSS-SR optimal settings are not available on the current Vulkan device";
         return makeError(Error::Unsupported);
     }
-    if (mode == StreamlineDlssSrMode::Off || outputWidth == 0 || outputHeight == 0) {
+    if (mode == StreamlineDLSSSRMode::Off || outputWidth == 0 || outputHeight == 0) {
         log = "DLSS-SR optimal settings require an enabled mode and non-zero output dimensions";
         return makeError(Error::InvalidArgument);
     }
@@ -995,7 +995,7 @@ Result<> getStreamlineDlssSrOptimalSettings(
     const auto cached = std::find_if(
         state.dlssSrOptimalSettingsCache.begin(),
         state.dlssSrOptimalSettingsCache.end(),
-        [mode, outputWidth, outputHeight](const DlssRrOptimalSettingsCacheEntry& entry) {
+        [mode, outputWidth, outputHeight](const DLSSRROptimalSettingsCacheEntry& entry) {
             return entry.mode == mode &&
                 entry.outputWidth == outputWidth &&
                 entry.outputHeight == outputHeight;
@@ -1015,7 +1015,7 @@ Result<> getStreamlineDlssSrOptimalSettings(
         return result;
     }
 
-    settings = StreamlineDlssSrOptimalSettings{
+    settings = StreamlineDLSSSROptimalSettings{
         .renderWidth = nativeSettings.optimalRenderWidth,
         .renderHeight = nativeSettings.optimalRenderHeight,
         .renderWidthMin = nativeSettings.renderWidthMin,
@@ -1046,7 +1046,7 @@ Result<> getStreamlineDlssSrOptimalSettings(
         return makeError(Error::InvalidArgument);
     }
 
-    state.dlssSrOptimalSettingsCache.push_back(DlssRrOptimalSettingsCacheEntry{
+    state.dlssSrOptimalSettingsCache.push_back(DLSSRROptimalSettingsCacheEntry{
         .mode = mode,
         .outputWidth = outputWidth,
         .outputHeight = outputHeight,
@@ -1063,10 +1063,10 @@ Result<> getStreamlineDlssSrOptimalSettings(
 }
 
 Result<> getStreamlineDlssRrOptimalSettings(
-    StreamlineDlssRrMode mode,
+    StreamlineDLSSRRMode mode,
     uint32_t outputWidth,
     uint32_t outputHeight,
-    StreamlineDlssRrOptimalSettings& settings,
+    StreamlineDLSSRROptimalSettings& settings,
     std::string& log)
 {
     settings = {};
@@ -1083,7 +1083,7 @@ Result<> getStreamlineDlssRrOptimalSettings(
         log = "DLSS-RR optimal settings are not available on the current Vulkan device";
         return makeError(Error::Unsupported);
     }
-    if (mode == StreamlineDlssRrMode::Off || outputWidth == 0 || outputHeight == 0) {
+    if (mode == StreamlineDLSSRRMode::Off || outputWidth == 0 || outputHeight == 0) {
         log = "DLSS-RR optimal settings require an enabled mode and non-zero output dimensions";
         return makeError(Error::InvalidArgument);
     }
@@ -1091,7 +1091,7 @@ Result<> getStreamlineDlssRrOptimalSettings(
     const auto cached = std::find_if(
         state.dlssRrOptimalSettingsCache.begin(),
         state.dlssRrOptimalSettingsCache.end(),
-        [mode, outputWidth, outputHeight](const DlssRrOptimalSettingsCacheEntry& entry) {
+        [mode, outputWidth, outputHeight](const DLSSRROptimalSettingsCacheEntry& entry) {
             return entry.mode == mode &&
                 entry.outputWidth == outputWidth &&
                 entry.outputHeight == outputHeight;
@@ -1111,7 +1111,7 @@ Result<> getStreamlineDlssRrOptimalSettings(
         return result;
     }
 
-    settings = StreamlineDlssRrOptimalSettings{
+    settings = StreamlineDLSSRROptimalSettings{
         .renderWidth = nativeSettings.optimalRenderWidth,
         .renderHeight = nativeSettings.optimalRenderHeight,
         .renderWidthMin = nativeSettings.renderWidthMin,
@@ -1142,7 +1142,7 @@ Result<> getStreamlineDlssRrOptimalSettings(
         return makeError(Error::InvalidArgument);
     }
 
-    state.dlssRrOptimalSettingsCache.push_back(DlssRrOptimalSettingsCacheEntry{
+    state.dlssRrOptimalSettingsCache.push_back(DLSSRROptimalSettingsCacheEntry{
         .mode = mode,
         .outputWidth = outputWidth,
         .outputHeight = outputHeight,
@@ -1530,7 +1530,7 @@ void prepareStreamlineNgxCommandBuffer(CommandBuffer& commandBuffer)
 #endif
 }
 
-Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDlssSrDesc& desc, std::string& log)
+Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const StreamlineDLSSSRDesc& desc, std::string& log)
 {
 #if !METALLIC_HAS_STREAMLINE
     (void)commandBuffer;
@@ -1540,7 +1540,7 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
 #else
     std::lock_guard lock(streamlineMutex());
     StreamlineState& state = streamlineState();
-    DlssDebugCapture debug(state.srDebug, state.srDebugTime, desc, log);
+    DLSSDebugCapture debug(state.srDebug, state.srDebugTime, desc, log);
     debug.resource("Input color", desc.inputColor);
     debug.resource("Output color", desc.outputColor);
     debug.resource("Motion vectors", desc.motionVectors);
@@ -1553,7 +1553,7 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
         desc.renderHeight == 0 ||
         desc.outputWidth == 0 ||
         desc.outputHeight == 0 ||
-        desc.mode == StreamlineDlssSrMode::Off) {
+        desc.mode == StreamlineDLSSSRMode::Off) {
         log = "DLSS-SR evaluate requires non-zero render/output dimensions and an enabled mode";
         return makeError(Error::InvalidArgument);
     }
@@ -1561,7 +1561,7 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
     const auto optimalSettings = std::find_if(
         state.dlssSrOptimalSettingsCache.begin(),
         state.dlssSrOptimalSettingsCache.end(),
-        [&desc](const DlssRrOptimalSettingsCacheEntry& entry) {
+        [&desc](const DLSSRROptimalSettingsCacheEntry& entry) {
             return entry.mode == desc.mode &&
                 entry.outputWidth == desc.outputWidth &&
                 entry.outputHeight == desc.outputHeight;
@@ -1574,7 +1574,7 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
     }
 
     const auto validateTexture = [&log](
-                                     const StreamlineDlssSrTextureRef& ref,
+                                     const StreamlineDLSSSRTextureRef& ref,
                                      const char* name,
                                      uint32_t width,
                                      uint32_t height) {
@@ -1591,7 +1591,7 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
         !validateTexture(desc.outputColor, "outputColor", desc.outputWidth, desc.outputHeight)) {
         return makeError(Error::InvalidArgument);
     }
-    if (desc.motionVectors.texture->desc().format != Format::Rg16Sfloat) {
+    if (desc.motionVectors.texture->desc().format != Format::RG16Sfloat) {
         log = "DLSS-SR motionVectors must use RG16_SFLOAT";
         return makeError(Error::InvalidArgument);
     }
@@ -1599,8 +1599,8 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
         log = "DLSS-SR depth must use D32_SFLOAT";
         return makeError(Error::InvalidArgument);
     }
-    if (desc.inputColor.texture->desc().format != Format::Rgba16Sfloat ||
-        desc.outputColor.texture->desc().format != Format::Rgba16Sfloat) {
+    if (desc.inputColor.texture->desc().format != Format::RGBA16Sfloat ||
+        desc.outputColor.texture->desc().format != Format::RGBA16Sfloat) {
         log = "DLSS-SR inputColor and outputColor must use RGBA16_SFLOAT";
         return makeError(Error::InvalidArgument);
     }
@@ -1686,7 +1686,7 @@ Result<> evaluateStreamlineDlssSr(CommandBuffer& commandBuffer, const Streamline
 #endif
 }
 
-Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDlssRrDesc& desc, std::string& log)
+Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const StreamlineDLSSRRDesc& desc, std::string& log)
 {
 #if !METALLIC_HAS_STREAMLINE
     (void)commandBuffer;
@@ -1696,7 +1696,7 @@ Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const Streamline
 #else
     std::lock_guard lock(streamlineMutex());
     StreamlineState& state = streamlineState();
-    DlssDebugCapture debug(state.rrDebug, state.rrDebugTime, desc, log);
+    DLSSDebugCapture debug(state.rrDebug, state.rrDebugTime, desc, log);
     debug.resource("Input color", desc.inputColor);
     debug.resource("Output color", desc.outputColor);
     debug.resource("Motion vectors", desc.motionVectors);
@@ -1713,7 +1713,7 @@ Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const Streamline
         desc.renderHeight == 0 ||
         desc.outputWidth == 0 ||
         desc.outputHeight == 0 ||
-        desc.mode == StreamlineDlssRrMode::Off) {
+        desc.mode == StreamlineDLSSRRMode::Off) {
         log = "DLSS-RR evaluate requires non-zero render/output dimensions and an enabled mode";
         return makeError(Error::InvalidArgument);
     }
@@ -1721,7 +1721,7 @@ Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const Streamline
     const auto optimalSettings = std::find_if(
         state.dlssRrOptimalSettingsCache.begin(),
         state.dlssRrOptimalSettingsCache.end(),
-        [&desc](const DlssRrOptimalSettingsCacheEntry& entry) {
+        [&desc](const DLSSRROptimalSettingsCacheEntry& entry) {
             return entry.mode == desc.mode &&
                 entry.outputWidth == desc.outputWidth &&
                 entry.outputHeight == desc.outputHeight;
@@ -1734,7 +1734,7 @@ Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const Streamline
     }
 
     const auto validateTexture = [&log](
-                                     const StreamlineDlssRrTextureRef& ref,
+                                     const StreamlineDLSSRRTextureRef& ref,
                                      const char* name,
                                      uint32_t width,
                                      uint32_t height) {
@@ -1755,7 +1755,7 @@ Result<> evaluateStreamlineDlssRr(CommandBuffer& commandBuffer, const Streamline
         !validateTexture(desc.outputColor, "outputColor", desc.outputWidth, desc.outputHeight)) {
         return makeError(Error::InvalidArgument);
     }
-    if (desc.motionVectors.texture->desc().format != Format::Rg16Sfloat) {
+    if (desc.motionVectors.texture->desc().format != Format::RG16Sfloat) {
         log = "DLSS-RR motionVectors must use RG16_SFLOAT";
         return makeError(Error::InvalidArgument);
     }

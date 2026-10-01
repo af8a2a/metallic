@@ -40,7 +40,7 @@ struct ComputeProgramDesc {
     PipelineCache* pipelineCache = nullptr;
 };
 
-struct CpuProfileRecorder;
+struct CPUProfileRecorder;
 
 // Publish through shared_ptr<const ...> and never mutate afterwards. The owner
 // retains the underlying images, while views supply stable ownership identities.
@@ -83,7 +83,7 @@ struct ComputeDispatchDesc {
     // transitions this buffer to IndirectArgument and retains it until completion.
     Buffer* indirectArguments = nullptr;
     uint64_t indirectOffset = 0;
-    CpuProfileRecorder* profiler = nullptr;
+    CPUProfileRecorder* profiler = nullptr;
     ComputeDispatchStats* stats = nullptr;
 };
 

@@ -4,7 +4,7 @@
 
 ## 实现范围
 
-`MeshletStreamCompactClasPool` 的持久 CLAS 存储从一次性申请 `maxStorageBytes` 改为独立 Buffer 分块分配。Full 的上限仍为 2 GiB；默认增长粒度为 64 MiB，通过 `MeshletStreamClasPoolDesc::storageChunkBytes` 配置。初始化不申请持久 CLAS 数据块，已有暂存构建池、MOVE scratch、地址表和页表仍预分配。
+`MeshletStreamCompactCLASPool` 的持久 CLAS 存储从一次性申请 `maxStorageBytes` 改为独立 Buffer 分块分配。Full 的上限仍为 2 GiB；默认增长粒度为 64 MiB，通过 `MeshletStreamCLASPoolDesc::storageChunkBytes` 配置。初始化不申请持久 CLAS 数据块，已有暂存构建池、MOVE scratch、地址表和页表仍预分配。
 
 先完成暂存 CLAS 构建并读回实际尺寸，再在已有块中分配；没有连续空闲区域时才增长。每页完整落在一个块内，超出粒度的页面申请能容纳该页的块，尾块受剩余预算约束。MOVE 使用对应块的目标 Buffer，地址表发布绝对设备地址。增长不搬移活页、不修改稳定 cluster ID。
 
@@ -28,12 +28,12 @@ Buffer 字节不等于整卡显存：VMA 块保留、驱动开销、其他资源
 
 ```powershell
 cmake --build build-release --target MetallicGPUDrivenSample -j 6
-cmake --build build-scheduling-release --target MetallicRhiTests -j 6
+cmake --build build-scheduling-release --target MetallicRHITests -j 6
 $env:METALLIC_TEST_MINIZORAH='1'
-.\build-scheduling-release\tests\MetallicRhiTests.exe --gtest_filter=RhiResource.clas_actual_sizes_and_move:RhiResource.clas_compact_lifecycle:RhiRendering.minizorah_clas_in_flight:RhiRendering.stream_clas_runtime_lifecycle:RhiRendering.stream_clas_eviction_reupload --rhi-validation --output-dir build-scheduling-release/clas-demand-verified
+.\build-scheduling-release\tests\MetallicRHITests.exe --gtest_filter=RHIResource.clas_actual_sizes_and_move:RHIResource.clas_compact_lifecycle:RHIRendering.minizorah_clas_in_flight:RHIRendering.stream_clas_runtime_lifecycle:RHIRendering.stream_clas_eviction_reupload --rhi-validation --output-dir build-scheduling-release/clas-demand-verified
 ```
 
-5 项通过，无跳过。生命周期测试覆盖零初始 backing、实际尺寸 MOVE、两块增长、每页地址归属、活页地址稳定、过期/复活、未提交帧阻止回收、取消构建/搬移与重试、预算不足不发布地址、空块实际从设备 Clas 预算域释放。MiniZorah 运行 1,200 帧，其中 1,198 帧观测到在途重叠，并逐帧检查 used ≤ allocated ≤ budget。另有旧池流送生命周期及预算耗尽/重上传回归。日志含机器上已存在的 Vulkan overlay manifest 缺失警告，不是 GPU 验证错误。
+5 项通过，无跳过。生命周期测试覆盖零初始 backing、实际尺寸 MOVE、两块增长、每页地址归属、活页地址稳定、过期/复活、未提交帧阻止回收、取消构建/搬移与重试、预算不足不发布地址、空块实际从设备 CLAS 预算域释放。MiniZorah 运行 1,200 帧，其中 1,198 帧观测到在途重叠，并逐帧检查 used ≤ allocated ≤ budget。另有旧池流送生命周期及预算耗尽/重上传回归。日志含机器上已存在的 Vulkan overlay manifest 缺失警告，不是 GPU 验证错误。
 
 ## 同条件 Full 漫游
 
@@ -60,14 +60,14 @@ $env:METALLIC_TEST_MINIZORAH='1'
 
 ### Full 图像与切换验证
 
-最终二进制另通过 `RhiRendering.zorah_full_first_frame`，启用验证层，设置 `METALLIC_TEST_ZORAH_FULL=1`、`METALLIC_ZORAH_FULL_CYCLES=1`。完成一次 MiniZorah→Full 切换、全量 terminal cut 准备、120 帧后续渲染、材质分桶/非分桶检查、场景释放。检查了 settled 与 base-color 输出，建筑、植被、人物和材质均有正常几何覆盖。该检查为 960×540 原生分辨率、关闭 DLSS、背景关闭；图像有单样本着色噪声，不能等同于编辑器 DLSS Quality 图像逐像素等价或长时间漫游稳定性。合计 6 项 GPU 测试通过。
+最终二进制另通过 `RHIRendering.zorah_full_first_frame`，启用验证层，设置 `METALLIC_TEST_ZORAH_FULL=1`、`METALLIC_ZORAH_FULL_CYCLES=1`。完成一次 MiniZorah→Full 切换、全量 terminal cut 准备、120 帧后续渲染、材质分桶/非分桶检查、场景释放。检查了 settled 与 base-color 输出，建筑、植被、人物和材质均有正常几何覆盖。该检查为 960×540 原生分辨率、关闭 DLSS、背景关闭；图像有单样本着色噪声，不能等同于编辑器 DLSS Quality 图像逐像素等价或长时间漫游稳定性。合计 6 项 GPU 测试通过。
 
 Full 图像证据：`build-scheduling-release/clas-demand-full-visual/{results.json,ZorahFullFirstFrame.json,ZorahFull-settled-0.png,ZorahFull-base-color-0.png}`。
 
 
 本地证据（构建目录，不纳入源码）：
 
-- `build-scheduling-release/clas-demand-verified/results.json`、`CompactClasLifecycle.txt`、`MiniZorahClasInFlight.jsonl`。
+- `build-scheduling-release/clas-demand-verified/results.json`、`CompactCLASLifecycle.txt`、`MiniZorahCLASInFlight.jsonl`。
 - `build-release/clas-demand-baseline/run1/{Capture.json,Frames.jsonl,Gpu.csv,Summary.md}`。
 - `build-release/clas-demand-final-roam/run1/{Capture.json,Frames.jsonl,Gpu.csv,Summary.md}`。
 - `build-release/clas-demand-comparison.json`：设置、哈希、峰值及逐帧统计。

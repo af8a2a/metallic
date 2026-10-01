@@ -18,7 +18,7 @@ namespace {
 
 using BuildClock = std::chrono::steady_clock;
 
-constexpr RayTracingAccelerationStructureBuildFlags kSceneBlasBuildFlags =
+constexpr RayTracingAccelerationStructureBuildFlags kSceneBLASBuildFlags =
     RayTracingAccelerationStructureBuildFlags::PreferFastTrace |
     RayTracingAccelerationStructureBuildFlags::AllowCompaction;
 
@@ -140,7 +140,7 @@ struct TopLevelBuildStrategy {
                 .instanceCount = uint32_t(instances.size())});
             if (!sizes) { return std::unexpected(sizes.error()); }
             scratchSize = std::max(sizes->buildScratchSize, sizes->updateScratchSize);
-            instanceBytes = instances.size() * sizeof(RayTracingGpuInstance);
+            instanceBytes = instances.size() * sizeof(RayTracingGPUInstance);
             return device.createRayTracingAccelerationStructure({.type = RayTracingAccelerationStructureType::TopLevel,
                 .buildFlags = flags, .size = sizes->accelerationStructureSize});
         }
@@ -843,7 +843,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
             micromapCount, micromapTriangleCount, micromapBytes);
     }
 
-    const RayTracingAccelerationStructureBuildFlags blasBuildFlags = kSceneBlasBuildFlags |
+    const RayTracingAccelerationStructureBuildFlags blasBuildFlags = kSceneBLASBuildFlags |
         (device.capabilities().rayTracingPositionFetch
             ? RayTracingAccelerationStructureBuildFlags::AllowDataAccess
             : RayTracingAccelerationStructureBuildFlags::None);
@@ -858,7 +858,7 @@ Result<> SceneAccelerationStructureBuilder::buildInternal(
             .vertexBuffer = impl_->vertexBuffer.get(),
             .vertexOffset = static_cast<uint64_t>(input.firstVertex) * sizeof(RayTracingVertex),
             .vertexStride = sizeof(RayTracingVertex),
-            .vertexFormat = Format::Rgb32Sfloat,
+            .vertexFormat = Format::RGB32Sfloat,
             .vertexCount = input.vertexCount,
             .indexBuffer = impl_->indexBuffer.get(),
             .indexOffset = static_cast<uint64_t>(input.firstIndex) * sizeof(uint32_t),

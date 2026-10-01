@@ -210,7 +210,7 @@ class ExperimentTests(unittest.TestCase):
                     'confirmationBlocks':2,'restored':True,'runs':[],
                     'buildIdentity':{'configuration':'Release','cacheSha256':e.w.digest(root/'CMakeCache.txt')},
                     'toolHashes':{}}
-        for name in ('ExperimentRunner.py','WorkloadCase.py','MeasureExperimentGpu.ps1'):
+        for name in ('ExperimentRunner.py','WorkloadCase.py','MeasureExperimentGPU.ps1'):
             data = Path(e.__file__).with_name(name).read_bytes()
             (root/name).write_bytes(data); manifest['toolHashes'][name] = e.sha(data)
         for stage_index, stage in enumerate(('discovery','confirmation')):
@@ -245,6 +245,15 @@ class ExperimentTests(unittest.TestCase):
             self.assertEqual(decision['decision'],'accept')
             e.w.save(root/(stage+'-Decision.json'),decision)
         e.w.save(root/'Decision.json',decision)
+        manifest['artifacts'] = e.artifact_hashes(root)
+        e.w.save(root/'Manifest.json',manifest)
+        self.assertEqual(e.verify(root)['decision'],'accept')
+        # Archived experiments retain their original producer file names and hashes.
+        monitor = root/'MeasureExperimentGPU.ps1'
+        temporary_monitor = root/'ArchivedMonitor.tmp'
+        monitor.rename(temporary_monitor)
+        temporary_monitor.rename(root/'MeasureExperimentGpu.ps1')
+        manifest['toolHashes']['MeasureExperimentGpu.ps1'] = manifest['toolHashes'].pop('MeasureExperimentGPU.ps1')
         manifest['artifacts'] = e.artifact_hashes(root)
         e.w.save(root/'Manifest.json',manifest)
         self.assertEqual(e.verify(root)['decision'],'accept')

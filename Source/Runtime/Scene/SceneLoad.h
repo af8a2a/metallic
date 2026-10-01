@@ -10,16 +10,16 @@
 
 namespace metallic::scene {
 
-struct GltfInstanceSource {
+struct glTFInstanceSource {
     uint32_t nodeIndex = 0;
     uint32_t sourceNodeIndex = 0;
     uint32_t instanceIndex = 0;
 };
 
-struct GltfInstanceExpansion {
+struct glTFInstanceExpansion {
     uint32_t sourceNodeCount = 0;
     uint64_t rangeReadBytes = 0;
-    std::vector<GltfInstanceSource> instances;
+    std::vector<glTFInstanceSource> instances;
 };
 
 enum class SceneLoadPhase : uint8_t {
@@ -28,7 +28,7 @@ enum class SceneLoadPhase : uint8_t {
     Parsing,
     Geometry,
     Images,
-    GpuUpload,
+    GPUUpload,
     AccelerationStructures,
     Finalizing,
     Completed,

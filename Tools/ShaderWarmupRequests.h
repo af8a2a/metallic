@@ -31,7 +31,7 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
         }
     };
 
-    add("Features/Debug/GpuProbe", {"probe"});
+    add("Features/Debug/GPUProbe", {"probe"});
     add("Features/Debug/LightGridDebug", {"lightGridDebugMain"});
     add("Features/Debug/SliderDebug", {"sliderDebugMain", "sliderDebugOverlayMain"});
     add("Features/Environment/EnvironmentLightingPrecompute", {"environmentLightingPrecomputeMain"});
@@ -39,7 +39,7 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
     add("Features/GPUDriven/GPUDrivenStreamWorkload", {"streamWorkloadResetMain", "streamWorkloadMain"});
     add("Features/GPUDriven/GPUDrivenStreamWorkRaster", {"streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"});
     add("Features/GPUDriven/GPUDrivenStreamGroupRaster", {"streamClusterRasterGroup32Main"});
-    add("Features/GPUDriven/ResidentMeshletLod", {"residentLodResetMain", "residentLodSelectMain", "residentLodArgumentsMain", "residentLodScatterMain"});
+    add("Features/GPUDriven/ResidentMeshletLOD", {"residentLodResetMain", "residentLodSelectMain", "residentLodArgumentsMain", "residentLodScatterMain"});
     add("Features/GPUDriven/GPUDrivenStreamAsset", {"streamClusterBinMain", "streamClusterBinP0Main"});
     add("Features/Lighting/BuildReGIR", {"buildReGIRMain"});
     add("Features/Lighting/ClusterLightGrid", {"clusterLightGridMain"});
@@ -47,10 +47,10 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
     add("Features/PostProcess/AutoExposure", {"autoExposureHistogramMain", "autoExposureReduceMain", "autoExposureApplyMain"});
     add("Features/PostProcess/EditorDisplay", {"editorDisplayVertex", "editorDisplayFragment"});
     add("Features/PostProcess/FinalBlit", {"finalBlitUvMain", "finalBlitMain"});
-    add("Features/PostProcess/StreamlineDlssSupport", {"streamlineDlssDepthVertexMain", "streamlineDlssDepthFragmentMain", "streamlineDlssAlphaMain"});
+    add("Features/PostProcess/StreamlineDLSSSupport", {"streamlineDlssDepthVertexMain", "streamlineDlssDepthFragmentMain", "streamlineDlssAlphaMain"});
     add("Features/PostProcess/UpscalerGuideResolve", {"upscalerGuideResolveMain"});
-    add("Features/ReSTIR/RtxdiComposite", {"rtxdiCompositeMain"});
-    add("Features/ReSTIR/RtxdiConfidence", {"rtxdiConfidenceMain"});
+    add("Features/ReSTIR/RTXDIComposite", {"rtxdiCompositeMain"});
+    add("Features/ReSTIR/RTXDIConfidence", {"rtxdiConfidenceMain"});
     add("Features/Samples/BunnyWireframe", {"bunnyWireframeVertexMain", "bunnyWireframeFragmentMain"});
     add("Features/Samples/ImageSample", {"imageSampleVertexMain", "imageSampleFragmentMain"});
     add("Features/Samples/MaterialShaderObject", {"materialShaderObjectVertexMain", "materialShaderObjectFragmentMain", "materialShaderObjectAlternateFragmentMain"});
@@ -88,7 +88,7 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
         "visibilityClusterCountMain", "visibilityClusterBinMain", "visibilityClusterRasterMain",
         "visibilityTessellationFragment", "visibilityTessellationCullingFragment"});
     for (const char* wave : {"0", "1"}) {
-        add("Features/GPUDriven/HzbSpd", {"hzbSpdMain"}, {}, {{"HZB_SPD_WAVE_OPS", wave}});
+        add("Features/GPUDriven/HZBSPD", {"hzbSpdMain"}, {}, {{"HZB_SPD_WAVE_OPS", wave}});
         add(visibilityModule, {"visibilityBufferAmplificationMain", "visibilityTessellationTask"},
             meshCapabilities, {{"GPU_DRIVEN_AMPLIFICATION_WAVE_OPS", wave}});
         add(streamModule, {"streamTessellationTask"}, meshCapabilities,
@@ -105,7 +105,7 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
     const std::vector<std::string> rtxcrPaths = hasRtxcr
         ? std::vector<std::string>{rtxcrInclude} : std::vector<std::string>{};
     if (hasRtxcr) {
-        add("Features/Samples/RtxcrMaterialSample", {"rtxcrMaterialSampleMain"}, {}, {}, rtxcrPaths);
+        add("Features/Samples/RTXCRMaterialSample", {"rtxcrMaterialSampleMain"}, {}, {}, rtxcrPaths);
     }
     // Conventional textures, both position-fetch capability variants. Optional
     // NTC/NRD SDK permutations remain runtime-compiled.
@@ -117,7 +117,7 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
         const std::vector<std::pair<std::string, std::string>> rayDefines{
             {"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", positionFetch},
             {"METALLIC_HAS_NTC", "0"}, {"METALLIC_NTC_COOPERATIVE_VECTOR", "0"}};
-        add("Features/ReSTIR/SceneRtxdi", {"sceneRtxdiMain"}, rayCapabilities, rayDefines);
+        add("Features/ReSTIR/SceneRTXDI", {"sceneRtxdiMain"}, rayCapabilities, rayDefines);
         add("Features/Debug/SceneMaterialVisualize", {"sceneMaterialVisualizeMain"}, rayCapabilities, rayDefines);
 
         std::vector<std::string> pathCapabilities{"spvRayQueryKHR", "spvGroupNonUniformBallot"};

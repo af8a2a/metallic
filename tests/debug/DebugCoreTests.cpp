@@ -76,7 +76,7 @@ TEST(DebugCore, CompletionAndStaleGeneration)
     EXPECT_EQ(job["result"]["error"]["code"], "StaleHandle");
 }
 
-TEST(DebugCore, CancellationRetainsReservationUntilGpuCompletion)
+TEST(DebugCore, CancellationRetainsReservationUntilGPUCompletion)
 {
     DebugLimits limits; limits.capturePoolBytes = 16; limits.jobBytes = 16;
     DebugCore core(limits); core.setGraph(graph());
@@ -153,7 +153,7 @@ TEST(DebugCapture, ScopedRelationsMissingDependenciesAndNonFiniteStatistics)
     const uint32_t records[] = {1, 0, 0, 0, 2, 9, 7, 1u << 28};
     add("streaming.P.visibleClusters", {"VisibleClusterRecord", 16, {{"clusterIndex", "u32", 0}, {"instanceIndex", "u32", 4}, {"dataIndex", "u32", 8}, {"flags", "u32", 12}}}, records, sizeof(records));
     const uint32_t header[] = {3, 2, 32, 1, 99};
-    add("streaming.P.activeHeader", {"MeshletStreamGpuActiveHeader", 20, {{"activeGroupCount", "u32", 0}, {"activeGroupCapacity", "u32", 4}, {"maxActiveGroupClusters", "u32", 8}, {"overflowCount", "u32", 12}, {"frameIndex", "u32", 16}}}, header, sizeof(header));
+    add("streaming.P.activeHeader", {"MeshletStreamGPUActiveHeader", 20, {{"activeGroupCount", "u32", 0}, {"activeGroupCapacity", "u32", 4}, {"maxActiveGroupClusters", "u32", 8}, {"overflowCount", "u32", 12}, {"frameIndex", "u32", 16}}}, header, sizeof(header));
     auto root = capture.evaluationRoot(); ASSERT_TRUE(root);
     const auto& links = root->at("links").at("streaming.P.visibleClusters").at("items");
     EXPECT_EQ(links[0]["source"], "Resident"); EXPECT_EQ(links[0]["geometry"]["status"], "Captured");

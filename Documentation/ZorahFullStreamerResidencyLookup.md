@@ -12,7 +12,7 @@
 
 ## 验证
 
-Release 样例与 MetallicRhiTests 构建成功，10/10 项聚焦测试通过，Vulkan validation 关闭。新增 `streamer_meshlet_latency_eligibility` 覆盖立即/延迟准入、排队时 fallback 锁定、重复/非法请求、预算阻塞、上传完成、PendingUnload、删除后重新请求、场景 ID 复用及关闭测量。真实 GPU 上传完成/取消路径由已有 upload-completion 回归覆盖。
+Release 样例与 MetallicRHITests 构建成功，10/10 项聚焦测试通过，Vulkan validation 关闭。新增 `streamer_meshlet_latency_eligibility` 覆盖立即/延迟准入、排队时 fallback 锁定、重复/非法请求、预算阻塞、上传完成、PendingUnload、删除后重新请求、场景 ID 复用及关闭测量。真实 GPU 上传完成/取消路径由已有 upload-completion 回归覆盖。
 
 ## Full 同配置漫游
 

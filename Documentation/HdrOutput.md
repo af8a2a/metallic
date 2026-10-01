@@ -12,7 +12,7 @@ Scene-linear HDR → AutoExposure (曝光后的 FP16)
                  → FP16 ImGui 合成 → scRGB 交换链
 ```
 
-- RHI 的 `SwapchainDesc.outputMode` 支持 `Sdr` / `HdrScRgb`，`Swapchain::outputMode()` 返回协商结果。HDR 请求只接受 `R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR_EXT`；默认不支持时回退到 SDR，`allowSdrFallback = false` 则返回 Unsupported。
+- RHI 的 `SwapchainDesc.outputMode` 支持 `SDR` / `HDRscRGB`，`Swapchain::outputMode()` 返回协商结果。HDR 请求只接受 `R16G16B16A16_SFLOAT + EXTENDED_SRGB_LINEAR_EXT`；默认不支持时回退到 SDR，`allowSdrFallback = false` 则返回 Unsupported。
 - 可用时启用 instance extension `VK_EXT_swapchain_colorspace`。支持情况以 surface 报告的完整格式/色彩空间组合为准。[Vulkan 扩展说明](https://docs.vulkan.org/refpages/latest/refpages/source/VK_EXT_swapchain_colorspace.html)
 - Windows scRGB 的 1.0 对应 80 nits，所以四个校准色块的 RGB 值分别为 1.0、2.5375、5.0、12.5。无需 PQ 编码或 Rec.2020 转换。[Microsoft Advanced Color](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range)
 - `RenderGraphCompileOptions.displayOutput` 传入实际输出模式和显示参数。参数变化、shader 热重载及窗口 HDR/display-change 事件均保留正确的显示上下文。
@@ -28,10 +28,10 @@ HDR10/PQ、HDR metadata、自动显示器峰值检测与独立窗口 HDR 尚未�
 
 ## 验证
 
-构建 `Metallic` 和 `MetallicRhiTests`，运行：
+构建 `Metallic` 和 `MetallicRHITests`，运行：
 
 ```powershell
-MetallicRhiTests.exe --gtest_filter="*hdr_display_output*:*hdr_surface_format*:*hdr_editor_imgui*:*final_blit*:*auto_exposure*"
+MetallicRHITests.exe --gtest_filter="*hdr_display_output*:*hdr_surface_format*:*hdr_editor_imgui*:*final_blit*:*auto_exposure*"
 $env:METALLIC_SMOKE_TEST_SAMPLE = 'hdr-calibration'
 $env:METALLIC_DEBUG_VALIDATION = '1'
 Metallic.exe --smoke-test --debug-control

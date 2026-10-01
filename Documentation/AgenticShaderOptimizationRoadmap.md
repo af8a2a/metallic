@@ -87,7 +87,7 @@ flowchart TD
 
 `ShaderVariantManifest` 定义“到底编译和绑定了什么”，记录源码及依赖内容摘要、entry、宏/specialization、Slang 版本/profile/优化/符号选项、workgroup/subgroup、SPIR-V 内容 hash、驱动/GPU、pipeline 配置。保留已有 FNV 字段，同时提供内容寻址摘要。Nsight 的 app/module hash 与自算 hash 可能采用不同算法，必须通过字节码或可核验绑定关系建立映射，不能直接比较字符串。
 
-当前 SW compute 确实创建 `VkPipeline`，可复用已接入的 executable statistics；graphics shader object 路径单独记录 stage 组合和 dynamic state。不能把额外构造 pipeline 的统计默认为生产 `VkShaderEXT` 的统计。[Vulkan 实现](../Source/Runtime/Render/GAPI/Vulkan/VulkanRhi.cpp)。
+当前 SW compute 确实创建 `VkPipeline`，可复用已接入的 executable statistics；graphics shader object 路径单独记录 stage 组合和 dynamic state。不能把额外构造 pipeline 的统计默认为生产 `VkShaderEXT` 的统计。[Vulkan 实现](../Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp)。
 
 `EvidenceBundle` 定义“测到了什么”，每条记录至少有以下字段：
 
@@ -186,7 +186,7 @@ NvPerf 支持 Vulkan 应用内指标采集与自定义触发/输出，适合后�
 | PR4：实验 runner 与判定 | 复用 `RunZorahFullRoam.ps1` 和现有分析/正确性工具，扩展 CLI | 一个有限候选能完成构建、验证、A/B、独立确认和归档 |
 | PR5：可选 NvPerf backend | `Profiling/`、`cmake/`、backend contract tests | 无 SDK 构建仍正常；支持/缺失指标和多轮采集有明确语义 |
 
-复用 [MetallicCtl.cpp](../Source/Tools/MetallicCtl.cpp)、[DebugCore.cpp](../Source/Runtime/Debug/DebugCore.cpp) 的协议；复用 [GpuProfilingTests.cpp](../tests/rhi/GpuProfilingTests.cpp)、[EditorProfilerTests.cpp](../tests/rhi/EditorProfilerTests.cpp)、[StreamClusterClassificationTests.cpp](../tests/rhi/StreamClusterClassificationTests.cpp) 和现有光栅正确性测试。新增测试聚焦解析语义、错配检测、可写状态恢复与接受门槛，避免只是照抄实现。
+复用 [MetallicCtl.cpp](../Source/Tools/MetallicCtl.cpp)、[DebugCore.cpp](../Source/Runtime/Debug/DebugCore.cpp) 的协议；复用 [GPUProfilingTests.cpp](../tests/rhi/GPUProfilingTests.cpp)、[EditorProfilerTests.cpp](../tests/rhi/EditorProfilerTests.cpp)、[StreamClusterClassificationTests.cpp](../tests/rhi/StreamClusterClassificationTests.cpp) 和现有光栅正确性测试。新增测试聚焦解析语义、错配检测、可写状态恢复与接受门槛，避免只是照抄实现。
 
 **7. 建议的 Agent 命令面与完成定义**
 

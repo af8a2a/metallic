@@ -105,7 +105,7 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 
 static const uint kModeMeshlet = 0u;
 static const uint kModePrimitive = 1u;
-static const uint kModeLod = 2u;
+static const uint kModeLOD = 2u;
 static const uint kModeShaded = 3u;
 static const uint kModeBaseColor = 4u;
 static const uint kEnvironmentModeProcedural = 0u;
@@ -1301,7 +1301,7 @@ void visibilityBufferShadeMain(
         uint colorSeed = recordIndex;
         if (params.mode == kModePrimitive) {
             colorSeed = surface.primitiveIndex;
-        } else if (params.mode == kModeLod) {
+        } else if (params.mode == kModeLOD) {
             colorSeed = surface.primitiveIndex * 1009u +
                 surface.lodLevel * 131u + surface.lodGroupIndex * 17u + 1u;
         }

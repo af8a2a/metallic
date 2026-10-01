@@ -51,7 +51,7 @@ The first enabled capture has only 22 valid nonnegative Simulation-to-GPU interv
 
 ## Validation
 
-Release `MetallicGPUDrivenSample` and `MetallicRhiTests` builds succeeded. Eight selected tests passed with Vulkan validation: request selection, screen priority, prefetch admission, budget admission, joint cold reclaim, upload completion, ordered publication retry, and BLAS cut cache. Additional changed-benefit priority invalidation test passed after rebuilding the test executable. Main benchmark executable did not change between the four captures.
+Release `MetallicGPUDrivenSample` and `MetallicRHITests` builds succeeded. Eight selected tests passed with Vulkan validation: request selection, screen priority, prefetch admission, budget admission, joint cold reclaim, upload completion, ordered publication retry, and BLAS cut cache. Additional changed-benefit priority invalidation test passed after rebuilding the test executable. Main benchmark executable did not change between the four captures.
 
 The request-selection oracle covers ordering, duplicate promotion, blocked candidates, queued keepalive and reset; the added assertions verify unchanged-score reuse and exactly one candidate invalidated by one benefit change. BLAS lifecycle assertions cover repeated preparation, completed-feedback consumption and cancelled recording rejection. Validation's older layer disables KHR OMM for these focused tests; this is not OMM validation of the Full production path.
 

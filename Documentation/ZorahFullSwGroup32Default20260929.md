@@ -12,7 +12,7 @@
 
 ## 本轮验证
 
-环境为 RTX 5070 Ti；构建 `build-release`、`build-relwithdebinfo` 和 `build-scheduling-release` 的 `MetallicGPUDrivenSample` 均成功。后者的 `MetallicRhiTests` 也已重建。
+环境为 RTX 5070 Ti；构建 `build-release`、`build-relwithdebinfo` 和 `build-scheduling-release` 的 `MetallicGPUDrivenSample` 均成功。后者的 `MetallicRHITests` 也已重建。
 
 | 检查 | 结果 |
 |---|---|
@@ -42,7 +42,7 @@
 测试入口：
 
 ```powershell
-.\build-scheduling-release\tests\MetallicRhiTests.exe --rhi-validation --rhi-bindless --filter stream_group_raster_boundaries
+.\build-scheduling-release\tests\MetallicRHITests.exe --rhi-validation --rhi-bindless --filter stream_group_raster_boundaries
 python -B -m unittest discover -s tests/perf -p TestSwGroupCorrectness.py
 python -B -m unittest discover -s tests/perf -p TestRasterComparisonScopes.py
 ```

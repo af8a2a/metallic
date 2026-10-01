@@ -113,7 +113,7 @@ def summarize_case(directory):
         "final": rows[-1]["stream"]}
     # Includes device/graph setup and final diagnostics; it is machine telemetry,
     # not a timestamp-aligned attribution of GPU utilization to this renderer.
-    with (directory / "GpuDuring.csv").open(encoding="utf-8-sig", newline="") as source:
+    with (directory / "GPUDuring.csv").open(encoding="utf-8-sig", newline="") as source:
         telemetry = [{key.strip(): value.strip() for key, value in row.items()}
                      for row in csv.DictReader(source)]
     require(bool(telemetry), "GPU telemetry missing")

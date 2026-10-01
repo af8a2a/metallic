@@ -7,7 +7,7 @@
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Scene/Scene.h"
 
-#include "Runtime/Render/Profiling/CpuProfile.h"
+#include "Runtime/Render/Profiling/CPUProfile.h"
 
 #include <array>
 #include <cstdint>
@@ -103,7 +103,7 @@ public:
         CommandBuffer& commands,
         uint64_t frameIndex,
         Buffer*& feedback,
-        CpuProfileRecorder* profiler = nullptr,
+        CPUProfileRecorder* profiler = nullptr,
         bool freezePublication = false);
     // Record once after every consumer of this frame's texture feedback. Demand
     // is accumulated in Device memory and copied asynchronously to HostReadback;
@@ -111,7 +111,7 @@ public:
     Result<> endTextureStreaming(
         CommandBuffer& commands,
         uint64_t frameIndex,
-        CpuProfileRecorder* profiler = nullptr);
+        CPUProfileRecorder* profiler = nullptr);
     bool textureUploadsReady() const;
     bool gpuWorkComplete();
     SceneUploadStats uploadStats() const;

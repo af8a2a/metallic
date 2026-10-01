@@ -48,7 +48,7 @@ Nanite 使用按精度量化、按位打包的位置及专用索引/属性解码
 
 参考光追路径另有一个无法直接移植到当前 VBuffer 的优势：位置仅临时上传用于 CLAS 构建，命中着色通过内建操作获取三角形顶点，动态 Geometry 池可不保留位置。VBuffer 还要读取位置来光栅和重建三角形，不能直接释放。
 
-代码：[payload 格式](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.h:140)、[格式检查](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp:554)、[CLAS 解码契约](E:/metallic/Source/Runtime/Render/MeshletStreamClas.cpp:78)、[当前 cook 配置](E:/metallic/Source/Runtime/Scene/scene.cpp:1204)、[参考位置生命周期](E:/vk_lod_clusters/docs/streaming.md)、[Nanite 位置解码](E:/UnrealEngine/Engine/Shaders/Private/Nanite/NaniteDataDecode.ush:896)。数值来自[缓存审计](E:/metallic/Documentation/MiniZorahMemoryComparison.json)。
+代码：[payload 格式](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.h:140)、[格式检查](E:/metallic/Source/Runtime/Scene/MeshletStreamAsset.cpp:554)、[CLAS 解码契约](E:/metallic/Source/Runtime/Render/MeshletStreamCLAS.cpp:78)、[当前 cook 配置](E:/metallic/Source/Runtime/Scene/scene.cpp:1204)、[参考位置生命周期](E:/vk_lod_clusters/docs/streaming.md)、[Nanite 位置解码](E:/UnrealEngine/Engine/Shaders/Private/Nanite/NaniteDataDecode.ush:896)。数值来自[缓存审计](E:/metallic/Documentation/MiniZorahMemoryComparison.json)。
 
 ## 2. LOD 与遍历：已有并行，但工作粒度仍受实例限制
 
@@ -66,7 +66,7 @@ vk_lod_clusters 的 persistent traversal 从全局节点任务队列按 subgroup
 
 因此参考的 1 px 与 Metallic 的 1.5 px 不表示相同 cut 或相同质量。建议对比相同几何组的误差分布，特别是屏幕边缘、近裁面与非均匀缩放；再评估更紧的保守投影界。不能单纯换成更宽松公式，以减少 cluster 数作为效率提升。此前全屏跳色已通过逻辑 page/cluster ID 修复，剩余 cut 变化应按稳定几何身份统计。
 
-来源：[Metallic 度量](E:/metallic/Shaders/Libraries/GPUDriven/MeshletLodMetric.slang:7)、[参考度量](E:/vk_lod_clusters/shaders/traversal.glsl:204)、[Nanite 度量](E:/UnrealEngine/Engine/Shaders/Private/Nanite/NaniteClusterCulling.usf:233)、[稳定可视化验收](E:/metallic/Documentation/MiniZorahVisualizationStability.md)。
+来源：[Metallic 度量](E:/metallic/Shaders/Libraries/GPUDriven/MeshletLODMetric.slang:7)、[参考度量](E:/vk_lod_clusters/shaders/traversal.glsl:204)、[Nanite 度量](E:/UnrealEngine/Engine/Shaders/Private/Nanite/NaniteClusterCulling.usf:233)、[稳定可视化验收](E:/metallic/Documentation/MiniZorahVisualizationStability.md)。
 
 ## 3. 软硬分类与光栅：下一步是避免重复读几何
 
@@ -94,7 +94,7 @@ Metallic 的固定 512 MiB 持久 CLAS buffer 与 1 GiB 几何 buffer 仍按预�
 
 建议先补 `geometry drawable → CLAS ready → RT usable` 延迟和 batch 占用率，再移植 GPU 分配/搬移描述生成。若关注进程显存，再单独实现 sparse 或分段增长。是否做存活对象 defrag 应由最大连续空闲块、分配失败率和碎片率决定；它还要求同步更新引用这些地址的 BLAS，不能无条件每帧搬移。
 
-代码：[尺寸读回与地址发布](E:/metallic/Source/Runtime/Render/MeshletStreamCompactClasPool.cpp:120)、[固定池与批次](E:/metallic/Source/Runtime/Render/MeshletStreamCompactClasPool.cpp:239)、[CPU 分配与 MOVE](E:/metallic/Source/Runtime/Render/MeshletStreamCompactClasPool.cpp:361)、[参考 GPU 分配器](E:/vk_lod_clusters/docs/clas_allocation.md)、[Nanite CLAS](E:/UnrealEngine/Engine/Source/Runtime/Renderer/Private/Nanite/RayTracing/NaniteRayTracingCLAS.cpp:291)、[Nanite defrag](E:/UnrealEngine/Engine/Source/Runtime/Renderer/Private/Nanite/RayTracing/NaniteRayTracingCLASDefrag.cpp:219)。
+代码：[尺寸读回与地址发布](E:/metallic/Source/Runtime/Render/MeshletStreamCompactCLASPool.cpp:120)、[固定池与批次](E:/metallic/Source/Runtime/Render/MeshletStreamCompactCLASPool.cpp:239)、[CPU 分配与 MOVE](E:/metallic/Source/Runtime/Render/MeshletStreamCompactCLASPool.cpp:361)、[参考 GPU 分配器](E:/vk_lod_clusters/docs/clas_allocation.md)、[Nanite CLAS](E:/UnrealEngine/Engine/Source/Runtime/Renderer/Private/Nanite/RayTracing/NaniteRayTracingCLAS.cpp:291)、[Nanite defrag](E:/UnrealEngine/Engine/Source/Runtime/Renderer/Private/Nanite/RayTracing/NaniteRayTracingCLASDefrag.cpp:219)。
 
 ## 5. 光追：已有底层能力，当前样例尚未消费
 
@@ -112,7 +112,7 @@ MiniZorah 默认 `enableClas=true`、`enableClusterRtx=false`，画面为 VBuffe
 
 ## 6. 材质与引擎集成：距 Nanite 产品能力仍远
 
-当前 MiniZorah 的 `VisibilityBufferMaterialPass` 输出 Rgba8Unorm，使用几何法线、标量材质和固定方向光；明确拒绝纹理和真实透射。仓库已有其他材质、OpenPBR、光追和材质分箱能力，但当前 metadata/stream 场景并未自动接入这些消费者。`SceneResourceManager` 仍拒绝从 StreamAsset metadata 创建传统 resident/RTAS，避免回到全量几何导入。
+当前 MiniZorah 的 `VisibilityBufferMaterialPass` 输出 RGBA8Unorm，使用几何法线、标量材质和固定方向光；明确拒绝纹理和真实透射。仓库已有其他材质、OpenPBR、光追和材质分箱能力，但当前 metadata/stream 场景并未自动接入这些消费者。`SceneResourceManager` 仍拒绝从 StreamAsset metadata 创建传统 resident/RTAS，避免回到全量几何导入。
 
 Nanite 已有材质驱动的 programmable raster、材质分箱及最终着色，并接入引擎阴影和 GI 系统。这里的差距不适合用单个 VBuffer kernel 的毫秒数表达。[Epic 材质管线介绍](https://www.unrealengine.com/blog/take-a-deep-dive-into-nanite-gpu-driven-materials?lang=en)
 

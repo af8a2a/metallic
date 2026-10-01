@@ -30,7 +30,7 @@ public:
             .accelerationStructureRead().setOptional();
         reflection.addTextureOutput("color", "RayQuery acceleration-structure visualization")
             .storageWrite()
-            .format = Format::Rgba8Unorm;
+            .format = Format::RGBA8Unorm;
         return reflection;
     }
 

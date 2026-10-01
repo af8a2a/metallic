@@ -1,13 +1,13 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
-#include "Runtime/Render/MeshletLod.h"
+#include "Runtime/Render/MeshletLOD.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderSample.h"
-#include "Runtime/Render/Profiling/CpuPhaseTrace.h"
+#include "Runtime/Render/Profiling/CPUPhaseTrace.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
@@ -79,7 +79,7 @@ public:
             uint64_t size = 0;
             std::string key;
             if (checkpoint == "AfterTraversal" && resource.id == "streaming.GPUDriven.activeHeader") {
-                size = sizeof(MeshletStreamGpuActiveHeader); key = "header";
+                size = sizeof(MeshletStreamGPUActiveHeader); key = "header";
             } else if (checkpoint == "AfterTraversal" && resource.id == "streaming.GPUDriven.activeGroups") {
                 size = resource.size != 0 ? resource.size : resource.buffer->desc().size; key = "groups";
             } else if (checkpoint == "AfterTraversal" && resource.id == "streaming.GPUDriven.lodState") {
@@ -210,8 +210,8 @@ Json roamingMemory()
 Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAsset& asset, const Json& camera)
 {
     const auto rasterInfo = observer.read<VisibilityBufferFrameInfo>("rasterInfo").front();
-    const auto header = observer.read<MeshletStreamGpuActiveHeader>("header").at(0);
-    const auto rows = observer.read<MeshletStreamGpuActiveGroup>("groups");
+    const auto header = observer.read<MeshletStreamGPUActiveHeader>("header").at(0);
+    const auto rows = observer.read<MeshletStreamGPUActiveGroup>("groups");
     checkRoam(header.activeGroupCount <= rows.size() && header.overflowCount < 2, "Invalid/empty capacity fallback");
     const auto instanceStates = observer.read<uint32_t>("instances");
     const auto lateInstanceStates = observer.read<uint32_t>("lateInstances");
@@ -282,7 +282,7 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
     uint32_t verified = 0;
     uint64_t overTarget = 0, unbounded = 0, visibleOverTarget = 0, visibleUnbounded = 0;
     float maxFiniteError = 0, maxVisibleError = 0;
-    MeshletLodView view;
+    MeshletLODView view;
     for (uint32_t axis = 0; axis < 3; ++axis) { view.eye[axis] = camera.at("eye")[axis].get<float>(); }
     view.eye[3] = camera.at("znear").get<float>();
     float3 direction(camera.at("center")[0].get<float>() - view.eye[0], camera.at("center")[1].get<float>() - view.eye[1],
@@ -297,7 +297,7 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
         checkRoam(instanceStates[instance] == 0u || !masks.empty(), "A visible/deferred instance lost its complete cut");
         if (masks.empty()) { continue; }
         ++verified;
-        GPUSceneGpuInstanceRecord metricInstance{};
+        GPUSceneGPUInstanceRecord metricInstance{};
         std::copy_n(asset.instances()[instance].worldMatrix, 16, metricInstance.worldMatrix.begin());
         std::unordered_set<uint32_t> measured;
         for (const auto& [id, mask] : masks) {
@@ -307,11 +307,11 @@ Json validateRoamingCut(RoamingObserver& observer, const scene::MeshletStreamAss
                 const uint32_t child = asset.refinedGroups()[group.clusterRefinedOffset + cluster];
                 if (child >= asset.groups().size() || !measured.insert(child).second) { continue; }
                 const auto& refine = asset.groups()[child];
-                MeshletLodGroupRecord metric;
+                MeshletLODGroupRecord metric;
                 std::copy_n(refine.boundsCenterRadius, 4, metric.sphere.begin());
                 metric.error = refine.maxQuadricError;
                 const float error = meshletLodPixelError(metric, metricInstance, view);
-                MeshletLodRefinementBounds bounds;
+                MeshletLODRefinementBounds bounds;
                 for (uint32_t axis = 0; axis < 3; ++axis) {
                     const double radius = double(metric.sphere[3]) + metric.error;
                     bounds.min[axis] = std::nextafter(float(double(metric.sphere[axis]) - radius), -INFINITY);
@@ -385,16 +385,16 @@ Json percentiles(std::vector<double> samples)
     return {{"samples", samples.size()}, {"p50", p(.5)}, {"p95", p(.95)}, {"p99", p(.99)}, {"max", samples.back()}};
 }
 
-class MiniZorahRoamingTest final : public RhiTest {
+class MiniZorahRoamingTest final : public RHITest {
 public:
-    MiniZorahRoamingTest() { type = RhiTestType::Rendering; name = "minizorah_roaming"; }
-    RhiTestResult run(RhiTestContext& context) override;
+    MiniZorahRoamingTest() { type = RHITestType::Rendering; name = "minizorah_roaming"; }
+    RHITestResult run(RHITestContext& context) override;
 };
 
-RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
+RHITestResult MiniZorahRoamingTest::run(RHITestContext& context)
 {
     if (!std::getenv("METALLIC_TEST_MINIZORAH") || std::string_view(std::getenv("METALLIC_TEST_MINIZORAH")) != "1") {
-        return RhiTestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for the cooked scene roaming test");
+        return RHITestResult::skip("Set METALLIC_TEST_MINIZORAH=1 for the cooked scene roaming test");
     }
     const auto setting = [](const char* name, uint32_t fallback) {
         const char* value = std::getenv(name);
@@ -406,8 +406,8 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
     const bool transitionChecks = setting("METALLIC_MINIZORAH_TRANSITION_CHECKS", 0) != 0;
     const bool latencyOnly = setting("METALLIC_MINIZORAH_LATENCY_ONLY", 0) != 0;
     const uint32_t startupTraceFrames = std::min(setting("METALLIC_MINIZORAH_STARTUP_TRACE_FRAMES", 0),
-        static_cast<uint32_t>(profiling::CpuPhaseTrace::kMaxFrames));
-    auto startupTrace = startupTraceFrames != 0 ? std::make_unique<profiling::CpuPhaseTrace>() : nullptr;
+        static_cast<uint32_t>(profiling::CPUPhaseTrace::kMaxFrames));
+    auto startupTrace = startupTraceFrames != 0 ? std::make_unique<profiling::CPUPhaseTrace>() : nullptr;
     Json tracedFrames = Json::array(), tracedGpu = Json::array();
     Json report{{"status", "running"}, {"durationSeconds", duration}, {"pageBudgetBytes", budget},
         {"resolution", {1920, 1080}}, {"targetPixelError", 1.5}, {"routePeriodSeconds", 60},
@@ -458,7 +458,7 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         const auto renderPreview = [&](const char* output, bool readback, const char* phase) {
             const uint64_t frame = previewFrame++;
             auto* trace = startupTrace && frame < startupTraceFrames ? startupTrace.get() : nullptr;
-            profiling::CpuPhaseTraceFrame scope(trace, frame);
+            profiling::CPUPhaseTraceFrame scope(trace, frame);
             const auto start = trace ? Clock::now() : Clock::time_point{};
             const auto result = preview.render(graph, 1920, 1080, output, readback);
             if (trace) {
@@ -658,12 +658,12 @@ RhiTestResult MiniZorahRoamingTest::run(RhiTestContext& context)
         // Snapshot buffers belong to the preview device and must die first.
         observer.copies.clear();
         observer.timestamps.reset();
-        return RhiTestResult::pass("Fixed-budget route and DAG coverage verified");
+        return RHITestResult::pass("Fixed-budget route and DAG coverage verified");
     } catch (const std::exception& error) {
         report["status"] = "failed"; report["error"] = error.what(); save();
         observer.copies.clear();
         observer.timestamps.reset();
-        return RhiTestResult::fail(error.what());
+        return RHITestResult::fail(error.what());
     }
 }
 
@@ -671,18 +671,18 @@ METALLIC_REGISTER_RHI_TEST(MiniZorahRoamingTest);
 
 // Fixed input replay, separate from the wall-clock-driven quality/roaming test.
 // Timing runs keep multiple submissions in flight and have no debug observer.
-class MiniZorahBaselineTest final : public RhiTest {
+class MiniZorahBaselineTest final : public RHITest {
 public:
     MiniZorahBaselineTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "minizorah_fixed_baseline";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         if (!std::getenv("METALLIC_TEST_MINIZORAH")) {
-            return RhiTestResult::skip("Set METALLIC_TEST_MINIZORAH=1");
+            return RHITestResult::skip("Set METALLIC_TEST_MINIZORAH=1");
         }
         const auto setting = [](const char* name, uint32_t fallback) {
             const char* value = std::getenv(name);
@@ -694,7 +694,7 @@ public:
         const uint32_t recordingWorkers = setting("METALLIC_MINIZORAH_RECORDING_WORKERS", 0);
         const uint32_t finalHoldFrames = setting("METALLIC_MINIZORAH_BENCH_FINAL_HOLD", 0);
         if (realtime && !context.device.capabilities().streamlineDlssSr) {
-            return RhiTestResult::skip("Realtime replay requires --rhi-realtime and DLSS-SR");
+            return RHITestResult::skip("Realtime replay requires --rhi-realtime and DLSS-SR");
         }
         uint32_t frameCount = setting("METALLIC_MINIZORAH_BENCH_FRAMES", 8400);
         Json replay;
@@ -921,7 +921,7 @@ public:
                     const auto info = observer.read<VisibilityBufferFrameInfo>("rasterInfo").front();
                     entry["renderExtent"] = {info.width, info.height};
                     if (realtime && observer.copies.contains("streaming.GPUDriven.blasHeader")) {
-                        const auto blas = observer.read<MeshletStreamGpuBlasHeader>("streaming.GPUDriven.blasHeader").front();
+                        const auto blas = observer.read<MeshletStreamGPUBLASHeader>("streaming.GPUDriven.blasHeader").front();
                         entry["blas"] = {{"builds", blas.blasBuildCount}, {"references", blas.clusterReferenceCount},
                             {"cacheDirty", blas.padding0}, {"activeGroups", blas.padding1}, {"clasRevision", blas.padding2}};
                     }
@@ -936,7 +936,7 @@ public:
                     "Final held view did not converge to 1.5 render px"); }
             };
             const auto runStart = Clock::now();
-            profiling::CpuPhaseTrace cpuTrace;
+            profiling::CPUPhaseTrace cpuTrace;
             for (uint32_t f = 0; f < frameCount; ++f) {
                 const bool capture = quality && (f == 29 || f == 59 || f == 119 || f == 179 || (f + 1) % 300 == 0);
                 if (capture) { checkRoam(bool(executor.waitForSubmittedWork(30000000000ull)), "Pre-checkpoint drain failed"); }
@@ -949,7 +949,7 @@ public:
                 cpuTrace.events.clear();
                 cpuTrace.gpuSpans.clear();
                 {
-                    profiling::CpuPhaseTraceFrame traceFrame(&cpuTrace, f);
+                    profiling::CPUPhaseTraceFrame traceFrame(&cpuTrace, f);
                     submit();
                 }
                 frames[f].executeMs = std::chrono::duration<double, std::milli>(Clock::now() - executeStart).count();
@@ -1118,10 +1118,10 @@ public:
             report["overlappingFrames"] = overlapCount;
             report["status"] = "passed";
             save();
-            return RhiTestResult::pass(std::to_string(frameCount) + " fixed-step frames with complete timing, budget and final quality checks");
+            return RHITestResult::pass(std::to_string(frameCount) + " fixed-step frames with complete timing, budget and final quality checks");
         } catch (const std::exception& error) {
             report["status"] = "failed"; report["error"] = error.what(); save();
-            return RhiTestResult::fail(error.what());
+            return RHITestResult::fail(error.what());
         }
     }
 };

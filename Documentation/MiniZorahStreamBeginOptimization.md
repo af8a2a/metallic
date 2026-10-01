@@ -37,7 +37,7 @@ forward_2 的热点拆分如下，均为两轮均值。子项嵌套在总计内�
 | Sort cold candidates | 0.689 | 0.107 |
 | Update resident demand | 0.407 | 0.179 |
 
-[耗时对比图](E:/metallic/build-release/stream-begin-opt/analysis/CpuComparison.png) 中横条为两轮均值，短刻度为各轮均值。计时使用 steady-clock elapsed time，包含线程抢占；两个串行样本的范围不是置信区间。优化前两轮存在明显波动，但优化后两轮均低于优化前两轮。其余 8 个非预热阶段也均下降，详见结果 JSON。
+[耗时对比图](E:/metallic/build-release/stream-begin-opt/analysis/CPUComparison.png) 中横条为两轮均值，短刻度为各轮均值。计时使用 steady-clock elapsed time，包含线程抢占；两个串行样本的范围不是置信区间。优化前两轮存在明显波动，但优化后两轮均低于优化前两轮。其余 8 个非预热阶段也均下降，详见结果 JSON。
 
 ## 回收与质量验证
 
@@ -52,7 +52,7 @@ forward_2 的热点拆分如下，均为两轮均值。子项嵌套在总计内�
 
 优化后最大上传量相对优化前最小值增加约 0.022%。相机输入一致，但异步 I/O 的完成时间可以改变少量页面事件，因此不要求逐帧请求量完全相同。
 
-- Release 的 `MetallicGPUDrivenSample` 与 `MetallicRhiTests` 构建成功。
+- Release 的 `MetallicGPUDrivenSample` 与 `MetallicRHITests` 构建成功。
 - 6 项聚焦测试通过：`streamer_joint_cold_reclaim`、`streamer_meshlet_residency_eviction_delay_age`、`streamer_meshlet_demand_cache`、`stream_clas_eviction_reupload`、`stream_clas_runtime_lifecycle`、`clas_compact_lifecycle`。其中新增了反向插入、同龄 ID 排序、年龄优先、重复卸载/重载检查，并加强旧退休记录不能提前释放 CLAS 的断言。
 - 修改后 9,000 帧 MiniZorah 回放通过，包含 3,000 帧 Vulkan validation 质量回放、15 个检查点。初始加载检查点仍有未收敛项；运动中的 forward_1 / forward_2 检查点分别有 2 / 1 个可见超阈值项，停留与最终检查点均为 0。这次未承诺流送过程每一帧都完全收敛。
 - 原有 vk/Metallic 分析器校验通过，导出 3,674 条 scope 和 810 条内存/计数器记录。本次收益判断采用 Metallic 自身前后对比。
@@ -60,7 +60,7 @@ forward_2 的热点拆分如下，均为两轮均值。子项嵌套在总计内�
 ## 证据与复测
 
 - 原始前后回放：`build-release/stream-begin-opt/before`、`after`。
-- 保留的修改前程序：`build-release/stream-begin-opt/before-runtime/MetallicRhiTests.exe`。
+- 保留的修改前程序：`build-release/stream-begin-opt/before-runtime/MetallicRHITests.exe`。
 - [汇总结果与源码哈希](E:/metallic/Documentation/MiniZorahStreamBeginOptimizationResults.json)。
 - 完整均值/P95/最大值：`build-release/stream-begin-opt/analysis/Evidence.json`；参考程序对齐数据：`build-release/stream-begin-opt/reference-analysis`。
 - 聚焦验证日志：`build-release/stream-begin-opt/focused.log` 中 5 项通过；新增排序测试修正了 fixture 对 `requestPage()` 返回值的误用后，最终通过记录见 `order-final.log`。

@@ -12,7 +12,7 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "glTF material color via VK_EXT_shader_object")
-            .format = Format::Rgba8Unorm;
+            .format = Format::RGBA8Unorm;
         reflection.addTextureOutput("depth", "glTF material depth")
             .depthStencilWrite();
         return reflection;
@@ -48,10 +48,10 @@ public:
             return {};
         }
 
-        std::vector<MaterialShaderObjectGpuPosition> positions;
+        std::vector<MaterialShaderObjectGPUPosition> positions;
         std::vector<uint32_t> materialIndices;
-        std::vector<MaterialShaderObjectGpuMaterial> materials;
-        std::vector<SceneGpuTransform> transforms;
+        std::vector<MaterialShaderObjectGPUMaterial> materials;
+        std::vector<SceneGPUTransform> transforms;
         if (!buildSceneGeometry(
                 properties(),
                 runtimeScene,
@@ -73,7 +73,7 @@ public:
             transforms.emplace_back();
         }
 
-        MaterialShaderObjectGpuParams params;
+        MaterialShaderObjectGPUParams params;
         if (drawBounds_.valid) {
             buildParams(context.width, context.height, drawBounds_, params);
         }
@@ -81,7 +81,7 @@ public:
         Result<> result = uploadStorageBuffer(
             *context.device,
             positions.data(),
-            static_cast<uint64_t>(positions.size() * sizeof(MaterialShaderObjectGpuPosition)),
+            static_cast<uint64_t>(positions.size() * sizeof(MaterialShaderObjectGPUPosition)),
             positionBuffer_,
             log,
             "SceneMaterialShaderObjectPass positions");
@@ -91,7 +91,7 @@ public:
         result = uploadStorageBuffer(
             *context.device,
             transforms.data(),
-            static_cast<uint64_t>(transforms.size() * sizeof(SceneGpuTransform)),
+            static_cast<uint64_t>(transforms.size() * sizeof(SceneGPUTransform)),
             transformBuffer_,
             log,
             "SceneMaterialShaderObjectPass transforms");
@@ -111,7 +111,7 @@ public:
         result = uploadStorageBuffer(
             *context.device,
             materials.data(),
-            static_cast<uint64_t>(materials.size() * sizeof(MaterialShaderObjectGpuMaterial)),
+            static_cast<uint64_t>(materials.size() * sizeof(MaterialShaderObjectGPUMaterial)),
             materialBuffer_,
             log,
             "SceneMaterialShaderObjectPass materials");
@@ -324,9 +324,9 @@ private:
         if (runtimeScene->transformRevision() == transformRevision_) {
             return {};
         }
-        const std::vector<SceneGpuTransform> transforms = buildSceneGpuTransforms(*runtimeScene);
+        const std::vector<SceneGPUTransform> transforms = buildSceneGpuTransforms(*runtimeScene);
         if (transformBuffer_ == nullptr ||
-            transforms.size() * sizeof(SceneGpuTransform) != transformBuffer_->desc().size) {
+            transforms.size() * sizeof(SceneGPUTransform) != transformBuffer_->desc().size) {
             spdlog::warn("[SceneMaterialShaderObjectPass] Runtime scene transform layout changed");
             return makeError(Error::Failure);
         }
@@ -348,10 +348,10 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        std::vector<MaterialShaderObjectGpuPosition> positions;
+        std::vector<MaterialShaderObjectGPUPosition> positions;
         std::vector<uint32_t> materialIndices;
-        std::vector<MaterialShaderObjectGpuMaterial> materials;
-        std::vector<SceneGpuTransform> transforms;
+        std::vector<MaterialShaderObjectGPUMaterial> materials;
+        std::vector<SceneGPUTransform> transforms;
         std::vector<MaterialShaderObjectBatch> batches;
         scene::Bounds bounds;
         std::string log;
@@ -380,7 +380,7 @@ private:
         Result<> result = uploadStorageBuffer(
             *device_,
             positions.data(),
-            static_cast<uint64_t>(positions.size() * sizeof(MaterialShaderObjectGpuPosition)),
+            static_cast<uint64_t>(positions.size() * sizeof(MaterialShaderObjectGPUPosition)),
             positionBuffer,
             log,
             "SceneMaterialShaderObjectPass runtime positions");
@@ -391,7 +391,7 @@ private:
         result = uploadStorageBuffer(
             *device_,
             transforms.data(),
-            static_cast<uint64_t>(transforms.size() * sizeof(SceneGpuTransform)),
+            static_cast<uint64_t>(transforms.size() * sizeof(SceneGPUTransform)),
             transformBuffer,
             log,
             "SceneMaterialShaderObjectPass runtime transforms");
@@ -413,7 +413,7 @@ private:
         result = uploadStorageBuffer(
             *device_,
             materials.data(),
-            static_cast<uint64_t>(materials.size() * sizeof(MaterialShaderObjectGpuMaterial)),
+            static_cast<uint64_t>(materials.size() * sizeof(MaterialShaderObjectGPUMaterial)),
             materialBuffer,
             log,
             "SceneMaterialShaderObjectPass runtime materials");
@@ -563,14 +563,14 @@ private:
         uint32_t renderNodeIndex,
         const scene::RenderPrimitive& primitive,
         uint32_t localIndex,
-        std::vector<MaterialShaderObjectGpuPosition>& outPositions,
+        std::vector<MaterialShaderObjectGPUPosition>& outPositions,
         scene::Bounds& outBounds)
     {
         if (static_cast<size_t>(localIndex) >= primitive.positions.size()) {
             return;
         }
         const float3 local = primitive.positions[static_cast<size_t>(localIndex)];
-        outPositions.push_back(MaterialShaderObjectGpuPosition{
+        outPositions.push_back(MaterialShaderObjectGPUPosition{
             .x = local.x,
             .y = local.y,
             .z = local.z,
@@ -583,10 +583,10 @@ private:
     static bool buildSceneGeometry(
         const RenderGraphProperties& properties,
         const scene::Scene* runtimeScene,
-        std::vector<MaterialShaderObjectGpuPosition>& outPositions,
+        std::vector<MaterialShaderObjectGPUPosition>& outPositions,
         std::vector<uint32_t>& outMaterialIndices,
-        std::vector<MaterialShaderObjectGpuMaterial>& outMaterials,
-        std::vector<SceneGpuTransform>& outTransforms,
+        std::vector<MaterialShaderObjectGPUMaterial>& outMaterials,
+        std::vector<SceneGPUTransform>& outTransforms,
         std::vector<MaterialShaderObjectBatch>& outBatches,
         scene::Bounds& outBounds,
         std::string& log)
@@ -600,11 +600,11 @@ private:
 
         outMaterials.clear();
         if (loadedScene.materials().empty()) {
-            outMaterials.push_back(MaterialShaderObjectGpuMaterial{});
+            outMaterials.push_back(MaterialShaderObjectGPUMaterial{});
         } else {
             outMaterials.reserve(loadedScene.materials().size());
             for (const scene::RenderMaterial& material : loadedScene.materials()) {
-                outMaterials.push_back(MaterialShaderObjectGpuMaterial{
+                outMaterials.push_back(MaterialShaderObjectGPUMaterial{
                     .baseColor = {
                         material.baseColorFactor.x,
                         material.baseColorFactor.y,
@@ -615,7 +615,7 @@ private:
             }
         }
 
-        std::vector<std::vector<MaterialShaderObjectGpuPosition>> positionsByMaterial(outMaterials.size());
+        std::vector<std::vector<MaterialShaderObjectGPUPosition>> positionsByMaterial(outMaterials.size());
         outBounds.reset();
         for (size_t renderNodeIndex = 0; renderNodeIndex < loadedScene.renderNodes().size(); ++renderNodeIndex) {
             const scene::RenderNode& renderNode = loadedScene.renderNodes()[renderNodeIndex];
@@ -627,14 +627,14 @@ private:
 
             const scene::RenderPrimitive& primitive =
                 loadedScene.renderPrimitives()[static_cast<size_t>(renderNode.renderPrimitiveIndex)];
-            if (primitive.mode != kGltfTriangleListMode || primitive.positions.empty()) {
+            if (primitive.mode != kglTFTriangleListMode || primitive.positions.empty()) {
                 continue;
             }
 
             const uint32_t materialIndex = materialIndexOrDefault(
                 renderNode.materialIndex,
                 static_cast<uint32_t>(outMaterials.size()));
-            std::vector<MaterialShaderObjectGpuPosition>& materialPositions = positionsByMaterial[materialIndex];
+            std::vector<MaterialShaderObjectGPUPosition>& materialPositions = positionsByMaterial[materialIndex];
             const std::vector<uint32_t>& indices = primitive.indices;
             if (!indices.empty()) {
                 const size_t triangleIndexCount = indices.size() - (indices.size() % 3);
@@ -665,7 +665,7 @@ private:
         outMaterialIndices.clear();
         outBatches.clear();
         for (uint32_t materialIndex = 0; materialIndex < positionsByMaterial.size(); ++materialIndex) {
-            const std::vector<MaterialShaderObjectGpuPosition>& materialPositions = positionsByMaterial[materialIndex];
+            const std::vector<MaterialShaderObjectGPUPosition>& materialPositions = positionsByMaterial[materialIndex];
             if (materialPositions.empty()) {
                 continue;
             }
@@ -703,9 +703,9 @@ private:
         uint32_t width,
         uint32_t height,
         const scene::Bounds& drawBounds,
-        MaterialShaderObjectGpuParams& outParams)
+        MaterialShaderObjectGPUParams& outParams)
     {
-        outParams = MaterialShaderObjectGpuParams{};
+        outParams = MaterialShaderObjectGPUParams{};
         const float3 center = drawBounds.center();
         const float radius = std::max(drawBounds.radius(), 0.01f);
         const float aspect = height == 0 ? 1.0f : static_cast<float>(width) / static_cast<float>(height);
@@ -733,7 +733,7 @@ private:
             return makeError(Error::InvalidArgument);
         }
 
-        MaterialShaderObjectGpuParams params;
+        MaterialShaderObjectGPUParams params;
         buildParams(width, height, drawBounds_, params);
 
         void* mapped = paramsBuffer_->map();

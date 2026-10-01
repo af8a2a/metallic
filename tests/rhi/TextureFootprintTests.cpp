@@ -1,4 +1,4 @@
-#include "RhiTest.h"
+#include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -112,15 +112,15 @@ private:
     render::ComputeProgram program_;
 };
 
-class TextureFootprintTest final : public RhiTest {
+class TextureFootprintTest final : public RHITest {
 public:
     TextureFootprintTest()
     {
-        type = RhiTestType::Rendering;
+        type = RHITestType::Rendering;
         name = "texture_primary_ray_cone_pixel_footprint";
     }
 
-    RhiTestResult run(RhiTestContext& context) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::registerRenderGraphPassType("TextureFootprintProbe", "Pixel cone projection probe",
             [] { return std::make_unique<TextureFootprintProbePass>(); });
@@ -129,23 +129,23 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
             .transform([&](auto value) { device = std::move(value); });
         if (render::hasError(initialized, render::Error::Unsupported)) {
-            return RhiTestResult::skip("Requires bindless descriptors");
+            return RHITestResult::skip("Requires bindless descriptors");
         }
-        if (!initialized) { return RhiTestResult::fail("Device initialization failed"); }
+        if (!initialized) { return RHITestResult::fail("Device initialization failed"); }
         render::RenderGraph graph;
         graph.addNode("TextureFootprintProbe", "Probe");
         graph.markOutput("Probe.cones");
         render::RenderGraphExecutor executor;
         std::string log;
-        if (!executor.compile(*device, graph, 1, 1, log)) { return RhiTestResult::fail(log); }
+        if (!executor.compile(*device, graph, 1, 1, log)) { return RHITestResult::fail(log); }
         if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
             !executor.waitForSubmittedWork()) {
-            return RhiTestResult::fail("Pixel cone probe execution failed");
+            return RHITestResult::fail("Pixel cone probe execution failed");
         }
         auto* buffer = executor.outputResource("Probe.cones")->buffer;
         buffer->invalidate();
         const void* mapped = buffer->map();
-        if (mapped == nullptr) { return RhiTestResult::fail("Pixel cone probe readback failed"); }
+        if (mapped == nullptr) { return RHITestResult::fail("Pixel cone probe readback failed"); }
         std::array<std::array<float, 2>, kFootprintCaseCount> values{};
         std::memcpy(values.data(), mapped, sizeof(values));
         buffer->unmap();
@@ -178,17 +178,17 @@ public:
                         << ", relative error " << (expected != 0.0 ? (actual - expected) / expected : actual)
                         << ", fov " << input.verticalFovRadians
                         << ", render " << input.width << "x" << input.height;
-                    return RhiTestResult::fail(failure.str());
+                    return RHITestResult::fail(failure.str());
                 }
             }
             if (values[index][input.orthographic ? 0 : 1] <= 0.0f) {
-                return RhiTestResult::fail("Pixel cone became non-positive at case " + std::to_string(index));
+                return RHITestResult::fail("Pixel cone became non-positive at case " + std::to_string(index));
             }
             if (index > kHighResolutionCaseStart && values[index][1] >= values[index - 1][1]) {
-                return RhiTestResult::fail("High-resolution pixel cones lost continuity at case " + std::to_string(index));
+                return RHITestResult::fail("High-resolution pixel cones lost continuity at case " + std::to_string(index));
             }
         }
-        return RhiTestResult::pass("GPU: pixel diameter, FOV, orthographic scale, unequal axes and positive continuous cones up to 16M resolution");
+        return RHITestResult::pass("GPU: pixel diameter, FOV, orthographic scale, unequal axes and positive continuous cones up to 16M resolution");
     }
 };
 

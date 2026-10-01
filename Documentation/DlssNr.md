@@ -1,6 +1,6 @@
 # Experimental DLSS Neural Rendering
 
-`DlssNrPass` integrates the direct NGX feature-18 contract from
+`DLSSNRPass` integrates the direct NGX feature-18 contract from
 `Unity-DLSS-RR/src/DLSSNRRuntime.cpp` with Metallic's Vulkan backend. It is
 separate from the Streamline DLSS-SR and DLSS-RR passes. The NR DLL is not
 publicly released, so builds without a manually installed runtime disable NR.
@@ -17,7 +17,7 @@ source control. This is the only accepted runtime location; the former
 
 ```powershell
 cmake -S . -B build-dlss-nr -DMETALLIC_BUILD_TESTS=ON -DMETALLIC_ENABLE_DLSS_NR=ON
-cmake --build build-dlss-nr --target Metallic MetallicRhiTests --config Release
+cmake --build build-dlss-nr --target Metallic MetallicRHITests --config Release
 ```
 
 Windows x64/MSVC, a working Streamline SDK, and its bundled NGX SDK are
@@ -94,7 +94,7 @@ Signal camera cuts through graph history invalidation or `resetSerial`.
 ### Slider debug comparison
 
 Enable **DLSS-NR Slider Debug** in the viewport toolbar, or **Slider Debug
-(Before / After)** in the `DlssNr` node's runtime settings. It defaults off.
+(Before / After)** in the `DLSSNR` node's runtime settings. It defaults off.
 The left side shows `inputColor` before NR and the right side shows the NR
 result from the same frame. Both use the same exposure and display color space.
 
@@ -121,7 +121,7 @@ always performs an exact copy and works without the SDK or an NVIDIA GPU.
 Zero intensity also copies the input, since the snippet may otherwise leave
 its output unwritten.
 
-The lower-level `vulkan::DlssNrContext` also validates the reference's recovered
+The lower-level `vulkan::DLSSNRContext` also validates the reference's recovered
 2x upscaling contract and accepts matching RGBA8 or RGBA16F display-color
 textures. The graph pass exposes only native resolution. Actual GPU validation
 covers native mode; 2x is only contract-validated in this integration.
@@ -151,8 +151,8 @@ cached descriptor binding state so subsequent passes rebind correctly.
 ## Validation
 
 ```powershell
-build-dlss-nr/tests/MetallicRhiTests.exe --filter dlss_nr
-build-dlss-nr/tests/MetallicRhiTests.exe --rhi-streamline --filter dlss_nr_runtime `
+build-dlss-nr/tests/MetallicRHITests.exe --filter dlss_nr
+build-dlss-nr/tests/MetallicRHITests.exe --rhi-streamline --filter dlss_nr_runtime `
     --output-dir build-dlss-nr/tests/dlss-nr-output
 $env:METALLIC_SMOKE_TEST_SAMPLE = 'pathtracing-sample-dlss-nr'
 build-dlss-nr/Source/Metallic.exe --smoke-test
@@ -171,7 +171,7 @@ unsupported, and never enable
 fallback. A passing bypass test or editor smoke test by itself does not prove
 that neural rendering ran.
 
-`MetallicDlssNrConfiguration` checks missing/present local DLLs, explicit
+`MetallicDLSSNRConfiguration` checks missing/present local DLLs, explicit
 disable, ignored legacy runtime overrides, unsupported dependencies and NGX
 LFS pointers. It also builds a tiny fixture through DLL removal and restoration
 to verify automatic reconfiguration, compiler definitions and deployment.

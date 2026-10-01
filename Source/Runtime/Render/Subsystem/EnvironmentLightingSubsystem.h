@@ -73,7 +73,7 @@ public:
 private:
     struct DecodedEnvironment;
     struct DecodeJob;
-    struct GpuPrecompute;
+    struct GPUPrecompute;
     struct Resources;
     class ShaderReload;
 
@@ -90,7 +90,7 @@ private:
     RenderWorld* world_ = nullptr;
     Desc desc_;
     ImportancePdfCompute pdfCompute_;
-    std::unique_ptr<GpuPrecompute> gpuPrecompute_;
+    std::unique_ptr<GPUPrecompute> gpuPrecompute_;
     std::shared_ptr<Resources> resources_;
     std::vector<DecodeJob> decodeJobs_;
     std::filesystem::path pendingDecodePath_;

@@ -55,7 +55,7 @@ struct MeshletStreamLatencyHistogram {
 };
 
 enum class MeshletStreamLatencyStage : uint32_t {
-    Feedback, Admission, IoQueue, Decode, ReadyToUpload, UploadToDrawable,
+    Feedback, Admission, IOQueue, Decode, ReadyToUpload, UploadToDrawable,
     DemandToDrawable, PrefetchToDrawable, Count
 };
 
