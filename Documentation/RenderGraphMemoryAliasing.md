@@ -2,7 +2,117 @@
 
 调研日期：2026-09-30。依据当前工作区源码（包含尚未提交的 RenderGraph/RHI 修改）、作者资料及 Vulkan/VMA 官方文档。
 
-本文是设计建议，尚未实现 memory aliasing。没有运行新的 GPU 工作负载，不包含 Metallic 显存节省或性能收益的实测结果。
+首次调研后的实现更新：2026-10-01。首阶段已实现独立 `VkImage` 共享同一个别名槽位，并增加原生分配容量统计及 GPU 开关对比。下文保留调研时的架构分析，当前接口、测量范围与结果见下面的实现说明。
+
+## 首阶段实现
+
+通过 `RenderGraphCompileOptions::enableTextureAliasing = true` 显式启用，默认关闭。编辑器和 `RenderGraphPreviewRenderer` 也支持环境变量 `METALLIC_RENDER_GRAPH_TEXTURE_ALIASING=1`。pass 的输出字段必须声明完整初始化契约，例如：
+
+```cpp
+reflection.addTextureOutput("color")
+    .colorWrite()
+    .transient(RenderGraphInitialization::Clear);
+```
+
+`Clear` 和 `FullOverwrite` 都是 pass 的承诺：每次执行、所有 texel、整个初始图级使用边界（包含内部 stages）都会初始化。不满足该条件的字段必须保持 `Persistent` 或 `Unknown`。当前已审计 `CopyColorPass.color` 和 `AutoExposurePass.color` 的 `FullOverwrite`。场景未就绪时可能跳过的 pass 不参与；`VisibilityBufferPass` 保持原分配。
+
+- `RenderGraphTextureAliasPlan` 根据活动图的语义依赖计算严格 happens-before。它合并输入别名的全部使用，要求前一成员的所有使用都先于后一成员；独立分支、同一 pass 同时使用的资源不共享。
+- graph-owned Device Texture2D 的 native requirements 决定槽位容量、对齐和共同 memory type。强制 dedicated allocation、depth、外部资源及其他不支持的类型保持原分配。每个槽位绑定 offset 0，没有 offset packing 或 buffer aliasing。
+- RHI 的 `textureAliasAllocationRequirements()` 和 `createAliasedTextures()` 创建独立 image/view 与共享 backing owner。记账和释放各一次；command/view 的保留链继续保护 image 与 backing。
+- 每张别名 image 在每帧激活时从 `Undefined` 丢弃布局开始，先编码物理内存同步，再编码自己的布局切换。语义依赖和末端使用者接入现有 GPU submission/join 前驱，跨帧继续等待上一图执行及输出消费者。
+- `markOutput`、`extraOutputs`、presentation 字段及 debug observer 排除复用。`outputResource()` 仍提供元数据；只有 `isExportedOutput()` 为真才能在图外使用。`transitionOutput()` 拒绝已别名的 transient；预览切换会重新编译并将所选输出加入 `extraOutputs`。
+- 调用方提供 command buffer 的执行需要有效的 `RenderFrameContext`；无完成跟踪返回 `Unsupported`。上一外部执行尚未提交或取消时，新执行返回 `InvalidArgument`，避免多个未提交录制占用同一槽位。取消录制后需要重新编译，避免保留只在录制期前进的 persistent 资源状态。提交失败保持现有图失效与完成跟踪机制。
+- `ResourceMemoryInfo` 保留独立 image 的 `allocationId`，新增共享 `backingAllocationId` 和 `backingSizeBytes`。viewer 的 backing 总量按 owner 去重，资源矩阵仍保留每张 image。
+
+相关实现位于 [alias planner](../Source/Runtime/Render/RenderGraph/RenderGraphTextureAliasPlan.cpp)、[executor](../Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp) 和 [Vulkan backend](../Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp)。CPU 规划及 GPU 功能覆盖见 `tests/rhi/RenderGraphTextureAliasPlanTests.cpp`、`TextureAliasingTests.cpp`、`RenderGraphTextureAliasingTests.cpp`。
+
+### 实现验证（2026-10-01）
+
+复用 `build-scheduling-release` 的 Release/MSVC 配置构建 `MetallicRHITests` 与 `Metallic`，构建通过。39 项相关回归全部通过，包含六项 planner CPU 测试、五项 alias GPU 测试，以及 access plan、内部 stages、parallel/cancellation、resource memory info、viewer、AutoExposure 回归。
+
+五项 alias GPU 测试另以 `async` profile 在隔离进程运行 synchronization validation，全部执行并通过，无跳过，各 `validation.json` 消息数均为零：
+
+```powershell
+.\build-scheduling-release\tests\MetallicRHITests.exe --tb-run --tb-suite sync `
+    '--tb-filter=*texture_aliasing*' --tb-validation sync --tb-require-all `
+    --tb-layer-path C:\VulkanSDK\1.4.350.0\Bin `
+    --output-dir build-scheduling-release/texture-aliasing-sync
+```
+
+其中图级 A/B 测试在可用的 graphics、copy、compute 队列模式逐像素对照开关两种配置，每种模式执行四帧；捕获验证独立 image、重叠 backing、激活 barrier、末端使用者依赖和跨队列 semaphore wait。native 测试还覆盖不同尺寸/格式、预算只计一次、view/command 保活及失败原子性。报告位于本地输出 `build-scheduling-release/texture-aliasing-sync/report.html`。
+
+本机两条失效的系统 Vulkan layer manifest 会使已有 AutoExposure 测试将 loader 错误计入验证错误。最终回归使用当前进程的 `VK_LAYER_PATH=C:\VulkanSDK\1.4.350.0\Bin` 与指向空目录的 `VK_IMPLICIT_LAYER_PATH`，没有修改系统配置或过滤测试断言。隔离 testbench 的 `--tb-layer-path` 已提供相同隔离机制。
+
+设置 `METALLIC_RENDER_GRAPH_TEXTURE_ALIASING=1` 的编辑器 `--smoke-test` 通过一帧 Vulkan 提交与呈现；这不证明真实场景长期稳定性、复杂 SDK 路径的别名覆盖或端到端性能收益。没有为 SDK 私有缓存或 history 启用复用。
+
+### 显存统计与受控 GPU 测量
+
+`executor.textureMemoryStats()` 在编译完成后即可读取；同一份编译代统计发布到 `executionStats().textureMemory` 与 `executionSnapshot()->textureMemory`。编辑器 **Statistics**、**Execution → Memory** 和捕获 JSON 显示总量、候选/别名纹理计数及每个共享槽位的成员。只在编译时查询 native requirements，逐帧读取不查询原生分配或等待 GPU。
+
+- `logicalBytes`：不复用时的独立分配容量。实际别名成员使用原始 descriptor（没有 `VK_IMAGE_CREATE_ALIAS_BIT`）查询；其他纹理使用实际独立 backing 容量。
+- `backingBytes`：当前图的实际 backing 容量，按 `backingAllocationId` 去重。
+- `savedBytes = max(logicalBytes - backingBytes, 0)`；反方向差额单独报告 `overheadBytes`。只有比较完整时才报告节省/额外开销及百分比；未知项和不完整槽位明确标记。
+- 统计包含驱动要求的尺寸/对齐，输入别名不会重复计算。范围是当前编译图拥有的纹理，排除 buffer、scene、私有 imports、history、SDK 及其他 in-flight generation；不是整个进程的 VRAM 驻留量。
+
+2026-10-01 在 NVIDIA GeForce RTX 5070 Ti / NVIDIA 616.92 / Release MSVC 上，受控图 `A clear → ReadA → B clear → ReadB` 的两张 RGBA8Unorm 图像共享一个槽位，B 的宽、高各为 A 的一半。下面是原生分配实测，而不是像素数估算；MiB 为 1,048,576 字节。
+
+| 受控图 A 分辨率 | 独立分配 | 共享 backing | 节省 | 比例 |
+| --- | ---: | ---: | ---: | ---: |
+| 1920 × 1080 | 10.78125 MiB | 8.43750 MiB | 2.34375 MiB（2,457,600 B） | 21.739% |
+| 3840 × 2160 | 40.31250 MiB | 31.87500 MiB | 8.43750 MiB（8,847,360 B） | 20.930% |
+
+两组均执行 GPU clear/readback，开启/关闭的逐像素结果一致；`FrameResources.allocationBytes` 与 `deviceLocalBytes` 的对照差额均等于 `savedBytes`，各隔离 synchronization validation 消息数为零。比例不同来自 native image requirements 的分配粒度，不能直接使用裸像素占用替代。
+
+复现命令（1080p；4K 将两个环境变量改为 3840、2160）：
+
+```powershell
+$env:METALLIC_TEST_ALIAS_WIDTH = '1920'
+$env:METALLIC_TEST_ALIAS_HEIGHT = '1080'
+.\build-scheduling-release\tests\MetallicRHITests.exe --tb-run --tb-suite sync `
+    '--tb-filter=*texture_aliasing_vram_statistics' --tb-validation sync --tb-require-all `
+    --tb-layer-path C:\VulkanSDK\1.4.350.0\Bin `
+    --output-dir build-scheduling-release/alias-vram/controlled-1080p
+```
+
+原始 JSON、native capabilities、validation、逐像素 readback 与实际捕获值的 Memory viewer 截图在本地 `build-scheduling-release/alias-vram/controlled-1080p/` 和 `controlled-4k/`。该受控图证明共享机制节约了 device-local 分配容量；真实管线的收益取决于已审计候选及它们的 GPU 生命周期，不能将这里的比例套用到场景。
+
+统计接入后的构建与 40 项相关回归通过；包含新统计测试的六项隔离 alias GPU 测试全部通过 synchronization validation。Memory viewer 截图已检查，统计和原生重叠范围一致。
+
+### 默认生产管线 MiniZorah 的实际收益
+
+相同 Release 构建、现有 shader cache、`--rhi-validation --rhi-realtime --rhi-async-compute` 配置分别运行关闭和开启的完整 `minizorah_realtime_pipeline` 回归。两次均通过原有 180 帧、shaded pixel、motion/depth guide、viewport resize、streaming budget 和 session retirement 检查；原始输出没有 VUID 或运行错误。两次均采用相同的 OMM capability fallback（本机 validation layer 版本不足该可选路径要求），没有对该路径的验证作出声明。这里不比较启动或帧耗时。
+
+两张生产结果 PNG 不是逐像素相同：512 × 320 图像有 10,747 个像素不同，RGBA 的平均绝对通道差为 0.02261/255、最大差为 9，仅一个像素的任意通道差超过 8。两次运行均没有实际共享槽位，现有生产正确性 oracle 均通过；没有单独定位这些跨运行像素差异的原因。逐像素一致性的结论只适用于上述受控图。
+
+取 `phase=180-frames-completed` 的稳态 512 × 320 样本，而非报告尾部的 retirement fixture：
+
+| 指标 | 关闭 | 开启 |
+| --- | ---: | ---: |
+| graph-owned 纹理数 / backing 数 | 14 / 14 | 14 / 14 |
+| 声明 transient / 固定输出数 | 1 / 1 | 1 / 1 |
+| native-qualified 候选数 | 0（关闭时不查询） | 1 |
+| 实际别名纹理 / 共享槽位 | 0 / 0 | 0 / 0 |
+| 独立 / 实际纹理 backing | 8,208,384 / 8,208,384 B | 8,208,384 / 8,208,384 B |
+| 节省 | 0 B | **0 B（0%）** |
+| FrameResources 总分配（含 buffer 等） | 68,775,360 B | 68,775,360 B |
+
+因此当前默认生产图节省 **0 MiB**。该图只有 `AutoExposure.color` 一个已审计候选，不能形成至少两个成员的别名槽位；`CopyColorPass` 虽已具备契约，但当前 pipeline asset 未使用。Visibility 和 scene-dependent 输出、history 及 SDK 私有资源继续保持原生命周期。增加实际收益需要逐一审计更多临时输出的完整初始化、跨帧使用与 GPU happens-before，不能仅将字段改成 transient。
+
+本次稳态 graph texture backing 为 7.828125 MiB；整个 device-local VMA allocation 为 2,122,330,928 B，远大于该纹理子集。新统计准确覆盖第一阶段可优化的范围，场景 geometry/CLAS/RT 等分配以及 SDK、驱动驻留不能并入它的节省百分比。即时 compile 样本也可能包含上一代延迟释放的资源，因此 device telemetry 与当前编译图容量分别记录。
+
+复现（关闭的那次将 `METALLIC_TEST_TEXTURE_ALIASING` 改为 `0`，使用独立输出目录）：
+
+```powershell
+$env:METALLIC_TEST_MINIZORAH = '1'
+$env:METALLIC_TEST_TEXTURE_ALIASING = '1'
+$env:VK_LAYER_PATH = 'C:\VulkanSDK\1.4.350.0\Bin'
+$env:VK_IMPLICIT_LAYER_PATH = (Resolve-Path build-scheduling-release/empty-vulkan-layers).Path
+.\build-scheduling-release\tests\MetallicRHITests.exe `
+    '--gtest_filter=*minizorah_realtime_pipeline' --rhi-validation --rhi-realtime --rhi-async-compute `
+    --output-dir build-scheduling-release/alias-vram/minizorah-on
+```
+
+`empty-vulkan-layers` 是此前验证创建的空目录；只对当前测试进程设置 layer 路径。原始统计在 `build-scheduling-release/alias-vram/minizorah-off/MiniZorahTextureMemory-AliasingOff.json` 与 `minizorah-on/MiniZorahTextureMemory-AliasingOn.json`，均带有 `correctnessVerified=true` 和各阶段原生 telemetry；对应 `run.log` 保留完整运行输出。
 
 ## 结论
 
@@ -14,7 +124,7 @@ Metallic 可以在现有 RenderGraph 与 VMA 3.3.0 上增加真正的物理内�
 
 首版默认关闭，通过编译选项显式启用；仅已审计、显式声明 transient 的字段参与。首版采用整个 pass 的使用跨度，并保留已有异步分支的并行机会。最大风险在 GPU 执行先后关系、跨帧状态、资源逃逸及提交失败，而不在贪心分配算法。
 
-## 1. 当前实现与已有支撑
+## 1. 调研时的实现与已有支撑（2026-09-30）
 
 | 当前事实 | 源码入口 | 实现影响 |
 | --- | --- | --- |

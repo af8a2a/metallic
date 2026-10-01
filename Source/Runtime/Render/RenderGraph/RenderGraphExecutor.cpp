@@ -5,6 +5,7 @@
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/RenderGraph/RenderGraphInternal.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
+#include "Runtime/Render/RenderGraph/RenderGraphTextureAliasPlan.h"
 #include "Runtime/Render/RenderGraph/RenderGraphGPULabels.h"
 #include "Runtime/Render/Streamer/StreamingUploads.h"
 #include "Runtime/Render/Core/HistoryResources.h"
@@ -23,6 +24,7 @@
 #include <bit>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <limits>
@@ -247,6 +249,9 @@ struct RenderGraphExecutor::Impl {
         std::unique_ptr<Buffer> buffer;
         std::unique_ptr<BufferView> bufferView;
         RenderGraphResource resource;
+        bool transientCandidate = false;
+        bool pinned = false;
+        bool aliasTransient = false;
     };
 
     struct SceneBinding {
@@ -407,6 +412,9 @@ struct RenderGraphExecutor::Impl {
     std::unordered_map<uint32_t, uint64_t> sceneAccelerationStructureCacheOwners;
     std::unordered_map<std::string, ResourceSlot> resources;
     std::unordered_map<std::string, std::string> inputAliases;
+    GraphTextureAliasPlan textureAliasPlan;
+    std::vector<std::string> textureAliasNames;
+    RenderGraphTextureMemoryStats textureMemory;
     std::unique_ptr<BindlessHeap> bindlessHeap;
     std::shared_ptr<SceneResourceSnapshot> pendingSceneResourceSnapshot;
     std::vector<std::string> requiredSubsystemIds;
@@ -1226,6 +1234,172 @@ struct RenderGraphExecutor::Impl {
         return {};
     }
 
+    Result<> allocateGraphTextures(Device& graphDevice, const RenderGraph& graph,
+        const RenderGraphCompileOptions& options, std::string& log)
+    {
+        RenderGraphTextureMemoryStats memoryStats{.aliasingEnabled = options.enableTextureAliasing,
+            .complete = true};
+        std::vector<GraphTextureAliasCandidate> candidates;
+        std::unordered_map<RenderGraphResource*, size_t> identities;
+        std::unordered_map<std::string, size_t> passIndices;
+        textureAliasNames.clear();
+        textureAliasPlan = {};
+        for (size_t passIndex = 0; passIndex < executionList.size(); ++passIndex) {
+            const auto& node = executionList[passIndex];
+            passIndices.emplace(node.name, passIndex);
+            for (const auto& field : node.reflection.fields()) {
+                if (field.visibility != RenderGraphFieldVisibility::Output ||
+                    field.resourceType != RenderGraphResourceType::Texture2D) { continue; }
+                auto name = makeRenderGraphFieldName(node.name, field.name);
+                auto& slot = resources.at(name);
+                ++memoryStats.textureCount;
+                if (field.lifetime == RenderGraphResourceLifetime::Transient) { ++memoryStats.transientTextureCount; }
+                if (slot.pinned) { ++memoryStats.pinnedTextureCount; }
+                const size_t index = candidates.size();
+                identities.emplace(&slot.resource, index);
+                textureAliasNames.push_back(name);
+                auto& candidate = candidates.emplace_back();
+                candidate.resource = index;
+                candidate.name = std::move(name);
+                // Scene-dependent passes can be skipped while streaming. They
+                // cannot promise the initializing write on every execution.
+                if (options.enableTextureAliasing && !debugObserver && slot.transientCandidate && !slot.pinned &&
+                    !node.preparedScene && node.sceneDependency.source == RenderGraphSceneSource::None) {
+                    auto requirements = graphDevice.textureAliasAllocationRequirements(slot.resource.desc);
+                    if (requirements && !requirements->requiresDedicatedAllocation) {
+                        candidate.sizeBytes = requirements->sizeBytes;
+                        candidate.alignment = requirements->alignmentBytes;
+                        candidate.memoryTypeBits = requirements->memoryTypeBits;
+                        candidate.eligible = true;
+                        ++memoryStats.eligibleTextureCount;
+                    } else if (!requirements && requirements.error() != Error::Unsupported &&
+                        requirements.error() != Error::InvalidArgument) {
+                        log += "Texture alias requirements failed: " + candidate.name;
+                        return makeError(requirements.error());
+                    }
+                }
+            }
+        }
+        const bool hasCandidates = std::any_of(candidates.begin(), candidates.end(),
+            [](const auto& candidate) { return candidate.eligible; });
+        if (hasCandidates) {
+            for (size_t passIndex = 0; passIndex < executionList.size(); ++passIndex) {
+                const auto& node = executionList[passIndex];
+                for (const auto& field : node.reflection.fields()) {
+                    auto* resource = fieldResource(node, field);
+                    const auto found = identities.find(resource);
+                    if (found != identities.end()) { candidates[found->second].uses.push_back(passIndex); }
+                }
+            }
+            std::vector<GraphTextureAliasDependency> dependencies;
+            for (const auto& edge : graph.edges()) {
+                const auto source = passIndices.find(edge.srcPass);
+                const auto destination = passIndices.find(edge.dstPass);
+                if (source != passIndices.end() && destination != passIndices.end()) {
+                    dependencies.push_back({source->second, destination->second});
+                }
+            }
+            auto planned = buildGraphTextureAliasPlan(executionList.size(), candidates, dependencies);
+            if (!planned) { return makeError(planned.error()); }
+            textureAliasPlan = std::move(*planned);
+        }
+        for (const auto& aliasSlot : textureAliasPlan.slots) {
+            if (aliasSlot.resources.size() < 2) { continue; }
+            std::vector<TextureDesc> descriptions;
+            for (size_t index : aliasSlot.resources) {
+                descriptions.push_back(resources.at(textureAliasNames[index]).resource.desc);
+            }
+            auto images = graphDevice.createAliasedTextures(descriptions);
+            if (!images) { log += "Create texture alias slot failed"; return makeError(images.error()); }
+            for (size_t member = 0; member < aliasSlot.resources.size(); ++member) {
+                auto& slot = resources.at(textureAliasNames[aliasSlot.resources[member]]);
+                slot.texture = std::move((*images)[member]);
+                slot.aliasTransient = true;
+            }
+        }
+        for (const auto& name : textureAliasNames) {
+            auto& slot = resources.at(name);
+            const auto& desc = slot.resource.desc;
+            if (!slot.texture) {
+                auto image = graphDevice.createTexture(desc);
+                if (!image) { log += "Create texture failed: " + name; return makeError(image.error()); }
+                slot.texture = std::move(*image);
+            }
+            auto view = graphDevice.createTextureView(*slot.texture, {.format = desc.format,
+                .range = {.baseMip = 0, .mipCount = desc.mipCount, .baseLayer = 0, .layerCount = desc.layerCount}});
+            if (!view) { log += "Create texture view failed: " + name; return makeError(view.error()); }
+            slot.textureView = std::move(*view);
+            slot.resource.texture = slot.texture.get();
+            slot.resource.view = slot.textureView.get();
+        }
+        // Compile-time native measurements only. For shared members the normal
+        // descriptor query avoids assuming ALIAS_BIT leaves requirements equal.
+        // A failed diagnostic query marks this comparison incomplete; it must
+        // not discard a successfully allocated rendering graph.
+        std::vector<uint64_t> independentBytes(textureAliasNames.size(), 0);
+        std::vector<bool> independentKnown(textureAliasNames.size(), false);
+        std::unordered_set<uint64_t> backingIds;
+        for (size_t index = 0; index < textureAliasNames.size(); ++index) {
+            const auto& slot = resources.at(textureAliasNames[index]);
+            const auto info = slot.texture->memoryInfo();
+            const uint64_t backingId = info.backingAllocationId ? info.backingAllocationId : info.allocationId;
+            const uint64_t backingBytes = info.backingSizeBytes ? info.backingSizeBytes : info.sizeBytes;
+            bool known = info.known && backingId && backingBytes;
+            if (known && backingIds.insert(backingId).second) {
+                ++memoryStats.backingAllocationCount;
+                memoryStats.backingBytes += backingBytes;
+            }
+            if (slot.aliasTransient) {
+                ++memoryStats.aliasedTextureCount;
+                auto independent = graphDevice.textureAllocationSize(slot.resource.desc);
+                if (independent) {
+                    independentBytes[index] = *independent;
+                } else {
+                    known = false;
+                    spdlog::warn("[RenderGraph] Texture memory comparison unavailable for '{}': {}",
+                        textureAliasNames[index], resultToString(independent));
+                }
+            } else if (known) {
+                independentBytes[index] = backingBytes;
+            }
+            memoryStats.logicalBytes += independentBytes[index];
+            independentKnown[index] = known;
+            if (!known) {
+                ++memoryStats.unknownTextureCount;
+                memoryStats.complete = false;
+            }
+        }
+        for (const auto& slot : textureAliasPlan.slots) {
+            if (slot.resources.size() < 2) { continue; }
+            auto& group = memoryStats.slots.emplace_back();
+            const auto info = resources.at(textureAliasNames[slot.resources.front()]).texture->memoryInfo();
+            group.backingAllocationId = info.backingAllocationId;
+            group.backingBytes = info.backingSizeBytes;
+            group.complete = info.known && group.backingAllocationId && group.backingBytes;
+            for (size_t member : slot.resources) {
+                group.resources.push_back(textureAliasNames[member]);
+                group.logicalBytes += independentBytes[member];
+                group.complete = group.complete && independentKnown[member];
+            }
+            group.savedBytes = group.complete && group.logicalBytes > group.backingBytes
+                ? group.logicalBytes - group.backingBytes : 0;
+            group.overheadBytes = group.complete && group.backingBytes > group.logicalBytes
+                ? group.backingBytes - group.logicalBytes : 0;
+        }
+        memoryStats.aliasSlotCount = uint32_t(memoryStats.slots.size());
+        memoryStats.savedBytes = memoryStats.complete && memoryStats.logicalBytes > memoryStats.backingBytes
+            ? memoryStats.logicalBytes - memoryStats.backingBytes : 0;
+        memoryStats.overheadBytes = memoryStats.complete && memoryStats.backingBytes > memoryStats.logicalBytes
+            ? memoryStats.backingBytes - memoryStats.logicalBytes : 0;
+        textureMemory = std::move(memoryStats);
+        spdlog::info("[RenderGraph] Texture memory aliasing={} complete={} textures={} eligible={} aliased={} slots={} "
+            "independentBytes={} backingBytes={} savedBytes={} overheadBytes={}",
+            textureMemory.aliasingEnabled, textureMemory.complete, textureMemory.textureCount,
+            textureMemory.eligibleTextureCount, textureMemory.aliasedTextureCount, textureMemory.aliasSlotCount,
+            textureMemory.logicalBytes, textureMemory.backingBytes, textureMemory.savedBytes, textureMemory.overheadBytes);
+        return {};
+    }
+
     Result<> allocateGraphResources(
         Device& graphDevice,
         const RenderGraph& graph,
@@ -1234,6 +1408,7 @@ struct RenderGraphExecutor::Impl {
         const BindlessResourcePlan& bindlessPlan,
         std::string& log)
     {
+        textureMemory = {};
         resources.clear();
         bindlessHeap.reset();
 
@@ -1303,22 +1478,12 @@ struct RenderGraphExecutor::Impl {
                         .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy,
                     };
 
-                    Result<> result = graphDevice.createTexture(desc).transform([&](auto rhiValue) { slot.texture = std::move(rhiValue); });
-                    if (!result || slot.texture == nullptr) {
-                        log += resultMessage(std::string("createTexture(") + fullName + ")", result);
-                        log += '\n';
-                        return result ? makeError(Error::Failure) : result;
-                    }
-                    result = graphDevice.createTextureView(*slot.texture,
-                        TextureViewDesc{
-                            .format = desc.format,
-                            .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
-                        }).transform([&](auto rhiValue) { slot.textureView = std::move(rhiValue); });
-                    if (!result || slot.textureView == nullptr) {
-                        log += resultMessage(std::string("createTextureView(") + fullName + ")", result);
-                        log += '\n';
-                        return result ? makeError(Error::Failure) : result;
-                    }
+                    // Resolve every descriptor before allocating, so different
+                    // VkImages can be placed into a proven disjoint alias slot.
+                    slot.transientCandidate = field.lifetime == RenderGraphResourceLifetime::Transient &&
+                        field.initialization != RenderGraphInitialization::Unknown && fieldAccessWrites(field);
+                    slot.pinned = field.presentationOutput || isOutputMarked(graph, fullName) ||
+                        std::find(options.extraOutputs.begin(), options.extraOutputs.end(), fullName) != options.extraOutputs.end();
                     slot.resource = RenderGraphResource{
                         .type = RenderGraphResourceType::Texture2D,
                         .texture = slot.texture.get(),
@@ -1413,6 +1578,8 @@ struct RenderGraphExecutor::Impl {
             }
         }
 
+        Result<> allocationResult = allocateGraphTextures(graphDevice, graph, options, log);
+        if (!allocationResult) { return allocationResult; }
         Result<> extentResult = resolveNodeExecutionExtents(log);
         if (!extentResult) {
             return extentResult;
@@ -1520,6 +1687,10 @@ struct RenderGraphExecutor::Impl {
 
     Result<> waitForSubmittedWork(uint64_t timeoutNanoseconds)
     {
+        if (!textureAliasPlan.handoffs.empty() && std::any_of(externalCompletions.begin(),
+                externalCompletions.end(), [](const auto& point) { return point.isCancelled(); })) {
+            isCompiled = false;
+        }
         profiling::CPUPhase phase("drain.externalWait");
         const auto begin = std::chrono::steady_clock::now();
         auto remaining = [&]() {
@@ -1806,6 +1977,7 @@ struct RenderGraphExecutor::Impl {
         capture.graphName = captureGraphName;
         capture.externalRecording = external;
         capture.status = RenderGraphExecutionSnapshotStatus::Recording;
+        capture.textureMemory = textureMemory;
         capturedExternalSubmission.reset();
         capturedImports.clear();
         capturedImports.resize(executionList.size());
@@ -1932,6 +2104,10 @@ struct RenderGraphExecutor::Impl {
         std::vector<GraphAccessBinding> bindings;
         std::unordered_map<RenderGraphResource*, size_t> identities;
         std::vector<GraphAccessPass> passes;
+        std::unordered_set<RenderGraphResource*> transientTextures;
+        for (auto& [name, slot] : resources) {
+            if (slot.aliasTransient) { transientTextures.insert(&slot.resource); }
+        }
         passes.reserve(executionList.size());
         for (size_t i = 0; i < executionList.size(); ++i) {
             const auto& node = executionList[i];
@@ -1949,6 +2125,13 @@ struct RenderGraphExecutor::Impl {
                     resolved.push_back(allocation);
                     bindings.push_back(std::move(*binding));
                     initial.push_back(accessInitialState(*allocation));
+                    if (transientTextures.contains(allocation)) {
+                        // Each distinct image begins a fresh lifetime every
+                        // execution. Its previous contents belong to the slot's
+                        // prior occupant and must be discarded.
+                        initial.back().state = ResourceState::Undefined;
+                        initial.back().scope = {};
+                    }
                 }
                 pass.uses.push_back({entry->second, stateForAccess(field.access),
                     fieldAccessScope(field, node.kind), fieldAccessWrites(field)});
@@ -1958,6 +2141,51 @@ struct RenderGraphExecutor::Impl {
         if (!planned) {
             spdlog::error("[RenderGraph] Conflicting or invalid pass resource access declarations");
             return makeError(planned.error());
+        }
+        if (!textureAliasPlan.handoffs.empty()) {
+            const auto appendPredecessor = [&](size_t pass, size_t predecessor) {
+                auto& predecessors = planned->passes[pass].predecessors;
+                if (std::find(predecessors.begin(), predecessors.end(), predecessor) == predecessors.end()) {
+                    predecessors.push_back(predecessor);
+                }
+            };
+            // Preserve the semantic edges used by the lifetime proof, even
+            // where a read/read access creates no logical resource hazard.
+            for (const auto& edge : textureAliasPlan.safetyDependencies) {
+                appendPredecessor(edge.successor, edge.predecessor);
+            }
+            for (const auto& handoff : textureAliasPlan.handoffs) {
+                for (size_t predecessor : handoff.predecessors) {
+                    appendPredecessor(handoff.activationPass, predecessor);
+                }
+            }
+            const SyncScope aliasScope{PipelineStageBits::AllCommands,
+                AccessBits::MemoryRead | AccessBits::MemoryWrite};
+            for (const auto& slot : textureAliasPlan.slots) {
+                if (slot.resources.size() < 2) { continue; }
+                for (size_t member : slot.resources) {
+                    auto* resource = &resources.at(textureAliasNames[member]).resource;
+                    const size_t identity = identities.at(resource);
+                    const auto activation = std::find_if(passes.begin(), passes.end(), [&](const auto& pass) {
+                        return std::any_of(pass.uses.begin(), pass.uses.end(), [&](const auto& use) {
+                            return use.resource == identity;
+                        });
+                    });
+                    auto& barriers = planned->passes[size_t(activation - passes.begin())].barriers;
+                    for (auto& barrier : barriers) {
+                        if (barrier.resource == identity && barrier.before == ResourceState::Undefined) {
+                            // The discard layout transition itself must follow
+                            // all accesses to the previous physical occupant.
+                            barrier.beforeScope = aliasScope;
+                        }
+                    }
+                    barriers.insert(barriers.begin(), GraphAccessBarrier{.resource = identity,
+                        .beforeScope = aliasScope, .afterScope = aliasScope, .memoryAliasing = true});
+                }
+            }
+            for (auto& pass : planned->passes) {
+                std::sort(pass.predecessors.begin(), pass.predecessors.end());
+            }
         }
         accessPlan = std::move(*planned);
         accessResources = std::move(resolved);
@@ -2631,6 +2859,7 @@ Result<> RenderGraphExecutor::compile(
     }
 
     impl_->executionList.clear();
+    impl_->textureMemory = {};
     impl_->resources.clear();
     impl_->inputAliases.clear();
     impl_->bindlessHeap.reset();
@@ -2896,8 +3125,16 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
     impl_->preparationWorkerLimit = 1;
     METALLIC_TRACY_CPU_SCOPE("RenderGraph Record");
     DebugExecutionScope debugScope;
+    if (!compiled()) { impl_->isCompiled = false; }
     if (!impl_->isCompiled) {
         return makeError(Error::InvalidArgument);
+    }
+    if (!impl_->textureAliasPlan.handoffs.empty()) {
+        if (!commandBuffer.frameContext()) { return makeError(Error::Unsupported); }
+        if (!commandBuffer.frameContext()->recording()) { return makeError(Error::InvalidArgument); }
+        if (std::any_of(impl_->externalCompletions.begin(), impl_->externalCompletions.end(), [](const auto& point) {
+                return point.valid() && !point.isSubmitted() && !point.isCancelled();
+            })) { return makeError(Error::InvalidArgument); }
     }
 
     std::string sceneLog;
@@ -2924,6 +3161,12 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
     }
     impl_->recordedSceneStamp = sceneStamp;
     std::erase_if(impl_->externalCompletions, [](const auto& point) { return point.isComplete(); });
+    if (!impl_->textureAliasPlan.handoffs.empty()) {
+        for (const auto& completion : impl_->externalCompletions) {
+            Result<> result = commandBuffer.addDependency(completion);
+            if (!result) { return result; }
+        }
+    }
     if (RenderFrameContext* frame = commandBuffer.frameContext()) {
         if (!frame->recording()) {
             return makeError(Error::InvalidArgument);
@@ -2992,6 +3235,7 @@ Result<> RenderGraphExecutor::execute(CommandBuffer& commandBuffer, HistoryResou
         return result;
     }
     impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex, .graphGeneration = impl_->profilingGeneration};
+    impl_->lastExecutionStats.textureMemory = impl_->textureMemory;
     impl_->beginGpuTiming(commandBuffer);
     const auto cpuBegin = std::chrono::steady_clock::now();
     for (Impl::CompiledNode& node : impl_->executionList) {
@@ -3169,9 +3413,14 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     CPUProfileScope preparationPhase(&preparation, "Refresh scene bindings");
     profiling::CPUPhase phase("graph.refreshSceneBindings");
     DebugExecutionScope debugScope;
+    if (!compiled()) { impl_->isCompiled = false; }
     if (!impl_->isCompiled || impl_->device == nullptr || impl_->executionList.empty()) {
         return makeError(Error::InvalidArgument);
     }
+    if (!impl_->textureAliasPlan.handoffs.empty() &&
+        std::any_of(impl_->externalCompletions.begin(), impl_->externalCompletions.end(), [](const auto& point) {
+            return point.valid() && !point.isSubmitted() && !point.isCancelled();
+        })) { return makeError(Error::InvalidArgument); }
 
     std::string sceneLog;
     Result<> sceneResult = impl_->refreshFrameSceneBindings(desc.historyResources, sceneLog);
@@ -3320,6 +3569,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     preparationPhase.end();
     const auto cpuBegin = std::chrono::steady_clock::now();
     impl_->lastExecutionStats = RenderGraphExecutionStats{.executionId = frameIndex, .graphGeneration = impl_->profilingGeneration};
+    impl_->lastExecutionStats.textureMemory = impl_->textureMemory;
     impl_->lastExecutionStats.preparation = std::move(preparation.sections);
     impl_->lastExecutionStats.drainReasonMask = drainReasonMask;
     impl_->lastExecutionStats.externalCompletionCount = uint32_t(externalDependencies.size());
@@ -3902,6 +4152,11 @@ GPUCompletionPoint RenderGraphExecutor::lastSubmittedCompletion() const
 
 void RenderGraphExecutor::setDebugObserver(IRenderDebugObserver* observer)
 {
+    if (observer && !impl_->textureAliasPlan.handoffs.empty()) {
+        // Recompile with pinned debug resources before arbitrary checkpoints
+        // can consume intermediates beyond their transient lifetime.
+        impl_->isCompiled = false;
+    }
     impl_->debugObserver = observer;
 }
 
@@ -3954,8 +4209,9 @@ Result<> RenderGraphExecutor::transitionOutput(
     std::string_view fullName,
     ResourceState state)
 {
+    if (!compiled()) { return makeError(Error::InvalidArgument); }
     RenderGraphResource* resource = outputResource(fullName);
-    if (resource == nullptr) {
+    if (resource == nullptr || !isExportedOutput(fullName)) {
         return makeError(Error::InvalidArgument);
     }
     if (impl_->lastSubmittedCompletion.valid()) {
@@ -3983,6 +4239,17 @@ RenderGraphResource* RenderGraphExecutor::outputResource(std::string_view fullNa
 const RenderGraphResource* RenderGraphExecutor::outputResource(std::string_view fullName) const
 {
     return impl_->resource(fullName);
+}
+
+bool RenderGraphExecutor::isExportedOutput(std::string_view fullName) const
+{
+    const auto slot = impl_->resources.find(std::string(fullName));
+    return slot != impl_->resources.end() && !slot->second.aliasTransient;
+}
+
+const RenderGraphTextureMemoryStats& RenderGraphExecutor::textureMemoryStats() const
+{
+    return impl_->textureMemory;
 }
 
 const RenderGraphExecutionStats& RenderGraphExecutor::executionStats() const
@@ -4042,7 +4309,9 @@ const RenderGraphStreamingStats& RenderGraphExecutor::streamingStats() const
 
 bool RenderGraphExecutor::compiled() const
 {
-    return impl_->isCompiled;
+    return impl_->isCompiled && (impl_->textureAliasPlan.handoffs.empty() ||
+        std::none_of(impl_->externalCompletions.begin(), impl_->externalCompletions.end(),
+            [](const auto& point) { return point.isCancelled(); }));
 }
 
 uint32_t RenderGraphExecutor::width() const
@@ -4260,7 +4529,7 @@ Result<> RenderGraphPreviewRenderer::render(
 
     phase.next("preview.compileCheck");
     const bool outputCompiled = impl_->executor.compiled() &&
-        impl_->executor.outputResource(resolvedOutputName) != nullptr;
+        impl_->executor.isExportedOutput(resolvedOutputName);
     const bool needsCompile =
         graph.dirty() ||
         !impl_->executor.compiled() ||
@@ -4278,6 +4547,8 @@ Result<> RenderGraphPreviewRenderer::render(
         RenderGraphCompileOptions options;
         options.extraOutputs.push_back(resolvedOutputName);
         options.enablePreviewOutputAccess = true;
+        const char* aliasing = std::getenv("METALLIC_RENDER_GRAPH_TEXTURE_ALIASING");
+        options.enableTextureAliasing = aliasing != nullptr && std::string_view(aliasing) == "1";
         result = impl_->executor.compile(
             *impl_->device,
             graph,

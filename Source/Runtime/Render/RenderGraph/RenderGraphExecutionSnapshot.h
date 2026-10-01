@@ -11,6 +11,44 @@ namespace metallic::render {
 enum class RenderGraphExecutionSnapshotStatus : uint8_t { Planned, Recording, Recorded, Submitted, Failed };
 enum class RenderGraphSegmentRole : uint8_t { Pass, Prologue, ComputeBranch, GraphicsBranch, Join, Epilogue };
 
+struct RenderGraphTextureAliasSlotMemoryStats {
+    bool complete = false;
+    uint64_t backingAllocationId = 0;
+    uint64_t logicalBytes = 0;
+    uint64_t backingBytes = 0;
+    uint64_t savedBytes = 0;
+    uint64_t overheadBytes = 0;
+    std::vector<std::string> resources;
+    bool operator==(const RenderGraphTextureAliasSlotMemoryStats&) const = default;
+};
+
+// Compile-generation graph-owned texture capacities, including native alignment.
+// logicalBytes is the independent allocation counterfactual; alias members query
+// their original descriptors without VK_IMAGE_CREATE_ALIAS_BIT. backingBytes
+// counts each actual allocation owner once. Buffers, scene/SDK allocations,
+// private imports, history and driver heap residency are outside this scope.
+struct RenderGraphTextureMemoryStats {
+    bool aliasingEnabled = false;
+    bool complete = false;
+    uint32_t textureCount = 0;
+    uint32_t transientTextureCount = 0;
+    uint32_t pinnedTextureCount = 0;
+    // Native-qualified candidates; zero when aliasing is disabled (no query).
+    uint32_t eligibleTextureCount = 0;
+    uint32_t aliasedTextureCount = 0;
+    uint32_t aliasSlotCount = 0;
+    uint32_t backingAllocationCount = 0;
+    uint32_t unknownTextureCount = 0;
+    uint64_t logicalBytes = 0;
+    uint64_t backingBytes = 0;
+    uint64_t savedBytes = 0;
+    uint64_t overheadBytes = 0;
+    // Savings/overhead are zero when incomplete; partial capacities alone do
+    // not establish a valid comparison. Slots list actual shared allocations.
+    std::vector<RenderGraphTextureAliasSlotMemoryStats> slots;
+    bool operator==(const RenderGraphTextureMemoryStats&) const = default;
+};
+
 struct RenderGraphExecutionQueueSnapshot {
     uint32_t id = 0;
     QueueType type = QueueType::Graphics;
@@ -44,6 +82,7 @@ struct RenderGraphExecutionBarrierSnapshot {
     SyncScope beforeScope;
     SyncScope afterScope;
     bool executionOnly = false;
+    bool memoryAliasing = false;
 };
 
 struct RenderGraphExecutionStageSnapshot {
@@ -110,6 +149,7 @@ struct RenderGraphExecutionSnapshot {
     std::vector<RenderGraphExecutionPassSnapshot> passes;
     std::vector<RenderGraphExecutionSegmentSnapshot> segments;
     std::vector<RenderGraphExecutionBatchSnapshot> batches;
+    RenderGraphTextureMemoryStats textureMemory;
 };
 
 } // namespace metallic::render

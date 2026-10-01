@@ -89,6 +89,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderGraph/RenderGraph.cpp
     Runtime/Render/RenderGraph/RenderGraphNode.cpp
     Runtime/Render/RenderGraph/RenderGraphAccessPlan.cpp
+    Runtime/Render/RenderGraph/RenderGraphTextureAliasPlan.cpp
     Runtime/Render/RenderGraph/RenderGraphComputeStages.cpp
     Runtime/Render/RenderGraph/RenderGraphExecutor.cpp
     Runtime/Render/Streamer/StreamingUploads.cpp

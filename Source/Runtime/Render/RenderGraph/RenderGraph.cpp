@@ -196,6 +196,13 @@ RenderGraphField& RenderGraphField::setOptional(bool value)
     return *this;
 }
 
+RenderGraphField& RenderGraphField::transient(RenderGraphInitialization initialization)
+{
+    lifetime = RenderGraphResourceLifetime::Transient;
+    this->initialization = initialization;
+    return *this;
+}
+
 RenderGraphField& RenderGraphField::accelerationStructure()
 {
     resourceType = RenderGraphResourceType::AccelerationStructure;

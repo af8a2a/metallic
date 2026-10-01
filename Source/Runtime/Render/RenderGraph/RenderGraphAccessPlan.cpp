@@ -164,7 +164,7 @@ void captureGraphAccessBoundary(const GraphAccessPassPlan& pass, std::span<const
     }
     for (const auto& barrier : pass.barriers) {
         barriers.push_back({resourceIds[barrier.resource], barrier.before, barrier.after,
-            barrier.beforeScope, barrier.afterScope, barrier.executionOnly});
+            barrier.beforeScope, barrier.afterScope, barrier.executionOnly, barrier.memoryAliasing});
     }
 }
 
@@ -250,12 +250,15 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
 
     std::vector<TextureBarrierDesc> textures;
     std::vector<MemoryBarrierDesc> memory;
+    std::vector<MemoryBarrierDesc> aliasMemory;
     std::vector<AccelerationStructureBarrierDesc> accelerationStructures;
     for (const auto& barrier : pass.barriers) {
         const auto& binding = bindings[barrier.resource];
         const auto* accelerationStructure = binding.accelerationStructureResource
             ? binding.accelerationStructureResource->accelerationStructure : binding.accelerationStructure;
-        if (accelerationStructure && !barrier.executionOnly) {
+        if (barrier.memoryAliasing) {
+            aliasMemory.push_back({barrier.beforeScope, barrier.afterScope});
+        } else if (accelerationStructure && !barrier.executionOnly) {
             accelerationStructures.push_back({const_cast<RayTracingAccelerationStructure*>(accelerationStructure),
                 barrier.beforeScope, barrier.afterScope});
         } else if (binding.texture && !barrier.executionOnly) {
@@ -287,6 +290,12 @@ Result<> recordGraphAccessBarriers(CommandBuffer& commands, const GraphAccessPas
             auto retained = commands.retainResource(binding.texture->retainAllocation());
             if (!retained) { return retained; }
         }
+    }
+    // Complete the old physical occupant before the new image's discard layout
+    // transition. Separate calls avoid treating two image objects as one layout.
+    if (!aliasMemory.empty()) {
+        auto result = commands.synchronize({.memory = aliasMemory});
+        if (!result) { return result; }
     }
     return commands.synchronize({
         .textures = textures,

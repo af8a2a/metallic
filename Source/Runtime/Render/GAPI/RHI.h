@@ -591,6 +591,16 @@ struct TextureDesc {
     MemoryBudgetDomain memoryDomain = MemoryBudgetDomain::Other;
 };
 
+// Native requirements for the same descriptor used by createAliasedTextures().
+// They describe an alias-capable image, not the ordinary dedicated image path.
+struct TextureAllocationRequirements {
+    uint64_t sizeBytes = 0;
+    uint64_t alignmentBytes = 0;
+    uint32_t memoryTypeBits = 0;
+    bool requiresDedicatedAllocation = false;
+    bool prefersDedicatedAllocation = false;
+};
+
 struct TextureViewDesc {
     Format format = Format::Unknown;
     TextureSubresourceRange range;
@@ -1575,12 +1585,16 @@ private:
 
 // Value-only allocation diagnostics: taking a snapshot does not retain GPU memory.
 // allocationId identifies one resource allocation generation for this process.
+// backingAllocationId identifies the physical allocation owner. Distinct alias
+// images have distinct allocationIds and share one backingAllocationId.
 // memoryBlockId is an opaque native-memory token, comparable only within one
 // device's live snapshot; a freed block's token can later be reused. Equal blocks
 // with disjoint ranges are suballocations, not memory aliases. Borrowed images
 // have an allocationId but unknown backing (known == false).
 struct ResourceMemoryInfo {
     uint64_t allocationId = 0;
+    uint64_t backingAllocationId = 0;
+    uint64_t backingSizeBytes = 0;
     uint64_t memoryBlockId = 0;
     uint64_t offsetBytes = 0;
     uint64_t sizeBytes = 0;
@@ -2266,6 +2280,12 @@ public:
     [[nodiscard]] Result<std::unique_ptr<BufferView>> createBufferView(Buffer& buffer, const BufferViewDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<Texture>> createTexture(const TextureDesc& desc);
     [[nodiscard]] Result<uint64_t> textureAllocationSize(const TextureDesc& desc);
+    [[nodiscard]] Result<TextureAllocationRequirements> textureAliasAllocationRequirements(const TextureDesc& desc);
+    // Creates independent Device Texture2D color images at offset zero in one
+    // shared allocation, accounted once as FrameResources. The caller must order
+    // alias uses and initialize each image after every handoff. Device must outlive
+    // the images, views, and retained commands. Failure returns no partial group.
+    [[nodiscard]] Result<std::vector<std::unique_ptr<Texture>>> createAliasedTextures(std::span<const TextureDesc> descriptions);
     [[nodiscard]] Result<std::unique_ptr<TextureView>> createTextureView(Texture& texture, const TextureViewDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<Streamer>> createStreamer(const StreamerDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<ShaderModule>> createShaderModule(const ShaderModuleDesc& desc);

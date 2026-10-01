@@ -39,6 +39,7 @@ struct GraphAccessBarrier {
     SyncScope beforeScope;
     SyncScope afterScope;
     bool executionOnly = false;
+    bool memoryAliasing = false;
 };
 
 struct GraphAccessPassPlan {

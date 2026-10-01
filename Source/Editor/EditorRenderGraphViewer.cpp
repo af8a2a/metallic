@@ -202,6 +202,7 @@ void synchronizationText(const SynchronizationStats& stats)
 
 void barrierDetails(const Barrier& barrier)
 {
+    if (barrier.memoryAliasing) { ImGui::TextUnformatted("Physical memory alias handoff"); }
     ImGui::Text("%s -> %s%s", stateName(barrier.before), stateName(barrier.after),
         barrier.executionOnly ? " (execution only)" : "");
     scopeText("From", barrier.beforeScope);
@@ -252,12 +253,29 @@ std::string captureJson(const Snapshot& snapshot)
         {"externalRecording", snapshot.externalRecording}, {"scope", "Declared graph and captured internal stages; opaque internals excluded"},
         {"resources", Json::array()}, {"passes", Json::array()}, {"queues", Json::array()},
         {"segments", Json::array()}, {"batches", Json::array()}};
+    const auto& textureMemory = snapshot.textureMemory;
+    value["textureMemory"] = {{"aliasingEnabled", textureMemory.aliasingEnabled},
+        {"complete", textureMemory.complete}, {"transientTextureCount", textureMemory.transientTextureCount},
+        {"pinnedTextureCount", textureMemory.pinnedTextureCount}, {"unknownTextureCount", textureMemory.unknownTextureCount},
+        {"textureCount", textureMemory.textureCount}, {"eligibleTextureCount", textureMemory.eligibleTextureCount},
+        {"aliasedTextureCount", textureMemory.aliasedTextureCount}, {"aliasSlotCount", textureMemory.aliasSlotCount},
+        {"backingAllocationCount", textureMemory.backingAllocationCount},
+        {"logicalBytes", textureMemory.logicalBytes}, {"backingBytes", textureMemory.backingBytes},
+        {"savedBytes", textureMemory.savedBytes}, {"overheadBytes", textureMemory.overheadBytes},
+        {"scope", "Graph-owned texture backing capacity; excludes scene, buffers and opaque subsystem memory"},
+        {"slots", Json::array()}};
+    for (const auto& slot : textureMemory.slots) {
+        value["textureMemory"]["slots"].push_back({{"backingAllocationId", slot.backingAllocationId}, {"complete", slot.complete},
+            {"logicalBytes", slot.logicalBytes}, {"backingBytes", slot.backingBytes},
+            {"savedBytes", slot.savedBytes}, {"overheadBytes", slot.overheadBytes}, {"resources", slot.resources}});
+    }
     for (const auto& resource : snapshot.resources) {
         const auto& m = resource.memory;
         value["resources"].push_back({{"id", resource.id}, {"name", resource.name}, {"aliases", resource.aliases},
             {"private", resource.privateResource}, {"buffer", resource.type == RenderGraphResourceType::Buffer},
             {"type", resourceTypeName(resource.type)},
             {"allocation", m.allocationId}, {"memoryBlock", std::to_string(m.memoryBlockId)}, {"memoryKnown", m.known},
+            {"backingAllocationId", m.backingAllocationId}, {"backingSizeBytes", m.backingSizeBytes},
             {"offsetBytes", m.offsetBytes}, {"sizeBytes", m.sizeBytes}, {"memoryType", m.memoryTypeIndex}, {"heap", m.heapIndex}});
         auto& exported = value["resources"].back();
         if (resource.type == RenderGraphResourceType::Buffer) { exported["logicalBytes"] = resource.bufferDesc.size; }
@@ -283,7 +301,7 @@ std::string captureJson(const Snapshot& snapshot)
     const auto barriersJson = [](const auto& barriers) {
         auto result = Json::array();
         for (const auto& b : barriers) { result.push_back({{"resource", b.resourceId}, {"before", stateName(b.before)},
-            {"after", stateName(b.after)}, {"executionOnly", b.executionOnly},
+            {"after", stateName(b.after)}, {"executionOnly", b.executionOnly}, {"memoryAliasing", b.memoryAliasing},
             {"sourceStages", uint64_t(b.beforeScope.stages)}, {"sourceAccess", uint64_t(b.beforeScope.access)},
             {"destinationStages", uint64_t(b.afterScope.stages)}, {"destinationAccess", uint64_t(b.afterScope.access)}}); }
         return result;
@@ -621,21 +639,82 @@ void RenderGraphExecutionViewer::drawQueues(float scale)
 
 void RenderGraphExecutionViewer::drawMemory(float scale)
 {
+    const auto& textureMemory = snapshot_->textureMemory;
+    const double savedPercent = textureMemory.complete && textureMemory.logicalBytes
+        ? 100.0 * double(textureMemory.savedBytes) / double(textureMemory.logicalBytes) : 0.0;
+    ImGui::Text("Graph texture aliasing: %s", textureMemory.aliasingEnabled ? "Enabled" : "Disabled");
+    ImGui::Text("Without aliasing: %s | Backing: %s%s", bytesText(textureMemory.logicalBytes).c_str(),
+        bytesText(textureMemory.backingBytes).c_str(), textureMemory.complete ? "" : " (known capacity only)");
+    if (textureMemory.complete) {
+        if (textureMemory.overheadBytes) {
+            ImGui::Text("Backing overhead: %s", bytesText(textureMemory.overheadBytes).c_str());
+        } else {
+            ImGui::Text("Saved: %s (%.2f%%)", bytesText(textureMemory.savedBytes).c_str(), savedPercent);
+        }
+    } else {
+        ImGui::TextDisabled("Partial comparison: %u textures have unknown capacity; savings percentage unavailable.",
+            textureMemory.unknownTextureCount);
+    }
+    ImGui::Text("%u textures | %u transient | %u pinned | %u eligible", textureMemory.textureCount,
+        textureMemory.transientTextureCount, textureMemory.pinnedTextureCount, textureMemory.eligibleTextureCount);
+    ImGui::Text("%u aliased textures in %u shared slots | %u backing allocations", textureMemory.aliasedTextureCount,
+        textureMemory.aliasSlotCount, textureMemory.backingAllocationCount);
+    ImGui::TextDisabled("Graph-owned texture capacity; excludes scene, buffers and opaque subsystem memory.");
+    if (!textureMemory.slots.empty() && ImGui::TreeNodeEx("Shared texture slots", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::BeginTable("TextureAliasSlots", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Textures", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+            ImGui::TableSetupColumn("Backing ID", ImGuiTableColumnFlags_WidthFixed, 88 * scale);
+            ImGui::TableSetupColumn("Without alias", ImGuiTableColumnFlags_WidthFixed, 98 * scale);
+            ImGui::TableSetupColumn("Backing", ImGuiTableColumnFlags_WidthFixed, 88 * scale);
+            ImGui::TableSetupColumn("Net saved", ImGuiTableColumnFlags_WidthFixed, 88 * scale);
+            ImGui::TableHeadersRow();
+            for (const auto& slot : textureMemory.slots) {
+                bool visible = resourceFilter_[0] == '\0';
+                for (const auto& name : slot.resources) { visible |= matches(name, resourceFilter_); }
+                if (!visible) { continue; }
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                for (const auto& name : slot.resources) { ImGui::TextWrapped("%s", name.c_str()); }
+                ImGui::TableNextColumn();
+                ImGui::Text("%llu", static_cast<unsigned long long>(slot.backingAllocationId));
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(bytesText(slot.logicalBytes).c_str());
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(bytesText(slot.backingBytes).c_str());
+                ImGui::TableNextColumn();
+                if (slot.complete) {
+                    ImGui::Text("%s%s", slot.overheadBytes ? "-" : "",
+                        bytesText(slot.overheadBytes ? slot.overheadBytes : slot.savedBytes).c_str());
+                } else { ImGui::TextDisabled("N/A"); }
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TreePop();
+    }
+    ImGui::Separator();
     std::map<uint64_t, std::vector<const Resource*>> blocks;
     std::set<uint64_t> allocations;
+    std::map<uint64_t, uint64_t> backingSizes;
     uint64_t bytes = 0; size_t unknown = 0, aliasPairs = 0;
     for (const auto& resource : snapshot_->resources) {
         if (!resource.memory.known) { ++unknown; continue; }
         if (!allocations.insert(resource.memory.allocationId).second) { continue; }
-        bytes += resource.memory.sizeBytes;
+        // Old captures may lack backing metadata. Keep each native resource row,
+        // while shared physical allocation capacity contributes only once.
+        const auto backingId = resource.memory.backingAllocationId
+            ? resource.memory.backingAllocationId : resource.memory.allocationId;
+        const auto backingSize = resource.memory.backingSizeBytes
+            ? resource.memory.backingSizeBytes : resource.memory.sizeBytes;
+        backingSizes[backingId] = std::max(backingSizes[backingId], backingSize);
         blocks[resource.memory.memoryBlockId].push_back(&resource);
     }
+    for (const auto& [backingId, size] : backingSizes) { bytes += size; }
     for (const auto& [block, resources] : blocks) {
         for (size_t i = 0; i < resources.size(); ++i) {
             for (size_t j = i + 1; j < resources.size(); ++j) { aliasPairs += overlaps(*resources[i], *resources[j]); }
         }
     }
-    ImGui::Text("%zu unique allocations | %s | %zu overlapping pairs", allocations.size(), bytesText(bytes).c_str(), aliasPairs);
+    ImGui::Text("%zu native resources | %zu backing allocations | %s | %zu overlapping pairs",
+        allocations.size(), backingSizes.size(), bytesText(bytes).c_str(), aliasPairs);
     ImGui::TextWrapped("Actual memory block + byte ranges. Shared block does not imply aliasing; only overlapping ranges do.");
     ImGui::TextDisabled("Capture allocations only; excludes opaque subsystem memory and other in-flight slots. Unknown: %zu", unknown);
     if (aliasPairs == 0) { ImGui::TextDisabled("No physical memory aliasing observed. Graph field aliases share one resource."); }
@@ -656,7 +735,7 @@ void RenderGraphExecutionViewer::drawMemory(float scale)
         }
         if (!visible) { continue; }
         ImGui::PushID(int(blockIndex));
-        ImGui::Text("Block %zu | heap %u / type %u | %zu allocations", blockIndex, resources.front()->memory.heapIndex,
+        ImGui::Text("Block %zu | heap %u / type %u | %zu native resources", blockIndex, resources.front()->memory.heapIndex,
             resources.front()->memory.memoryTypeIndex, resources.size());
         ImGui::TextDisabled("0 .. %s observed span (not total block capacity)", bytesText(extent).c_str());
         const float width = std::max(50.0f, ImGui::GetContentRegionAvail().x - 6 * scale);
@@ -681,7 +760,9 @@ void RenderGraphExecutionViewer::drawMemory(float scale)
                 ImGui::BeginTooltip(); ImGui::TextUnformatted(resource->name.c_str());
                 ImGui::Text("Allocation #%llu | offset %llu | size %s", static_cast<unsigned long long>(resource->memory.allocationId),
                     static_cast<unsigned long long>(resource->memory.offsetBytes), bytesText(resource->memory.sizeBytes).c_str());
-                ImGui::TextUnformatted(alias ? "Physical range overlaps another allocation." : "No overlapping allocation range.");
+                ImGui::Text("Backing #%llu | capacity %s", static_cast<unsigned long long>(resource->memory.backingAllocationId),
+                    bytesText(resource->memory.backingSizeBytes).c_str());
+                ImGui::TextUnformatted(alias ? "Physical range overlaps another resource." : "No overlapping resource range.");
                 ImGui::EndTooltip();
             }
             ImGui::PopID();
@@ -716,6 +797,8 @@ void RenderGraphExecutionViewer::drawInspector()
         }
         if (resource->memory.known) {
             ImGui::Text("Allocation #%llu", static_cast<unsigned long long>(resource->memory.allocationId));
+            ImGui::Text("Backing #%llu | capacity %s", static_cast<unsigned long long>(resource->memory.backingAllocationId),
+                bytesText(resource->memory.backingSizeBytes).c_str());
             ImGui::Text("%s at byte %llu", bytesText(resource->memory.sizeBytes).c_str(), static_cast<unsigned long long>(resource->memory.offsetBytes));
             ImGui::Text("Heap %u / memory type %u", resource->memory.heapIndex, resource->memory.memoryTypeIndex);
         } else { ImGui::TextDisabled("Native allocation information unavailable."); }

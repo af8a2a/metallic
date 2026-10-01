@@ -19,6 +19,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <set>
@@ -683,7 +684,83 @@ public:
             RenderGraphExecutor executor;
             executor.bindRenderWorld(&world);
             uint32_t width = 512, height = 320;
-            require(bool(executor.compile(context.device, graph, width, height, log)), log);
+            const char* aliasSetting = std::getenv("METALLIC_TEST_TEXTURE_ALIASING");
+            RenderGraphCompileOptions compileOptions;
+            compileOptions.enableTextureAliasing = aliasSetting && std::string_view(aliasSetting) == "1";
+            nlohmann::json memorySamples = nlohmann::json::array();
+            bool memoryCorrectnessVerified = false;
+            const std::string memoryLabel = std::string(miniZorah_ ? "MiniZorah" : "Streamed") +
+                "TextureMemory-Aliasing" + (compileOptions.enableTextureAliasing ? "On" : "Off");
+            const auto measureTextureMemory = [&](std::string_view phase) {
+                const auto& stats = executor.textureMemoryStats();
+                require(stats.complete, "Production texture allocation statistics are incomplete");
+                require(stats.logicalBytes + stats.overheadBytes == stats.backingBytes + stats.savedBytes,
+                    "Texture memory accounting does not balance");
+                const auto budget = context.device.memoryBudget();
+                const auto& frameResources = budget.domains[size_t(MemoryBudgetDomain::FrameResources)];
+                nlohmann::json domains = nlohmann::json::array();
+                constexpr std::array domainNames{"Other", "Geometry", "CLAS", "CLASScratch", "RayTracing",
+                    "MaterialTextures", "FrameResources", "Upload"};
+                static_assert(domainNames.size() == size_t(MemoryBudgetDomain::Count));
+                for (size_t index = 0; index < budget.domains.size(); ++index) {
+                    const auto& domain = budget.domains[index];
+                    domains.push_back({{"name", domainNames[index]}, {"allocationBytes", domain.allocationBytes},
+                        {"peakAllocationBytes", domain.peakAllocationBytes},
+                        {"deviceLocalBytes", domain.deviceLocalBytes}, {"allocationCount", domain.allocationCount}});
+                }
+                nlohmann::json heaps = nlohmann::json::array();
+                for (size_t index = 0; index < budget.heaps.size(); ++index) {
+                    const auto& heap = budget.heaps[index];
+                    heaps.push_back({{"index", index}, {"deviceLocal", heap.deviceLocal},
+                        {"sizeBytes", heap.sizeBytes}, {"budgetBytes", heap.budgetBytes},
+                        {"usageBytes", heap.usageBytes}, {"blockBytes", heap.blockBytes},
+                        {"allocationBytes", heap.allocationBytes}, {"blockCount", heap.blockCount},
+                        {"allocationCount", heap.allocationCount}});
+                }
+                nlohmann::json slots = nlohmann::json::array();
+                for (const auto& slot : stats.slots) {
+                    slots.push_back({{"complete", slot.complete}, {"backingAllocationId", slot.backingAllocationId},
+                        {"logicalBytes", slot.logicalBytes}, {"backingBytes", slot.backingBytes},
+                        {"savedBytes", slot.savedBytes}, {"overheadBytes", slot.overheadBytes},
+                        {"resources", slot.resources}});
+                }
+                memorySamples.push_back({{"phase", phase}, {"width", width}, {"height", height},
+                    {"textureMemory", {{"complete", stats.complete}, {"logicalBytes", stats.logicalBytes},
+                        {"backingBytes", stats.backingBytes}, {"savedBytes", stats.savedBytes},
+                        {"overheadBytes", stats.overheadBytes}, {"textureCount", stats.textureCount},
+                        {"transientTextureCount", stats.transientTextureCount},
+                        {"eligibleTextureCount", stats.eligibleTextureCount},
+                        {"pinnedTextureCount", stats.pinnedTextureCount},
+                        {"unknownTextureCount", stats.unknownTextureCount},
+                        {"aliasedTextureCount", stats.aliasedTextureCount},
+                        {"aliasSlotCount", stats.aliasSlotCount},
+                        {"backingAllocationCount", stats.backingAllocationCount}, {"slots", std::move(slots)}}},
+                    {"deviceTelemetry", {{"frameResourceAllocationBytes", frameResources.allocationBytes},
+                        {"frameResourceDeviceLocalBytes", frameResources.deviceLocalBytes},
+                        {"frameResourceAllocationCount", frameResources.allocationCount},
+                        {"driverBudget", budget.driverBudget}, {"domains", std::move(domains)},
+                        {"heaps", std::move(heaps)}}}});
+                std::filesystem::create_directories(context.outputDirectory);
+                std::ofstream report(context.outputDirectory / (memoryLabel + ".json"));
+                report << nlohmann::json{{"schemaVersion", 1}, {"workload", name},
+                    {"textureAliasingEnabled", compileOptions.enableTextureAliasing},
+                    {"correctnessVerified", memoryCorrectnessVerified},
+                    {"scope", "Owned graph textures only; logicalBytes is the independent-image allocation counterfactual; backingBytes counts each physical backing once. Device telemetry also includes buffers, private resources, scene/SDK allocations and driver usage, and is not an alias savings metric."},
+                    {"samples", memorySamples}}.dump(2) << '\n';
+                require(report.good(), "Could not save production texture memory statistics");
+                spdlog::info("[Texture memory] {} {} {}x{} logical={} backing={} saved={} overhead={} aliasTextures={} aliasSlots={} FrameResources={}",
+                    memoryLabel, phase, width, height, stats.logicalBytes, stats.backingBytes, stats.savedBytes,
+                    stats.overheadBytes, stats.aliasedTextureCount, stats.aliasSlotCount, frameResources.allocationBytes);
+            };
+            const auto compileGraph = [&](std::string_view phase) {
+                const auto begin = std::chrono::steady_clock::now();
+                require(bool(executor.compile(context.device, graph, width, height, compileOptions, log)), log);
+                const auto compileMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - begin).count();
+                measureTextureMemory(phase);
+                return compileMs;
+            };
+            compileGraph("initial-compiled");
             auto* streamer = executor.subsystemHost()->get<StreamerSubsystem>();
             require(streamer != nullptr && streamer->streamCount() == 1, "Streamer must own exactly one raster session");
             require(!streamer->sceneReadiness().ready && streamer->sceneReadiness().requiredPages != 0,
@@ -712,12 +789,10 @@ public:
             const auto rebuildAndDraw = [&](uint32_t newWidth, uint32_t newHeight) {
                 require(executor.executionStats().streaming.size() == 1, "Missing stream continuity telemetry");
                 const auto before = executor.executionStats().streaming.front();
-                const auto begin = std::chrono::steady_clock::now();
                 width = newWidth; height = newHeight;
-                require(bool(executor.compile(context.device, graph, width, height, log)), log);
-                const auto compileMs = std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - begin).count();
+                const auto compileMs = compileGraph("viewport-rebuild-compiled");
                 draw();
+                measureTextureMemory("viewport-rebuild-completed");
                 require(executor.executionStats().streaming.size() == 1, "Stream missing after graph rebuild");
                 const auto& after = executor.executionStats().streaming.front();
                 require(after.generation == before.generation && after.frameIndex == before.frameIndex + 1 &&
@@ -748,6 +823,7 @@ public:
                         sceneReadyFrame, readiness.completedPages, readiness.requiredPages);
                 }
             }
+            measureTextureMemory(miniZorah_ ? "180-frames-completed" : "48-frames-completed");
             const auto pixels = [&]() {
                 auto* buffer = executor.outputResource("Readback.pixels")->buffer;
                 buffer->invalidate(); const auto* bytes = static_cast<const uint32_t*>(buffer->map());
@@ -773,12 +849,12 @@ public:
             }
             if (!miniZorah_) {
                 graph.setNodeRuntimeProperty(graph.findNode("Deferred")->id, "materialBinning", false);
-                require(bool(executor.compile(context.device, graph, width, height, log)), log);
+                compileGraph("unbinned-compiled");
                 draw();
                 const auto unbinned = pixels();
                 require(shaded == unbinned, "Streamed material classification differs from unbinned deferred shading");
                 graph.setNodeRuntimeProperty(graph.findNode("Deferred")->id, "debugDisableShadows", true);
-                require(bool(executor.compile(context.device, graph, width, height, log)), log); draw();
+                compileGraph("unshadowed-compiled"); draw();
                 const auto unshadowed = pixels();
                 size_t shadowed = 0;
                 for (size_t i = 0; i < shaded.size(); ++i) {
@@ -801,6 +877,7 @@ public:
             rebuildAndDraw(321, 217);
             if (!miniZorah_) {
                 require(bool(executor.reloadShaders(log)), "Streamed shader reload: " + log);
+                measureTextureMemory("shaders-reloaded");
                 for (uint32_t frame = 0; frame < 32; ++frame) { draw(); }
                 streamer->collectReleasedStreams();
                 require(streamer->streamCount() == 1, "Shader reload leaked the previous streaming session");
@@ -810,10 +887,13 @@ public:
                     "Reloaded streaming session produced an empty image");
             }
             RenderGraph empty; empty.addNode("FinalBlitPass", "Empty"); empty.markOutput("Empty.color");
-            require(bool(executor.compile(context.device, empty, width, height, log)), log);
+            require(bool(executor.compile(context.device, empty, width, height, compileOptions, log)), log);
+            measureTextureMemory("raster-session-retired");
             for (uint32_t frame = 0; frame <= executor.subsystemHost()->frameSlotCount(); ++frame) { draw(); }
             streamer->collectReleasedStreams();
             require(streamer->streamCount() == 0, "Streamer retained an unused raster session after graph removal");
+            memoryCorrectnessVerified = true;
+            measureTextureMemory("all-checks-completed");
             return RHITestResult::pass("Stream-only materials, unified lighting/TLAS, guides, resize and Streamer retirement verified");
         } catch (const std::exception& error) { return realtimeFailure(error.what()); }
     }

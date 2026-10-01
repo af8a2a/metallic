@@ -33,7 +33,9 @@ public:
         source.sampledRead();
         source.format = Format::Unknown;
         auto& color = reflection.addTextureOutput("color", "Exposed color; HDR display mapping occurs in FinalBlit");
-        color.storageWrite();
+        // Apply dispatches cover every output texel, including every tone-curve
+        // branch; adaptation history remains in the separate persistent buffer.
+        color.storageWrite().transient(RenderGraphInitialization::FullOverwrite);
         const bool hdr = context.displayOutput.mode == DisplayOutputMode::HDRscRGB;
         color.format = hdr ? Format::RGBA16Sfloat : Format::RGBA8Unorm;
         color.colorEncoding = hdr ? DisplayColorEncoding::ExposedLinear : DisplayColorEncoding::sRGB;

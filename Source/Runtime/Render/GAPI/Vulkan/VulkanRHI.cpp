@@ -67,7 +67,8 @@ ResourceMemoryInfo allocationMemoryInfo(const VmaAllocationInfo& allocation,
     uint64_t blockId = 0;
     static_assert(sizeof(allocation.deviceMemory) <= sizeof(blockId));
     std::memcpy(&blockId, &allocation.deviceMemory, sizeof(allocation.deviceMemory));
-    return {.allocationId = allocationId, .memoryBlockId = blockId,
+    return {.allocationId = allocationId, .backingAllocationId = allocationId,
+        .backingSizeBytes = allocation.size, .memoryBlockId = blockId,
         .offsetBytes = allocation.offset, .sizeBytes = allocation.size,
         .memoryTypeIndex = allocation.memoryType,
         .heapIndex = properties.memoryTypes[allocation.memoryType].heapIndex, .known = true};
@@ -3161,6 +3162,15 @@ struct BufferViewImpl {
     VkDeviceSize size = 0;
 };
 
+struct AliasTextureAllocation {
+    DeviceImpl* device = nullptr;
+    VmaAllocation allocation = VK_NULL_HANDLE;
+    uint64_t allocationId = nextResourceAllocationId.fetch_add(1, std::memory_order_relaxed);
+    uint64_t sizeBytes = 0;
+    bool deviceLocal = false;
+    ~AliasTextureAllocation();
+};
+
 struct TextureImpl {
     DeviceImpl* device = nullptr;
     ResourceMemoryInfo memoryInfo{.allocationId = nextResourceAllocationId.fetch_add(1, std::memory_order_relaxed)};
@@ -3168,6 +3178,7 @@ struct TextureImpl {
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VmaAllocation allocation = VK_NULL_HANDLE;
+    std::shared_ptr<AliasTextureAllocation> aliasAllocation;
     VkImageCreateFlags flags = 0;
     VkImageUsageFlags usage = 0;
     bool ownsImage = false;
@@ -3515,11 +3526,25 @@ BufferImpl::~BufferImpl()
     device->trackMemoryLocked(desc.memoryDomain, allocationBytes, deviceLocal, false);
 }
 
+AliasTextureAllocation::~AliasTextureAllocation()
+{
+    if (!device || allocation == VK_NULL_HANDLE) { return; }
+    std::lock_guard lock(device->memoryBudgetState->mutex);
+    vmaFreeMemory(device->allocator, allocation);
+    device->trackMemoryLocked(MemoryBudgetDomain::FrameResources, sizeBytes, deviceLocal, false);
+}
+
 TextureImpl::~TextureImpl()
 {
     if (!device || image == VK_NULL_HANDLE) { return; }
     vulkan::forgetTraceObject(device->device, VK_OBJECT_TYPE_IMAGE, uint64_t(image));
     if (!ownsImage) { return; }
+    // Aliased images retain the allocation owner; unbound images are temporary
+    // members of a group being created. Neither frees memory or tracks it here.
+    if (aliasAllocation || allocation == VK_NULL_HANDLE) {
+        vkDestroyImage(device->device, image, nullptr);
+        return;
+    }
     std::lock_guard lock(device->memoryBudgetState->mutex);
     vmaDestroyImage(device->allocator, image, allocation);
     device->trackMemoryLocked(desc.memoryDomain, allocationSize, deviceLocal, false);
@@ -9448,6 +9473,174 @@ Result<std::unique_ptr<BufferView>> Device::createBufferView(Buffer& buffer,
     viewImpl->address = bufferAddress + desc.range.offset;
     viewImpl->size = viewSize;
     return std::unique_ptr<BufferView>(new BufferView(std::move(viewImpl)));
+}
+
+namespace {
+Result<VkImageCreateInfo> aliasTextureImageInfo(detail::DeviceImpl& device, const TextureDesc& desc,
+    const std::vector<uint32_t>& queueFamilies)
+{
+    if (!desc.width || !desc.height || desc.depth != 1 || !desc.mipCount || !desc.layerCount ||
+        toVkFormat(desc.format) == VK_FORMAT_UNDEFINED || size_t(desc.memoryDomain) >= size_t(MemoryBudgetDomain::Count)) {
+        return makeError(Error::InvalidArgument);
+    }
+    constexpr auto allowedUsage = TextureUsageBits::Sampled | TextureUsageBits::Storage |
+        TextureUsageBits::ColorAttachment | TextureUsageBits::TransferSource | TextureUsageBits::TransferDestination;
+    constexpr auto allowedQueues = QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy;
+    if (desc.usage == TextureUsageBits::None || (uint32_t(desc.usage) & ~uint32_t(allowedUsage)) != 0 ||
+        (uint32_t(desc.queueAccess) & ~uint32_t(allowedQueues)) != 0) {
+        return makeError(Error::InvalidArgument);
+    }
+    if (desc.type != TextureType::Texture2D || desc.memoryLocation != MemoryLocation::Device ||
+        desc.format == Format::D32Sfloat ||
+        (desc.memoryDomain != MemoryBudgetDomain::Other && desc.memoryDomain != MemoryBudgetDomain::FrameResources)) {
+        return makeError(Error::Unsupported);
+    }
+    uint32_t maxMipCount = 0;
+    for (uint32_t extent = std::max(desc.width, desc.height); extent; extent >>= 1) { ++maxMipCount; }
+    if (desc.mipCount > maxMipCount) { return makeError(Error::InvalidArgument); }
+    VkImageCreateInfo info{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .flags = VK_IMAGE_CREATE_ALIAS_BIT,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = toVkFormat(desc.format),
+        .extent = {desc.width, desc.height, 1},
+        .mipLevels = desc.mipCount,
+        .arrayLayers = desc.layerCount,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = toVkImageUsage(desc.usage),
+        .sharingMode = queueFamilies.size() > 1 ? VK_SHARING_MODE_CONCURRENT : VK_SHARING_MODE_EXCLUSIVE,
+        .queueFamilyIndexCount = queueFamilies.size() > 1 ? uint32_t(queueFamilies.size()) : 0,
+        .pQueueFamilyIndices = queueFamilies.size() > 1 ? queueFamilies.data() : nullptr,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VkImageFormatProperties properties{};
+    const VkResult supported = vkGetPhysicalDeviceImageFormatProperties(device.physicalDevice, info.format,
+        info.imageType, info.tiling, info.usage, info.flags, &properties);
+    if (supported == VK_ERROR_FORMAT_NOT_SUPPORTED) { return makeError(Error::Unsupported); }
+    if (supported != VK_SUCCESS) { return std::unexpected(resultFromVk(supported).error()); }
+    if (desc.width > properties.maxExtent.width || desc.height > properties.maxExtent.height ||
+        desc.mipCount > properties.maxMipLevels || desc.layerCount > properties.maxArrayLayers ||
+        !(properties.sampleCounts & VK_SAMPLE_COUNT_1_BIT)) {
+        return makeError(Error::InvalidArgument);
+    }
+    return info;
+}
+
+TextureAllocationRequirements aliasTextureRequirements(const VkMemoryRequirements& memory,
+    const VkMemoryDedicatedRequirements& dedicated)
+{
+    return {.sizeBytes = memory.size, .alignmentBytes = memory.alignment,
+        .memoryTypeBits = memory.memoryTypeBits,
+        .requiresDedicatedAllocation = dedicated.requiresDedicatedAllocation != VK_FALSE,
+        .prefersDedicatedAllocation = dedicated.prefersDedicatedAllocation != VK_FALSE};
+}
+} // namespace
+
+Result<TextureAllocationRequirements> Device::textureAliasAllocationRequirements(const TextureDesc& desc)
+{
+    if (!impl_) { return makeError(Error::InvalidArgument); }
+    activateVolkDevice(impl_->device);
+    const auto families = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
+    const auto info = aliasTextureImageInfo(*impl_, desc, families);
+    if (!info) { return std::unexpected(info.error()); }
+    VkMemoryDedicatedRequirements dedicated{.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+    VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
+    const VkDeviceImageMemoryRequirements request{
+        .sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS, .pCreateInfo = &*info};
+    vkGetDeviceImageMemoryRequirements(impl_->device, &request, &requirements);
+    if (!requirements.memoryRequirements.size || !requirements.memoryRequirements.alignment ||
+        !requirements.memoryRequirements.memoryTypeBits) { return makeError(Error::Unsupported); }
+    return aliasTextureRequirements(requirements.memoryRequirements, dedicated);
+}
+
+Result<std::vector<std::unique_ptr<Texture>>> Device::createAliasedTextures(std::span<const TextureDesc> descriptions)
+{
+    if (!impl_ || descriptions.empty()) { return makeError(Error::InvalidArgument); }
+    activateVolkDevice(impl_->device);
+    std::vector<std::unique_ptr<detail::TextureImpl>> images;
+    std::vector<TextureAllocationRequirements> imageRequirements;
+    images.reserve(descriptions.size());
+    imageRequirements.reserve(descriptions.size());
+    VkMemoryRequirements combined{.size = 0, .alignment = 1, .memoryTypeBits = UINT32_MAX};
+    for (const auto& desc : descriptions) {
+        const auto families = detail::queueFamiliesForAccess(*impl_, desc.queueAccess);
+        const auto info = aliasTextureImageInfo(*impl_, desc, families);
+        if (!info) { return std::unexpected(info.error()); }
+        auto image = std::make_unique<detail::TextureImpl>();
+        image->device = impl_.get();
+        image->desc = desc;
+        image->desc.memoryDomain = MemoryBudgetDomain::FrameResources;
+        image->ownsImage = true;
+        const VkResult created = vkCreateImage(impl_->device, &*info, nullptr, &image->image);
+        if (created != VK_SUCCESS) { return std::unexpected(resultFromVk(created).error()); }
+        image->flags = info->flags;
+        image->usage = info->usage;
+        VkMemoryDedicatedRequirements dedicated{.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+        VkMemoryRequirements2 requirements{.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, .pNext = &dedicated};
+        const VkImageMemoryRequirementsInfo2 request{
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2, .image = image->image};
+        vkGetImageMemoryRequirements2(impl_->device, &request, &requirements);
+        const auto& memory = requirements.memoryRequirements;
+        if (dedicated.requiresDedicatedAllocation || !memory.size || !memory.alignment || !memory.memoryTypeBits) {
+            return makeError(Error::Unsupported);
+        }
+        combined.size = std::max(combined.size, memory.size);
+        combined.alignment = std::max(combined.alignment, memory.alignment);
+        combined.memoryTypeBits &= memory.memoryTypeBits;
+        imageRequirements.push_back(aliasTextureRequirements(memory, dedicated));
+        images.push_back(std::move(image));
+    }
+    if (!combined.memoryTypeBits) { return makeError(Error::Unsupported); }
+    auto backing = std::make_shared<detail::AliasTextureAllocation>();
+    backing->device = impl_.get();
+    VmaAllocationInfo allocated{};
+    {
+        std::unique_lock budgetLock(impl_->memoryBudgetState->mutex);
+        VmaAllocationCreateInfo allocationInfo{
+            .flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT | VMA_ALLOCATION_CREATE_CAN_ALIAS_BIT,
+            .usage = VMA_MEMORY_USAGE_UNKNOWN,
+            .preferredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            .memoryTypeBits = combined.memoryTypeBits,
+        };
+        uint32_t memoryType = 0;
+        VkResult result = vmaFindMemoryTypeIndex(impl_->allocator, combined.memoryTypeBits, &allocationInfo, &memoryType);
+        if (result != VK_SUCCESS) { return std::unexpected(resultFromVk(result).error()); }
+        if (!impl_->admitMemoryLocked(memoryType, combined.size, MemoryBudgetDomain::FrameResources)) {
+            return makeError(Error::OutOfMemory);
+        }
+        allocationInfo.memoryTypeBits = 1u << memoryType;
+        if (impl_->memoryBudgetState->policy.enabled) { allocationInfo.flags |= VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT; }
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        result = vmaAllocateMemory(impl_->allocator, &combined, &allocationInfo, &allocation, &allocated);
+        if (result != VK_SUCCESS) { return std::unexpected(resultFromVk(result).error()); }
+        backing->allocation = allocation;
+        backing->sizeBytes = allocated.size;
+        backing->deviceLocal = (impl_->memoryProperties.memoryHeaps[
+            impl_->memoryProperties.memoryTypes[allocated.memoryType].heapIndex].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+        impl_->trackMemoryLocked(MemoryBudgetDomain::FrameResources, backing->sizeBytes, backing->deviceLocal, true);
+    }
+    // Retain the backing even for unbound members so rollback destroys every
+    // native image before releasing the shared allocation.
+    for (auto& image : images) { image->aliasAllocation = backing; }
+    for (size_t index = 0; index < images.size(); ++index) {
+        auto& image = *images[index];
+        const auto& requirements = imageRequirements[index];
+        if (allocated.size < requirements.sizeBytes || allocated.offset % requirements.alignmentBytes ||
+            !(requirements.memoryTypeBits & (1u << allocated.memoryType))) { return makeError(Error::Unsupported); }
+        const VkResult bound = vmaBindImageMemory(impl_->allocator, backing->allocation, image.image);
+        if (bound != VK_SUCCESS) { return std::unexpected(resultFromVk(bound).error()); }
+        image.memory = allocated.deviceMemory;
+        image.memoryInfo = allocationMemoryInfo(allocated, impl_->memoryProperties, image.memoryInfo.allocationId);
+        image.memoryInfo.backingAllocationId = backing->allocationId;
+        image.memoryInfo.sizeBytes = requirements.sizeBytes;
+        image.allocationSize = requirements.sizeBytes;
+        image.deviceLocal = backing->deviceLocal;
+    }
+    std::vector<std::unique_ptr<Texture>> textures;
+    textures.reserve(images.size());
+    for (auto& image : images) { textures.push_back(std::unique_ptr<Texture>(new Texture(std::move(image)))); }
+    return textures;
 }
 
 Result<uint64_t> Device::textureAllocationSize(const TextureDesc& desc)

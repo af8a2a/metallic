@@ -340,6 +340,9 @@ add_executable(MetallicRHITests
     rhi/ReGIRVirtualLightTests.cpp
     rhi/RenderGraphTests.cpp
     rhi/RenderGraphAccessPlanTests.cpp
+    rhi/RenderGraphTextureAliasPlanTests.cpp
+    rhi/TextureAliasingTests.cpp
+    rhi/RenderGraphTextureAliasingTests.cpp
     rhi/RenderGraphAccelerationStructureTests.cpp
     rhi/SceneAccelerationStructurePassTests.cpp
     rhi/RenderGraphComputeStageTests.cpp

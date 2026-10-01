@@ -19,6 +19,7 @@ public:
             .transferRead();
         reflection.addTextureOutput("color", "Copied color texture")
             .transferWrite()
+            .transient(RenderGraphInitialization::FullOverwrite)
             .format = Format::RGBA8Unorm;
         return reflection;
     }

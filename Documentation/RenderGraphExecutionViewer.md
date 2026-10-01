@@ -12,7 +12,7 @@ Open **Render Graph Editor → Execution** while the viewport renders. The **Edi
 
 Rows are canonical resource allocations; columns are executed passes after graph culling. Inputs referencing an output appear as aliases on the same resource, rather than as duplicate allocations. Green means data read, red means data write, and split cells mean both. The gray span connects declared uses in pass order; it does **not** describe allocation/free times.
 
-Diamonds mark planned barrier boundaries. Gold marks synchronization without a resource-state change; cyan marks a state/layout boundary. The inspector lists source and destination scopes, execution-only dependencies, and internal stages captured through `executeStages` / `executeComputeStages`, including private imports and the final restore boundary. Layout ownership alone is not a data write.
+Diamonds mark planned barrier boundaries. Gold marks synchronization without a resource-state change; cyan marks a state/layout boundary. The inspector lists source and destination scopes, execution-only dependencies, physical memory alias handoffs, and internal stages captured through `executeStages` / `executeComputeStages`, including private imports and the final restore boundary. Layout ownership alone is not a data write.
 
 Planned barriers and encoded operations are separate evidence. The inspector's encoded boundary counts come from the common RHI encoder; it may merge several resources into one native memory barrier or omit a redundant transition. Opaque subsystem/SDK internals are not expanded. Reused RAW visibility can retain a pass dependency without another barrier.
 
@@ -28,7 +28,7 @@ The horizontal axis is dependency depth, **not GPU time**. This view shows where
 
 ## Memory
 
-The view groups actual VMA allocations by native memory block and places each allocation at its byte offset. Each allocation has a process-wide generation ID, size, memory type, and heap. These are captured values, not owning references. Borrowed images with unavailable backing information remain unknown.
+The view groups native resources by memory block and places each resource at its byte offset. Each resource has a process-wide generation ID, native required size, memory type, and heap. Shared backing owners have a separate ID and capacity; memory totals count each owner once while every distinct image remains visible. These are captured values, not owning references. Borrowed images with unavailable backing information remain unknown.
 
 Three cases have distinct meanings:
 
@@ -38,7 +38,29 @@ Three cases have distinct meanings:
 | Different allocation IDs, same block, disjoint ranges | Suballocation without physical aliasing |
 | Different allocation IDs, same block, overlapping ranges | Observed physical memory aliasing |
 
-Metallic currently allocates graph outputs separately and retains them across executions of the compiled graph. This viewer does not add transient alias allocation. “No physical memory aliasing observed” is therefore a valid and expected result. The chart's extent is the largest observed offset plus size, not total native block capacity. It includes graph resources and used declarative private imports visible to this execution, not the full device memory budget, other in-flight slots, or opaque SDK allocations. Memory searches select matching blocks and retain their neighboring allocations for range context.
+Graph texture aliasing is opt-in through `RenderGraphCompileOptions::enableTextureAliasing`, or `METALLIC_RENDER_GRAPH_TEXTURE_ALIASING=1` in the editor/preview renderer. Eligible transient images can overlap one shared backing; pinned exports and persistent resources keep independent allocations. See [memory aliasing contracts](RenderGraphMemoryAliasing.md). “No physical memory aliasing observed” remains valid when disabled or when no safe pair exists. The chart's extent is the largest observed offset plus resource size, not total native block capacity. It includes graph resources and used declarative private imports visible to this execution, not the full device memory budget, other in-flight slots, or opaque SDK allocations. Memory searches select matching blocks and retain their neighboring allocations for range context.
+
+The **Statistics** panel and the Memory tab also report compile-generation **graph texture capacity**. The comparison uses native allocation requirements, including alignment, rather than `width × height × bytes per pixel`. Shared images retain distinct native resource IDs; each backing owner contributes once to the physical total. The summary reports MiB (`1 MiB = 1,048,576 bytes`), saved capacity, and its percentage of the independent allocation baseline. The shared-slot table lists its member images and the slot's net savings. A negative value in **Net saved** means backing overhead.
+
+The copied capture JSON stores this summary in `textureMemory`:
+
+| Field | Meaning |
+| --- | --- |
+| `aliasingEnabled` | Requested compile policy; enabled graphs can still have no reusable pair. |
+| `textureCount` | Active graph-owned texture outputs after culling, counted once per native image. |
+| `transientTextureCount`, `pinnedTextureCount` | Declared transient outputs and outputs pinned by export, presentation, or preview. These counts are available when aliasing is disabled. |
+| `eligibleTextureCount` | Native-qualified candidates when aliasing is enabled, before dependency and slot compatibility tests. Zero when disabled. |
+| `aliasedTextureCount`, `aliasSlotCount` | Images sharing memory and actual shared backing slots; singleton slots are excluded. |
+| `backingAllocationCount` | Known unique backing owners for graph-owned textures. |
+| `logicalBytes` | Capacity required by independent textures. For aliased images, queried using the original descriptor without `VK_IMAGE_CREATE_ALIAS_BIT`; other images use their actual standalone capacity. |
+| `backingBytes` | Actual known backing capacity, counted once per owner. |
+| `savedBytes`, `overheadBytes` | Positive and negative sides of `logicalBytes - backingBytes`. When complete, at most one is nonzero. |
+| `complete`, `unknownTextureCount` | Whether every texture's native capacity comparison is known, and the number with incomplete information. |
+| `slots` | Each shared slot's backing ID, member names, capacity comparison, savings, overhead, and `complete` flag. |
+
+If a capacity query is unavailable, known byte totals remain reportable but the comparison is marked partial. Aggregate or individual-slot savings and overhead are zero when that comparison is incomplete; zero then means unavailable, not measured zero savings. The UI hides the aggregate percentage and shows **N/A** for incomplete slot savings. A slot with complete information remains usable even if another texture makes the aggregate partial.
+
+These figures cover graph-owned texture allocations for the current compile generation. They exclude scene assets, graph buffers, private imports, pass/SDK-owned history, opaque subsystem allocations, and other in-flight resources. They measure allocation capacity; they do not measure total driver heap residency, process VRAM usage, or an end-to-end memory reduction. Resizing or rebuilding refreshes the measurements; frame execution copies the values without querying native memory requirements again. Frozen captures retain their original generation's values.
 
 ## Implementation and validation
 
@@ -46,7 +68,7 @@ Metallic currently allocates graph outputs separately and retains them across ex
 - `Source/Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h`: immutable diagnostic value schema.
 - `RenderGraphExecutor`: opt-in capture of compiled access plans, actual recording segments, accepted batches, and completion state.
 - `RenderGraphComputeStages`: per-pass local capture; worker results are merged only after recording joins.
-- `ResourceMemoryInfo` in `GAPI/rhi.h`: allocation metadata obtained from the Vulkan/VMA backend.
+- `ResourceMemoryInfo` in `GAPI/RHI.h`: allocation metadata obtained from the Vulkan/VMA backend.
 
 Capture does not install a render debug observer, force serial recording, disable pipelined submission, or wait for the GPU. Disabling it leaves the last snapshot available and skips new capture work.
 

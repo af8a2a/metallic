@@ -32,6 +32,8 @@ struct RenderGraphSubmitDesc {
 struct RenderGraphCompileOptions {
     std::vector<std::string> extraOutputs;
     bool enablePreviewOutputAccess = false;
+    // Opt-in; only audited transient textures with disjoint GPU lifetimes alias.
+    bool enableTextureAliasing = false;
     DisplayOutputParameters displayOutput;
 };
 
@@ -69,6 +71,7 @@ struct RenderGraphExecutionStats {
     uint32_t batchesSubmittedWhileRecording = 0;
     std::vector<std::string> submissionBlockingPasses;
     profiling::SchedulingMetrics scheduling;
+    RenderGraphTextureMemoryStats textureMemory;
 };
 
 class RenderGraphExecutor {
@@ -134,6 +137,11 @@ public:
 
     RenderGraphResource* outputResource(std::string_view fullName);
     const RenderGraphResource* outputResource(std::string_view fullName) const;
+    // Aliased intermediate contents must be pinned with extraOutputs before use
+    // outside the graph. Native handles remain available for metadata queries.
+    bool isExportedOutput(std::string_view fullName) const;
+    // Available immediately after compile; no GPU wait or per-frame native query.
+    const RenderGraphTextureMemoryStats& textureMemoryStats() const;
     const RenderGraphExecutionStats& executionStats() const;
     // Owner-thread control/query. Disabling capture preserves the last snapshot;
     // returned immutable values can outlive the executor and its GPU resources.

@@ -4111,6 +4111,33 @@ void EditorApplication::drawStatisticsPanel()
         return;
     }
 
+    const bool hasTextureMemoryStats = graphExecutor_ != nullptr && graphExecutor_->compiled();
+    if (hasTextureMemoryStats) {
+        const auto& textureMemory = graphExecutor_->textureMemoryStats();
+        constexpr double kBytesPerMiB = 1024.0 * 1024.0;
+        ImGui::Text("Graph texture aliasing: %s", textureMemory.aliasingEnabled ? "Enabled" : "Disabled");
+        ImGui::Text("Without aliasing: %.2f MiB | Backing: %.2f MiB%s",
+            double(textureMemory.logicalBytes) / kBytesPerMiB, double(textureMemory.backingBytes) / kBytesPerMiB,
+            textureMemory.complete ? "" : " (known capacity only)");
+        if (textureMemory.complete) {
+            if (textureMemory.overheadBytes) {
+                ImGui::Text("Backing overhead: %.2f MiB", double(textureMemory.overheadBytes) / kBytesPerMiB);
+            } else {
+                const double savedPercent = textureMemory.logicalBytes
+                    ? 100.0 * double(textureMemory.savedBytes) / double(textureMemory.logicalBytes) : 0.0;
+                ImGui::Text("Saved: %.2f MiB (%.2f%%)", double(textureMemory.savedBytes) / kBytesPerMiB, savedPercent);
+            }
+        } else {
+            ImGui::TextDisabled("Partial comparison: %u textures have unknown capacity.", textureMemory.unknownTextureCount);
+        }
+        ImGui::Text("%u textures | %u transient | %u pinned | %u eligible", textureMemory.textureCount,
+            textureMemory.transientTextureCount, textureMemory.pinnedTextureCount, textureMemory.eligibleTextureCount);
+        ImGui::Text("%u aliased textures in %u shared slots | %u backing allocations", textureMemory.aliasedTextureCount,
+            textureMemory.aliasSlotCount, textureMemory.backingAllocationCount);
+        ImGui::TextDisabled("Graph-owned texture capacity. Slot details: Render Graph Editor / Execution / Memory.");
+        ImGui::Separator();
+    }
+
     const scene::Scene* statisticsScene = &scene_;
     if (!statisticsScene->valid()) {
         if (const auto* gpuScene = subsystemHost_.get<render::GPUSceneSubsystem>();
@@ -4206,6 +4233,23 @@ void EditorApplication::drawStatisticsPanel()
         ImGui::LogText("Lights: %zu\n", statisticsScene->lights().size());
         ImGui::LogText("Textures: %llu\n", static_cast<unsigned long long>(stats.textureCount));
         ImGui::LogText("Images: %llu\n", static_cast<unsigned long long>(stats.imageCount));
+        if (hasTextureMemoryStats) {
+            const auto& textureMemory = graphExecutor_->textureMemoryStats();
+            ImGui::LogText("Graph texture aliasing: %s\n", textureMemory.aliasingEnabled ? "Enabled" : "Disabled");
+            ImGui::LogText("Graph texture capacity comparison: %s (%u unknown textures)\n",
+                textureMemory.complete ? "Complete" : "Partial", textureMemory.unknownTextureCount);
+            ImGui::LogText("Graph texture capacity without aliasing: %llu bytes\n",
+                static_cast<unsigned long long>(textureMemory.logicalBytes));
+            ImGui::LogText("Graph texture backing capacity: %llu bytes\n",
+                static_cast<unsigned long long>(textureMemory.backingBytes));
+            ImGui::LogText("Graph texture saved capacity: %llu bytes; overhead: %llu bytes\n",
+                static_cast<unsigned long long>(textureMemory.savedBytes),
+                static_cast<unsigned long long>(textureMemory.overheadBytes));
+            ImGui::LogText("Graph textures: %u total, %u transient, %u pinned, %u eligible, %u aliased in %u slots, %u backing allocations\n",
+                textureMemory.textureCount, textureMemory.transientTextureCount, textureMemory.pinnedTextureCount,
+                textureMemory.eligibleTextureCount, textureMemory.aliasedTextureCount, textureMemory.aliasSlotCount,
+                textureMemory.backingAllocationCount);
+        }
         if (hasAccelerationStructureStats) {
             ImGui::LogText(
                 "Original BLAS: %llu bytes\n",
@@ -6726,6 +6770,7 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
         viewportTextureWidth_ == width &&
         viewportTextureHeight_ == height;
     const bool previewResourceAvailable = graphExecutor_->compiled() &&
+        graphExecutor_->isExportedOutput(previewOutput) &&
         graphExecutor_->outputResource(previewOutput) != nullptr;
 
     if (viewportPreviewValid_ &&
@@ -6769,6 +6814,8 @@ bool EditorApplication::updateViewportPreview(uint32_t width, uint32_t height)
     render::RenderGraphCompileOptions compileOptions;
     compileOptions.extraOutputs.push_back(previewOutput);
     compileOptions.enablePreviewOutputAccess = true;
+    const char* textureAliasing = std::getenv("METALLIC_RENDER_GRAPH_TEXTURE_ALIASING");
+    compileOptions.enableTextureAliasing = textureAliasing != nullptr && std::string_view(textureAliasing) == "1";
     compileOptions.displayOutput = displayOutput_;
     render::Result<> result;
     {
@@ -7900,6 +7947,7 @@ void EditorApplication::setActivePreviewOutput(std::string outputName)
     copyToBuffer(activePreviewOutput_, previewOutputBuffer_, sizeof(previewOutputBuffer_));
     if (graphExecutor_ != nullptr &&
         graphExecutor_->compiled() &&
+        graphExecutor_->isExportedOutput(activePreviewOutput_) &&
         graphExecutor_->outputResource(activePreviewOutput_) != nullptr &&
         bindViewportPreviewOutput(activePreviewOutput_)) {
         viewportPreviewValid_ = true;
@@ -7915,6 +7963,10 @@ void EditorApplication::setActivePreviewOutput(std::string outputName)
 bool EditorApplication::bindViewportPreviewOutput(std::string_view outputName)
 {
     if (graphExecutor_ == nullptr || viewportSampler_ == VK_NULL_HANDLE) {
+        return false;
+    }
+    if (!graphExecutor_->isExportedOutput(outputName)) {
+        renderGraphStatus_ = std::string("RenderGraph preview output requires recompilation: ") + std::string(outputName);
         return false;
     }
     render::RenderGraphResource* output = graphExecutor_->outputResource(outputName);

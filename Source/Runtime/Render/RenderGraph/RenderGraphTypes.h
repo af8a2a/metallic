@@ -128,6 +128,9 @@ struct RenderGraphRuntimeSetting {
     bool rebuildGraph = false;
 };
 
+enum class RenderGraphResourceLifetime : uint8_t { Persistent, Transient };
+enum class RenderGraphInitialization : uint8_t { Unknown, Clear, FullOverwrite };
+
 struct RenderGraphField {
     std::string name;
     std::string description;
@@ -143,6 +146,10 @@ struct RenderGraphField {
     bool optional = false;
     // Presentation outputs are execution roots without a manual markOutput().
     bool presentationOutput = false;
+    RenderGraphResourceLifetime lifetime = RenderGraphResourceLifetime::Persistent;
+    // Clear/FullOverwrite is a pass contract covering its entire initial image
+    // use, including internal stages. A write access alone does not establish it.
+    RenderGraphInitialization initialization = RenderGraphInitialization::Unknown;
     DisplayColorEncoding colorEncoding = DisplayColorEncoding::sRGB;
     // Disable for inputs that can be resampled to a different output extent.
     bool matchOutputExtent = true;
@@ -164,6 +171,7 @@ struct RenderGraphField {
     RenderGraphField& buildWrite();
     RenderGraphField& buildReadWrite();
     RenderGraphField& setOptional(bool value = true);
+    RenderGraphField& transient(RenderGraphInitialization initialization);
     RenderGraphField& sampledRead();
     RenderGraphField& colorWrite();
     RenderGraphField& depthStencilWrite();
