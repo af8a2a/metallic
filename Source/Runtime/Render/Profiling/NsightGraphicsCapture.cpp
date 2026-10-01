@@ -1,8 +1,12 @@
 #include "Runtime/Render/Profiling/NsightGraphicsCapture.h"
+#include "Runtime/Render/Profiling/NsightReplayProtocol.h"
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <fstream>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -118,6 +122,50 @@ std::string pathToUtf8(const std::filesystem::path& path)
     return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
 }
 
+std::string traceHostFailure(const std::filesystem::path& logPath)
+{
+    // Keep the first backend error in the application's own startup log.
+    std::ifstream log(logPath);
+    for (std::string line; std::getline(log, line);) {
+        if (line.find("ERROR:") != std::string::npos || line.starts_with("No metric sets") ||
+            line.starts_with("Invalid activity")) {
+            return line + "; see " + logPath.string();
+        }
+    }
+    return "GPU Trace host exited; see " + logPath.string();
+}
+
+// Windows argv quoting, including nested --args and paths containing spaces.
+std::wstring quoteArgument(const std::wstring& value)
+{
+    std::wstring result = L"\"";
+    size_t slashes = 0;
+    for (wchar_t c : value) {
+        if (c == L'\\') { ++slashes; continue; }
+        result.append(c == L'"' ? slashes * 2 + 1 : slashes, L'\\');
+        result += c;
+        slashes = 0;
+    }
+    result.append(slashes * 2, L'\\');
+    return result + L'"';
+}
+
+bool writeTraceMetrics(const std::filesystem::path& path)
+{
+    std::ofstream metrics(path);
+    metrics << R"([
+  {"architecture":"Turing","metric-set-name":"Throughput Metrics","multi-pass-metrics":"false"},
+  {"architecture":"Ampere GA10x","metric-set-name":"Top-Level Triage","multi-pass-metrics":"false"},
+  {"architecture":"Orin GA10B","metric-set-name":"Top-Level Triage","multi-pass-metrics":"false"},
+  {"architecture":"Ada","metric-set-name":"Top-Level Triage","multi-pass-metrics":"false"},
+  {"architecture":"Thor GB10B","metric-set-name":"Top-Level Triage","multi-pass-metrics":"false"},
+  {"architecture":"Blackwell GB20x","metric-set-name":"Top-Level Triage","multi-pass-metrics":"false"},
+  {"architecture":"T25x GB20x","metric-set-name":"Top-Level Triage","multi-pass-metrics":"false"}
+])";
+    metrics.close();
+    return static_cast<bool>(metrics);
+}
+
 #endif
 
 const char* stateName(NsightGraphicsCaptureState state)
@@ -207,15 +255,25 @@ NsightGraphicsCapture::NsightGraphicsCapture()
 
 NsightGraphicsCapture::~NsightGraphicsCapture()
 {
+    closeTraceHost();
+}
+
+void NsightGraphicsCapture::closeTraceHost()
+{
 #ifdef _WIN32
+    if (traceHostJob_ != nullptr) {
+        TerminateJobObject(traceHostJob_, 0);
+        CloseHandle(traceHostJob_);
+        traceHostJob_ = nullptr;
+    }
     if (traceHostProcess_ != nullptr) {
-        // Only our own hidden host is owned here. Vulkan has already shut down.
+        // Only the host/worker created by this instance is owned here.
         if (WaitForSingleObject(traceHostProcess_, 1000) == WAIT_TIMEOUT) {
             TerminateProcess(traceHostProcess_, 0);
         }
         CloseHandle(traceHostProcess_);
+        traceHostProcess_ = nullptr;
     }
-    if (traceHostJob_ != nullptr) { CloseHandle(traceHostJob_); }
 #endif
 }
 
@@ -224,15 +282,29 @@ bool NsightGraphicsCapture::startTraceHost(std::string& error)
 #if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
     const auto executable = installationRoot_ / "host/windows-desktop-nomad-x64/ngfx.exe";
     traceHostLog_ = outputDirectory_ / ("GpuTraceHost-" + std::to_string(GetCurrentProcessId()) + ".log");
+    std::wstring command = quoteArgument(executable.wstring()) + L" --activity \"GPU Trace Profiler\" --attach-pid " +
+        std::to_wstring(GetCurrentProcessId()) + L" --output-dir " + quoteArgument(outputDirectory_.wstring()) +
+        L" --per-arch-config-path " + quoteArgument(traceMetricsConfig_.wstring()) +
+        L" --start-with-ngfx-sdk --stop-with-ngfx-sdk --keep-going --set-gpu-clocks unaltered --trace-timeout 120";
+    if (!launchTraceHost(executable, std::move(command), error)) { return fail(error); }
+    return true;
+#else
+    return fail("Nsight GPU Trace SDK support was not compiled", &error);
+#endif
+}
+
+bool NsightGraphicsCapture::launchTraceHost(const std::filesystem::path& executable, std::wstring command, std::string& error)
+{
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
     SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
     HANDLE log = CreateFileW(traceHostLog_.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
         &security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (log == INVALID_HANDLE_VALUE) { return fail("Cannot create GPU Trace host log", &error); }
+    if (log == INVALID_HANDLE_VALUE) { error = "Cannot create GPU Trace host log"; return false; }
     HANDLE input = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
         &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (input == INVALID_HANDLE_VALUE) {
         CloseHandle(log);
-        return fail("Cannot open GPU Trace host input", &error);
+        error = "Cannot open GPU Trace host input"; return false;
     }
     HANDLE job = CreateJobObjectW(nullptr, nullptr);
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
@@ -241,11 +313,8 @@ bool NsightGraphicsCapture::startTraceHost(std::string& error)
         if (job != nullptr) { CloseHandle(job); }
         CloseHandle(input);
         CloseHandle(log);
-        return fail("Cannot create GPU Trace host lifetime job", &error);
+        error = "Cannot create GPU Trace host lifetime job"; return false;
     }
-    std::wstring command = L"\"" + executable.wstring() + L"\" --activity \"GPU Trace Profiler\" --attach-pid " +
-        std::to_wstring(GetCurrentProcessId()) + L" --output-dir \"" + outputDirectory_.generic_wstring() +
-        L"\" --start-with-ngfx-sdk --stop-with-ngfx-sdk --keep-going --set-gpu-clocks unaltered --trace-timeout 120";
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
@@ -261,21 +330,24 @@ bool NsightGraphicsCapture::startTraceHost(std::string& error)
     if (input != INVALID_HANDLE_VALUE) { CloseHandle(input); }
     if (!launched) {
         CloseHandle(job);
-        return fail("Cannot start GPU Trace host (Win32 " + std::to_string(launchError) + ")", &error);
+        error = "Cannot start GPU Trace host (Win32 " + std::to_string(launchError) + ")"; return false;
     }
     if (!AssignProcessToJobObject(job, process.hProcess) || ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
         TerminateProcess(process.hProcess, 1);
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
         CloseHandle(job);
-        return fail("Cannot manage GPU Trace host lifetime", &error);
+        error = "Cannot manage GPU Trace host lifetime"; return false;
     }
     CloseHandle(process.hThread);
     traceHostProcess_ = process.hProcess;
     traceHostJob_ = job;
     return true;
 #else
-    return fail("Nsight GPU Trace SDK support was not compiled", &error);
+    (void)command;
+    (void)executable;
+    error = "Nsight GPU Trace SDK support was not compiled";
+    return false;
 #endif
 }
 
@@ -384,10 +456,42 @@ bool NsightGraphicsCapture::initializeBeforeGraphics(
         outputDirectoryUtf8_ = pathToUtf8(outputDirectory_);
     }
 
+    if (config.enableReplayCollection && mode_ == NsightCaptureMode::GraphicsCapture) {
+        // Start before injection: Nsight propagates Graphics Capture into child
+        // processes. Only this clean worker may launch a GPU Trace replay.
+        wchar_t modulePath[32768]{};
+        if (GetModuleFileNameW(nullptr, modulePath, 32768) == 0) {
+            return fail("Cannot locate the replay worker", &error);
+        }
+        const auto worker = std::filesystem::path(modulePath).parent_path() / "MetallicNsightReplay.exe";
+        replayMailbox_ = outputDirectory_ / ("ReplayWorker-" + std::to_string(GetCurrentProcessId()) +
+            "-" + std::to_string(GetTickCount64()));
+        if (!std::filesystem::create_directory(replayMailbox_, filesystemError)) {
+            return fail("Cannot create replay worker mailbox", &error);
+        }
+        traceHostLog_ = replayMailbox_ / "Worker.log";
+        const auto host = installationRoot_ / "host/windows-desktop-nomad-x64/ngfx.exe";
+        const auto command = quoteArgument(worker.wstring()) + L" --nsight-replay-worker " +
+            quoteArgument(replayMailbox_.wstring()) + L" " + quoteArgument(host.wstring());
+        if (!launchTraceHost(worker, command, error)) { return fail(error); }
+    }
+
     NGFX_SetLibraryLoadFn(loadNsightGraphicsLibrary);
 
 #if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
     if (mode_ == NsightCaptureMode::GPUTrace) {
+        traceMetricsConfig_ = config.gpuTraceMetricsConfig;
+        if (traceMetricsConfig_.empty()) {
+            traceMetricsConfig_ = outputDirectory_ / ("GpuTraceMetrics-" + std::to_string(GetCurrentProcessId()) + ".json");
+            // Names verified against ngfx --help-all (SDK 0.9.2). Every supported
+            // architecture gets an explicit single-pass set, including Turing,
+            // which does not expose Top-Level Triage. Numeric IDs are not stable.
+            if (!writeTraceMetrics(traceMetricsConfig_)) {
+                return fail("Cannot write GPU Trace metrics configuration", &error);
+            }
+        }
+        traceMetricsConfig_ = std::filesystem::canonical(traceMetricsConfig_, filesystemError);
+        if (filesystemError) { return fail("GPU Trace metrics configuration does not exist", &error); }
         NGFX_GPUTrace_InjectionSettings settings{};
         auto result = NGFX_GPUTrace_InjectionSettings_SetDefaults(&settings);
         if (result != NGFX_Result_Success) {
@@ -451,6 +555,61 @@ bool NsightGraphicsCapture::initializeBeforeGraphics(
     lastError_.clear();
     return true;
 #endif
+}
+
+bool NsightGraphicsCapture::prepareBeforeSubmission(Queue& queue, std::string& error)
+{
+    error.clear();
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    if (mode_ != NsightCaptureMode::GPUTrace || traceHostProcess_ == nullptr) { return true; }
+    if (state_ != NsightGraphicsCaptureState::Ready) { error = lastError_; return false; }
+    if (WaitForSingleObject(traceHostProcess_, 0) == WAIT_OBJECT_0) {
+        return fail(traceHostFailure(traceHostLog_), &error);
+    }
+
+    // QueueSubmit implicitly activates Nsight, and can block indefinitely if
+    // its host rejects the metrics. Do it explicitly before scene resources or
+    // rendering are submitted, with an independent bounded startup watchdog.
+    // Only this thread calls NGFX. The watchdog touches only the child process.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    std::jthread watchdog([&](std::stop_token stop) {
+        while (!stop.stop_requested()) {
+            const bool exited = WaitForSingleObject(traceHostProcess_, 50) == WAIT_OBJECT_0;
+            const bool timedOut = std::chrono::steady_clock::now() >= deadline;
+            if (!stop.stop_requested() && (exited || timedOut)) {
+                const std::string message = exited ? traceHostFailure(traceHostLog_)
+                    : "GPU Trace startup timed out after 60 seconds; see " + traceHostLog_.string();
+                std::fprintf(stderr, "[Nsight startup] %s\n", message.c_str());
+                std::fflush(stderr);
+                // Unwinding into the intercepted Vulkan driver can hang too.
+                // The owned job closes automatically, including on this path.
+                // TerminateProcess can itself block inside Nsight's injected
+                // teardown. A new, unnamed job contains only this process and
+                // lets Windows terminate it without entering that interception.
+                if (HANDLE failedStartup = CreateJobObjectW(nullptr, nullptr)) {
+                    if (AssignProcessToJobObject(failedStartup, GetCurrentProcess())) {
+                        TerminateJobObject(failedStartup, 1);
+                    }
+                    CloseHandle(failedStartup);
+                }
+                TerminateProcess(GetCurrentProcess(), 1);
+                return;
+            }
+        }
+    });
+    NGFX_GPUTrace_ActivateTrace_Vulkan_Params activate{};
+    activate.version = NGFX_GPUTrace_ActivateTrace_Vulkan_Params_VER;
+    activate.queue = vulkan::nativeQueue(queue).queue;
+    const auto result = NGFX_GPUTrace_ActivateTrace_Vulkan(&activate);
+    watchdog.request_stop();
+    watchdog.join();
+    if (result != NGFX_Result_Success) {
+        return fail(ngfxError("GPU Trace startup activation", result) + "; " + traceHostFailure(traceHostLog_), &error);
+    }
+#else
+    (void)queue;
+#endif
+    return true;
 }
 
 bool NsightGraphicsCapture::requestCapture(
@@ -607,8 +766,9 @@ NsightGraphicsCapturePollResult NsightGraphicsCapture::poll()
 {
 #if METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE
 #if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
-    if (traceHostProcess_ != nullptr && WaitForSingleObject(traceHostProcess_, 0) == WAIT_OBJECT_0) {
-        fail("GPU Trace host exited; see " + traceHostLog_.string());
+    if (mode_ == NsightCaptureMode::GPUTrace && traceHostProcess_ != nullptr &&
+        WaitForSingleObject(traceHostProcess_, 0) == WAIT_OBJECT_0) {
+        fail(traceHostFailure(traceHostLog_));
         return {state_, capturePath_, lastError_};
     }
     if (mode_ == NsightCaptureMode::GPUTrace && hasOutstandingCapture() &&
@@ -674,6 +834,93 @@ NsightGraphicsCapturePollResult NsightGraphicsCapture::poll()
 #endif
 
     return {state_, capturePath_, lastError_};
+}
+
+bool NsightGraphicsCapture::startReplayTrace(std::string& error)
+{
+    error.clear();
+    if (replayTracePending_) { error = "Replay GPU Trace is already pending"; return false; }
+    replayTracePath_.clear();
+    replayTraceError_.clear();
+    const auto reject = [&](std::string message) {
+        replayTraceError_ = std::move(message);
+        error = replayTraceError_;
+        return false;
+    };
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    if (mode_ != NsightCaptureMode::GraphicsCapture || state_ != NsightGraphicsCaptureState::CaptureCompleted) {
+        return reject("Replay profiling requires a completed Graphics Capture");
+    }
+    const auto host = installationRoot_ / "host/windows-desktop-nomad-x64/ngfx.exe";
+    const auto replayer = installationRoot_ / "host/windows-desktop-nomad-x64/ngfx-replay.exe";
+    replayTraceDirectory_ = capturePath_.parent_path() / (capturePath_.stem().wstring() + L"_Collected");
+    std::error_code filesystemError;
+    if (!std::filesystem::create_directory(replayTraceDirectory_, filesystemError)) {
+        return reject("Cannot create a fresh replay collection directory: " + replayTraceDirectory_.string());
+    }
+    traceMetricsConfig_ = replayTraceDirectory_ / "Metrics.json";
+    traceHostLog_ = replayTraceDirectory_ / "GpuTraceHost.log";
+    if (!writeTraceMetrics(traceMetricsConfig_)) { return reject("Cannot write replay metrics configuration"); }
+    const std::wstring replayArgs = L"--present-hidden --vsync-off --no-present-blit "
+        L"--no-block-on-incompatibility --inject-full-frame-perf-marker --loop-count 3 " +
+        quoteArgument(capturePath_.wstring());
+    std::wstring command = quoteArgument(host.wstring()) + L" --activity \"GPU Trace Profiler\" --exe " +
+        quoteArgument(replayer.wstring()) + L" --dir " + quoteArgument(capturePath_.parent_path().wstring()) +
+        L" --args " + quoteArgument(replayArgs) + L" --output-dir " + quoteArgument(replayTraceDirectory_.wstring()) +
+        L" --per-arch-config-path " + quoteArgument(traceMetricsConfig_.wstring()) +
+        L" --start-on-replay-begin --stop-on-replay-end --max-duration-ms 1000 --set-gpu-clocks unaltered --trace-timeout 120";
+    if (traceHostProcess_ == nullptr || WaitForSingleObject(traceHostProcess_, 0) != WAIT_TIMEOUT ||
+        replayMailbox_.empty()) {
+        return reject("Replay worker is unavailable; restart with --nsight-capture");
+    }
+    std::filesystem::remove(replayMailbox_ / "result.txt", filesystemError);
+    if (filesystemError) { return reject("Cannot clear previous replay result"); }
+    std::ofstream request(replayMailbox_ / "request.tmp", std::ios::binary);
+    const bool written = writeReplayString(request, command) && writeReplayString(request, traceHostLog_.wstring()) &&
+        writeReplayString(request, capturePath_.parent_path().wstring());
+    request.close();
+    if (!written || !request) { return reject("Cannot write replay request"); }
+    std::filesystem::rename(replayMailbox_ / "request.tmp", replayMailbox_ / "request.bin", filesystemError);
+    if (filesystemError) { return reject("Cannot submit replay request"); }
+    traceDeadline_ = std::chrono::steady_clock::now() + std::chrono::seconds(180);
+    replayTracePending_ = true;
+    return true;
+#else
+    return reject("Nsight GPU Trace SDK support was not compiled");
+#endif
+}
+
+void NsightGraphicsCapture::pollReplayTrace()
+{
+#if defined(METALLIC_HAS_NSIGHT_GPU_TRACE)
+    if (!replayTracePending_) { return; }
+    const bool workerExited = WaitForSingleObject(traceHostProcess_, 0) != WAIT_TIMEOUT;
+    std::error_code resultError;
+    const bool resultAvailable = std::filesystem::exists(replayMailbox_ / "result.txt", resultError);
+    if (!resultAvailable && !workerExited && std::chrono::steady_clock::now() < traceDeadline_) { return; }
+    DWORD exitCode = 1;
+    std::ifstream result(replayMailbox_ / "result.txt");
+    if (resultAvailable && (result >> exitCode) && exitCode == 0) {
+        std::error_code error;
+        for (std::filesystem::directory_iterator it(replayTraceDirectory_, error), end;
+             !error && it != end; it.increment(error)) {
+            if (it->path().extension() == ".ngfx-gputrace" && it->is_regular_file(error) &&
+                it->file_size(error) > 0 && !error) {
+                replayTracePath_ = it->path();
+                break;
+            }
+        }
+        if (replayTracePath_.empty()) {
+            replayTraceError_ = "Replay finished without a nonempty GPU Trace; see " + traceHostLog_.string();
+        }
+    } else {
+        replayTraceError_ = !resultAvailable && !workerExited
+            ? "Replay GPU Trace timed out after 180 seconds; see " + traceHostLog_.string()
+            : "Replay GPU Trace failed (exit " + std::to_string(exitCode) + "): " + traceHostFailure(traceHostLog_);
+    }
+    replayTracePending_ = false;
+    if (!resultAvailable) { closeTraceHost(); }
+#endif
 }
 
 NsightGraphicsCaptureState NsightGraphicsCapture::state() const

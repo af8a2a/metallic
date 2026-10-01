@@ -40,8 +40,7 @@
       "binaryDir": "${sourceDir}/build-relwithdebinfo",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "METALLIC_ENABLE_NSIGHT_GRAPHICS_CAPTURE": true,
-        "METALLIC_DEFAULT_NSIGHT_CAPTURE": true
+        "METALLIC_ENABLE_NSIGHT_GRAPHICS_CAPTURE": true
       }
     },
     {

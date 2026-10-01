@@ -72,9 +72,10 @@ source dependencies and disabled tests. `RelWithDebInfo` enables optimization
 and native debug symbols. Each configuration has its own CMake cache and output
 directory.
 
-The `metallic-relwithdebinfo` preset also enables Nsight GPU Trace export by
-default in the editor and sample executables, equivalent to launching with
-`--nsight-mode gputrace`. Shaders embed source text and NonSemantic source/function/line
+All presets, including `metallic-relwithdebinfo`, leave Nsight capture injection
+disabled unless explicitly requested with a launch mode or
+`METALLIC_NSIGHT_GRAPHICS_CAPTURE=1`. The RelWithDebInfo preset makes the SDK
+available and embeds shader source text and NonSemantic source/function/line
 debug information (`-g2`) while retaining optimization (`capture-symbols` mode).
 RelWithDebInfo also defaults to these symbols when internal capture injection is
 disabled (`METALLIC_NSIGHT_GRAPHICS_CAPTURE=0`), for external Nsight launches.
@@ -104,6 +105,29 @@ the selected activity and exports the next full main-viewport frame under
 produces `.ngfx-capture` for replay and frame debugging. Switching activities
 requires restarting the process. RHI test captures keep their existing mode.
 
+For a one-click collection, launch with `--nsight-capture` and press **Export
+View Capture + GPU Trace** in the Profiler. Metallic first saves the
+`.ngfx-capture`, then launches an owned, hidden `ngfx-replay` process through
+`ngfx` to profile that capture. It selects single-pass metrics automatically;
+no separate preset or `METALLIC_NSIGHT_GPU_TRACE_METRICS` setting is needed.
+That environment override applies only to direct `--nsight-gputrace` sessions.
+The matching `<capture-name>_Collected/` directory contains the GPU Trace,
+metrics configuration and host log. The Profiler shows paths to both artifacts.
+Keep `MetallicNsightReplay.exe` beside the editor executable when distributing
+this feature. It starts before Graphics Capture injection and launches the
+replay later, preventing inherited Capture injection from conflicting with
+GPU Trace in the replay process. It is built automatically with SDK-enabled
+Windows editor targets.
+
+The editor drains its GPU work and pauses rendering while the replay is profiled,
+then resumes. Replay collection is bounded to 180 seconds and its process tree
+is cleaned up on completion or editor exit. A failed replay preserves the
+original capture and reports an error without terminating the editor. The two
+files remain separate Nsight artifacts; GPU Trace is not embedded into the
+`.ngfx-capture`. These measurements describe the replayed workload on the current
+GPU and driver, not the original application's CPU pacing or streaming behavior.
+See NVIDIA's [Live Replay GPU Trace documentation](https://docs.nvidia.com/nsight-graphics/UserGuide/graphics-capture-ui.html#gpu-trace).
+
 GPU Trace requires an attached host for metric preparation and file writing
 ([NVIDIA SDK guide](https://docs.nvidia.com/nsight-graphics/UserGuide/sdk.html)).
 Metallic starts the installed `ngfx.exe` hidden, uses SDK start/stop boundaries,
@@ -111,6 +135,50 @@ and keeps the host connected for repeated exports. Host diagnostics are saved
 as `GpuTraceHost-<pid>.log` in the output directory. The host is owned by this
 process and is cleaned up at shutdown. GPU clocks remain unaltered. Neither
 activity's live timings are a production performance baseline.
+
+GPU Trace explicitly selects single-pass metrics for each supported architecture
+(`Top-Level Triage`, or `Throughput Metrics` on Turing). The generated
+`GpuTraceMetrics-<pid>.json` is passed to `ngfx` so saved host preferences cannot
+leave the session without a metric set. `METALLIC_NSIGHT_GPU_TRACE_METRICS` can
+point to an alternate ngfx per-architecture JSON configuration.
+
+Launching with only `--nsight-gputrace` uses the **single-pass performance
+overview** preset above. Startup logs identify that preset (or the custom JSON
+path, when configured) and print detailed usage, including the Profiler export
+button, output location and configuration override. The same usage is available
+through `--help` without starting Vulkan. To customize the preset, copy a
+generated `GpuTraceMetrics-<pid>.json`, edit the per-architecture entries, then run:
+
+```powershell
+$env:METALLIC_NSIGHT_GPU_TRACE_METRICS = 'E:/path/MyMetrics.json'
+.\build-release\Source\LookDev.exe --nsight-gputrace
+```
+
+Unset `METALLIC_NSIGHT_GPU_TRACE_METRICS` to return to the default preset. An
+invalid custom configuration reports an error instead of silently using defaults.
+
+Before the application's first queue submission, Metallic logs a GPU Trace
+startup handshake and activates the SDK on the rendering thread. Host failure
+is reported in the application log, including the backend error when available.
+If that native activation blocks, a startup watchdog exits the instrumented
+process with code 1 after host failure or a 60-second timeout. It cannot safely
+unwind an uncancellable call inside Nsight. Termination uses a private Windows
+job because even `TerminateProcess` can block in the injected teardown; the
+owned host job is also cleaned up by Windows. This check runs before scene
+loading rather than waiting for an export request. Host liveness is also checked
+before frame waits.
+
+The opt-in `METALLIC_NSIGHT_INTEGRATION_TESTS` CMake option registers
+`MetallicNsightGPUTrace.disabled`, `MetallicNsightGPUTrace.export` and
+`MetallicNsightGPUTrace.invalid-metrics`, plus
+`MetallicNsightGPUTrace.collection` for three complete capture/replay exports.
+Build `LookDev` first. The regression can also run against an existing binary
+without changing its build configuration:
+
+```powershell
+cmake -DEDITOR_EXECUTABLE=E:/metallic/build-release/Source/LookDev.exe -DTEST_DIRECTORY=E:/metallic/build/nsight-startup/export -DCASE=export -P tests/editor/RunNsightGPUTraceStartup.cmake
+cmake -DEDITOR_EXECUTABLE=E:/metallic/build-release/Source/LookDev.exe -DTEST_DIRECTORY=E:/metallic/build/nsight-startup/invalid-metrics -DCASE=invalid-metrics -P tests/editor/RunNsightGPUTraceStartup.cmake
+```
 
 For the ZorahFull export memory-pressure fix and full-scene capture/replay
 regression, see [the investigation](ZorahFullNsightCaptureMemory.md).
@@ -170,12 +238,14 @@ that verification (`0` forces them off). The editor-equivalent headless check is
 `MetallicRHITests --rhi-realtime --rhi-async-compute --rhi-aftermath --rhi-nsight-capture --rhi-no-validation --gtest_filter='*sponza_async_scene_rtas*:*gpu_driven_sponza_realtime_pipeline*'`.
 See the investigation document for the before/after evidence and cleanup fix.
 
-To disable this launch default, configure with
-`-DMETALLIC_DEFAULT_NSIGHT_CAPTURE=OFF`, or set the runtime environment variable
-`METALLIC_NSIGHT_GRAPHICS_CAPTURE=0`. An explicit mode option still takes
-precedence over the environment variable. Other presets keep Nsight opt-in.
-The legacy CMake/environment names now control whether the default GPU Trace
-activity is enabled; `--nsight-capture` explicitly retains Graphics Capture.
+Nsight is opt-in in every build configuration. The removed CMake option
+`METALLIC_DEFAULT_NSIGHT_CAPTURE` is ignored even when an old build cache still
+contains `ON`; it cannot inject Nsight into an ordinary launch. The explicit
+environment setting `METALLIC_NSIGHT_GRAPHICS_CAPTURE=1` enables capture and replay collection,
+while `0` or an unset variable leaves injection disabled. An explicit mode
+option takes precedence over the environment variable; `--nsight-capture`
+selects Graphics Capture. Shader symbols remain independently available in
+RelWithDebInfo.
 
 ```powershell
 cmake --preset metallic-release

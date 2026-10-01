@@ -360,9 +360,8 @@ endif()
 metallic_copy_openusd_runtime(MetallicResidentMeshletCook)
 metallic_copy_spdlog_runtime(MetallicResidentMeshletCook)
 
-# Apply the launch default to every executable that shares the editor shell.
+# Keep shader symbols independent of opt-in Nsight capture injection.
 set_property(SOURCE Editor/EditorApplication.cpp APPEND PROPERTY COMPILE_DEFINITIONS
-    METALLIC_DEFAULT_NSIGHT_CAPTURE=$<BOOL:${METALLIC_DEFAULT_NSIGHT_CAPTURE}>
     METALLIC_DEFAULT_SHADER_CAPTURE_SYMBOLS=$<CONFIG:RelWithDebInfo>
 )
 
@@ -380,6 +379,12 @@ set(METALLIC_EDITOR_SOURCES
     Editor/EditorRenderGraphViewer.cpp
     Editor/NVMLMonitor.cpp
 )
+
+if(WIN32 AND METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE)
+    add_executable(MetallicNsightReplay Tools/NsightReplayMain.cpp)
+    target_include_directories(MetallicNsightReplay PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(MetallicNsightReplay PRIVATE NOMINMAX)
+endif()
 
 add_executable(Metallic
     Main.cpp
@@ -440,8 +445,14 @@ metallic_copy_openusd_runtime(Metallic)
 metallic_copy_spdlog_runtime(Metallic)
 
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+if(TARGET MetallicNsightReplay)
+    add_dependencies(Metallic MetallicNsightReplay)
+endif()
 
 function(configure_metallic_editor_sample target_name)
+    if(TARGET MetallicNsightReplay)
+        add_dependencies(${target_name} MetallicNsightReplay)
+    endif()
     target_include_directories(${target_name} PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}"
     )

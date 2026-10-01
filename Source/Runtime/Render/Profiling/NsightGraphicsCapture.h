@@ -39,6 +39,10 @@ struct NsightGraphicsCaptureConfig {
     std::filesystem::path outputDirectory;
     bool showHud = true;
     NsightCaptureMode mode = NsightCaptureMode::GraphicsCapture;
+    // Optional ngfx per-architecture configuration. Empty selects the built-in
+    // single-pass metrics instead of relying on the host's saved preferences.
+    std::filesystem::path gpuTraceMetricsConfig;
+    bool enableReplayCollection = false;
 };
 
 struct NsightGraphicsCaptureRequest {
@@ -70,11 +74,22 @@ public:
     static std::filesystem::path defaultInstallationRoot();
 
     bool initializeBeforeGraphics(const NsightGraphicsCaptureConfig& config, std::string& error);
+    // Activate on the owner thread before the application's first queue submit.
+    // Nsight's blocking activation has no cancellation API; a failed host or a
+    // 60-second startup timeout terminates this instrumented process with code 1.
+    bool prepareBeforeSubmission(Queue& queue, std::string& error);
     bool requestCapture(const NsightGraphicsCaptureRequest& request, std::string& error);
     bool frameBoundary(Queue& queue, Texture* output, std::string& error);
     // Called after the main viewport Present (not secondary ImGui windows).
     bool afterPresent(Queue& queue, std::string& error);
     NsightGraphicsCapturePollResult poll();
+    // Profile a completed Graphics Capture in a separate, owned replay process.
+    // The caller must drain and pause its GPU workload until this job finishes.
+    bool startReplayTrace(std::string& error);
+    void pollReplayTrace();
+    bool replayTracePending() const { return replayTracePending_; }
+    const std::filesystem::path& replayTracePath() const { return replayTracePath_; }
+    const std::string& replayTraceError() const { return replayTraceError_; }
     NsightCaptureMode mode() const { return mode_; }
 
     NsightGraphicsCaptureState state() const;
@@ -102,7 +117,15 @@ private:
     void* traceHostProcess_ = nullptr;
     void* traceHostJob_ = nullptr;
     std::filesystem::path traceHostLog_;
+    std::filesystem::path traceMetricsConfig_;
     bool startTraceHost(std::string& error);
+    bool launchTraceHost(const std::filesystem::path& executable, std::wstring command, std::string& error);
+    void closeTraceHost();
+    bool replayTracePending_ = false;
+    std::filesystem::path replayTraceDirectory_;
+    std::filesystem::path replayTracePath_;
+    std::string replayTraceError_;
+    std::filesystem::path replayMailbox_;
 };
 
 } // namespace metallic::render::profiling

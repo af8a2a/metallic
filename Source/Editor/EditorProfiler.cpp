@@ -1036,7 +1036,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
     }
 
     ImGui::BeginDisabled(!graphicsCapture.canCapture);
-    if (ImGui::Button(graphicsCapture.gpuTrace ? "Export Current View GPU Trace" : "Export Current View Capture")) {
+    if (ImGui::Button(graphicsCapture.gpuTrace ? "Export Current View GPU Trace" : "Export View Capture + GPU Trace")) {
         captureRequested = true;
     }
     ImGui::EndDisabled();
@@ -1045,7 +1045,7 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
         if (!graphicsCapture.sdkCompiled) {
             ImGui::SetTooltip("Nsight Graphics SDK was not available when Metallic was built.");
         } else if (!graphicsCapture.runtimeEnabled) {
-            ImGui::SetTooltip("Restart Metallic with --nsight-mode gputrace or --nsight-mode capture.");
+            ImGui::SetTooltip("Restart Metallic with --nsight-capture to collect a capture and its replay GPU Trace.");
         } else if (graphicsCapture.capturePending) {
             ImGui::SetTooltip("An Nsight export is already pending.");
         } else if (!graphicsCapture.canCapture) {
@@ -1056,16 +1056,27 @@ bool EditorProfiler::drawWindow(bool* open, const GraphicsCaptureControls& graph
                     : "The current View is not ready for capture.");
         } else {
             ImGui::SetTooltip(
-                "Capture the current View during the next complete presented frame. "
-                "Optimized Slang source symbols are embedded in captured SPIR-V.");
+                "%s", graphicsCapture.gpuTrace
+                    ? "Profile the next complete View frame in the live application."
+                    : "Save the next complete View frame, then collect GPU Trace from its replay. "
+                      "Metrics are automatic. Editor rendering pauses during replay profiling.");
         }
     }
 
     ImGui::SameLine();
     if (graphicsCapture.capturePending) {
-        ImGui::TextDisabled("Capturing next full frame...");
+        ImGui::TextDisabled("%s", graphicsCapture.gpuTrace ? "Capturing next full frame..."
+            : "Collecting capture and replay GPU Trace; rendering will pause...");
     } else if (graphicsCapture.statusText != nullptr && graphicsCapture.statusText[0] != '\0') {
         ImGui::TextDisabled("%s", graphicsCapture.statusText);
+    }
+
+    if (graphicsCapture.replayTracePath != nullptr && graphicsCapture.replayTracePath[0] != '\0') {
+        ImGui::TextWrapped("Replay GPU Trace: %s", graphicsCapture.replayTracePath);
+        if (ImGui::SmallButton("Copy GPU Trace Path")) { ImGui::SetClipboardText(graphicsCapture.replayTracePath); }
+    }
+    if (graphicsCapture.replayTraceError != nullptr && graphicsCapture.replayTraceError[0] != '\0') {
+        ImGui::TextWrapped("Replay collection failed (capture preserved): %s", graphicsCapture.replayTraceError);
     }
 
     if (graphicsCapture.capturePath != nullptr && graphicsCapture.capturePath[0] != '\0') {

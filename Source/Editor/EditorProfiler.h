@@ -26,6 +26,8 @@ public:
         bool gpuTrace = false;
         const char* statusText = "";
         const char* capturePath = "";
+        const char* replayTracePath = "";
+        const char* replayTraceError = "";
     };
 
     struct Node {

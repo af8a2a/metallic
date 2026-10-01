@@ -76,8 +76,8 @@ bool EditorApplication::runNsightCaptureSmokeTest()
         }
         requestNsightGraphicsCapture();
         if (!nsightGraphicsCapture_.hasOutstandingCapture()) { return false; }
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(120);
-        while (nsightGraphicsCapture_.hasOutstandingCapture() &&
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(300);
+        while ((nsightGraphicsCapture_.hasOutstandingCapture() || nsightGraphicsCapture_.replayTracePending()) &&
             std::chrono::steady_clock::now() < deadline) {
             if (!renderCaptureFrame()) { return false; }
             pollNsightGraphicsCapture();
@@ -93,6 +93,14 @@ bool EditorApplication::runNsightCaptureSmokeTest()
             return false;
         }
         previousPath = path;
+        if (nsightMode_ == render::profiling::NsightCaptureMode::GraphicsCapture) {
+            const auto traceBytes = std::filesystem::file_size(nsightGraphicsCapture_.replayTracePath(), error);
+            if (nsightGraphicsCapture_.replayTracePending() || error || traceBytes == 0 ||
+                !nsightGraphicsCapture_.replayTraceError().empty()) {
+                spdlog::error("[Smoke Nsight] Replay GPU Trace failed: {}", nsightGraphicsCapture_.replayTraceError());
+                return false;
+            }
+        }
         spdlog::info("[Smoke Nsight] Capture {} viewport {}x{}: '{}' ({} bytes)",
             capture + 1, viewportTextureWidth_, viewportTextureHeight_, path.string(), bytes);
     }

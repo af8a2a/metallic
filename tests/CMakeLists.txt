@@ -31,6 +31,23 @@ target_link_libraries(MetallicNsightLaunchOptionsTests PRIVATE GTest::gtest_main
 add_test(NAME MetallicNsightLaunchOptionsTests COMMAND MetallicNsightLaunchOptionsTests)
 set_tests_properties(MetallicNsightLaunchOptionsTests PROPERTIES LABELS "editor;profiling")
 
+option(METALLIC_NSIGHT_INTEGRATION_TESTS "Run installed Nsight host/GPU integration regressions" OFF)
+if(WIN32 AND METALLIC_HAS_NSIGHT_GRAPHICS_CAPTURE AND METALLIC_NSIGHT_INTEGRATION_TESTS)
+    foreach(nsight_case IN ITEMS disabled export collection invalid-metrics)
+        add_test(NAME MetallicNsightGPUTrace.${nsight_case}
+            COMMAND ${CMAKE_COMMAND}
+                "-DEDITOR_EXECUTABLE=$<TARGET_FILE:LookDev>"
+                "-DTEST_DIRECTORY=${CMAKE_CURRENT_BINARY_DIR}/nsight-gputrace-${nsight_case}"
+                "-DCASE=${nsight_case}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/editor/RunNsightGPUTraceStartup.cmake")
+        set_tests_properties(MetallicNsightGPUTrace.${nsight_case} PROPERTIES
+            LABELS "editor;profiling;gpu" TIMEOUT 200 RESOURCE_LOCK MetallicEditor)
+        if(nsight_case STREQUAL "collection")
+            set_tests_properties(MetallicNsightGPUTrace.${nsight_case} PROPERTIES TIMEOUT 620)
+        endif()
+    endforeach()
+endif()
+
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.27)
     foreach(dependency_case IN ITEMS reuse boolean missing compiler configuration crt flags features multiconfig)
         add_test(NAME MetallicDependencyCache.${dependency_case}

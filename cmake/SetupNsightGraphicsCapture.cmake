@@ -3,11 +3,8 @@ option(
     "Enable programmatic NVIDIA Nsight Graphics captures when the SDK is available"
     ON
 )
-option(
-    METALLIC_DEFAULT_NSIGHT_CAPTURE
-    "Enable Nsight GPU Trace export and optimized shader debug symbols by default in editor executables"
-    OFF
-)
+# Capture injection is opt-in at runtime. Old build trees may retain
+# METALLIC_DEFAULT_NSIGHT_CAPTURE in their cache; it no longer enables injection.
 set(
     METALLIC_NSIGHT_GRAPHICS_SDK_ROOT
     ""

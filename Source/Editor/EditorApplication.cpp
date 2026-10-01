@@ -1,5 +1,6 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Editor/EditorApplication.h"
+#include "Editor/NsightLaunchOptions.h"
 #include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/Profiling/TracyProfiler.h"
 
@@ -2009,10 +2010,9 @@ int EditorApplication::run(
     waitForGraphicsDebugger_ = waitForGraphicsDebugger && !smokeTest;
     nsightGraphicsCaptureRequested_ =
         nsightMode != render::profiling::NsightCaptureMode::Default ||
-        environmentFlagEnabled(
-            "METALLIC_NSIGHT_GRAPHICS_CAPTURE", METALLIC_DEFAULT_NSIGHT_CAPTURE != 0);
+        environmentFlagEnabled("METALLIC_NSIGHT_GRAPHICS_CAPTURE");
     nsightMode_ = nsightMode == render::profiling::NsightCaptureMode::Default
-        ? render::profiling::NsightCaptureMode::GPUTrace : nsightMode;
+        ? render::profiling::NsightCaptureMode::GraphicsCapture : nsightMode;
     nsightShaderDebugRequested_ =
         enableNsightShaderDebug ||
         environmentFlagEnabled("METALLIC_NSIGHT_SHADER_DEBUG");
@@ -2053,6 +2053,10 @@ int EditorApplication::run(
         startupStreamAssetPath_);
 
     initializeNsightGraphicsCapture();
+    if (nsightGraphicsCapture_.state() == render::profiling::NsightGraphicsCaptureState::Error) {
+        spdlog::error("Nsight startup failed: {}", nsightGraphicsCapture_.lastError());
+        return 1;
+    }
 
     if (enableDebugControl || environmentFlagEnabled("METALLIC_DEBUG_CONTROL") || environmentFlagEnabled("METALLIC_SHADER_TRACE")) {
         try {
@@ -2256,7 +2260,7 @@ int EditorApplication::run(
     }
 
     shutdown();
-    return 0;
+    return nsightGraphicsCapture_.state() == render::profiling::NsightGraphicsCaptureState::Error ? 1 : 0;
 }
 
 void EditorApplication::initializeNsightGraphicsCapture()
@@ -2264,12 +2268,6 @@ void EditorApplication::initializeNsightGraphicsCapture()
     if (!nsightGraphicsCaptureRequested_) {
         return;
     }
-    if (!render::profiling::NsightGraphicsCapture::compiledAvailable()) {
-        spdlog::warn(
-            "Nsight Graphics Capture was requested, but the SDK was not available when Metallic was built.");
-        return;
-    }
-
     render::profiling::NsightGraphicsCaptureConfig config;
     config.installationRoot =
         render::profiling::NsightGraphicsCapture::defaultInstallationRoot();
@@ -2277,6 +2275,27 @@ void EditorApplication::initializeNsightGraphicsCapture()
         std::filesystem::path(PROJECT_SOURCE_DIR) / "Captures" / "NsightGraphics";
     config.showHud = true;
     config.mode = nsightMode_;
+    config.enableReplayCollection = nsightMode_ == render::profiling::NsightCaptureMode::GraphicsCapture;
+    if (const char* metrics = std::getenv("METALLIC_NSIGHT_GPU_TRACE_METRICS")) {
+        config.gpuTraceMetricsConfig = metrics;
+    }
+
+    if (nsightMode_ == render::profiling::NsightCaptureMode::GPUTrace) {
+        if (config.gpuTraceMetricsConfig.empty()) {
+            spdlog::info(
+                "[Nsight GPU Trace] No custom metrics configuration supplied; selected default preset: "
+                "single-pass performance overview (Top-Level Triage; Throughput Metrics on Turing).");
+        } else {
+            spdlog::info("[Nsight GPU Trace] Using custom metrics configuration: '{}'",
+                config.gpuTraceMetricsConfig.string());
+        }
+        spdlog::info("[Nsight GPU Trace] Launch options and detailed usage:\n{}", NsightLaunchOptions::kUsage);
+    }
+    if (!render::profiling::NsightGraphicsCapture::compiledAvailable()) {
+        spdlog::warn(
+            "Nsight Graphics Capture was requested, but the SDK was not available when Metallic was built.");
+        return;
+    }
 
     std::string error;
     if (!nsightGraphicsCapture_.initializeBeforeGraphics(config, error)) {
@@ -2288,11 +2307,16 @@ void EditorApplication::initializeNsightGraphicsCapture()
         "Nsight {} initialized; exports will be written under '{}'",
         nsightMode_ == render::profiling::NsightCaptureMode::GPUTrace ? "GPU Trace" : "Graphics Capture",
         config.outputDirectory.string());
+    if (nsightMode_ == render::profiling::NsightCaptureMode::GraphicsCapture) {
+        spdlog::info("Nsight one-click collection: Profiler > Export View Capture + GPU Trace. "
+            "Saves .ngfx-capture, then profiles its replay into a matching _Collected directory. "
+            "Metrics are selected automatically; rendering pauses during replay profiling.");
+    }
 }
 
 void EditorApplication::requestNsightGraphicsCapture()
 {
-    if (!nsightGraphicsCaptureRequested_ || !viewportPreviewValid_) {
+    if (!nsightGraphicsCaptureRequested_ || !viewportPreviewValid_ || nsightGraphicsCapture_.replayTracePending()) {
         return;
     }
 
@@ -2315,16 +2339,42 @@ void EditorApplication::requestNsightGraphicsCapture()
 
 void EditorApplication::pollNsightGraphicsCapture()
 {
-    if (!nsightGraphicsCapture_.hasOutstandingCapture()) {
+    if (nsightGraphicsCapture_.replayTracePending()) {
+        nsightGraphicsCapture_.pollReplayTrace();
+        if (!nsightGraphicsCapture_.replayTracePending()) {
+            if (nsightGraphicsCapture_.replayTraceError().empty()) {
+                spdlog::info("Replay GPU Trace completed: {} (source capture: {})",
+                    nsightGraphicsCapture_.replayTracePath().string(), nsightGraphicsCapture_.capturePath().string());
+            } else {
+                spdlog::warn("Replay GPU Trace failed; original capture retained: {}. {}",
+                    nsightGraphicsCapture_.capturePath().string(), nsightGraphicsCapture_.replayTraceError());
+            }
+        }
+        return;
+    }
+    const auto previousState = nsightGraphicsCapture_.state();
+    const bool wasPending = nsightGraphicsCapture_.hasOutstandingCapture();
+    if (!wasPending && nsightMode_ != render::profiling::NsightCaptureMode::GPUTrace) {
         return;
     }
 
     const render::profiling::NsightGraphicsCapturePollResult result =
         nsightGraphicsCapture_.poll();
-    if (result.state == render::profiling::NsightGraphicsCaptureState::CaptureCompleted) {
+    if (wasPending && result.state == render::profiling::NsightGraphicsCaptureState::CaptureCompleted) {
         nsightGraphicsCaptureFramePhase_ = NsightGraphicsCaptureFramePhase::Idle;
         spdlog::info("Nsight export completed: {}", result.capturePath.string());
-    } else if (result.state == render::profiling::NsightGraphicsCaptureState::Error) {
+        if (nsightMode_ == render::profiling::NsightCaptureMode::GraphicsCapture) {
+            // Drain the live workload before the separate replay owns the GPU.
+            (void)device_->waitIdle();
+            std::string error;
+            if (!nsightGraphicsCapture_.startReplayTrace(error)) {
+                spdlog::warn("Replay GPU Trace could not start; original capture retained: {}. {}",
+                    result.capturePath.string(), error);
+            } else {
+                spdlog::info("Collecting GPU Trace from capture replay; editor rendering paused.");
+            }
+        }
+    } else if (result.state == render::profiling::NsightGraphicsCaptureState::Error && result.state != previousState) {
         nsightGraphicsCaptureFramePhase_ = NsightGraphicsCaptureFramePhase::Idle;
         spdlog::warn("Nsight Graphics Capture failed: {}", result.message);
     }
@@ -2524,6 +2574,15 @@ bool EditorApplication::initializeRhi()
     if (graphicsQueue_ == nullptr) {
         spdlog::error("RHI graphics queue is not available");
         return false;
+    }
+
+    if (nsightGraphicsCaptureRequested_ && nsightMode_ == render::profiling::NsightCaptureMode::GPUTrace) {
+        StartupLogScope scope("Nsight GPU Trace startup handshake");
+        std::string error;
+        if (!nsightGraphicsCapture_.prepareBeforeSubmission(*graphicsQueue_, error)) {
+            spdlog::error("Nsight startup failed: {}", error);
+            return false;
+        }
     }
 
     {
@@ -2949,6 +3008,14 @@ void EditorApplication::pollShaderHotReload()
 
 bool EditorApplication::waitForFrameSlotBeforeInput()
 {
+    // Monitor the host even before the first export. Waiting on a frame fence
+    // first could hide a host failure behind a blocked intercepted submission.
+    pollNsightGraphicsCapture();
+    if (nsightGraphicsCaptureRequested_ &&
+        nsightGraphicsCapture_.state() == render::profiling::NsightGraphicsCaptureState::Error) {
+        running_ = false;
+        return false;
+    }
     // Resolve frame-slot backpressure before Reflex sleep and input sampling.
     // renderFrame still begins the context, including for direct smoke-test callers.
     const auto& frame = frameSlots_[submittedFrameIndex_ % kFrameSlotCount];
@@ -2985,6 +3052,11 @@ bool EditorApplication::waitForFrameSlotBeforeInput()
 
 bool EditorApplication::renderFrame()
 {
+    if (nsightGraphicsCapture_.replayTracePending()) {
+        pollNsightGraphicsCapture();
+        SDL_Delay(10);
+        return true;
+    }
     currentFrameSlot_ = static_cast<uint32_t>(submittedFrameIndex_ % kFrameSlotCount);
     FrameSlot& frame = frameSlots_[currentFrameSlot_];
     int framebufferWidth = 0;
@@ -3000,6 +3072,15 @@ bool EditorApplication::renderFrame()
     {
         auto profileScope = profiler_.scope("Poll Nsight Capture");
         pollNsightGraphicsCapture();
+    }
+    if (nsightGraphicsCapture_.replayTracePending()) {
+        SDL_Delay(10);
+        return true;
+    }
+    if (nsightGraphicsCaptureRequested_ &&
+        nsightGraphicsCapture_.state() == render::profiling::NsightGraphicsCaptureState::Error) {
+        running_ = false;
+        return false;
     }
 
     {
@@ -3395,15 +3476,19 @@ void EditorApplication::drawPanels()
             captureStatus += " Optimized Slang source symbols are enabled.";
         }
         const std::string capturePath = nsightGraphicsCapture_.capturePath().string();
+        const std::string replayTracePath = nsightGraphicsCapture_.replayTracePath().string();
+        const std::string& replayTraceError = nsightGraphicsCapture_.replayTraceError();
         const EditorProfiler::GraphicsCaptureControls captureControls{
             .sdkCompiled = render::profiling::NsightGraphicsCapture::compiledAvailable(),
             .runtimeEnabled = nsightGraphicsCaptureRequested_,
             .canCapture = captureReady && viewportPreviewValid_ &&
-                !nsightGraphicsCapture_.hasOutstandingCapture(),
+                !nsightGraphicsCapture_.hasOutstandingCapture() && !nsightGraphicsCapture_.replayTracePending(),
             .capturePending = nsightGraphicsCapture_.hasOutstandingCapture(),
             .gpuTrace = nsightMode_ == render::profiling::NsightCaptureMode::GPUTrace,
             .statusText = captureStatus.c_str(),
             .capturePath = capturePath.c_str(),
+            .replayTracePath = replayTracePath.c_str(),
+            .replayTraceError = replayTraceError.c_str(),
         };
         if (profiler_.drawWindow(&profilerOpen_, captureControls)) {
             requestNsightGraphicsCapture();

@@ -14,8 +14,26 @@ struct NsightLaunchOptions {
 
     static constexpr const char* kUsage =
         "  --nsight-mode <gputrace|capture> Select and enable Nsight export\n"
-        "  --nsight-gputrace               Alias for --nsight-mode gputrace\n"
-        "  --nsight-capture                Alias for --nsight-mode capture";
+        "  --nsight-gputrace               Enable GPU Trace with the default preset\n"
+        "  --nsight-capture                Enable one-click capture + replay GPU Trace\n"
+        "Capture collection (no metrics preset required):\n"
+        "  Launch with --nsight-capture, then click 'Export View Capture + GPU Trace' in Profiler.\n"
+        "  Saves .ngfx-capture and automatically profiles its replay into <capture>_Collected/.\n"
+        "  Editor rendering pauses during collection. Results measure replayed GPU work.\n"
+        "Direct live GPU Trace usage (--nsight-gputrace):\n"
+        "  Default preset: single-pass performance overview, GPU clocks unchanged.\n"
+        "  Metrics: Top-Level Triage (Throughput Metrics on Turing).\n"
+        "  In Profiler, click 'Export Current View GPU Trace' to export the next full View frame.\n"
+        "  Output: Captures/NsightGraphics/*.ngfx-gputrace under the project directory.\n"
+        "  Advanced configuration (PowerShell, before launching):\n"
+        "    $env:METALLIC_NSIGHT_GPU_TRACE_METRICS = 'E:/path/MyMetrics.json'\n"
+        "    .\\LookDev.exe --nsight-gputrace\n"
+        "  The JSON uses ngfx per-architecture settings; it overrides the default preset.\n"
+        "  Copy a generated GpuTraceMetrics-<pid>.json as a starting point.\n"
+        "  Run the installed ngfx.exe --help-all for supported architectures and metric sets.\n"
+        "  To restore the default (PowerShell):\n"
+        "    Remove-Item Env:METALLIC_NSIGHT_GPU_TRACE_METRICS -ErrorAction SilentlyContinue\n"
+        "  Run this executable with --help to display these options without starting Vulkan.";
 
     // Returns 0 for unrelated arguments, 1 for consumed arguments, -1 on error.
     int consume(int argc, char** argv, int& index)
