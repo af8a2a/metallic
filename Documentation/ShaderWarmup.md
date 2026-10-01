@@ -1,4 +1,4 @@
-# Optional shader cache warmup
+# Shader cache warmup
 
 After configuring the project, run this target manually:
 
@@ -11,10 +11,31 @@ builds the small MetallicShaderCompiler executable and warms the project's
 .cache/shaders/spirv directory using the same SlangCompiler.cpp as the runtime.
 It does not start Metallic, create a GPU device, load scenes, or build the editor.
 
-Neither the tool nor the warmup target belongs to the default build. Metallic and
-sample targets do not depend on them. Skipping warmup, deleting the cache, changing
-shader sources, or encountering an unlisted variant leaves the original runtime
-compile-on-cache-miss behavior intact.
+The editor, LookDev, all rendering samples, and MetallicShaderPrintfProbe now
+warm the complete catalog synchronously before initializing rendering. Warmup
+failure aborts startup with a nonzero exit code. To explicitly skip it:
+
+~~~powershell
+.\build-release\Source\Metallic.exe --skip-shader-warmup
+.\build-release\Source\LookDev.exe --skip-shader-warmup
+.\build-release\Source\MetallicPathTracingSample.exe --skip-shader-warmup
+~~~
+
+The flag also works with smoke-test launches and the GPU printf probe. Help,
+sample listing, offline cooking, CLI control tools, auxiliary launchers and test
+executables do not automatically run this startup warmup.
+
+The shared implementation runs inside each rendering process, after selecting
+its shader debug mode and before GPU initialization. It uses the existing
+parallel workers and progress display, then restores application logging.
+There is no external compiler process to locate or deploy. Startup always uses
+the complete catalog; METALLIC_SHADER_WARMUP_ARGS only configures the manual
+target and cannot bypass or filter startup warmup.
+
+The standalone compiler and manual warmup target remain outside default builds.
+Rendering targets link the shared implementation; building them does not execute
+warmup. Runtime compile-on-cache-miss remains available for unlisted variants,
+source changes, and launches using --skip-shader-warmup.
 
 Repeated invocations validate dependencies and reuse current entries. Compilation
 errors or failure to read back a newly written cache entry produce a nonzero exit

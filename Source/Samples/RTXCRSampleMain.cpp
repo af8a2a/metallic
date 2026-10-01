@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Editor/EditorApplication.h"
 #include "Editor/NsightLaunchOptions.h"
 
@@ -11,6 +12,7 @@ constexpr const char* kRTXCRSampleId = "rtxcr-material-sample";
 
 void printUsage()
 {
+    std::puts(metallic::render::ShaderWarmupLaunchOptions::kUsage);
     std::puts(metallic::NsightLaunchOptions::kUsage);
     spdlog::info(
         "MetallicRTXCRSample options:\n"
@@ -23,9 +25,11 @@ void printUsage()
 int main(int argc, char** argv)
 {
     metallic::NsightLaunchOptions nsightOptions;
+    metallic::render::ShaderWarmupLaunchOptions warmupOptions;
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
     for (int index = 1; index < argc; ++index) {
+        if (warmupOptions.consume(argv[index])) { continue; }
         const int nsightArgument = nsightOptions.consume(argc, argv, index);
         if (nsightArgument < 0) { return 1; }
         if (nsightArgument > 0) { continue; }
@@ -49,5 +53,5 @@ int main(int argc, char** argv)
     }
 
     metallic::EditorApplication app;
-    return app.run(smokeTest, waitForGraphicsDebugger, kRTXCRSampleId, nullptr, nullptr, nsightOptions.mode);
+    return app.run(smokeTest, waitForGraphicsDebugger, kRTXCRSampleId, nullptr, nullptr, nsightOptions.mode, false, false, false, warmupOptions.skip);
 }

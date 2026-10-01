@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Editor/EditorApplication.h"
 #include "Editor/NsightLaunchOptions.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
@@ -16,6 +17,7 @@ constexpr const char* kRTXDISampleId = "rtxdi-sample";
 
 void printUsage()
 {
+    std::puts(metallic::render::ShaderWarmupLaunchOptions::kUsage);
     std::puts(metallic::NsightLaunchOptions::kUsage);
     spdlog::info(
         "MetallicRTXDISample options:\n"
@@ -109,10 +111,12 @@ int runSmokeTest(const std::string& scenePath)
 int main(int argc, char** argv)
 {
     metallic::NsightLaunchOptions nsightOptions;
+    metallic::render::ShaderWarmupLaunchOptions warmupOptions;
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
     std::string scenePath;
     for (int index = 1; index < argc; ++index) {
+        if (warmupOptions.consume(argv[index])) { continue; }
         const int nsightArgument = nsightOptions.consume(argc, argv, index);
         if (nsightArgument < 0) { return 1; }
         if (nsightArgument > 0) { continue; }
@@ -139,6 +143,9 @@ int main(int argc, char** argv)
     }
 
     if (smokeTest) {
+        if (const int warmupResult = metallic::render::warmupShadersForStartup(warmupOptions.skip); warmupResult != 0) {
+            return warmupResult;
+        }
         return runSmokeTest(scenePath);
     }
 
@@ -149,5 +156,5 @@ int main(int argc, char** argv)
         kRTXDISampleId,
         scenePath.empty() ? nullptr : scenePath.c_str(),
         nullptr,
-        nsightOptions.mode);
+        nsightOptions.mode, false, false, false, warmupOptions.skip);
 }

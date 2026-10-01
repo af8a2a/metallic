@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Editor/EditorApplication.h"
 #include "Editor/NsightLaunchOptions.h"
@@ -2055,7 +2056,8 @@ int EditorApplication::run(
     render::profiling::NsightCaptureMode nsightMode,
     bool enableNsightShaderDebug,
     bool enableDebugControl,
-    bool gpuDrivenScenesOnly)
+    bool gpuDrivenScenesOnly,
+    bool skipShaderWarmup)
 {
     gpuDrivenScenesOnly_ = gpuDrivenScenesOnly;
     if (gpuDrivenScenesOnly_) {
@@ -2099,6 +2101,9 @@ int EditorApplication::run(
         ? render::SlangShaderDebugMode::CaptureSymbols
         : render::SlangShaderDebugMode::Disabled;
     render::setSlangShaderDebugMode(shaderDebugMode);
+    if (const int warmupResult = render::warmupShadersForStartup(skipShaderWarmup); warmupResult != 0) {
+        return warmupResult;
+    }
     render::resetSlangShaderHotReloadTracking();
     startupSampleId_ = startupSampleId != nullptr ? startupSampleId : "";
     if (smokeTest_ && startupSampleId_.empty()) {

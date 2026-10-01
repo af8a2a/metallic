@@ -1,5 +1,23 @@
 include(GoogleTest)
 
+find_package(Threads REQUIRED)
+add_executable(MetallicShaderWarmupStartupTests
+    editor/ShaderWarmupStartupTests.cpp
+    "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmup.cpp")
+target_include_directories(MetallicShaderWarmupStartupTests PRIVATE
+    "${CMAKE_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/Source")
+target_compile_definitions(MetallicShaderWarmupStartupTests PRIVATE
+    PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}")
+target_link_libraries(MetallicShaderWarmupStartupTests PRIVATE GTest::gtest_main spdlog::spdlog Threads::Threads)
+if(MSVC)
+    target_compile_options(MetallicShaderWarmupStartupTests PRIVATE /EHsc /utf-8)
+endif()
+metallic_copy_spdlog_runtime(MetallicShaderWarmupStartupTests)
+add_test(NAME MetallicShaderWarmupStartupTests COMMAND MetallicShaderWarmupStartupTests)
+set_tests_properties(MetallicShaderWarmupStartupTests PROPERTIES LABELS "editor;shader" TIMEOUT 30)
+
+
 add_subdirectory(perf)
 
 if(METALLIC_ENABLE_NRD)

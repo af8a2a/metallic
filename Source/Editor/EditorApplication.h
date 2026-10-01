@@ -42,7 +42,8 @@ public:
         render::profiling::NsightCaptureMode nsightMode = render::profiling::NsightCaptureMode::Default,
         bool enableNsightShaderDebug = false,
         bool enableDebugControl = false,
-        bool gpuDrivenScenesOnly = false);
+        bool gpuDrivenScenesOnly = false,
+        bool skipShaderWarmup = false);
 
 private:
     enum class PendingSceneAction : int32_t;

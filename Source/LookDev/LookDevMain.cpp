@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Editor/EditorApplication.h"
 #include "Editor/NsightLaunchOptions.h"
 #include "Runtime/Render/RenderSample.h"
@@ -14,6 +15,7 @@ constexpr const char* kDefaultLookDevSampleId = "openpbr-lookdev";
 
 void printUsage()
 {
+    std::puts(metallic::render::ShaderWarmupLaunchOptions::kUsage);
     std::puts(metallic::NsightLaunchOptions::kUsage);
     spdlog::info(
         "LookDev material playground options:\n"
@@ -31,6 +33,7 @@ void printUsage()
 int main(int argc, char** argv)
 {
     metallic::NsightLaunchOptions nsightOptions;
+    metallic::render::ShaderWarmupLaunchOptions warmupOptions;
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
     bool debugControl = false;
@@ -38,6 +41,7 @@ int main(int argc, char** argv)
     std::string sampleId = kDefaultLookDevSampleId;
     std::string scenePath;
     for (int index = 1; index < argc; ++index) {
+        if (warmupOptions.consume(argv[index])) { continue; }
         const int nsightArgument = nsightOptions.consume(argc, argv, index);
         if (nsightArgument < 0) { return 1; }
         if (nsightArgument > 0) { continue; }
@@ -97,5 +101,5 @@ int main(int argc, char** argv)
         nullptr,
         nsightOptions.mode,
         false,
-        debugControl);
+        debugControl, false, warmupOptions.skip);
 }

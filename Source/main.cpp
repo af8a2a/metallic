@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Editor/EditorApplication.h"
 #include "Editor/NsightLaunchOptions.h"
 #include "Runtime/Render/GAPI/RHI.h"
@@ -44,6 +45,7 @@ bool waitForGraphicsDebuggerFromEnv()
 
 void printUsage()
 {
+    std::puts(metallic::render::ShaderWarmupLaunchOptions::kUsage);
     std::puts(metallic::NsightLaunchOptions::kUsage);
     std::puts(
         "Metallic options:\n"
@@ -166,6 +168,7 @@ int buildMeshletStreamAssetOffline(
 int main(int argc, char** argv)
 {
     metallic::NsightLaunchOptions nsightOptions;
+    metallic::render::ShaderWarmupLaunchOptions warmupOptions;
     bool smokeTest = false;
     bool rhiSmokeTest = false;
     bool rhiTrianglePreviewTest = false;
@@ -182,6 +185,7 @@ int main(int argc, char** argv)
     uint32_t buildMeshstreamMaxNewGeometries = 0;
     uint32_t buildMeshstreamCheckpointInterval = 64;
     for (int index = 1; index < argc; ++index) {
+        if (warmupOptions.consume(argv[index])) { continue; }
         const int nsightArgument = nsightOptions.consume(argc, argv, index);
         if (nsightArgument < 0) { return 1; }
         if (nsightArgument > 0) { continue; }
@@ -266,6 +270,11 @@ int main(int argc, char** argv)
             buildMeshstreamCheckpointInterval);
     }
 
+    if (rhiTrianglePreviewTest || rhiBindlessDescriptorHeapSmokeTest || rhiSmokeTest) {
+        if (const int warmupResult = metallic::render::warmupShadersForStartup(warmupOptions.skip); warmupResult != 0) {
+            return warmupResult;
+        }
+    }
     if (rhiTrianglePreviewTest) {
         return metallic::render::runRhiTrianglePreviewTest(rhiValidation);
     }
@@ -288,5 +297,5 @@ int main(int argc, char** argv)
         nullptr,
         nsightOptions.mode,
         nsightShaderDebug,
-        debugControl);
+        debugControl, false, warmupOptions.skip);
 }

@@ -1,20 +1,23 @@
-# No editor, Vulkan device, or scene library is needed. Neither target is in ALL
-# and Metallic/sample targets must never depend on this optional warmup.
-add_executable(MetallicShaderCompiler EXCLUDE_FROM_ALL
+add_library(MetallicShaderWarmupCore STATIC EXCLUDE_FROM_ALL
     "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmup.cpp"
     "${CMAKE_SOURCE_DIR}/Source/Runtime/Render/Core/SlangCompiler.cpp"
 )
-target_include_directories(MetallicShaderCompiler PRIVATE "${CMAKE_SOURCE_DIR}/Source")
+target_include_directories(MetallicShaderWarmupCore PUBLIC "${CMAKE_SOURCE_DIR}/Source")
 find_package(Threads REQUIRED)
-target_link_libraries(MetallicShaderCompiler PRIVATE slang::slang spdlog::spdlog Threads::Threads)
-target_compile_definitions(MetallicShaderCompiler PRIVATE
+target_link_libraries(MetallicShaderWarmupCore PUBLIC slang::slang spdlog::spdlog Threads::Threads)
+target_compile_definitions(MetallicShaderWarmupCore PRIVATE
     PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     METALLIC_RTXCR_SHADER_INCLUDE_DIR="${METALLIC_RTXCR_SHADER_INCLUDE_DIR}"
 )
 if(MSVC)
-    target_compile_options(MetallicShaderCompiler PRIVATE /utf-8 /EHsc)
-    target_compile_definitions(MetallicShaderCompiler PRIVATE NOMINMAX)
+    target_compile_options(MetallicShaderWarmupCore PRIVATE /utf-8 /EHsc)
+    target_compile_definitions(MetallicShaderWarmupCore PRIVATE NOMINMAX)
 endif()
+# Applications call the shared implementation at startup. Building an
+# application does not execute the separate manual warmup target.
+add_executable(MetallicShaderCompiler EXCLUDE_FROM_ALL
+    "${CMAKE_SOURCE_DIR}/Tools/ShaderWarmupMain.cpp")
+target_link_libraries(MetallicShaderCompiler PRIVATE MetallicShaderWarmupCore)
 metallic_copy_spdlog_runtime(MetallicShaderCompiler)
 if(WIN32)
     file(GLOB _metallic_warmup_slang_dlls "${METALLIC_SLANG_ROOT}/bin/*.dll")

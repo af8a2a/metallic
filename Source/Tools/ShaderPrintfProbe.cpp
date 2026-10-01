@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -343,11 +344,13 @@ int serve(const std::filesystem::path& directory, const std::string& mode, uint3
 
 int main(int argc, char** argv)
 {
+    metallic::render::ShaderWarmupLaunchOptions warmupOptions;
     std::string mode = "ordinary", fault = "none";
     bool service = false;
     uint32_t serveSeconds = 120;
     std::filesystem::path directory;
     for (int i = 1; i < argc; ++i) {
+        if (warmupOptions.consume(argv[i])) { continue; }
         const std::string arg = argv[i];
         if (arg == "--serve") { service = true; }
         else if (i + 1 < argc && arg == "--serve-seconds") {
@@ -358,7 +361,7 @@ int main(int argc, char** argv)
         else if (i + 1 < argc && arg == "--mode") { mode = argv[++i]; }
         else if (i + 1 < argc && arg == "--fault") { fault = argv[++i]; }
         else if (i + 1 < argc && arg == "--output") { directory = argv[++i]; }
-        else { std::cerr << "Usage: MetallicShaderPrintfProbe --output <new-dir> --mode ordinary|heap-mapped|heap-native [--fault none|no-info|stdout|gpu-overflow] [--serve --serve-seconds 120]\n"; return 64; }
+        else { std::cerr << "Usage: MetallicShaderPrintfProbe [--skip-shader-warmup] --output <new-dir> --mode ordinary|heap-mapped|heap-native [--fault none|no-info|stdout|gpu-overflow] [--serve --serve-seconds 120]\n"; return 64; }
     }
     if ((service && fault != "none") || !serveSeconds || serveSeconds > 300 || directory.empty() || std::filesystem::exists(directory) ||
         (mode != "ordinary" && mode != "heap-mapped" && mode != "heap-native") ||
@@ -367,6 +370,9 @@ int main(int argc, char** argv)
         return 64;
     }
     try {
+        if (const int warmupResult = metallic::render::warmupShadersForStartup(warmupOptions.skip); warmupResult != 0) {
+            return warmupResult;
+        }
         std::filesystem::create_directories(directory);
         if (service) { return serve(directory, mode, serveSeconds); }
         auto capture = std::make_unique<vk::ShaderPrintf>(vk::ShaderPrintfOptions{

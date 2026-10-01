@@ -87,7 +87,6 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/GAPI/PipelineStateHash.cpp
     Runtime/Render/Streamer/UploadStreamer.cpp
     Runtime/Render/RenderSample.cpp
-    Runtime/Render/Core/SlangCompiler.cpp
     Runtime/Render/RenderGraph/RenderGraph.cpp
     Runtime/Render/RenderGraph/RenderGraphNode.cpp
     Runtime/Render/RenderGraph/RenderGraphAccessPlan.cpp
@@ -175,6 +174,7 @@ target_link_libraries(MetallicRuntimeRender PUBLIC
     metallic::dlss_nr
     metallic::nrc
     nlohmann_json
+    MetallicShaderWarmupCore
     slang::slang
     spdlog::spdlog
 )

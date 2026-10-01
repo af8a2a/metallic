@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Editor/EditorApplication.h"
 #include "Editor/NsightLaunchOptions.h"
 #include "Runtime/Render/RenderSample.h"
@@ -11,6 +12,7 @@ namespace {
 
 void printUsage()
 {
+    std::puts(metallic::render::ShaderWarmupLaunchOptions::kUsage);
     std::puts(metallic::NsightLaunchOptions::kUsage);
     spdlog::info(
         "MetallicGPUDrivenSample options:\n"
@@ -30,12 +32,14 @@ void printUsage()
 int main(int argc, char** argv)
 {
     metallic::NsightLaunchOptions nsightOptions;
+    metallic::render::ShaderWarmupLaunchOptions warmupOptions;
     bool smokeTest = false;
     bool waitForGraphicsDebugger = false;
     bool debugControl = false;
     const char* sampleId = metallic::render::kDefaultGPUDrivenSampleId;
     std::string streamAssetPath;
     for (int index = 1; index < argc; ++index) {
+        if (warmupOptions.consume(argv[index])) { continue; }
         const int nsightArgument = nsightOptions.consume(argc, argv, index);
         if (nsightArgument < 0) { return 1; }
         if (nsightArgument > 0) { continue; }
@@ -101,5 +105,5 @@ int main(int argc, char** argv)
         sampleId,
         nullptr,
         streamAssetPath.empty() ? nullptr : streamAssetPath.c_str(),
-        nsightOptions.mode, false, debugControl, true);
+        nsightOptions.mode, false, debugControl, true, warmupOptions.skip);
 }
