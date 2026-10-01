@@ -8,6 +8,7 @@
 #include "Runtime/Scene/Scene.h"
 
 #include "Runtime/Render/Profiling/CPUProfile.h"
+#include "Runtime/Render/Material/MaterialRuntime.h"
 
 #include <array>
 #include <cstdint>
@@ -90,7 +91,8 @@ public:
         scene::SceneLoadProgress& progress,
         std::string& log);
     bool preparing() const;
-    Result<> syncRuntimeScene(const scene::Scene* runtimeScene, std::string& log);
+    Result<> syncRuntimeScene(const scene::Scene* runtimeScene, std::string& log,
+        MaterialBufferAllocator materialAllocator = nullptr);
     Result<> uploadMaterialTextures(CommandBuffer& commandBuffer);
     // Called before consumers with a frame context; repeat calls in the same
     // frame share one seed and demand buffer. Never waits for
@@ -132,6 +134,9 @@ public:
     Buffer* primitiveBuffer() const;
     Buffer* instanceBuffer() const;
     Buffer* materialBuffer() const;
+    // Same published generation as materialBuffer(); no mutable parameter access.
+    std::shared_ptr<const MaterialGeneration> materialGeneration() const;
+    std::shared_ptr<MaterialBindingGeneration> materialBinding() const;
     const std::vector<TextureView*>& materialTextureViews() const;
     uint32_t materialTextureCount() const;
     std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot() const;

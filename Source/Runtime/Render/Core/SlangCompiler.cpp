@@ -19,6 +19,7 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <regex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -1034,6 +1035,32 @@ Result<ShaderCompileResult> compileSlangShaderToSpirv(
     Slang::ComPtr<slang::IModule> module(session->loadModule(desc.moduleName, diagnostics.writeRef()));
     appendDiagnostics(diagnostics, log);
     if (module == nullptr) {
+        // loadModule can fail before Slang exposes its dependency list. Watch
+        // the entry source (including a missing file) and diagnostic locations,
+        // so repairing a first-load syntax error in an include retries the graph.
+        std::vector<ShaderDependencySnapshot> failedSources;
+        const auto watch = [&](const std::filesystem::path& path) {
+            const auto normalized = normalizedAbsolutePath(path);
+            failedSources.push_back({normalized, shaderDependencyStamp(normalized)});
+        };
+        for (const auto& root : normalizedSearchPaths) {
+            watch(root / (std::string(desc.moduleName) + ".slang"));
+        }
+        static const std::regex location(
+            R"((?:^|\n)(?:([^\r\n(]+)\([0-9]+|[ \t]*-->[ \t]+([^\r\n]+?):[0-9]+:[0-9]+))");
+        for (auto match = std::sregex_iterator(log.begin(), log.end(), location);
+                match != std::sregex_iterator(); ++match) {
+            const std::filesystem::path path((*match)[1].matched ? (*match)[1].str() : (*match)[2].str());
+            std::error_code error;
+            if (path.is_absolute()) {
+                if (std::filesystem::is_regular_file(path, error)) { watch(path); }
+            } else {
+                for (const auto& root : normalizedSearchPaths) {
+                    if (std::filesystem::is_regular_file(root / path, error)) { watch(root / path); }
+                }
+            }
+        }
+        registerShaderDependencies(failedSources);
         return makeError(Error::Failure);
     }
     const std::vector<std::filesystem::path> dependencies = collectShaderDependencies(

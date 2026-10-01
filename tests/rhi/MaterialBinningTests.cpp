@@ -260,6 +260,29 @@ private:
     render::MaterialBinning binning_;
 };
 
+// Keep millions of per-pixel atomics in device memory. Marking Probe.data as
+// an output makes the graph allocate HostReadback memory (PCIe atomics).
+// Copy once after all consumers, preserving the exact coverage assertions.
+class MaterialBinningReadbackPass final : public render::ComputePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
+    {
+        const auto bytes = (uint64_t(context.width) * context.height * 3 + kProbeHeader) * 4;
+        render::RenderPassReflection reflection;
+        reflection.addBufferInput("source").buffer(bytes, 4).transferRead();
+        reflection.addBufferOutput("data").buffer(bytes, 4).transferWrite().hostReadback();
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        auto source = context.inputBuffer("source").buffer()->slice();
+        auto destination = context.outputBuffer("data").buffer()->slice();
+        if (!source) { return std::unexpected(source.error()); }
+        if (!destination) { return std::unexpected(destination.error()); }
+        return context.commandBuffer().copyBuffer(*source, *destination);
+    }
+};
+
 class MaterialBinningTest : public RHITest {
 public:
     explicit MaterialBinningTest(bool typed = false) : typed_(typed)
@@ -282,13 +305,17 @@ public:
             [] { return std::make_unique<MaterialBinningProbePass>(true); });
         render::registerRenderGraphPassType("MaterialBinProbe", "Probe",
             [typed = typed_] { return std::make_unique<MaterialBinningProbePass>(false, typed); });
+        render::registerRenderGraphPassType("MaterialBinReadback", "Readback",
+            [] { return std::make_unique<MaterialBinningReadbackPass>(); });
         render::RenderGraph graph;
         graph.addNode("MaterialBinFixture", "Fixture");
         graph.addNode("MaterialBinProbe", "Probe");
         for (const char* field : {"visibility", "records", "instances", "materials", "shadingMaterials"}) {
             graph.addEdge(std::string("Fixture.") + field, std::string("Probe.") + field);
         }
-        graph.markOutput("Probe.data");
+        graph.addNode("MaterialBinReadback", "Readback");
+        graph.addEdge("Probe.data", "Readback.source");
+        graph.markOutput("Readback.data");
         render::RenderGraphExecutor executor;
         std::string log;
         for (auto extent : {std::array<uint32_t, 2>{63, 37}, {17, 9}, {1, 1}, {8, 4}, {193, 157}, {4097, 1025}}) {
@@ -298,8 +325,12 @@ public:
             for (uint32_t frame = 0; frame < 3; ++frame) {
                 result = executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)});
                 if (!result) { return RHITestResult::fail(std::string("Binning dispatch: ") + toString(result)); }
-                if (!executor.waitForSubmittedWork(5'000'000'000ull)) { return RHITestResult::fail("Binning wait failed"); }
-                auto* buffer = executor.outputResource("Probe.data")->buffer;
+                result = executor.waitForSubmittedWork(5'000'000'000ull);
+                if (!result) {
+                    return RHITestResult::fail("Binning wait " + std::to_string(width) + "x" +
+                        std::to_string(height) + " frame=" + std::to_string(frame) + ": " + toString(result));
+                }
+                auto* buffer = executor.outputResource("Readback.data")->buffer;
                 buffer->invalidate();
                 void* mapped = buffer->map();
                 if (mapped == nullptr) { return RHITestResult::fail("Binning readback failed"); }

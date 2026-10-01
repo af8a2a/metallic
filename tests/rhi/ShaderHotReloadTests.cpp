@@ -203,5 +203,28 @@ public:
 METALLIC_REGISTER_RHI_TEST(SlangShaderBackgroundHotReloadTest);
 METALLIC_REGISTER_RHI_TEST(SlangShaderBackgroundResetTest);
 
+class SlangShaderInitialFailureTest final : public RHITest {
+public:
+    SlangShaderInitialFailureTest() { type = RHITestType::Resource; name = "slang_shader_initial_failure_recovery"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        ShaderHotReloadFixture fixture(context.outputDirectory / name);
+        if (!fixture.initialize()) { return RHITestResult::fail("Could not create source fixture"); }
+        render::resetSlangShaderHotReloadTracking();
+        {
+            std::ofstream stream(fixture.dependencyPath, std::ios::binary | std::ios::trunc);
+            stream << "this is an intentional first-load syntax error;\n";
+        }
+        if (fixture.compile() || fixture.compiled.diagnostics.empty()) {
+            return RHITestResult::fail("Invalid initial include compiled successfully");
+        }
+        if (!fixture.writeValue(42) || !fixture.waitForChange() || !fixture.compile()) {
+            return RHITestResult::fail("Fixing only a first-failed include did not recover: " + fixture.compiled.diagnostics);
+        }
+        return RHITestResult::pass("First loadModule failure watches diagnostic source; include-only repair retries successfully");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(SlangShaderInitialFailureTest);
+
 } // namespace
 } // namespace metallic::tests

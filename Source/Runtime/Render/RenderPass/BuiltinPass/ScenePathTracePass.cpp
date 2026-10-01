@@ -4,6 +4,7 @@
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/SceneLightResources.h"
 #include "Runtime/Render/MaterialBinning.h"
+#include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
 #include "Runtime/Render/ClusterLightGrid.h"
@@ -871,6 +872,7 @@ public:
             return makeError(Error::InvalidArgument);
         }
         sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
+        if (!validateMaterialTarget(log)) { return makeError(Error::Unsupported); }
         Result<> result;
         const uint64_t resourceRevision = sceneResources_.revision();
         if (resourceRevision != sceneResourceRevision_) {
@@ -1218,66 +1220,28 @@ public:
                 additionalSearchPaths.push_back(METALLIC_NTC_SHADER_INCLUDE_DIR);
             }
 #endif
-            ShaderCompileResult permutationCompile;
-            Result<> permutationResult = compileSlangShaderToSpirv(SlangShaderDesc{
-                .moduleName = moduleName,
-                .entryPointName = entryPointName,
-                .searchPath = kTriangleShaderSearchPath,
-                .additionalSearchPaths = additionalSearchPaths,
-                .capabilities = capabilities,
-                .macroDefines = defines,
-            }, permutationCompile.diagnostics).transform([&](auto value) { permutationCompile = std::move(value); });
-            if (!permutationResult) {
-                log += "compileSlangShaderToSpirv(";
-                log += moduleName;
-                log += ".";
-                log += entryPointName;
-                log += "[";
-                log += toString(permutation);
-                log += "]) returned ";
-                log += resultToString(permutationResult);
-                if (!permutationCompile.diagnostics.empty()) {
-                    log += ": ";
-                    log += permutationCompile.diagnostics;
-                }
-                log += '\n';
-                outProgram.clear();
-                return permutationResult;
-            }
-
-            std::string programLog;
+            std::shared_ptr<const MaterialExecutableArtifact> artifact;
             const std::string debugName = std::string("ScenePathTracePass.") + toString(permutation);
-            const auto pipelineStart = std::chrono::steady_clock::now();
-            if (visibilityDeferred_) {
-                spdlog::info("[VisibilityBufferDeferredPass] Begin pipeline {} (materialClass={})",
-                    entryPointName, extraDefines.empty() ? "unclassified" : extraDefines.front().value);
+            std::string diagnostics;
+            auto compiled = compileMaterialExecutable(*context.device,
+                {.moduleName = moduleName, .entryPointName = entryPointName,
+                    .searchPath = kTriangleShaderSearchPath, .additionalSearchPaths = additionalSearchPaths,
+                    .capabilities = capabilities, .macroDefines = defines},
+                {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
+                    .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get()},
+                outProgram, artifact, diagnostics);
+            if (!diagnostics.empty()) { log += diagnostics + '\n'; }
+            if (!compiled) {
+                // Reload creates replacement passes. Reject the entire transaction
+                // so a failure can never replace a previously successful graph.
+                if (context.shaderReload || outProgram.valid()) { return compiled; }
+                log += "Initial material compilation failed; displaying the error material.\n";
+                std::string errorLog;
+                auto fallback = initializeMaterialErrorProgram(*context.device, errorProgram_, errorLog);
+                if (!fallback) { log += errorLog; return fallback; }
+                return {};
             }
-            permutationResult = outProgram.initialize(
-                *context.device,
-                ComputeProgramDesc{
-                    .spirv = permutationCompile.spirv,
-                    .pushConstantSize = sizeof(ScenePathTracePush),
-                    .bindings = permutationBindings,
-                    .debugName = debugName.c_str(),
-                    .pipelineCache = deferredPipelineCache_.get(),
-                },
-                programLog);
-            if (visibilityDeferred_) {
-                spdlog::info("[VisibilityBufferDeferredPass] End pipeline {} in {:.2f} ms ({})",
-                    entryPointName, std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() - pipelineStart).count(),
-                    resultToString(permutationResult));
-            }
-            if (!programLog.empty()) {
-                if (!log.empty() && log.back() != '\n') {
-                    log += '\n';
-                }
-                log += programLog;
-            }
-            if (!permutationResult) {
-                outProgram.clear();
-                return permutationResult;
-            }
+            materialArtifacts_.push_back(std::move(artifact));
             return {};
         };
 
@@ -1302,6 +1266,7 @@ public:
             }
         }
 
+        if (errorProgram_.valid()) { return {}; }
         if (classified) {
             for (uint32_t type = 0; type < classifiedPrograms_.size(); ++type) {
                 if (classifiedPrograms_[type].valid()) { continue; }
@@ -1312,6 +1277,7 @@ public:
             }
         }
 
+        if (errorProgram_.valid()) { return {}; }
         if (cacheMode_ == kScenePathTraceCacheModeSharc) {
             const std::vector<ComputeProgramBindingDesc> sharcBindings = [cacheBindings]() {
                 std::vector<ComputeProgramBindingDesc> bindings = cacheBindings;
@@ -1580,6 +1546,20 @@ public:
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
+        if (errorProgram_.valid()) {
+            for (const char* name : {"color", "albedo", "specularAlbedo", "normalRoughness",
+                    "motionVectors", "deviceDepth", "linearDepth", "specularHitDistance", "depth"}) {
+                auto output = context.outputTexture(name);
+                if (!output.valid()) { continue; }
+                const uint32_t color = std::string_view(name) == "color";
+                const ComputeDispatchBinding binding{.binding = 0, .textureView = output.view()};
+                auto result = errorProgram_.dispatch({.commandBuffer = &context.commandBuffer(),
+                    .bindings = {&binding, 1}, .pushData = &color, .pushDataSize = sizeof(color),
+                    .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
+                if (!result) { return result; }
+            }
+            return {};
+        }
         CPUProfileRecorder profiler;
         const auto result = executeProfiled(context, visibilityDeferred_ ? &profiler : nullptr);
         context.publishCpuProfile(profiler.sections);
@@ -1594,6 +1574,10 @@ public:
         // StreamerSubsystem publishes geometry, material tables and RTAS together;
         // a pass never resolves an authored path midway through this frame.
         if (sceneResources_.revision() != sceneResourceRevision_) {
+            if (!validateMaterialTarget(syncLog)) {
+                spdlog::error("{}", syncLog);
+                return makeError(Error::Unsupported);
+            }
             sceneResourceRevision_ = sceneResources_.revision();
             resetAccumulation_ = true;
             hasPreviousCamera_ = false;
@@ -2395,6 +2379,8 @@ private:
 
     void clearPrograms()
     {
+        errorProgram_.clear();
+        materialArtifacts_.clear();
         for (ComputeProgram& program : classifiedPrograms_) { program.clear(); }
         for (ComputeProgram& program : programs_) {
             program.clear();
@@ -3008,6 +2994,16 @@ private:
         return realtime_ || bsdf == "openpbr" || bsdf == "OpenPBR";
     }
 
+    bool validateMaterialTarget(std::string& log) const
+    {
+        const auto generation = sceneResources_.materialGeneration();
+        if (!generation) { log = "Missing material generation"; return false; }
+        const auto target = visibilityDeferred_ ? MaterialEvaluationTarget::VisibilityBuffer :
+            (!useOpenPBRBsdf(properties()) && METALLIC_HAS_RTXCR
+                ? MaterialEvaluationTarget::RayHitWithFiber : MaterialEvaluationTarget::SurfaceRayHit);
+        return generation->supports(target, log);
+    }
+
     static uint32_t debugViewFromProperties(const RenderGraphProperties& properties)
     {
         const std::string view = stringProperty(properties, "debugView", "final");
@@ -3269,6 +3265,8 @@ private:
         }
     }
 
+    ComputeProgram errorProgram_;
+    std::vector<std::shared_ptr<const MaterialExecutableArtifact>> materialArtifacts_;
     bool realtime_ = false;
     bool visibilityDeferred_ = false;
     std::unique_ptr<PipelineCache> deferredPipelineCache_;

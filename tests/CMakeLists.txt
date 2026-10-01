@@ -290,6 +290,7 @@ add_executable(MetallicRHITests
     rhi/StreamMaterialTests.cpp
     rhi/ZorahFullFirstFrameTests.cpp
     rhi/MaterialBinningTests.cpp
+    rhi/MaterialRuntimeTests.cpp
     rhi/ResourceRegistryTests.cpp
     rhi/ResourceMemoryInfoTests.cpp
     rhi/DeferredTransmissionTests.cpp

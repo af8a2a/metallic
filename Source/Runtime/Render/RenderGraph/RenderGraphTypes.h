@@ -227,6 +227,9 @@ struct RenderGraphCompileContext {
     RenderView* renderView = nullptr;
     DisplayOutputParameters displayOutput;
 
+    // Reload must keep the last successful graph instead of an initial error material.
+    bool shaderReload = false;
+
     RenderWorld* world() const { return renderWorld; }
     RenderSubsystemHost* subsystems() const { return subsystemHost; }
 

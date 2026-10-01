@@ -86,6 +86,7 @@ float4 sampleOpenPBRLut3D(int lutId, float3 uvw)
 #define OPENPBR_SAMPLE_3D_TEXTURE(lut_id, uvw) sampleOpenPBRLut3D(lut_id, uvw)
 
 #include "../../../External/openpbr-bsdf/openpbr.h"
+#include "../../Interop/OpenPBRMaterialAdapter.hlsli"
 #include "ScenePathTrace.slang"
 
 struct OpenPBRMaterialEval
@@ -655,7 +656,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
                 ray.direction);
         }
         float3 viewDirection = safeNormalize(-ray.direction, hit.normal);
-        OpenPBR_PreparedBsdf prepared = openpbr_prepare(
+        OpenPBR_PreparedBsdf prepared = prepareOpenPBRMaterial(
             materialEval.inputs,
             throughput,
             OpenPBR_BaseRgbWavelengths_nm,
@@ -671,7 +672,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
             if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
                 PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), punctualLightIndex, hit.position);
                 float3 weight = max(openpbr_get_sum_of_diffuse_specular(
-                    openpbr_eval(prepared, light.direction)), float3(0.0));
+                    evalOpenPBRMaterialProjected(prepared, light.direction)), float3(0.0));
                 if (luminanceMax(weight * light.illuminance) > 0.0) {
                     float3 origin = offsetRay(hit.position,
                         openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
@@ -694,7 +695,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         bool sampledEnvironment = directLightingEnabled && sampleEnvironmentLight(push, seed, lightSample);
         if (sampledEnvironment) {
             float lightBsdfPdf = openpbr_pdf(prepared, lightSample.direction);
-            OpenPBR_DiffuseSpecular lightBsdf = openpbr_eval(prepared, lightSample.direction);
+            OpenPBR_DiffuseSpecular lightBsdf = evalOpenPBRMaterialProjected(prepared, lightSample.direction);
             float3 lightWeight = openpbr_get_sum_of_diffuse_specular(lightBsdf);
             float3 shadowTransmittance = float3(0.0, 0.0, 0.0);
             if (lightBsdfPdf > 0.0 && luminanceMax(lightWeight) > 0.0) {
@@ -755,7 +756,7 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         OpenPBR_DiffuseSpecular sampledWeight;
         float sampledPdf;
         OpenPBR_BsdfLobeType sampledType;
-        openpbr_sample(
+        sampleOpenPBRMaterial(
             prepared,
             float3(rand(seed), rand(seed), rand(seed)),
             sampledDirection,

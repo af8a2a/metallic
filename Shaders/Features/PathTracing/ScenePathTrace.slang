@@ -271,42 +271,11 @@ float rand(inout uint state)
 
 bool isRtxcrHairMaterial(PathTraceMaterial material)
 {
-    return material.rtxcrHairBaseColor.w > 0.5;
+    return materialProgramId(material) == kMaterialProgramRTXCRChiang;
 }
 
 #if METALLIC_HAS_RTXCR
-RTXCR_HairMaterialData makeRtxcrHairMaterial(PathTraceMaterial material)
-{
-    RTXCR_HairMaterialData hair;
-    hair.baseColor = saturate(material.rtxcrHairBaseColor.rgb);
-    hair.longitudinalRoughness = clamp(material.rtxcrHairParams0.x, 0.02, 1.0);
-    hair.azimuthalRoughness = clamp(material.rtxcrHairParams0.y, 0.02, 1.0);
-    hair.ior = clamp(material.rtxcrHairParams0.z, 1.01, 3.0);
-    hair.eta = 1.0 / hair.ior;
-    hair.fresnelApproximation = 1u;
-    hair.absorptionModel = RTXCR_HairAbsorptionModel_Normalized;
-    hair.melanin = saturate(material.rtxcrHairParams1.x);
-    hair.melaninRedness = saturate(material.rtxcrHairParams1.y);
-    hair.cuticleAngleInDegrees = clamp(material.rtxcrHairParams0.w, -10.0, 10.0);
-    return hair;
-}
-
-RTXCR_HairInteractionSurface makeRtxcrHairSurface(
-    float3 stableNormal,
-    float3 tangent,
-    float3 viewDirection)
-{
-    RTXCR_HairInteractionSurface surface;
-    surface.shadingNormal = safeNormalize(stableNormal, float3(0.0, 0.0, 1.0));
-    float3 tangentFallback = abs(surface.shadingNormal.y) < 0.99
-        ? cross(float3(0.0, 1.0, 0.0), surface.shadingNormal)
-        : cross(float3(1.0, 0.0, 0.0), surface.shadingNormal);
-    surface.tangent = safeNormalize(
-        tangent - surface.shadingNormal * dot(surface.shadingNormal, tangent),
-        tangentFallback);
-    surface.incidentRayDirection = safeNormalize(viewDirection, -surface.shadingNormal);
-    return surface;
-}
+#include "../../Interop/RTXCRMaterialAdapter.hlsli"
 #endif
 
 float4 rand4(inout uint state)
@@ -1608,18 +1577,18 @@ float3 pathTrace(
 
 #if METALLIC_HAS_RTXCR
         if (isRtxcrHairMaterial(material)) {
-            RTXCR_HairMaterialData hairMaterial = makeRtxcrHairMaterial(material);
-            RTXCR_HairInteractionSurface hairSurface = makeRtxcrHairSurface(
-                stableShadingNormal,
-                hit.tangent.xyz,
-                -ray.direction);
+            FiberInteraction fiber;
+            fiber.authoredNormal = stableShadingNormal;
+            fiber.tangent = hit.tangent.xyz;
+            fiber.outgoingDirection = -ray.direction;
+            RTXCRPreparedMaterial preparedHair = prepareRTXCRMaterial(material, fiber);
+            RTXCR_HairMaterialData hairMaterial = preparedHair.parameters;
 
             uint hairLightIndex;
             float hairInverseSourcePdf;
             if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, hairLightIndex, hairInverseSourcePdf)) {
                 PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), hairLightIndex, hit.position);
-                float3 hairBsdf = max(RTXCR_HairChiangBsdfEval(
-                    hairMaterial, hairSurface, light.direction), 0.0);
+                float3 hairBsdf = max(evalRTXCRMaterial(preparedHair, light.direction), 0.0);
                 if (luminanceMax(hairBsdf * light.illuminance) > 0.0) {
                     float3 shadowOrigin = offsetRay(hit.position,
                         dot(light.direction, hit.geometryNormal) >= 0.0
@@ -1658,10 +1627,7 @@ float3 pathTrace(
                     10000.0,
                     push);
                 if (!occluded) {
-                    float3 hairBsdf = RTXCR_HairChiangBsdfEval(
-                        hairMaterial,
-                        hairSurface,
-                        hairLightSample.direction);
+                    float3 hairBsdf = evalRTXCRMaterial(preparedHair, hairLightSample.direction);
                     radiance += throughput * max(hairBsdf, 0.0) * lightRadianceOverPdf;
                 }
             }
@@ -1674,9 +1640,8 @@ float3 pathTrace(
             float hairPdf;
             float3 hairWeight;
             RTXCR_HairLobeType hairLobe;
-            if (!RTXCR_SampleChiangBsdf(
-                    hairMaterial,
-                    hairSurface,
+            if (!sampleRTXCRMaterial(
+                    preparedHair,
                     hairRandom,
                     hairDirection,
                     hairPdf,

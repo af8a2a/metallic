@@ -89,7 +89,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
     }
     if (material.emissive.w != 0.0) { return surface.inputs.base_color; }
     float3 viewDirection = -ray.direction;
-    OpenPBR_PreparedBsdf prepared = openpbr_prepare(surface.inputs, float3(1.0),
+    OpenPBR_PreparedBsdf prepared = prepareOpenPBRMaterial(surface.inputs, float3(1.0),
         OpenPBR_BaseRgbWavelengths_nm, OpenPBR_VacuumIor, viewDirection);
     float3 radiance = max(prepared.emission, float3(0.0));
     if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
@@ -111,7 +111,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
             PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), i, hit.position);
 #endif
             float3 bsdf = max(openpbr_get_sum_of_diffuse_specular(
-                openpbr_eval(prepared, light.direction)), float3(0.0));
+                evalOpenPBRMaterialProjected(prepared, light.direction)), float3(0.0));
             if (luminanceMax(bsdf * light.illuminance) <= 0.0) { continue; }
             float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(light.direction, hit.geometryNormal));
             float distance = max(light.distance - length(origin - hit.position), 0.0);
@@ -171,7 +171,7 @@ float3 shadeOpenPBRDirectSurface(Ray ray, HitInfo hit, float2 samplePixel,
             OpenPBR_DiffuseSpecular weight;
             float pdf;
             OpenPBR_BsdfLobeType type;
-            openpbr_sample(prepared, random, direction, weight, pdf, type);
+            sampleOpenPBRMaterial(prepared, random, direction, weight, pdf, type);
             if (pdf <= 0.0 || type == OpenPBR_BsdfLobeTypeNone) { continue; }
             float3 origin = offsetRay(hit.position, openPbrRayOffsetNormal(direction, hit.geometryNormal));
             float3 visibility = openPbrDirectVisibility(origin, direction, max(push.clipOrtho.y, 1.0), push);

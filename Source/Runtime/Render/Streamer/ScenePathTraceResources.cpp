@@ -91,41 +91,7 @@ struct ScenePathTraceGPUInstance {
     float rayConeLodConstant = 0.0f;
 };
 
-struct ScenePathTraceGPUMaterial {
-    float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-    float emissive[4] = {};
-    float params[4] = {};
-    float textureParams[4] = {1.0f, 1.0f, 0.0f, 0.0f};
-    float glassParams[4] = {0.0f, 1.5f, 0.0f, 0.0f};
-    float attenuationColor[4] = {1.0f, 1.0f, 1.0f, 0.0f};
-    float diffuseTransmission[4] = {1.0f, 1.0f, 1.0f, 0.0f};
-    float rtxcrHairBaseColor[4] = {0.2f, 0.2f, 0.2f, 0.0f};
-    float rtxcrHairParams0[4] = {0.3f, 0.3f, 1.55f, 3.0f};
-    float rtxcrHairParams1[4] = {1.0f, 0.0f, 0.0f, 0.0f};
-    float rtxcrHairDiffuseTint[4] = {};
-    struct TextureInfo {
-        uint32_t textureIndex = kInvalidMaterialTextureIndex;
-        uint32_t texCoord = 0;
-        uint32_t ntcTextureSetIndex = kInvalidNeuralTextureSetIndex;
-        uint32_t ntcChannelMapping = UINT32_MAX;
-        float transform0[4] = {1.0f, 0.0f, 0.0f, 0.0f};
-        float transform1[4] = {0.0f, 1.0f, 0.0f, 0.0f};
-    };
-    TextureInfo baseColorTexture;
-    TextureInfo metallicRoughnessTexture;
-    TextureInfo normalTexture;
-    TextureInfo occlusionTexture;
-    TextureInfo emissiveTexture;
-    TextureInfo transmissionTexture;
-    TextureInfo thicknessTexture;
-    TextureInfo diffuseTransmissionTexture;
-    TextureInfo diffuseTransmissionColorTexture;
-    float specular[4] = {1.0f, 1.0f, 1.0f, 1.0f}; // RGB color, scalar weight
-    TextureInfo specularTexture;
-    TextureInfo specularColorTexture;
-};
-static_assert(sizeof(ScenePathTraceGPUMaterial) == 720);
-static_assert(offsetof(ScenePathTraceGPUMaterial, specular) == 608);
+using ScenePathTraceGPUMaterial = LegacyMaterialPayload;
 
 struct ScenePathTraceGPUScene {
     std::vector<SceneShadingVertex> vertices;
@@ -405,7 +371,8 @@ Result<> uploadStorageBuffer(
     std::string& log,
     std::string_view label,
     std::vector<ScenePathTraceBufferUpload>* pendingUploads = nullptr,
-    SceneUploadStagingArena* stagingArena = nullptr)
+    SceneUploadStagingArena* stagingArena = nullptr,
+    MaterialBufferAllocator allocator = nullptr)
 {
     if (data == nullptr || byteSize == 0) {
         log = std::string(label) + " upload data is empty";
@@ -413,7 +380,7 @@ Result<> uploadStorageBuffer(
     }
 
     const bool deviceLocal = pendingUploads != nullptr;
-    Result<> result = device.createBuffer(BufferDesc{
+    const BufferDesc description{
             .size = byteSize,
             .structureStride = structureStride,
             .usage = deviceLocal
@@ -423,7 +390,9 @@ Result<> uploadStorageBuffer(
             .queueAccess = deviceLocal
                 ? QueueAccessBits::Graphics | QueueAccessBits::Compute | QueueAccessBits::Copy
                 : QueueAccessBits::Graphics,
-        }).transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
+        };
+    Result<> result = (allocator ? allocator(device, description) : device.createBuffer(description))
+        .transform([&](auto rhiValue) { outBuffer = std::move(rhiValue); });
     if (!result || outBuffer == nullptr) {
         log += resultMessage(std::string("createBuffer(") + std::string(label) + ")", result);
         log += '\n';
@@ -2730,6 +2699,8 @@ struct ScenePathTraceResources::Impl {
         primitiveBuffer.reset();
         instanceBuffer.reset();
         materialBuffer.reset();
+        materialBinding.reset();
+        pendingMaterialGeneration.reset();
         neuralTextures.clear();
         materialTextures.clear();
         materialTextureViews.clear();
@@ -2787,7 +2758,7 @@ struct ScenePathTraceResources::Impl {
             (materialOnly || (rtxBuilder.valid() && shadingVertexBuffer != nullptr &&
                 (device->capabilities().rayTracingPositionFetch || fallbackPositionBuffer != nullptr) &&
                 indexBuffer != nullptr && primitiveBuffer != nullptr && instanceBuffer != nullptr)) &&
-            materialBuffer != nullptr &&
+            materialBinding != nullptr && materialBinding->buffer() != nullptr &&
             !materialTextures.empty() &&
             !materialTextureViews.empty() && materialTextureViews[0] != nullptr;
     }
@@ -2845,6 +2816,8 @@ struct ScenePathTraceResources::Impl {
     std::unique_ptr<Buffer> primitiveBuffer;
     std::unique_ptr<Buffer> instanceBuffer;
     std::unique_ptr<Buffer> materialBuffer;
+    std::shared_ptr<MaterialBindingGeneration> materialBinding;
+    std::shared_ptr<const MaterialGeneration> pendingMaterialGeneration;
     NeuralTextureResources neuralTextures;
     SceneUploadStagingArena stagingArena;
     std::vector<ScenePathTraceBufferUpload> bufferUploads;
@@ -3105,9 +3078,17 @@ Result<> ScenePathTraceResources::prepare(
             return result;
         }
         stampTextureFormats(gpuScene.materials,impl_->materialTextures);
+        std::string materialLog;
+        impl_->pendingMaterialGeneration = MaterialGeneration::create(
+            gpuScene.materials, loadedScene.materialRevision(), materialLog);
+        if (!impl_->pendingMaterialGeneration) {
+            appendLogBlock(log, materialLog);
+            impl_->clear();
+            return makeError(Error::InvalidArgument);
+        }
         result = uploadStorageBuffer(
             device,
-            gpuScene.materials.data(),
+            impl_->pendingMaterialGeneration->parameters().data(),
             static_cast<uint64_t>(gpuScene.materials.size() * sizeof(ScenePathTraceGPUMaterial)),
             sizeof(ScenePathTraceGPUMaterial),
             impl_->materialBuffer,
@@ -3133,6 +3114,8 @@ Result<> ScenePathTraceResources::prepare(
     impl_->drawBounds = loadedScene.bounds();
     impl_->scenePath = path;
     impl_->stampSource(loadedScene);
+    impl_->materialBinding = std::make_shared<MaterialBindingGeneration>(
+        std::move(impl_->pendingMaterialGeneration), std::move(impl_->materialBuffer));
     impl_->prepared = true;
     ++impl_->revision;
     spdlog::info(
@@ -3370,14 +3353,23 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
                 destination = &impl_->instanceBuffer;
                 label = "ScenePathTracePass instances";
                 break;
-            case 4:
+            case 4: {
                 stampTextureFormats(impl_->asyncGpuScene.materials,impl_->materialTextures);
-                data = impl_->asyncGpuScene.materials.data();
+                std::string materialLog;
+                impl_->pendingMaterialGeneration = MaterialGeneration::create(
+                    impl_->asyncGpuScene.materials, impl_->asyncSourceMaterialRevision, materialLog);
+                if (!impl_->pendingMaterialGeneration) {
+                    appendLogBlock(log, materialLog);
+                    impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
+                    return makeError(Error::InvalidArgument);
+                }
+                data = impl_->pendingMaterialGeneration->parameters().data();
                 byteSize = impl_->asyncGpuScene.materials.size() * sizeof(ScenePathTraceGPUMaterial);
                 stride = sizeof(ScenePathTraceGPUMaterial);
                 destination = &impl_->materialBuffer;
                 label = "ScenePathTracePass materials";
                 break;
+            }
             case 5:
                 if (impl_->asyncGpuScene.positions.empty()) {
                     ++impl_->asyncBufferStep;
@@ -3492,6 +3484,8 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
             impl_->sourceGeometryTransformRevision = impl_->asyncSourceGeometryTransformRevision;
             impl_->sourceVisibilityRevision = impl_->asyncSourceVisibilityRevision;
             impl_->sourceMaterialRevision = impl_->asyncSourceMaterialRevision;
+            impl_->materialBinding = std::make_shared<MaterialBindingGeneration>(
+                std::move(impl_->pendingMaterialGeneration), std::move(impl_->materialBuffer));
             impl_->prepared = true;
             ++impl_->revision;
             impl_->asyncScene = nullptr;
@@ -3522,7 +3516,8 @@ bool ScenePathTraceResources::preparing() const
 
 Result<> ScenePathTraceResources::syncRuntimeScene(
     const scene::Scene* runtimeScene,
-    std::string& log)
+    std::string& log,
+    MaterialBufferAllocator materialAllocator)
 {
     log.clear();
     const scene::Scene* boundScene = runtimeSceneForPath(runtimeScene, impl_->scenePath);
@@ -3604,17 +3599,28 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
             impl_->neuralTextures.logicalTextureSetIndices(),
             log);
         stampTextureFormats(materials,impl_->materialTextures);
+        std::string materialLog;
+        auto candidate = MaterialGeneration::create(materials, boundScene->materialRevision(), materialLog);
+        if (!candidate) {
+            appendLogBlock(log, materialLog);
+            return makeError(Error::InvalidArgument);
+        }
+        // Build both halves before publication. An allocation or mapping failure
+        // must not replace the previous buffer while retaining its old revision.
+        std::unique_ptr<Buffer> candidateBuffer;
         const Result<> result = uploadStorageBuffer(
             *impl_->device,
-            materials.data(),
+            candidate->parameters().data(),
             static_cast<uint64_t>(materials.size() * sizeof(ScenePathTraceGPUMaterial)),
             sizeof(ScenePathTraceGPUMaterial),
-            impl_->materialBuffer,
+            candidateBuffer,
             log,
-            "ScenePathTracePass updated materials");
+            "ScenePathTracePass updated materials", nullptr, nullptr, materialAllocator);
         if (!result) {
             return result;
         }
+        impl_->materialBinding = std::make_shared<MaterialBindingGeneration>(
+            std::move(candidate), std::move(candidateBuffer));
         // Do not stamp geometry revisions here: a simultaneous transform edit
         // still needs the instance upload and TLAS refit below.
         impl_->sourceMaterialRevision = boundScene->materialRevision();
@@ -3701,6 +3707,9 @@ Result<> ScenePathTraceResources::beginTextureStreaming(
     CPUProfileRecorder* profiler,
     bool freezePublication)
 {
+    if (auto* frame = commands.frameContext(); frame && impl_->materialBinding) {
+        frame->retain(impl_->materialBinding);
+    }
     return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler, freezePublication);
 }
 
@@ -3767,9 +3776,19 @@ Buffer* ScenePathTraceResources::instanceBuffer() const
     return impl_->instanceBuffer.get();
 }
 
+std::shared_ptr<const MaterialGeneration> ScenePathTraceResources::materialGeneration() const
+{
+    return impl_->materialBinding ? impl_->materialBinding->generation() : nullptr;
+}
+
+std::shared_ptr<MaterialBindingGeneration> ScenePathTraceResources::materialBinding() const
+{
+    return impl_->materialBinding;
+}
+
 Buffer* ScenePathTraceResources::materialBuffer() const
 {
-    return impl_->materialBuffer.get();
+    return impl_->materialBinding ? impl_->materialBinding->buffer() : nullptr;
 }
 
 const std::vector<TextureView*>& ScenePathTraceResources::materialTextureViews() const

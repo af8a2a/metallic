@@ -16,6 +16,8 @@ Metallic 是一个以 C++23、Slang 和 Vulkan 为核心的实验性实时渲染
 
 当前抽象层虽然为设备和队列保留了通用接口，但实际图形后端是 Vulkan；编辑器和光追模块仍直接使用部分 Vulkan 类型与原生句柄。
 
+材质运行时的后续更新见 [M1 实现与验收记录](MaterialRuntimeM1.md)：内置模型注册、参数布局迁移、编译产物发布、失败回退与 GPU 生命周期。后续阶段见 [材质系统路线图](MaterialSystemRoadmap.md)。
+
 ## 2. 总体架构
 
 ```mermaid

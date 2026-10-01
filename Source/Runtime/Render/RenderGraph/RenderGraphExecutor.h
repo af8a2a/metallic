@@ -196,6 +196,11 @@ public:
     RenderSubsystemHost* subsystemHost();
     const RenderSubsystemHost* subsystemHost() const;
     const std::vector<uint32_t>& pixels() const;
+    // Exact bytes before preview conversion/quantization. Empty when readback
+    // is disabled; interpret using readbackFormat(), width() and height().
+    const std::vector<std::byte>& readbackBytes() const;
+    Format readbackFormat() const;
+    void setRawReadbackEnabled(bool enabled);
     uint32_t width() const;
     uint32_t height() const;
     const std::string& lastLog() const;

@@ -138,6 +138,8 @@ uint32_t previewReadbackTexelByteSize(Format format)
         return 4;
     case Format::RGBA16Sfloat:
         return 8;
+    case Format::RGBA32Sfloat:
+        return 16;
     default:
         return 0;
     }
@@ -193,6 +195,16 @@ bool convertPreviewReadback(
     if (texelByteSize > 0 && texelByteSize <= 4) {
         std::fill(destination.begin(), destination.end(), 0u);
         std::memcpy(destination.data(), source, pixelCount * texelByteSize);
+        return true;
+    }
+    if (format == Format::RGBA32Sfloat) {
+        const auto* sourceBytes = static_cast<const std::byte*>(source);
+        auto* destinationBytes = reinterpret_cast<uint8_t*>(destination.data());
+        for (size_t i = 0; i < pixelCount * 4; ++i) {
+            float value;
+            std::memcpy(&value, sourceBytes + i * sizeof(float), sizeof(float));
+            destinationBytes[i] = floatToUnorm8(value);
+        }
         return true;
     }
     if (format != Format::RGBA16Sfloat) {
@@ -3047,6 +3059,7 @@ Result<> RenderGraphExecutor::reloadShaders(std::string& log)
         .debugReadback = impl_->debugObserver != nullptr,
         .renderView = impl_->renderView(),
         .displayOutput = impl_->displayOutput,
+        .shaderReload = true,
     };
 
     result = impl_->refreshFrameSceneBindings(nullptr, log);
@@ -4413,6 +4426,9 @@ struct RenderGraphPreviewRenderer::Impl {
     RenderGraphExecutor executor;
     HistoryResourceManager historyResources;
     std::vector<uint32_t> pixels;
+    std::vector<std::byte> rawReadback;
+    Format rawFormat = Format::Unknown;
+    bool rawReadbackEnabled = false;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t readbackWidth = 0;
@@ -4659,6 +4675,8 @@ Result<> RenderGraphPreviewRenderer::render(
         if (result) { result = impl_->executor.waitForSubmittedWork(); }
         phase.next("preview.finish");
         impl_->pixels.clear();
+        impl_->rawReadback.clear();
+        impl_->rawFormat = Format::Unknown;
         impl_->width = outputWidth;
         impl_->height = outputHeight;
         return result;
@@ -4753,6 +4771,11 @@ Result<> RenderGraphPreviewRenderer::render(
         return makeError(Error::Failure);
     }
     const size_t pixelCount = static_cast<size_t>(outputWidth) * static_cast<size_t>(outputHeight);
+    const auto* bytes = static_cast<const std::byte*>(mapped);
+    if (impl_->rawReadbackEnabled) {
+        impl_->rawReadback.assign(bytes, bytes + pixelCount * outputTexelByteSize);
+        impl_->rawFormat = output->desc.format;
+    }
     if (!convertPreviewReadback(output->desc.format, mapped, pixelCount, impl_->pixels)) {
         impl_->readbackBuffer->unmap();
         impl_->lastLog =
@@ -4784,6 +4807,23 @@ std::shared_ptr<const RenderGraphExecutionSnapshot> RenderGraphPreviewRenderer::
 const std::vector<uint32_t>& RenderGraphPreviewRenderer::pixels() const
 {
     return impl_->pixels;
+}
+
+const std::vector<std::byte>& RenderGraphPreviewRenderer::readbackBytes() const
+{
+    return impl_->rawReadback;
+}
+
+Format RenderGraphPreviewRenderer::readbackFormat() const
+{
+    return impl_->rawFormat;
+}
+
+void RenderGraphPreviewRenderer::setRawReadbackEnabled(bool enabled)
+{
+    impl_->rawReadbackEnabled = enabled;
+    impl_->rawReadback.clear();
+    impl_->rawFormat = Format::Unknown;
 }
 
 uint32_t RenderGraphPreviewRenderer::width() const
