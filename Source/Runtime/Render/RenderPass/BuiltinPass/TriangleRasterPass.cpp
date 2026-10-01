@@ -13,6 +13,7 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "Rasterized triangle color")
+            .transient(RenderGraphInitialization::Clear)
             .format = Format::RGBA8Unorm;
         return reflection;
     }

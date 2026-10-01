@@ -14,7 +14,7 @@ reflection.addTextureOutput("color")
     .transient(RenderGraphInitialization::Clear);
 ```
 
-`Clear` 和 `FullOverwrite` 都是 pass 的承诺：每次执行、所有 texel、整个初始图级使用边界（包含内部 stages）都会初始化。不满足该条件的字段必须保持 `Persistent` 或 `Unknown`。当前已审计 `CopyColorPass.color` 和 `AutoExposurePass.color` 的 `FullOverwrite`。场景未就绪时可能跳过的 pass 不参与；`VisibilityBufferPass` 保持原分配。
+`Clear` 和 `FullOverwrite` 都是 pass 的承诺：每次成功调用 `execute()`、所有 texel、整个初始图级使用边界（包含内部 stages）都会初始化。不满足该条件的字段必须保持 `Persistent` 或 `Unknown`。场景未就绪时 executor 可能跳过整个 pass，因此 scene-dependent 或带有 prepared scene 的输出即使声明 transient，也继续排除实际别名。2026-10-01 的逐 pass 审查范围见下节。
 
 - `RenderGraphTextureAliasPlan` 根据活动图的语义依赖计算严格 happens-before。它合并输入别名的全部使用，要求前一成员的所有使用都先于后一成员；独立分支、同一 pass 同时使用的资源不共享。
 - graph-owned Device Texture2D 的 native requirements 决定槽位容量、对齐和共同 memory type。强制 dedicated allocation、depth、外部资源及其他不支持的类型保持原分配。每个槽位绑定 offset 0，没有 offset packing 或 buffer aliasing。
@@ -25,6 +25,62 @@ reflection.addTextureOutput("color")
 - `ResourceMemoryInfo` 保留独立 image 的 `allocationId`，新增共享 `backingAllocationId` 和 `backingSizeBytes`。viewer 的 backing 总量按 owner 去重，资源矩阵仍保留每张 image。
 
 相关实现位于 [alias planner](../Source/Runtime/Render/RenderGraph/RenderGraphTextureAliasPlan.cpp)、[executor](../Source/Runtime/Render/RenderGraph/RenderGraphExecutor.cpp) 和 [Vulkan backend](../Source/Runtime/Render/GAPI/Vulkan/VulkanRHI.cpp)。CPU 规划及 GPU 功能覆盖见 `tests/rhi/RenderGraphTextureAliasPlanTests.cpp`、`TextureAliasingTests.cpp`、`RenderGraphTextureAliasingTests.cpp`。
+
+### RenderPass transient 审查（2026-10-01）
+
+本次只修改已满足契约的 reflection，保留默认关闭、scene readiness、导出/presentation 固定、depth/native requirements 排除规则。`Clear` 声明不会自动编码 clear；依据是 pass 已有的全附件 clear。`FullOverwrite` 依据是完整范围的 shader 写入或 copy。private history、SDK 内部分配不属于图输出，也不因这些声明改变生命周期。
+
+| Pass | transient 输出 | 初始化依据与限制 |
+| --- | --- | --- |
+| ClearColor、TriangleRaster | color / Clear | 每次成功执行先清除整个颜色附件 |
+| BunnyWireframe | color、depth / Clear | 空几何路径也在附件 clear 之后返回；prepared scene 继续排除别名，depth 本身不参与首阶段复用 |
+| ImageSample | color / Clear | 全屏 draw 前已有附件 clear；prepared scene 继续排除别名 |
+| SliderDebug、RTXCRMaterialSample、LightGridDebug | color / FullOverwrite | 计算 shader 对每个范围内像素写出结果 |
+| FinalBlit | color / FullOverwrite | 有效输入和无输入的 UV fallback 都覆盖全屏；presentationOutput 继续固定分配 |
+| CopyColor、AutoExposure | color / FullOverwrite | 已有标记；完整 copy 或最终全屏 resolve，适应/history 独立 |
+| RenderGraphBufferWrite、RenderGraphBufferCopy | data / FullOverwrite | 固定长度 buffer 所有元素写入；仅声明生命周期，尚未实现 buffer aliasing |
+| VisibilityBuffer | color、visibility、depth / Clear | 第一次 resident raster 清除附件，包括空几何；同帧后续 Load 保留当帧内容，HZB 历史另存；场景规则继续排除别名 |
+| VisibilityBuffer | domain / Clear，仅 tessellation 开启 | 开启时参与第一次附件 clear；关闭时 dummy 未初始化，保留 Persistent/Unknown |
+| GPUDrivenStreamAsset | color / Clear（raster）或 FullOverwrite（RTAS） | raster 初始化附件，RTAS 完整 shader 写入且无效 TLAS 返回错误；场景规则继续排除别名 |
+| GPUDrivenStreamAsset | visibility、depth / Clear，仅 raster | RTAS 分支不写这两张图，保留 Persistent/Unknown |
+| VisibilityBufferMaterial、SceneMaterialVisualization | color / FullOverwrite | 当前像素全部写出背景或着色结果；场景规则继续排除别名 |
+| SceneMaterialShaderObject | color、depth / Clear | 绘制和空 batches 路径均在附件 clear 之后；场景规则继续排除别名 |
+| RayTracedShadow（含 ScreenSpaceShadow 兼容名） | shadow / FullOverwrite | 完整 copy 当前私有 SIGMA 输出，私有 history 独立；场景规则继续排除别名 |
+| RTXDIConfidence | diffuseConfidence、specularConfidence / FullOverwrite | resolve 全量写 graph 输出，current/previous history 使用不同 import |
+| RTXDIComposite | color / FullOverwrite | 全屏 composite，每个范围内像素写入 |
+| StreamlineDLSSSR、StreamlineDLSSRR | motionVectors、depth / FullOverwrite，仅 exportOutputGuides 开启 | active 和 Off bypass 成功路径均调用全屏 guide resolve；SDK color 输出保持原声明 |
+
+保留 Persistent/Unknown 的关键输出：
+
+- SceneRayQueryVisualization：无效 AS 时成功返回且不写颜色。
+- ScenePathTrace、SceneRealtimeLighting、VisibilityBufferDeferred：共用实现有 environment 无效时成功返回且不写输出的分支。累计 history 本身也继续独立持有。
+- SceneRTXDI：environment 无效时成功返回且不写其八个图输出；reservoir/history 不复用。
+- NRDDenoise：RELAX/REBLUR shaders 会跳过 sky/range 像素，Validation 还读取原输出，因此不能声明每次完整初始化。
+- Streamline/DLSSNR color：SDK 的 `eValidUntilEvaluate` 解决 tag 生命周期，但没有提供可从本项目源码证明的完整覆盖契约；enabled/Off/HDR 等状态切换也保留原分配。
+- SceneAccelerationStructure 和各 pass 的 AS、rasterInfo 等 metadata：对象发布或部分更新不构成全量 texture/buffer 初始化，首阶段不参与。
+
+端口是否为 transient 与某次编译是否真正进入别名槽位分别统计。仅增加声明不保证 VRAM 收益：输入消费重叠、导出固定、场景跳过或 native restrictions 都会保留独立 backing。新增回归检查条件分支的 reflection 契约，并以真实 TriangleRaster/ClearColor → 多级 CopyColor → GPU readback 图比较 alias 开关、跨帧 runtime color 修改和 resize。
+
+#### 审查后的实际验证与收益
+
+复用原 `build-scheduling-release` 的 Release/MSVC 配置构建 `MetallicRHITests`、`Metallic` 通过。新增纯 CPU 契约测试通过；真实 builtin 图在 64×48、97×65 各运行四帧，ClearColor 动态交替红/绿和 TriangleRaster 实际覆盖均通过逐像素开关对比。四张独立 VkImage 使用两个共享 backing：64×48 从 65,536 B 降至 32,768 B，97×65 从 229,376 B 降至 114,688 B，两种均节省 **50%**。七项隔离 alias GPU 测试全部实际执行、通过 synchronization validation，各 `validation.json` 的 `count=0`、`captureFailed=false`。
+
+MiniZorah 以相同缓存、Release 构建和 `--rhi-validation --rhi-realtime --rhi-async-compute` 配置重新分别关闭/开启别名，两次完整 180 帧、guide、viewport resize、streaming budget 和 session retirement 回归均通过。512×320 的 `180-frames-completed` 样本：
+
+| 指标 | 扩展标记前（开启） | 扩展标记后（开启） |
+| --- | ---: | ---: |
+| graph-owned texture / backing 数 | 14 / 14 | 14 / 14 |
+| 声明 transient 数 | 1 | **8** |
+| native-qualified 候选数 | 1 | **3** |
+| 实际别名纹理 / 共享槽位 | 0 / 0 | 0 / 0 |
+| 独立 / 实际 backing | 8,208,384 / 8,208,384 B | 8,208,384 / 8,208,384 B |
+| 节省 | 0 B | **0 B** |
+
+三个实际候选是 `DLSSSR.motionVectors`、`DLSSSR.depth`、`AutoExposure.color`；它们的消费者使 GPU 生命周期重叠，不能共享。Visibility/shadow 等新声明输出仍受 scene-ready 排除保护，FinalBlit 仍 presentation-pinned，因此没有把新增 transient 计数误报为显存节省。两次生产输出图像已检查，既有像素 oracle 通过；不声明不同进程的生产 PNG 逐像素一致。受控 builtin 图的 50% 只适用于该图，不代表 MiniZorah 或整个进程 VRAM。
+
+扩展回归共选中 38 项，其中 36 项通过、RTXDI/RELAX preview 因当前配置 `METALLIC_ENABLE_NRD=OFF` 跳过；Visibility 第二帧 HZB preview 返回 `InvalidArgument`。该失败在隔离进程、alias 开/关均复现，并在临时恢复修改前的 `VisibilityBufferPass.cpp`、重新构建后复现相同错误，因此未归因于本次 transient 标记；原始日志保留，本次未修改这个已有 HZB 行为。契约测试和最终构建通过。
+
+原始证据在本地 `build-scheduling-release/transient-audit/`：`sync/` 含七项验证与 builtin JSON，`contracts/` 含纯 CPU 契约结果，`minizorah-0/` 和 `minizorah-1/` 含原始统计、日志与 PNG；`Comparison.json` 汇总开关数据、验证计数和回归范围。已有 HZB 失败的源码基线验证日志是 `build-scheduling-release/TransientAuditVisibilityBaseline.log`。
 
 ### 实现验证（2026-10-01）
 
@@ -78,7 +134,7 @@ $env:METALLIC_TEST_ALIAS_HEIGHT = '1080'
 
 统计接入后的构建与 40 项相关回归通过；包含新统计测试的六项隔离 alias GPU 测试全部通过 synchronization validation。Memory viewer 截图已检查，统计和原生重叠范围一致。
 
-### 默认生产管线 MiniZorah 的实际收益
+### 扩展 transient 标记前的 MiniZorah 基线
 
 相同 Release 构建、现有 shader cache、`--rhi-validation --rhi-realtime --rhi-async-compute` 配置分别运行关闭和开启的完整 `minizorah_realtime_pipeline` 回归。两次均通过原有 180 帧、shaded pixel、motion/depth guide、viewport resize、streaming budget 和 session retirement 检查；原始输出没有 VUID 或运行错误。两次均采用相同的 OMM capability fallback（本机 validation layer 版本不足该可选路径要求），没有对该路径的验证作出声明。这里不比较启动或帧耗时。
 
@@ -96,7 +152,7 @@ $env:METALLIC_TEST_ALIAS_HEIGHT = '1080'
 | 节省 | 0 B | **0 B（0%）** |
 | FrameResources 总分配（含 buffer 等） | 68,775,360 B | 68,775,360 B |
 
-因此当前默认生产图节省 **0 MiB**。该图只有 `AutoExposure.color` 一个已审计候选，不能形成至少两个成员的别名槽位；`CopyColorPass` 虽已具备契约，但当前 pipeline asset 未使用。Visibility 和 scene-dependent 输出、history 及 SDK 私有资源继续保持原生命周期。增加实际收益需要逐一审计更多临时输出的完整初始化、跨帧使用与 GPU happens-before，不能仅将字段改成 transient。
+因此扩展标记前的默认生产图节省 **0 MiB**。该基线只有 `AutoExposure.color` 一个已审计候选，不能形成至少两个成员的别名槽位；`CopyColorPass` 虽已具备契约，但当前 pipeline asset 未使用。后续审查已增加本文件前述 transient 声明，场景跳过、history 及 SDK 私有资源的排除继续保留。实际收益还取决于完整初始化与 GPU happens-before，不能仅将字段改成 transient。
 
 本次稳态 graph texture backing 为 7.828125 MiB；整个 device-local VMA allocation 为 2,122,330,928 B，远大于该纹理子集。新统计准确覆盖第一阶段可优化的范围，场景 geometry/CLAS/RT 等分配以及 SDK、驱动驻留不能并入它的节省百分比。即时 compile 样本也可能包含上一代延迟释放的资源，因此 device telemetry 与当前编译图容量分别记录。
 

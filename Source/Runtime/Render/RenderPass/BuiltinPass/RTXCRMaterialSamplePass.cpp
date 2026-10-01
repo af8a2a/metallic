@@ -82,6 +82,7 @@ public:
                 "color",
                 "RTXCR Chiang hair, far-field hair, and Burley subsurface showcase")
             .storageWrite()
+            .transient(RenderGraphInitialization::FullOverwrite)
             .format = Format::RGBA8Unorm;
         return reflection;
     }

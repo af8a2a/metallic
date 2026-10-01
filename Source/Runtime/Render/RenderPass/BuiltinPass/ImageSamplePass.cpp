@@ -17,6 +17,7 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "Fullscreen sampled image")
+            .transient(RenderGraphInitialization::Clear)
             .format = Format::RGBA8Unorm;
         return reflection;
     }

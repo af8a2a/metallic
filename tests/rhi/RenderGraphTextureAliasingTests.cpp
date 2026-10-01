@@ -766,10 +766,147 @@ public:
     }
 };
 
+class RenderGraphBuiltinTextureAliasingTest final : public RHITest {
+public:
+    RenderGraphBuiltinTextureAliasingTest()
+    {
+        type = RHITestType::Rendering;
+        name = "render_graph_texture_aliasing_builtin_clear_raster_copy";
+    }
+
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::Metadata{.suite = "sync", .profile = "async", .layer = bench::Layer::RenderGraph,
+            .requirements = {.validation = bench::Validation::Synchronization},
+            .coverage = {"graph.textureAliasing.builtinClear", "graph.textureAliasing.builtinRaster",
+                "graph.textureAliasing.builtinCopy", "graph.textureAliasing.runtimePropertiesAndResize"},
+            .artifacts = {"builtin-aliasing.json"}};
+    }
+
+    RHITestResult run(RHITestContext& context) override
+    {
+        registerTextureAliasPasses();
+        constexpr std::array<std::pair<uint32_t, uint32_t>, 2> extents{{{64, 48}, {97, 65}}};
+        const RenderGraphCompileOptions options{.enableTextureAliasing = true};
+        const RenderGraphSubmitDesc submit{.graphicsQueue = &context.graphicsQueue,
+            .computeQueue = context.device.getQueue(QueueType::Compute),
+            .copyQueue = context.device.getQueue(QueueType::Copy)};
+        auto cases = bench::Json::array();
+        for (const auto sourceType : {"ClearColorPass", "TriangleRasterPass"}) {
+            RenderGraph graph;
+            graph.addNode(sourceType, "Source");
+            graph.addNode("CopyColorPass", "Copy1");
+            graph.addNode("CopyColorPass", "Copy2");
+            graph.addNode("CopyColorPass", "Copy3");
+            graph.addNode(std::string(kAliasReadType), "Read", {{"queue", "copy"}});
+            graph.addEdge("Source.color", "Copy1.source");
+            graph.addEdge("Copy1.color", "Copy2.source");
+            graph.addEdge("Copy2.color", "Copy3.source");
+            graph.addEdge("Copy3.color", "Read.color");
+            graph.markOutput("Read.data");
+            RenderGraphExecutor baseline;
+            RenderGraphExecutor aliased;
+            aliased.setExecutionCaptureEnabled(true);
+            std::string log;
+            for (const auto [width, height] : extents) {
+                graph.setNodeProperties(graph.findNode("Read")->id,
+                    {{"width", width}, {"height", height}, {"queue", "copy"}});
+                if (!baseline.compile(context.device, graph, width, height, log) ||
+                    !aliased.compile(context.device, graph, width, height, options, log)) {
+                    return RHITestResult::fail(std::string(sourceType) + " chain compilation failed: " + log);
+                }
+                for (const auto& [executor, aliases] : {std::pair{&baseline, false}, std::pair{&aliased, true}}) {
+                    const auto& memory = executor->textureMemoryStats();
+                    if (!memory.complete || memory.unknownTextureCount || memory.textureCount != 4 ||
+                        memory.transientTextureCount != 4 || memory.pinnedTextureCount ||
+                        memory.backingAllocationCount != (aliases ? 2u : 4u) ||
+                        memory.eligibleTextureCount != (aliases ? 4u : 0u) ||
+                        memory.aliasedTextureCount != (aliases ? 4u : 0u) ||
+                        memory.aliasSlotCount != (aliases ? 2u : 0u) || memory.overheadBytes ||
+                        (aliases ? !memory.savedBytes : memory.savedBytes != 0)) {
+                        return RHITestResult::fail(std::string(sourceType) + " chain has incorrect transient/backing/savings counts");
+                    }
+                    std::vector<uint64_t> backings;
+                    std::vector<VkImage> images;
+                    for (const auto output : {"Source.color", "Copy1.color", "Copy2.color", "Copy3.color"}) {
+                        const auto* resource = executor->outputResource(output);
+                        if (!resource || !resource->texture || resource->desc.width != width || resource->desc.height != height) {
+                            return RHITestResult::fail("Builtin alias recompile retained a missing or stale texture extent");
+                        }
+                        const auto allocation = resource->texture->memoryInfo();
+                        const auto image = vulkan::nativeTexture(*resource->texture).image;
+                        if (!allocation.known || !allocation.backingAllocationId ||
+                            std::find(images.begin(), images.end(), image) != images.end()) {
+                            return RHITestResult::fail("Builtin alias chain lost distinct VkImages or native backing metadata");
+                        }
+                        images.push_back(image);
+                        if (std::find(backings.begin(), backings.end(), allocation.backingAllocationId) == backings.end()) {
+                            backings.push_back(allocation.backingAllocationId);
+                        }
+                    }
+                    if (backings.size() != (aliases ? 2u : 4u)) {
+                        return RHITestResult::fail("Builtin alias statistics do not match the actual native backing identities");
+                    }
+                }
+                if (baseline.textureMemoryStats().logicalBytes != aliased.textureMemoryStats().logicalBytes ||
+                    baseline.textureMemoryStats().backingBytes - aliased.textureMemoryStats().backingBytes !=
+                        aliased.textureMemoryStats().savedBytes) {
+                    return RHITestResult::fail("Builtin alias savings do not match the same graph's independent allocation capacity");
+                }
+                const auto compiledMemory = textureMemoryEvidence(aliased.textureMemoryStats());
+                for (uint32_t frame = 0; frame < 4; ++frame) {
+                    const bool red = (frame % 2) == 0;
+                    if (std::string_view(sourceType) == "ClearColorPass") {
+                        graph.findNode("Source")->runtimeProperties = {{"color", red
+                            ? RenderGraphProperties::array({1.0f, 0.0f, 0.0f, 1.0f})
+                            : RenderGraphProperties::array({0.0f, 1.0f, 0.0f, 1.0f})}};
+                        baseline.syncRuntimeProperties(graph);
+                        aliased.syncRuntimeProperties(graph);
+                    }
+                    for (auto* executor : {&baseline, &aliased}) {
+                        if (!executor->execute(submit) || !executor->waitForSubmittedWork(5'000'000'000ull)) {
+                            (void)context.device.waitIdle();
+                            return RHITestResult::fail(std::string(sourceType) + " builtin alias frame did not complete");
+                        }
+                    }
+                    std::vector<uint8_t> expected, actual;
+                    if (!readGraphAliasPixels(baseline, "Read.data", expected) ||
+                        !readGraphAliasPixels(aliased, "Read.data", actual) || expected != actual ||
+                        actual.size() != size_t(width) * height * 4 ||
+                        (std::string_view(sourceType) == "ClearColorPass" && !graphAliasPixelsMatch(actual, red))) {
+                        return RHITestResult::fail(std::string(sourceType) + " alias-on/off pixels differ or a runtime clear is stale");
+                    }
+                    if (std::string_view(sourceType) == "TriangleRasterPass") {
+                        bool rasterized = false;
+                        for (size_t pixel = 4; pixel < actual.size(); pixel += 4) {
+                            if (std::memcmp(actual.data(), actual.data() + pixel, 3) != 0) {
+                                rasterized = true;
+                                break;
+                            }
+                        }
+                        if (!rasterized) { return RHITestResult::fail("Triangle alias regression has no rasterized color coverage"); }
+                    }
+                    const auto snapshot = aliased.executionSnapshot();
+                    if (!snapshot || !snapshot->success || textureMemoryEvidence(snapshot->textureMemory) != compiledMemory ||
+                        textureMemoryEvidence(aliased.executionStats().textureMemory) != compiledMemory) {
+                        return RHITestResult::fail("Builtin alias capture or execution lost its compiled memory statistics");
+                    }
+                }
+                cases.push_back({{"source", sourceType}, {"width", width}, {"height", height}, {"frames", 4},
+                    {"allPixelsMatch", true}, {"aliasOff", textureMemoryEvidence(baseline.textureMemoryStats())},
+                    {"aliasOn", compiledMemory}});
+            }
+        }
+        saveAliasMemoryEvidence(context, "builtin-aliasing.json", {{"cases", std::move(cases)}});
+        return RHITestResult::pass("Real clear and triangle raster outputs survive three copy passes in two shared slots; all alias-off/on pixels match over four frames at each extent, including runtime clear changes and resize");
+    }
+};
+
 METALLIC_REGISTER_RHI_TEST(RenderGraphTextureAliasingReadbackTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphTextureAliasingExternalGuardTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphTextureAliasingEligibilityTest);
 METALLIC_REGISTER_RHI_TEST(RenderGraphTextureAliasingMemoryStatisticsTest);
+METALLIC_REGISTER_RHI_TEST(RenderGraphBuiltinTextureAliasingTest);
 
 } // namespace
 } // namespace metallic::tests

@@ -44,7 +44,7 @@ public:
             .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
         info.memoryLocation = MemoryLocation::HostUpload;
         reflection.addTextureOutput("shadow", "SIGMA-encoded visibility for deferred direct lighting")
-            .transferWrite().format = Format::R8Unorm;
+            .transferWrite().transient(RenderGraphInitialization::FullOverwrite).format = Format::R8Unorm;
         reflection.addBufferOutput("parameters", "Selected light and shadow settings")
             .buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).transferWrite();
         return reflection;

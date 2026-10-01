@@ -147,8 +147,9 @@ struct RenderGraphField {
     // Presentation outputs are execution roots without a manual markOutput().
     bool presentationOutput = false;
     RenderGraphResourceLifetime lifetime = RenderGraphResourceLifetime::Persistent;
-    // Clear/FullOverwrite is a pass contract covering its entire initial image
-    // use, including internal stages. A write access alone does not establish it.
+    // Clear/FullOverwrite covers every successful pass invocation's entire
+    // initial image use, including internal stages. A write alone is insufficient;
+    // the executor separately excludes passes it can skip for scene readiness.
     RenderGraphInitialization initialization = RenderGraphInitialization::Unknown;
     DisplayColorEncoding colorEncoding = DisplayColorEncoding::sRGB;
     // Disable for inputs that can be resampled to a different output extent.

@@ -23,6 +23,8 @@ public:
             .format = Format::RGBA16Sfloat;
         reflection.addTextureOutput("color", "Composited RELAX-denoised RTXDI color")
             .storageWrite()
+            // The full-resolution dispatch writes every in-bounds output texel.
+            .transient(RenderGraphInitialization::FullOverwrite)
             .format = properties().value("outputLinear", false) ? Format::RGBA32Sfloat : Format::RGBA8Unorm;
         return reflection;
     }

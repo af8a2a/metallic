@@ -16,6 +16,7 @@ public:
         reflection.addBufferOutput("data", "Known test byte pattern")
             .buffer(kRenderGraphBufferByteSize)
             .storageWrite()
+            .transient(RenderGraphInitialization::FullOverwrite)
             .bindlessBuffer();
         return reflection;
     }
@@ -95,6 +96,7 @@ public:
         reflection.addBufferOutput("data", "Copied byte buffer")
             .buffer(kRenderGraphBufferByteSize)
             .storageWrite()
+            .transient(RenderGraphInitialization::FullOverwrite)
             .bindlessBuffer();
         return reflection;
     }

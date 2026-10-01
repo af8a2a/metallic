@@ -12,9 +12,10 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "Stanford Bunny barycentric wireframe")
+            .transient(RenderGraphInitialization::Clear)
             .format = Format::RGBA8Unorm;
         reflection.addTextureOutput("depth", "Stanford Bunny depth")
-            .depthStencilWrite();
+            .depthStencilWrite().transient(RenderGraphInitialization::Clear);
         return reflection;
     }
 

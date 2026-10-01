@@ -14,6 +14,7 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "Cleared color target")
+            .transient(RenderGraphInitialization::Clear)
             .format = Format::RGBA8Unorm;
         return reflection;
     }

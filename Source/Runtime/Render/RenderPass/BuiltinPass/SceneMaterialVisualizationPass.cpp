@@ -34,6 +34,7 @@ public:
             .accelerationStructureRead().setOptional();
         reflection.addTextureOutput("color", "glTF material diagnostic visualization")
             .storageWrite()
+            .transient(RenderGraphInitialization::FullOverwrite)
             .format = Format::RGBA8Unorm;
         return reflection;
     }

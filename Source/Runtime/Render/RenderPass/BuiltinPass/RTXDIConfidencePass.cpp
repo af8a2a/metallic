@@ -46,9 +46,12 @@ public:
             .format = Format::RGBA16Sfloat;
         reflection.addTextureOutput("diffuseConfidence", "NRD diffuse history confidence")
             .storageWrite()
+            // Resolve writes every texel; temporal data lives in separate imports.
+            .transient(RenderGraphInitialization::FullOverwrite)
             .format = Format::R8Unorm;
         reflection.addTextureOutput("specularConfidence", "NRD specular history confidence")
             .storageWrite()
+            .transient(RenderGraphInitialization::FullOverwrite)
             .format = Format::R8Unorm;
         return reflection;
     }

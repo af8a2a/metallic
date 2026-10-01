@@ -12,9 +12,10 @@ public:
     {
         RenderPassReflection reflection;
         reflection.addTextureOutput("color", "glTF material color via VK_EXT_shader_object")
+            .transient(RenderGraphInitialization::Clear)
             .format = Format::RGBA8Unorm;
         reflection.addTextureOutput("depth", "glTF material depth")
-            .depthStencilWrite();
+            .depthStencilWrite().transient(RenderGraphInitialization::Clear);
         return reflection;
     }
 

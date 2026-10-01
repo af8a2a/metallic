@@ -115,10 +115,14 @@ public:
                 .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
         }
         if (boolProperty(&properties(), "exportOutputGuides", false)) {
+            // Our resolve shader writes both complete display-resolution guides,
+            // including the successful mode-Off copy path. SDK history is separate.
             reflection.addTextureOutput("motionVectors", "Display-resolution UV motion for NR")
-                .texture2D(context.width, context.height).storageReadWrite().format = Format::RG16Sfloat;
+                .texture2D(context.width, context.height).storageReadWrite()
+                .transient(RenderGraphInitialization::FullOverwrite).format = Format::RG16Sfloat;
             reflection.addTextureOutput("depth", "Display-resolution standard depth for NR")
-                .texture2D(context.width, context.height).storageReadWrite().format = Format::R32Sfloat;
+                .texture2D(context.width, context.height).storageReadWrite()
+                .transient(RenderGraphInitialization::FullOverwrite).format = Format::R32Sfloat;
         }
         return reflection;
     }

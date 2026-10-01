@@ -302,11 +302,13 @@ public:
         RenderGraphField& color = reflection.addTextureOutput(
             "color",
             "Meshlet streamasset deferred color");
-        if (boolProperty(properties(), "rtasVisualization", false)) {
+        const bool rtasVisualization = boolProperty(properties(), "rtasVisualization", false);
+        if (rtasVisualization) {
             color.texture2D().storageReadWrite().format = Format::RGBA8Unorm;
             color.stageAccess(RenderGraphResourceAccess::TextureStorageWrite);
+            color.transient(RenderGraphInitialization::FullOverwrite);
         } else {
-            color.texture2D().colorWrite();
+            color.texture2D().colorWrite().transient(RenderGraphInitialization::Clear);
         }
         RenderGraphField& visibility = reflection.addTextureOutput(
             "visibility",
@@ -314,11 +316,13 @@ public:
         visibility.colorWrite();
         visibility.format = Format::R32Uint;
         visibility.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
+        if (!rtasVisualization) { visibility.transient(RenderGraphInitialization::Clear); }
         RenderGraphField& depth = reflection.addTextureOutput(
             "depth",
             "Meshlet streamasset visibility depth and HZB source");
         depth.texture2D().depthStencilWrite();
         depth.stageAccess(RenderGraphResourceAccess::TextureSampleRead);
+        if (!rtasVisualization) { depth.transient(RenderGraphInitialization::Clear); }
         return reflection;
     }
 

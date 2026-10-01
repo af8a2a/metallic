@@ -233,24 +233,30 @@ public:
     RenderPassReflection reflect(const RenderGraphCompileContext&) const override
     {
         RenderPassReflection reflection;
+        // Initialization applies to successful invocations. The executor keeps
+        // scene-dependent outputs out of aliases because streaming can skip them.
         reflection.addAccelerationStructureOutput("accelerationStructure", "Stream TLAS for ray-query consumers")
             .buildWrite().setOptional();
         reflection.addTextureOutput("color", "Optional visibility-buffer diagnostic display (no material shading)")
+            .transient(RenderGraphInitialization::Clear)
             .format = Format::RGBA8Unorm;
         RenderGraphField& visibility = reflection.addTextureOutput(
             "visibility",
             "Hybrid hardware / software visibility buffer");
-        visibility.colorWrite();
+        visibility.colorWrite().transient(RenderGraphInitialization::Clear);
         visibility.format = Format::R32Uint;
         visibility.stageAccess(RenderGraphResourceAccess::TextureSampleRead, RenderGraphPassKind::Raster);
         RenderGraphField& depth = reflection.addTextureOutput(
             "depth",
             "Visibility pass depth and HZB source");
-        depth.depthStencilWrite();
+        depth.depthStencilWrite().transient(RenderGraphInitialization::Clear);
         depth.stageAccess(RenderGraphResourceAccess::TextureSampleRead)
             .stageAccess(RenderGraphResourceAccess::TextureSampleRead, RenderGraphPassKind::Raster);
         auto& domain = reflection.addTextureOutput("domain", "Displaced domain barycentrics and geometric normal");
         domain.colorWrite();
+        // Active attachments are cleared by the first raster, including empty
+        // resident geometry. The inactive dummy domain is never initialized.
+        if (tessellationEnabled()) { domain.transient(RenderGraphInitialization::Clear); }
         // Inactive consumers are gated by rasterInfo; keep the graph port cheap
         // without changing the viewport extent shared by this pass's outputs.
         domain.format = tessellationEnabled() ? Format::RGBA32Sfloat : Format::R8Unorm;
