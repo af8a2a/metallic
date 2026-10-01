@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Material/LegacyMaterialPayload.h"
+#include "Runtime/Render/Material/MaterialValueProgram.h"
 #include "Runtime/Render/GAPI/RHI.h"
 
 #include <memory>
@@ -120,13 +121,19 @@ private:
 class MaterialBindingGeneration final
 {
 public:
-    MaterialBindingGeneration(std::shared_ptr<const MaterialGeneration> generation, std::unique_ptr<Buffer> buffer)
-        : generation_(std::move(generation)), buffer_(std::move(buffer)) {}
+    MaterialBindingGeneration(std::shared_ptr<const MaterialGeneration> generation, std::unique_ptr<Buffer> buffer,
+        std::shared_ptr<const MaterialValueProgramSet> values = {}, std::unique_ptr<Buffer> valueBuffer = {})
+        : generation_(std::move(generation)), buffer_(std::move(buffer)),
+          values_(std::move(values)), valueBuffer_(std::move(valueBuffer)) {}
     const std::shared_ptr<const MaterialGeneration>& generation() const { return generation_; }
     Buffer* buffer() const { return buffer_.get(); }
+    const std::shared_ptr<const MaterialValueProgramSet>& values() const { return values_; }
+    Buffer* valueBuffer() const { return valueBuffer_.get(); }
 private:
     std::shared_ptr<const MaterialGeneration> generation_;
     std::unique_ptr<Buffer> buffer_;
+    std::shared_ptr<const MaterialValueProgramSet> values_;
+    std::unique_ptr<Buffer> valueBuffer_;
 };
 
 } // namespace metallic::render

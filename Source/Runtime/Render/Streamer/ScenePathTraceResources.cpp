@@ -443,6 +443,17 @@ Result<> uploadStorageBuffer(
     return {};
 }
 
+Result<> buildMaterialValues(Device& device, const scene::Scene& scene,
+    std::shared_ptr<const MaterialValueProgramSet>& values, std::unique_ptr<Buffer>& buffer,
+    std::string& log, MaterialBufferAllocator allocator = nullptr)
+{
+    values = MaterialValueProgramSet::create(scene.materials(), log);
+    if (!values) { return makeError(Error::InvalidArgument); }
+    if (values->programCount() == 0) { return {}; }
+    return uploadStorageBuffer(device, values->instances().data(), values->instances().size_bytes(),
+        sizeof(MaterialValueInstance), buffer, log, "Material Value instances", nullptr, nullptr, allocator);
+}
+
 uint32_t mipCountForDimensions(uint32_t width, uint32_t height)
 {
     uint32_t mipCount = 1;
@@ -2701,6 +2712,8 @@ struct ScenePathTraceResources::Impl {
         materialBuffer.reset();
         materialBinding.reset();
         pendingMaterialGeneration.reset();
+        pendingMaterialValues.reset();
+        pendingValueBuffer.reset();
         neuralTextures.clear();
         materialTextures.clear();
         materialTextureViews.clear();
@@ -2818,6 +2831,8 @@ struct ScenePathTraceResources::Impl {
     std::unique_ptr<Buffer> materialBuffer;
     std::shared_ptr<MaterialBindingGeneration> materialBinding;
     std::shared_ptr<const MaterialGeneration> pendingMaterialGeneration;
+    std::shared_ptr<const MaterialValueProgramSet> pendingMaterialValues;
+    std::unique_ptr<Buffer> pendingValueBuffer;
     NeuralTextureResources neuralTextures;
     SceneUploadStagingArena stagingArena;
     std::vector<ScenePathTraceBufferUpload> bufferUploads;
@@ -2964,6 +2979,8 @@ Result<> ScenePathTraceResources::prepare(
 
     std::vector<uint32_t> textureIndexMap;
     Result<> result;
+    result = buildMaterialValues(device, loadedScene, impl_->pendingMaterialValues, impl_->pendingValueBuffer, log);
+    if (!result) { impl_->clear(); return result; }
     {
         SceneResourceLogScope scope("build material textures");
         result = impl_->buildMaterialTextures(device, loadedScene, textureIndexMap, log);
@@ -3115,7 +3132,8 @@ Result<> ScenePathTraceResources::prepare(
     impl_->scenePath = path;
     impl_->stampSource(loadedScene);
     impl_->materialBinding = std::make_shared<MaterialBindingGeneration>(
-        std::move(impl_->pendingMaterialGeneration), std::move(impl_->materialBuffer));
+        std::move(impl_->pendingMaterialGeneration), std::move(impl_->materialBuffer),
+        std::move(impl_->pendingMaterialValues), std::move(impl_->pendingValueBuffer));
     impl_->prepared = true;
     ++impl_->revision;
     spdlog::info(
@@ -3174,7 +3192,9 @@ Result<> ScenePathTraceResources::beginPrepareAsync(
     impl_->asyncSourceVisibilityRevision = boundScene->visibilityRevision();
     impl_->asyncSourceMaterialRevision = boundScene->materialRevision();
     impl_->sourceMaterialResourceLayout = materialResourceLayout(*boundScene);
-    Result<> result = impl_->beginMaterialTextureBuild(device, *boundScene, log);
+    Result<> result = buildMaterialValues(device, *boundScene, impl_->pendingMaterialValues, impl_->pendingValueBuffer, log);
+    if (!result) { impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed; return result; }
+    result = impl_->beginMaterialTextureBuild(device, *boundScene, log);
     if (!result) {
         impl_->asyncPrepareStage = Impl::AsyncPrepareStage::Failed;
         return result;
@@ -3485,7 +3505,8 @@ Result<bool> ScenePathTraceResources::pumpPrepareAsync(
             impl_->sourceVisibilityRevision = impl_->asyncSourceVisibilityRevision;
             impl_->sourceMaterialRevision = impl_->asyncSourceMaterialRevision;
             impl_->materialBinding = std::make_shared<MaterialBindingGeneration>(
-                std::move(impl_->pendingMaterialGeneration), std::move(impl_->materialBuffer));
+                std::move(impl_->pendingMaterialGeneration), std::move(impl_->materialBuffer),
+                std::move(impl_->pendingMaterialValues), std::move(impl_->pendingValueBuffer));
             impl_->prepared = true;
             ++impl_->revision;
             impl_->asyncScene = nullptr;
@@ -3593,6 +3614,11 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
         return {};
     }
     if (impl_->sourceMaterialRevision != boundScene->materialRevision()) {
+        std::shared_ptr<const MaterialValueProgramSet> candidateValues;
+        std::unique_ptr<Buffer> candidateValueBuffer;
+        auto valueResult = buildMaterialValues(*impl_->device, *boundScene, candidateValues,
+            candidateValueBuffer, log, materialAllocator);
+        if (!valueResult) { return valueResult; }
         std::vector<ScenePathTraceGPUMaterial> materials = buildGpuMaterials(
             *boundScene,
             impl_->textureIndexMap,
@@ -3620,7 +3646,7 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
             return result;
         }
         impl_->materialBinding = std::make_shared<MaterialBindingGeneration>(
-            std::move(candidate), std::move(candidateBuffer));
+            std::move(candidate), std::move(candidateBuffer), std::move(candidateValues), std::move(candidateValueBuffer));
         // Do not stamp geometry revisions here: a simultaneous transform edit
         // still needs the instance upload and TLAS refit below.
         impl_->sourceMaterialRevision = boundScene->materialRevision();

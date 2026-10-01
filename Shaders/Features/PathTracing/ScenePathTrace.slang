@@ -4,6 +4,9 @@ import Core;
 using Metallic;
 import Material;
 using Metallic.Material;
+#if METALLIC_CUSTOM_MATERIALS
+#include "MaterialValueDispatch.hlsli"
+#endif
 import Lighting;
 using Metallic.Lighting;
 

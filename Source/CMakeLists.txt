@@ -126,6 +126,7 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/RenderPass/BuiltinPass/TriangleRasterPass.cpp
     Runtime/Render/Streamer/ScenePathTraceResources.cpp
     Runtime/Render/Material/MaterialRuntime.cpp
+    Runtime/Render/Material/MaterialValueProgram.cpp
     Runtime/Render/Material/MaterialExecutable.cpp
     Runtime/Render/Streamer/Ktx2Texture.cpp
     Runtime/Render/Profiling/NsightAftermath.cpp

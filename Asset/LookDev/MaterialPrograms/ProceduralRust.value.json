@@ -1,0 +1,24 @@
+{
+    "version": 1,
+    "baseColor": {
+        "op": "mix",
+        "args": [
+            {"op": "parameter", "index": 0},
+            {"op": "parameter", "index": 1},
+            {"op": "saturate", "args": [
+                {"op": "mul", "args": [
+                    {"op": "sin", "args": [
+                        {"op": "dot", "args": [
+                            {"op": "position"}, {"op": "parameter", "index": 2}
+                        ]}
+                    ]},
+                    {"op": "sin", "args": [
+                        {"op": "dot", "args": [{"op": "position"}, [23, 11, 31, 0]]}
+                    ]}
+                ]}
+            ]}
+        ]
+    },
+    "roughness": {"op": "parameter", "index": 3},
+    "metallic": 0.65
+}

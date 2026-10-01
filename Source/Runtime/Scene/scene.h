@@ -217,6 +217,9 @@ struct RenderNode {
 };
 
 struct RenderMaterial {
+    // M2 controlled JSON source; empty means the existing model inputs.
+    std::string valueProgram;
+    std::array<float, 16> valueParameters{};
     std::string name;
     float4 baseColorFactor{1.0f, 1.0f, 1.0f, 1.0f};
     float metallicFactor = 1.0f;

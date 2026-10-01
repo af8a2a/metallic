@@ -241,6 +241,10 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
         {"unlit", properties.unlit},
     };
     for (const auto& [name, member] : kMaterialScalarFields) { value[name] = properties.*member; }
+    if (!properties.valueProgram.empty()) {
+        value["valueProgram"] = properties.valueProgram;
+        value["valueParameters"] = properties.valueParameters;
+    }
     for (const auto& [name, member] : kMaterialColorFields) {
         const float3& color = properties.*member;
         value[name] = {color.x, color.y, color.z};
@@ -251,6 +255,18 @@ nlohmann::json serializeMaterialProperties(const RenderMaterial& properties)
 bool parseMaterialProperties(const nlohmann::json& value, RenderMaterial& properties, std::string& reason)
 {
     if (!value.is_object()) { reason = "properties must be an object"; return false; }
+    if (value.contains("valueProgram")) {
+        if (!value["valueProgram"].is_string()) { reason = "valueProgram must be a JSON source string"; return false; }
+        properties.valueProgram = value["valueProgram"].get<std::string>();
+    }
+    if (value.contains("valueParameters")) {
+        const auto& parameters = value["valueParameters"];
+        if (!parameters.is_array() || parameters.size() != 16 ||
+            !std::all_of(parameters.begin(), parameters.end(), [](const auto& v) { return v.is_number(); })) {
+            reason = "valueParameters must contain sixteen numbers"; return false;
+        }
+        properties.valueParameters = parameters.get<std::array<float, 16>>();
+    }
     for (const auto& [name, member] : kMaterialScalarFields) {
         double number = properties.*member;
         if (!readOptionalFiniteNumber(value, name, number, reason)) { return false; }

@@ -1,0 +1,14 @@
+{
+    "version": 1,
+    "baseColor": {
+        "op": "mix",
+        "args": [
+            {"op": "parameter", "index": 0},
+            {"op": "parameter", "index": 1},
+            {"op": "fract", "args": [
+                {"op": "dot", "args": [{"op": "position"}, {"op": "parameter", "index": 2}]}
+            ]}
+        ]
+    },
+    "roughness": {"op": "parameter", "index": 3}
+}

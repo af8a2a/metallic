@@ -873,6 +873,13 @@ public:
         }
         sceneResources_ = *context.preparedScene->snapshot->pathTraceResources;
         if (!validateMaterialTarget(log)) { return makeError(Error::Unsupported); }
+        const auto valuePrograms = sceneResources_.materialBinding()->values();
+        std::filesystem::path valueDirectory;
+        if (hasValuePrograms() && !valuePrograms->writeInclude(
+                PROJECT_SOURCE_DIR "/.cache/materials", valueDirectory, log)) {
+            return makeError(Error::Failure);
+        }
+        const std::string valueSearchPath = valueDirectory.string();
         Result<> result;
         const uint64_t resourceRevision = sceneResources_.revision();
         if (resourceRevision != sceneResourceRevision_) {
@@ -890,7 +897,7 @@ public:
         const char* entryPointName = nullptr;
         if (visibilityDeferred_) {
             moduleName = "Features/VisibilityBuffer/VisibilityBufferDeferred";
-            entryPointName = boolProperty(properties(), "materialBinning", true)
+            entryPointName = materialBinningEnabled(properties())
                 ? "visibilityBufferDeferredBinnedMain" : "visibilityBufferDeferredMain";
         } else if (realtime_) {
             moduleName = "Features/Lighting/SceneRealtimeLighting";
@@ -939,6 +946,7 @@ public:
         const bool globalView = visibilityDeferred_ && context.renderView != nullptr &&
             properties().value("sceneBinding", "world") != "asset" && properties().value("viewBinding", "global") != "local";
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
+            "|valuePrograms=" + std::to_string(hasValuePrograms() ? valuePrograms->key() : 0) +
             "|streamMaterials=" + (streamMaterials_ ? "1" : "0") +
             "|streamRayQueries=" + (streamRayQueries_ ? "1" : "0") +
             "|supplementaryPathTracing=" + (supplementaryPathTracing ? "1" : "0") +
@@ -966,7 +974,7 @@ public:
             sharcResourcesRevision_ = 0;
         }
 
-        const bool classified = visibilityDeferred_ && boolProperty(properties(), "materialBinning", true);
+        const bool classified = visibilityDeferred_ && materialBinningEnabled(properties());
         if (classified && (!context.device->capabilities().computeSubgroupBallotArithmetic ||
             context.device->capabilities().subgroupSize != 32)) {
             log += "Deferred material classification requires native wave32; disable materialBinning on this device\n";
@@ -1097,7 +1105,7 @@ public:
             for (uint32_t binding = 83; binding <= 87; ++binding) {
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
-            if (boolProperty(properties(), "materialBinning", true)) {
+            if (materialBinningEnabled(properties())) {
                 baseBindings.push_back({.binding = 70, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
                 baseBindings.push_back({.binding = 71, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
             }
@@ -1176,12 +1184,16 @@ public:
         if (streamRayQueries_) {
             for (uint32_t i = 90; i <= 93; ++i) { baseBindings.push_back({.binding = i}); }
         }
+        if (hasValuePrograms()) {
+            baseBindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
+        }
         auto compilePermutation =
             [&](PathTracePermutation permutation,
                 std::span<const SlangMacroDefine> extraDefines,
                 const std::vector<ComputeProgramBindingDesc>& permutationBindings,
                 ComputeProgram& outProgram) -> Result<> {
             std::vector<SlangMacroDefine> defines{
+                {.name = "METALLIC_CUSTOM_MATERIALS", .value = hasValuePrograms() ? "1" : "0"},
                 {.name = "METALLIC_STREAM_MATERIALS", .value = streamMaterials_ ? "1" : "0"},
                 {.name = "METALLIC_STREAM_RAY_QUERIES", .value = streamRayQueries_ ? "1" : "0"},
                 {.name = "METALLIC_GLOBAL_VIEW", .value = globalView ? "1" : "0"},
@@ -1212,6 +1224,7 @@ public:
                 boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0"});
             defines.insert(defines.end(), extraDefines.begin(), extraDefines.end());
             std::vector<const char*> additionalSearchPaths;
+            if (hasValuePrograms()) { additionalSearchPaths.push_back(valueSearchPath.c_str()); }
 #if METALLIC_HAS_RTXCR
             additionalSearchPaths.push_back(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
 #endif
@@ -1929,6 +1942,9 @@ public:
         if (sceneResources_.fallbackPositionBuffer() != nullptr) {
             bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
         }
+        if (hasValuePrograms()) {
+            bindings.push_back({.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()});
+        }
         if (streamMaterials_) {
             std::erase_if(bindings, [this](const auto& binding) {
                 return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
@@ -2042,7 +2058,7 @@ public:
             for (uint32_t i = 0; i < streamBuffers.size(); ++i) {
                 bindings.push_back({.binding = 83 + i, .buffer = streamBuffers[i]});
             }
-            if (boolProperty(context.properties(), "materialBinning", true)) {
+            if (materialBinningEnabled(context.properties())) {
                 CPUProfileScope binningProfile(profiler, "Record material binning");
                 std::string binningLog;
                 result = materialBinning_.record(*device_, context.commandBuffer(), {
@@ -2994,8 +3010,26 @@ private:
         return realtime_ || bsdf == "openpbr" || bsdf == "OpenPBR";
     }
 
+    bool hasValuePrograms() const
+    {
+        const auto binding = sceneResources_.materialBinding();
+        return binding && binding->values() && binding->values()->programCount() != 0;
+    }
+
+    bool materialBinningEnabled(const RenderGraphProperties& settings) const
+    {
+        // The existing five bins classify legacy factors. A Value program can
+        // change them per hit, so use the general kernel until sparse M2 bins land.
+        return !hasValuePrograms() && boolProperty(settings, "materialBinning", true);
+    }
+
     bool validateMaterialTarget(std::string& log) const
     {
+        if (hasValuePrograms() && (!useOpenPBRBsdf(properties()) || streamMaterials_ ||
+                (visibilityDeferred_ && properties().value("lightingMode", "reference") == "realtime"))) {
+            log = "Custom Value programs currently require OpenPBR PT or reference VBuffer shading (no StreamAsset/realtime specialization)";
+            return false;
+        }
         const auto generation = sceneResources_.materialGeneration();
         if (!generation) { log = "Missing material generation"; return false; }
         const auto target = visibilityDeferred_ ? MaterialEvaluationTarget::VisibilityBuffer :

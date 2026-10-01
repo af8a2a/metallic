@@ -149,6 +149,8 @@ ABeautifulGame、StreamAsset、程序数量压力与 Claire groom 分别在后�
 
 ### M2 跑通真正的自定义程序
 
+**当前状态：进行中。** 首批受控 Value 前端、静态程序集和 OpenPBR PT / reference VBuffer 接入见 [M2 实施记录](MaterialValueProgramsM2.md)。完整阶段门槛仍以下列四项为准。
+
 先做小型代码前端和足够支持示例的 Value 表达，暂不等待完整节点编辑器。用默认 OpenPBR、程序化锈蚀、三平面贴图、带动画 mask 的材质证明：参数计算不同，散射模型可以相同。
 
 这一阶段包含四个不可拆开的子任务：

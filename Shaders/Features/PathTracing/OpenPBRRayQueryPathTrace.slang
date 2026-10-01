@@ -264,6 +264,9 @@ OpenPBRMaterialEval evaluateOpenPBRMaterial(
     inout uint seed)
 {
     bool deterministicGlassTextures = materialNeedsDeterministicTextureMip0(material);
+#if METALLIC_CUSTOM_MATERIALS
+    material = evaluateMaterialValue(hit.materialIndex, hit.position, hit.geometryNormal, hit.texcoord, material);
+#endif
     float4 baseColorSample = loadMaterialTextureForMaterial(
         material.baseColorTexture,
         hit.texcoord,

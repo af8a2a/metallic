@@ -18,6 +18,8 @@ Metallic 是一个以 C++23、Slang 和 Vulkan 为核心的实验性实时渲染
 
 材质运行时的后续更新见 [M1 实现与验收记录](MaterialRuntimeM1.md)：内置模型注册、参数布局迁移、编译产物发布、失败回退与 GPU 生命周期。后续阶段见 [材质系统路线图](MaterialSystemRoadmap.md)。
 
+M2 首批自定义 Value Program 的前端、独立参数、静态程序集与支持范围见 [M2 实施记录](MaterialValueProgramsM2.md)。
+
 ## 2. 总体架构
 
 ```mermaid
