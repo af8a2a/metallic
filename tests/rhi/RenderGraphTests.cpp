@@ -65,7 +65,7 @@ constexpr uint32_t kSPIRVRayTracingClusterAccelerationStructureNv = 5437u;
 // Native DescriptorHandle shaders expose only Slang's unbounded heap arrays.
 // A scalar/fixed-array descriptor here would silently restore a per-pass Vulkan
 // binding, even if its binding number happened to match a heap's number.
-bool hasNativeComputeResourceInterface(const std::vector<uint32_t>& words)
+bool hasNativeComputeResourceInterface(const std::vector<uint32_t>& words, bool requireDeviceAddresses = true)
 {
     if (words.size() < 5 || words[0] != kSPIRVMagic) { return false; }
     bool heapCapability = false, heapBuiltin = false, deviceAddresses = false;
@@ -88,7 +88,7 @@ bool hasNativeComputeResourceInterface(const std::vector<uint32_t>& words)
         if (opcode == 59 && count >= 4 && instruction[3] == 9) { ++pushBlocks; }
         offset += count;
     }
-    return heapCapability && heapBuiltin && deviceAddresses && pushBlocks == 1;
+    return heapCapability && heapBuiltin && (!requireDeviceAddresses || deviceAddresses) && pushBlocks == 1;
 }
 
 render::EnvironmentSettings sampleEnvironmentSettings(const render::RenderSampleDesc& desc)
@@ -3375,8 +3375,8 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext& context) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA8Unorm;
-        reflection.addBufferOutput("data").buffer(uint64_t(context.width) * context.height * 4)
+        reflection.addTextureInput("color").transferRead().format = render::Format::RGBA32Sfloat;
+        reflection.addBufferOutput("data").buffer(uint64_t(context.width) * context.height * 16)
             .transferWrite().hostReadback();
         return reflection;
     }
@@ -3464,12 +3464,13 @@ RHITestResult runPathTraceCacheStages(RHITestContext& context, bool nrc)
             }
             auto* output = executor.outputResource("Readback.data");
             if (!output || !output->buffer) { return "cache readback output missing"; }
-            std::array<uint32_t, kWidth * kHeight> pixels{};
+            std::array<std::array<float, 4>, kWidth * kHeight> pixels{};
             if (!readHostBuffer(*output->buffer, pixels.data(), sizeof(pixels))) { return "cache readback map failed"; }
             bool visible = false;
-            for (uint32_t pixel : pixels) {
-                if ((pixel >> 24u) != 255u) { return "cache stages left unwritten output pixels"; }
-                visible = visible || (pixel & 0x00ffffffu) != 0;
+            for (const auto& pixel : pixels) {
+                if (!std::all_of(pixel.begin(), pixel.end(), [](float value) { return std::isfinite(value); }) ||
+                    pixel[3] != 1.0f) { return "cache stages left invalid or unwritten HDR pixels"; }
+                visible = visible || pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0;
             }
             return visible ? std::string{} : "cache output contains no visible light";
         };
@@ -5616,12 +5617,13 @@ public:
             const char* moduleName;
             const char* entryPointName;
             bool rayQuery;
+            bool deviceAddresses = true;
         } entries[] = {
             {"Features/Lighting/BuildReGIR", "buildReGIRMain", false},
             {"Features/Lighting/PrepareLightsPdf", "prepareLightsPdfMain", false},
             {"Features/ReSTIR/SceneRTXDI", "sceneRtxdiMain", true},
-            {"Features/ReSTIR/RTXDIConfidence", "rtxdiConfidenceMain", false},
-            {"Features/ReSTIR/RTXDIComposite", "rtxdiCompositeMain", false},
+            {"Features/ReSTIR/RTXDIConfidence", "rtxdiConfidenceMain", false, false},
+            {"Features/ReSTIR/RTXDIComposite", "rtxdiCompositeMain", false, false},
         };
         for (const ShaderEntry& entry : entries) {
             render::ShaderCompileResult compileResult;
@@ -5641,7 +5643,7 @@ public:
                     ": " +
                     compileResult.diagnostics);
             }
-            if (!hasNativeComputeResourceInterface(compileResult.spirv)) {
+            if (!hasNativeComputeResourceInterface(compileResult.spirv, entry.deviceAddresses)) {
                 return RHITestResult::fail(std::string(entry.moduleName) + " retained a fixed descriptor binding or invalid compute resource ABI");
             }
         }

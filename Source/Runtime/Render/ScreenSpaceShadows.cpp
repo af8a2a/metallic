@@ -1,4 +1,4 @@
-#include "Runtime/Render/Core/StreamSceneParameters.h"
+#include "Runtime/Render/Core/ShadowTraceParameters.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
@@ -137,14 +137,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     const bool coop = ntc && neural->cooperativeVectorActive();
     profile.next("Prepare trace pipeline");
     auto& trace = traces_[streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0)];
-    constexpr uint32_t kShadowBinding = 80; // Keep the shared scene alpha-mask resource slots.
-    const auto traceIndex = streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0);
     const uint32_t textureCount = streamed && !streamTlas ? 0 : geometry->materialTextureCount();
-    if (trace.valid() && traceTextureCounts_[traceIndex] != textureCount) {
-        if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ComputeProgram>(std::move(trace))); }
-        else { (void)device.waitIdle(); trace.clear(); }
-    }
-    traceTextureCounts_[traceIndex] = textureCount;
     if (!trace.valid()) {
         std::vector<const char*> capabilities{"spvRayQueryKHR"};
         if (coop) { capabilities.push_back("spvCooperativeVectorNV"); }
@@ -168,42 +161,10 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             .macroDefines = {defines, 4},
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result.transform([&] { return std::move(output); }); }
-        std::vector<ComputeProgramBindingDesc> layout = {
-            {.binding = kShadowBinding}, {.binding = kShadowBinding + 1, .kind = ComputeResourceBindingKind::SampledImage},
-        };
-        for (uint32_t i = 2; i < 7; ++i) {
-            layout.push_back({.binding = kShadowBinding + i, .kind = ComputeResourceBindingKind::StorageImage});
-        }
-        if (!streamed || streamTlas) {
-            layout.push_back({.binding = 0, .kind = ComputeResourceBindingKind::AccelerationStructure});
-        }
-        if (streamTlas) {
-            layout.push_back({.binding = 6});
-            layout.push_back({.binding = 9, .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = textureCount});
-        }
-        if (!streamed) {
-            layout.push_back({.binding = 2, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 16, .dataAlignment = 8});
-            layout.push_back({.binding = 3, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4});
-            layout.push_back({.binding = 4, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 32, .dataAlignment = 4});
-            layout.push_back({.binding = 5, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 16, .dataAlignment = 4});
-            layout.push_back({.binding = 6});
-            layout.push_back({.binding = 9, .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = geometry->materialTextureCount()});
-        }
-        if (ntc) {
-            layout.push_back({.binding = kNeuralTextureLatentsBinding, .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kMaxNeuralTextureSets});
-            layout.push_back({.binding = kNeuralTextureConstantsBinding});
-            layout.push_back({.binding = kNeuralTextureWeightsBinding});
-            layout.push_back({.binding = kNeuralTextureSetInfoBinding});
-            layout.push_back({.binding = kNeuralTextureSamplerBinding, .kind = ComputeResourceBindingKind::Sampler});
-        }
         result = trace.initialize(device, {
             .spirv = shader.spirv,
-            .pushConstantSize = sizeof(ShadowGeometryPush),
-            .bindings = layout,
+            .parameters = parameterAbi<ShadowTraceParameters>(kShadowTraceABI, ParameterTransport::InlinePush),
             .debugName = "Ray-traced shadows",
-            .requiresRayQuery = true,
         }, log);
         if (!result) { return makeError(result.error()); }
     }
@@ -300,75 +261,56 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             commands.clearColorTexture(*state->textures[i], ResourceState::TransferDestination, {1, 1, 1, 1});
         }
     }
-    profile.next("Prepare dispatch bindings");
-    TextureView* depthView = &depth;
-    std::vector<ComputeDispatchBinding> bindings{
-        {.binding = kShadowBinding, .buffer = state->parameters.get()},
-        {.binding = kShadowBinding + 1, .textureViews = {&depthView, 1}},
-    };
-    for (uint32_t i = 0; i < 5; ++i) {
-        bindings.push_back({.binding = kShadowBinding + i + 2, .textureView = state->views[i].get()});
-    }
-    ShadowGeometryPush geometryPush{};
-    if (streamed) {
-        if (streamTlas) {
-            CPUProfileScope resources(profiler, "Prepare material textures");
-            if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
-            bindings.push_back({.binding = 0, .accelerationStructure = accelerationStructure
-                ? accelerationStructure : streamGeometry->accelerationStructure});
-            bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
-            bindings.push_back({.binding = 9, .textureViews = {geometry->materialTextureViews().data(), textureCount}, .sampledImages = geometry->materialTextureSnapshot()});
-            auto registry = device.resourceRegistry();
-            if (!registry) { return makeError(registry.error()); }
-            ParameterWriter writer(device, **registry, commands.frameContext());
-            auto encoded = streamGeometry->encodeRayQueryParameters(writer);
-            if (!encoded) { return makeError(encoded.error()); }
-            result = encoded->bindResources(commands);
-            if (!result) { return makeError(result.error()); }
-            geometryPush.streamScene = encoded->address();
-            geometryPush.materialTextureCount = textureCount;
-        }
-    } else {
+    profile.next("Encode shadow parameters");
+    auto registry = device.resourceRegistry();
+    if (!registry) { return makeError(registry.error()); }
+    ParameterWriter writer(device, **registry, commands.frameContext());
+    ShadowTraceParameters params{};
+    params.settings = writer.dataBuffer(state->parameters.get(), sizeof(ScreenSpaceShadowParameters), 4);
+    params.depth = writer.sampledImage(&depth);
+    params.penumbra = writer.storageImage(state->views[0].get());
+    params.normal = writer.storageImage(state->views[1].get());
+    params.viewZ = writer.storageImage(state->views[2].get());
+    params.motion = writer.storageImage(state->views[3].get());
+    params.shadow = writer.storageImage(state->views[4].get());
+    if (!streamed || streamTlas) {
         CPUProfileScope resources(profiler, "Prepare material textures");
-        if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
-        bindings.push_back({.binding = 0, .accelerationStructure = accelerationStructure
-            ? accelerationStructure : geometry->accelerationStructure().accelerationStructure()});
-        bindings.push_back({.binding = 2, .buffer = geometry->shadingVertexBuffer()});
-        bindings.push_back({.binding = 3, .buffer = geometry->indexBuffer()});
-        bindings.push_back({.binding = 4, .buffer = geometry->primitiveBuffer()});
-        bindings.push_back({.binding = 5, .buffer = geometry->instanceBuffer()});
-        bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
-        bindings.push_back({
-            .binding = 9,
-            .textureViews = {geometry->materialTextureViews().data(), geometry->materialTextureCount()},
-            .sampledImages = geometry->materialTextureSnapshot(),
-        });
-        geometryPush.materialTextureCount = geometry->materialTextureCount();
-        geometryPush.ntcTextureSetCount = neural->textureSetCount();
+        writer.retain(std::make_shared<ScenePathTraceResources>(*geometry));
+        PathTraceParameters scene{};
+        scene.scene = writer.accelerationStructure(accelerationStructure ? accelerationStructure :
+            (streamed ? streamGeometry->accelerationStructure : geometry->accelerationStructure().accelerationStructure()));
+        scene.materials = writer.buffer(geometry->materialBuffer());
+        scene.materialTextures = writer.sampledImages({geometry->materialTextureViews().data(), textureCount});
+        params.materialTextureCount = textureCount;
+        if (streamed) {
+            auto encodedScene = streamGeometry->encodeRayQueryParameters(writer);
+            if (!encodedScene) { return makeError(encodedScene.error()); }
+            result = encodedScene->bindResources(commands);
+            if (!result) { return makeError(result.error()); }
+            params.streamScene = encodedScene->address();
+        } else {
+            scene.vertices = writer.dataBuffer(geometry->shadingVertexBuffer(), 16, 8);
+            scene.indices = writer.dataBuffer(geometry->indexBuffer(), 4, 4);
+            scene.primitives = writer.dataBuffer(geometry->primitiveBuffer(), 32, 4);
+            scene.instances = writer.dataBuffer(geometry->instanceBuffer(), 16, 4);
+            params.ntcTextureSetCount = neural->textureSetCount();
+        }
+        if (ntc) {
+            scene.ntcLatents = writer.sampledImages(neural->latentTextureViews());
+            scene.ntcConstants = writer.buffer(neural->constantsBuffer());
+            scene.ntcWeights = writer.buffer(neural->weightsBuffer());
+            scene.ntcInfo = writer.buffer(neural->setInfoBuffer());
+            scene.ntcSampler = writer.sampler(neural->latentSampler());
+        }
+        params.scene = writer.data(&scene, sizeof(scene));
     }
-    if (ntc) {
-        bindings.push_back({
-            .binding = kNeuralTextureLatentsBinding,
-            .textureViews = {neural->latentTextureViews().data(), kMaxNeuralTextureSets},
-        });
-        bindings.push_back({.binding = kNeuralTextureConstantsBinding, .buffer = neural->constantsBuffer()});
-        bindings.push_back({.binding = kNeuralTextureWeightsBinding, .buffer = neural->weightsBuffer()});
-        bindings.push_back({.binding = kNeuralTextureSetInfoBinding, .buffer = neural->setInfoBuffer()});
-        bindings.push_back({.binding = kNeuralTextureSamplerBinding, .sampler = &neural->latentSampler()});
-    }
+    auto encoded = writer.encode(params, kShadowTraceABI, ParameterTransport::InlinePush);
+    if (!encoded) { return makeError(encoded.error()); }
     profile.next("Record trace dispatch");
     result = enterStage(1);
     if (!result) { return makeError(result.error()); }
     commands.beginDebugLabel({.name = "Ray-traced shadows"});
-    result = trace.dispatch({
-        .commandBuffer = &commands,
-        .bindings = bindings,
-        .pushData = &geometryPush,
-        .pushDataSize = sizeof(geometryPush),
-        .groupCountX = (width + 7) / 8,
-        .groupCountY = (height + 7) / 8,
-        .profiler = profiler,
-    });
+    result = trace.dispatch(commands, *encoded, (width + 7) / 8, (height + 7) / 8);
     commands.endDebugLabel();
     if (!result) { return makeError(result.error()); }
     profile.next("Record denoising");

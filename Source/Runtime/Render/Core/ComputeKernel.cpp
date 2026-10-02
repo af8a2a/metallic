@@ -13,6 +13,11 @@ struct ComputeKernel::Impl {
     PreparedExecution execution;
 };
 
+ComputePipeline* ComputeKernel::diagnosticPipeline() const
+{
+    return impl_ ? impl_->pipeline.get() : nullptr;
+}
+
 Result<> ComputeKernel::initialize(Device& device, const ComputeKernelDesc& desc, std::string& log)
 {
     clear();
@@ -130,6 +135,21 @@ Result<> PreparedComputeDispatch::record(CommandBuffer& commands, const BarrierD
         }
     }
     return {};
+}
+
+Result<> ComputeKernel::bind(CommandBuffer& commands, const EncodedParameters& params) const
+{
+    if (!impl_ || !params.compatible(commands, impl_->parameters) || commands.deviceIdentity() != impl_->device) {
+        return makeError(Error::InvalidArgument);
+    }
+    auto result = commands.retainResource(impl_);
+    if (!result) { return result; }
+    result = params.bindResources(commands);
+    if (!result) { return result; }
+    const auto bytes = params.inlineData();
+    const uint64_t root = params.address();
+    return bytes.empty() ? commands.bindExecution(impl_->execution, &root, sizeof(root))
+        : commands.bindExecution(impl_->execution, bytes.data(), uint32_t(bytes.size()));
 }
 
 Result<> ComputeKernel::dispatch(CommandBuffer& commands, const EncodedParameters& params,

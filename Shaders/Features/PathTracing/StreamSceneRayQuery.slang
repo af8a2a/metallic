@@ -1,4 +1,14 @@
+#ifndef METALLIC_STREAM_SCENE_RAY_QUERY
+#define METALLIC_STREAM_SCENE_RAY_QUERY
 #include "StreamSceneDecode.slang"
+
+// Statically specialized at the caller. The query layer owns no descriptor
+// slots, parameter roots, or material/texture globals.
+interface IStreamRayMaterials
+{
+    bool load(uint index, out PathTraceMaterial material);
+    float alpha(PathTraceTextureInfo texture, float2 uv);
+};
 
 float3 streamRayVector(StreamRayInstance instance, float3 v)
 {
@@ -13,17 +23,14 @@ float3 streamRayNormal(StreamRayInstance instance, float3 n)
         (dot(instance.world0.xyz, c0) < 0.0 ? -1.0 : 1.0), n);
 }
 
-bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
-    Ray ray, float t, ScenePathTracePush push, out HitInfo hit)
+bool streamRaySurface<Materials : IStreamRayMaterials>(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
+    Ray ray, float t, StreamSceneParameters scene, Materials materials, float bitangentFlip, out HitInfo hit)
 {
     hit = (HitInfo)0;
-    if (push.streamScene == nullptr) { return false; }
-    StreamSceneParameters scene = *push.streamScene;
     StreamRayInstance instance;
     if (!loadStreamRayInstance(scene, instanceIndex, instance)) { return false; }
-    uint count, stride;
-    gMaterials.GetDimensions(count, stride);
-    if (instance.materialIndex >= count) { return false; }
+    PathTraceMaterial material;
+    if (!materials.load(instance.materialIndex, material)) { return false; }
     float3 a, b, c;
     float3 n[3]; float2 uv[3]; float4 tangents[3];
     uint attributes;
@@ -50,7 +57,7 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
             (dot(instance.world0.xyz, cross(instance.world1.xyz, instance.world2.xyz)) < 0.0 ? -1.0 : 1.0);
     } else { sign = dot(cross(hit.normal, tangent), triangleBitangent) < 0.0 ? -1.0 : 1.0; }
     tangent = safeNormalize(tangent - hit.normal * dot(hit.normal, tangent), fallback);
-    hit.tangent = float4(tangent, sign * push.bitangentFlip);
+    hit.tangent = float4(tangent, sign * bitangentFlip);
     hit.bitangent = cross(hit.normal, tangent) * hit.tangent.w;
     hit.position = ray.origin + ray.direction * t;
     hit.t = t;
@@ -62,42 +69,41 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
     return true;
 }
 
-bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
-    Ray ray, float t, ScenePathTracePush push)
+bool streamRayAlphaAccepts<Materials : IStreamRayMaterials>(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
+    Ray ray, float t, StreamSceneParameters scene, Materials materials, float bitangentFlip)
 {
-    if (push.streamScene == nullptr) { return false; }
-    uint count, stride;
     StreamRayInstance instance;
-    if (!loadStreamRayInstance(*push.streamScene, instanceIndex, instance)) { return false; }
-    uint materialIndex = instance.materialIndex;
-    gMaterials.GetDimensions(count, stride);
-    if (materialIndex >= count) { return false; }
-    PathTraceMaterial material = gMaterials[materialIndex];
+    if (!loadStreamRayInstance(scene, instanceIndex, instance)) { return false; }
+    PathTraceMaterial material;
+    if (!materials.load(instance.materialIndex, material)) { return false; }
     if (material.textureParams.w < 0.5) { return true; }
     HitInfo hit;
-    if (!streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, push, hit)) { return false; }
-    float alpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, hit.texcoord, push);
+    if (!streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, scene, materials, bitangentFlip, hit)) { return false; }
+    float alpha = material.baseColor.a * materials.alpha(material.baseColorTexture, hit.texcoord);
     return material.textureParams.w < 1.5 ? alpha >= material.params.z : alpha > 0.0;
 }
 
-bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push, out HitInfo hit)
+bool traceStreamClosest<Materials : IStreamRayMaterials>(Ray ray, float nearDistance, float farDistance,
+    RaytracingAccelerationStructure accelerationStructure, StreamSceneParameters scene,
+    Materials materials, float bitangentFlip, out HitInfo hit)
 {
     hit = (HitInfo)0;
-    if (push.streamScene == nullptr) { return false; }
     RayDesc desc;
     desc.Origin = ray.origin; desc.Direction = ray.direction;
     desc.TMin = nearDistance; desc.TMax = farDistance;
     // Force candidate callbacks even for CLAS built with the opaque default.
     RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
-    query.TraceRayInline(gScene, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, desc);
+    query.TraceRayInline(accelerationStructure, RAY_FLAG_FORCE_NON_OPAQUE, 0xff, desc);
     while (query.Proceed()) {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
             streamRayAlphaAccepts(query.CandidateInstanceID(), uint(query.CandidateClusterID()),
-                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), ray, query.CandidateTriangleRayT(), push)) {
+                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), ray, query.CandidateTriangleRayT(), scene, materials, bitangentFlip)) {
             query.CommitNonOpaqueTriangleHit();
         }
     }
     if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) { return false; }
     return streamRaySurface(query.CommittedInstanceID(), uint(query.CommittedClusterID()),
-        query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(), ray, query.CommittedRayT(), push, hit);
+        query.CommittedPrimitiveIndex(), query.CommittedTriangleBarycentrics(), ray, query.CommittedRayT(), scene, materials, bitangentFlip, hit);
 }
+
+#endif

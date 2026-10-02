@@ -1,3 +1,7 @@
+#include "Runtime/Render/Core/PathTraceInlineParameters.h"
+#include "Runtime/Render/Core/RTXDITraceParameters.h"
+#include "Runtime/Render/Core/ShadowTraceParameters.h"
+#include "Runtime/Render/Core/StreamWorkloadParameters.h"
 #include "Runtime/Render/Core/StreamRasterParameters.h"
 #include "Runtime/Render/Core/HybridResolveParameters.h"
 #include "Runtime/Render/Core/HybridRasterParameters.h"
@@ -224,6 +228,10 @@ public:
             {"Metallic.HybridRasterParameters", {FIELD(HybridRasterParameters, queue), FIELD(HybridRasterParameters, pixels), FIELD(HybridRasterParameters, arguments), FIELD(HybridRasterParameters, width), FIELD(HybridRasterParameters, height), FIELD(HybridRasterParameters, capacity), FIELD(HybridRasterParameters, maxPixels), FIELD(HybridRasterParameters, reversedZ), FIELD(HybridRasterParameters, subpixelBits)}},
             {"Metallic.HybridResolveParameters", {FIELD(HybridResolveParameters, pixels), FIELD(HybridResolveParameters, width), FIELD(HybridResolveParameters, reversedZ)}},
             {"Metallic.StreamRasterParameters", {FIELD(StreamRasterParameters, settings), FIELD(StreamRasterParameters, pages), FIELD(StreamRasterParameters, groups), FIELD(StreamRasterParameters, header), FIELD(StreamRasterParameters, pageTable), FIELD(StreamRasterParameters, instances), FIELD(StreamRasterParameters, bins), FIELD(StreamRasterParameters, pixels), FIELD(StreamRasterParameters, visibleRecordBase), FIELD(StreamRasterParameters, visibleRecordCapacity), FIELD(StreamRasterParameters, hasInstances), FIELD(StreamRasterParameters, padding)}},
+            {"Metallic.StreamWorkloadParameters", {FIELD(StreamWorkloadParameters, raster), FIELD(StreamWorkloadParameters, counters)}},
+            {"Metallic.ShadowTraceParameters", {FIELD(ShadowTraceParameters, settings), FIELD(ShadowTraceParameters, scene), FIELD(ShadowTraceParameters, streamScene), FIELD(ShadowTraceParameters, depth), FIELD(ShadowTraceParameters, penumbra), FIELD(ShadowTraceParameters, normal), FIELD(ShadowTraceParameters, viewZ), FIELD(ShadowTraceParameters, motion), FIELD(ShadowTraceParameters, shadow), FIELD(ShadowTraceParameters, materialTextureCount), FIELD(ShadowTraceParameters, ntcTextureSetCount)}},
+            {"Metallic.RTXDITraceParameters", {FIELD(RTXDITraceParameters, settings), FIELD(RTXDITraceParameters, scene), FIELD(RTXDITraceParameters, output), FIELD(RTXDITraceParameters, reservoirCurrent), FIELD(RTXDITraceParameters, reservoirPrevious), FIELD(RTXDITraceParameters, positionCurrent), FIELD(RTXDITraceParameters, positionPrevious), FIELD(RTXDITraceParameters, normalCurrent), FIELD(RTXDITraceParameters, normalPrevious), FIELD(RTXDITraceParameters, noisyDiffuse), FIELD(RTXDITraceParameters, noisySpecular), FIELD(RTXDITraceParameters, normalRoughness), FIELD(RTXDITraceParameters, motionVectors), FIELD(RTXDITraceParameters, viewZ), FIELD(RTXDITraceParameters, baseColorMetalness), FIELD(RTXDITraceParameters, emissive)}},
+            {"Metallic.PathTraceInlineParameters", {FIELD(PathTraceInlineParameters, resources), FIELD(PathTraceInlineParameters, settings), FIELD(PathTraceInlineParameters, output), FIELD(PathTraceInlineParameters, historyCurrent), FIELD(PathTraceInlineParameters, historyPrevious)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -305,6 +313,13 @@ public:
             {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterRasterLegacyMain", 45},
             {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterRasterPlaneMain", 45},
             {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterRasterCooperativeMain", 45},
+            {"Features/GPUDriven/GPUDrivenStreamWorkRaster", "streamClusterRasterWorkBinsMain", 45},
+            {"Features/GPUDriven/GPUDrivenStreamWorkRaster", "streamClusterRasterWorkControlMain", 45},
+            {"Features/GPUDriven/GPUDrivenStreamWorkload", "streamWorkloadResetMain", 46},
+            {"Features/GPUDriven/GPUDrivenStreamWorkload", "streamWorkloadMain", 46},
+            {"Features/Lighting/ScreenSpaceShadows", "rayTracedShadowsMain", 47},
+            {"Features/ReSTIR/SceneRTXDI", "sceneRtxdiMain", 48},
+            {"Features/PathTracing/ScenePathTraceInline", "scenePathTraceMain", 49},
             {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup32Main", 45},
             {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup64Main", 45},
             {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup128Main", 45},
@@ -315,7 +330,7 @@ public:
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout == 45 ? 31u : program.layout == 44 ? 30u : program.layout == 43 ? 29u : program.layout == 42 ? 28u : program.layout == 41 ? 27u : program.layout == 40 ? 26u : program.layout == 39 ? 25u : program.layout == 38 ? 24u : program.layout == 37 ? 23u : program.layout == 36 ? 22u : program.layout == 35 ? 21u : program.layout == 34 ? 20u : program.layout == 33 ? 19u : program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                if ((program.layout == 49 ? 35u : program.layout == 48 ? 34u : program.layout == 47 ? 33u : program.layout == 46 ? 32u : program.layout == 45 ? 31u : program.layout == 44 ? 30u : program.layout == 43 ? 29u : program.layout == 42 ? 28u : program.layout == 41 ? 27u : program.layout == 40 ? 26u : program.layout == 39 ? 25u : program.layout == 38 ? 24u : program.layout == 37 ? 23u : program.layout == 36 ? 22u : program.layout == 35 ? 21u : program.layout == 34 ? 20u : program.layout == 33 ? 19u : program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
                 const char* capabilities[] = {"spvRayQueryKHR"};
                 std::span<const char* const> extraPaths;
@@ -362,7 +377,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 31 ? "StreamRasterParameters.h" : category == 30 ? "HybridResolveParameters.h" : category == 29 ? "HybridRasterParameters.h" : category == 28 ? "HybridBinParameters.h" : category == 27 ? "StreamClusterCullParameters.h" : category == 26 ? "StreamClassifyParameters.h" : category == 25 ? "StreamCandidateParameters.h" : category == 24 ? "StreamBLASParameters.h" : category == 23 ? "StreamTLASParameters.h" : category == 22 ? "StreamActiveBuildParameters.h" : category == 21 ? "StreamTraversalParameters.h" : category == 20 ? "StreamPageTableParameters.h" : category == 19 ? "ResidentLODParameters.h" : category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 35 ? "PathTraceInlineParameters.h" : category == 34 ? "RTXDITraceParameters.h" : category == 33 ? "ShadowTraceParameters.h" : category == 32 ? "StreamWorkloadParameters.h" : category == 31 ? "StreamRasterParameters.h" : category == 30 ? "HybridResolveParameters.h" : category == 29 ? "HybridRasterParameters.h" : category == 28 ? "HybridBinParameters.h" : category == 27 ? "StreamClusterCullParameters.h" : category == 26 ? "StreamClassifyParameters.h" : category == 25 ? "StreamCandidateParameters.h" : category == 24 ? "StreamBLASParameters.h" : category == 23 ? "StreamTLASParameters.h" : category == 22 ? "StreamActiveBuildParameters.h" : category == 21 ? "StreamTraversalParameters.h" : category == 20 ? "StreamPageTableParameters.h" : category == 19 ? "ResidentLODParameters.h" : category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -1428,6 +1443,30 @@ public:
     HybridResolveLayoutTest() { category = 30; name = "hybrid_resolve_parameter_spirv_layout"; }
 };
 METALLIC_REGISTER_RHI_TEST(HybridResolveLayoutTest);
+class StreamWorkloadLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamWorkloadLayoutTest() { category = 32; name = "stream_workload_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamWorkloadLayoutTest);
+class ShadowTraceLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    ShadowTraceLayoutTest() { category = 33; name = "shadow_trace_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(ShadowTraceLayoutTest);
+class RTXDITraceLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    RTXDITraceLayoutTest() { category = 34; name = "rtxdi_trace_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(RTXDITraceLayoutTest);
+class PathTraceInlineLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    PathTraceInlineLayoutTest() { category = 35; name = "path_trace_inline_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(PathTraceInlineLayoutTest);
+
+
+
+
 class StreamRasterLayoutTest final : public PostProcessParameterLayoutTest {
 public:
     StreamRasterLayoutTest() { category = 31; name = "stream_raster_parameter_spirv_layout"; }
@@ -1673,20 +1712,24 @@ public:
         auto registry = device->resourceRegistry();
         REG_CHECK(registry);
         struct Params { StreamSceneParameters stream; ShaderDataSpan output; };
-        ComputeKernel kernel;
+        ComputeKernel kernel, surfaceKernel;
         std::string log;
         auto shader = compileSlangShaderToSpirv({.moduleName = "StreamDataDecodeProbe",
             .entryPointName = "streamDataDecodeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
         if (!shader) { return RHITestResult::fail(log); }
         REG_REQUIRE(kernel.initialize(*device, {.spirv = shader->spirv, .parameters = parameterAbi<Params>(kABI + 6)}, log));
+        auto surfaceShader = compileSlangShaderToSpirv({.moduleName = "StreamRaySurfaceProbe",
+            .entryPointName = "streamRaySurfaceMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
+        if (!surfaceShader) { return RHITestResult::fail(log); }
+        REG_REQUIRE(surfaceKernel.initialize(*device, {.spirv = surfaceShader->spirv, .parameters = parameterAbi<Params>(kABI + 6)}, log));
         std::unique_ptr<Buffer> output;
-        REG_REQUIRE(device->createBuffer({.size = 24 * sizeof(uint32_t), .structureStride = 4,
+        REG_REQUIRE(device->createBuffer({.size = 40 * sizeof(uint32_t), .structureStride = 4,
             .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
             .transform([&](auto value) { output = std::move(value); }));
         // Poison every result so a skipped invocation cannot look like a rejected input.
         void* initial = output->map();
         REG_CHECK(initial);
-        std::memset(initial, 0xff, 24 * sizeof(uint32_t));
+        std::memset(initial, 0xff, 40 * sizeof(uint32_t));
         output->flush();
         output->unmap();
         QueueSubmissionTracker tracker;
@@ -1708,6 +1751,7 @@ public:
             params.stream.pageTable = {writer.data(table.data(), sizeof(table)), 1, 8};
             std::array<uint32_t, 24> instance{};
             instance[1] = 17;
+            instance[4] = instance[9] = instance[14] = instance[19] = 0x3f800000; // Identity world transform.
             const std::array<uint32_t, 4> header{0, 0, 23, 0};
             params.stream.instances = {writer.data(instance.data(), sizeof(instance)), 1, 96};
             params.stream.header = {writer.data(header.data(), sizeof(header)), 3, 4};
@@ -1715,6 +1759,7 @@ public:
             auto encoded = writer.encode(params, kABI + 6);
             REG_CHECK(encoded);
             REG_REQUIRE(kernel.dispatch(*recording.commands, *encoded, 2));
+            REG_REQUIRE(surfaceKernel.dispatch(*recording.commands, *encoded, 1));
         }
         const MemoryBarrierDesc hostRead{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
             {PipelineStageBits::Host, AccessBits::HostRead}};
@@ -1728,12 +1773,16 @@ public:
         output->invalidate();
         const auto* values = static_cast<const uint32_t*>(output->map());
         REG_CHECK(values);
-        std::array<uint32_t, 24> actual{};
+        std::array<uint32_t, 40> actual{};
         std::memcpy(actual.data(), values, sizeof(actual));
         output->unmap();
-        for (uint32_t i = 0; i < actual.size(); ++i) { REG_CHECK(actual[i] == (i == 9 ? 17u : i == 10 ? 23u : (i == 0 || i == 11) ? 1u : 0u)); }
+        for (uint32_t i = 0; i < 24; ++i) { REG_CHECK(actual[i] == (i == 9 ? 17u : i == 10 ? 23u : (i == 0 || i == 11) ? 1u : 0u)); }
+        for (uint32_t i = 0; i < 16; ++i) {
+            const bool expected = i <= 2 || i == 7 || i == 10 || i == 11;
+            REG_CHECK(actual[24 + i] == uint32_t(expected));
+        }
         REG_CHECK((*registry)->stats().descriptorWrites == 0);
-        return RHITestResult::pass("BDA triangle values; invalid page/cluster/triangle, truncated buffers, empty table, null resources, instance/header bounds and wrong strides rejected");
+        return RHITestResult::pass("BDA triangle values; invalid page/cluster/triangle, truncated buffers, empty table, null resources, instance/header bounds and wrong strides rejected; explicit surface/alpha provider, ray-independent normals/TBN, bitangent flip and mask/blend thresholds");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamDataDecodeTest);

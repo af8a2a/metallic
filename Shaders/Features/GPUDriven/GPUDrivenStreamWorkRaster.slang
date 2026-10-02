@@ -25,14 +25,13 @@ ShaderTraceIdentity workControlTraceIdentity(uint3 group, uint lane)
 }
 #endif
 
-void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool reorder
+void rasterStreamClusterWorkBins(uint3 group, uint lane, StreamRasterParameters push, bool reorder
 #if METALLIC_WORK_CONTROL_TRACE
     , inout uint3 traceCounts
 #endif
 )
 {
-    DescriptorHandle<StructuredBuffer<uint>> bins =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+    let bins = push.bins;
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
     if (lane < WaveGetLaneCount()) {
@@ -42,7 +41,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPus
     GroupMemoryBarrierWithGroupSync();
     if (g_StreamSoftwareValid == 0u) { return; }
     if (lane < g_StreamSoftware.vertexCount) {
-        HybridScreenVertex vertex = hybridPrepareVertex(streamSoftwareClip(lane, push), float2(bins[6], bins[7]), bins[10]);
+        HybridScreenVertex vertex = hybridPrepareVertex(streamSoftwareClip(lane, push.pages), float2(bins[6], bins[7]), bins[10]);
         // Reuse the existing raw-word scratch. Do not store snapped signed
         // coordinates as float bits: NaN canonicalization can change them.
         g_StreamRasterWords[lane] = uint4(uint2(vertex.position), asuint(vertex.depth), 0u);
@@ -52,7 +51,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPus
     if (reorder) {
         uint bucket = 3u;
         if (lane < g_StreamSoftware.triangleCount) {
-            uint3 tri = streamSoftwareTriangle(lane, push);
+            uint3 tri = streamSoftwareTriangle(lane, push.pages);
             bucket = streamRasterWorkBucket(asint(g_StreamRasterWords[tri.x].xy), asint(g_StreamRasterWords[tri.y].xy),
                 asint(g_StreamRasterWords[tri.z].xy), (g_StreamSoftware.instanceFlags & 2u) != 0u, bins[6], bins[7], bins[10]);
         }
@@ -61,7 +60,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPus
         triangle = work & 127u;
     }
     if (triangle < g_StreamSoftware.triangleCount) {
-        uint3 tri = streamSoftwareTriangle(triangle, push);
+        uint3 tri = streamSoftwareTriangle(triangle, push.pages);
         HybridScreenVertex a, b, c;
         a.position = asint(g_StreamRasterWords[tri.x].xy); a.depth = asfloat(g_StreamRasterWords[tri.x].z);
         b.position = asint(g_StreamRasterWords[tri.y].xy); b.depth = asfloat(g_StreamRasterWords[tri.y].z);
@@ -90,7 +89,7 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPus
         HybridTriangleDecision decision;
         hybridRasterPreparedTriangleDecision(a, b, c,
             packVisibilityId(g_StreamSoftware.recordIndex, triangle), (g_StreamSoftware.instanceFlags & 2u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], bins[11], false, decision);
+            bins[6], bins[7], bins[9], bins[10], push.pixels, false, decision);
         if (!reorder && workControlTraceSelected(group, lane)) {
             ++traceCounts.x;
             if (!TRACE_PREDICATE_ENABLED || triangle == TRACE_TRIANGLE_ID) {
@@ -111,42 +110,42 @@ void rasterStreamClusterWorkBins(uint3 group, uint lane, GPUDrivenStreamAssetPus
 #else
         hybridRasterPreparedTriangle(a, b, c,
             packVisibilityId(g_StreamSoftware.recordIndex, triangle), (g_StreamSoftware.instanceFlags & 2u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], bins[11], false);
+            bins[6], bins[7], bins[9], bins[10], push.pixels, false);
 #endif
     }
 }
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamClusterRasterWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+void streamClusterRasterWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, push, false, false); return; }
+    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, gStreamRaster, false, false); return; }
 #if METALLIC_WORK_CONTROL_TRACE
     uint3 traceCounts = 0;
-    rasterStreamClusterWorkBins(group, lane, push, true, traceCounts);
+    rasterStreamClusterWorkBins(group, lane, gStreamRaster, true, traceCounts);
 #else
-    rasterStreamClusterWorkBins(group, lane, push, true);
+    rasterStreamClusterWorkBins(group, lane, gStreamRaster, true);
 #endif
 }
 
 // Measurement control: same vertex setup/raster arithmetic without reordering.
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamClusterRasterWorkControlMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+void streamClusterRasterWorkControlMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
 #if METALLIC_WORK_CONTROL_TRACE
     uint3 traceCounts = 0;
     ShaderTraceIdentity id = workControlTraceIdentity(group, lane);
     bool selected = workControlTraceSelected(group, lane);
     if (selected) { shaderTraceBegin(id); }
-    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, push, false, false); }
-    else { rasterStreamClusterWorkBins(group, lane, push, false, traceCounts); }
+    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, gStreamRaster, false, false); }
+    else { rasterStreamClusterWorkBins(group, lane, gStreamRaster, false, traceCounts); }
     if (selected) {
         shaderTraceWords5(id, 2, traceCounts.z + 1,
             uint4(traceCounts, WaveGetLaneCount() < 32u ? 1u : 0u), traceCounts.y > traceCounts.z ? 1u : 0u);
     }
 #else
-    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, push, false, false); return; }
-    rasterStreamClusterWorkBins(group, lane, push, false);
+    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, gStreamRaster, false, false); return; }
+    rasterStreamClusterWorkBins(group, lane, gStreamRaster, false);
 #endif
 }

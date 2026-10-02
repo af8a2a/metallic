@@ -166,30 +166,11 @@ uint3 streamSoftwareTriangle(uint triangle, DescriptorHandle<StructuredBuffer<ui
     return reflected ? indices.xzy : indices;
 }
 
-// Legacy WorkControl replay keeps its captured raw-index closure until it migrates.
-bool loadStreamSoftwareWave(uint record, GPUDrivenStreamAssetPush push)
-{
-    GPUDrivenStreamAssetParams params;
-    GPUDrivenStreamAssetRasterBindings raster;
-    StreamRasterResources resources = legacyStreamRasterResources(push, params, raster);
-    return loadStreamSoftwareWave(record, params, raster.visibleRecordBase, raster.visibleRecordCapacity, resources);
-}
-
 bool loadStreamSoftwareWave(uint record, StreamRasterParameters push)
 {
     if (push.settings.data == nullptr || !push.settings.contains(0u)) { return false; }
     return loadStreamSoftwareWave(record, push.settings.data[0], push.visibleRecordBase,
         push.visibleRecordCapacity, streamRasterResources(push));
-}
-
-float4 streamSoftwareClip(uint vertex, GPUDrivenStreamAssetPush push)
-{
-    return streamSoftwareClip(vertex, DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0)));
-}
-
-uint3 streamSoftwareTriangle(uint triangle, GPUDrivenStreamAssetPush push)
-{
-    return streamSoftwareTriangle(triangle, DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0)));
 }
 
 void rasterStreamClusterCooperative(uint3 group, uint lane, StreamRasterParameters push)

@@ -193,5 +193,67 @@ class ReplayTests(unittest.TestCase):
         self.reject()
 
 
+class InlineReplayTests(ReplayTests):
+    def setUp(self):
+        super().setUp()
+        self.report.update(protocol="metallic-work-control-replay-v2",
+                           bindingPolicy="canonical-handles-private-allocations",
+                           parameterABI={"id": str(r.INLINE_ABI), "size": 88, "settingsBytes": 624})
+        handles = {}
+        for i, row in enumerate(self.report["bindings"]):
+            bound = row["name"] in r.INLINE_BOUND
+            row["sourceHandle"] = str(i + 100 if bound else 0xffffffffffffffff)
+            row["scratchHandle"] = str(i + 200 if bound else 0xffffffffffffffff)
+            handles[row["name"]] = row
+            del row["shaderIndex"]
+        names = ("pages", "groups", "header", "pageTable", "instances", "bins", "pixels")
+        for file, address, field in (("Push.bin", 4096, "sourceHandle"), ("ReplayPush.bin", 8192, "scratchHandle")):
+            (self.root / file).write_bytes(struct.pack("<QII7Q4I", address, 1, 624,
+                *(int(handles[name][field]) for name in names), 372, 1024, 1, 0))
+        for file in ("Settings.bin", "ReplaySettings.bin"):
+            (self.root / file).write_bytes(bytes(624))
+        self.save()
+
+    def test_wrong_nested_binding(self):
+        # The old bin header index is now inert data. Change every captured copy
+        # consistently; only the explicit pixel handle controls the new shader.
+        for path in self.root.glob("*bins*.bin"):
+            data = bytearray(path.read_bytes())
+            struct.pack_into("<I", data, 44, 999)
+            path.write_bytes(data)
+        r.inspect_replay(self.root)
+
+    def mutate_push(self, offset, value, fmt="<Q"):
+        path = self.root / "ReplayPush.bin"
+        data = bytearray(path.read_bytes())
+        struct.pack_into(fmt, data, offset, value)
+        path.write_bytes(data)
+        self.reject()
+
+    def test_production_handle_in_scratch_root(self):
+        self.mutate_push(16, struct.unpack_from("<Q", (self.root / "Push.bin").read_bytes(), 16)[0])
+
+    def test_settings_address_not_relocated(self):
+        self.mutate_push(0, 4096)
+
+    def test_settings_stride_wrong(self):
+        self.mutate_push(12, 16, "<I")
+
+    def test_settings_bytes_changed(self):
+        (self.root / "ReplaySettings.bin").write_bytes(b"x" + bytes(623))
+        self.reject()
+
+    def test_scalar_changed(self):
+        self.mutate_push(72, 373, "<I")
+
+    def test_truncated_inline_root(self):
+        (self.root / "ReplayPush.bin").write_bytes(bytes(80))
+        self.reject()
+
+    def test_unknown_abi(self):
+        self.report["parameterABI"]["id"] = "0"
+        self.reject()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -77,11 +77,11 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
         "gpuDrivenStreamAssetBuildActiveMain", "gpuDrivenStreamAssetBuildBlasInputMain",
         "gpuDrivenStreamAssetBuildTlasInputMain", "streamClusterPrepareMain",
         "streamClusterCullMain", "streamClusterCullP0Main",
-        "gpuDrivenStreamAssetDeferredMain", "gpuDrivenStreamAssetCompositeVertexMain",
-        "gpuDrivenStreamAssetCompositeFragmentMain", "gpuDrivenStreamAssetInitializePageTableMain",
+        "gpuDrivenStreamAssetDeferredMain", "gpuDrivenStreamAssetInitializePageTableMain",
         "gpuDrivenStreamAssetApplyUpdatesMain", "gpuDrivenStreamAssetFragmentMain",
         "streamClusterRasterMain", "streamClusterRasterLegacyMain",
         "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain"});
+    add("Features/GPUDriven/StreamComposite", {"gpuDrivenStreamAssetCompositeVertexMain", "gpuDrivenStreamAssetCompositeFragmentMain"});
     add(streamModule, {"gpuDrivenStreamAssetMeshMain"}, {"spvMeshShadingEXT"});
     const std::vector<std::string> meshCapabilities{"spvMeshShadingEXT", "spvGroupNonUniformBallot"};
     add(streamModule, {"gpuDrivenStreamAssetMeshMain", "streamTessellationMesh"}, meshCapabilities);
@@ -142,7 +142,8 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
             if (cacheDefine[0] != '\0') {
                 defines.emplace_back(cacheDefine, "1");
             }
-            add("Features/PathTracing/ScenePathTrace", {"scenePathTraceMain"}, pathCapabilities, defines, rtxcrPaths);
+            add(cacheDefine[0] == '\0' ? "Features/PathTracing/ScenePathTraceInline" : "Features/PathTracing/ScenePathTrace",
+                {"scenePathTraceMain"}, pathCapabilities, defines, rtxcrPaths);
             if (cacheDefine[0] != '\0') { continue; }
             add("Features/PathTracing/ScenePathTraceGuides", {"scenePathTraceGuidesMain"}, pathCapabilities, defines, rtxcrPaths);
             add("Features/PathTracing/OpenPBRRayQueryPathTrace", {"openPbrRayQueryPathTraceMain"}, pathCapabilities, defines, rtxcrPaths);

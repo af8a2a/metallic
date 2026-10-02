@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/RHI.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include <filesystem>
 #include <json.hpp>
 #include <span>
@@ -15,7 +15,6 @@ std::recursive_mutex& workControlReplaySubmissionMutex();
 struct WorkControlReplayBinding {
     std::string name;
     Buffer* buffer = nullptr;
-    uint32_t shaderIndex = UINT32_MAX;
 };
 
 // Diagnostic, owner-thread-only capture. The graph owner must drain the target
@@ -28,9 +27,9 @@ public:
     ~WorkControlReplay();
     void arm();
     static WorkControlReplay* selected(std::string_view phase);
-    void before(CommandBuffer& commands, ComputePipeline& pipeline, BindlessHeap& heap,
+    void before(CommandBuffer& commands, const ComputeKernel& kernel, const EncodedParameters& parameters,
         std::span<const WorkControlReplayBinding> bindings, Buffer& arguments,
-        const void* push, uint32_t pushBytes, nlohmann::json identity);
+        std::span<const uint8_t> settings, nlohmann::json identity);
     void after(CommandBuffer& commands);
     nlohmann::json run(Queue& queue, const nlohmann::json& frozenIdentity);
 private:

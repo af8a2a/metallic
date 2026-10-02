@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/StreamRasterParameters.h"
+#include "Runtime/Render/Core/StreamWorkloadParameters.h"
 #include "Runtime/Render/Core/StreamClusterCullParameters.h"
 #include "Runtime/Render/Core/StreamClassifyParameters.h"
 #include "Runtime/Render/Core/StreamSceneParameters.h"
@@ -2586,20 +2587,45 @@ Result<> MeshletStreamRuntime::updateRasterBindings(
     return result;
 }
 
-Result<EncodedParameters> MeshletStreamRuntime::encodeSoftwareRaster(ParameterWriter& writer,
+Result<> MeshletStreamRuntime::fillSoftwareRasterParameters(ParameterWriter& writer, StreamRasterParameters& params,
     Buffer* bins, Buffer* pixels, Buffer* instances) const
 {
     if (!previousFrameParamsValid_) { return makeError(Error::InvalidArgument); }
-    const StreamRasterParameters params{
+    params = {
         .settings = {writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16), 1, sizeof(previousFrameParams_)},
         .pages = writer.buffer(pageBuffer_.get()), .groups = writer.buffer(activeGroupBuffer_.get()),
         .header = writer.buffer(activeHeaderBuffer_.get()), .pageTable = writer.buffer(pageTableBuffer_.get()),
-        .instances = writer.buffer(instances), .bins = writer.buffer(bins), .pixels = writer.buffer(pixels),
+        .instances = writer.buffer(instances), .bins = writer.buffer(bins),
+        .pixels = pixels ? writer.buffer(pixels) : ShaderBuffer{},
         .visibleRecordBase = rasterBindingsSnapshot_.visibleRecordBase,
         .visibleRecordCapacity = rasterBindingsSnapshot_.visibleRecordCapacity,
         .hasInstances = 1,
     };
+    return {};
+}
+
+Result<EncodedParameters> MeshletStreamRuntime::encodeSoftwareRaster(ParameterWriter& writer,
+    Buffer* bins, Buffer* pixels, Buffer* instances, std::vector<uint8_t>* settingsSnapshot) const
+{
+    StreamRasterParameters params;
+    auto result = fillSoftwareRasterParameters(writer, params, bins, pixels, instances);
+    if (!result) { return makeError(result.error()); }
+    if (settingsSnapshot) {
+        settingsSnapshot->resize(sizeof(previousFrameParams_));
+        std::memcpy(settingsSnapshot->data(), &previousFrameParams_, sizeof(previousFrameParams_));
+    }
     return writer.encode(params, kStreamRasterABI, ParameterTransport::InlinePush);
+}
+
+Result<EncodedParameters> MeshletStreamRuntime::encodeSoftwareWorkload(ParameterWriter& writer,
+    Buffer* bins, Buffer* counters, Buffer* instances) const
+{
+    StreamWorkloadParameters params;
+    // Coverage diagnostics never receive or retain the production pixel buffer.
+    auto result = fillSoftwareRasterParameters(writer, params.raster, bins, nullptr, instances);
+    if (!result) { return makeError(result.error()); }
+    params.counters = writer.buffer(counters);
+    return writer.encode(params, kStreamWorkloadABI, ParameterTransport::InlinePush);
 }
 
 Result<> MeshletStreamRuntime::fillClusterCullParameters(ParameterWriter& writer, StreamClusterCullParameters& params) const
@@ -4050,15 +4076,15 @@ void MeshletStreamRuntime::consumeGpuRequestReadback(CPUProfileRecorder* profile
 void MeshletStreamRuntime::appendReplayBindings(std::vector<profiling::WorkControlReplayBinding>& bindings) const
 {
     bindings.insert(bindings.end(), {
-        {"pages", pageBuffer_.get(), pageHandle_.shaderIndex()},
-        {"groups", activeGroupBuffer_.get(), activeGroupHandle_.shaderIndex()},
-        {"header", activeHeaderBuffer_.get(), activeHeaderHandle_.shaderIndex()},
-        {"pageTable", pageTableBuffer_.get(), pageTableHandle_.shaderIndex()},
-        {"params", paramsBuffer_.get(), paramsHandle_.shaderIndex()},
-        {"rasterBindings", rasterBindingsBuffer_.get(), rasterBindingsHandle_.shaderIndex()},
-        {"requests", requestBuffer_.get(), UINT32_MAX},
-        {"visibleRecords", visibleClusterBuffer_.get(), UINT32_MAX},
-        {"lodState", lodStateBuffer_.get(), UINT32_MAX},
+        {"pages", pageBuffer_.get()},
+        {"groups", activeGroupBuffer_.get()},
+        {"header", activeHeaderBuffer_.get()},
+        {"pageTable", pageTableBuffer_.get()},
+        {"params", paramsBuffer_.get()},
+        {"rasterBindings", rasterBindingsBuffer_.get()},
+        {"requests", requestBuffer_.get()},
+        {"visibleRecords", visibleClusterBuffer_.get()},
+        {"lodState", lodStateBuffer_.get()},
     });
 }
 

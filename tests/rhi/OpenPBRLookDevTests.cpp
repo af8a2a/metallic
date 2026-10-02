@@ -11,10 +11,10 @@ namespace {
 
 class OpenPBRTypedGuidesTest : public RHITest {
 public:
-    explicit OpenPBRTypedGuidesTest(bool standard = false) : standard_(standard)
+    explicit OpenPBRTypedGuidesTest(bool standard = false, bool guides = true) : standard_(standard), guides_(guides)
     {
         type = RHITestType::Rendering;
-        name = standard ? "standard_typed_guides_outputs" : "openpbr_typed_guides_outputs";
+        name = !guides ? "standard_inline_path_trace_history" : standard ? "standard_typed_guides_outputs" : "openpbr_typed_guides_outputs";
     }
     RHITestResult run(RHITestContext& context) override
     {
@@ -25,7 +25,7 @@ public:
         if (!document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) { return RHITestResult::fail("Load LookDev"); }
         auto* pass = sample.graph.findNode("PathTrace");
         pass->properties["bsdf"] = standard_ ? "standard" : "openpbr";
-        pass->properties["exportDenoiserGuides"] = true;
+        pass->properties["exportDenoiserGuides"] = guides_;
         pass->properties["samples"] = 1;
         pass->properties["temporalJitter"] = false;
         sample.graph.markDirty();
@@ -36,47 +36,64 @@ public:
         auto initialized = preview.initialize(context.enableValidation, true);
         if (!initialized) { return RHITestResult::fail(toString(initialized)); }
         preview.setRawReadbackEnabled(true);
-        for (uint32_t width : {31u, 63u}) {
-            for (const char* field : {"color", "albedo", "specularAlbedo", "normalRoughness", "motionVectors", "linearDepth", "specularHitDistance", "depth"}) {
-                const std::string output = std::string("PathTrace.") + field;
-                if (!preview.render(sample.graph, width, 39, output)) { return RHITestResult::fail(preview.lastLog()); }
-                if (preview.lastLog().find("Initial material compilation failed") != std::string::npos) {
-                    return RHITestResult::fail(preview.lastLog());
-                }
-                const auto format = preview.readbackFormat();
-                const bool half = format == render::Format::RGBA16Sfloat || format == render::Format::RG16Sfloat;
-                const uint32_t channels = format == render::Format::RGBA16Sfloat ? 4 : format == render::Format::RG16Sfloat ? 2 : 1;
-                const auto& bytes = preview.readbackBytes();
-                if (bytes.size() != width * 39u * channels * (half ? 2u : 4u)) { return RHITestResult::fail(output + " size"); }
-                for (size_t pixel = 0; pixel < width * 39u; ++pixel) {
-                    float values[4]{};
-                    for (uint32_t channel = 0; channel < channels; ++channel) {
-                        const size_t index = pixel * channels + channel;
-                        if (half) {
-                            uint16_t word; std::memcpy(&word, bytes.data() + index * 2, 2);
-                            const uint32_t exponent = (word >> 10) & 31, mantissa = word & 1023;
-                            values[channel] = exponent == 0 ? std::ldexp(float(mantissa), -24) :
-                                exponent == 31 ? INFINITY : std::ldexp(float(mantissa + 1024), int(exponent) - 25);
-                            if (word & 0x8000) { values[channel] = -values[channel]; }
-                        } else { std::memcpy(&values[channel], bytes.data() + index * 4, 4); }
-                        if (!std::isfinite(values[channel])) { return RHITestResult::fail(output + " nonfinite"); }
-                        if ((std::string_view(field) == "albedo" || std::string_view(field) == "specularAlbedo" || std::string_view(field) == "depth") &&
-                            (values[channel] < 0 || values[channel] > 1)) { return RHITestResult::fail(output + " range"); }
+        for (uint32_t mode = 0; mode < (guides_ ? 1u : 3u); ++mode) {
+            if (!guides_) {
+                pass->properties["cacheMode"] = mode == 1 ? "sharc" : "off";
+                sample.graph.markDirty();
+            }
+            for (uint32_t width : {31u, 63u}) {
+                for (const char* field : {"color", "albedo", "specularAlbedo", "normalRoughness", "motionVectors", "linearDepth", "specularHitDistance", "depth"}) {
+                    if (!guides_ && std::string_view(field) != "color") { continue; }
+                    const std::string output = std::string("PathTrace.") + field;
+                    if (!guides_) {
+                        for (uint32_t frame = 0; frame < 3; ++frame) {
+                            if (!preview.render(sample.graph, width, 39, output)) { return RHITestResult::fail(preview.lastLog()); }
+                            if (preview.lastLog().find("Initial material compilation failed") != std::string::npos) {
+                                return RHITestResult::fail(preview.lastLog());
+                            }
+                        }
                     }
-                    if (std::string_view(field) == "normalRoughness") {
-                        const float lengthSquared = values[0]*values[0] + values[1]*values[1] + values[2]*values[2];
-                        if (std::abs(lengthSquared - 1) > 0.003f || values[3] < 0 || values[3] > 1) { return RHITestResult::fail(output + " invalid normal/roughness"); }
+                    if (!preview.render(sample.graph, width, 39, output)) { return RHITestResult::fail(preview.lastLog()); }
+                    if (preview.lastLog().find("Initial material compilation failed") != std::string::npos) {
+                        return RHITestResult::fail(preview.lastLog());
                     }
-                    if (std::string_view(field) == "motionVectors" && (std::abs(values[0]) > 0.01f || std::abs(values[1]) > 0.01f)) {
-                        return RHITestResult::fail(output + " stationary camera motion");
+                    const auto format = preview.readbackFormat();
+                    const bool half = format == render::Format::RGBA16Sfloat || format == render::Format::RG16Sfloat;
+                    const uint32_t channels = (format == render::Format::RGBA16Sfloat || format == render::Format::RGBA32Sfloat) ? 4 : format == render::Format::RG16Sfloat ? 2 : 1;
+                    const auto& bytes = preview.readbackBytes();
+                    if (bytes.size() != width * 39u * channels * (half ? 2u : 4u)) { return RHITestResult::fail(output + " size"); }
+                    for (size_t pixel = 0; pixel < width * 39u; ++pixel) {
+                        float values[4]{};
+                        for (uint32_t channel = 0; channel < channels; ++channel) {
+                            const size_t index = pixel * channels + channel;
+                            if (half) {
+                                uint16_t word; std::memcpy(&word, bytes.data() + index * 2, 2);
+                                const uint32_t exponent = (word >> 10) & 31, mantissa = word & 1023;
+                                values[channel] = exponent == 0 ? std::ldexp(float(mantissa), -24) :
+                                    exponent == 31 ? INFINITY : std::ldexp(float(mantissa + 1024), int(exponent) - 25);
+                                if (word & 0x8000) { values[channel] = -values[channel]; }
+                            } else { std::memcpy(&values[channel], bytes.data() + index * 4, 4); }
+                            if (!std::isfinite(values[channel])) { return RHITestResult::fail(output + " nonfinite"); }
+                            if ((std::string_view(field) == "albedo" || std::string_view(field) == "specularAlbedo" || std::string_view(field) == "depth") &&
+                                (values[channel] < 0 || values[channel] > 1)) { return RHITestResult::fail(output + " range"); }
+                        }
+                        if (std::string_view(field) == "normalRoughness") {
+                            const float lengthSquared = values[0]*values[0] + values[1]*values[1] + values[2]*values[2];
+                            if (std::abs(lengthSquared - 1) > 0.003f || values[3] < 0 || values[3] > 1) { return RHITestResult::fail(output + " invalid normal/roughness"); }
+                        }
+                        if (std::string_view(field) == "motionVectors" && (std::abs(values[0]) > 0.01f || std::abs(values[1]) > 0.01f)) {
+                            return RHITestResult::fail(output + " stationary camera motion");
+                        }
                     }
                 }
             }
         }
-        return RHITestResult::pass("Eight typed outputs, finite HDR, normalized normals, bounded guides and resize/history");
+        return RHITestResult::pass(guides_ ? "Eight typed outputs, finite HDR, normalized normals, bounded guides and resize/history" :
+            "Standard inline path tracing, finite HDR, history/resize and off/SHaRC/off ABI transitions");
     }
 private:
     bool standard_ = false;
+    bool guides_ = true;
 };
 METALLIC_REGISTER_RHI_TEST(OpenPBRTypedGuidesTest);
 
@@ -85,6 +102,12 @@ public:
     StandardTypedGuidesTest() : OpenPBRTypedGuidesTest(true) {}
 };
 METALLIC_REGISTER_RHI_TEST(StandardTypedGuidesTest);
+class StandardInlinePathTraceTest final : public OpenPBRTypedGuidesTest {
+public:
+    StandardInlinePathTraceTest() : OpenPBRTypedGuidesTest(true, false) {}
+};
+METALLIC_REGISTER_RHI_TEST(StandardInlinePathTraceTest);
+
 
 class OpenPBRLookDevTest final : public RHITest {
 public:

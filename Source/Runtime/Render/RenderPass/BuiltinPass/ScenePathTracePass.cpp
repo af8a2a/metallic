@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/PathTraceInlineParameters.h"
 #include "Runtime/Render/Core/PathTraceParameters.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
@@ -907,6 +908,10 @@ public:
 #endif
         }
         cacheMode_ = cacheMode;
+        const bool typedPathTrace = !realtime_ && !visibilityDeferred_ && cacheMode == kScenePathTraceCacheModeOff;
+        const bool inlinePathTrace = typedPathTrace && !useOpenPBR && !exportGuides;
+        if (inlinePathTrace) { moduleName = "Features/PathTracing/ScenePathTraceInline"; }
+
         if (!cacheWarning.empty()) {
             log += cacheWarning;
         }
@@ -918,7 +923,7 @@ public:
             "|streamMaterials=" + (streamMaterials_ ? "1" : "0") +
             "|streamRayQueries=" + (streamRayQueries_ ? "1" : "0") +
             "|supplementaryPathTracing=" + (supplementaryPathTracing ? "1" : "0") +
-            "|textureCount=" + std::to_string(sceneResources_.materialTextureCount()) +
+            "|textureCount=" + std::to_string(typedPathTrace ? 0 : sceneResources_.materialTextureCount()) +
             "|view=" + (globalView ? "1" : "0") +
             "|cache=" + std::to_string(cacheMode_) +
             "|ntc=" + (ntcActive ? "1" : "0") +
@@ -948,7 +953,6 @@ public:
             log += "Deferred material classification requires native wave32; disable materialBinning on this device\n";
             return makeError(Error::Unsupported);
         }
-        const bool typedPathTrace = (useOpenPBR || exportGuides) && !realtime_ && !visibilityDeferred_;
         const bool baseReady = (typedPathTrace ? typedPathTraceProgram_.valid() : programs_[static_cast<size_t>(PathTracePermutation::Base)].valid()) &&
             (!classified || std::all_of(classifiedPrograms_.begin(), classifiedPrograms_.end(),
                 [](const ComputeProgram& program) { return program.valid(); }));
@@ -1214,7 +1218,9 @@ public:
                 .capabilities = capabilities, .macroDefines = defines};
             auto compiled = typedPathTrace
                 ? compileMaterialExecutable(*context.device, source,
-                    ComputeKernelDesc{.parameters = parameterAbi<PathTraceParameters>(kPathTraceABI),
+                    ComputeKernelDesc{.parameters = inlinePathTrace
+                        ? parameterAbi<PathTraceInlineParameters>(kPathTraceInlineABI, ParameterTransport::InlinePush)
+                        : parameterAbi<PathTraceParameters>(kPathTraceABI),
                         .debugName = debugName.c_str()}, typedPathTraceProgram_, artifact, diagnostics)
                 : compileMaterialExecutable(*context.device, source,
                     ComputeProgramDesc{.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
@@ -1633,6 +1639,7 @@ public:
 #endif
         }
         cacheMode_ = cacheMode;
+
 
         if (!color.valid() ||
             color.view() == nullptr ||
@@ -2182,7 +2189,22 @@ public:
                             params.ntcInfo = writer.buffer(neural.setInfoBuffer());
                             params.ntcSampler = writer.sampler(neural.latentSampler());
                         }
-                        auto encoded = writer.encode(params, kPathTraceABI);
+                        Result<EncodedParameters> encoded;
+                        if (!useOpenPBR && !exportGuides) {
+                            PathTraceInlineParameters root{};
+                            root.settings = params.settings;
+                            root.output = params.output;
+                            root.historyCurrent = params.historyCurrent;
+                            root.historyPrevious = params.historyPrevious;
+                            params.settings = 0;
+                            params.output = {};
+                            params.historyCurrent = {};
+                            params.historyPrevious = {};
+                            root.resources = writer.data(&params, sizeof(params));
+                            encoded = writer.encode(root, kPathTraceInlineABI, ParameterTransport::InlinePush);
+                        } else {
+                            encoded = writer.encode(params, kPathTraceABI);
+                        }
                         if (!encoded) { return makeError(encoded.error()); }
                         return typedPathTraceProgram_.dispatch(commands, *encoded,
                             (context.width() + 7) / 8, (context.height() + 7) / 8);

@@ -634,7 +634,8 @@ public:
     BindlessHeap* bindlessHeap() const { return registry_ ? registry_->heap() : nullptr; }
     MeshletStreamUserPush userPush() const;
     Result<> updateRasterBindings(const MeshletStreamGPURasterBindings& bindings);
-    Result<EncodedParameters> encodeSoftwareRaster(ParameterWriter& writer, Buffer* bins, Buffer* pixels, Buffer* instances) const;
+    Result<EncodedParameters> encodeSoftwareRaster(ParameterWriter& writer, Buffer* bins, Buffer* pixels, Buffer* instances, std::vector<uint8_t>* settingsSnapshot = nullptr) const;
+    Result<EncodedParameters> encodeSoftwareWorkload(ParameterWriter& writer, Buffer* bins, Buffer* counters, Buffer* instances) const;
     Result<> fillClusterCullParameters(ParameterWriter& writer, StreamClusterCullParameters& params) const;
     Result<EncodedParameters> encodeClusterClassify(ParameterWriter& writer, Buffer* bins,
         ShaderDataSpan instances, bool tessellation) const;
@@ -659,6 +660,8 @@ public:
     MeshletStreamCLASPool* clasPool() const { return clasPool_.get(); }
 
 private:
+    Result<> fillSoftwareRasterParameters(ParameterWriter& writer, StreamRasterParameters& params,
+        Buffer* bins, Buffer* pixels, Buffer* instances) const;
     Result<> beginUploadBatch(CommandBuffer& commandBuffer, Streamer& streamer,
         const MeshletStreamFrameDesc& frame, const std::function<Result<>()>& flushUploads, bool initialLoad);
     Result<> cmdBuildPendingClas(CommandBuffer& commandBuffer, const TraversalCheckpoint& checkpoint = {});

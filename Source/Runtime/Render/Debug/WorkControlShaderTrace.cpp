@@ -1,4 +1,5 @@
 #include "WorkControlShaderTrace.h"
+#include "Runtime/Render/Core/StreamRasterParameters.h"
 #include "Runtime/Debug/DebugHash.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -238,7 +239,7 @@ void WorkControlShaderTrace::prepare(Device& device, const DebugValue& specifica
     require(bool(device.createComputePipeline({
         .computeShader = {lease_->shader.get(), "main"},
         .usesBindlessHeap = true,
-        .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
+        .bindlessUserPushDataSize = sizeof(StreamRasterParameters),
     }).transform(
         [&](auto value){lease_->pipeline=std::move(value);})),"Diagnostic pipeline creation failed");
     armed_ = true;

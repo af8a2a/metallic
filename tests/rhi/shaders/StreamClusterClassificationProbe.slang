@@ -61,7 +61,10 @@ void verifyStreamSoftwareLoadMain(uint3 group : SV_GroupID, uint lane : SV_Group
     if (candidate >= bins[12] || WaveGetLaneCount() < 32u) { return; }
     uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
     if (lane < WaveGetLaneCount()) {
-        bool valid = loadStreamSoftwareWave(record, push);
+        GPUDrivenStreamAssetParams params;
+        GPUDrivenStreamAssetRasterBindings raster;
+        StreamRasterResources resources = legacyStreamRasterResources(push, params, raster);
+        bool valid = loadStreamSoftwareWave(record, params, raster.visibleRecordBase, raster.visibleRecordCapacity, resources);
         if (lane == 0u) { g_StreamSoftwareValid = valid ? 1u : 0u; }
     }
     if (lane == 0u) {
@@ -76,10 +79,10 @@ void verifyStreamSoftwareLoadMain(uint3 group : SV_GroupID, uint lane : SV_Group
         g_StreamSoftware.recordIndex == g_StreamRasterCluster.recordIndex &&
         g_StreamSoftware.instanceFlags == g_StreamRasterCluster.instanceFlags;
     if (lane < g_StreamRasterCluster.vertexCount) {
-        same = same && all(asuint(streamSoftwareClip(lane, push)) == asuint(streamClusterClip(g_StreamRasterCluster, lane, push)));
+        same = same && all(asuint(streamSoftwareClip(lane, DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0)))) == asuint(streamClusterClip(g_StreamRasterCluster, lane, push)));
     }
     if (lane < g_StreamRasterCluster.triangleCount) {
-        same = same && all(streamSoftwareTriangle(lane, push) == streamClusterTriangle(g_StreamRasterCluster, lane, push));
+        same = same && all(streamSoftwareTriangle(lane, DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0))) == streamClusterTriangle(g_StreamRasterCluster, lane, push));
     }
     if (!same) { InterlockedOr(bins[14], 0x20000000u); }
 }

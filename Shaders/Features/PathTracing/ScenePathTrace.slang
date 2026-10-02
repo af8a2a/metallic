@@ -1222,6 +1222,45 @@ float3 faceForwardShadingNormal(float3 normal, float3 geometryNormal, float3 ray
 
 #if METALLIC_STREAM_RAY_QUERIES || (METALLIC_STREAM_SHADOWS && METALLIC_STREAM_TLAS)
 #include "StreamSceneRayQuery.slang"
+
+// Adapt either the canonical typed root or the remaining ComputeProgram callers
+// here; the shared stream query implementation does not know either ABI.
+struct SceneStreamRayMaterials : IStreamRayMaterials
+{
+    ScenePathTracePush settings;
+    StructuredBuffer<PathTraceMaterial> materials;
+
+    bool load(uint index, out PathTraceMaterial material)
+    {
+        material = (PathTraceMaterial)0;
+        uint count, stride;
+        materials.GetDimensions(count, stride);
+        if (index >= count) { return false; }
+        material = materials[index];
+        return true;
+    }
+
+    float alpha(PathTraceTextureInfo texture, float2 uv)
+    {
+        return loadMaterialAlphaCoverage(texture, uv, settings);
+    }
+};
+
+SceneStreamRayMaterials sceneStreamRayMaterials(ScenePathTracePush settings)
+{
+    SceneStreamRayMaterials result;
+    result.settings = settings;
+    result.materials = gMaterials;
+    return result;
+}
+
+bool traceSceneStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push, out HitInfo hit)
+{
+    hit = (HitInfo)0;
+    if (push.streamScene == nullptr) { return false; }
+    return traceStreamClosest(ray, nearDistance, farDistance, gScene, *push.streamScene,
+        sceneStreamRayMaterials(push), push.bitangentFlip, hit);
+}
 #endif
 
 bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTracePush push)
@@ -1229,7 +1268,7 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTr
 #if METALLIC_STREAM_RAY_QUERIES
     Ray ray; ray.origin = origin; ray.direction = direction;
     HitInfo hit;
-    return traceStreamClosest(ray, 0.001, max(maxDistance, 0.001), push, hit);
+    return traceSceneStreamClosest(ray, 0.001, max(maxDistance, 0.001), push, hit);
 #elif METALLIC_STREAM_MATERIALS
     return false; // Streamed opaque shading consumes the main-light shadow pass.
 #else
@@ -1258,7 +1297,7 @@ bool traceShadow(float3 origin, float3 direction, float maxDistance, ScenePathTr
 bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
 {
 #if METALLIC_STREAM_RAY_QUERIES
-    return traceStreamClosest(ray, max(push.clipOrtho.x, 0.0001), max(push.clipOrtho.y, 0.001), push, hit);
+    return traceSceneStreamClosest(ray, max(push.clipOrtho.x, 0.0001), max(push.clipOrtho.y, 0.001), push, hit);
 #elif METALLIC_STREAM_MATERIALS
     hit = (HitInfo)0;
     return false; // Streamed opaque shading consumes the main-light shadow pass.
@@ -2041,7 +2080,7 @@ PathTraceCacheContext makeCacheContext()
     return cache;
 }
 
-#if !METALLIC_PATH_TRACE_TYPED
+#if !METALLIC_PATH_TRACE_TYPED || defined(METALLIC_PATH_TRACE_INLINE)
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)

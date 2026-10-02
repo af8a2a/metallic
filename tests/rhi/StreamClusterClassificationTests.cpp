@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/StreamWorkloadParameters.h"
 #include "Runtime/Render/Core/StreamRasterParameters.h"
 #include "Runtime/Render/Core/StreamClusterCullParameters.h"
 #include "Runtime/Render/Core/StreamClassifyParameters.h"
@@ -52,8 +53,8 @@ public:
         std::array<VisibilityHybridRasterizer, 2> rasterizers;
         for (auto& rasterizer : rasterizers) { CLASSIFY_REQUIRE(rasterizer.initialize(*device, 128, 128, log, 1, capacity)); }
         std::unique_ptr<BindlessHeap> heap;
-        CLASSIFY_REQUIRE(device->createBindlessHeap({.maxBuffers = 18}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
-        std::array<BindlessHandle, 18> handles;
+        CLASSIFY_REQUIRE(device->createBindlessHeap({.maxBuffers = 16}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
+        std::array<BindlessHandle, 16> handles;
         for (auto& handle : handles) { CLASSIFY_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
         enum Input { Header, Groups, Params, Pages, PageTable, Bindings, Visibility, Requests, Records, HZB0, HZB1, Instances, InputCount };
         const uint32_t strides[] = {sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUActiveGroup),
@@ -71,7 +72,6 @@ public:
         for (size_t i = 0; i < 2; ++i) {
             CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[12 + i * 2], rasterizers[i].clusterBuffer()));
             CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[13 + i * 2], rasterizers[i].candidateArguments()));
-            CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[16 + i], rasterizers[i].workloadBuffer()));
         }
         const auto upload = [&](size_t index, const void* data, size_t size) -> Result<> {
             void* mapped = inputs[index]->map();
@@ -81,6 +81,7 @@ public:
             return {};
         };
         ComputeKernel candidateKernel;
+        std::array<ComputeKernel, 2> workloadKernels;
         std::array<ComputeKernel, 2> cullKernels;
         std::array<ComputeKernel, 2> classifyKernels;
         std::array<std::unique_ptr<ShaderModule>, 9> shaders;
@@ -110,6 +111,11 @@ public:
             if (i == 2 || i == 7) {
                 CLASSIFY_REQUIRE(classifyKernels[i == 7 ? 1 : 0].initialize(*device, {.spirv = compiled.spirv,
                     .parameters = parameterAbi<StreamClassifyParameters>(kStreamClassifyABI, ParameterTransport::InlinePush)}, log));
+                continue;
+            }
+            if (i == 5 || i == 6) {
+                CLASSIFY_REQUIRE(workloadKernels[i - 5].initialize(*device, {.spirv = compiled.spirv,
+                    .parameters = parameterAbi<StreamWorkloadParameters>(kStreamWorkloadABI, ParameterTransport::InlinePush)}, log));
                 continue;
             }
             CLASSIFY_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
@@ -154,7 +160,8 @@ public:
                         continue;
                     }
                     if (std::strcmp(entry, "streamClusterRasterMain") == 0 || std::strcmp(entry, "streamClusterRasterLegacyMain") == 0 ||
-                        std::strcmp(entry, "streamClusterRasterPlaneMain") == 0 || std::strcmp(entry, "streamClusterRasterCooperativeMain") == 0) {
+                        std::strcmp(entry, "streamClusterRasterPlaneMain") == 0 || std::strcmp(entry, "streamClusterRasterCooperativeMain") == 0 ||
+                        std::strcmp(entry, "streamClusterRasterWorkBinsMain") == 0 || std::strcmp(entry, "streamClusterRasterWorkControlMain") == 0) {
                         ComputeKernel kernel;
                         CLASSIFY_REQUIRE(kernel.initialize(*device, {.spirv = compiled.spirv,
                             .parameters = parameterAbi<StreamRasterParameters>(kStreamRasterABI, ParameterTransport::InlinePush)}, log));
@@ -454,21 +461,29 @@ public:
                     }
                     CLASSIFY_REQUIRE(rasterizer.finishClusterBins(*commands));
                     if (schedule != 0) {
-                        commands->bindBindlessHeap(*heap);
-                        auto diagnosticPush = push;
-                        diagnosticPush.hybridQueueBuffer = handles[16 + bufferSet].shaderIndex;
+                        ParameterWriter writer(*device, **candidateRegistry, commands->frameContext());
+                        const StreamWorkloadParameters diagnostic{
+                            .raster = {
+                                .settings = {writer.data(&params, sizeof(params), 16), 1, sizeof(params)},
+                                .pages = writer.buffer(inputs[Pages].get()), .groups = writer.buffer(inputs[Groups].get()),
+                                .header = writer.buffer(inputs[Header].get()), .pageTable = writer.buffer(inputs[PageTable].get()),
+                                .instances = writer.buffer(inputs[Instances].get()), .bins = writer.buffer(&rasterizer.clusterBuffer()),
+                                .visibleRecordBase = bindings.visibleRecordBase, .visibleRecordCapacity = bindings.visibleRecordCapacity,
+                                .hasInstances = 1,
+                            },
+                            .counters = writer.buffer(&rasterizer.workloadBuffer()),
+                        };
+                        auto encoded = writer.encode(diagnostic, kStreamWorkloadABI, ParameterTransport::InlinePush);
+                        if (!encoded) { return RHITestResult::fail("Cannot encode workload parameters"); }
                         BufferBarrierDesc ready{
                             .buffer = &rasterizer.workloadBuffer(),
                             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                         };
                         if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                        if (auto commandResult = commands->bindExecution((pipelines[5])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                        commands->pushBindlessData(&diagnosticPush, sizeof(diagnosticPush));
-                        commands->dispatch(1);
+                        CLASSIFY_REQUIRE(workloadKernels[0].dispatch(*commands, *encoded, 1));
                         if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                        if (auto commandResult = commands->bindExecution((pipelines[6])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                        CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.clusterArguments(), 4 * 3 * sizeof(uint32_t)));
+                        CLASSIFY_REQUIRE(workloadKernels[1].dispatchIndirect(*commands, *encoded, rasterizer.clusterArguments(), 4 * 3 * sizeof(uint32_t)));
                         ready.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                         if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         {

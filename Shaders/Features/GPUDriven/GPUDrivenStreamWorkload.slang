@@ -3,24 +3,24 @@
 #include "GPUDrivenStreamAsset.slang"
 
 #include "StreamRasterWorkload.slang"
+#include "../../../Source/Runtime/Render/Core/StreamWorkloadParameters.h"
+[[vk::push_constant]] ConstantBuffer<StreamWorkloadParameters> gStreamWorkload;
 
 [shader("compute")]
 [numthreads(16, 1, 1)]
-void streamWorkloadResetMain(uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+void streamWorkloadResetMain(uint lane : SV_GroupIndex)
 {
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> counters =
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(push.hybridQueueBuffer, 0));
+    let counters = gStreamWorkload.counters;
     counters[lane] = 0;
 }
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamWorkloadMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+void streamWorkloadMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    DescriptorHandle<StructuredBuffer<uint>> bins =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> handle =
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(push.hybridQueueBuffer, 0));
+    StreamRasterParameters push = gStreamWorkload.raster;
+    let bins = push.bins;
+    let handle = gStreamWorkload.counters;
     RWStructuredBuffer<uint64_t> counters = handle;
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
@@ -34,14 +34,14 @@ void streamWorkloadMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uni
         return;
     }
     if (lane < g_StreamSoftware.vertexCount) {
-        HybridScreenVertex vertex = hybridPrepareVertex(streamSoftwareClip(lane, push), float2(bins[6], bins[7]), bins[10]);
+        HybridScreenVertex vertex = hybridPrepareVertex(streamSoftwareClip(lane, push.pages), float2(bins[6], bins[7]), bins[10]);
         g_StreamRasterWords[lane] = uint4(uint2(vertex.position), asuint(vertex.depth), 0);
     }
     GroupMemoryBarrierWithGroupSync();
     uint64_t4 work = uint64_t4(0);
     bool active = lane < g_StreamSoftware.triangleCount;
     if (active) {
-        uint3 tri = streamSoftwareTriangle(lane, push);
+        uint3 tri = streamSoftwareTriangle(lane, push.pages);
         work = workloadTriangle(asint(g_StreamRasterWords[tri.x].xy), asint(g_StreamRasterWords[tri.y].xy),
             asint(g_StreamRasterWords[tri.z].xy), (g_StreamSoftware.instanceFlags & 2u) != 0,
             bins[6], bins[7], bins[10]);

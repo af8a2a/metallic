@@ -32,15 +32,7 @@ using StreamSceneAddress = uint64_t;
 #else
 typealias StreamSceneAddress = StreamSceneParameters*;
 #endif
-struct ShadowGeometryPush
-{
-    uint32_t materialTextureCount;
-    uint32_t ntcTextureSetCount;
-    StreamSceneAddress streamScene;
-};
 #ifdef __cplusplus
-static_assert(sizeof(ShadowGeometryPush) == 16);
-static_assert(offsetof(ShadowGeometryPush, streamScene) == 8);
 inline constexpr uint64_t kStreamSceneABI = 0x53545245414d0001ull;
 static_assert(sizeof(StreamSceneParameters) == 64);
 static_assert(offsetof(StreamSceneParameters, pageTable) == 16);

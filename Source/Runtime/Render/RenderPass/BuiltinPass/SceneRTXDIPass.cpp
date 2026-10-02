@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/RTXDITraceParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/RenderGraph/NRDRuntime.h"
@@ -216,7 +217,6 @@ public:
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
         if (rayQueryProgram_.valid() &&
-            compiledTextureCount_ == sceneResources_.materialTextureCount() &&
             compiledPositionFetch_ == positionFetch &&
             compiledNtcActive_ == ntcActive &&
             compiledNtcCooperativeVector_ == ntcCooperativeVector) {
@@ -267,72 +267,12 @@ public:
             return result;
         }
 
-        // Keep the conventional binding table stable; append NTC descriptors only when active.
-        std::vector<ComputeProgramBindingDesc> bindings{
-            {.binding = 0, .kind = ComputeResourceBindingKind::AccelerationStructure},
-            {.binding = 1, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 2, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 3, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 4, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 5, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 6, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {
-                .binding = 7,
-                .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = sceneResources_.materialTextureCount(),
-            },
-            {.binding = 8, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 9, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 10, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 11, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 12, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 13, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 14, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 15, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 16, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 17, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 18, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 19, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 20, .kind = ComputeResourceBindingKind::StorageImage},
-            {.binding = 21, .kind = ComputeResourceBindingKind::SampledImage},
-            {.binding = 23, .kind = ComputeResourceBindingKind::SampledImage},
-            {.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 53, .kind = ComputeResourceBindingKind::SampledImage},
-        };
-        if (!positionFetch) {
-            bindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
-        }
-        if (ntcActive) {
-            bindings.push_back({
-                .binding = kNeuralTextureLatentsBinding,
-                .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kMaxNeuralTextureSets,
-            });
-            bindings.push_back({
-                .binding = kNeuralTextureConstantsBinding,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            bindings.push_back({
-                .binding = kNeuralTextureWeightsBinding,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            bindings.push_back({
-                .binding = kNeuralTextureSetInfoBinding,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            bindings.push_back({
-                .binding = kNeuralTextureSamplerBinding,
-                .kind = ComputeResourceBindingKind::Sampler,
-            });
-        }
         std::string programLog;
         result = rayQueryProgram_.initialize(
             *context.device,
-            ComputeProgramDesc{
+            ComputeKernelDesc{
                 .spirv = computeCompile.spirv,
-                .pushConstantSize = sizeof(SceneRTXDIPush),
-                .bindings = bindings,
+                .parameters = parameterAbi<RTXDITraceParameters>(kRTXDITraceABI, ParameterTransport::InlinePush),
                 .debugName = "SceneRTXDIPass",
             },
             programLog);
@@ -346,7 +286,6 @@ public:
             rayQueryProgram_.clear();
         } else {
             compiledNtcActive_ = ntcActive;
-            compiledTextureCount_ = sceneResources_.materialTextureCount();
             compiledPositionFetch_ = positionFetch;
             compiledNtcCooperativeVector_ = ntcCooperativeVector;
         }
@@ -517,82 +456,6 @@ public:
             }
         }
 
-        TextureView* const environmentTextureViews[] = {environmentTextureView};
-        TextureView* const localLightPdfViews[] = {lights_.lightPdfView()};
-        TextureView* const environmentImportanceTextureViews[] = {environmentImportanceTextureView};
-        std::vector<ComputeDispatchBinding> bindings{
-            {
-                .binding = 0,
-                .accelerationStructure =
-                    context.inputAccelerationStructure("accelerationStructure")
-                        ? context.inputAccelerationStructure("accelerationStructure")
-                        : sceneResources_.accelerationStructure().accelerationStructure(),
-            },
-            {.binding = 1, .textureView = color.view()},
-            {.binding = 2, .buffer = sceneResources_.shadingVertexBuffer()},
-            {.binding = 3, .buffer = sceneResources_.indexBuffer()},
-            {.binding = 4, .buffer = sceneResources_.primitiveBuffer()},
-            {.binding = 5, .buffer = sceneResources_.instanceBuffer()},
-            {.binding = 6, .buffer = sceneResources_.materialBuffer()},
-            {
-                .binding = 7,
-                .textureViews = materialTextureViews,
-            },
-            {.binding = 8, .textureView = reservoirHistory.current},
-            {.binding = 9, .textureView = reservoirHistory.previous},
-            {.binding = 10, .textureView = positionHistory.current},
-            {.binding = 11, .textureView = positionHistory.previous},
-            {.binding = 12, .textureView = normalHistory.current},
-            {.binding = 13, .textureView = normalHistory.previous},
-            {.binding = 14, .textureView = noisyDiffuse.view()},
-            {.binding = 15, .textureView = noisySpecular.view()},
-            {.binding = 16, .textureView = normalRoughness.view()},
-            {.binding = 17, .textureView = motionVectors.view()},
-            {.binding = 18, .textureView = viewZ.view()},
-            {.binding = 19, .textureView = baseColorMetalness.view()},
-            {.binding = 20, .textureView = emissive.view()},
-            {
-                .binding = 21,
-                .textureViews = {environmentTextureViews, static_cast<uint32_t>(std::size(environmentTextureViews))},
-            },
-            {
-                .binding = 53,
-                .textureViews = {localLightPdfViews, static_cast<uint32_t>(std::size(localLightPdfViews))},
-            },
-            {
-                .binding = 23,
-                .textureViews = {environmentImportanceTextureViews, static_cast<uint32_t>(std::size(environmentImportanceTextureViews))},
-            },
-            {.binding = 50, .buffer = lights_.buffer()},
-            {.binding = 52, .buffer = lights_.reGIRBuffer()},
-        };
-        const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
-        if (sceneResources_.fallbackPositionBuffer() != nullptr) {
-            bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
-        }
-        if (neuralTextures.active()) {
-            const auto& latentViews = neuralTextures.latentTextureViews();
-            bindings.push_back({
-                .binding = kNeuralTextureLatentsBinding,
-                .textureViews = latentViews,
-            });
-            bindings.push_back({
-                .binding = kNeuralTextureConstantsBinding,
-                .buffer = neuralTextures.constantsBuffer(),
-            });
-            bindings.push_back({
-                .binding = kNeuralTextureWeightsBinding,
-                .buffer = neuralTextures.weightsBuffer(),
-            });
-            bindings.push_back({
-                .binding = kNeuralTextureSetInfoBinding,
-                .buffer = neuralTextures.setInfoBuffer(),
-            });
-            bindings.push_back({
-                .binding = kNeuralTextureSamplerBinding,
-                .sampler = &neuralTextures.latentSampler(),
-            });
-        }
         using Access = RenderGraphResourceAccess;
         const RenderGraphStageUse uses[] = {
             {"color", Access::TextureStorageWrite},
@@ -623,16 +486,56 @@ public:
             import("normalPrevious", normalHistory.previousResource),
         };
         const RenderGraphStage stages[] = {
-            {"ReSTIR", uses, [&](CommandBuffer& commands) {
-                return rayQueryProgram_.dispatch(ComputeDispatchDesc{
-                    .commandBuffer = &commands,
-                    .bindings = bindings,
-                    .pushData = &push,
-                    .pushDataSize = sizeof(push),
-                    .groupCountX = (context.width() + 7) / 8,
-                    .groupCountY = (context.height() + 7) / 8,
-                    .groupCountZ = 1,
-                });
+            {"ReSTIR", uses, [&](CommandBuffer& commands) -> Result<> {
+                auto registry = device_->resourceRegistry();
+                if (!registry) { return makeError(registry.error()); }
+                ParameterWriter writer(*device_, **registry, commands.frameContext());
+                writer.retain(std::make_shared<ScenePathTraceResources>(sceneResources_));
+                PathTraceParameters scene{};
+                scene.scene = writer.accelerationStructure(context.inputAccelerationStructure("accelerationStructure")
+                    ? context.inputAccelerationStructure("accelerationStructure") : sceneResources_.accelerationStructure().accelerationStructure());
+                scene.vertices = writer.dataBuffer(sceneResources_.shadingVertexBuffer(), 16, 8);
+                scene.indices = writer.dataBuffer(sceneResources_.indexBuffer(), 4, 4);
+                scene.primitives = writer.dataBuffer(sceneResources_.primitiveBuffer(), 32, 4);
+                scene.instances = writer.dataBuffer(sceneResources_.instanceBuffer(), 16, 4);
+                if (sceneResources_.fallbackPositionBuffer()) {
+                    scene.positions = writer.dataBuffer(sceneResources_.fallbackPositionBuffer(), 12, 4);
+                }
+                scene.materials = writer.buffer(sceneResources_.materialBuffer());
+                scene.materialTextures = writer.sampledImages(materialTextureViews);
+                scene.environment = writer.sampledImage(environmentTextureView);
+                scene.environmentPdf = writer.sampledImage(environmentImportanceTextureView);
+                scene.lights = writer.buffer(lights_.buffer());
+                scene.reGIR = writer.buffer(lights_.reGIRBuffer());
+                scene.punctualPdf = writer.sampledImage(lights_.lightPdfView());
+                const auto& neural = sceneResources_.neuralTextures();
+                if (neural.active()) {
+                    scene.ntcLatents = writer.sampledImages(neural.latentTextureViews());
+                    scene.ntcConstants = writer.buffer(neural.constantsBuffer());
+                    scene.ntcWeights = writer.buffer(neural.weightsBuffer());
+                    scene.ntcInfo = writer.buffer(neural.setInfoBuffer());
+                    scene.ntcSampler = writer.sampler(neural.latentSampler());
+                }
+                RTXDITraceParameters params{};
+                params.settings = writer.data(&push, sizeof(push));
+                params.scene = writer.data(&scene, sizeof(scene));
+                params.output = writer.storageImage(color.view());
+                params.reservoirCurrent = writer.storageImage(reservoirHistory.current);
+                params.reservoirPrevious = writer.storageImage(reservoirHistory.previous);
+                params.positionCurrent = writer.storageImage(positionHistory.current);
+                params.positionPrevious = writer.storageImage(positionHistory.previous);
+                params.normalCurrent = writer.storageImage(normalHistory.current);
+                params.normalPrevious = writer.storageImage(normalHistory.previous);
+                params.noisyDiffuse = writer.storageImage(noisyDiffuse.view());
+                params.noisySpecular = writer.storageImage(noisySpecular.view());
+                params.normalRoughness = writer.storageImage(normalRoughness.view());
+                params.motionVectors = writer.storageImage(motionVectors.view());
+                params.viewZ = writer.storageImage(viewZ.view());
+                params.baseColorMetalness = writer.storageImage(baseColorMetalness.view());
+                params.emissive = writer.storageImage(emissive.view());
+                auto encoded = writer.encode(params, kRTXDITraceABI, ParameterTransport::InlinePush);
+                if (!encoded) { return makeError(encoded.error()); }
+                return rayQueryProgram_.dispatch(commands, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
             }},
         };
         result = context.executeStages(stages, {}, textures);
@@ -1007,9 +910,8 @@ private:
     }
 
     ScenePathTraceResources sceneResources_;
-    ComputeProgram rayQueryProgram_;
+    ComputeKernel rayQueryProgram_;
     bool compiledNtcActive_ = false;
-    uint32_t compiledTextureCount_ = 0;
     bool compiledPositionFetch_ = false;
     bool compiledNtcCooperativeVector_ = false;
     Device* device_ = nullptr;

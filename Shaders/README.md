@@ -179,14 +179,25 @@ GPUScene HZB 录制只接收 prepared dispatch，旧 pipeline/heap/pushData 描�
 streaming deferred 外层保留 `ComputeProgram` 兼容入口；四个 span 已统一为共享 `StreamSceneParameters`，
 通过 settings 中的 BDA 根地址传递，不再使用 90–93 数字槽位或 buffer descriptor。
 `ParameterWriter` 编码不可变快照，并将四个资源保留至提交完成；material bin dispatch 复用同一快照。
-ScreenSpaceShadows 的 CLAS alpha-mask 查询复用同一声明，通过 16 字节 `ShadowGeometryPush` 传递根地址，
-同步移除旧 90–94 绑定。主追踪 settings 为 272 字节 BDA 数据，不是原生 push constant。
+ScreenSpaceShadows 的 CLAS alpha-mask 查询复用同一声明，通过 `ShadowTraceParameters.streamScene` 传递根地址。
+旧 90–94 绑定已移除。主追踪 settings 为 272 字节 BDA 数据，不是原生 push constant。
 续射页容量直接来自 span，不再读取 slot 94 的参数块。共享 stream 解码通过静态泛型 reader 同时支持 descriptor 和 BDA；
 CLAS surface 通过 `decodeStreamRaySurface` 统一执行三角形校验和属性解码，避免未校验的属性读取。
 `StreamSceneDecode.slang` 显式接收 `StreamSceneParameters`，供 CLAS ray-query 与 GPU 边界测试共用；
 实例读取检查地址、stride 和索引，三角形解码检查 header、cluster stride、页表及页数据范围。
 CPU 的 deferred 与 alpha shadow 共用 `encodeRayQueryParameters`，保持 span 布局、编码及资源保留一致。
-`StreamSceneRayQuery` 不再以宏捕获局部 push；法线和 TBN 仍保持 authored/world-space 语义。
+[ShadowTraceParameters.h](../Source/Runtime/Render/Core/ShadowTraceParameters.h) 定义阴影入口的 88 字节 inline ABI。
+常规、NTC/CoopVec、stream TLAS 与 pending 五种变体统一使用 ComputeKernel；深度和五路输出为 typed handle，
+320 字节设置为有界 BDA span，几何为共享 PathTraceParameters 的不可变快照。移除编号资源表、
+16 字节 ShadowGeometryPush 和按贴图数量重建 pipeline 的逻辑；参数包保留贴图、几何及 BLAS 间接所有者。
+原有 RenderGraph 阶段同步、参数池供 deferred 消费和 SIGMA 接入保持不变。
+`StreamSceneRayQuery` 显式接收 `StreamSceneParameters`、加速结构、bitangentFlip 与静态泛型
+`IStreamRayMaterials`；不读取 `gScene` / `gMaterials`，不依赖 `ScenePathTracePush` 或参数根。
+`ScenePathTrace` 在调用边界适配 typed root / 现存 ComputeProgram 的材质和 alpha 采样，
+`ScreenSpaceShadows` 共用同一适配器；空场景根地址在边界拒绝。CPU 的 64 字节场景布局与资源保留不变。
+法线和 TBN 仍保持 authored/world-space 语义。`stream_data_decode_bounds` 的 GPU 探针覆盖
+显式材质 provider、正反向射线、bitangent 翻转、无效材质/实例/三角形及 mask/blend alpha 阈值；
+这些辅助层检查不等同于 CLAS 遍历或完整场景的视觉验证。
 
 [PathTraceParameters.h](../Source/Runtime/Render/Core/PathTraceParameters.h) 为
 Standard ScenePathTraceGuides、OpenPBRRayQueryPathTrace 和 OpenPBRRayQueryPathTraceGuides 提供 296 字节具名资源根，通过 BDA root 提交。
@@ -309,15 +320,38 @@ BDA span 读取 64-bit depth/visibility 像素；资源在 draw 前编码并绑�
 `VisibilityHybridRasterizer` 已无私有 heap、旧 `HybridPush` 或裸 push 提交，host settings
 与各入口 wire ABI 分离。外部 raster 仍透传 bin header 的 producer pixel index，待后续迁移。
 
-Streaming 软件光栅的普通、参考、plane、cooperative 和 Group32/64/128 七个入口共用
+Streaming 软件光栅的普通、参考、plane、cooperative、WorkBins、WorkControl 和 Group32/64/128 九个入口共用
 [StreamRasterParameters.h](../Source/Runtime/Render/Core/StreamRasterParameters.h)（88 字节 inline push）。
 settings 为不可变有界 BDA 快照；pages、groups、header、page table、instances、bins 和 pixels
 使用 canonical typed handles，record base/capacity 显式传入。入口不再解析 rasterBindings buffer
 或 bin header 的 pixel index，生产默认 Group32 同样通过 `ComputeKernel` 与参数包保留资源。
 cooperative 与 group 入口共用显式资源的 wave 解码核心，保留原有 barrier、尾部和反射变换规则。
-WorkBins、WorkControl、诊断 workload 和硬件 raster 尚未迁移；WorkControl 的 136 字节回放
-快照仍经旧资源适配层执行，不应使用新 ABI 解释旧快照。GPU 测试对七个 inline 入口和旧
-WorkControl 逐像素对照：plane 保持覆盖/ID 且深度误差不超过 1e-6，其余 packed 输出相同。
+WorkControl 回放保留生产 `ComputeKernel`，为 scratch allocations 重新编码 canonical handles
+和 settings BDA 地址，归档 v2 的 `Push.bin`、`ReplayPush.bin` 及两份 settings；每次恢复后仍
+逐字节校验像素输出、只读输入和生产 guard。v1 快照只保留离线校验，不按 v2 执行。
+shader trace 复用同一 88 字节布局，在生产参数绑定后替换诊断 shader。
+GPU 测试对九个 inline 入口逐像素对照：plane 保持覆盖/ID 且深度误差不超过 1e-6，
+其余 packed 输出相同。硬件 raster 的旧资源适配层仍待迁移。
+
+诊断 workload 的 reset/coverage 阶段共用
+[StreamWorkloadParameters.h](../Source/Runtime/Render/Core/StreamWorkloadParameters.h)（96 字节 inline push）。
+它复用 88 字节 raster 输入，另加 typed uint64 counter handle；未使用的 raster pixel handle
+保持 invalid，不注册或保留生产像素 buffer。两个阶段共用不可变参数包，保留原有阶段访问声明与
+同步。私有 workload descriptor、旧 push 编码及软件解码 raw-push 适配器已删除。
+计数表示覆盖和原子尝试次数，不表示深度竞争获胜次数；GPU 回归检查 early/late、空列表及
+不同分类路径的计数守恒。预热列表中的 Composite 顶点/片元入口指向 `Features/GPUDriven/StreamComposite`。
 
 Fragment 中的 BDA 范围校验失败必须显式 return；不能只 discard 后继续读取物理地址。
 Resolve 的 indexed-mesh/奇数尺寸回归覆盖该路径，避免 helper invocation 越界读取。
+
+[RTXDITraceParameters.h](../Source/Runtime/Render/Core/RTXDITraceParameters.h) 定义 SceneRTXDI 主追踪的 128 字节 inline 根。
+十四路当前/历史/降噪输出使用 typed handle；设置和共享 PathTraceParameters 场景快照使用 BDA。
+普通几何复用 PathTracePrimitive/Instance/Material 布局，通过有界 span 读取，候选和提交命中均检查完整索引链，
+fallback position 也检查范围。NTC、环境与 ReGIR 资源显式编码；移除编号 binding 表及按贴图数量重建管线。
+原有 ReSTIR 阶段访问、历史发布和 RELAX 后处理保持不变。布局测试覆盖 mapped/native；无 NTC 构建不验证 NTC 推理。
+
+[PathTraceInlineParameters.h](../Source/Runtime/Render/Core/PathTraceInlineParameters.h) 为标准无缓存路径追踪提供
+40 字节 inline 根，直接携带 settings 地址、输出和两路历史句柄；其余资源复用 PathTraceParameters 场景快照。
+生产入口为 `ScenePathTraceInline.scenePathTraceMain`，CPU 复用 guides/OpenPBR 的 ParameterWriter 编码链，
+无编号 binding 表，也不因贴图数量变化重建管线。SHaRC/NRC 暂保留 ScenePathTrace 的旧资源入口；
+标准回归覆盖 off/SHaRC/off 的 ABI 切换、逐帧 fallback 检查、有限 HDR 与奇数尺寸 resize。

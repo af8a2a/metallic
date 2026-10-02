@@ -52,28 +52,20 @@ public:
             if (!mapped) { return makeError(Error::Failure); }
             std::memcpy(mapped, data, bytes); buffers[index]->flush(); buffers[index]->unmap(); return {};
         };
-        std::array<std::unique_ptr<ShaderModule>, 1> shaders;
-        std::array<std::unique_ptr<ComputePipeline>, 1> pipelines;
-        std::array<ComputeKernel, 8> kernels;
+        std::array<ComputeKernel, 9> kernels;
         const char* entries[] = {"streamClusterRasterWorkControlMain", "streamClusterRasterGroup32Main",
             "streamClusterRasterGroup64Main", "streamClusterRasterGroup128Main",
-            "streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain"};
+            "streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain"};
         for (size_t i=0; i<std::size(entries); ++i) {
             ShaderCompileResult compiled;
             auto result = compileSlangShaderToSpirv({
-                .moduleName = i >= 4 ? "Features/GPUDriven/GPUDrivenStreamAsset" : i ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : "Features/GPUDriven/GPUDrivenStreamWorkRaster",
+                .moduleName = i == 8 ? "Features/GPUDriven/GPUDrivenStreamWorkRaster" : i >= 4 ? "Features/GPUDriven/GPUDrivenStreamAsset" : i ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : "Features/GPUDriven/GPUDrivenStreamWorkRaster",
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled.diagnostics)
                 .transform([&](auto v) { compiled = std::move(v); });
             if (!result) { return RHITestResult::fail(compiled.diagnostics); }
-            if (i != 0) {
-                std::string log;
-                GROUP_REQUIRE(kernels[i].initialize(*device, {.spirv = compiled.spirv,
-                    .parameters = parameterAbi<StreamRasterParameters>(kStreamRasterABI, ParameterTransport::InlinePush)}, log));
-                continue;
-            }
-            GROUP_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto v) { shaders[i] = std::move(v); }));
-            GROUP_REQUIRE(device->createComputePipeline({.computeShader = {shaders[i].get()}, .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto v) { pipelines[i] = std::move(v); }));
+            std::string log;
+            GROUP_REQUIRE(kernels[i].initialize(*device, {.spirv = compiled.spirv,
+                .parameters = parameterAbi<StreamRasterParameters>(kStreamRasterABI, ParameterTransport::InlinePush)}, log));
         }
         Queue* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
@@ -152,7 +144,7 @@ public:
                 GROUP_REQUIRE(upload(Pixels,pixels.data(),pixels.size()*8));
                 if (submitted) { GROUP_REQUIRE(fence->reset()); GROUP_REQUIRE(pool->reset()); }
                 GROUP_REQUIRE(commands->begin()); commands->bindBindlessHeap(*heap);
-                if (variant != 0) {
+                {
                     auto registry = device->resourceRegistry();
                     if (!registry) { return RHITestResult::fail("Missing raster registry"); }
                     ParameterWriter writer(*device, **registry, commands->frameContext());
@@ -167,14 +159,6 @@ public:
                     auto encoded = writer.encode(raster, kStreamRasterABI, ParameterTransport::InlinePush);
                     if (!encoded) { return RHITestResult::fail("Cannot encode raster parameters"); }
                     GROUP_REQUIRE(kernels[variant].dispatch(*commands, *encoded, 2));
-                } else {
-                GROUP_REQUIRE(commands->bindExecution(pipelines[variant]->execution()));
-                MeshletStreamUserPush push{.pageBuffer=handles[Pages].shaderIndex, .activeGroupBuffer=handles[Groups].shaderIndex,
-                    .pageTableBuffer=handles[PageTable].shaderIndex, .paramsBuffer=handles[Params].shaderIndex,
-                    .activeHeaderBuffer=handles[Header].shaderIndex, .traversalPhase=index%2,
-                    .rasterBindingsBuffer=handles[Bindings].shaderIndex, .hybridClusterBuffer=handles[Bins].shaderIndex};
-                commands->pushBindlessData(&push,sizeof(push));
-                commands->dispatch(2,1,1); // second group must reject out-of-list work
                 }
                 BufferBarrierDesc barrier{.buffer=buffers[Pixels].get(),
                     .before={PipelineStageBits::ComputeShader,AccessBits::ShaderWrite},
@@ -213,7 +197,7 @@ public:
             }
             ++index;
         }
-        return RHITestResult::pass(std::to_string(cases.size())+" cases x eight raster entrypoints: tail vertices/triangles, each triangle ID, float3/4, normal/reversed Z, reflected transforms, rejected pages and guard pixels; seven packed outputs byte-equal; plane preserves coverage/IDs and depth within 1e-6");
+        return RHITestResult::pass(std::to_string(cases.size())+" cases x nine raster entrypoints: tail vertices/triangles, each triangle ID, float3/4, normal/reversed Z, reflected transforms, rejected pages and guard pixels; eight packed outputs byte-equal; plane preserves coverage/IDs and depth within 1e-6");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamGroupRasterTest);
