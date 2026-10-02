@@ -263,7 +263,12 @@ public:
                     MESH_REQUIRE(commands->end());
                     CommandBuffer* list[] = {commands.get()};
                     MESH_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
-                    MESH_REQUIRE(fence->wait()); submitted = true;
+                    const auto completed = fence->wait();
+                    if (!completed) {
+                        return RHITestResult::fail("GPU completion failed: case=" + std::to_string(test) +
+                            " mode=" + std::to_string(mode) + " indexed=" + std::to_string(indexed) + ": " + toString(completed));
+                    }
+                    submitted = true;
                     for (size_t attachment = 0; attachment < 2; ++attachment) {
                         readbacks[attachment]->invalidate(); const auto* mapped = static_cast<const uint32_t*>(readbacks[attachment]->map());
                         if (!mapped) { return RHITestResult::fail("Cannot map mesh output"); }

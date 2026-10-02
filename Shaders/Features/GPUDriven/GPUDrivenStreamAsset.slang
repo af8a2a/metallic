@@ -830,28 +830,21 @@ bool streamSphereOccluded(
         camera.clipOrtho.w > 0.5);
 }
 
-bool streamSphereOccluded(float3 center, float radius, GPUDrivenStreamAssetCameraData camera,
-    GPUDrivenStreamAssetRasterBindings bindings, GPUDrivenStreamAssetPush push, uint hzbIndex)
-{
-    uint index = hzbIndex == 0u ? bindings.hzbBuffer0 : bindings.hzbBuffer1;
-    return streamSphereOccluded(center, radius, camera, bindings,
-        DescriptorHandle<StructuredBuffer<float>>(uint2(index, 0)));
-}
-
 bool streamClusterVisibleInOcclusionPhase(float3 center, float radius, uint instanceState,
-    GPUDrivenStreamAssetParams params, GPUDrivenStreamAssetRasterBindings bindings, GPUDrivenStreamAssetPush push, out bool retryLate)
+    GPUDrivenStreamAssetParams params, GPUDrivenStreamAssetRasterBindings bindings, uint phase,
+    DescriptorHandle<StructuredBuffer<float>> previousHZB, DescriptorHandle<StructuredBuffer<float>> currentHZB,
+    out bool retryLate)
 {
     retryLate = false;
-    bool early = push.traversalPhase == 0u;
+    bool early = phase == 0u;
     if ((bindings.cullingFlags & (1u << 4u)) == 0u) {
         return instanceState == (early ? 1u : 3u);
     }
     if (early ? instanceState != 1u : (instanceState != 1u && instanceState != 3u)) { return false; }
-    uint currentHzb = params.frameIndex & 1u;
     bool deferred = instanceState == 3u || (bindings.hzbValid != 0u &&
-        streamSphereOccluded(center, radius, previousStreamCamera(params), bindings, push, currentHzb ^ 1u));
+        streamSphereOccluded(center, radius, previousStreamCamera(params), bindings, previousHZB));
     if (early) { retryLate = deferred; return !deferred; }
-    return deferred && !streamSphereOccluded(center, radius, currentStreamCamera(params), bindings, push, currentHzb);
+    return deferred && !streamSphereOccluded(center, radius, currentStreamCamera(params), bindings, currentHZB);
 }
 
 #include "../../../Source/Runtime/Render/Core/StreamInstanceCullParameters.h"
@@ -3629,38 +3622,33 @@ bool streamSphereFitsSoftware(StreamRasterCluster c, float2 viewport, float maxP
         all(lower >= -32.0) && all(upper <= viewport + 32.0);
 }
 
+struct StreamRasterResources
+{
+    DescriptorHandle<StructuredBuffer<uint>> pages;
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups;
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> header;
+    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTable;
+    DescriptorHandle<RWStructuredBuffer<uint>> requests;
+    DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances;
+    DescriptorHandle<StructuredBuffer<uint>> visibility;
+    DescriptorHandle<RWStructuredBuffer<CompactStreamVisibleRecord>> records;
+    DescriptorHandle<StructuredBuffer<float>> previousHZB;
+    DescriptorHandle<StructuredBuffer<float>> currentHZB;
+    bool hasInstances;
+    bool tessellation;
+};
+
 bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool publishRecord,
-    GPUDrivenStreamAssetPush push, out StreamRasterCluster output, out bool retryLate)
+    GPUDrivenStreamAssetParams params, GPUDrivenStreamAssetRasterBindings rasterBindings,
+    StreamRasterResources resources, uint phase, out StreamRasterCluster output, out bool retryLate)
 {
     retryLate = false;
     output = (StreamRasterCluster)0;
-    DescriptorHandle<StructuredBuffer<uint>> pageHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.activeGroupBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> activeHeaderHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.activeHeaderBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
-        DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.pageTableBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> requestHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.requestBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rasterBindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
-
-    StructuredBuffer<uint> pageWords = pageHandle;
-    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
-    StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader = activeHeaderHandle;
-    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
-    StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
-    RWStructuredBuffer<uint> requests = requestHandle;
-    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rasterBindingsBuffer = rasterBindingsHandle;
-
-    GPUDrivenStreamAssetParams params = paramsBuffer[0];
-    GPUDrivenStreamAssetRasterBindings rasterBindings = rasterBindingsBuffer[0];
+    StructuredBuffer<uint> pageWords = resources.pages;
+    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = resources.groups;
+    StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeader = resources.header;
+    RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = resources.pageTable;
+    RWStructuredBuffer<uint> requests = resources.requests;
     if (localRecordIndex >= params.drawTaskCount / kMeshletTriangleChunkCount) { return false; }
     uint recordCapacity = rasterBindings.visibleRecordCapacity != 0u
         ? rasterBindings.visibleRecordCapacity
@@ -3685,13 +3673,10 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
 
     GPUDrivenStreamAssetActiveGroup group = activeGroups[activeGroupIndex];
     uint instanceFlags = 0u;
-    if (rasterBindings.gpuSceneInstanceBuffer != 0xffffffffu) {
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances =
-            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(
-                rasterBindings.gpuSceneInstanceBuffer, 0));
-        StructuredBuffer<GPUDrivenPreviewInstance> instanceBuffer = instances;
+    if (resources.hasInstances) {
+        StructuredBuffer<GPUDrivenPreviewInstance> instances = resources.instances;
         uint count, stride;
-        instanceBuffer.GetDimensions(count, stride);
+        instances.GetDimensions(count, stride);
         if (group.gpuSceneInstanceIndex >= count) { return false; }
         instanceFlags = instances[group.gpuSceneInstanceIndex].identity.w;
     }
@@ -3839,21 +3824,14 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
         }
     }
 
-    DescriptorHandle<StructuredBuffer<uint>> visibilityStateHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(
-            rasterBindings.instanceVisibilityBuffer,
-            0));
-    StructuredBuffer<uint> visibilityStates = visibilityStateHandle;
+    StructuredBuffer<uint> visibilityStates = resources.visibility;
     if (testVisibility && !streamClusterVisibleInOcclusionPhase(worldSphereCenter, worldSphereRadius,
-        visibilityStates[group.gpuSceneInstanceIndex], params, rasterBindings, push, retryLate)) {
+        visibilityStates[group.gpuSceneInstanceIndex], params, rasterBindings, phase,
+        resources.previousHZB, resources.currentHZB, retryLate)) {
         return false;
     }
 
-    DescriptorHandle<RWStructuredBuffer<CompactStreamVisibleRecord>> visibleClusterHandle =
-        DescriptorHandle<RWStructuredBuffer<CompactStreamVisibleRecord>>(uint2(
-            rasterBindings.visibleClusterBuffer,
-            0));
-    RWStructuredBuffer<CompactStreamVisibleRecord> visibleClusters = visibleClusterHandle;
+    RWStructuredBuffer<CompactStreamVisibleRecord> visibleClusters = resources.records;
     if (publishRecord) {
         uint flags = ((instanceFlags & 2u) != 0u ? 1u : 0u) | ((instanceFlags & 4u) != 0u ? 2u : 0u);
         visibleClusters[localRecordIndex] = packStreamVisibleRecord(activeGroupIndex, clusterIndex, flags);
@@ -3879,14 +3857,51 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     output.worldSphere = float4(worldSphereCenter, worldSphereRadius + affineSlack);
     output.classificationFlags = rasterBindings.classificationFlags |
         ((!isfinite(rawSphereRadius) || rawSphereRadius < 0.0) ? 1u : 0u);
-    output.forceHardware = (instanceFlags & 12u) != 0u || rasterBindings.tessellationBuffer != 0xffffffffu;
+    output.forceHardware = (instanceFlags & 12u) != 0u || resources.tessellation;
     return true;
 }
 
-float4 streamClusterClip(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push)
+// Legacy raster callers resolve their wire indices here. The shared loader above
+// accepts canonical resource handles and explicit phase/camera data only.
+StreamRasterResources legacyStreamRasterResources(GPUDrivenStreamAssetPush push,
+    out GPUDrivenStreamAssetParams params, out GPUDrivenStreamAssetRasterBindings raster)
 {
-    DescriptorHandle<StructuredBuffer<uint>> pages =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> settings =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
+    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindings =
+        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
+    params = settings[0];
+    raster = bindings[0];
+    StreamRasterResources resources;
+    resources.pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
+    resources.groups = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.activeGroupBuffer, 0));
+    resources.header = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.activeHeaderBuffer, 0));
+    resources.pageTable = DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.pageTableBuffer, 0));
+    resources.requests = DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.requestBuffer, 0));
+    resources.instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(raster.gpuSceneInstanceBuffer, 0));
+    resources.visibility = DescriptorHandle<StructuredBuffer<uint>>(uint2(raster.instanceVisibilityBuffer, 0));
+    resources.records = DescriptorHandle<RWStructuredBuffer<CompactStreamVisibleRecord>>(uint2(raster.visibleClusterBuffer, 0));
+    uint current = (params.frameIndex & 1u) == 0u ? raster.hzbBuffer0 : raster.hzbBuffer1;
+    uint previous = (params.frameIndex & 1u) == 0u ? raster.hzbBuffer1 : raster.hzbBuffer0;
+    resources.previousHZB = DescriptorHandle<StructuredBuffer<float>>(uint2(previous, 0));
+    resources.currentHZB = DescriptorHandle<StructuredBuffer<float>>(uint2(current, 0));
+    resources.hasInstances = raster.gpuSceneInstanceBuffer != 0xffffffffu;
+    resources.tessellation = raster.tessellationBuffer != 0xffffffffu;
+    return resources;
+}
+
+bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool publishRecord,
+    GPUDrivenStreamAssetPush push, out StreamRasterCluster output, out bool retryLate)
+{
+    GPUDrivenStreamAssetParams params;
+    GPUDrivenStreamAssetRasterBindings raster;
+    StreamRasterResources resources = legacyStreamRasterResources(push, params, raster);
+    return loadStreamRasterCluster(localRecordIndex, testVisibility, publishRecord,
+        params, raster, resources, push.traversalPhase, output, retryLate);
+}
+
+float4 streamClusterClip(StreamRasterCluster c, uint vertex, DescriptorHandle<StructuredBuffer<uint>> pages)
+{
     uint word = c.pageWord + c.positionOffsetBytes / 4u + (c.vertexOffset + vertex) * c.positionStrideWords;
     float3 local = float3(asfloat(pages[word]), asfloat(pages[word + 1u]), asfloat(pages[word + 2u]));
     float3 world = c.group.world0.xyz * local.x + c.group.world1.xyz * local.y +
@@ -3895,6 +3910,11 @@ float4 streamClusterClip(StreamRasterCluster c, uint vertex, GPUDrivenStreamAsse
     clip.y = -clip.y;
     return clip;
 }
+float4 streamClusterClip(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push)
+{
+    return streamClusterClip(c, vertex, DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0)));
+}
+
 
 // Preserve projection arithmetic, but build camera-only terms once per cluster.
 struct StreamRasterProjection
@@ -3924,9 +3944,8 @@ StreamRasterProjection prepareStreamRasterProjection(GPUDrivenStreamAssetParams 
     r.ortho=p.upProjection.w>0.5; r.reversedZ=p.clipOrtho.w>0.5;
     return r;
 }
-float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push, StreamRasterProjection r)
+float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, DescriptorHandle<StructuredBuffer<uint>> pages, StreamRasterProjection r)
 {
-    DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer,0));
     uint word=c.pageWord+c.positionOffsetBytes/4u+(c.vertexOffset+vertex)*c.positionStrideWords;
     float3 local=asfloat(uint3(pages[word],pages[word+1u],pages[word+2u]));
     float3 world=c.group.world0.xyz*local.x+c.group.world1.xyz*local.y+c.group.world2.xyz*local.z+c.group.world3.xyz;
@@ -3939,12 +3958,15 @@ float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, GPUDrivenStre
     clip.y=-clip.y;
     return clip;
 }
+float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push, StreamRasterProjection r)
+{
+    return streamClusterClipCached(c, vertex, DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0)), r);
+}
+
 groupshared StreamRasterProjection g_StreamRasterProjection;
 
-uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStreamAssetPush push)
+uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, DescriptorHandle<StructuredBuffer<uint>> pages)
 {
-    DescriptorHandle<StructuredBuffer<uint>> pages =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
     uint address = c.triangleBaseByte + triangle * 3u;
     uint3 indices = uint3(readPageByte(pages, address), readPageByte(pages, address + 1u), readPageByte(pages, address + 2u));
     // Retain the existing malformed-index fallback in the stream HW decoder.
@@ -3956,6 +3978,11 @@ uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStrea
     bool reflected = dot(cross(c.group.world0.xyz, c.group.world1.xyz), c.group.world2.xyz) < 0.0;
     return reflected ? indices.xzy : indices;
 }
+uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStreamAssetPush push)
+{
+    return streamClusterTriangle(c, triangle, DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0)));
+}
+
 
 float2 streamClusterUv(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push)
 {
@@ -4195,19 +4222,19 @@ void streamClusterPrepareMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIn
     }
 }
 
+#include "../../../Source/Runtime/Render/Core/StreamClusterCullParameters.h"
+[[vk::push_constant]] ConstantBuffer<StreamClusterCullParameters> gStreamClusterCull;
+
 // One lane validates/culls one candidate. Survivors carry only the geometry
 // decode fields needed by classification, in the still-unused bin list storage.
 // A wave reserves one range; its scheduling order is intentionally irrelevant:
 // classifiers write back to original candidate slots before stable binning.
-void cullStreamClusterCandidates(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool divertHardware)
+void cullStreamClusterCandidates(uint3 group, uint lane, StreamClusterCullParameters push, bool divertHardware)
 {
-    DescriptorHandle<RWStructuredBuffer<uint>> handle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
-    RWStructuredBuffer<uint> bins = handle;
-    if (push.activeBuildPhase == 1u) {
+    RWStructuredBuffer<uint> bins = push.bins;
+    if (push.stage == 1u) {
         if (lane == 0u) {
-            DescriptorHandle<RWStructuredBuffer<uint>> args =
-                DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.hybridQueueBuffer, 0));
+            DescriptorHandle<RWStructuredBuffer<uint>> args = push.arguments;
             uint count = bins[0];
             args[0] = min(count, kHybridDispatchWidth);
             args[1] = max(1u, (count + kHybridDispatchWidth - 1u) / kHybridDispatchWidth);
@@ -4215,14 +4242,30 @@ void cullStreamClusterCandidates(uint3 group, uint lane, GPUDrivenStreamAssetPus
         }
         return;
     }
+    if (push.settings == nullptr || push.rasterSettings == nullptr) { return; }
+    GPUDrivenStreamAssetParams params = *push.settings;
+    GPUDrivenStreamAssetRasterBindings raster = *push.rasterSettings;
+    StreamRasterResources resources;
+    resources.pages = push.pages;
+    resources.groups = push.groups;
+    resources.header = push.header;
+    resources.pageTable = push.pageTable;
+    resources.requests = push.requests;
+    resources.instances = push.instances;
+    resources.visibility = push.visibility;
+    resources.records = push.records;
+    resources.previousHZB = push.previousHZB;
+    resources.currentHZB = push.currentHZB;
+    resources.hasInstances = (push.flags & 1u) != 0u;
+    resources.tessellation = (push.flags & 2u) != 0u;
     uint candidate = hybridFlatGroup(group) * 128u + lane;
     StreamRasterCluster cluster = (StreamRasterCluster)0;
     bool visible = false;
     if (candidate < bins[12]) {
         uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
         bool retryLate;
-        visible = loadStreamRasterCluster(record, true, true, push, cluster, retryLate) && cluster.triangleCount != 0u;
-        if (push.traversalPhase == 0u && retryLate) {
+        visible = loadStreamRasterCluster(record, true, true, params, raster, resources, push.phase, cluster, retryLate) && cluster.triangleCount != 0u;
+        if (push.phase == 0u && retryLate) {
             InterlockedOr(bins[hybridRetryBase(bins[5]) + record / bins[13]], 1u << (record % bins[13]));
         }
     }
@@ -4265,37 +4308,38 @@ void cullStreamClusterCandidates(uint3 group, uint lane, GPUDrivenStreamAssetPus
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamClusterCullMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+void streamClusterCullMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    cullStreamClusterCandidates(group, lane, push, true);
+    cullStreamClusterCandidates(group, lane, gStreamClusterCull, true);
 }
 
 // P0 producer/consumer pair retained for integration and sample A/B profiling.
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamClusterCullP0Main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+void streamClusterCullP0Main(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    cullStreamClusterCandidates(group, lane, push, false);
+    cullStreamClusterCandidates(group, lane, gStreamClusterCull, false);
 }
 
 #include "StreamClusterClassify.slang"
 
-void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool prepared, bool incrementalDepth)
+void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetParams params,
+    GPUDrivenStreamAssetRasterBindings raster, StreamRasterResources resources,
+    DescriptorHandle<StructuredBuffer<uint>> bins, DescriptorHandle<RWStructuredBuffer<uint64_t>> pixels,
+    bool prepared, bool incrementalDepth)
 {
-    DescriptorHandle<StructuredBuffer<uint>> bins =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
     uint record;
     if (!hybridBinRecord(bins, kHybridSoftwareBin, hybridFlatGroup(group), record)) { return; }
     if (lane == 0u) {
         bool retryLate;
-        g_StreamBinVisible = loadStreamRasterCluster(record, false, false, push, g_StreamRasterCluster, retryLate) ? 1u : 0u;
+        g_StreamBinVisible = loadStreamRasterCluster(record, false, false, params, raster, resources, 0u, g_StreamRasterCluster, retryLate) ? 1u : 0u;
         if (prepared && g_StreamBinVisible != 0u) { g_StreamRasterProjection = prepareStreamRasterProjection(g_StreamRasterCluster.params); }
     }
     GroupMemoryBarrierWithGroupSync();
     if (g_StreamBinVisible == 0u) { return; }
     if (lane < g_StreamRasterCluster.vertexCount) {
-        float4 clip = prepared ? streamClusterClipCached(g_StreamRasterCluster, lane, push, g_StreamRasterProjection) :
-            streamClusterClip(g_StreamRasterCluster, lane, push);
+        float4 clip = prepared ? streamClusterClipCached(g_StreamRasterCluster, lane, resources.pages, g_StreamRasterProjection) :
+            streamClusterClip(g_StreamRasterCluster, lane, resources.pages);
         if (prepared) {
             HybridScreenVertex vertex = hybridPrepareVertex(clip, float2(bins[6],bins[7]), bins[10]);
             // Reuse the clip scratch: one shared allocation in both A/B paths.
@@ -4305,7 +4349,7 @@ void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, 
     }
     GroupMemoryBarrierWithGroupSync();
     if (lane < g_StreamRasterCluster.triangleCount) {
-        uint3 tri = streamClusterTriangle(g_StreamRasterCluster, lane, push);
+        uint3 tri = streamClusterTriangle(g_StreamRasterCluster, lane, resources.pages);
         uint id = packVisibilityId(g_StreamRasterCluster.recordIndex, lane);
         bool doubleSided = (g_StreamRasterCluster.instanceFlags & 2u) != 0u;
         if (prepared) {
@@ -4314,12 +4358,49 @@ void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, 
             b.position = asint(g_StreamRasterWords[tri.y].xy); b.depth = asfloat(g_StreamRasterWords[tri.y].z);
             c.position = asint(g_StreamRasterWords[tri.z].xy); c.depth = asfloat(g_StreamRasterWords[tri.z].z);
             hybridRasterPreparedTriangle(a, b, c,
-                id, doubleSided, bins[6], bins[7], bins[9], bins[10], bins[11], incrementalDepth);
+                id, doubleSided, bins[6], bins[7], bins[9], bins[10], pixels, incrementalDepth);
         } else {
             hybridRasterTriangle(asfloat(g_StreamRasterWords[tri.x]), asfloat(g_StreamRasterWords[tri.y]), asfloat(g_StreamRasterWords[tri.z]),
-                id, doubleSided, bins[6], bins[7], bins[9], bins[10], bins[11]);
+                id, doubleSided, bins[6], bins[7], bins[9], bins[10], pixels);
         }
     }
+}
+
+void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool prepared, bool incrementalDepth)
+{
+    GPUDrivenStreamAssetParams params;
+    GPUDrivenStreamAssetRasterBindings raster;
+    StreamRasterResources resources = legacyStreamRasterResources(push, params, raster);
+    DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+    rasterStreamCluster(group, lane, params, raster, resources, bins,
+        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(bins[11], 0)), prepared, incrementalDepth);
+}
+
+#include "../../../Source/Runtime/Render/Core/StreamRasterParameters.h"
+[[vk::push_constant]] ConstantBuffer<StreamRasterParameters> gStreamRaster;
+StreamRasterResources streamRasterResources(StreamRasterParameters push)
+{
+    StreamRasterResources resources;
+    resources.pages = push.pages; resources.groups = push.groups; resources.header = push.header;
+    resources.pageTable = push.pageTable; resources.instances = push.instances;
+    // Pure raster never publishes records or performs occlusion/request updates.
+    resources.requests = DescriptorHandle<RWStructuredBuffer<uint>>(uint2(0));
+    resources.visibility = DescriptorHandle<StructuredBuffer<uint>>(uint2(0));
+    resources.records = DescriptorHandle<RWStructuredBuffer<CompactStreamVisibleRecord>>(uint2(0));
+    resources.previousHZB = DescriptorHandle<StructuredBuffer<float>>(uint2(0));
+    resources.currentHZB = DescriptorHandle<StructuredBuffer<float>>(uint2(0));
+    resources.hasInstances = push.hasInstances != 0u;
+    resources.tessellation = false;
+    return resources;
+}
+
+void rasterStreamCluster(uint3 group, uint lane, StreamRasterParameters push, bool prepared, bool incrementalDepth)
+{
+    if (push.settings.data == nullptr || !push.settings.contains(0u)) { return; }
+    GPUDrivenStreamAssetRasterBindings raster = (GPUDrivenStreamAssetRasterBindings)0;
+    raster.visibleRecordBase = push.visibleRecordBase;
+    raster.visibleRecordCapacity = push.visibleRecordCapacity;
+    rasterStreamCluster(group, lane, push.settings.data[0], raster, streamRasterResources(push), push.bins, push.pixels, prepared, incrementalDepth);
 }
 
 #include "StreamRasterCooperative.slang"
@@ -4702,24 +4783,24 @@ uint gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, ui
 
 [shader("compute")]
 [numthreads(128,1,1)]
-void streamClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
-{ rasterStreamCluster(group,lane,push,true,false); }
+void streamClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{ rasterStreamCluster(group,lane,gStreamRaster,true,false); }
 
 [shader("compute")]
 [numthreads(128,1,1)]
-void streamClusterRasterLegacyMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
-{ rasterStreamCluster(group,lane,push,false,false); }
+void streamClusterRasterLegacyMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{ rasterStreamCluster(group,lane,gStreamRaster,false,false); }
 
 [shader("compute")]
 [numthreads(128,1,1)]
-void streamClusterRasterPlaneMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
-{ rasterStreamCluster(group,lane,push,true,true); }
+void streamClusterRasterPlaneMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
+{ rasterStreamCluster(group,lane,gStreamRaster,true,true); }
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void streamClusterRasterCooperativeMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform GPUDrivenStreamAssetPush push)
+void streamClusterRasterCooperativeMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
     // The cooperative decoder uses lanes 0..20. Keep the reference on narrow subgroups.
-    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, push, false, false); return; }
-    rasterStreamClusterCooperative(group, lane, push);
+    if (WaveGetLaneCount() < 32u) { rasterStreamCluster(group, lane, gStreamRaster, false, false); return; }
+    rasterStreamClusterCooperative(group, lane, gStreamRaster);
 }

@@ -40,6 +40,8 @@ struct StreamSceneReadiness {
     float fraction() const { return requiredPages ? float(completedPages) / float(requiredPages) : 0.f; }
 };
 struct DebugResourceBinding;
+struct StreamClusterCullParameters;
+struct StreamRasterParameters;
 namespace profiling { struct WorkControlReplayBinding; }
 
 inline constexpr const char* kMeshletStreamShaderSearchPath = PROJECT_SOURCE_DIR "/Shaders";
@@ -632,6 +634,8 @@ public:
     BindlessHeap* bindlessHeap() const { return registry_ ? registry_->heap() : nullptr; }
     MeshletStreamUserPush userPush() const;
     Result<> updateRasterBindings(const MeshletStreamGPURasterBindings& bindings);
+    Result<EncodedParameters> encodeSoftwareRaster(ParameterWriter& writer, Buffer* bins, Buffer* pixels, Buffer* instances) const;
+    Result<> fillClusterCullParameters(ParameterWriter& writer, StreamClusterCullParameters& params) const;
     Result<EncodedParameters> encodeClusterClassify(ParameterWriter& writer, Buffer* bins,
         ShaderDataSpan instances, bool tessellation) const;
     Result<EncodedParameters> encodeInstanceCull(ParameterWriter& writer, Buffer* visibility,

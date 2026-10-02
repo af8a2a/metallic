@@ -19,7 +19,7 @@ internal int hybridEdgeBias(int2 a, int2 b)
 
 public void hybridRasterTriangle(float4 c0, float4 c1, float4 c2, uint visibilityId,
     bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
-    uint pixelBuffer)
+    DescriptorHandle<RWStructuredBuffer<uint64_t>> pixelHandle)
 {
     float2 viewport = float2(width, height);
     float2 s0 = (c0.xy / c0.w * 0.5 + 0.5) * viewport;
@@ -51,8 +51,6 @@ public void hybridRasterTriangle(float4 c0, float4 c1, float4 c2, uint visibilit
     float2 e2 = s2 - s0;
     float determinant = e1.x * e2.y - e1.y * e2.x;
     if (abs(determinant) < 1e-12) { return; }
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> pixelHandle =
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(pixelBuffer, 0));
     RWStructuredBuffer<uint64_t> pixels = pixelHandle;
     for (int y = lower.y; y <= upper.y; ++y) {
         for (int x = lower.x; x <= upper.x; ++x) {
@@ -69,6 +67,14 @@ public void hybridRasterTriangle(float4 c0, float4 c1, float4 c2, uint visibilit
             InterlockedMax(pixels[uint(y) * width + uint(x)], packed);
         }
     }
+}
+
+// Adapter for raster entrypoints still using their producer heap's raw index.
+public void hybridRasterTriangle(float4 c0, float4 c1, float4 c2, uint visibilityId,
+    bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits, uint pixelBuffer)
+{
+    hybridRasterTriangle(c0, c1, c2, visibilityId, doubleSided, width, height, reversedZ, subpixelBits,
+        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(pixelBuffer, 0)));
 }
 
 // One setup per unique vertex, shared by all triangles in a cluster. Keep
@@ -104,7 +110,7 @@ public struct HybridTriangleDecision
 
 public void hybridRasterPreparedTriangleDecision(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
     uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
-    uint pixelBuffer, bool incrementalDepth, out HybridTriangleDecision decision)
+    DescriptorHandle<RWStructuredBuffer<uint64_t>> handle, bool incrementalDepth, out HybridTriangleDecision decision)
 {
     decision = {};
     decision.doubleSided = uint(doubleSided);
@@ -139,7 +145,6 @@ public void hybridRasterPreparedTriangleDecision(HybridScreenVertex a, HybridScr
     if (abs(determinant) < 1e-12) { decision.reason = 4; return; }
     float3 z = float3(a.depth,b.depth,c.depth);
     float2 gradient = float2(e2.y*(z.y-z.x)-e1.y*(z.z-z.x), e1.x*(z.z-z.x)-e2.x*(z.y-z.x)) / determinant;
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> handle = DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(pixelBuffer, 0));
     RWStructuredBuffer<uint64_t> pixels = handle;
     for (int y = lower.y; y <= upper.y; ++y) {
         int3 edges = rowEdges;
@@ -167,6 +172,23 @@ public void hybridRasterPreparedTriangleDecision(HybridScreenVertex a, HybridScr
         rowEdges += stepY;
     }
 }
+public void hybridRasterPreparedTriangleDecision(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
+    uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
+    uint pixelBuffer, bool incrementalDepth, out HybridTriangleDecision decision)
+{
+    hybridRasterPreparedTriangleDecision(a,b,c,visibilityId,doubleSided,width,height,reversedZ,subpixelBits,
+        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(pixelBuffer, 0)),incrementalDepth,decision);
+}
+
+public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
+    uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
+    DescriptorHandle<RWStructuredBuffer<uint64_t>> pixels, bool incrementalDepth)
+{
+    HybridTriangleDecision decision;
+    hybridRasterPreparedTriangleDecision(a,b,c,visibilityId,doubleSided,width,height,reversedZ,
+        subpixelBits,pixels,incrementalDepth,decision);
+}
+
 // Ordinary callers discard the decision; no Printf or additional resource reads.
 public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
     uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,

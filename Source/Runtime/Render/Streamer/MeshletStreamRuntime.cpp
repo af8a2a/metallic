@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/StreamRasterParameters.h"
+#include "Runtime/Render/Core/StreamClusterCullParameters.h"
 #include "Runtime/Render/Core/StreamClassifyParameters.h"
 #include "Runtime/Render/Core/StreamSceneParameters.h"
 #include "Runtime/Render/Core/StreamBLASParameters.h"
@@ -2582,6 +2584,38 @@ Result<> MeshletStreamRuntime::updateRasterBindings(
     auto result = updateHostBuffer(*rasterBindingsBuffer_, &resolved, sizeof(resolved));
     if (result) { rasterBindingsSnapshot_ = resolved; }
     return result;
+}
+
+Result<EncodedParameters> MeshletStreamRuntime::encodeSoftwareRaster(ParameterWriter& writer,
+    Buffer* bins, Buffer* pixels, Buffer* instances) const
+{
+    if (!previousFrameParamsValid_) { return makeError(Error::InvalidArgument); }
+    const StreamRasterParameters params{
+        .settings = {writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16), 1, sizeof(previousFrameParams_)},
+        .pages = writer.buffer(pageBuffer_.get()), .groups = writer.buffer(activeGroupBuffer_.get()),
+        .header = writer.buffer(activeHeaderBuffer_.get()), .pageTable = writer.buffer(pageTableBuffer_.get()),
+        .instances = writer.buffer(instances), .bins = writer.buffer(bins), .pixels = writer.buffer(pixels),
+        .visibleRecordBase = rasterBindingsSnapshot_.visibleRecordBase,
+        .visibleRecordCapacity = rasterBindingsSnapshot_.visibleRecordCapacity,
+        .hasInstances = 1,
+    };
+    return writer.encode(params, kStreamRasterABI, ParameterTransport::InlinePush);
+}
+
+Result<> MeshletStreamRuntime::fillClusterCullParameters(ParameterWriter& writer, StreamClusterCullParameters& params) const
+{
+    if (!previousFrameParamsValid_) { return makeError(Error::InvalidArgument); }
+    params.settings = writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16);
+    params.rasterSettings = writer.data(&rasterBindingsSnapshot_, sizeof(rasterBindingsSnapshot_), 16);
+    params.pages = writer.buffer(pageBuffer_.get());
+    params.groups = writer.buffer(activeGroupBuffer_.get());
+    params.header = writer.buffer(activeHeaderBuffer_.get());
+    params.pageTable = writer.buffer(pageTableBuffer_.get());
+    params.requests = writer.buffer(requestBuffer_.get());
+    params.records = writer.buffer(visibleClusterBuffer_.get());
+    params.flags = (rasterBindingsSnapshot_.gpuSceneInstanceBuffer != UINT32_MAX ? 1u : 0u) |
+        (rasterBindingsSnapshot_.tessellationBuffer != UINT32_MAX ? 2u : 0u);
+    return {};
 }
 
 Result<EncodedParameters> MeshletStreamRuntime::encodeClusterClassify(ParameterWriter& writer,

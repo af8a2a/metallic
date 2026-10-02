@@ -1,3 +1,7 @@
+#include "Runtime/Render/Core/StreamRasterParameters.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include <bit>
+#include <cmath>
 #include "RHITest.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -48,17 +52,25 @@ public:
             if (!mapped) { return makeError(Error::Failure); }
             std::memcpy(mapped, data, bytes); buffers[index]->flush(); buffers[index]->unmap(); return {};
         };
-        std::array<std::unique_ptr<ShaderModule>, 4> shaders;
-        std::array<std::unique_ptr<ComputePipeline>, 4> pipelines;
+        std::array<std::unique_ptr<ShaderModule>, 1> shaders;
+        std::array<std::unique_ptr<ComputePipeline>, 1> pipelines;
+        std::array<ComputeKernel, 8> kernels;
         const char* entries[] = {"streamClusterRasterWorkControlMain", "streamClusterRasterGroup32Main",
-            "streamClusterRasterGroup64Main", "streamClusterRasterGroup128Main"};
-        for (size_t i=0; i<4; ++i) {
+            "streamClusterRasterGroup64Main", "streamClusterRasterGroup128Main",
+            "streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain"};
+        for (size_t i=0; i<std::size(entries); ++i) {
             ShaderCompileResult compiled;
             auto result = compileSlangShaderToSpirv({
-                .moduleName = i ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : "Features/GPUDriven/GPUDrivenStreamWorkRaster",
+                .moduleName = i >= 4 ? "Features/GPUDriven/GPUDrivenStreamAsset" : i ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : "Features/GPUDriven/GPUDrivenStreamWorkRaster",
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, compiled.diagnostics)
                 .transform([&](auto v) { compiled = std::move(v); });
             if (!result) { return RHITestResult::fail(compiled.diagnostics); }
+            if (i != 0) {
+                std::string log;
+                GROUP_REQUIRE(kernels[i].initialize(*device, {.spirv = compiled.spirv,
+                    .parameters = parameterAbi<StreamRasterParameters>(kStreamRasterABI, ParameterTransport::InlinePush)}, log));
+                continue;
+            }
             GROUP_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto v) { shaders[i] = std::move(v); }));
             GROUP_REQUIRE(device->createComputePipeline({.computeShader = {shaders[i].get()}, .usesBindlessHeap = true,
                 .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush)}).transform([&](auto v) { pipelines[i] = std::move(v); }));
@@ -134,12 +146,28 @@ public:
             GROUP_REQUIRE(upload(PageTable,&table,sizeof(table))); GROUP_REQUIRE(upload(Bindings,&bindings,sizeof(bindings)));
             GROUP_REQUIRE(upload(Instances,&instance,sizeof(instance))); GROUP_REQUIRE(upload(Bins,bins.data(),sizeof(bins)));
             std::vector<uint64_t> reference;
-            for (uint32_t variant=0; variant<4; ++variant) {
+            for (uint32_t variant=0; variant<std::size(entries); ++variant) {
                 std::vector<uint64_t> pixels(pixelCount+16,0);
                 std::fill(pixels.begin()+pixelCount,pixels.end(),0x1234567887654321ull);
                 GROUP_REQUIRE(upload(Pixels,pixels.data(),pixels.size()*8));
                 if (submitted) { GROUP_REQUIRE(fence->reset()); GROUP_REQUIRE(pool->reset()); }
                 GROUP_REQUIRE(commands->begin()); commands->bindBindlessHeap(*heap);
+                if (variant != 0) {
+                    auto registry = device->resourceRegistry();
+                    if (!registry) { return RHITestResult::fail("Missing raster registry"); }
+                    ParameterWriter writer(*device, **registry, commands->frameContext());
+                    const StreamRasterParameters raster{
+                        .settings = {writer.data(&params, sizeof(params), 16), 1, sizeof(params)},
+                        .pages = writer.buffer(buffers[Pages].get()), .groups = writer.buffer(buffers[Groups].get()),
+                        .header = writer.buffer(buffers[Header].get()), .pageTable = writer.buffer(buffers[PageTable].get()),
+                        .instances = writer.buffer(buffers[Instances].get()), .bins = writer.buffer(buffers[Bins].get()),
+                        .pixels = writer.buffer(buffers[Pixels].get()), .visibleRecordBase = bindings.visibleRecordBase,
+                        .visibleRecordCapacity = bindings.visibleRecordCapacity, .hasInstances = 1,
+                    };
+                    auto encoded = writer.encode(raster, kStreamRasterABI, ParameterTransport::InlinePush);
+                    if (!encoded) { return RHITestResult::fail("Cannot encode raster parameters"); }
+                    GROUP_REQUIRE(kernels[variant].dispatch(*commands, *encoded, 2));
+                } else {
                 GROUP_REQUIRE(commands->bindExecution(pipelines[variant]->execution()));
                 MeshletStreamUserPush push{.pageBuffer=handles[Pages].shaderIndex, .activeGroupBuffer=handles[Groups].shaderIndex,
                     .pageTableBuffer=handles[PageTable].shaderIndex, .paramsBuffer=handles[Params].shaderIndex,
@@ -147,6 +175,7 @@ public:
                     .rasterBindingsBuffer=handles[Bindings].shaderIndex, .hybridClusterBuffer=handles[Bins].shaderIndex};
                 commands->pushBindlessData(&push,sizeof(push));
                 commands->dispatch(2,1,1); // second group must reject out-of-list work
+                }
                 BufferBarrierDesc barrier{.buffer=buffers[Pixels].get(),
                     .before={PipelineStageBits::ComputeShader,AccessBits::ShaderWrite},
                     .after={PipelineStageBits::Transfer,AccessBits::TransferRead}};
@@ -170,11 +199,21 @@ public:
                     }
                 }
                 if (!variant) { reference=pixels; }
+                else if (variant == 6) {
+                    for (size_t i = 0; i < pixelCount; ++i) {
+                        uint32_t actualDepth = uint32_t(pixels[i] >> 32u), expectedDepth = uint32_t(reference[i] >> 32u);
+                        if (!test.reversed) { actualDepth = ~actualDepth; expectedDepth = ~expectedDepth; }
+                        if (uint32_t(pixels[i]) != uint32_t(reference[i]) || (pixels[i] &&
+                            std::abs(std::bit_cast<float>(actualDepth) - std::bit_cast<float>(expectedDepth)) > 1e-6f)) {
+                            return RHITestResult::fail("Plane coverage/depth mismatch case=" + std::to_string(index));
+                        }
+                    }
+                }
                 else if (pixels!=reference) { return RHITestResult::fail("Packed depth/visibility mismatch case="+std::to_string(index)+" variant="+entries[variant]); }
             }
             ++index;
         }
-        return RHITestResult::pass(std::to_string(cases.size())+" cases x four production entrypoints: tail vertices/triangles, each triangle ID, float3/4, normal/reversed Z, reflected transforms, rejected pages and guard pixels; packed output byte-equal");
+        return RHITestResult::pass(std::to_string(cases.size())+" cases x eight raster entrypoints: tail vertices/triangles, each triangle ID, float3/4, normal/reversed Z, reflected transforms, rejected pages and guard pixels; seven packed outputs byte-equal; plane preserves coverage/IDs and depth within 1e-6");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamGroupRasterTest);

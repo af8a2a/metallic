@@ -1,3 +1,8 @@
+#include "Runtime/Render/Core/StreamRasterParameters.h"
+#include "Runtime/Render/Core/HybridResolveParameters.h"
+#include "Runtime/Render/Core/HybridRasterParameters.h"
+#include "Runtime/Render/Core/HybridBinParameters.h"
+#include "Runtime/Render/Core/StreamClusterCullParameters.h"
 #include "Runtime/Render/Core/StreamClassifyParameters.h"
 #include "Runtime/Render/Core/StreamCandidateParameters.h"
 #include "Runtime/Render/Core/StreamBLASParameters.h"
@@ -214,6 +219,11 @@ public:
             {"Metallic.StreamBLASParameters", {FIELD(StreamBLASParameters, settings), FIELD(StreamBLASParameters, activeGroupBuffer), FIELD(StreamBLASParameters, activeHeaderBuffer), FIELD(StreamBLASParameters, blasBuildInfoBuffer), FIELD(StreamBLASParameters, blasClusterReferenceBuffer), FIELD(StreamBLASParameters, blasHeaderBuffer), FIELD(StreamBLASParameters, clasAddressBuffer), FIELD(StreamBLASParameters, clasPageTableBuffer), FIELD(StreamBLASParameters, dynamicBlasAddressBuffer), FIELD(StreamBLASParameters, instanceBlasBuffer), FIELD(StreamBLASParameters, scratch), FIELD(StreamBLASParameters, activeBuildPhase), FIELD(StreamBLASParameters, traversalPhase), FIELD(StreamBLASParameters, clasPublicationRevision), FIELD(StreamBLASParameters, padding)}},
             {"Metallic.StreamCandidateParameters", {FIELD(StreamCandidateParameters, headers), FIELD(StreamCandidateParameters, groups), FIELD(StreamCandidateParameters, arguments), FIELD(StreamCandidateParameters, bins), FIELD(StreamCandidateParameters, visibility), FIELD(StreamCandidateParameters, stage), FIELD(StreamCandidateParameters, late)}},
             {"Metallic.StreamClassifyParameters", {FIELD(StreamClassifyParameters, settings), FIELD(StreamClassifyParameters, groups), FIELD(StreamClassifyParameters, pages), FIELD(StreamClassifyParameters, instances), FIELD(StreamClassifyParameters, bins), FIELD(StreamClassifyParameters, tessellationEnabled), FIELD(StreamClassifyParameters, padding)}},
+            {"Metallic.StreamClusterCullParameters", {FIELD(StreamClusterCullParameters, settings), FIELD(StreamClusterCullParameters, rasterSettings), FIELD(StreamClusterCullParameters, pages), FIELD(StreamClusterCullParameters, groups), FIELD(StreamClusterCullParameters, header), FIELD(StreamClusterCullParameters, pageTable), FIELD(StreamClusterCullParameters, requests), FIELD(StreamClusterCullParameters, instances), FIELD(StreamClusterCullParameters, visibility), FIELD(StreamClusterCullParameters, records), FIELD(StreamClusterCullParameters, previousHZB), FIELD(StreamClusterCullParameters, currentHZB), FIELD(StreamClusterCullParameters, bins), FIELD(StreamClusterCullParameters, arguments), FIELD(StreamClusterCullParameters, phase), FIELD(StreamClusterCullParameters, stage), FIELD(StreamClusterCullParameters, flags), FIELD(StreamClusterCullParameters, padding)}},
+            {"Metallic.HybridBinParameters", {FIELD(HybridBinParameters, bins), FIELD(HybridBinParameters, arguments), FIELD(HybridBinParameters, width), FIELD(HybridBinParameters, height), FIELD(HybridBinParameters, clusterCapacity), FIELD(HybridBinParameters, maxPixels), FIELD(HybridBinParameters, reversedZ), FIELD(HybridBinParameters, subpixelBits), FIELD(HybridBinParameters, producerPixelBuffer), FIELD(HybridBinParameters, inputClusterCount), FIELD(HybridBinParameters, streamMode), FIELD(HybridBinParameters, padding)}},
+            {"Metallic.HybridRasterParameters", {FIELD(HybridRasterParameters, queue), FIELD(HybridRasterParameters, pixels), FIELD(HybridRasterParameters, arguments), FIELD(HybridRasterParameters, width), FIELD(HybridRasterParameters, height), FIELD(HybridRasterParameters, capacity), FIELD(HybridRasterParameters, maxPixels), FIELD(HybridRasterParameters, reversedZ), FIELD(HybridRasterParameters, subpixelBits)}},
+            {"Metallic.HybridResolveParameters", {FIELD(HybridResolveParameters, pixels), FIELD(HybridResolveParameters, width), FIELD(HybridResolveParameters, reversedZ)}},
+            {"Metallic.StreamRasterParameters", {FIELD(StreamRasterParameters, settings), FIELD(StreamRasterParameters, pages), FIELD(StreamRasterParameters, groups), FIELD(StreamRasterParameters, header), FIELD(StreamRasterParameters, pageTable), FIELD(StreamRasterParameters, instances), FIELD(StreamRasterParameters, bins), FIELD(StreamRasterParameters, pixels), FIELD(StreamRasterParameters, visibleRecordBase), FIELD(StreamRasterParameters, visibleRecordCapacity), FIELD(StreamRasterParameters, hasInstances), FIELD(StreamRasterParameters, padding)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -281,11 +291,31 @@ public:
             {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterPrepareMain", 39},
             {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterBinMain", 40},
             {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterBinP0Main", 40},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterCullMain", 41},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterCullP0Main", 41},
+            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridClusterResetMain", 42},
+            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridClusterHistogramMain", 42},
+            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridClusterArgumentsMain", 42},
+            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridClusterScatterMain", 42},
+            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridResetMain", 43},
+            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridArgumentsMain", 43},
+            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridRasterMain", 43},
+            {"Features/VisibilityBuffer/VisibilityHybridRaster", "hybridResolveFragmentMain", 44},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterRasterMain", 45},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterRasterLegacyMain", 45},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterRasterPlaneMain", 45},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterRasterCooperativeMain", 45},
+            {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup32Main", 45},
+            {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup64Main", 45},
+            {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup128Main", 45},
+
+
+
 
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout == 40 ? 26u : program.layout == 39 ? 25u : program.layout == 38 ? 24u : program.layout == 37 ? 23u : program.layout == 36 ? 22u : program.layout == 35 ? 21u : program.layout == 34 ? 20u : program.layout == 33 ? 19u : program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                if ((program.layout == 45 ? 31u : program.layout == 44 ? 30u : program.layout == 43 ? 29u : program.layout == 42 ? 28u : program.layout == 41 ? 27u : program.layout == 40 ? 26u : program.layout == 39 ? 25u : program.layout == 38 ? 24u : program.layout == 37 ? 23u : program.layout == 36 ? 22u : program.layout == 35 ? 21u : program.layout == 34 ? 20u : program.layout == 33 ? 19u : program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
                 const char* capabilities[] = {"spvRayQueryKHR"};
                 std::span<const char* const> extraPaths;
@@ -332,7 +362,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 26 ? "StreamClassifyParameters.h" : category == 25 ? "StreamCandidateParameters.h" : category == 24 ? "StreamBLASParameters.h" : category == 23 ? "StreamTLASParameters.h" : category == 22 ? "StreamActiveBuildParameters.h" : category == 21 ? "StreamTraversalParameters.h" : category == 20 ? "StreamPageTableParameters.h" : category == 19 ? "ResidentLODParameters.h" : category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 31 ? "StreamRasterParameters.h" : category == 30 ? "HybridResolveParameters.h" : category == 29 ? "HybridRasterParameters.h" : category == 28 ? "HybridBinParameters.h" : category == 27 ? "StreamClusterCullParameters.h" : category == 26 ? "StreamClassifyParameters.h" : category == 25 ? "StreamCandidateParameters.h" : category == 24 ? "StreamBLASParameters.h" : category == 23 ? "StreamTLASParameters.h" : category == 22 ? "StreamActiveBuildParameters.h" : category == 21 ? "StreamTraversalParameters.h" : category == 20 ? "StreamPageTableParameters.h" : category == 19 ? "ResidentLODParameters.h" : category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -1378,6 +1408,36 @@ public:
     StreamClassifyLayoutTest() { category = 26; name = "stream_classify_parameter_spirv_layout"; }
 };
 METALLIC_REGISTER_RHI_TEST(StreamClassifyLayoutTest);
+class StreamClusterCullLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamClusterCullLayoutTest() { category = 27; name = "stream_cluster_cull_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamClusterCullLayoutTest);
+class HybridBinLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    HybridBinLayoutTest() { category = 28; name = "hybrid_bin_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(HybridBinLayoutTest);
+class HybridRasterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    HybridRasterLayoutTest() { category = 29; name = "hybrid_raster_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(HybridRasterLayoutTest);
+class HybridResolveLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    HybridResolveLayoutTest() { category = 30; name = "hybrid_resolve_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(HybridResolveLayoutTest);
+class StreamRasterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamRasterLayoutTest() { category = 31; name = "stream_raster_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamRasterLayoutTest);
+
+
+
+
+
 
 
 class StreamBLASLayoutTest final : public PostProcessParameterLayoutTest {

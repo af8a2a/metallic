@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/StreamRasterParameters.h"
+#include "Runtime/Render/Core/StreamClusterCullParameters.h"
 #include "Runtime/Render/Core/StreamClassifyParameters.h"
 #include "Runtime/Render/Core/StreamInstanceCullParameters.h"
 #include "Runtime/Render/Core/InstanceCullParameters.h"
@@ -881,7 +883,7 @@ public:
             }
         }
         for (const auto& lease : {streamWorkloadHandle_, streamHybridClusterHandle_, streamHybridPixelHandle_,
-             streamCandidateArgumentsHandle_, streamHybridQueueHandle_, streamTessellationHandle_,
+             streamHybridQueueHandle_, streamTessellationHandle_,
              streamGPUSceneInstanceHandle_, streamMaterialHandle_, streamMaterialTextureRemapHandle_,
              streamVisibilityImageHandle_, streamDepthImageHandle_, streamInstanceVisibilityHandle_,
              streamVisibleInstanceIdsHandle_, streamVisibleInstanceCounterHandle_, streamHzbHandles_[0], streamHzbHandles_[1]}) {
@@ -1261,15 +1263,13 @@ private:
         for (auto& pipeline : streamWorkloadPipelines_) { pipeline.reset(); }
         for (auto& shader : streamWorkloadShaders_) { shader.reset(); }
         streamHybridPixelHandle_ = {};
-        streamCandidateArgumentsHandle_ = {};
         streamClusterPrepareKernel_.clear();
-        streamClusterCullShader_.reset();
-        streamClusterCullP0Shader_.reset();
+        for (auto& kernel : streamRasterKernels_) { kernel.clear(); }
         for (auto& shader : streamClusterRasterShaders_) { shader.reset(); }
         streamClusterBinKernel_.clear();
         streamClusterBinP0Kernel_.clear();
-        streamClusterCullPipeline_.reset();
-        streamClusterCullP0Pipeline_.reset();
+        streamClusterCullKernel_.clear();
+        streamClusterCullP0Kernel_.clear();
         for (auto& pipeline : streamClusterRasterPipelines_) { pipeline.reset(); }
         streamVisibilityImageHandle_ = {};
         streamDepthImageHandle_ = {};
@@ -1657,13 +1657,16 @@ private:
                 .parameters = parameterAbi<StreamCandidateParameters>(kStreamCandidateABI, ParameterTransport::InlinePush),
                 .pipelineCache = pipelineCache_.get()}, log);
             if (!result) { return result; }
-            result = createShader(device, kMeshletStreamShaderModuleName,
-                "streamClusterCullMain", false, streamClusterCullShader_, log);
-            if (result) { result = createStreamCompute(*streamClusterCullShader_, streamClusterCullPipeline_, "cluster cull"); }
-            if (!result) { return result; }
-            result = createShader(device, kMeshletStreamShaderModuleName,
-                "streamClusterCullP0Main", false, streamClusterCullP0Shader_, log);
-            if (result) { result = createStreamCompute(*streamClusterCullP0Shader_, streamClusterCullP0Pipeline_, "P0 cluster cull"); }
+            for (auto [entry, kernel] : {std::pair{"streamClusterCullMain", &streamClusterCullKernel_},
+                     std::pair{"streamClusterCullP0Main", &streamClusterCullP0Kernel_}}) {
+                auto shader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
+                    .entryPointName = entry, .searchPath = kMeshletStreamShaderSearchPath}, log);
+                if (!shader) { return makeError(shader.error()); }
+                result = kernel->initialize(device, {.spirv = shader->spirv,
+                    .parameters = parameterAbi<StreamClusterCullParameters>(kStreamClusterCullABI, ParameterTransport::InlinePush),
+                    .pipelineCache = pipelineCache_.get()}, log);
+                if (!result) { return result; }
+            }
             for (auto [entry, kernel] : {std::pair{"streamClusterBinMain", &streamClusterBinKernel_},
                      std::pair{"streamClusterBinP0Main", &streamClusterBinP0Kernel_}}) {
                 if (!result) { return result; }
@@ -1687,6 +1690,21 @@ private:
                         continue; // Production falls back to the 128-thread path.
                     }
                     if (i != 6 && !experiments) { continue; }
+                }
+                if (i < 4 || i >= 6) {
+                    const char* module = i >= 6 ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : kMeshletStreamShaderModuleName;
+                    auto shader = compileSlangShaderToSpirv({.moduleName = module,
+                        .entryPointName = rasterEntries[i], .searchPath = kMeshletStreamShaderSearchPath}, log);
+                    if (!shader) { return makeError(shader.error()); }
+                    uint64_t hash = 14695981039346656037ull;
+                    for (uint32_t word : shader->spirv) {
+                        for (uint32_t shift = 0; shift < 32; shift += 8) { hash ^= (word >> shift) & 255u; hash *= 1099511628211ull; }
+                    }
+                    shaderHashes_[std::string(module) + "." + rasterEntries[i]] = std::to_string(hash);
+                    result = streamRasterKernels_[i].initialize(device, {.spirv = shader->spirv,
+                        .parameters = parameterAbi<StreamRasterParameters>(kStreamRasterABI, ParameterTransport::InlinePush),
+                        .pipelineCache = pipelineCache_.get()}, log);
+                    continue;
                 }
                 result = createShader(device, i >= 6 ? "Features/GPUDriven/GPUDrivenStreamGroupRaster" : i >= 4 ? "Features/GPUDriven/GPUDrivenStreamWorkRaster" : kMeshletStreamShaderModuleName, rasterEntries[i], false, streamClusterRasterShaders_[i], log);
                 if (result) { result = createStreamCompute(*streamClusterRasterShaders_[i], streamClusterRasterPipelines_[i], rasterEntries[i]); }
@@ -2647,7 +2665,6 @@ private:
             if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->clusterBuffer()).transform([&](auto value) { streamHybridClusterHandle_ = std::move(value); }); }
             if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->workloadBuffer()).transform([&](auto value) { streamWorkloadHandle_ = std::move(value); }); }
             if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->pixelBuffer()).transform([&](auto value) { streamHybridPixelHandle_ = std::move(value); }); }
-            if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->candidateArguments()).transform([&](auto value) { streamCandidateArgumentsHandle_ = std::move(value); }); }
             if (!hybridResult) { return hybridResult; }
         }
         if (tessellationEnabled()) {
@@ -2901,10 +2918,18 @@ private:
             // depends on the cull stage removing all semantically forced HW.
             // Experimental until full-pass gains are established in scene profiles.
             const bool divertHardware = boolProperty(&properties(), "cullHardwareClassification", false);
-            push.hybridQueueBuffer = streamCandidateArgumentsHandle_.shaderIndex();
+            ParameterWriter cullWriter(*device_, *registry_, commandBuffer.frameContext());
+            StreamClusterCullParameters cullParams{
+                .instances = cullWriter.buffer(gpuSceneSubsystem_->globalBufferViews().instances.buffer),
+                .visibility = cullWriter.buffer(activeFrameResources().instanceVisibilityBuffer),
+                .previousHZB = cullWriter.buffer(hzbBuffers_[(frameIndex_ & 1u) ^ 1u]),
+                .currentHZB = cullWriter.buffer(hzbBuffers_[frameIndex_ & 1u]),
+                .phase = push.traversalPhase,
+            };
+            result = streamRuntime_->fillClusterCullParameters(cullWriter, cullParams);
+            if (!result) { return result; }
             result = hybridRasterizer_->cullStreamClusters(commandBuffer,
-                divertHardware ? *streamClusterCullPipeline_ : *streamClusterCullP0Pipeline_, push);
-            push.hybridQueueBuffer = UINT32_MAX;
+                divertHardware ? streamClusterCullKernel_ : streamClusterCullP0Kernel_, cullWriter, cullParams);
             commandBuffer.endDebugLabel();
             if (!result) { return result; }
             debugClusterBins(context, phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClusterCull" : "AfterStreamLateClusterCull", ResourceState::General);
@@ -2969,12 +2994,10 @@ private:
             // The fork semaphore supplies availability and visibility for the
             // producer's private cluster/argument and pixel resources.
             commands.beginDebugLabel({.name = "Hybrid raster: stream software clusters"});
-            commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             // Fixed wave32 devices use the validated 32-thread strided kernel.
             // WorkControl 128 and the other comparison kernels remain explicit references.
             const size_t rasterMode = softwareRasterMode();
-            if (!streamClusterRasterPipelines_[rasterMode]) { return makeError(Error::Unsupported); }
-            if (auto commandResult = commands.bindExecution((streamClusterRasterPipelines_[rasterMode])->execution()); !commandResult) { return commandResult; }
+            if ((rasterMode == 4 || rasterMode == 5) && !streamClusterRasterPipelines_[rasterMode]) { return makeError(Error::Unsupported); }
 
             if (context.debugEnabled()) {
                 auto identity = softwareRasterIdentity();
@@ -2989,6 +3012,23 @@ private:
                     {}, identity);
             }
 
+            if (rasterMode < 4 || rasterMode >= 6) {
+                // Replay currently requires mode 5 and its frozen legacy closure.
+                if (profiling::WorkControlReplay::selected(phase == GPUSceneCullPhase::Early ? "early" : "late")) {
+                    return makeError(Error::InvalidArgument);
+                }
+                ParameterWriter writer(*device_, *registry_, commands.frameContext());
+                auto parameters = streamRuntime_->encodeSoftwareRaster(writer, &hybridRasterizer_->clusterBuffer(),
+                    &hybridRasterizer_->pixelBuffer(), gpuSceneSubsystem_->globalBufferViews().instances.buffer);
+                if (!parameters) { return makeError(parameters.error()); }
+                profiling::NvPerfRange range(commands, phase == GPUSceneCullPhase::Early ? "WorkControl/early" : "WorkControl/late");
+                auto result = streamRasterKernels_[rasterMode].dispatchIndirect(commands, *parameters,
+                    hybridRasterizer_->clusterArguments(), VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
+                commands.endDebugLabel();
+                return result;
+            }
+            commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
+            if (auto result = commands.bindExecution(streamClusterRasterPipelines_[rasterMode]->execution()); !result) { return result; }
             commands.pushBindlessData(&push, sizeof(push));
             Result<> result;
             auto* replay = profiling::WorkControlReplay::selected(phase == GPUSceneCullPhase::Early ? "early" : "late");
@@ -4489,21 +4529,19 @@ private:
     std::map<std::string, std::string> shaderHashes_;
     ResourceLease streamHybridClusterHandle_;
     ResourceLease streamHybridPixelHandle_;
-    ResourceLease streamCandidateArgumentsHandle_;
     ComputeKernel streamClusterPrepareKernel_;
     std::unique_ptr<ShaderModule> clusterBinShader_;
     std::unique_ptr<ShaderModule> clusterCountShader_;
     std::unique_ptr<ShaderModule> clusterRasterShader_;
-    std::unique_ptr<ShaderModule> streamClusterCullShader_;
-    std::unique_ptr<ShaderModule> streamClusterCullP0Shader_;
+    std::array<ComputeKernel, 9> streamRasterKernels_;
     std::array<std::unique_ptr<ShaderModule>, 9> streamClusterRasterShaders_;
     std::unique_ptr<ComputePipeline> clusterBinPipeline_;
     std::unique_ptr<ComputePipeline> clusterCountPipeline_;
     std::unique_ptr<ComputePipeline> clusterRasterPipeline_;
     ComputeKernel streamClusterBinKernel_;
     ComputeKernel streamClusterBinP0Kernel_;
-    std::unique_ptr<ComputePipeline> streamClusterCullPipeline_;
-    std::unique_ptr<ComputePipeline> streamClusterCullP0Pipeline_;
+    ComputeKernel streamClusterCullKernel_;
+    ComputeKernel streamClusterCullP0Kernel_;
     std::array<std::unique_ptr<ComputePipeline>, 9> streamClusterRasterPipelines_;
     ResourceLease streamHybridQueueHandle_;
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;

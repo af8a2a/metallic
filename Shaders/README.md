@@ -268,7 +268,7 @@ Streaming TLAS 输入使用 `StreamTLASParameters`（80 字节 inline push）：
 instances、BLAS records、fallback addresses 与 output 全部为有界 BDA span。
 设置快照与输入/输出 allocation 由参数包保留；入口无需 buffer descriptor。
 旧 fallback-address/TLAS-output descriptor 已移除，原加速结构构建同步保持不变。
-Dynamic BLAS 地址表仍由尚未迁移的 BLAS 输入阶段写入，不属于该入口的读取资源。
+Dynamic BLAS 地址表由 BLAS 输入阶段写入，不属于 TLAS 输入入口的读取资源。
 
 Streaming BLAS 输入构建使用 `StreamBLASParameters`（112 字节 inline push）与
 `ComputeKernel`。设置为 BDA 快照，所有缓冲使用 canonical typed handles，header
@@ -279,4 +279,45 @@ Streaming raster 候选压缩的 setup/count/prefix/scatter 共用
 `StreamCandidateParameters`（72 字节 inline push）。active header、groups 与间接参数
 使用 BDA span，bin 和 visibility 使用 typed handles；不再读取 raster bindings 中的
 visibility 裸索引。四个阶段通过 `ComputeKernel` 直接/间接录制，保留稳定顺序、
-容量溢出时整体硬件回退及早/晚重试语义。后续 cull/classify 入口仍待迁移。
+容量溢出时整体硬件回退及早/晚重试语义。后续 cull 同样使用独立的 inline ABI。
+
+[StreamClassifyParameters.h](../Source/Runtime/Render/Core/StreamClassifyParameters.h) 定义 stream cluster
+P0/P1 分类共用的 80 字节 inline ABI。settings 使用不可变 BDA 快照，active groups、page words
+和 GPUScene instances 使用有界 span，输出 bin 使用 typed registry handle。
+P0 保留材质覆盖及曲面细分的强制硬件判定，P1 消费 cull 已过滤的队列；两个入口通过
+`ComputeKernel` 录制，参数包将输入资源保留到提交完成。
+
+Streaming cluster cull 的 P0/P1 共用 `StreamClusterCullParameters`（128 字节 inline push）。
+settings 与 raster settings 为不可变 BDA 快照，十二个资源使用 canonical typed handle；
+资源索引解析只保留在旧 raster 适配层，共享加载器显式接收资源与 early/late phase。
+Cull 与间接参数 finalize 各自编码参数包，经 `ComputeKernel` 录制并保留资源；
+保留页请求、HZB 重试和稳定 bin 顺序，移除旧 candidate-arguments 专用 descriptor 租约。
+
+混合光栅稳定分桶的 reset/histogram/arguments/scatter 共用 `HybridBinParameters`
+（64 字节 inline push）。bin 使用 typed registry handle，间接参数输出使用有界 BDA span；
+四阶段通过 `ComputeKernel` 录制并保留 allocation，沿用原有阶段同步、稳定顺序和溢出回退。
+分桶私有 heap 的 bin/arguments descriptor 已删除。`producerPixelBuffer` 暂作为旧 raster
+consumer 的 header 数据透传，分桶自身不解引用它；像素寻址仍需随 raster 入口继续迁移。
+
+混合光栅 clear/arguments/triangle raster 使用 `HybridRasterParameters`（56 字节 inline push），
+queue/pixels 为 typed handles，间接参数为有界 BDA span；三阶段均通过 `ComputeKernel` 录制。
+`hybridRasterTriangle` 接收 typed pixel handle，未迁移的 raster 入口经裸索引适配重载调用同一算法。
+私有 queue/arguments descriptor 已删除。
+
+混合光栅 graphics resolve 使用 `HybridResolveParameters`（24 字节 inline push），以有界
+BDA span 读取 64-bit depth/visibility 像素；资源在 draw 前编码并绑定，保留到提交完成。
+`VisibilityHybridRasterizer` 已无私有 heap、旧 `HybridPush` 或裸 push 提交，host settings
+与各入口 wire ABI 分离。外部 raster 仍透传 bin header 的 producer pixel index，待后续迁移。
+
+Streaming 软件光栅的普通、参考、plane、cooperative 和 Group32/64/128 七个入口共用
+[StreamRasterParameters.h](../Source/Runtime/Render/Core/StreamRasterParameters.h)（88 字节 inline push）。
+settings 为不可变有界 BDA 快照；pages、groups、header、page table、instances、bins 和 pixels
+使用 canonical typed handles，record base/capacity 显式传入。入口不再解析 rasterBindings buffer
+或 bin header 的 pixel index，生产默认 Group32 同样通过 `ComputeKernel` 与参数包保留资源。
+cooperative 与 group 入口共用显式资源的 wave 解码核心，保留原有 barrier、尾部和反射变换规则。
+WorkBins、WorkControl、诊断 workload 和硬件 raster 尚未迁移；WorkControl 的 136 字节回放
+快照仍经旧资源适配层执行，不应使用新 ABI 解释旧快照。GPU 测试对七个 inline 入口和旧
+WorkControl 逐像素对照：plane 保持覆盖/ID 且深度误差不超过 1e-6，其余 packed 输出相同。
+
+Fragment 中的 BDA 范围校验失败必须显式 return；不能只 discard 后继续读取物理地址。
+Resolve 的 indexed-mesh/奇数尺寸回归覆盖该路径，避免 helper invocation 越界读取。

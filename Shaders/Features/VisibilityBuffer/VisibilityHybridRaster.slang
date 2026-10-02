@@ -3,36 +3,19 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
-struct HybridPush
-{
-    uint queueBuffer;
-    uint pixelBuffer;
-    uint argumentsBuffer;
-    uint width;
-    uint height;
-    uint capacity;
-    float maxPixels;
-    uint reversedZ;
-    uint subpixelBits;
-    uint clusterBuffer;
-    uint clusterArgumentsBuffer;
-    uint clusterCapacity;
-    uint producerPixelBuffer;
-    uint inputClusterCount;
-    uint streamMode;
-};
+#include "../../../Source/Runtime/Render/Core/HybridRasterParameters.h"
+[[vk::push_constant]] ConstantBuffer<HybridRasterParameters> gHybridRaster;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void hybridResetMain(uint3 id : SV_DispatchThreadID, uniform HybridPush push)
+void hybridResetMain(uint3 id : SV_DispatchThreadID)
 {
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> pixels =
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(push.pixelBuffer, 0));
+    HybridRasterParameters push = gHybridRaster;
+    DescriptorHandle<RWStructuredBuffer<uint64_t>> pixels = push.pixels;
     uint index = id.y * push.width + id.x;
     if (id.x < push.width && id.y < push.height) { pixels[index] = uint64_t(0); }
     if (all(id == 0u)) {
-        DescriptorHandle<RWStructuredBuffer<uint4>> queue =
-            DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(push.queueBuffer, 0));
+        DescriptorHandle<RWStructuredBuffer<uint4>> queue = push.queue;
         queue[0] = uint4(0u, push.capacity, push.width, push.height);
         queue[1] = uint4(push.width, push.height, asuint(push.maxPixels), push.capacity);
     }
@@ -40,12 +23,12 @@ void hybridResetMain(uint3 id : SV_DispatchThreadID, uniform HybridPush push)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void hybridArgumentsMain(uniform HybridPush push)
+void hybridArgumentsMain()
 {
-    DescriptorHandle<StructuredBuffer<uint4>> queue =
-        DescriptorHandle<StructuredBuffer<uint4>>(uint2(push.queueBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> args =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.argumentsBuffer, 0));
+    HybridRasterParameters push = gHybridRaster;
+    DescriptorHandle<RWStructuredBuffer<uint4>> queue = push.queue;
+    if (push.arguments.data == nullptr || !push.arguments.contains(2u)) { return; }
+    uint* args = push.arguments.data;
     args[0] = (min(queue[0].x, push.capacity) + 63u) / 64u;
     args[1] = 1u;
     args[2] = 1u;
@@ -53,11 +36,10 @@ void hybridArgumentsMain(uniform HybridPush push)
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void hybridRasterMain(uint3 id : SV_DispatchThreadID, uniform HybridPush push)
+void hybridRasterMain(uint3 id : SV_DispatchThreadID)
 {
-    DescriptorHandle<StructuredBuffer<uint4>> queueHandle =
-        DescriptorHandle<StructuredBuffer<uint4>>(uint2(push.queueBuffer, 0));
-    StructuredBuffer<uint4> queue = queueHandle;
+    HybridRasterParameters push = gHybridRaster;
+    RWStructuredBuffer<uint4> queue = push.queue;
     if (id.x >= min(queue[0].x, push.capacity)) { return; }
     uint offset = 2u + id.x * 4u;
     float4 c0 = asfloat(queue[offset]);
@@ -65,8 +47,11 @@ void hybridRasterMain(uint3 id : SV_DispatchThreadID, uniform HybridPush push)
     float4 c2 = asfloat(queue[offset + 2u]);
     uint4 payload = queue[offset + 3u];
     hybridRasterTriangle(c0, c1, c2, payload.x, payload.y != 0u,
-        push.width, push.height, push.reversedZ, push.subpixelBits, push.pixelBuffer);
+        push.width, push.height, push.reversedZ, push.subpixelBits, push.pixels);
 }
+
+#include "../../../Source/Runtime/Render/Core/HybridResolveParameters.h"
+[[vk::push_constant]] ConstantBuffer<HybridResolveParameters> gHybridResolve;
 
 struct HybridVertexOutput { float4 position : SV_Position; };
 [shader("vertex")]
@@ -78,11 +63,17 @@ HybridVertexOutput hybridResolveVertexMain(uint vertex : SV_VertexID)
 }
 struct HybridFragmentOutput { uint visibility : SV_Target0; float depth : SV_Depth; };
 [shader("fragment")]
-HybridFragmentOutput hybridResolveFragmentMain(HybridVertexOutput input, uniform HybridPush push)
+HybridFragmentOutput hybridResolveFragmentMain(HybridVertexOutput input)
 {
-    DescriptorHandle<StructuredBuffer<uint64_t>> pixels =
-        DescriptorHandle<StructuredBuffer<uint64_t>>(uint2(push.pixelBuffer, 0));
-    uint64_t packed = pixels[uint(input.position.y) * push.width + uint(input.position.x)];
+    HybridResolveParameters push = gHybridResolve;
+    uint index = uint(input.position.y) * push.width + uint(input.position.x);
+    // Discard can demote a fragment to a helper invocation; explicitly leave
+    // the invalid path before dereferencing a physical buffer address.
+    if (push.pixels.data == nullptr || !push.pixels.contains(index)) {
+        discard;
+        return (HybridFragmentOutput)0;
+    }
+    uint64_t packed = push.pixels.data[index];
     if (uint(packed) == 0u) { discard; }
     uint key = uint(packed >> 32u);
     HybridFragmentOutput output;
@@ -91,13 +82,15 @@ HybridFragmentOutput hybridResolveFragmentMain(HybridVertexOutput input, uniform
     return output;
 }
 
+#include "../../../Source/Runtime/Render/Core/HybridBinParameters.h"
+[[vk::push_constant]] ConstantBuffer<HybridBinParameters> gHybridBins;
+
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void hybridClusterResetMain(uniform HybridPush push)
+void hybridClusterResetMain()
 {
-    DescriptorHandle<RWStructuredBuffer<uint>> handle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.clusterBuffer, 0));
-    RWStructuredBuffer<uint> bins = handle;
+    HybridBinParameters push = gHybridBins;
+    RWStructuredBuffer<uint> bins = push.bins;
     for (uint i = 0; i < kHybridBinHeaderWords; ++i) { bins[i] = 0u; }
     bins[5] = push.clusterCapacity;
     bins[6] = push.width;
@@ -115,11 +108,10 @@ groupshared uint g_BinPrefix[128];
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void hybridClusterHistogramMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform HybridPush push)
+void hybridClusterHistogramMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    DescriptorHandle<RWStructuredBuffer<uint>> handle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.clusterBuffer, 0));
-    RWStructuredBuffer<uint> bins = handle;
+    HybridBinParameters push = gHybridBins;
+    RWStructuredBuffer<uint> bins = push.bins;
     uint block = hybridFlatGroup(group);
     uint item = block * kHybridBinBlockSize + lane;
     uint tag = 0xffffffffu;
@@ -142,12 +134,12 @@ void hybridClusterHistogramMain(uint3 group : SV_GroupID, uint lane : SV_GroupIn
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void hybridClusterArgumentsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform HybridPush push)
+void hybridClusterArgumentsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
-    DescriptorHandle<RWStructuredBuffer<uint>> bins =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.clusterBuffer, 0));
-    DescriptorHandle<RWStructuredBuffer<uint>> args =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.clusterArgumentsBuffer, 0));
+    HybridBinParameters push = gHybridBins;
+    DescriptorHandle<RWStructuredBuffer<uint>> bins = push.bins;
+    if (push.arguments.data == nullptr || !push.arguments.contains(14u)) { return; }
+    uint* args = push.arguments.data;
     uint bin = group.x;
     uint blocks = (bins[12] + 127u) / 128u;
     uint blocksPerLane = (blocks + 127u) / 128u;
@@ -188,12 +180,12 @@ void hybridClusterArgumentsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIn
 
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void hybridClusterScatterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform HybridPush push)
+void hybridClusterScatterMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
+    HybridBinParameters push = gHybridBins;
     uint block = hybridFlatGroup(group);
     uint item = block * kHybridBinBlockSize + lane;
-    DescriptorHandle<RWStructuredBuffer<uint>> bins =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.clusterBuffer, 0));
+    DescriptorHandle<RWStructuredBuffer<uint>> bins = push.bins;
     if (item >= bins[12]) { return; }
     uint candidate = hybridCandidateBase(push.clusterCapacity) + item * 2u;
     uint bin = bins[candidate + 1u];

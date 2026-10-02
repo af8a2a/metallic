@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/StreamRasterParameters.h"
+#include "Runtime/Render/Core/StreamClusterCullParameters.h"
 #include "Runtime/Render/Core/StreamClassifyParameters.h"
 #include <limits>
 #include "RHITest.h"
@@ -79,6 +81,7 @@ public:
             return {};
         };
         ComputeKernel candidateKernel;
+        std::array<ComputeKernel, 2> cullKernels;
         std::array<ComputeKernel, 2> classifyKernels;
         std::array<std::unique_ptr<ShaderModule>, 9> shaders;
         std::array<std::unique_ptr<ComputePipeline>, 9> pipelines;
@@ -97,6 +100,11 @@ public:
             if (i == 0) {
                 CLASSIFY_REQUIRE(candidateKernel.initialize(*device, {.spirv = compiled.spirv,
                     .parameters = parameterAbi<StreamCandidateParameters>(kStreamCandidateABI, ParameterTransport::InlinePush)}, log));
+                continue;
+            }
+            if (i == 1 || i == 8) {
+                CLASSIFY_REQUIRE(cullKernels[i == 8 ? 1 : 0].initialize(*device, {.spirv = compiled.spirv,
+                    .parameters = parameterAbi<StreamClusterCullParameters>(kStreamClusterCullABI, ParameterTransport::InlinePush)}, log));
                 continue;
             }
             if (i == 2 || i == 7) {
@@ -133,10 +141,23 @@ public:
                         .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
                         .additionalSearchPaths = {additionalStatsPaths, 1},
                     }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
+                    if (std::strcmp(entry, "streamClusterCullMain") == 0 || std::strcmp(entry, "streamClusterCullP0Main") == 0) {
+                        ComputeKernel kernel;
+                        CLASSIFY_REQUIRE(kernel.initialize(*device, {.spirv = compiled.spirv,
+                            .parameters = parameterAbi<StreamClusterCullParameters>(kStreamClusterCullABI, ParameterTransport::InlinePush)}, log));
+                        continue;
+                    }
                     if (std::strcmp(entry, "streamClusterBinMain") == 0 || std::strcmp(entry, "streamClusterBinP0Main") == 0) {
                         ComputeKernel kernel;
                         CLASSIFY_REQUIRE(kernel.initialize(*device, {.spirv = compiled.spirv,
                             .parameters = parameterAbi<StreamClassifyParameters>(kStreamClassifyABI, ParameterTransport::InlinePush)}, log));
+                        continue;
+                    }
+                    if (std::strcmp(entry, "streamClusterRasterMain") == 0 || std::strcmp(entry, "streamClusterRasterLegacyMain") == 0 ||
+                        std::strcmp(entry, "streamClusterRasterPlaneMain") == 0 || std::strcmp(entry, "streamClusterRasterCooperativeMain") == 0) {
+                        ComputeKernel kernel;
+                        CLASSIFY_REQUIRE(kernel.initialize(*device, {.spirv = compiled.spirv,
+                            .parameters = parameterAbi<StreamRasterParameters>(kStreamRasterABI, ParameterTransport::InlinePush)}, log));
                         continue;
                     }
                     std::unique_ptr<ShaderModule> shader;
@@ -341,7 +362,25 @@ public:
                             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
                         };
                         if (auto commandResult = commands->synchronize({.buffers = {&verifyBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                        CLASSIFY_REQUIRE(rasterizer.cullStreamClusters(*commands, *pipelines[schedule == 1 ? 1 : 8], push));
+                        ParameterWriter cullWriter(*device, **candidateRegistry, commands->frameContext());
+                        const StreamClusterCullParameters cullParams{
+                            .settings = cullWriter.data(&params, sizeof(params), 16),
+                            .rasterSettings = cullWriter.data(&bindings, sizeof(bindings), 16),
+                            .pages = cullWriter.buffer(inputs[Pages].get()),
+                            .groups = cullWriter.buffer(inputs[Groups].get()),
+                            .header = cullWriter.buffer(inputs[Header].get()),
+                            .pageTable = cullWriter.buffer(inputs[PageTable].get()),
+                            .requests = cullWriter.buffer(inputs[Requests].get()),
+                            .instances = cullWriter.buffer(inputs[Instances].get()),
+                            .visibility = cullWriter.buffer(inputs[Visibility].get()),
+                            .records = cullWriter.buffer(inputs[Records].get()),
+                            .previousHZB = cullWriter.buffer(inputs[(params.frameIndex & 1u) == 0u ? HZB1 : HZB0].get()),
+                            .currentHZB = cullWriter.buffer(inputs[(params.frameIndex & 1u) == 0u ? HZB0 : HZB1].get()),
+                            .phase = phase,
+                            .flags = 1u | (test.tessellation ? 2u : 0u),
+                        };
+                        CLASSIFY_REQUIRE(rasterizer.cullStreamClusters(*commands, cullKernels[schedule == 1 ? 0 : 1], cullWriter, cullParams));
+                        commands->bindBindlessHeap(*heap);
                         // Inspect the queue before stable bin scatter overwrites it.
                         BufferBarrierDesc queueCopy{
                             .buffer = &rasterizer.clusterBuffer(),

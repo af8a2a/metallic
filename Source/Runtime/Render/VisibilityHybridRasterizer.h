@@ -1,4 +1,5 @@
 #pragma once
+#include "Runtime/Render/Core/StreamClusterCullParameters.h"
 #include "Runtime/Render/Core/StreamCandidateParameters.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 
@@ -7,8 +8,6 @@
 #include <string>
 
 namespace metallic::render {
-
-struct MeshletStreamUserPush;
 
 // GPU cluster classification/compaction, micropolygon rasterization and depth
 // resolve, with the triangle-queue path retained for runtime comparisons.
@@ -29,54 +28,51 @@ public:
     Result<> prepareStreamClusterCandidates(CommandBuffer& commands, const ComputeKernel& kernel,
         ParameterWriter& writer, StreamCandidateParameters params);
     // Batch metadata culling, then dispatch geometry classification only for
-    // survivors. Both kernels share the producer's bindless heap.
-    Result<> cullStreamClusters(CommandBuffer& commands, ComputePipeline& pipeline,
-        MeshletStreamUserPush push);
+    // survivors. The parameter packets retain resources for both stages.
+    Result<> cullStreamClusters(CommandBuffer& commands, const ComputeKernel& kernel,
+        ParameterWriter& writer, StreamClusterCullParameters params);
     Buffer& candidateArguments() const { return *candidateArguments_; }
     Result<> finishClusterBins(CommandBuffer& commands);
     Buffer& workloadBuffer() const { return *workloadBuffer_; }
     Buffer& clusterBuffer() const { return *clusterBuffer_; }
     Buffer& clusterArguments() const { return *clusterArguments_; }
-    uint32_t clusterCapacity() const { return push_.clusterCapacity; }
+    uint32_t clusterCapacity() const { return settings_.clusterCapacity; }
     static constexpr uint32_t kDispatchWidth = 65535;
     static constexpr uint32_t kSoftwareBin = 4;
     static constexpr uint32_t kCandidateBuildArgumentsOffset = 24;
     Buffer& queueBuffer() const { return *buffers_[0]; }
     Buffer& pixelBuffer() const { return *buffers_[1]; }
-    uint32_t width() const { return push_.width; }
-    uint32_t height() const { return push_.height; }
+    uint32_t width() const { return settings_.width; }
+    uint32_t height() const { return settings_.height; }
 
 private:
     [[nodiscard]] Result<> prepareClusterCandidates(CommandBuffer& commands);
-    struct Push {
-        uint32_t queueBuffer = 0;
-        uint32_t pixelBuffer = 0;
-        uint32_t argumentsBuffer = 0;
+    Result<EncodedParameters> encodeRasterParameters(CommandBuffer& commands);
+    Result<EncodedParameters> encodeBinParameters(CommandBuffer& commands);
+    Device* device_ = nullptr;
+    // Host settings only; GPU entrypoints use their shared parameter ABI.
+    struct Settings {
         uint32_t width = 0;
         uint32_t height = 0;
         uint32_t capacity = 0;
         float maxPixels = 8.0f;
         uint32_t reversedZ = 1;
         uint32_t subpixelBits = 8;
-        uint32_t clusterBuffer = 0;
-        uint32_t clusterArgumentsBuffer = 0;
         uint32_t clusterCapacity = 1;
         uint32_t producerPixelBuffer = 0;
         uint32_t inputClusterCount = 0;
         uint32_t streamMode = 0;
-    } push_;
+    } settings_;
     std::array<std::unique_ptr<Buffer>, 3> buffers_;
-    std::unique_ptr<BindlessHeap> heap_;
     std::array<std::unique_ptr<ShaderModule>, 5> shaders_;
-    std::array<std::unique_ptr<ComputePipeline>, 3> compute_;
+    std::array<ComputeKernel, 3> rasterKernels_;
     std::array<std::unique_ptr<GraphicsPipeline>, 2> resolve_;
     std::unique_ptr<Buffer> workloadBuffer_;
     std::unique_ptr<Buffer> clusterBuffer_;
     std::unique_ptr<Buffer> clusterArguments_;
     std::unique_ptr<Buffer> candidateArguments_;
     bool compactCandidates_ = false;
-    std::array<std::unique_ptr<ShaderModule>, 4> clusterShaders_;
-    std::array<std::unique_ptr<ComputePipeline>, 4> clusterPipelines_;
+    std::array<ComputeKernel, 4> clusterKernels_;
     bool clusterInitialized_ = false;
     bool initialized_ = false;
 };

@@ -71,11 +71,17 @@ float4 streamClassifyClip(StreamClassifyDesc c, uint vertex, StreamClassifyParam
     return clip;
 }
 
+uint streamClassifyByte(uint* pages, uint address)
+{
+    return (pages[address / 4u] >> ((address & 3u) * 8u)) & 255u;
+}
+
 uint3 streamClassifyTriangle(StreamClassifyDesc c, uint triangle, StreamClassifyParameters push)
 {
     uint* pages = push.pages.data;
     uint address = c.triangleBaseByte + triangle * 3u;
-    uint3 indices = uint3(((pages[address / 4u] >> ((address & 3u) * 8u)) & 255u), ((pages[(address + 1u) / 4u] >> (((address + 1u) & 3u) * 8u)) & 255u), ((pages[(address + 2u) / 4u] >> (((address + 2u) & 3u) * 8u)) & 255u));
+    uint3 indices = uint3(streamClassifyByte(pages, address),
+        streamClassifyByte(pages, address + 1u), streamClassifyByte(pages, address + 2u));
     // Retain the existing malformed-index fallback in the stream HW decoder.
     indices = uint3(indices.x < c.vertexCount ? indices.x : 0u,
         indices.y < c.vertexCount ? indices.y : 0u, indices.z < c.vertexCount ? indices.z : 0u);
