@@ -22,14 +22,12 @@ struct HybridBinParameters
     float maxPixels;
     uint32_t reversedZ;
     uint32_t subpixelBits;
-    uint32_t producerPixelBuffer; // Legacy raster consumer's pixel index, not read by binning.
     uint32_t inputClusterCount;
     uint32_t streamMode;
-    uint32_t padding;
 };
 #ifdef __cplusplus
-inline constexpr uint64_t kHybridBinABI = 0x48594242494e0001ull;
-static_assert(sizeof(HybridBinParameters) == 64);
+inline constexpr uint64_t kHybridBinABI = 0x48594242494e0002ull;
+static_assert(sizeof(HybridBinParameters) == 56);
 static_assert(offsetof(HybridBinParameters, arguments) == 8);
 static_assert(offsetof(HybridBinParameters, width) == 24);
 #endif

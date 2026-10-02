@@ -164,9 +164,10 @@ public:
                 params.renderEye[0] = .1f; params.renderEye[3] = .35f; params.renderCenter[3] = -.2f;
             }
             const StreamPageTableEntry entry{.deviceOffsetAndState = packStreamPageTableEntry(0, MeshletStreamPageResidencyState::Resident)};
-            MeshletStreamGPURasterBindings bindings{.visibleClusterBuffer = handles[Records].shaderIndex,
-                .instanceVisibilityBuffer = handles[Visibility].shaderIndex, .visibleRecordBase = kVisibilityMaxRecordCount - capacity,
-                .visibleRecordCapacity = capacity, .gpuSceneInstanceBuffer = handles[Instances].shaderIndex};
+            MeshletStreamGPURasterBindings bindings{.visibleClusterBuffer = {uint64_t(handles[Records].shaderIndex)},
+                .instanceVisibilityBuffer = {uint64_t(handles[Visibility].shaderIndex)}, .visibleRecordBase = kVisibilityMaxRecordCount - capacity,
+                .visibleRecordCapacity = capacity, .gpuSceneInstanceBuffer = {uint64_t(handles[Instances].shaderIndex)}};
+            updateStreamRasterResourceFlags(bindings);
             const std::array<uint32_t, 2> visibility{test == 7 ? 3u : 1u, test == 7 ? 3u : 1u};
             std::array<uint32_t, 16 + 9 * capacity + 5> bins{};
             bins[0] = capacity; bins[5] = capacity;

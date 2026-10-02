@@ -152,18 +152,17 @@ public struct GPUDrivenPreviewParams
     public uint environmentVisible;
     public uint materialCount;
     public uint visibleMeshletCapacity;
-    public uint lodSelectionBuffer;
+    public uint resourcePadding;
     public uint lodSelectionEnabled;
-    public uint tessellationBuffer;
+    public uint tessellationEnabled;
     public float displacementBound;
     public uint2 tessellationPadding;
 };
 
-public uint residentLodRecordIndex(uint candidate, GPUDrivenPreviewParams params)
+public uint residentLodRecordIndex(uint candidate, GPUDrivenPreviewParams params,
+    DescriptorHandle<StructuredBuffer<uint4>> selections)
 {
     if (params.lodSelectionEnabled == 0u) { return params.meshletOffset + candidate; }
-    DescriptorHandle<StructuredBuffer<uint4>> selections =
-        DescriptorHandle<StructuredBuffer<uint4>>(uint2(params.lodSelectionBuffer, 0));
     uint count = min(selections[0].x, selections[0].y);
     return candidate < count ? selections[candidate + 1u].z : 0xffffffffu;
 }

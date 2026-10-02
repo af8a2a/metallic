@@ -1,11 +1,8 @@
-import Core;
-using Metallic;
+#include "../SliderFixtureParameters.h"
 
-#define gOutput getResource<RWTexture2D<float4>>(0)
-#define gInput getResource<Texture2D<float4>>(1)
-#define gReadback getResource<RWStructuredBuffer<float4>>(2)
-struct FixturePush { uint path; };
-#define gPush getConstants<FixturePush>()
+[[vk::push_constant]] ConstantBuffer<SliderFixtureParameters> gPush;
+#define gOutput resolveDescriptor(gPush.output)
+#define gInput resolveDescriptor(gPush.input)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -25,5 +22,7 @@ void sliderReadbackMain(uint3 id : SV_DispatchThreadID)
     uint width, height;
     gInput.GetDimensions(width, height);
     if (id.x >= width || id.y >= height) { return; }
-    gReadback[id.y * width + id.x] = gInput.Load(int3(id.xy, 0));
+    uint index = id.y * width + id.x;
+    if (!gPush.readback.contains(index)) { return; }
+    gPush.readback.data[index] = gInput.Load(int3(id.xy, 0));
 }

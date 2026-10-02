@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "harness/RayQueryFixture.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "UnifiedTopLevelProbeParameters.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -126,11 +127,10 @@ public:
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         log = shader.diagnostics;
         TLAS_REQUIRE(compiled);
-        const ComputeProgramBindingDesc layout[] = {{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
-        ComputeProgram program;
+        ComputeKernel program;
         const auto initialized = program.initialize(device, {
             .spirv = shader.spirv,
-            .bindings = {layout, 2},
+            .parameters = parameterAbi<UnifiedTopLevelProbeParameters>(kUnifiedRayProbeABI, ParameterTransport::InlinePush),
         }, log);
         if (native_ && hasError(initialized, Error::Unsupported)) { return RHITestResult::skip("native descriptor heap unavailable"); }
         TLAS_REQUIRE(initialized);
@@ -190,7 +190,7 @@ public:
             TLAS_REQUIRE((*commands)->buildPartitionedAccelerationStructure({.destination = partitioned.get(),
                 .instanceBuffer = partitionedInstances.get(), .instanceCount = 1, .scratchBuffer = scratch->get()}));
         }
-        // Reuse the same shader, program, layout, binding slot and heap handle for both backends.
+        // Reuse the same shader, kernel and typed inline ABI for both backends.
         std::array<RayTracingAccelerationStructure*, 2> structures{standard->get(), partitioned.get()};
         for (uint32_t backend = context.evidence && usePartitioned ? 1u : 0u; backend < (usePartitioned ? 2u : 1u); ++backend) {
             auto& structure = *structures[backend];
@@ -225,8 +225,14 @@ public:
                     }
                     TLAS_CHECK(structure.deviceAddress() == address);
                 }
-                const ComputeDispatchBinding bindings[] = {{.binding = 0, .accelerationStructure = &structure}, {.binding = 1, .buffer = output->get()}};
-                TLAS_REQUIRE(program.dispatch({.commandBuffer = commands->get(), .bindings = {bindings, 2}}));
+                auto registry = device.resourceRegistry();
+                TLAS_REQUIRE(registry);
+                ParameterWriter writer(device, **registry, &frame);
+                const UnifiedTopLevelProbeParameters params{writer.accelerationStructure(&structure),
+                    writer.dataBuffer(output->get(), sizeof(bench::RayObservation), 4)};
+                auto encoded = writer.encode(params, kUnifiedRayProbeABI, ParameterTransport::InlinePush);
+                TLAS_REQUIRE(encoded);
+                TLAS_REQUIRE(program.dispatch(**commands, *encoded, 1));
                 TLAS_REQUIRE((*commands)->end());
                 CommandBuffer* submitted[] = {commands->get()};
                 TLAS_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));

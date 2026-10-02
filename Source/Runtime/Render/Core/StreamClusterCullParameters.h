@@ -58,7 +58,7 @@ struct StreamClusterCullParameters
     uint32_t padding;
 };
 #ifdef __cplusplus
-inline constexpr uint64_t kStreamClusterCullABI = 0x5354524343430002ull;
+inline constexpr uint64_t kStreamClusterCullABI = 0x5354524343430004ull;
 static_assert(sizeof(StreamClusterCullParameters) == 128);
 static_assert(offsetof(StreamClusterCullParameters, phase) == 112);
 #endif

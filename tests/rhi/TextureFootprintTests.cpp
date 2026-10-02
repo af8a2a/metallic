@@ -1,5 +1,6 @@
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "TextureFootprintProbeParameters.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 
@@ -17,22 +18,10 @@ namespace {
 constexpr uint32_t kFootprintCaseCount = 32;
 constexpr uint32_t kHighResolutionCaseStart = 16;
 
-struct TextureFootprintProbePush {
-    uint32_t width;
-    uint32_t height;
-    uint32_t index;
-    uint32_t orthographic;
-    float aspect;
-    float verticalFovRadians;
-    float orthographicHeight;
-    float reserved = 0.0f;
-};
-static_assert(sizeof(TextureFootprintProbePush) == 32);
-
-std::array<TextureFootprintProbePush, kFootprintCaseCount> footprintCases()
+std::array<TextureFootprintProbeInput, kFootprintCaseCount> footprintCases()
 {
     constexpr float kRadians = std::numbers::pi_v<float> / 180.0f;
-    std::array<TextureFootprintProbePush, kFootprintCaseCount> cases{{
+    std::array<TextureFootprintProbeInput, kFootprintCaseCount> cases{{
         {1920, 1080, 0, 0, 16.0f / 9.0f, 60.0f * kRadians, 4.0f},
         {3840, 2160, 0, 0, 16.0f / 9.0f, 60.0f * kRadians, 4.0f},
         {640, 360, 0, 0, 16.0f / 9.0f, 90.0f * kRadians, 4.0f},
@@ -75,6 +64,7 @@ public:
 
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({
             .moduleName = "TextureFootprintProbe",
@@ -82,34 +72,32 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc binding{
-            .binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer};
-        return program_.initialize(*context.device, {
+        return kernel_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .pushConstantSize = sizeof(TextureFootprintProbePush),
-            .bindings = {&binding, 1},
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<TextureFootprintProbeParameters>(kFootprintProbeABI, render::ParameterTransport::InlinePush),
         }, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        const render::ComputeDispatchBinding binding{
-            .binding = 0, .buffer = context.outputBuffer("cones").buffer()};
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return render::makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
         for (const auto& input : footprintCases()) {
-            auto result = program_.dispatch({
-                .commandBuffer = &context.commandBuffer(),
-                .bindings = {&binding, 1},
-                .pushData = &input,
-                .pushDataSize = sizeof(input),
-            });
+            render::ParameterWriter writer(*device_, **registry, commands.frameContext());
+            const TextureFootprintProbeParameters params{
+                writer.dataBuffer(context.outputBuffer("cones").buffer(), sizeof(float) * 2, alignof(float)), input};
+            auto encoded = writer.encode(params, kFootprintProbeABI, render::ParameterTransport::InlinePush);
+            if (!encoded) { return render::makeError(encoded.error()); }
+            auto result = kernel_.dispatch(commands, *encoded, 1);
             if (!result) { return result; }
         }
         return {};
     }
 
 private:
-    render::ComputeProgram program_;
+    render::Device* device_ = nullptr;
+    render::ComputeKernel kernel_;
 };
 
 class TextureFootprintTest final : public RHITest {

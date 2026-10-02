@@ -3,22 +3,16 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
-struct ProbePush
-{
-    uint inputBuffer;
-    uint clusterBuffer;
-    uint count;
-};
+#include "../HybridProbeParameters.h"
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void classifyMain(uint3 group : SV_GroupID, uniform ProbePush push)
+void classifyMain(uint3 group : SV_GroupID, uniform HybridClusterProbeParameters push)
 {
     uint item = hybridFlatGroup(group);
-    if (item >= push.count) { return; }
-    DescriptorHandle<StructuredBuffer<uint2>> input =
-        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.inputBuffer, 0));
+    if (item >= push.count || !push.input.contains(item)) { return; }
+    uint2* input = push.input.data;
     DescriptorHandle<RWStructuredBuffer<uint>> bins =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.clusterBuffer, 0));
+        push.bins;
     uint2 candidate = input[item];
     hybridClassifyCluster(bins, candidate.y, candidate.x, item);
 }
@@ -26,14 +20,13 @@ void classifyMain(uint3 group : SV_GroupID, uniform ProbePush push)
 // Poison reusable scratch and seed retry masks independently of preparation.
 [shader("compute")]
 [numthreads(128, 1, 1)]
-void seedStreamCandidatesMain(uint3 id : SV_DispatchThreadID, uniform ProbePush push)
+void seedStreamCandidatesMain(uint3 id : SV_DispatchThreadID, uniform HybridClusterProbeParameters push)
 {
     uint item = id.x;
-    if (item >= push.count) { return; }
-    DescriptorHandle<StructuredBuffer<uint2>> input =
-        DescriptorHandle<StructuredBuffer<uint2>>(uint2(push.inputBuffer, 0));
+    if (item >= push.count || !push.input.contains(item)) { return; }
+    uint2* input = push.input.data;
     DescriptorHandle<RWStructuredBuffer<uint>> bins =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.clusterBuffer, 0));
+        push.bins;
     bins[kHybridBinHeaderWords + item] = 0xa5a5a5a5u;
     bins[hybridCandidateBase(push.count) + item * 2u] = 0xa5a5a5a5u;
     bins[hybridCandidateBase(push.count) + item * 2u + 1u] = 0xa5a5a5a5u;

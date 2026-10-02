@@ -98,7 +98,6 @@ void hybridClusterResetMain()
     bins[8] = asuint(push.maxPixels);
     bins[9] = push.reversedZ;
     bins[10] = push.subpixelBits;
-    bins[11] = push.producerPixelBuffer;
     bins[12] = push.inputClusterCount;
 }
 

@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "Runtime/Render/Material/MaterialValueProgram.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "MaterialValueProbeParameters.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
@@ -188,6 +189,7 @@ public:
     }
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         const auto values = MaterialValueProgramSet::create(probeMaterials(), log);
         if (!values) { return makeError(Error::Failure); }
         auto result = context.device->createBuffer({.size = values->instances().size_bytes(),
@@ -207,19 +209,26 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .additionalSearchPaths = paths}, log)
             .transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
-        const std::array bindings{ComputeProgramBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeProgramBindingDesc{.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer}};
-        return program_.initialize(*context.device, {.spirv = shader.spirv, .bindings = bindings, .requiresRayQuery = false}, log);
+        return kernel_.initialize(*context.device, {.spirv = shader.spirv,
+            .parameters = parameterAbi<MaterialValueProbeParameters>(kMaterialValueProbeABI, ParameterTransport::InlinePush)}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {
-        const std::array bindings{ComputeDispatchBinding{.binding = 0, .buffer = context.outputBuffer("result").buffer()},
-            ComputeDispatchBinding{.binding = kMaterialValueBinding, .buffer = input_.get()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings});
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        const MaterialValueProbeParameters params{
+            writer.dataBuffer(input_.get(), sizeof(MaterialValueInstance), 16),
+            writer.dataBuffer(context.outputBuffer("result").buffer(), sizeof(float), 4)};
+        auto encoded = writer.encode(params, kMaterialValueProbeABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        return kernel_.dispatch(commands, *encoded, 1);
     }
 private:
     std::unique_ptr<Buffer> input_;
-    ComputeProgram program_;
+    Device* device_ = nullptr;
+    ComputeKernel kernel_;
 };
 
 class MaterialValueGPUTest final : public RHITest

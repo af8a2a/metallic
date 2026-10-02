@@ -71,7 +71,7 @@ struct StreamActiveBuildParameters
     uint32_t flags;
 };
 #ifdef __cplusplus
-inline constexpr uint64_t kStreamActiveBuildABI = 0x5354524143540002ull;
+inline constexpr uint64_t kStreamActiveBuildABI = 0x5354524143540004ull;
 static_assert(sizeof(StreamActiveBuildParameters) == 168);
 static_assert(offsetof(StreamActiveBuildParameters, activeBuildPhase) == 160);
 #endif

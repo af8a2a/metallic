@@ -2,7 +2,7 @@
 #include "Runtime/Render/Core/HZBParameters.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "HZBFixtureParameters.h"
 #include "Runtime/Render/HZBSPD.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -55,13 +55,9 @@ public:
             .entryPointName = "hzbSpdFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
             .macroDefines = {&finiteFixture, 1}}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage}, {.binding = 1}};
         result = fixture_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .pushConstantSize = 16,
-            .bindings = {bindings, 2},
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<HZBFixtureParameters>(kHZBFixtureABI, render::ParameterTransport::InlinePush),
         }, log);
         if (!result) { return result; }
         if (properties().value("streamInline", false)) {
@@ -95,20 +91,19 @@ public:
     {
         const uint32_t seed = uint32_t(context.frameIndex());
         const uint32_t reversed = context.properties().value("reversedZ", true) ? 1u : 0u;
-        uint32_t constants[] = {context.width(), context.height(), seed, reversed};
         const auto depth = context.outputTexture("depth");
         auto* data = context.outputBuffer("data").buffer();
         auto* counter = context.outputBuffer("counter").buffer();
-        const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureView = depth.view()}, {.binding = 1, .buffer = counter}};
-        auto result = fixture_.dispatch({
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = {bindings, 2},
-            .pushData = constants,
-            .pushDataSize = sizeof(constants),
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-        });
+        auto fixtureRegistry = device_->resourceRegistry();
+        if (!fixtureRegistry) { return render::makeError(fixtureRegistry.error()); }
+        render::ParameterWriter fixtureWriter(*device_, **fixtureRegistry, context.commandBuffer().frameContext());
+        const HZBFixtureParameters fixtureParams{
+            fixtureWriter.storageImage(depth.view()), fixtureWriter.dataBuffer(counter, 4, 4),
+            context.width(), context.height(), seed, reversed};
+        auto fixtureEncoded = fixtureWriter.encode(fixtureParams, kHZBFixtureABI, render::ParameterTransport::InlinePush);
+        if (!fixtureEncoded) { return render::makeError(fixtureEncoded.error()); }
+        auto result = fixture_.dispatch(context.commandBuffer(), *fixtureEncoded,
+            (context.width() + 7) / 8, (context.height() + 7) / 8);
         if (!result) { return result; }
         render::TextureBarrierDesc depthBarrier{
             .texture = depth.texture(),
@@ -175,7 +170,7 @@ public:
     }
 private:
     render::Device* device_ = nullptr;
-    render::ComputeProgram fixture_;
+    render::ComputeKernel fixture_;
     render::ComputeKernel streamKernel_;
     render::ComputeKernel spdKernel_;
 };

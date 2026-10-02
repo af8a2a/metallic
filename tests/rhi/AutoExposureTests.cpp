@@ -1,5 +1,6 @@
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "AutoExposureFixtureParameters.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
@@ -25,35 +26,32 @@ public:
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "AutoExposureFixture",
             .entryPointName = "autoExposureFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc binding{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage};
-        return program_.initialize(*context.device, {
+        return kernel_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .pushConstantSize = 16,
-            .bindings = {&binding, 1},
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<AutoExposureFixtureParameters>(kExposureFixtureABI, render::ParameterTransport::InlinePush),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        struct Push { uint32_t width, height; float luminance; uint32_t outliers; };
-        const Push push{context.width(), context.height(), context.properties().value("luminance", 0.18f),
-            context.properties().value("outliers", 0u)};
-        const render::ComputeDispatchBinding binding{.binding = 0, .textureView = context.outputTexture("color").view()};
-        return program_.dispatch({
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = {&binding, 1},
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (push.width + 7) / 8,
-            .groupCountY = (push.height + 7) / 8,
-        });
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return render::makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
+        const AutoExposureFixtureParameters push{
+            writer.storageImage(context.outputTexture("color").view()), context.width(), context.height(),
+            context.properties().value("luminance", 0.18f), context.properties().value("outliers", 0u)};
+        auto encoded = writer.encode(push, kExposureFixtureABI, render::ParameterTransport::InlinePush);
+        if (!encoded) { return render::makeError(encoded.error()); }
+        return kernel_.dispatch(commands, *encoded, (push.width + 7) / 8, (push.height + 7) / 8);
     }
 private:
-    render::ComputeProgram program_;
+    render::Device* device_ = nullptr;
+    render::ComputeKernel kernel_;
 };
 
 // Consume every AutoExposure export in another pass. This checks that the

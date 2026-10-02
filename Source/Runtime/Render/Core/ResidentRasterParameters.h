@@ -18,6 +18,9 @@ using ResidentBins = ShaderBuffer;
 using ResidentHZB = ShaderBuffer;
 using ResidentWritableBins = ShaderBuffer;
 using ResidentQueue = ShaderBuffer;
+using ResidentPixels = ShaderBuffer;
+using ResidentLODSelections = ShaderBuffer;
+using ResidentTessellationData = ShaderDataSpan;
 #else
 import ShaderCore;
 import GPUDriven;
@@ -35,12 +38,15 @@ typealias ResidentTransformBuffer = DescriptorHandle<StructuredBuffer<GPUDrivenP
 typealias ResidentInstanceBuffer = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>;
 typealias ResidentInstanceVisibilityBuffer = DescriptorHandle<StructuredBuffer<uint>>;
 typealias ResidentMaterialBuffer = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMaterial>>;
-typealias ResidentMaterialTextureRemapBuffer = DescriptorHandle<StructuredBuffer<uint>>;
+typealias ResidentMaterialTextureRemapBuffer = DescriptorHandle<StructuredBuffer<DescriptorHandle<Texture2D<float4>>>>;
 typealias ResidentStreamOwnerMaskBuffer = DescriptorHandle<StructuredBuffer<uint>>;
 typealias ResidentBins = DescriptorHandle<StructuredBuffer<uint>>;
 typealias ResidentHZB = DescriptorHandle<RWStructuredBuffer<float>>;
 typealias ResidentWritableBins = DescriptorHandle<RWStructuredBuffer<uint>>;
 typealias ResidentQueue = DescriptorHandle<RWStructuredBuffer<uint4>>;
+typealias ResidentPixels = DescriptorHandle<RWStructuredBuffer<uint64_t>>;
+typealias ResidentLODSelections = DescriptorHandle<StructuredBuffer<uint4>>;
+typealias ResidentTessellationData = DataSpan<uint>;
 #endif
 struct ResidentRasterResources
 {
@@ -61,6 +67,9 @@ struct ResidentRasterResources
     ResidentHZB currentHZB;
     ResidentWritableBins writableBins;
     ResidentQueue queue;
+    ResidentLODSelections lodSelections;
+    ResidentTessellationData tessellationData;
+    ResidentPixels pixels;
 };
 #ifdef __cplusplus
 using ResidentRasterAddress = uint64_t;
@@ -78,8 +87,8 @@ struct ResidentRasterParameters
     ResidentUInt hasBins, hasQueue, hasStreamOwnerMask, padding;
 };
 #ifdef __cplusplus
-inline constexpr uint64_t kResidentRasterABI = 0x5253545252410001ull;
-static_assert(sizeof(ResidentRasterResources) == 136);
+inline constexpr uint64_t kResidentRasterABI = 0x5253545252410006ull;
+static_assert(sizeof(ResidentRasterResources) == 168);
 static_assert(sizeof(ResidentRasterParameters) == 48);
 } // namespace metallic::render
 #endif

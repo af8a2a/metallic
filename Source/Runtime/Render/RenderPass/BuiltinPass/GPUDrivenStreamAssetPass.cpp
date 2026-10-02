@@ -640,9 +640,9 @@ public:
         }
 
         result = streamRuntime_->updateRasterBindings(MeshletStreamGPURasterBindings{
-            .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex(),
-            .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
-            .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
+            .instanceVisibilityBuffer = {uint64_t(instanceVisibilityHandle_.shaderValue())},
+            .hzbBuffer0 = {uint64_t(hzbHandles_[0].shaderValue())},
+            .hzbBuffer1 = {uint64_t(hzbHandles_[1].shaderValue())},
             .hzbMipCount = hzbMipCount_,
             .hzbValid = 0u,
             .cullingFlags = cullingFlagsFromProperties(properties()),
@@ -1118,9 +1118,9 @@ private:
         }
 
         return streamRuntime_->updateRasterBindings(MeshletStreamGPURasterBindings{
-            .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex(),
-            .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
-            .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
+            .instanceVisibilityBuffer = {uint64_t(instanceVisibilityHandle_.shaderValue())},
+            .hzbBuffer0 = {uint64_t(hzbHandles_[0].shaderValue())},
+            .hzbBuffer1 = {uint64_t(hzbHandles_[1].shaderValue())},
             .hzbMipCount = hzbMipCount_,
             .hzbValid = hzbValid_ ? 1u : 0u,
             .cullingFlags = cullingFlagsFromProperties(properties()),

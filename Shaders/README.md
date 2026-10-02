@@ -199,6 +199,8 @@ CPU 的 deferred 与 alpha shadow 共用 `encodeRayQuerySnapshot`，保持 span 
 `ScreenSpaceShadows` 共用同一适配器；空场景根地址在边界拒绝。CPU 的 64 字节场景布局与资源保留不变。
 法线和 TBN 仍保持 authored/world-space 语义。`stream_data_decode_bounds` 的 GPU 探针覆盖
 显式材质 provider、正反向射线、bitangent 翻转、无效材质/实例/三角形及 mask/blend alpha 阈值；
+alpha 候选判定只接收场景与材质 provider，单次加载材质、插值 UV，不构建完整 TBN；
+不透明候选也先检查几何范围，探针覆盖无效三角形、空 pages、截短 header 与空 page table。
 这些辅助层检查不等同于 CLAS 遍历或完整场景的视觉验证。
 共享 `ScenePathTrace.slang` 仅提供 typed 场景辅助实现；标准生产入口为 `ScenePathTraceInline.slang`。
 旧 `PathTraceParameterRoot.hlsli` 和编号槽位分支已移除。stream surface 探针使用显式材质 provider，
@@ -310,7 +312,7 @@ Cull 与间接参数 finalize 各自编码参数包，经 `ComputeKernel` 录制
 保留页请求、HZB 重试和稳定 bin 顺序，移除旧 candidate-arguments 专用 descriptor 租约。
 
 混合光栅稳定分桶的 reset/histogram/arguments/scatter 共用 `HybridBinParameters`
-（64 字节 inline push）。bin 使用 typed registry handle，间接参数输出使用有界 BDA span；
+（56 字节 inline push）。bin 使用 typed registry handle，间接参数输出使用有界 BDA span；
 四阶段通过 `ComputeKernel` 录制并保留 allocation，沿用原有阶段同步、稳定顺序和溢出回退。
 分桶私有 heap 的 bin/arguments descriptor 已删除。`producerPixelBuffer` 暂作为旧 raster
 consumer 的 header 数据透传，分桶自身不解引用它；像素寻址仍需随 raster 入口继续迁移。
@@ -470,7 +472,9 @@ stream-only 场景不要求 resident buffer；关闭 debug 显示时保留清屏
 raster 调用边界负责按 frameIndex 选择 ping-pong HZB。
 
 Resident raster 的 mesh、细分、分箱与软件入口共用 `ResidentRasterParameters.h`：
-48 字节 inline 根携带绘制设置与 136 字节 typed 资源快照地址。
+48 字节 inline 根携带绘制设置与 168 字节 typed 资源快照地址。
+LOD selections 由完整 typed handle 提供，tessellation data 使用有界 BDA span；
+352 字节相机参数只保留启用标志，不再嵌入这两类资源索引。
 混合队列/分箱使用独立具名字段；当前/历史 HZB 在 CPU 编码边界选择，
 每个提交参数包保留快照及对应 lease，不再使用 132 字节混合索引根。
 
@@ -483,8 +487,40 @@ settings 与 raster settings 通过两个不可变 BDA 地址传递，不再读�
 快照由同一父参数包保留，根大小保持 104 字节，ABI 已升级。
 `MeshletStreamRuntime.hardwareParameters` 将自身资源加入父 ParameterWriter；调用方同时保留
 混合光栅资源并提交统一参数包。旧 136 字节 raster 根与遍历/BLAS reserved 槽位已删除。
-嵌套 raster settings 仍有索引字段，后续独立迁移，不代表整条资源链已去除裸索引。
+嵌套 raster settings 使用共享 `StreamRasterResourceSettings.h`，资源字段全部为完整 typed handle。
+材质贴图 remap 的元素统一为 8 字节 `ShaderSampledImage` / `DescriptorHandle<Texture2D<float4>>`，
+CPU 上传完整 `shaderValue()`，resident/stream alpha-mask 直接读取 typed handle，
+不再截断为 32 位索引后补零重建；原有材质纹理 leases 继续随阶段提交保留。
 
 Stream raster settings 已移除无消费者的 depth/visibility/deferred-color 图像输出、
-visible-instance ID 列表与计数器索引，结构从 96 缩为 76 字节。相关数据继续通过
-各自的 typed cull/deferred 参数传递；hardware、cluster cull、active build ABI 同步升级。
+visible-instance ID 列表与计数器索引，相关数据继续通过
+各自的 typed cull/deferred 参数传递。七个资源字段使用 typed handle，位移表使用有界 BDA span；
+共享结构为 128 字节，含显式 padding 和可选资源 flags；C++/Slang 共用同一声明。
+hardware、cluster cull、active build ABI 同步升级，CPU 不截断 shaderValue，shader 不补零重建 handle。
+
+位移材质表同样保留完整 `ShaderSampledImage`：每材质 16 words 中 word 0/12 分别保存 handle 低/高位，
+UV、位移标量和 pattern 起点保持原位置；resident/stream 共用 typed `TessMaterial.texture`，enabled 控制可选采样。
+
+Hybrid bin header 的 word 11 保留为零，不再传递 pixel descriptor 索引；
+resident 软件光栅通过资源快照的 typed pixels，stream 通过 StreamRasterParameters.pixels 访问。
+HybridBinParameters 收缩为 56 字节，删除无调用的 StreamHardware raster 包装和 raw-index 三角形适配器。
+
+Hybrid GPU 探针共用 HybridProbeParameters.h：mesh 入队与分桶为 32 字节 inline 根，
+prepared raster 对照为 64 字节；输入顶点/候选走有界 BDA，输出通过 registry typed handle，
+编码参数包保留至测试 fence 完成。已移除共享光栅模块中仅供旧探针使用的 raw-index 入队与 prepared 适配器。
+
+resident/stream 位移表统一使用 TessellationData 的有界 BDA 读取，不再分配位移 buffer descriptor。
+stream 快照构造验证 CPU slice 的设备、范围、stride 与 alignment；阶段提交包保留表的原生 allocation。
+
+SphericalHarmonicsProbe 使用共享 16 字节 typed inline 根与 ComputeKernel；保留 StructuredBuffer
+输入/输出以验证球谐库的 load/store API，移除 slot 0/1 资源表，提交参数包保留 buffer leases。
+
+ReGIRVirtualLightProbe 使用 ReGIRProbeParameters.h 的 64 字节共享 inline 根，具名 output/lights/grid/pdf
+字段替代 slot 0/50/52/53；ComputeKernel 参数包保留资源，采样位置、次数与 seed 直接随根传递。
+
+MaterialValueProbe 使用 32 字节 inline 根中的实例/输出 BDA span，并检查调用范围；
+生成的 MaterialValueDispatch 必须由入口提供 METALLIC_LOAD_MATERIAL_VALUE 适配器，
+不再隐式读取 slot 97。生产入口继续使用 PathTraceInlineRoot 的 typed materialValues。
+
+AutoExposureFixture 使用共享 24 字节 inline ABI：typed storage image 与尺寸、亮度、异常值模式；
+ComputeKernel 参数包保留每帧输出 view，曝光统计与内部阶段回归不再依赖旧 ComputeProgram 适配层。

@@ -1,4 +1,5 @@
 #pragma once
+#include "Runtime/Render/Core/StreamRasterResourceSettings.h"
 #include "Runtime/Render/Core/StreamHardwareParameters.h"
 
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -369,29 +370,7 @@ struct MeshletStreamGPUParams {
     uint32_t lodTelemetryPadding[2] = {};
 };
 
-struct MeshletStreamGPURasterBindings {
-    uint32_t visibleClusterBuffer = 0;
-    uint32_t instanceVisibilityBuffer = 0;
-    uint32_t hzbBuffer0 = 0;
-    uint32_t hzbBuffer1 = 0;
-    // Stream records keep a local storage index while visibility IDs address
-    // the common resident + stream record namespace.
-    uint32_t visibleRecordBase = 0;
-    uint32_t visibleRecordCapacity = 0;
-    uint32_t hzbMipCount = 0;
-    uint32_t hzbValid = 0;
-    uint32_t cullingFlags = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t gpuSceneInstanceBuffer = UINT32_MAX;
-    uint32_t tessellationBuffer = UINT32_MAX;
-    float displacementBound = 0.0f;
-    uint32_t classificationFlags = 0; // bit 0: disable metadata fast classification
-    uint32_t materialBuffer = UINT32_MAX;
-    uint32_t materialTextureRemapBuffer = UINT32_MAX;
-    uint32_t materialTextureCount = 0;
-    uint32_t materialPadding = 0;
-};
+using MeshletStreamGPURasterBindings = StreamRasterResourceSettings;
 
 // Non-owning resources required by a unified deferred consumer. The stream
 // runtime retains ownership; a consumer registers these buffers in its own
@@ -441,7 +420,7 @@ static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGPUParams) == 624);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
 static_assert(offsetof(MeshletStreamGPUParams, pageBufferBytes) == 100);
-static_assert(sizeof(MeshletStreamGPURasterBindings) == 76);
+static_assert(sizeof(MeshletStreamGPURasterBindings) == 128);
 
 
 struct MeshletStreamRuntimeDesc {

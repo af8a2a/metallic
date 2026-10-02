@@ -303,12 +303,13 @@ public:
                 params.renderEye[0] = .2f; params.renderEye[3] = .35f; params.renderCenter[3] = -.2f;
             }
             params.pageBufferBytes = pageBytes; params.drawTaskCount = capacity * 2; params.scenePageCount = 3;
-            MeshletStreamGPURasterBindings bindings{.visibleClusterBuffer = handles[Records].shaderIndex,
-                .instanceVisibilityBuffer = handles[Visibility].shaderIndex, .hzbBuffer0 = handles[HZB0].shaderIndex, .hzbBuffer1 = handles[HZB1].shaderIndex,
+            MeshletStreamGPURasterBindings bindings{.visibleClusterBuffer = {uint64_t(handles[Records].shaderIndex)},
+                .instanceVisibilityBuffer = {uint64_t(handles[Visibility].shaderIndex)}, .hzbBuffer0 = {uint64_t(handles[HZB0].shaderIndex)}, .hzbBuffer1 = {uint64_t(handles[HZB1].shaderIndex)},
                 .visibleRecordBase = 371, .visibleRecordCapacity = capacity, .hzbMipCount = 8, .hzbValid = 1,
-                .cullingFlags = test.culling, .width = 128, .height = 128, .gpuSceneInstanceBuffer = handles[Instances].shaderIndex,
-                .tessellationBuffer = test.tessellation ? 0u : UINT32_MAX,
+                .cullingFlags = test.culling, .width = 128, .height = 128, .gpuSceneInstanceBuffer = {uint64_t(handles[Instances].shaderIndex)},
+                .tessellationBuffer = test.tessellation ? ShaderDataSpan{inputs[Header]->deviceAddress(), 1, 4} : ShaderDataSpan{},
                 .classificationFlags = (test.dense || test.disableMetadata) ? 1u : 0u};
+            updateStreamRasterResourceFlags(bindings);
             std::array<uint32_t, instanceCount> visibility;
             std::array<GPUSceneGPUInstanceRecord, instanceCount> instances;
             for (uint32_t i = 0; i < instanceCount; ++i) {
@@ -342,7 +343,7 @@ public:
                     CLASSIFY_REQUIRE(upload(PageTable, pages.data(), sizeof(pages)));
                     if (submitted) { CLASSIFY_REQUIRE(fence->reset()); CLASSIFY_REQUIRE(pool->reset()); }
                     CLASSIFY_REQUIRE(commands->begin());
-                    CLASSIFY_REQUIRE(rasterizer.beginClusters(*commands, test.maxPixels, test.reversed, 0, capacity, true, true));
+                    CLASSIFY_REQUIRE(rasterizer.beginClusters(*commands, test.maxPixels, test.reversed, capacity, true, true));
                     commands->bindBindlessHeap(*heap);
                     auto hardwareRegistry = device->resourceRegistry();
                     if (!hardwareRegistry) { return RHITestResult::fail("Missing hardware registry"); }

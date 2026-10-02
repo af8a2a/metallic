@@ -1,3 +1,4 @@
+#include "HybridProbeParameters.h"
 #include "RHITest.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -80,7 +81,7 @@ public:
             CANDIDATE_REQUIRE(device->createComputePipeline({
                 .computeShader = {shaders[i].get()},
                 .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = i == 0 ? uint32_t(sizeof(StreamHardwareParameters)) : 12u,
+                .bindlessUserPushDataSize = i == 0 ? uint32_t(sizeof(StreamHardwareParameters)) : uint32_t(sizeof(HybridClusterProbeParameters)),
             }).transform([&](auto rhiValue) { pipelines[i] = std::move(rhiValue); }));
         }
         std::unique_ptr<Buffer> readback, arguments, binned, drawArguments;
@@ -135,7 +136,8 @@ public:
             if (overflow) { expected.clear(); }
             MeshletStreamGPUActiveHeader header{.activeGroupCount = test.count, .activeGroupCapacity = groupCapacity,
                 .maxActiveGroupClusters = 32};
-            MeshletStreamGPURasterBindings bindings{.instanceVisibilityBuffer = handles[3].shaderIndex};
+            MeshletStreamGPURasterBindings bindings{.instanceVisibilityBuffer = {uint64_t(handles[3].shaderIndex)}};
+            updateStreamRasterResourceFlags(bindings);
             if (!upload(0, &header, sizeof(header)) || !upload(1, groups.data(), groups.size() * sizeof(groups[0])) ||
                 !upload(2, &bindings, sizeof(bindings)) || !upload(3, visibility.data(), sizeof(visibility)) ||
                 !upload(4, retries.data(), retries.size() * sizeof(retries[0]))) {
@@ -143,11 +145,18 @@ public:
             }
             if (submitted) { CANDIDATE_REQUIRE(fence->reset()); CANDIDATE_REQUIRE(pool->reset()); }
             CANDIDATE_REQUIRE(commands->begin());
-            CANDIDATE_REQUIRE(rasterizer.beginClusters(*commands, 8, true, 0, groupCapacity * 32, true, true));
+            CANDIDATE_REQUIRE(rasterizer.beginClusters(*commands, 8, true, groupCapacity * 32, true, true));
             commands->bindBindlessHeap(*heap);
             if (auto commandResult = commands->bindExecution((pipelines[1])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-            const uint32_t seedPush[] = {handles[4].shaderIndex, handles[5].shaderIndex, capacity};
-            commands->pushBindlessData(seedPush, sizeof(seedPush));
+            auto seedRegistry = device->resourceRegistry();
+            if (!seedRegistry) { return RHITestResult::fail("Missing seed registry"); }
+            ParameterWriter seedWriter(*device, **seedRegistry);
+            const HybridClusterProbeParameters seedPush{
+                seedWriter.dataBuffer(inputs[4].get(), 8, 8), seedWriter.buffer(&rasterizer.clusterBuffer()), capacity, 0};
+            auto seedEncoded = seedWriter.encode(seedPush, kHybridClusterProbeABI, ParameterTransport::InlinePush);
+            if (!seedEncoded) { return RHITestResult::fail("Cannot encode seed probe parameters"); }
+            CANDIDATE_REQUIRE(seedEncoded->bindResources(*commands));
+            commands->pushBindlessData(seedEncoded->inlineData().data(), uint32_t(seedEncoded->inlineData().size()));
             commands->dispatch((capacity + 127) / 128);
             BufferBarrierDesc ready{
                 .buffer = &rasterizer.clusterBuffer(),

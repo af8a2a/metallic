@@ -15,7 +15,7 @@ struct ProbeMaterials : IStreamRayMaterials
         if (index != 17u || test == 3u || test == 12u) { return false; }
         material.baseColor.a = 0.5;
         material.params.z = 0.25;
-        material.textureParams.w = test == 11u ? 0.0 : (test == 9u || test == 10u ? 2.0 : 1.0);
+        material.textureParams.w = (test == 11u || test >= 16u) ? 0.0 : (test == 9u || test == 10u ? 2.0 : 1.0);
         return true;
     }
     float alpha(PathTraceTextureInfo texture, float2 uv)
@@ -25,25 +25,27 @@ struct ProbeMaterials : IStreamRayMaterials
 };
 
 [shader("compute")]
-[numthreads(16, 1, 1)]
+[numthreads(32, 1, 1)]
 void streamRaySurfaceMain(uint3 id : SV_DispatchThreadID)
 {
     StreamProbeParameters p = gStreamProbe;
-    if (id.x >= 16u || !p.output.contains(24u + id.x)) { return; }
+    if (id.x >= 20u || !p.output.contains(24u + id.x)) { return; }
     ProbeMaterials materials;
     materials.test = id.x;
     Ray ray;
     ray.origin = float3(0.25, 0.25, id.x == 1u ? -1.0 : 1.0);
     ray.direction = float3(0, 0, id.x == 1u ? 1.0 : -1.0);
     uint instance = id.x == 4u || id.x == 13u ? 1u : 0u;
-    uint triangle = id.x == 5u || id.x == 14u ? 1u : 0u;
+    uint triangle = id.x == 5u || id.x == 14u || id.x == 16u ? 1u : 0u;
     if (id.x == 6u) { p.stream.pages.count = 27; }
-    if (id.x == 15u) { p.stream.pages.data = nullptr; }
+    if (id.x == 15u || id.x == 17u) { p.stream.pages.data = nullptr; }
+    if (id.x == 18u) { p.stream.header.count = 2u; }
+    if (id.x == 19u) { p.stream.pageTable.count = 0u; }
     float flip = id.x == 2u ? -1.0 : 1.0;
     bool valid;
     if (id.x >= 7u) {
-        valid = streamRayAlphaAccepts(instance, 0u, triangle, float2(0.25), ray, 1.0,
-            p.stream, materials, flip);
+        valid = streamRayAlphaAccepts(instance, 0u, triangle, float2(0.25),
+            p.stream, materials);
     } else {
         HitInfo hit;
         valid = streamRaySurface(instance, 0u, triangle, float2(0.25), ray, 1.0,

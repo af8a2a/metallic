@@ -46,7 +46,7 @@ struct StreamHardwareParameters
     HardwareUInt hasQueue, hasBins;
 };
 #ifdef __cplusplus
-inline constexpr uint64_t kStreamHardwareABI = 0x5354524841520003ull;
+inline constexpr uint64_t kStreamHardwareABI = 0x5354524841520007ull;
 static_assert(sizeof(StreamHardwareParameters) == 104);
 } // namespace metallic::render
 #endif

@@ -127,7 +127,7 @@ Result<EncodedParameters> VisibilityHybridRasterizer::encodeBinParameters(Comman
         .arguments = writer.dataBuffer(clusterArguments_.get(), sizeof(uint32_t), alignof(uint32_t)),
         .width = settings_.width, .height = settings_.height, .clusterCapacity = settings_.clusterCapacity,
         .maxPixels = settings_.maxPixels, .reversedZ = settings_.reversedZ, .subpixelBits = settings_.subpixelBits,
-        .producerPixelBuffer = settings_.producerPixelBuffer, .inputClusterCount = settings_.inputClusterCount,
+        .inputClusterCount = settings_.inputClusterCount,
         .streamMode = settings_.streamMode,
     };
     return writer.encode(params, kHybridBinABI, ParameterTransport::InlinePush);
@@ -260,7 +260,7 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
 }
 
 Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
-    uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact, bool tessellation)
+    uint32_t inputCount, bool stream, bool compact, bool tessellation)
 {
     // Compact stream preparation checks its actual candidate count on GPU and
     // falls back to HW when scratch is exhausted. Record IDs remain unbounded by scratch.
@@ -273,7 +273,6 @@ Result<> VisibilityHybridRasterizer::beginClusters(CommandBuffer& commands, floa
     } else {
         if (auto result = begin(commands, maxPixels, reversedZ); !result) { return result; }
     }
-    settings_.producerPixelBuffer = producerPixelBuffer;
     settings_.inputClusterCount = inputCount;
     settings_.streamMode = (stream ? 1u : 0u) | (tessellation ? 2u : 0u);
     compactCandidates_ = compact;

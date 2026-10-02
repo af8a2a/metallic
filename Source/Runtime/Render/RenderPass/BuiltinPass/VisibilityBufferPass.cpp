@@ -168,7 +168,6 @@ struct GPUDrivenPreviewBindingBundle {
     std::shared_ptr<ResourceRegistry> registry;
     GPUSceneConsumerBindings gpuSceneBindings;
     ResourceLease materialTextureRemapHandle;
-    ResourceLease tessellationHandle;
     std::vector<GPUDrivenPreviewFrameSlotBindings> frameSlots;
     std::array<ResourceLease, 2> hzbHandles;
     ResourceLease depthImageHandle;
@@ -886,7 +885,7 @@ public:
             }
         }
         for (const auto& lease : {streamHybridClusterHandle_, streamHybridPixelHandle_,
-             streamHybridQueueHandle_, streamTessellationHandle_,
+             streamHybridQueueHandle_,
              streamGPUSceneInstanceHandle_, streamMaterialHandle_, streamMaterialTextureRemapHandle_,
              streamVisibilityImageHandle_, streamDepthImageHandle_, streamInstanceVisibilityHandle_,
              streamVisibleInstanceIdsHandle_, streamVisibleInstanceCounterHandle_, streamHzbHandles_[0], streamHzbHandles_[1]}) {
@@ -921,13 +920,14 @@ public:
         packet.registry = registry_;
         packet.owners.push_back(streamRuntime_);
         packet.owners.push_back(hybridRasterizer_);
+        if (tessellationBuffer_) { packet.owners.push_back(tessellationBuffer_->retainAllocation()); }
         for (const auto& lod : residentLods_) { packet.owners.push_back(lod); }
         auto retain = [&](const ResourceLease& lease) {
             if (lease.valid()) { packet.leases.push_back(lease); }
         };
         for (const auto& lease : {
             hybridQueueHandle_, hybridClusterHandle_, hybridPixelHandle_,
-            tessellationHandle_, materialTextureRemapHandle_,
+            materialTextureRemapHandle_,
             depthImageHandle_, visibilityImageHandle_, cullingDepthImageHandle_,
             streamOwnerMaskHandle_, streamDebugRecordsHandle_, streamDebugGroupsHandle_}) {
             retain(lease);
@@ -1260,7 +1260,6 @@ private:
         streamCullResetKernel_.clear();
         streamInstanceCullKernel_.clear();
         streamHybridQueueHandle_ = {};
-        streamTessellationHandle_ = {};
         streamHybridClusterHandle_ = {};
         for (auto& kernel : streamWorkloadKernels_) { kernel.clear(); }
         streamHybridPixelHandle_ = {};
@@ -1975,7 +1974,7 @@ private:
             return makeError(Error::InvalidArgument);
         }
         const uint64_t expectedRemapBytes =
-            static_cast<uint64_t>(materialTextureCount_) * sizeof(uint32_t);
+            static_cast<uint64_t>(materialTextureCount_) * sizeof(ShaderSampledImage);
         const bool remapLayoutChanged =
             materialTextureRemapBuffer_->desc().size != expectedRemapBytes;
         const uint64_t expectedOwnerMaskBytes = static_cast<uint64_t>(
@@ -2063,6 +2062,9 @@ private:
             .currentHZB = use(hzbHandles_[previousParams_.frameIndex & 1u]),
             .writableBins = use(hybridClusterHandle_),
             .queue = use(hybridQueueHandle_),
+            .lodSelections = use(slot.lodSelectionHandle),
+            .tessellationData = tessellationBuffer_ ? writer.dataBuffer(tessellationBuffer_.get(), sizeof(uint32_t), 4) : ShaderDataSpan{},
+            .pixels = use(hybridPixelHandle_),
         };
         const ResidentRasterParameters parameters{
             .resources = writer.data(&resources, sizeof(resources), alignof(ResidentRasterResources)),
@@ -2215,7 +2217,7 @@ private:
         if (prebin) {
             auto binProfile = context.profileScope("Soft/hard classification");
             Result<> result = hybridRasterizer_->beginClusters(commandBuffer,
-                softwareRasterMaxPixels(), reversedZ, hybridPixelHandle_.shaderIndex(), activeMeshletCount_, false, false, tessellationEnabled());
+                softwareRasterMaxPixels(), reversedZ, activeMeshletCount_, false, false, tessellationEnabled());
             if (!result) { return result; }
             commandBuffer.bindBindlessHeap(*registry_->heap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify resident clusters"});
@@ -2654,9 +2656,13 @@ private:
             if (hybridResult) { hybridResult = heap.storageBuffer(hybridRasterizer_->pixelBuffer()).transform([&](auto value) { streamHybridPixelHandle_ = std::move(value); }); }
             if (!hybridResult) { return hybridResult; }
         }
+        ShaderDataSpan tessellationData{};
         if (tessellationEnabled()) {
-            Result<> tessResult = heap.storageBuffer(*tessellationBuffer_).transform([&](auto value) { streamTessellationHandle_ = std::move(value); });
-            if (!tessResult) { return tessResult; }
+            if (!tessellationBuffer_) { return makeError(Error::InvalidArgument); }
+            auto slice = tessellationBuffer_->slice();
+            if (!slice) { return makeError(slice.error()); }
+            if (auto valid = slice->validateData(device_->identity(), 4, 4); !valid) { return valid; }
+            tessellationData = {slice->deviceAddress(), static_cast<uint32_t>(slice->size() / 4), 4};
         }
         Result<> result = heap.sampledImage(*visibility.view(), ResourceState::ShaderRead).transform([&](auto value) { streamVisibilityImageHandle_ = std::move(value); });
         if (result) {
@@ -2689,10 +2695,9 @@ private:
         }
         result = streamRuntime_->updateRasterBindings(
             MeshletStreamGPURasterBindings{
-                .instanceVisibilityBuffer =
-                    streamInstanceVisibilityHandle_.shaderIndex(),
-                .hzbBuffer0 = streamHzbHandles_[0].shaderIndex(),
-                .hzbBuffer1 = streamHzbHandles_[1].shaderIndex(),
+                .instanceVisibilityBuffer = {uint64_t(streamInstanceVisibilityHandle_.shaderValue())},
+                .hzbBuffer0 = {uint64_t(streamHzbHandles_[0].shaderValue())},
+                .hzbBuffer1 = {uint64_t(streamHzbHandles_[1].shaderValue())},
                 .visibleRecordBase = residentRecordCapacity_,
                 .visibleRecordCapacity = streamRecordCapacity,
                 .hzbMipCount = hzbMipCount_,
@@ -2700,12 +2705,12 @@ private:
                 .cullingFlags = streamCullingFlags(),
                 .width = frameWidth_,
                 .height = frameHeight_,
-                .gpuSceneInstanceBuffer = streamGPUSceneInstanceHandle_.shaderIndex(),
-                .tessellationBuffer = tessellationEnabled() ? streamTessellationHandle_.shaderIndex() : UINT32_MAX,
+                .gpuSceneInstanceBuffer = {uint64_t(streamGPUSceneInstanceHandle_.shaderValue())},
+                .tessellationBuffer = tessellationData,
                 .displacementBound = previousParams_.displacementBound,
                 .classificationFlags = boolProperty(&properties(), "metadataFastClassification", true) ? 0u : 1u,
-                .materialBuffer = streamMaterialHandle_.shaderIndex(),
-                .materialTextureRemapBuffer = streamMaterialTextureRemapHandle_.shaderIndex(),
+                .materialBuffer = {uint64_t(streamMaterialHandle_.shaderValue())},
+                .materialTextureRemapBuffer = {uint64_t(streamMaterialTextureRemapHandle_.shaderValue())},
                 .materialTextureCount = materialTextureCount_,
             });
         if (!result || streamOwnerMaskBuffer_ == nullptr) {
@@ -2870,7 +2875,7 @@ private:
             auto binProfile = context.profileScope("Candidates");
             const uint32_t count = streamRuntime_->visibleClusterCapacity();
             result = hybridRasterizer_->beginClusters(commandBuffer,
-                forceHardware ? 0.0f : softwareRasterMaxPixels(), reversedZ, streamHybridPixelHandle_.shaderIndex(), count, true, true, tessellationEnabled());
+                forceHardware ? 0.0f : softwareRasterMaxPixels(), reversedZ, count, true, true, tessellationEnabled());
             if (!result) { return result; }
             commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: compact stream candidates"});
@@ -3395,9 +3400,9 @@ private:
             log = "VisibilityBufferPass canonical material texture remap size is invalid";
             return makeError(Error::InvalidArgument);
         }
-        std::vector<uint32_t> materialTextureRemap(
+        std::vector<ShaderSampledImage> materialTextureRemap(
             materialTextureCount_,
-            bundle.materialTextureHandles.front().shaderIndex());
+            ShaderSampledImage{bundle.materialTextureHandles.front().shaderValue()});
         const auto textureForSlot = [](const scene::RenderMaterial& material,
                                        uint32_t slot) -> const scene::RenderTextureInfo* {
             const std::array<const scene::RenderTextureInfo*,
@@ -3441,11 +3446,11 @@ private:
                 continue;
             }
             materialTextureRemap[remapIndex] =
-                bundle.materialTextureHandles[consumerTextureIndex].shaderIndex();
+                ShaderSampledImage{bundle.materialTextureHandles[consumerTextureIndex].shaderValue()};
         }
         result = uploadStorageBuffer(
             *device_, materialTextureRemap.data(),
-            static_cast<uint64_t>(materialTextureRemap.size() * sizeof(uint32_t)),
+            static_cast<uint64_t>(materialTextureRemap.size() * sizeof(ShaderSampledImage)),
             bundle.materialTextureRemapBuffer, log,
             "VisibilityBufferPass material texture descriptor remap");
         if (!result) {
@@ -3483,10 +3488,10 @@ private:
         if (!gpuSceneSource_) { return makeError(Error::InvalidArgument); }
         const auto materials = gpuSceneSource_->materials();
         const auto makeData = [&](const std::vector<ResourceLease>& handles) {
-            std::vector<uint32_t> descriptors(logicalTextureToMaterialTexture_.size(), UINT32_MAX);
+            std::vector<ShaderSampledImage> descriptors(logicalTextureToMaterialTexture_.size(), ShaderSampledImage{UINT64_MAX});
             for (size_t i = 0; i < descriptors.size(); ++i) {
                 const uint32_t mapped = logicalTextureToMaterialTexture_[i];
-                if (mapped < handles.size()) { descriptors[i] = handles[mapped].shaderIndex(); }
+                if (mapped < handles.size()) { descriptors[i] = ShaderSampledImage{handles[mapped].shaderValue()}; }
             }
             return buildTessellationData(materials, descriptors);
         };
@@ -3507,8 +3512,6 @@ private:
         Result<> result = uploadStorageBuffer(*device_, data.data(), data.size() * sizeof(uint32_t),
             bundle.tessellationBuffer, log, "Tessellation patterns and materials");
         if (!result) { return result; }
-        result = allocateAndWriteBuffer(*bundle.registry, *bundle.tessellationBuffer,
-            bundle.tessellationHandle, log, "tessellation");
         return result;
     }
 
@@ -3522,7 +3525,6 @@ private:
         registry_ = std::move(bundle.registry);
         materialTextureRemapBuffer_ = std::move(bundle.materialTextureRemapBuffer);
         tessellationBuffer_ = std::move(bundle.tessellationBuffer);
-        tessellationHandle_ = bundle.tessellationHandle;
         streamOwnerMaskBuffer_ = std::move(bundle.streamOwnerMaskBuffer);
         hzbSpdCounterBuffer_ = std::move(bundle.hzbSpdCounterBuffer);
         hzbSpdResetBuffer_ = std::move(bundle.hzbSpdResetBuffer);
@@ -4380,7 +4382,8 @@ private:
         GPUDrivenPreviewGPUParams previous, frozen;
         uint64_t temporalFrameIndex = 0;
         uint32_t width = 1, height = 1, instanceCount = 0, hzbMipCount = 1, frameIndex = 0;
-        uint32_t textureCount = 1, materialCount = 1, lodSelection = UINT32_MAX, tessellation = UINT32_MAX;
+        uint32_t textureCount = 1, materialCount = 1;
+        bool tessellation = false;
         float displacementBound = 0;
         bool hasView = false, hzbValid = false, previousValid = false, frozenValid = false;
         bool freeze = false, freezeChanged = false;
@@ -4438,9 +4441,8 @@ private:
 
         params.meshletOffset = input.adaptiveRange.offset;
         params.meshletCount = input.adaptiveRange.count;
-        params.lodSelectionBuffer = input.lodSelection;
         params.lodSelectionEnabled = 1u;
-        params.tessellationBuffer = input.tessellation;
+        params.tessellationEnabled = input.tessellation ? 1u : 0u;
         params.displacementBound = input.displacementBound;
         output.params = params;
         return {};
@@ -4465,8 +4467,7 @@ private:
         input.hzbValid = hzbValid_ && !input.freezeChanged;
         input.previousValid = previousCameraValid_ && !input.freezeChanged;
         input.frozenValid = frozenCullingCameraValid_ && !(input.freezeChanged && !input.freeze);
-        input.lodSelection = slot.lodSelectionHandle.shaderIndex();
-        input.tessellation = tessellationEnabled() ? tessellationHandle_.shaderIndex() : UINT32_MAX;
+        input.tessellation = tessellationEnabled();
         input.displacementBound = tessellationEnabled() && gpuSceneSource_
             ? tessellationDisplacementBound(gpuSceneSource_->materials()) : 0.0f;
         CameraPreparationOutput camera;
@@ -4522,8 +4523,6 @@ private:
     ResourceLease streamHybridQueueHandle_;
     std::unique_ptr<Buffer> materialTextureRemapBuffer_;
     std::unique_ptr<Buffer> tessellationBuffer_;
-    ResourceLease tessellationHandle_;
-    ResourceLease streamTessellationHandle_;
     std::unique_ptr<ShaderModule> streamTaskShader_;
     std::string compiledTessellationKey_;
     int compiledTextureMaxDimension_ = 512;

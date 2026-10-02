@@ -1,5 +1,6 @@
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "PhotometricProbeParameters.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/SceneLightResources.h"
@@ -36,14 +37,9 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "PhotometricProbe",
             .entryPointName = "photometricProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 50, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
-        return program_.initialize(*device_, {
+        return kernel_.initialize(*device_, {
             .spirv = shader.spirv,
-            .bindings = {bindings, 3},
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<PhotometricProbeParameters>(kPhotometricProbeABI, render::ParameterTransport::InlinePush),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -52,15 +48,20 @@ public:
             nullptr, context.world()->lighting());
         if (!result) { return result; }
         const auto& environment = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot();
-        const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
-            {.binding = 1, .buffer = environment.sphericalHarmonicsBuffer},
-            {.binding = 50, .buffer = lights_.buffer()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 3}});
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return render::makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
+        const PhotometricProbeParameters params{
+            writer.dataBuffer(context.outputBuffer("data").buffer(), 16, 4),
+            writer.buffer(environment.sphericalHarmonicsBuffer), writer.buffer(lights_.buffer())};
+        auto encoded = writer.encode(params, kPhotometricProbeABI, render::ParameterTransport::InlinePush);
+        if (!encoded) { return render::makeError(encoded.error()); }
+        return kernel_.dispatch(commands, *encoded, 1);
     }
 private:
     render::Device* device_ = nullptr;
-    render::ComputeProgram program_;
+    render::ComputeKernel kernel_;
     render::SceneLightResources lights_;
 };
 

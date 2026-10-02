@@ -1,5 +1,6 @@
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "SphericalHarmonicsProbeParameters.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -44,6 +45,7 @@ public:
 
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         const auto values = probeInput();
         auto result = context.device->createBuffer({.size = sizeof(values), .structureStride = sizeof(ProbeValue),
             .usage = render::BufferUsageBits::Storage, .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { input_ = std::move(rhiValue); });
@@ -58,27 +60,29 @@ public:
         result = render::compileSlangShaderToSpirv({.moduleName = "SphericalHarmonicsProbe",
             .entryPointName = "sphericalHarmonicsProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
-        return program_.initialize(*context.device, {
+        return kernel_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .bindings = {bindings, 2},
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<SphericalHarmonicsProbeParameters>(kSHProbeABI, render::ParameterTransport::InlinePush),
         }, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
-            {.binding = 1, .buffer = input_.get()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return render::makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
+        const SphericalHarmonicsProbeParameters params{
+            writer.buffer(input_.get()), writer.buffer(context.outputBuffer("data").buffer())};
+        auto encoded = writer.encode(params, kSHProbeABI, render::ParameterTransport::InlinePush);
+        if (!encoded) { return render::makeError(encoded.error()); }
+        return kernel_.dispatch(commands, *encoded, 1);
     }
 
 private:
     std::unique_ptr<render::Buffer> input_;
-    render::ComputeProgram program_;
+    render::Device* device_ = nullptr;
+    render::ComputeKernel kernel_;
 };
 
 class SphericalHarmonicsMathTest final : public RHITest {

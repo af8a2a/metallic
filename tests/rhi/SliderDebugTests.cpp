@@ -1,5 +1,6 @@
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "SliderFixtureParameters.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderSample.h"
@@ -32,45 +33,40 @@ public:
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "SliderDebugFixture",
             .entryPointName = readback_ ? "sliderReadbackMain" : "sliderFixtureMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::SampledImage},
-            {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-        };
-        return program_.initialize(*context.device, {
+        return kernel_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .pushConstantSize = readback_ ? 0u : 4u,
-            .bindings = {readback_ ? bindings + 1 : bindings, readback_ ? 2u : 1u},
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<SliderFixtureParameters>(kSliderFixtureABI, render::ParameterTransport::InlinePush),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         if (context.properties().value("integer", false)) { return {}; }
-        const uint32_t path = context.properties().value("path", 0u);
-        auto* input = context.inputTexture("source").view();
-        const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureView = context.outputTexture("color").view()},
-            {.binding = 1, .textureViews = {&input, 1}},
-            {.binding = 2, .buffer = context.outputBuffer("pixels").buffer()},
-        };
-        return program_.dispatch({
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = {readback_ ? bindings + 1 : bindings, readback_ ? 2u : 1u},
-            .pushData = readback_ ? nullptr : &path,
-            .pushDataSize = readback_ ? 0u : 4u,
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-        });
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return render::makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
+        SliderFixtureParameters params{};
+        if (readback_) {
+            params.input = writer.sampledImage(context.inputTexture("source").view());
+            params.readback = writer.dataBuffer(context.outputBuffer("pixels").buffer(), 16, 4);
+        } else {
+            params.output = writer.storageImage(context.outputTexture("color").view());
+            params.path = context.properties().value("path", 0u);
+        }
+        auto encoded = writer.encode(params, kSliderFixtureABI, render::ParameterTransport::InlinePush);
+        if (!encoded) { return render::makeError(encoded.error()); }
+        return kernel_.dispatch(commands, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
     }
 private:
     bool readback_;
-    render::ComputeProgram program_;
+    render::Device* device_ = nullptr;
+    render::ComputeKernel kernel_;
 };
 
 class SliderDebugPixelsTest final : public RHITest {

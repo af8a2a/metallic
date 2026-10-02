@@ -1,5 +1,6 @@
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "EnvironmentPrefilterProbeParameters.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -36,34 +37,34 @@ public:
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "EnvironmentPrefilterFieldProbe",
             .entryPointName = "environmentPrefilterFieldProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}, {.binding = 1},
-            {.binding = 2, .kind = render::ComputeResourceBindingKind::SampledImage}};
-        return program_.initialize(*context.device, {
+        return kernel_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .bindings = {bindings, 3},
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<EnvironmentPrefilterProbeParameters>(kEnvironmentProbeABI, render::ParameterTransport::InlinePush),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         const auto& environment = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot();
-        auto* source = environment.radianceView;
-        const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = context.outputBuffer("field").buffer()},
-            {.binding = 1, .buffer = environment.prefilteredSpecularBuffer},
-            {.binding = 2, .textureViews = {&source, 1}}};
-        return program_.dispatch({
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = {bindings, 3},
-            .groupCountX = (kTexels + 2 + 63) / 64,
-        });
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return render::makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
+        const EnvironmentPrefilterProbeParameters params{
+            writer.dataBuffer(context.outputBuffer("field").buffer(), 16, 4),
+            writer.dataBuffer(environment.prefilteredSpecularBuffer, 16, 4),
+            writer.sampledImage(environment.radianceView)};
+        auto encoded = writer.encode(params, kEnvironmentProbeABI, render::ParameterTransport::InlinePush);
+        if (!encoded) { return render::makeError(encoded.error()); }
+        return kernel_.dispatch(commands, *encoded, (kTexels + 2 + 63) / 64);
     }
 private:
-    render::ComputeProgram program_;
+    render::Device* device_ = nullptr;
+    render::ComputeKernel kernel_;
 };
 
 class EnvironmentPrefilterImpulseTest final : public RHITest {

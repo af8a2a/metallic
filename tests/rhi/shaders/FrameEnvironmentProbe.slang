@@ -1,12 +1,11 @@
-import Core;
-using Metallic;
+#include "../FrameEnvironmentProbeParameters.h"
 
-#define environmentTexture getResource<Texture2D<float4>>(0)
-#define result getResource<RWStructuredBuffer<float4>>(1)
+[[vk::push_constant]] ConstantBuffer<FrameEnvironmentProbeParameters> gProbe;
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void readEnvironment(uint3 thread : SV_DispatchThreadID)
 {
-    result[0] = environmentTexture.Load(int3(0, 0, 0));
+    if (!gProbe.output.contains(0u)) { return; }
+    gProbe.output.data[0] = resolveDescriptor(gProbe.environment).Load(int3(0, 0, 0));
 }

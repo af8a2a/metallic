@@ -1,8 +1,14 @@
+struct TessellationData
+{
+    DataSpan<uint> words;
+    uint load(uint index) { return words.contains(index) ? words.data[index] : 0u; }
+};
+
 // Shared domain evaluation for resident and streamed patches. The table and
 // material descriptors are immutable for the lifetime of the graph bindings.
 struct TessMaterial
 {
-    uint texture;
+    DescriptorHandle<Texture2D<float4>> texture;
     float magnitude;
     float centre;
     uint enabled;
@@ -11,27 +17,30 @@ struct TessMaterial
     uint4 reserved;
 };
 
-TessMaterial tessMaterial(StructuredBuffer<uint> data, uint material)
+TessMaterial tessMaterial(TessellationData data, uint material)
 {
-    TessMaterial m = (TessMaterial)0;
-    m.texture = 0xffffffffu;
-    if (material >= data[1]) { return m; }
+    TessMaterial m;
+    m.texture = DescriptorHandle<Texture2D<float4>>(uint2(0xffffffffu));
+    m.magnitude = m.centre = 0.0;
+    m.enabled = 0u;
+    m.uv0 = m.uv1 = float4(0);
+    m.reserved = uint4(0);
+    if (material >= data.load(1)) { return m; }
     uint base = 16u + material * 16u;
-    m.texture = data[base];
-    m.magnitude = asfloat(data[base + 1u]);
-    m.centre = asfloat(data[base + 2u]);
-    m.enabled = data[base + 3u];
-    m.uv0 = asfloat(uint4(data[base + 4u], data[base + 5u], data[base + 6u], data[base + 7u]));
-    m.uv1 = asfloat(uint4(data[base + 8u], data[base + 9u], data[base + 10u], data[base + 11u]));
+    m.texture = DescriptorHandle<Texture2D<float4>>(uint2(data.load(base), data.load(base + 12u)));
+    m.magnitude = asfloat(data.load(base + 1u));
+    m.centre = asfloat(data.load(base + 2u));
+    m.enabled = data.load(base + 3u);
+    m.uv0 = asfloat(uint4(data.load(base + 4u), data.load(base + 5u), data.load(base + 6u), data.load(base + 7u)));
+    m.uv1 = asfloat(uint4(data.load(base + 8u), data.load(base + 9u), data.load(base + 10u), data.load(base + 11u)));
     return m;
 }
 
 float tessHeight(TessMaterial material, float2 uv)
 {
-    if (material.enabled == 0u || material.texture == 0xffffffffu) { return 0.0; }
+    if (material.enabled == 0u) { return 0.0; }
     uv = float2(dot(material.uv0.xy, uv) + material.uv0.z, dot(material.uv1.xy, uv) + material.uv1.z);
-    DescriptorHandle<Texture2D<float4>> handle = DescriptorHandle<Texture2D<float4>>(uint2(material.texture, 0));
-    Texture2D<float4> image = handle;
+    Texture2D<float4> image = material.texture;
     uint width, height;
     image.GetDimensions(width, height);
     // Keep the integer conversion nonnegative at repeat seams, including UV=0.
@@ -56,22 +65,22 @@ uint tessEdgeRate(float3 a, float3 b, float3 eye, float3 forward, float pixelSca
     return uint(clamp(rate, 1.0, float(maximum)));
 }
 
-uint4 tessPattern(StructuredBuffer<uint> data, uint3 rates)
+uint4 tessPattern(TessellationData data, uint3 rates)
 {
-    uint index = data[0] + ((rates.x - 1u) + 8u * (rates.y - 1u) + 64u * (rates.z - 1u)) * 4u;
-    return uint4(data[index], data[index + 1u], data[index + 2u], data[index + 3u]);
+    uint index = data.load(0) + ((rates.x - 1u) + 8u * (rates.y - 1u) + 64u * (rates.z - 1u)) * 4u;
+    return uint4(data.load(index), data.load(index + 1u), data.load(index + 2u), data.load(index + 3u));
 }
 
-float3 tessBary(StructuredBuffer<uint> data, uint4 pattern, uint vertex)
+float3 tessBary(TessellationData data, uint4 pattern, uint vertex)
 {
-    uint word = data[data[0] + pattern.x + vertex];
+    uint word = data.load(data.load(0) + pattern.x + vertex);
     float2 yz = float2(word & 65535u, word >> 16u) / 65535.0;
     return float3(1.0 - yz.x - yz.y, yz);
 }
 
-uint3 tessTriangle(StructuredBuffer<uint> data, uint4 pattern, uint triangle)
+uint3 tessTriangle(TessellationData data, uint4 pattern, uint triangle)
 {
-    uint word = data[data[0] + pattern.z + triangle];
+    uint word = data.load(data.load(0) + pattern.z + triangle);
     return uint3(word & 255u, (word >> 8u) & 255u, (word >> 16u) & 255u);
 }
 

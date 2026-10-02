@@ -23,7 +23,7 @@ public:
     Result<> resolve(CommandBuffer& commands, Texture& visibilityTexture, TextureView& visibility,
         Texture& depthTexture, TextureView& depth, bool softwareRasterized = false);
     Result<> beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
-        uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact = false, bool tessellation = false);
+        uint32_t inputCount, bool stream, bool compact = false, bool tessellation = false);
     // beginClusters must publish the bin header before candidate preparation.
     Result<> prepareStreamClusterCandidates(CommandBuffer& commands, const ComputeKernel& kernel,
         ParameterWriter& writer, StreamCandidateParameters params);
@@ -59,7 +59,6 @@ private:
         uint32_t reversedZ = 1;
         uint32_t subpixelBits = 8;
         uint32_t clusterCapacity = 1;
-        uint32_t producerPixelBuffer = 0;
         uint32_t inputClusterCount = 0;
         uint32_t streamMode = 0;
     } settings_;

@@ -149,7 +149,7 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
             result->manifests_.emplace_back();
             result->source_ += emitProgram(Json::parse(source), id, result->manifests_.back());
         }
-        result->source_ += "#ifndef METALLIC_LOAD_MATERIAL_VALUE\n#define METALLIC_LOAD_MATERIAL_VALUE(index) getResource<StructuredBuffer<MaterialValueInstance>>(97)[index]\n#endif\n";
+        result->source_ += "#ifndef METALLIC_LOAD_MATERIAL_VALUE\n#error Material Value dispatch requires an explicit METALLIC_LOAD_MATERIAL_VALUE adapter\n#endif\n";
         result->source_ += "PathTraceMaterial evaluateMaterialValue(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material)\n{\n"
             "    MaterialValueInstance instance = METALLIC_LOAD_MATERIAL_VALUE(materialIndex);\n"
             "    switch (instance.programId) {\n";

@@ -41,11 +41,4 @@ public bool hybridEnqueueTriangle(float4 a, float4 b, float4 c, uint visibilityI
     queue[offset + 3u] = uint4(visibilityId, doubleSided ? 1u : 0u, 0u, 0u);
     return true;
 }
-// Compatibility boundary for the legacy GPU queue test fixture.
-public bool hybridEnqueueTriangle(float4 a, float4 b, float4 c, uint visibilityId,
-    bool doubleSided, uint queueIndex)
-{
-    return hybridEnqueueTriangle(a, b, c, visibilityId, doubleSided,
-        DescriptorHandle<RWStructuredBuffer<uint4>>(uint2(queueIndex, 0)), queueIndex != 0xffffffffu);
-}
 } // namespace Metallic.GPUDriven

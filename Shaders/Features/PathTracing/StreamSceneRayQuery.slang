@@ -70,16 +70,23 @@ bool streamRaySurface<Materials : IStreamRayMaterials>(uint instanceIndex, uint 
 }
 
 bool streamRayAlphaAccepts<Materials : IStreamRayMaterials>(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
-    Ray ray, float t, StreamSceneParameters scene, Materials materials, float bitangentFlip)
+    StreamSceneParameters scene, Materials materials)
 {
     StreamRayInstance instance;
     if (!loadStreamRayInstance(scene, instanceIndex, instance)) { return false; }
     PathTraceMaterial material;
     if (!materials.load(instance.materialIndex, material)) { return false; }
+    // Validate geometry even for opaque candidates before committing the hit.
+    uint pageIndex, cluster;
+    float3 a, b, c;
+    if (!decodeStreamRayTriangle(scene, clusterId, triangle, pageIndex, cluster, a, b, c)) { return false; }
     if (material.textureParams.w < 0.5) { return true; }
-    HitInfo hit;
-    if (!streamRaySurface(instanceIndex, clusterId, triangle, bary, ray, t, scene, materials, bitangentFlip, hit)) { return false; }
-    float alpha = material.baseColor.a * materials.alpha(material.baseColorTexture, hit.texcoord);
+    // Alpha coverage needs UV only, not world transforms, normals or a TBN.
+    float3 normals[3]; float2 uvs[3]; float4 tangents[3];
+    decodeStreamAttributesAtPage(pageIndex, cluster, triangle,
+        StreamDataBuffer<uint>(scene.pages), StreamDataBuffer<uint2>(scene.pageTable), normals, uvs, tangents);
+    float2 uv = uvs[0] * (1.0 - bary.x - bary.y) + uvs[1] * bary.x + uvs[2] * bary.y;
+    float alpha = material.baseColor.a * materials.alpha(material.baseColorTexture, uv);
     return material.textureParams.w < 1.5 ? alpha >= material.params.z : alpha > 0.0;
 }
 
@@ -97,7 +104,7 @@ bool traceStreamClosest<Materials : IStreamRayMaterials>(Ray ray, float nearDist
     while (query.Proceed()) {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
             streamRayAlphaAccepts(query.CandidateInstanceID(), uint(query.CandidateClusterID()),
-                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), ray, query.CandidateTriangleRayT(), scene, materials, bitangentFlip)) {
+                query.CandidatePrimitiveIndex(), query.CandidateTriangleBarycentrics(), scene, materials)) {
             query.CommitNonOpaqueTriangleHit();
         }
     }

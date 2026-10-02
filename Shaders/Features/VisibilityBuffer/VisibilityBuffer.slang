@@ -73,13 +73,8 @@ float materialBaseColorAlpha(
         textureInfo.textureIndex >= params.materialTextureCount) {
         return material.baseColor.a;
     }
-    DescriptorHandle<StructuredBuffer<uint>> remapHandle =
-        push.resources.materialTextureRemapBuffer;
-    StructuredBuffer<uint> remap = remapHandle;
-    DescriptorHandle<Texture2D<float4>> textureHandle =
-        DescriptorHandle<Texture2D<float4>>(uint2(
-            remap[textureInfo.textureIndex],
-            0));
+    ResidentMaterialTextureRemapBuffer remap = push.resources.materialTextureRemapBuffer;
+    DescriptorHandle<Texture2D<float4>> textureHandle = remap[textureInfo.textureIndex];
     Texture2D<float4> texture = textureHandle;
     return material.baseColor.a *
         sampleAlphaCoverage(texture, transformMaterialUv(textureInfo, uv));
@@ -173,7 +168,7 @@ void visibilityBufferAmplificationMain(
         DispatchMesh(count, 1, 1, g_AmplificationPayload);
         return;
     } else {
-        meshletDrawIndex = residentLodRecordIndex(localMeshletIndex, params);
+        meshletDrawIndex = residentLodRecordIndex(localMeshletIndex, params, push.resources.lodSelections);
         visible = residentClusterVisible(meshletDrawIndex, push);
         if (visible) { visible = visibleClusterDrawBucket(records[meshletDrawIndex]) == push.mipLevel; }
     }
@@ -448,7 +443,7 @@ void visibilityClusterCountMain(uniform ResidentRasterParameters push)
         push.resources.paramsBuffer;
     GPUDrivenPreviewParams params = parameters[0];
     DescriptorHandle<StructuredBuffer<uint4>> selections =
-        DescriptorHandle<StructuredBuffer<uint4>>(uint2(params.lodSelectionBuffer, 0));
+        push.resources.lodSelections;
     DescriptorHandle<RWStructuredBuffer<uint>> bins =
         push.resources.writableBins;
     bins[12] = min(selections[0].x, params.meshletCount);
@@ -464,7 +459,7 @@ void visibilityClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupInde
         push.resources.writableBins;
     RWStructuredBuffer<uint> bins = binHandle;
     GPUDrivenPreviewParams params = parameters[0];
-    uint index = residentLodRecordIndex(hybridFlatGroup(group), params);
+    uint index = residentLodRecordIndex(hybridFlatGroup(group), params, push.resources.lodSelections);
     if (lane == 0u) {
         hybridClassifyCluster(bins, 0xffffffffu, index, hybridFlatGroup(group));
         g_PrebinVisible = residentClusterVisible(index, push) ? 1u : 0u;
@@ -478,7 +473,7 @@ void visibilityClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupInde
     GroupMemoryBarrierWithGroupSync();
     if (g_PrebinVisible == 0u) { return; }
     uint bucket = visibleClusterDrawBucket(g_PrebinCluster.record);
-    if (bucket >= 2u || params.tessellationBuffer != 0xffffffffu) {
+    if (bucket >= 2u || params.tessellationEnabled != 0u) {
         if (lane == 0u) { hybridClassifyCluster(bins, bucket, index, hybridFlatGroup(group)); }
         return;
     }
@@ -519,7 +514,7 @@ void visibilityClusterRasterMain(uint3 group : SV_GroupID, uint lane : SV_GroupI
         tri = residentRasterWinding(tri, instanceTransform(g_PrebinCluster.instance));
         hybridRasterTriangle(g_HybridClipPositions[tri.x], g_HybridClipPositions[tri.y], g_HybridClipPositions[tri.z],
             packVisibilityId(record, lane), (visibleClusterDrawBucket(g_PrebinCluster.record) & 1u) != 0u,
-            bins[6], bins[7], bins[9], bins[10], bins[11]);
+            bins[6], bins[7], bins[9], bins[10], push.resources.pixels);
     }
 }
 

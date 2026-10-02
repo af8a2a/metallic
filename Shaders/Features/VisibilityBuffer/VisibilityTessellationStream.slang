@@ -38,8 +38,8 @@ void streamTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     if (valid) {
         GPUDrivenStreamAssetRasterBindings* rh = push.rasterSettings;
         GPUDrivenStreamAssetRasterBindings bindings = rh[0];
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(bindings.gpuSceneInstanceBuffer, 0));
-        DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(bindings.tessellationBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = bindings.gpuSceneInstanceBuffer;
+        TessellationData data = TessellationData(bindings.tessellationBuffer);
         DescriptorHandle<StructuredBuffer<uint>> pages = push.pageBuffer;
         uint material = instances[c.group.gpuSceneInstanceIndex].identity.y;
         bool attributes = (pages[c.pageWord + 14u] & 6u) == 6u && streamNormalStride(pages[c.pageWord + 21u]) != 0u && pages[c.pageWord + 22u] == 1u;
@@ -105,7 +105,7 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         return;
     }
     GPUDrivenStreamAssetRasterBindings* rh = push.rasterSettings;
-    DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(rh[0].tessellationBuffer, 0));
+    TessellationData data = TessellationData(rh[0].tessellationBuffer);
     DescriptorHandle<StructuredBuffer<uint>> pages = push.pageBuffer;
     TessMaterial material = tessMaterial(data, payload.material);
     uint source = tessPayloadRoot(payload, group.x);

@@ -1,5 +1,6 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "RHITest.h"
+#include "HybridProbeParameters.h"
 #include "Runtime/Task/TaskSystem.h"
 #include "Runtime/Render/VisibilityHybridRasterizer.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
@@ -75,11 +76,8 @@ public:
         void* mapped = input->map();
         if (!mapped) { return RHITestResult::fail("Vertex upload map failed"); }
         std::memcpy(mapped, vertices.data(), vertices.size() * 16); input->flush(); input->unmap();
-        std::unique_ptr<BindlessHeap> heap;
-        HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
-        BindlessHandle inputHandle, queueHandle;
-        HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); })); HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { queueHandle = std::move(rhiValue); }));
-        HYBRID_REQUIRE(heap->writeStorageBuffer(inputHandle, *input));
+        auto registry = device->resourceRegistry();
+        if (!registry) { return RHITestResult::fail("Missing shared registry"); }
         // Compare the new shared-vertex/integer-step SW kernel to the legacy
         // kernel before testing either against HW. Include both subpixel grids.
         {
@@ -95,7 +93,7 @@ public:
             std::unique_ptr<ShaderModule> shader;
             std::unique_ptr<ComputePipeline> compute;
             HYBRID_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
-            HYBRID_REQUIRE(device->createComputePipeline({.computeShader = {shader.get()}, .usesBindlessHeap = true, .bindlessUserPushDataSize = 40}).transform([&](auto rhiValue) { compute = std::move(rhiValue); }));
+            HYBRID_REQUIRE(device->createComputePipeline({.computeShader = {shader.get()}, .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(PreparedRasterProbeParameters)}).transform([&](auto rhiValue) { compute = std::move(rhiValue); }));
             ShaderCompileResult workCompiled;
             HYBRID_REQUIRE(compileSlangShaderToSpirv({
                 .moduleName = "PreparedRasterProbe",
@@ -106,7 +104,7 @@ public:
             std::unique_ptr<ShaderModule> workShader;
             std::unique_ptr<ComputePipeline> workCompute;
             HYBRID_REQUIRE(device->createShaderModule({.spirv = workCompiled.spirv}).transform([&](auto rhiValue) { workShader = std::move(rhiValue); }));
-            HYBRID_REQUIRE(device->createComputePipeline({.computeShader = {workShader.get()}, .usesBindlessHeap = true, .bindlessUserPushDataSize = 40}).transform([&](auto rhiValue) { workCompute = std::move(rhiValue); }));
+            HYBRID_REQUIRE(device->createComputePipeline({.computeShader = {workShader.get()}, .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(PreparedRasterProbeParameters)}).transform([&](auto rhiValue) { workCompute = std::move(rhiValue); }));
             ShaderCompileResult workloadCompiled;
             const auto workloadResult = compileSlangShaderToSpirv({
                 .moduleName = "PreparedRasterProbe",
@@ -119,19 +117,11 @@ public:
             std::unique_ptr<ShaderModule> workloadShader;
             std::unique_ptr<ComputePipeline> workloadCompute;
             HYBRID_REQUIRE(device->createShaderModule({.spirv = workloadCompiled.spirv}).transform([&](auto rhiValue) { workloadShader = std::move(rhiValue); }));
-            HYBRID_REQUIRE(device->createComputePipeline({.computeShader = {workloadShader.get()}, .usesBindlessHeap = true, .bindlessUserPushDataSize = 40}).transform([&](auto rhiValue) { workloadCompute = std::move(rhiValue); }));
-            std::unique_ptr<BindlessHeap> compareHeap;
-            HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers=3}).transform([&](auto rhiValue) { compareHeap = std::move(rhiValue); }));
-            BindlessHandle vertexHandle;
-            HYBRID_REQUIRE(compareHeap->allocateBuffer().transform([&](auto rhiValue) { vertexHandle = std::move(rhiValue); }));
-            HYBRID_REQUIRE(compareHeap->writeStorageBuffer(vertexHandle,*input));
+            HYBRID_REQUIRE(device->createComputePipeline({.computeShader = {workloadShader.get()}, .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(PreparedRasterProbeParameters)}).transform([&](auto rhiValue) { workloadCompute = std::move(rhiValue); }));
             std::array<std::unique_ptr<Buffer>,2> pixels;
-            std::array<BindlessHandle,2> handles;
             for (size_t i=0;i<2;++i) {
                 HYBRID_REQUIRE(device->createBuffer({.size=pixelCount*8,.structureStride=8,.usage=BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                     .memoryLocation=MemoryLocation::HostUpload}).transform([&](auto rhiValue) { pixels[i] = std::move(rhiValue); }));
-                HYBRID_REQUIRE(compareHeap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
-                HYBRID_REQUIRE(compareHeap->writeStorageBuffer(handles[i],*pixels[i]));
             }
             auto* queue=device->getQueue(QueueType::Graphics);
             std::unique_ptr<CommandPool> pool;
@@ -149,11 +139,17 @@ public:
                     std::memset(data,0,pixelCount*8); output->flush(); output->unmap();
                 }
                 HYBRID_REQUIRE(commands->begin());
-                commands->bindBindlessHeap(*compareHeap); if (auto commandResult = commands->bindExecution((plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                uint32_t push[]={vertexHandle.shaderIndex,handles[0].shaderIndex,handles[1].shaderIndex,width,height,reversed,sided,bits,plane,count};
-                commands->pushBindlessData(push,sizeof(push));
+                if (auto commandResult = commands->bindExecution((plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                ParameterWriter writer(*device, **registry);
+                const PreparedRasterProbeParameters push{
+                    writer.dataBuffer(input.get(), 16, 16), writer.buffer(pixels[0].get()), writer.buffer(pixels[1].get()),
+                    width, height, reversed, sided, bits, plane, count, 0};
+                auto encoded = writer.encode(push, kPreparedRasterProbeABI, ParameterTransport::InlinePush);
+                if (!encoded) { return RHITestResult::fail("Cannot encode hybrid probe parameters"); }
+                HYBRID_REQUIRE(encoded->bindResources(*commands));
+                commands->pushBindlessData(encoded->inlineData().data(), uint32_t(encoded->inlineData().size()));
                 const uint32_t lanes=plane>=2u ? 128u : 64u;
-                commands->dispatch(std::max(1u,(push[9]+lanes-1u)/lanes));
+                commands->dispatch(std::max(1u,(push.triangleCount+lanes-1u)/lanes));
                 HYBRID_REQUIRE(commands->end()); CommandBuffer* list[]={commands.get()};
                 HYBRID_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
                 HYBRID_REQUIRE(fence->wait()); submitted=true;
@@ -247,7 +243,6 @@ public:
                         &rasterizer.pixelBuffer() != pixelAllocation || &rasterizer.clusterBuffer() != clusters) {
                         return RHITestResult::fail("Hybrid extent reuse changed resources or accepted an invalid extent");
                     }
-                    HYBRID_REQUIRE(heap->writeStorageBuffer(queueHandle, rasterizer.queueBuffer()));
                     if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
                     HYBRID_REQUIRE(commands->begin());
                     const TextureBarrierDesc transitions[] = {
@@ -279,9 +274,15 @@ public:
                     }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                     commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f});
                     commands->setScissor({.width = width, .height = height});
-                    commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                    const uint32_t push[] = {inputHandle.shaderIndex, hybrid ? queueHandle.shaderIndex : UINT32_MAX, doubleSided ? 1u : 0u};
-                    commands->pushBindlessData(push, sizeof(push));
+                    if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                    ParameterWriter writer(*device, **registry);
+                    const HybridMeshProbeParameters push{
+                        writer.dataBuffer(input.get(), 16, 16), writer.buffer(&rasterizer.queueBuffer()),
+                        doubleSided ? 1u : 0u, hybrid ? 1u : 0u};
+                    auto encoded = writer.encode(push, kHybridMeshProbeABI, ParameterTransport::InlinePush);
+                    if (!encoded) { return RHITestResult::fail("Cannot encode hybrid probe parameters"); }
+                    HYBRID_REQUIRE(encoded->bindResources(*commands));
+                    commands->pushBindlessData(encoded->inlineData().data(), uint32_t(encoded->inlineData().size()));
                     commands->drawMeshTasks(uint32_t(vertices.size() / 3)); commands->endRendering();
                     if (hybrid) {
                         HYBRID_REQUIRE(rasterizer.resolve(*commands, *textures[0], *views[0], *textures[1], *views[1]));
@@ -379,10 +380,8 @@ public:
         if (!device->capabilities().shaderBufferInt64Atomics || device->capabilities().subPixelPrecisionBits > 8) {
             return RHITestResult::skip("Requires hybrid raster capabilities");
         }
-        std::unique_ptr<BindlessHeap> heap;
-        HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
-        BindlessHandle inputHandle, binHandle;
-        HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); })); HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { binHandle = std::move(rhiValue); }));
+        auto registry = device->resourceRegistry();
+        if (!registry) { return RHITestResult::fail("Missing shared registry"); }
         ShaderCompileResult compiled;
         const auto compile = compileSlangShaderToSpirv({.moduleName = "HybridClusterProbe", .entryPointName = "classifyMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
@@ -393,7 +392,7 @@ public:
         HYBRID_REQUIRE(device->createComputePipeline({
             .computeShader = {shader.get()},
             .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = 12,
+            .bindlessUserPushDataSize = sizeof(HybridClusterProbeParameters),
         }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
@@ -424,8 +423,6 @@ public:
             void* mapped = input->map();
             if (!mapped) { return RHITestResult::fail("Cluster input map failed"); }
             std::memcpy(mapped, candidates.data(), candidates.size() * 8); input->flush(); input->unmap();
-            HYBRID_REQUIRE(heap->writeStorageBuffer(inputHandle, *input));
-            HYBRID_REQUIRE(heap->writeStorageBuffer(binHandle, rasterizer.clusterBuffer()));
             const uint64_t readbackBytes = (16ull + 5ull * capacity) * 4u;
             HYBRID_REQUIRE(device->createBuffer({.size = readbackBytes, .usage = BufferUsageBits::TransferDestination,
                 .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
@@ -434,13 +431,18 @@ public:
             if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
             HYBRID_REQUIRE(commands->begin());
             // Capacity validation must reject oversized dispatches before recording GPU work.
-            if (!hasError(rasterizer.beginClusters(*commands, 8, true, 0, capacity + 1u, test.stream), Error::InvalidArgument)) {
+            if (!hasError(rasterizer.beginClusters(*commands, 8, true, capacity + 1u, test.stream), Error::InvalidArgument)) {
                 return RHITestResult::fail("Oversized cluster input was accepted");
             }
-            HYBRID_REQUIRE(rasterizer.beginClusters(*commands, 8, true, 0, test.count, test.stream));
-            commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-            const uint32_t push[] = {inputHandle.shaderIndex, binHandle.shaderIndex, test.count};
-            commands->pushBindlessData(push, sizeof(push));
+            HYBRID_REQUIRE(rasterizer.beginClusters(*commands, 8, true, test.count, test.stream));
+            if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+            ParameterWriter writer(*device, **registry);
+            const HybridClusterProbeParameters push{
+                writer.dataBuffer(input.get(), 8, 8), writer.buffer(&rasterizer.clusterBuffer()), test.count, 0};
+            auto encoded = writer.encode(push, kHybridClusterProbeABI, ParameterTransport::InlinePush);
+            if (!encoded) { return RHITestResult::fail("Cannot encode hybrid probe parameters"); }
+            HYBRID_REQUIRE(encoded->bindResources(*commands));
+            commands->pushBindlessData(encoded->inlineData().data(), uint32_t(encoded->inlineData().size()));
             if (test.count != 0) {
                 commands->dispatch(std::min(test.count, 65535u), (test.count + 65534u) / 65535u);
             }

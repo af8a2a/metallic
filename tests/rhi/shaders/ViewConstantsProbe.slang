@@ -1,10 +1,11 @@
-import Core;
-using Metallic;
+#include "../ViewProbeParameters.h"
+
+[[vk::push_constant]] ConstantBuffer<ViewProbeParameters> gProbe;
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void viewConstantsProbeMain()
 {
-    getResource<RWStructuredBuffer<ViewConstants>>(0)[0] =
-        getResource<StructuredBuffer<ViewConstants>>(1)[0];
+    if (!gProbe.output.contains(0u) || !gProbe.view.contains(0u)) { return; }
+    gProbe.output.data[0] = gProbe.view.data[0];
 }

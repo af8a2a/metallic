@@ -69,14 +69,6 @@ public void hybridRasterTriangle(float4 c0, float4 c1, float4 c2, uint visibilit
     }
 }
 
-// Adapter for raster entrypoints still using their producer heap's raw index.
-public void hybridRasterTriangle(float4 c0, float4 c1, float4 c2, uint visibilityId,
-    bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits, uint pixelBuffer)
-{
-    hybridRasterTriangle(c0, c1, c2, visibilityId, doubleSided, width, height, reversedZ, subpixelBits,
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(pixelBuffer, 0)));
-}
-
 // One setup per unique vertex, shared by all triangles in a cluster. Keep
 // division/snap expressions identical to the reference rasterizer above.
 public struct HybridScreenVertex
@@ -172,14 +164,6 @@ public void hybridRasterPreparedTriangleDecision(HybridScreenVertex a, HybridScr
         rowEdges += stepY;
     }
 }
-public void hybridRasterPreparedTriangleDecision(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
-    uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
-    uint pixelBuffer, bool incrementalDepth, out HybridTriangleDecision decision)
-{
-    hybridRasterPreparedTriangleDecision(a,b,c,visibilityId,doubleSided,width,height,reversedZ,subpixelBits,
-        DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(pixelBuffer, 0)),incrementalDepth,decision);
-}
-
 public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
     uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
     DescriptorHandle<RWStructuredBuffer<uint64_t>> pixels, bool incrementalDepth)
@@ -189,13 +173,4 @@ public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVerte
         subpixelBits,pixels,incrementalDepth,decision);
 }
 
-// Ordinary callers discard the decision; no Printf or additional resource reads.
-public void hybridRasterPreparedTriangle(HybridScreenVertex a, HybridScreenVertex b, HybridScreenVertex c,
-    uint visibilityId, bool doubleSided, uint width, uint height, uint reversedZ, uint subpixelBits,
-    uint pixelBuffer, bool incrementalDepth)
-{
-    HybridTriangleDecision decision;
-    hybridRasterPreparedTriangleDecision(a,b,c,visibilityId,doubleSided,width,height,reversedZ,
-        subpixelBits,pixelBuffer,incrementalDepth,decision);
-}
 } // namespace Metallic.GPUDriven

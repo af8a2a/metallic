@@ -1,22 +1,18 @@
-import Core;
-using Metallic;
+#include "../UnifiedTopLevelProbeParameters.h"
 
-struct RayObservation
-{
-    uint hit, instance, primitive, front;
-    float distance, u, v, padding;
-};
+[[vk::push_constant]] ConstantBuffer<UnifiedTopLevelProbeParameters> gProbe;
 
 [shader("compute")]
 [numthreads(6, 1, 1)]
 void unifiedTopLevelMain(uint3 id : SV_DispatchThreadID)
 {
+    if (!gProbe.output.contains(id.x)) { return; }
     float x = id.x == 1 ? 0.65 : id.x == 2 ? 3.0 : 0.2;
     float y = id.x == 1 ? 0.15 : id.x == 2 ? 0.2 : 0.3;
     RayDesc ray = {float3(x, y, id.x == 5 ? 5.0 : 0), 0.001,
         float3(0, 0, id.x == 5 ? -1.0 : 1.0), id.x == 4 ? 1.0 : 10.0};
     RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
-    query.TraceRayInline(getResource<RaytracingAccelerationStructure>(0), 0, id.x == 3 ? 2 : 1, ray);
+    query.TraceRayInline(resolveDescriptor(gProbe.structure), 0, id.x == 3 ? 2 : 1, ray);
     while (query.Proceed()) {}
     bool hit = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
     RayObservation result = {hit ? 1u : 0u, hit ? query.CommittedInstanceID() : 0xffffffffu,
@@ -24,5 +20,5 @@ void unifiedTopLevelMain(uint3 id : SV_DispatchThreadID)
         hit && query.CommittedTriangleFrontFace() ? 1u : 0u,
         hit ? query.CommittedRayT() : 0.0, 0.0, 0.0, 0.0};
     if (hit) { float2 bary = query.CommittedTriangleBarycentrics(); result.u = bary.x; result.v = bary.y; }
-    getResource<RWStructuredBuffer<RayObservation>>(1)[id.x] = result;
+    gProbe.output.data[id.x] = result;
 }

@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "RealtimeProbeParameters.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -153,26 +154,32 @@ public:
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "RealtimeGuideProbe",
             .entryPointName = "environmentPrefilterProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {{.binding = 2}, {.binding = 3}};
-        return program_.initialize(*context.device, {
+        return kernel_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .bindings = {bindings, 2},
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<RealtimeProbeParameters>(kRealtimeProbeABI, render::ParameterTransport::InlinePush),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 2, .buffer = context.outputBuffer("data").buffer()},
-            {.binding = 3, .buffer = context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot().prefilteredSpecularBuffer}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 2}});
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return render::makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
+        RealtimeProbeParameters params{};
+        params.data = writer.dataBuffer(context.outputBuffer("data").buffer(), 16, 4);
+        params.prefilter = writer.buffer(context.subsystem<render::EnvironmentLightingSubsystem>()->snapshot().prefilteredSpecularBuffer);
+        auto encoded = writer.encode(params, kRealtimeProbeABI, render::ParameterTransport::InlinePush);
+        if (!encoded) { return render::makeError(encoded.error()); }
+        return kernel_.dispatch(commands, *encoded, 1);
     }
 private:
-    render::ComputeProgram program_;
+    render::Device* device_ = nullptr;
+    render::ComputeKernel kernel_;
 };
 
 class EnvironmentPrefilterTest final : public RHITest {
@@ -241,18 +248,14 @@ public:
 
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         render::ShaderCompileResult shader;
         auto result = render::compileSlangShaderToSpirv({.moduleName = "RealtimeGuideProbe",
             .entryPointName = "realtimeGuideProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::SampledImage},
-            {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
-        return program_.initialize(*context.device, {
+        return kernel_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .bindings = {bindings, 3},
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<RealtimeProbeParameters>(kRealtimeProbeABI, render::ParameterTransport::InlinePush),
         }, log);
     }
 
@@ -264,19 +267,21 @@ public:
             .width = context.width(), .height = context.height()});
         auto* motion = context.inputTexture("motion").view();
         auto* depth = context.inputTexture("depth").view();
-        const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = {&motion, 1}},
-            {.binding = 1, .textureViews = {&depth, 1}},
-            {.binding = 2, .buffer = context.outputBuffer("guides").buffer()}};
-        return program_.dispatch({
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = {bindings, 3},
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-        });
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return render::makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        render::ParameterWriter writer(*device_, **registry, commands.frameContext());
+        RealtimeProbeParameters params{};
+        params.motion = writer.sampledImage(motion);
+        params.depth = writer.sampledImage(depth);
+        params.data = writer.dataBuffer(context.outputBuffer("guides").buffer(), 16, 4);
+        auto encoded = writer.encode(params, kRealtimeProbeABI, render::ParameterTransport::InlinePush);
+        if (!encoded) { return render::makeError(encoded.error()); }
+        return kernel_.dispatch(commands, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
     }
 private:
-    render::ComputeProgram program_;
+    render::Device* device_ = nullptr;
+    render::ComputeKernel kernel_;
 };
 
 class RealtimePipelineTest : public RHITest {

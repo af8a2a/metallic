@@ -9,7 +9,7 @@ public static const uint kHybridBinHeaderWords = 16u;
 public static const uint kHybridDispatchWidth = 65535u;
 
 // Header: five counters, capacity, width, height, maxPixels, reversedZ,
-// subpixelBits, producer pixel descriptor, candidate count, max group clusters,
+// subpixelBits, reserved, candidate count, max group clusters,
 // overflow, active group count (the last group fields are stream-only).
 // Lists contain original record indices, never a reordered visibility namespace.
 public uint hybridFlatGroup(uint3 group)

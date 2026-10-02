@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/TessellationPatterns.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Scene/Scene.h"
 #include <bit>
 #include <span>
@@ -19,7 +20,7 @@ inline float tessellationDisplacementBound(std::span<const scene::RenderMaterial
 }
 
 inline std::vector<uint32_t> buildTessellationData(std::span<const scene::RenderMaterial> materials,
-    std::span<const uint32_t> textureDescriptors)
+    std::span<const ShaderSampledImage> textureDescriptors)
 {
     std::vector<uint32_t> data(16 + materials.size() * 16);
     data[0] = static_cast<uint32_t>(data.size());
@@ -31,8 +32,11 @@ inline std::vector<uint32_t> buildTessellationData(std::span<const scene::Render
         const auto& texture = material.displacementTexture;
         const size_t base = 16 + i * 16;
         const bool valid = texture.textureIndex >= 0 && size_t(texture.textureIndex) < textureDescriptors.size() &&
-            texture.texCoord == 0 && textureDescriptors[texture.textureIndex] != UINT32_MAX;
-        data[base] = valid ? textureDescriptors[texture.textureIndex] : UINT32_MAX;
+            texture.texCoord == 0 && textureDescriptors[texture.textureIndex].value != UINT64_MAX;
+        const uint64_t handle = valid ? textureDescriptors[texture.textureIndex].value : UINT64_MAX;
+        data[base] = static_cast<uint32_t>(handle);
+        // Use a reserved word for the upper half without changing the material stride.
+        data[base + 12] = static_cast<uint32_t>(handle >> 32);
         data[base + 1] = std::bit_cast<uint32_t>(material.displacementMagnitude);
         data[base + 2] = std::bit_cast<uint32_t>(material.displacementCenter);
         data[base + 3] = valid && material.displacementMagnitude != 0.0f ? 1u : 0u;

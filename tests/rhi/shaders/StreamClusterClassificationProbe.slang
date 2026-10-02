@@ -27,7 +27,7 @@ void referenceStreamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_Grou
     // The retained reference predates Full coverage materials. Their HW-only
     // contract is independent of the candidate scheduling being compared.
     if (asfloat(bins[8]) == 0.0 || (g_StreamRasterCluster.instanceFlags & 12u) != 0u ||
-        raster[0].tessellationBuffer != 0xffffffffu) {
+        (raster[0].resourceFlags & 2u) != 0u) {
         if (lane == 0u) { hybridClassifyCluster(bins, 0u, record, candidate); }
         return;
     }
@@ -101,12 +101,12 @@ void legacyStreamClusterBinMain(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     uint record = bins[hybridCandidateBase(bins[5]) + candidate * 2u];
     GPUDrivenStreamAssetRasterBindings* raster = push.rasterSettings;
     bool needsCoverage = false;
-    if (raster[0].gpuSceneInstanceBuffer != 0xffffffffu) {
+    if ((raster[0].resourceFlags & 1u) != 0u) {
         DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> groups = push.activeGroupBuffer;
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(raster[0].gpuSceneInstanceBuffer, 0));
+        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = raster[0].gpuSceneInstanceBuffer;
         needsCoverage = (instances[groups[record / bins[13]].gpuSceneInstanceIndex].identity.w & 12u) != 0u;
     }
-    if (raster[0].tessellationBuffer != 0xffffffffu || needsCoverage) {
+    if ((raster[0].resourceFlags & 2u) != 0u || needsCoverage) {
         if (lane == 0u) { hybridClassifyCluster(bins, 0u, record, candidate); }
         return;
     }

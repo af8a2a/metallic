@@ -127,12 +127,13 @@ public:
             StreamPageTableEntry table;
             table.deviceOffsetAndState=packStreamPageTableEntry(0,test.fault == 4 ? MeshletStreamPageResidencyState::Unloaded : MeshletStreamPageResidencyState::Resident);
             MeshletStreamGPURasterBindings bindings{.visibleRecordBase=371, .visibleRecordCapacity=1,
-                .gpuSceneInstanceBuffer=handles[Instances].shaderIndex};
+                .gpuSceneInstanceBuffer = {uint64_t(handles[Instances].shaderIndex)}};
+            updateStreamRasterResourceFlags(bindings);
             GPUSceneGPUInstanceRecord instance;
             instance.identity[3]=2; // two-sided; reflected winding must preserve coverage
             std::array<uint32_t,21> bins{};
             bins[4]=bins[5]=1; bins[6]=bins[7]=extent; bins[9]=test.reversed ? 1 : 0;
-            bins[10]=caps.subPixelPrecisionBits; bins[11]=handles[Pixels].shaderIndex;
+            bins[10]=caps.subPixelPrecisionBits;
             GROUP_REQUIRE(upload(Header,&active,sizeof(active))); GROUP_REQUIRE(upload(Groups,&group,sizeof(group)));
             GROUP_REQUIRE(upload(Params,&params,sizeof(params))); GROUP_REQUIRE(upload(Pages,page.data(),page.size()));
             GROUP_REQUIRE(upload(PageTable,&table,sizeof(table))); GROUP_REQUIRE(upload(Bindings,&bindings,sizeof(bindings)));

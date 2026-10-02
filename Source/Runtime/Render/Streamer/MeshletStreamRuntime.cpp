@@ -2563,7 +2563,8 @@ Result<> MeshletStreamRuntime::updateRasterBindings(
         return makeError(Error::InvalidArgument);
     }
     MeshletStreamGPURasterBindings resolved = bindings;
-    resolved.visibleClusterBuffer = visibleClusterHandle_.shaderIndex();
+    resolved.visibleClusterBuffer = {visibleClusterHandle_.shaderValue()};
+    updateStreamRasterResourceFlags(resolved);
     auto result = updateHostBuffer(*rasterBindingsBuffer_, &resolved, sizeof(resolved));
     if (result) { rasterBindingsSnapshot_ = resolved; }
     return result;
@@ -2621,8 +2622,7 @@ Result<> MeshletStreamRuntime::fillClusterCullParameters(ParameterWriter& writer
     params.pageTable = writer.buffer(pageTableBuffer_.get());
     params.requests = writer.buffer(requestBuffer_.get());
     params.records = writer.buffer(visibleClusterBuffer_.get());
-    params.flags = (rasterBindingsSnapshot_.gpuSceneInstanceBuffer != UINT32_MAX ? 1u : 0u) |
-        (rasterBindingsSnapshot_.tessellationBuffer != UINT32_MAX ? 2u : 0u);
+    params.flags = (rasterBindingsSnapshot_.resourceFlags & 3u);
     return {};
 }
 

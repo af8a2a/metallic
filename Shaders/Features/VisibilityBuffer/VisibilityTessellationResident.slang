@@ -14,7 +14,7 @@ void visibilityTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> ph =
         push.resources.paramsBuffer;
     GPUDrivenPreviewParams params = ph[0];
-    DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(params.tessellationBuffer, 0));
+    TessellationData data = TessellationData(push.resources.tessellationData);
     uint draw = hybridFlatGroup(group);
     uint candidate = draw / kTessTasksPerCluster;
     uint first = (draw % kTessTasksPerCluster) * kTessRootsPerTask;
@@ -25,7 +25,7 @@ void visibilityTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIn
             DescriptorHandle<StructuredBuffer<uint>> bins = push.resources.bins;
             visible = hybridBinRecord(bins, push.mipLevel, candidate, record);
         } else {
-            record = residentLodRecordIndex(candidate, params);
+            record = residentLodRecordIndex(candidate, params, push.resources.lodSelections);
             visible = residentClusterVisible(record, push);
             if (visible) { visible = visibleClusterDrawBucket(residentRasterCluster(record, push).record) == push.mipLevel; }
         }
@@ -80,7 +80,7 @@ void visibilityTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIn
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> ph =
         push.resources.paramsBuffer;
     GPUDrivenPreviewParams params = ph[0];
-    DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(params.tessellationBuffer, 0));
+    TessellationData data = TessellationData(push.resources.tessellationData);
     TessMaterial material = tessMaterial(data, c.instance.identity.y);
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewVertex>> vb = push.resources.positionBuffer;
     DescriptorHandle<StructuredBuffer<uint>> vi = push.resources.meshletVertexBuffer;

@@ -13,7 +13,6 @@ namespace metallic::scene { struct RenderMaterial; }
 
 namespace metallic::render {
 
-inline constexpr uint32_t kMaterialValueBinding = 97;
 inline constexpr uint32_t kMaxMaterialValuePrograms = 64;
 inline constexpr size_t kMaxMaterialValueSourceBytes = 16384;
 

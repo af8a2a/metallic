@@ -1,6 +1,7 @@
 #include "RHITest.h"
 
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "ReGIRProbeParameters.h"
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/ReGIR.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -29,14 +30,6 @@ constexpr uint32_t kProbeSampleCount = 65'536;
 constexpr uint32_t kProbeLightCapacity = 16;
 constexpr uint32_t kReservoirSlots = 4'096;
 using ProbeRecord = std::array<float, 4>;
-
-struct ReGIRProbePush {
-    float position[3] = {};
-    uint32_t sampleCount = kProbeSampleCount;
-    uint32_t seedOffset = 0;
-    uint32_t padding[3] = {};
-};
-static_assert(sizeof(ReGIRProbePush) == 32);
 
 struct ReGIRProbeResult {
     std::array<double, 3> mean{};
@@ -90,15 +83,9 @@ public:
             .entryPointName = "reGIRVirtualLightProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!compiled) { return RHITestResult::fail(shader.diagnostics); }
-        const std::array<render::ComputeProgramBindingDesc, 4> bindings{{
-            {.binding = 0}, {.binding = 50}, {.binding = 52},
-            {.binding = 53, .kind = render::ComputeResourceBindingKind::SampledImage},
-        }};
-        REGIR_CHECK(program_.initialize(*device_, {
+        REGIR_CHECK(kernel_.initialize(*device_, {
             .spirv = shader.spirv,
-            .pushConstantSize = sizeof(ReGIRProbePush),
-            .bindings = bindings,
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<ReGIRProbeParameters>(kReGIRProbeABI, render::ParameterTransport::InlinePush),
         }, log_));
         return RHITestResult::pass();
     }
@@ -243,25 +230,21 @@ public:
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
         };
         if (auto commandResult = commands_->synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        render::TextureView* pdfViews[] = {
-            cancelledWrapperSettings != nullptr ? wrappedLights.lightPdfView() : pdf_.view()};
-        const std::array<render::ComputeDispatchBinding, 4> bindings{{
-            {.binding = 0, .buffer = probe.get()},
-            {.binding = 50, .buffer = cancelledWrapperSettings != nullptr ? wrappedLights.buffer() : lightBuffer.get()},
-            {.binding = 52, .buffer = cancelledWrapperSettings != nullptr ? wrappedLights.reGIRBuffer()
-                : (syntheticGrid ? syntheticGrid.get() : selector_.buffer())},
-            {.binding = 53, .textureViews = {pdfViews, 1}},
-        }};
-        ReGIRProbePush push;
+        auto registry = device_->resourceRegistry();
+        REGIR_CHECK(registry.has_value());
+        render::ParameterWriter writer(*device_, **registry, commands_->frameContext());
+        ReGIRProbeParameters push{};
+        push.output = writer.buffer(probe.get());
+        push.lights = writer.buffer(cancelledWrapperSettings != nullptr ? wrappedLights.buffer() : lightBuffer.get());
+        push.grid = writer.buffer(cancelledWrapperSettings != nullptr ? wrappedLights.reGIRBuffer()
+            : (syntheticGrid ? syntheticGrid.get() : selector_.buffer()));
+        push.pdf = writer.sampledImage(cancelledWrapperSettings != nullptr ? wrappedLights.lightPdfView() : pdf_.view());
         std::copy(position.begin(), position.end(), push.position);
+        push.sampleCount = kProbeSampleCount;
         push.seedOffset = frameIndex_;
-        REGIR_CHECK(program_.dispatch({
-            .commandBuffer = commands_.get(),
-            .bindings = bindings,
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = kProbeSampleCount / 256,
-        }));
+        auto encoded = writer.encode(push, kReGIRProbeABI, render::ParameterTransport::InlinePush);
+        REGIR_CHECK(encoded.has_value());
+        REGIR_CHECK(kernel_.dispatch(*commands_, *encoded, kProbeSampleCount / 256));
         const std::array transferBarriers{
             render::BufferBarrierDesc{
                 .buffer = probe.get(),
@@ -338,7 +321,7 @@ private:
     render::ImportancePdfCompute pdfCompute_;
     render::ImportancePdfTexture pdf_;
     render::ReGIRLightSelector selector_;
-    render::ComputeProgram program_;
+    render::ComputeKernel kernel_;
     std::unique_ptr<render::Texture> dummyEnvironment_;
     std::unique_ptr<render::TextureView> dummyEnvironmentView_;
     std::string log_;

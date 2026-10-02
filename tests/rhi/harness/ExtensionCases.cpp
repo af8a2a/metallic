@@ -1,5 +1,6 @@
 #include "RayQueryFixture.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "../UnifiedTopLevelProbeParameters.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include <cstring>
 
@@ -71,10 +72,10 @@ Json trace(RHITestContext& context, uint64_t blasAddress)
     std::string log;
     const auto shader = checked(compileSlangShaderToSpirv({.moduleName = "UnifiedTopLevelProbe",
         .entryPointName = "unifiedTopLevelMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-        .capabilities = capabilities, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log));
-    const ComputeProgramBindingDesc layout[]{{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
-    ComputeProgram program;
-    checked(program.initialize(device, {.spirv = shader.spirv, .bindings = layout}, log));
+        .capabilities = capabilities}, log));
+    ComputeKernel program;
+    checked(program.initialize(device, {.spirv = shader.spirv,
+        .parameters = parameterAbi<UnifiedTopLevelProbeParameters>(kUnifiedRayProbeABI, ParameterTransport::InlinePush)}, log));
     auto output = buffer(device, sizeof(RayObservations), MemoryLocation::HostReadback);
     auto pool = checked(device.createCommandPool(queue));
     auto commands = checked(pool->createCommandBuffer());
@@ -85,8 +86,12 @@ Json trace(RHITestContext& context, uint64_t blasAddress)
         ~Drain() { if (frame.completion().isSubmitted()) { (void)frame.wait(); } (void)pool.reset(); (void)frame.reset(); }
     } drain{frame, *pool};
     checked(frame.begin(0)); checked(commands->begin(&frame));
-    const ComputeDispatchBinding bindings[]{{.binding = 0, .accelerationStructure = tlas.get()}, {.binding = 1, .buffer = output.get()}};
-    checked(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings}));
+    auto registry = checked(device.resourceRegistry());
+    ParameterWriter writer(device, *registry, &frame);
+    const UnifiedTopLevelProbeParameters params{writer.accelerationStructure(tlas.get()),
+        writer.dataBuffer(output.get(), sizeof(RayObservation), 4)};
+    auto encoded = checked(writer.encode(params, kUnifiedRayProbeABI, ParameterTransport::InlinePush));
+    checked(program.dispatch(*commands, encoded, 1));
     checked(commands->end());
     CommandBuffer* submitted[]{commands.get()};
     checked(tracker.submit({.commandBuffers = submitted}, frame)); checked(frame.wait(5'000'000'000ull));

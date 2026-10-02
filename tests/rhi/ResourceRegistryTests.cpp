@@ -233,7 +233,7 @@ public:
             {"Metallic.StreamCandidateParameters", {FIELD(StreamCandidateParameters, headers), FIELD(StreamCandidateParameters, groups), FIELD(StreamCandidateParameters, arguments), FIELD(StreamCandidateParameters, bins), FIELD(StreamCandidateParameters, visibility), FIELD(StreamCandidateParameters, stage), FIELD(StreamCandidateParameters, late)}},
             {"Metallic.StreamClassifyParameters", {FIELD(StreamClassifyParameters, settings), FIELD(StreamClassifyParameters, groups), FIELD(StreamClassifyParameters, pages), FIELD(StreamClassifyParameters, instances), FIELD(StreamClassifyParameters, bins), FIELD(StreamClassifyParameters, tessellationEnabled), FIELD(StreamClassifyParameters, padding)}},
             {"Metallic.StreamClusterCullParameters", {FIELD(StreamClusterCullParameters, settings), FIELD(StreamClusterCullParameters, rasterSettings), FIELD(StreamClusterCullParameters, pages), FIELD(StreamClusterCullParameters, groups), FIELD(StreamClusterCullParameters, header), FIELD(StreamClusterCullParameters, pageTable), FIELD(StreamClusterCullParameters, requests), FIELD(StreamClusterCullParameters, instances), FIELD(StreamClusterCullParameters, visibility), FIELD(StreamClusterCullParameters, records), FIELD(StreamClusterCullParameters, previousHZB), FIELD(StreamClusterCullParameters, currentHZB), FIELD(StreamClusterCullParameters, bins), FIELD(StreamClusterCullParameters, arguments), FIELD(StreamClusterCullParameters, phase), FIELD(StreamClusterCullParameters, stage), FIELD(StreamClusterCullParameters, flags), FIELD(StreamClusterCullParameters, padding)}},
-            {"Metallic.HybridBinParameters", {FIELD(HybridBinParameters, bins), FIELD(HybridBinParameters, arguments), FIELD(HybridBinParameters, width), FIELD(HybridBinParameters, height), FIELD(HybridBinParameters, clusterCapacity), FIELD(HybridBinParameters, maxPixels), FIELD(HybridBinParameters, reversedZ), FIELD(HybridBinParameters, subpixelBits), FIELD(HybridBinParameters, producerPixelBuffer), FIELD(HybridBinParameters, inputClusterCount), FIELD(HybridBinParameters, streamMode), FIELD(HybridBinParameters, padding)}},
+            {"Metallic.HybridBinParameters", {FIELD(HybridBinParameters, bins), FIELD(HybridBinParameters, arguments), FIELD(HybridBinParameters, width), FIELD(HybridBinParameters, height), FIELD(HybridBinParameters, clusterCapacity), FIELD(HybridBinParameters, maxPixels), FIELD(HybridBinParameters, reversedZ), FIELD(HybridBinParameters, subpixelBits), FIELD(HybridBinParameters, inputClusterCount), FIELD(HybridBinParameters, streamMode)}},
             {"Metallic.HybridRasterParameters", {FIELD(HybridRasterParameters, queue), FIELD(HybridRasterParameters, pixels), FIELD(HybridRasterParameters, arguments), FIELD(HybridRasterParameters, width), FIELD(HybridRasterParameters, height), FIELD(HybridRasterParameters, capacity), FIELD(HybridRasterParameters, maxPixels), FIELD(HybridRasterParameters, reversedZ), FIELD(HybridRasterParameters, subpixelBits)}},
             {"Metallic.HybridResolveParameters", {FIELD(HybridResolveParameters, pixels), FIELD(HybridResolveParameters, width), FIELD(HybridResolveParameters, reversedZ)}},
             {"Metallic.StreamRasterParameters", {FIELD(StreamRasterParameters, settings), FIELD(StreamRasterParameters, pages), FIELD(StreamRasterParameters, groups), FIELD(StreamRasterParameters, header), FIELD(StreamRasterParameters, pageTable), FIELD(StreamRasterParameters, instances), FIELD(StreamRasterParameters, bins), FIELD(StreamRasterParameters, pixels), FIELD(StreamRasterParameters, visibleRecordBase), FIELD(StreamRasterParameters, visibleRecordCapacity), FIELD(StreamRasterParameters, hasInstances), FIELD(StreamRasterParameters, padding)}},
@@ -1791,13 +1791,13 @@ public:
         if (!surfaceShader) { return RHITestResult::fail(log); }
         REG_REQUIRE(surfaceKernel.initialize(*device, {.spirv = surfaceShader->spirv, .parameters = parameterAbi<StreamProbeParameters>(kStreamProbeABI, ParameterTransport::InlinePush)}, log));
         std::unique_ptr<Buffer> output;
-        REG_REQUIRE(device->createBuffer({.size = 40 * sizeof(uint32_t), .structureStride = 4,
+        REG_REQUIRE(device->createBuffer({.size = 44 * sizeof(uint32_t), .structureStride = 4,
             .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
             .transform([&](auto value) { output = std::move(value); }));
         // Poison every result so a skipped invocation cannot look like a rejected input.
         void* initial = output->map();
         REG_CHECK(initial);
-        std::memset(initial, 0xff, 40 * sizeof(uint32_t));
+        std::memset(initial, 0xff, 44 * sizeof(uint32_t));
         output->flush();
         output->unmap();
         QueueSubmissionTracker tracker;
@@ -1841,16 +1841,16 @@ public:
         output->invalidate();
         const auto* values = static_cast<const uint32_t*>(output->map());
         REG_CHECK(values);
-        std::array<uint32_t, 40> actual{};
+        std::array<uint32_t, 44> actual{};
         std::memcpy(actual.data(), values, sizeof(actual));
         output->unmap();
         for (uint32_t i = 0; i < 24; ++i) { REG_CHECK(actual[i] == (i == 9 ? 17u : i == 10 ? 23u : (i == 0 || i == 11) ? 1u : 0u)); }
-        for (uint32_t i = 0; i < 16; ++i) {
+        for (uint32_t i = 0; i < 20; ++i) {
             const bool expected = i <= 2 || i == 7 || i == 10 || i == 11;
             REG_CHECK(actual[24 + i] == uint32_t(expected));
         }
         REG_CHECK((*registry)->stats().descriptorWrites == 0);
-        return RHITestResult::pass("BDA triangle values; invalid page/cluster/triangle, truncated buffers, empty table, null resources, instance/header bounds and wrong strides rejected; explicit surface/alpha provider, ray-independent normals/TBN, bitangent flip and mask/blend thresholds");
+        return RHITestResult::pass("BDA triangle values; invalid page/cluster/triangle, truncated buffers, empty table, null resources, instance/header bounds and wrong strides rejected; explicit surface/alpha provider, ray-independent normals/TBN, bitangent flip and mask/blend thresholds and invalid opaque geometry");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamDataDecodeTest);

@@ -1,15 +1,13 @@
 import GPUDriven;
 using Metallic.GPUDriven;
-struct ProbePush {
-    uint vertices; uint reference; uint prepared; uint width; uint height;
-    uint reversed; uint doubleSided; uint bits; uint incrementalDepth; uint triangleCount;
-};
+#include "../HybridProbeParameters.h"
 groupshared HybridScreenVertex screen[192];
 [shader("compute")]
 [numthreads(64,1,1)]
-void compareMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ProbePush p)
+void compareMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform PreparedRasterProbeParameters p)
 {
-    DescriptorHandle<StructuredBuffer<float4>> vertices = DescriptorHandle<StructuredBuffer<float4>>(uint2(p.vertices,0));
+    float4* vertices = p.vertices.data;
+    p.triangleCount = min(p.triangleCount, p.vertices.length() / 3u);
     uint triangle = group.x * 64u + lane;
     for (uint i=lane; i<192u; i+=64u) {
         uint vertex = group.x * 192u + i;
@@ -29,9 +27,10 @@ groupshared uint originalBucket[128];
 groupshared uint reorderedWork[128];
 [shader("compute")]
 [numthreads(128,1,1)]
-void compareWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform ProbePush p)
+void compareWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform PreparedRasterProbeParameters p)
 {
-    DescriptorHandle<StructuredBuffer<float4>> vertices = DescriptorHandle<StructuredBuffer<float4>>(uint2(p.vertices,0));
+    float4* vertices = p.vertices.data;
+    p.triangleCount = min(p.triangleCount, p.vertices.length() / 3u);
     uint triangle = group.x * 128u + lane;
     uint bucket = 3u;
     if (triangle < p.triangleCount) {
@@ -51,7 +50,7 @@ void compareWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, un
     bool valid=(work>>7u)==originalBucket[work&127u];
     if (lane>0u) { valid = valid && work>reorderedWork[lane-1u]; }
     if (!valid) {
-        DescriptorHandle<RWStructuredBuffer<uint64_t>> target=DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(p.prepared,0));
+        DescriptorHandle<RWStructuredBuffer<uint64_t>> target=p.prepared;
         InterlockedMax(target[0],~uint64_t(0));
     }
     if ((work>>7u)==3u) { return; }
@@ -72,12 +71,13 @@ void compareWorkBinsMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, un
 // at a time. There is no inter-triangle occlusion to hide attempted writes.
 [shader("compute")]
 [numthreads(1,1,1)]
-void verifyWorkloadMain(uint3 group : SV_GroupID, uniform ProbePush p)
+void verifyWorkloadMain(uint3 group : SV_GroupID, uniform PreparedRasterProbeParameters p)
 {
     if (group.x != 0) { return; }
-    DescriptorHandle<StructuredBuffer<float4>> vertices = DescriptorHandle<StructuredBuffer<float4>>(uint2(p.vertices,0));
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> pixels = DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(p.reference,0));
-    DescriptorHandle<RWStructuredBuffer<uint64_t>> result = DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(p.prepared,0));
+    float4* vertices = p.vertices.data;
+    p.triangleCount = min(p.triangleCount, p.vertices.length() / 3u);
+    DescriptorHandle<RWStructuredBuffer<uint64_t>> pixels = p.reference;
+    DescriptorHandle<RWStructuredBuffer<uint64_t>> result = p.prepared;
     uint64_t errors = 0, total = 0;
     for (uint t = 0; t < p.triangleCount; ++t) {
         float4 a = vertices[t*3], b = vertices[t*3+1], c = vertices[t*3+2];

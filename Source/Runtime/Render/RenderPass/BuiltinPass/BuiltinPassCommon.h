@@ -638,9 +638,9 @@ struct GPUDrivenPreviewGPUParams {
     uint32_t environmentVisible = 1;
     uint32_t materialCount = 1;
     uint32_t visibleMeshletCapacity = 0;
-    uint32_t lodSelectionBuffer = UINT32_MAX;
+    uint32_t resourcePadding = 0;
     uint32_t lodSelectionEnabled = 0;
-    uint32_t tessellationBuffer = UINT32_MAX;
+    uint32_t tessellationEnabled = 0;
     float displacementBound = 0.0f;
     uint32_t tessellationPadding[2] = {};
 };
