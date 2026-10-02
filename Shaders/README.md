@@ -93,6 +93,11 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 `loadPathTraceTriangle` 在解引用前检查完整索引链，并用减法检查避免偏移溢出；fallback position 另查范围。
 无 guides 的 Standard/realtime/deferred 仍通过 ComputeProgram 的 DataBuffer 兼容表传递 span。
 
+`StreamSceneRayQuery` 的 pages、page table、instances 和 header 也使用有界 BDA `DataSpan`。
+streaming deferred 外层保留 `ComputeProgram` 兼容入口（90–93 为 DataBuffer），这四项不再分配 buffer descriptor；
+续射页容量直接来自 span，不再读取 slot 94 的参数块。共享 stream 解码通过静态泛型 reader 同时支持 descriptor 和 BDA；
+属性解码必须在相同三角形的范围校验成功后调用。
+
 [PathTraceParameters.h](../Source/Runtime/Render/Core/PathTraceParameters.h) 为
 Standard ScenePathTraceGuides、OpenPBRRayQueryPathTrace 和 OpenPBRRayQueryPathTraceGuides 提供 296 字节具名资源根，通过 BDA root 提交。
 CPU 使用 ParameterWriter 编码不可变 settings、几何 span、场景/历史/环境/LUT/光源/NTC 和七路 guide 句柄，

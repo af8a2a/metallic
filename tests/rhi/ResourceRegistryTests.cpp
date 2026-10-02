@@ -1076,6 +1076,72 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(BufferSliceSubmissionTest);
 
+class StreamDataDecodeTest final : public RHITest {
+public:
+    StreamDataDecodeTest() { type = RHITestType::Resource; name = "stream_data_decode_bounds"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Stream BDA bounds",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { device = std::move(value); }));
+        auto& queue = *device->getQueue(QueueType::Graphics);
+        auto registry = device->resourceRegistry();
+        REG_CHECK(registry);
+        struct Params { ShaderDataSpan pages, table, output; };
+        ComputeKernel kernel;
+        std::string log;
+        auto shader = compileSlangShaderToSpirv({.moduleName = "StreamDataDecodeProbe",
+            .entryPointName = "streamDataDecodeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
+        if (!shader) { return RHITestResult::fail(log); }
+        REG_REQUIRE(kernel.initialize(*device, {.spirv = shader->spirv, .parameters = parameterAbi<Params>(kABI + 6)}, log));
+        std::unique_ptr<Buffer> output;
+        REG_REQUIRE(makeBuffer(*device, output));
+        QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(*device, queue));
+        Commands recording;
+        REG_REQUIRE(recording.initialize(*device, queue));
+        REG_REQUIRE(recording.begin(0));
+        {
+            // One resident page, one cluster, one triangle with three float3 positions.
+            std::array<uint32_t, 63> words{};
+            words[2] = 1; words[9] = 112; words[10] = 208; words[11] = 244;
+            words[12] = 249; words[14] = 1; words[20] = 4;
+            words[29] = 3; words[31] = 1;
+            words[55] = 0x3f800000; words[59] = 0x3f800000; words[61] = 0x00020100;
+            const std::array<uint32_t, 2> table{2, 0};
+            ParameterWriter writer(*device, **registry, &recording.frame);
+            Params params{};
+            params.pages = {writer.data(words.data(), sizeof(words)), uint32_t(words.size()), 4};
+            params.table = {writer.data(table.data(), sizeof(table)), 1, 8};
+            params.output = writer.dataBuffer(output.get(), 4, 4);
+            auto encoded = writer.encode(params, kABI + 6);
+            REG_CHECK(encoded);
+            REG_REQUIRE(kernel.dispatch(*recording.commands, *encoded, 1));
+        }
+        const MemoryBarrierDesc hostRead{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            {PipelineStageBits::Host, AccessBits::HostRead}};
+        REG_REQUIRE(recording.commands->synchronize({.memory = {&hostRead, 1}}));
+        std::unique_ptr<Semaphore> gate;
+        REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+        Drain drain{queue, *gate};
+        REG_REQUIRE(recording.submit(tracker, *gate));
+        REG_REQUIRE(gate->signal(1));
+        REG_REQUIRE(recording.frame.wait(5'000'000'000ull));
+        output->invalidate();
+        const auto* values = static_cast<const uint32_t*>(output->map());
+        REG_CHECK(values);
+        std::array<uint32_t, 9> actual{};
+        std::memcpy(actual.data(), values, sizeof(actual));
+        output->unmap();
+        for (uint32_t i = 0; i < actual.size(); ++i) { REG_CHECK(actual[i] == (i == 0 ? 1u : 0u)); }
+        REG_CHECK((*registry)->stats().descriptorWrites == 0);
+        return RHITestResult::pass("BDA triangle values; invalid page/cluster/triangle, truncated buffers, empty table and wrong stride rejected");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamDataDecodeTest);
+
 class ResourceRangeContractTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override

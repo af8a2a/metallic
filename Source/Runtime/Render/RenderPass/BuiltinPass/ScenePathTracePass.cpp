@@ -1156,7 +1156,11 @@ public:
                 });
             }
             if (streamRayQueries_) {
-                for (uint32_t i = 90; i <= 93; ++i) { baseBindings.push_back({.binding = i}); }
+                baseBindings.push_back({.binding = 90, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4});
+                baseBindings.push_back({.binding = 91, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
+                baseBindings.push_back({.binding = 92, .kind = ComputeResourceBindingKind::DataBuffer,
+                    .dataStride = sizeof(MeshletStreamGPUInstance), .dataAlignment = alignof(MeshletStreamGPUInstance)});
+                baseBindings.push_back({.binding = 93, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4});
             }
             if (hasValuePrograms()) {
                 baseBindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});

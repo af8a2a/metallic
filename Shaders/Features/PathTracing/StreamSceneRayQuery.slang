@@ -8,10 +8,10 @@ struct StreamRayInstance
     float4 world0, world1, world2, world3;
     float4 bounds;
 };
-#define gRayStreamPages getResource<StructuredBuffer<uint>>(90)
-#define gRayStreamPageTable getResource<StructuredBuffer<uint2>>(91)
-#define gRayStreamInstances getResource<StructuredBuffer<StreamRayInstance>>(92)
-#define gRayStreamHeader getResource<StructuredBuffer<uint>>(93)
+#define gRayStreamPages getData<uint>(90)
+#define gRayStreamPageTable getData<uint2>(91)
+#define gRayStreamInstances getData<StreamRayInstance>(92)
+#define gRayStreamHeader getData<uint>(93)
 
 float3 streamRayVector(StreamRayInstance instance, float3 v)
 {
@@ -31,18 +31,19 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
 {
     hit = (HitInfo)0;
     uint count, stride;
-    gRayStreamInstances.GetDimensions(count, stride);
+    count = gRayStreamInstances.length();
     if (instanceIndex >= count) { return false; }
-    StreamRayInstance instance = gRayStreamInstances[instanceIndex];
+    StreamRayInstance instance = gRayStreamInstances.data[instanceIndex];
     gMaterials.GetDimensions(count, stride);
     if (instance.materialIndex >= count) { return false; }
-    uint clusterStride = gRayStreamHeader[2];
+    if (!gRayStreamHeader.contains(2u)) { return false; }
+    uint clusterStride = gRayStreamHeader.data[2];
     if (clusterStride == 0u) { return false; }
     uint pageIndex = clusterId / clusterStride, cluster = clusterId % clusterStride;
     float3 a, b, c;
-    if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, streamPageWordCount(getResource<ByteAddressBuffer>(94)), a, b, c)) { return false; }
+    if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, StreamDataBuffer<uint>(gRayStreamPages), StreamDataBuffer<uint2>(gRayStreamPageTable), gRayStreamPages.length(), a, b, c)) { return false; }
     float3 n[3]; float2 uv[3]; float4 tangents[3];
-    uint attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle, gRayStreamPages, gRayStreamPageTable, n, uv, tangents);
+    uint attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle, StreamDataBuffer<uint>(gRayStreamPages), StreamDataBuffer<uint2>(gRayStreamPageTable), n, uv, tangents);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
     float3 localGeometry = safeTriangleNormal(b - a, c - a, float3(0, 1, 0));
     float3 localNormal = safeNormalize(n[0] * weights.x + n[1] * weights.y + n[2] * weights.z, localGeometry);
@@ -81,9 +82,9 @@ bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, fl
     Ray ray, float t, ScenePathTracePush push)
 {
     uint count, stride;
-    gRayStreamInstances.GetDimensions(count, stride);
+    count = gRayStreamInstances.length();
     if (instanceIndex >= count) { return false; }
-    uint materialIndex = gRayStreamInstances[instanceIndex].materialIndex;
+    uint materialIndex = gRayStreamInstances.data[instanceIndex].materialIndex;
     gMaterials.GetDimensions(count, stride);
     if (materialIndex >= count) { return false; }
     PathTraceMaterial material = gMaterials[materialIndex];
