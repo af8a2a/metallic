@@ -35,7 +35,8 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
     add("Features/Debug/LightGridDebug", {"lightGridDebugMain"});
     add("Features/Debug/SliderDebug", {"sliderDebugMain", "sliderDebugOverlayMain"});
     add("Features/Environment/EnvironmentLightingPrecompute", {"environmentLightingPrecomputeMain"});
-    add("Features/GPUDriven/GPUDrivenCulling", {"gpuDrivenPreviewResetMain", "gpuDrivenPreviewInstanceCullMain", "gpuDrivenPreviewHzbMain"});
+    add("Features/GPUDriven/HZB", {"hzbMain"});
+    add("Features/GPUDriven/GPUDrivenCulling", {"gpuDrivenPreviewResetMain", "gpuDrivenPreviewInstanceCullMain"});
     add("Features/GPUDriven/GPUDrivenStreamWorkload", {"streamWorkloadResetMain", "streamWorkloadMain"});
     add("Features/GPUDriven/GPUDrivenStreamWorkRaster", {"streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain"});
     add("Features/GPUDriven/GPUDrivenStreamGroupRaster", {"streamClusterRasterGroup32Main"});
@@ -71,7 +72,7 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
 
     const char* streamModule = "Features/GPUDriven/GPUDrivenStreamAsset";
     add(streamModule, {"gpuDrivenStreamAssetCullResetMain", "gpuDrivenStreamAssetInstanceCullMain",
-        "gpuDrivenStreamAssetHzbMain", "gpuDrivenStreamAssetTraversalMain",
+         "gpuDrivenStreamAssetTraversalMain",
         "streamDistributedDemandMain", "streamCooperativeLodMain",
         "gpuDrivenStreamAssetBuildActiveMain", "gpuDrivenStreamAssetBuildBlasInputMain",
         "gpuDrivenStreamAssetBuildTlasInputMain", "streamClusterPrepareMain",

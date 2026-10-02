@@ -1,12 +1,4 @@
-// CLAS IDs are pageIndex * maxPageClusters + localCluster. IDs survive arena moves.
-import GPUDriven;
-using Metallic.GPUDriven;
-#include "../VisibilityBuffer/VisibilityStreamDecode.slang"
-// The immutable settings snapshot owns the named, bounded stream parameters.
-#define gRayStreamPages push.streamScene.pages
-#define gRayStreamPageTable push.streamScene.pageTable
-#define gRayStreamInstances push.streamScene.instances
-#define gRayStreamHeader push.streamScene.header
+#include "StreamSceneDecode.slang"
 
 float3 streamRayVector(StreamRayInstance instance, float3 v)
 {
@@ -26,20 +18,18 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
 {
     hit = (HitInfo)0;
     if (push.streamScene == nullptr) { return false; }
+    StreamSceneParameters scene = *push.streamScene;
+    StreamRayInstance instance;
+    if (!loadStreamRayInstance(scene, instanceIndex, instance)) { return false; }
     uint count, stride;
-    count = gRayStreamInstances.length();
-    if (instanceIndex >= count) { return false; }
-    StreamRayInstance instance = gRayStreamInstances.data[instanceIndex];
     gMaterials.GetDimensions(count, stride);
     if (instance.materialIndex >= count) { return false; }
-    if (!gRayStreamHeader.contains(2u)) { return false; }
-    uint clusterStride = gRayStreamHeader.data[2];
-    if (clusterStride == 0u) { return false; }
-    uint pageIndex = clusterId / clusterStride, cluster = clusterId % clusterStride;
+    uint pageIndex, cluster;
     float3 a, b, c;
-    if (!decodeStreamTriangleAtPage(pageIndex, cluster, triangle, StreamDataBuffer<uint>(gRayStreamPages), StreamDataBuffer<uint2>(gRayStreamPageTable), gRayStreamPages.length(), a, b, c)) { return false; }
+    if (!decodeStreamRayTriangle(scene, clusterId, triangle, pageIndex, cluster, a, b, c)) { return false; }
     float3 n[3]; float2 uv[3]; float4 tangents[3];
-    uint attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle, StreamDataBuffer<uint>(gRayStreamPages), StreamDataBuffer<uint2>(gRayStreamPageTable), n, uv, tangents);
+    uint attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle,
+        StreamDataBuffer<uint>(scene.pages), StreamDataBuffer<uint2>(scene.pageTable), n, uv, tangents);
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
     float3 localGeometry = safeTriangleNormal(b - a, c - a, float3(0, 1, 0));
     float3 localNormal = safeNormalize(n[0] * weights.x + n[1] * weights.y + n[2] * weights.z, localGeometry);
@@ -79,9 +69,9 @@ bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, fl
 {
     if (push.streamScene == nullptr) { return false; }
     uint count, stride;
-    count = gRayStreamInstances.length();
-    if (instanceIndex >= count) { return false; }
-    uint materialIndex = gRayStreamInstances.data[instanceIndex].materialIndex;
+    StreamRayInstance instance;
+    if (!loadStreamRayInstance(*push.streamScene, instanceIndex, instance)) { return false; }
+    uint materialIndex = instance.materialIndex;
     gMaterials.GetDimensions(count, stride);
     if (materialIndex >= count) { return false; }
     PathTraceMaterial material = gMaterials[materialIndex];
@@ -95,6 +85,7 @@ bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, fl
 bool traceStreamClosest(Ray ray, float nearDistance, float farDistance, ScenePathTracePush push, out HitInfo hit)
 {
     hit = (HitInfo)0;
+    if (push.streamScene == nullptr) { return false; }
     RayDesc desc;
     desc.Origin = ray.origin; desc.Direction = ray.direction;
     desc.TMin = nearDistance; desc.TMax = farDistance;

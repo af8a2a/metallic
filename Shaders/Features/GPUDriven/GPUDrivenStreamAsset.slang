@@ -520,11 +520,6 @@ struct GPUDrivenStreamAssetPrimitiveOutput
     uint visibilityId : SV_PrimitiveID;
 };
 
-struct GPUDrivenStreamAssetFullscreenOutput
-{
-    float4 position : SV_Position;
-};
-
 float3 safeNormalize(float3 value, float3 fallback)
 {
     float lengthSquared = dot(value, value);
@@ -795,28 +790,12 @@ uint streamHzbMipOffset(
     return offset;
 }
 
-float loadStreamHzb(
-    GPUDrivenStreamAssetPush push,
-    GPUDrivenStreamAssetRasterBindings bindings,
-    uint hzbIndex,
-    uint elementIndex)
-{
-    uint handleIndex = hzbIndex == 0u ? bindings.hzbBuffer0 : bindings.hzbBuffer1;
-    DescriptorHandle<StructuredBuffer<float>> hzbHandle =
-        DescriptorHandle<StructuredBuffer<float>>(uint2(
-            handleIndex,
-            0));
-    StructuredBuffer<float> hzb = hzbHandle;
-    return hzb[elementIndex];
-}
-
 bool streamSphereOccluded(
     float3 center,
     float radius,
     GPUDrivenStreamAssetCameraData camera,
     GPUDrivenStreamAssetRasterBindings bindings,
-    GPUDrivenStreamAssetPush push,
-    uint hzbIndex)
+    DescriptorHandle<StructuredBuffer<float>> hzb)
 {
     if (bindings.hzbMipCount == 0u) {
         return false;
@@ -841,15 +820,23 @@ bool streamSphereOccluded(
     uint2 maxTexel = min(uint2(maxPixels * mipScale), uint2(mipWidth - 1u, mipHeight - 1u));
     if (any(maxTexel - minTexel > 1u)) { return false; }
     uint mipOffset = streamHzbMipOffset(bindings, mipLevel);
-    float depth00 = loadStreamHzb(push, bindings, hzbIndex, mipOffset + minTexel.y * mipWidth + minTexel.x);
-    float depth10 = loadStreamHzb(push, bindings, hzbIndex, mipOffset + minTexel.y * mipWidth + maxTexel.x);
-    float depth01 = loadStreamHzb(push, bindings, hzbIndex, mipOffset + maxTexel.y * mipWidth + minTexel.x);
-    float depth11 = loadStreamHzb(push, bindings, hzbIndex, mipOffset + maxTexel.y * mipWidth + maxTexel.x);
+    float depth00 = hzb[mipOffset + minTexel.y * mipWidth + minTexel.x];
+    float depth10 = hzb[mipOffset + minTexel.y * mipWidth + maxTexel.x];
+    float depth01 = hzb[mipOffset + maxTexel.y * mipWidth + minTexel.x];
+    float depth11 = hzb[mipOffset + maxTexel.y * mipWidth + maxTexel.x];
     float nearestZ = max(viewCenter.z - radius, zNear);
     float depthBias = max(0.001, radius * 0.01);
     float nearestDepth = streamProjectDepth(max(nearestZ - depthBias, zNear), camera);
     return conservativeDepthOccluded(nearestDepth, float4(depth00, depth10, depth01, depth11),
         camera.clipOrtho.w > 0.5);
+}
+
+bool streamSphereOccluded(float3 center, float radius, GPUDrivenStreamAssetCameraData camera,
+    GPUDrivenStreamAssetRasterBindings bindings, GPUDrivenStreamAssetPush push, uint hzbIndex)
+{
+    uint index = hzbIndex == 0u ? bindings.hzbBuffer0 : bindings.hzbBuffer1;
+    return streamSphereOccluded(center, radius, camera, bindings,
+        DescriptorHandle<StructuredBuffer<float>>(uint2(index, 0)));
 }
 
 bool streamClusterVisibleInOcclusionPhase(float3 center, float radius, uint instanceState,
@@ -868,75 +855,44 @@ bool streamClusterVisibleInOcclusionPhase(float3 center, float radius, uint inst
     return deferred && !streamSphereOccluded(center, radius, currentStreamCamera(params), bindings, push, currentHzb);
 }
 
+#include "../../../Source/Runtime/Render/Core/StreamInstanceCullParameters.h"
+[[vk::push_constant]] ConstantBuffer<StreamInstanceCullParameters> gStreamCull;
+
 [shader("compute")]
 [numthreads(1, 1, 1)]
-void gpuDrivenStreamAssetCullResetMain(
-    uint3 dispatchThreadID : SV_DispatchThreadID,
-    uniform GPUDrivenStreamAssetPush push)
+void gpuDrivenStreamAssetCullResetMain(uint3 id : SV_DispatchThreadID)
 {
-    // Late culling appends the instances recovered by the current-frame HZB to
-    // the early-pass list, matching the common GPUScene two-phase contract.
-    if (min(push.traversalPhase, 1u) != 0u) {
-        return;
-    }
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
-    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsBuffer = bindingsHandle;
-    GPUDrivenStreamAssetRasterBindings bindings = bindingsBuffer[0];
-    DescriptorHandle<RWStructuredBuffer<uint>> counterHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            bindings.visibleInstanceCounterBuffer,
-            0));
-    RWStructuredBuffer<uint> counter = counterHandle;
-    counter[0] = 0u;
+    StreamInstanceCullParameters p = gStreamCull;
+    if (p.phase == 0u) { resolveDescriptor(p.counter)[0] = 0u; }
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void gpuDrivenStreamAssetInstanceCullMain(
-    uint3 dispatchThreadID : SV_DispatchThreadID,
-    uniform GPUDrivenStreamAssetPush push)
+void gpuDrivenStreamAssetInstanceCullMain(uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(
-            push.paramsBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>> instanceHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetInstance>>(uint2(
-            push.instanceBuffer,
-            0));
-    StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
-    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsBuffer = bindingsHandle;
-    StructuredBuffer<GPUDrivenStreamAssetInstance> instances = instanceHandle;
-    GPUDrivenStreamAssetParams params = paramsBuffer[0];
-    GPUDrivenStreamAssetRasterBindings bindings = bindingsBuffer[0];
-    uint rasterPhase = min(push.traversalPhase, 1u);
+    StreamInstanceCullParameters p = gStreamCull;
+    if (!p.settings.contains(0u)) { return; }
+    GPUDrivenStreamAssetParams params = p.settings.data[0];
+    GPUDrivenStreamAssetRasterBindings bindings = (GPUDrivenStreamAssetRasterBindings)0;
+    bindings.width = p.width; bindings.height = p.height; bindings.hzbMipCount = p.mipCount;
+    bindings.hzbValid = p.hzbValid; bindings.cullingFlags = p.cullingFlags;
+    bindings.displacementBound = p.displacementBound;
+    uint rasterPhase = p.phase;
     uint instanceIndex = dispatchThreadID.x;
-    if (instanceIndex >= params.sceneInstanceCount) {
+    if (instanceIndex >= params.sceneInstanceCount || !p.instances.contains(instanceIndex)) {
         return;
     }
 
-    DescriptorHandle<RWStructuredBuffer<uint>> visibilityHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            bindings.instanceVisibilityBuffer,
-            0));
-    RWStructuredBuffer<uint> visibility = visibilityHandle;
-    GPUDrivenStreamAssetInstance instance = instances[instanceIndex];
+    GPUDrivenStreamAssetInstance instance = p.instances.data[instanceIndex];
     uint gpuSceneInstanceIndex = instance.gpuSceneInstanceIndex;
-    if (gpuSceneInstanceIndex == kInvalidClusterIndex) {
+    if (gpuSceneInstanceIndex == kInvalidClusterIndex || !p.visibility.contains(gpuSceneInstanceIndex)) {
         return;
     }
-    if (rasterPhase != 0u && visibility[gpuSceneInstanceIndex] != 2u) {
+    if (rasterPhase != 0u && p.visibility.data[gpuSceneInstanceIndex] != 2u) {
         return;
     }
     if (instance.visible == 0u) {
-        visibility[gpuSceneInstanceIndex] = 0u;
+        p.visibility.data[gpuSceneInstanceIndex] = 0u;
         return;
     }
 
@@ -945,15 +901,13 @@ void gpuDrivenStreamAssetInstanceCullMain(
     GPUDrivenStreamAssetCameraData currentCamera = currentStreamCamera(params);
     if ((bindings.cullingFlags & (1u << 0u)) != 0u &&
         !streamSphereInsideFrustum(center, radius, currentCamera)) {
-        visibility[gpuSceneInstanceIndex] = 0u;
+        p.visibility.data[gpuSceneInstanceIndex] = 0u;
         return;
     }
 
     bool occluded = false;
     if ((bindings.cullingFlags & (1u << 1u)) != 0u &&
         (rasterPhase != 0u || bindings.hzbValid != 0u)) {
-        uint currentHzb = params.frameIndex & 1u;
-        uint hzbIndex = rasterPhase == 0u ? (currentHzb ^ 1u) : currentHzb;
         GPUDrivenStreamAssetCameraData hzbCamera = rasterPhase == 0u
             ? previousStreamCamera(params)
             : currentCamera;
@@ -962,95 +916,22 @@ void gpuDrivenStreamAssetInstanceCullMain(
             radius,
             hzbCamera,
             bindings,
-            push,
-            hzbIndex);
+            p.hzb);
     }
     uint visibleState = rasterPhase == 0u ? 1u : 3u;
-    visibility[gpuSceneInstanceIndex] = occluded
+    p.visibility.data[gpuSceneInstanceIndex] = occluded
         ? (rasterPhase == 0u ? 2u : 0u)
         : visibleState;
     if (!occluded) {
-        DescriptorHandle<RWStructuredBuffer<uint>> visibleIdsHandle =
-            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-                bindings.visibleInstanceIdsBuffer,
-                0));
-        DescriptorHandle<RWStructuredBuffer<uint>> counterHandle =
-            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-                bindings.visibleInstanceCounterBuffer,
-                0));
-        RWStructuredBuffer<uint> visibleIds = visibleIdsHandle;
-        RWStructuredBuffer<uint> counter = counterHandle;
+        RWStructuredBuffer<uint> counter = resolveDescriptor(p.counter);
         uint outputIndex = 0u;
         InterlockedAdd(counter[0], 1u, outputIndex);
-        if (outputIndex < params.sceneInstanceCount) {
-            visibleIds[outputIndex] = gpuSceneInstanceIndex;
+        if (outputIndex < params.sceneInstanceCount && p.visibleIds.contains(outputIndex)) {
+            p.visibleIds.data[outputIndex] = gpuSceneInstanceIndex;
         }
     }
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void gpuDrivenStreamAssetHzbMain(
-    uint3 dispatchThreadID : SV_DispatchThreadID,
-    uniform GPUDrivenStreamAssetPush push)
-{
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(
-            push.paramsBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
-    StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
-    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> bindingsBuffer = bindingsHandle;
-    GPUDrivenStreamAssetParams params = paramsBuffer[0];
-    GPUDrivenStreamAssetRasterBindings bindings = bindingsBuffer[0];
-    uint mipLevel = push.activeBuildPhase;
-    if (mipLevel >= bindings.hzbMipCount) {
-        return;
-    }
-    uint mipWidth = streamMipDimension(bindings.width, mipLevel);
-    uint mipHeight = streamMipDimension(bindings.height, mipLevel);
-    if (dispatchThreadID.x >= mipWidth || dispatchThreadID.y >= mipHeight) {
-        return;
-    }
-    uint currentHzb = params.frameIndex & 1u;
-    uint hzbHandleIndex = currentHzb == 0u ? bindings.hzbBuffer0 : bindings.hzbBuffer1;
-    DescriptorHandle<RWStructuredBuffer<float>> hzbHandle =
-        DescriptorHandle<RWStructuredBuffer<float>>(uint2(
-            hzbHandleIndex,
-            0));
-    RWStructuredBuffer<float> hzb = hzbHandle;
-    uint destinationIndex = streamHzbMipOffset(bindings, mipLevel) +
-        dispatchThreadID.y * mipWidth + dispatchThreadID.x;
-    if (mipLevel == 0u) {
-        DescriptorHandle<Texture2D<float>> depthHandle =
-            DescriptorHandle<Texture2D<float>>(uint2(
-                bindings.depthImage,
-                0));
-        Texture2D<float> depth = depthHandle;
-        hzb[destinationIndex] = depth.Load(int3(dispatchThreadID.xy, 0));
-        return;
-    }
-    uint sourceMip = mipLevel - 1u;
-    uint sourceWidth = streamMipDimension(bindings.width, sourceMip);
-    uint sourceHeight = streamMipDimension(bindings.height, sourceMip);
-    uint sourceOffset = streamHzbMipOffset(bindings, sourceMip);
-    uint2 sourceBase = dispatchThreadID.xy * 2u;
-    uint2 limit = uint2(sourceWidth - 1u, sourceHeight - 1u);
-    uint2 source0 = min(sourceBase, limit);
-    uint2 source1 = min(sourceBase + uint2(1u, 0u), limit);
-    uint2 source2 = min(sourceBase + uint2(0u, 1u), limit);
-    uint2 source3 = min(sourceBase + uint2(1u, 1u), limit);
-    float depth0 = hzb[sourceOffset + source0.y * sourceWidth + source0.x];
-    float depth1 = hzb[sourceOffset + source1.y * sourceWidth + source1.x];
-    float depth2 = hzb[sourceOffset + source2.y * sourceWidth + source2.x];
-    float depth3 = hzb[sourceOffset + source3.y * sourceWidth + source3.x];
-    hzb[destinationIndex] = params.clipOrtho.w > 0.5
-        ? min(min(depth0, depth1), min(depth2, depth3))
-        : max(max(depth0, depth1), max(depth2, depth3));
-}
 
 float3 hashColor(uint seed)
 {
@@ -1058,11 +939,16 @@ float3 hashColor(uint seed)
     return lerp(float3(0.16, 0.39, 0.70), float3(0.92, 0.78, 0.26), value);
 }
 
-uint readPageByte(StructuredBuffer<uint> pageWords, uint absoluteByteOffset)
+uint readPageByte<Words : IStreamReadBuffer<uint>>(Words pageWords, uint absoluteByteOffset)
 {
-    uint word = pageWords[absoluteByteOffset / 4u];
+    uint word = pageWords.load(absoluteByteOffset / 4u);
     uint shift = (absoluteByteOffset & 3u) * 8u;
     return (word >> shift) & 0xffu;
+}
+
+uint readPageByte(StructuredBuffer<uint> pageWords, uint absoluteByteOffset)
+{
+    return readPageByte(StreamDescriptorBuffer<uint>(pageWords), absoluteByteOffset);
 }
 
 void requestStreamPageLoad(
@@ -4539,15 +4425,6 @@ uint packStreamColor(float3 color)
     return encoded.x | (encoded.y << 8u) | (encoded.z << 16u) | 0xff000000u;
 }
 
-float4 unpackStreamColor(uint packed)
-{
-    return float4(
-        float(packed & 0xffu),
-        float((packed >> 8u) & 0xffu),
-        float((packed >> 16u) & 0xffu),
-        float((packed >> 24u) & 0xffu)) / 255.0;
-}
-
 float3 streamPerspectiveBarycentrics(
     float2 pixelCenter,
     float4 clip0,
@@ -4576,10 +4453,10 @@ float3 streamPerspectiveBarycentrics(
     return abs(weight) > 0.000001 ? weighted / weight : affine;
 }
 
-float3 loadPayloadPosition(StructuredBuffer<uint> words, uint pageWord, uint offsetBytes, uint index, uint format)
+float3 loadPayloadPosition<Words : IStreamReadBuffer<uint>>(Words words, uint pageWord, uint offsetBytes, uint index, uint format)
 {
     uint base = pageWord + offsetBytes / 4u + index * (format == kPayloadFormatFloat32x3 ? 3u : 4u);
-    return asfloat(uint3(words[base], words[base + 1u], words[base + 2u]));
+    return asfloat(uint3(words.load(base), words.load(base + 1u), words.load(base + 2u)));
 }
 
 float4 loadPayloadFloat4(
@@ -4596,52 +4473,37 @@ float4 loadPayloadFloat4(
         asfloat(pageWords[word + 3u]));
 }
 
-float2 loadPayloadFloat2(
-    StructuredBuffer<uint> pageWords,
+float2 loadPayloadFloat2<Words : IStreamReadBuffer<uint>>(
+    Words pageWords,
     uint pageWord,
     uint byteOffset,
     uint elementIndex)
 {
     uint word = pageWord + byteOffset / 4u + elementIndex * 2u;
     return float2(
-        asfloat(pageWords[word + 0u]),
-        asfloat(pageWords[word + 1u]));
+        asfloat(pageWords.load(word + 0u)),
+        asfloat(pageWords.load(word + 1u)));
 }
+
+#include "../../../Source/Runtime/Render/Core/StreamDeferredParameters.h"
+using Metallic;
+[[vk::push_constant]] ConstantBuffer<StreamDeferredParameters> gDeferred;
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void gpuDrivenStreamAssetDeferredMain(
-    uint3 dispatchThreadID : SV_DispatchThreadID,
-    uniform GPUDrivenStreamAssetPush push)
+    uint3 dispatchThreadID : SV_DispatchThreadID)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(
-            push.paramsBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rasterBindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
-    StructuredBuffer<GPUDrivenStreamAssetParams> paramsBuffer = paramsHandle;
-    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rasterBindingsBuffer = rasterBindingsHandle;
-    GPUDrivenStreamAssetParams params = paramsBuffer[0];
-    GPUDrivenStreamAssetRasterBindings rasterBindings = rasterBindingsBuffer[0];
-    uint width = max(rasterBindings.width, 1u);
-    uint height = max(rasterBindings.height, 1u);
-    if (dispatchThreadID.x >= width || dispatchThreadID.y >= height) {
-        return;
-    }
-
-    DescriptorHandle<Texture2D<uint>> visibilityHandle =
-        DescriptorHandle<Texture2D<uint>>(uint2(
-            rasterBindings.visibilityImage,
-            0));
-    DescriptorHandle<RWStructuredBuffer<uint>> outputHandle =
-        DescriptorHandle<RWStructuredBuffer<uint>>(uint2(
-            rasterBindings.deferredColorBuffer,
-            0));
-    Texture2D<uint> visibility = visibilityHandle;
-    RWStructuredBuffer<uint> output = outputHandle;
+    if (!gDeferred.settings.contains(0) || !gDeferred.header.contains(0)) { return; }
+    GPUDrivenStreamAssetParams params = gDeferred.settings.data[0];
+    uint width = gDeferred.width, height = gDeferred.height;
+    if (dispatchThreadID.x >= width || dispatchThreadID.y >= height) { return; }
+    uint outputCount = gDeferred.output.length();
+    if (dispatchThreadID.y > outputCount / width) { return; }
+    uint row = dispatchThreadID.y * width;
+    if (row >= outputCount || dispatchThreadID.x >= outputCount - row) { return; }
+    Texture2D<uint> visibility = resolveDescriptor(gDeferred.visibility);
+    uint* output = gDeferred.output.data;
     uint outputIndex = dispatchThreadID.y * width + dispatchThreadID.x;
     uint packedVisibility = visibility.Load(int3(dispatchThreadID.xy, 0));
     uint recordIndex = 0u;
@@ -4650,66 +4512,45 @@ void gpuDrivenStreamAssetDeferredMain(
         output[outputIndex] = packStreamColor(params.clearColor.xyz);
         return;
     }
-    uint visibleRecordCapacity = rasterBindings.visibleRecordCapacity != 0u
-        ? rasterBindings.visibleRecordCapacity
+    uint visibleRecordCapacity = gDeferred.recordCapacity != 0u
+        ? gDeferred.recordCapacity
         : params.drawTaskCount / kMeshletTriangleChunkCount;
     if (!visibilityRecordRangeValid(
-            rasterBindings.visibleRecordBase,
+            gDeferred.recordBase,
             visibleRecordCapacity) ||
-        recordIndex < rasterBindings.visibleRecordBase ||
-        recordIndex - rasterBindings.visibleRecordBase >= visibleRecordCapacity) {
+        recordIndex < gDeferred.recordBase ||
+        recordIndex - gDeferred.recordBase >= visibleRecordCapacity) {
         output[outputIndex] = packStreamColor(params.clearColor.xyz);
         return;
     }
 
-    DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>> visibleClusterHandle =
-        DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>>(uint2(
-            rasterBindings.visibleClusterBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>> activeGroupHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(
-            push.activeGroupBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<uint>> pageHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(
-            push.pageBuffer,
-            0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>> pageTableHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(
-            push.pageTableBuffer,
-            0));
-    StructuredBuffer<CompactStreamVisibleRecord> visibleClusters = visibleClusterHandle;
-    StructuredBuffer<GPUDrivenStreamAssetActiveGroup> activeGroups = activeGroupHandle;
-    StructuredBuffer<uint> pageWords = pageHandle;
-    StructuredBuffer<GPUDrivenStreamAssetPageTableEntry> pageTable = pageTableHandle;
-
-    uint localRecordIndex = recordIndex - rasterBindings.visibleRecordBase;
-    VisibleClusterRecord record = unpackStreamVisibleRecord(visibleClusters[localRecordIndex]);
+    StreamDataBuffer<uint> pageWords = StreamDataBuffer<uint>(gDeferred.pages);
+    uint pageWordCount = pageWords.length();
+    params.pageBufferBytes = min(params.pageBufferBytes, pageWordCount <= 0x3fffffffu ? pageWordCount * 4u : 0xfffffffcu);
+    uint localRecordIndex = recordIndex - gDeferred.recordBase;
+    if (!gDeferred.records.contains(localRecordIndex)) {
+        output[outputIndex] = packStreamColor(params.clearColor.xyz); return;
+    }
+    VisibleClusterRecord record = unpackStreamVisibleRecord(gDeferred.records.data[localRecordIndex]);
     if (visibleClusterSource(record) != kVisibleClusterSourceStreamPage) {
         output[outputIndex] = packStreamColor(params.clearColor.xyz);
         return;
     }
-    GPUDrivenStreamAssetActiveHeader activeHeader;
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>> activeHeaderHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(
-            push.activeHeaderBuffer,
-            0));
-    StructuredBuffer<GPUDrivenStreamAssetActiveHeader> activeHeaders = activeHeaderHandle;
-    activeHeader = activeHeaders[0];
+    GPUDrivenStreamAssetActiveHeader activeHeader = gDeferred.header.data[0];
     uint activeGroupCount = min(activeHeader.activeGroupCount, activeHeader.activeGroupCapacity);
-    if (record.dataIndex >= activeGroupCount) {
+    if (record.dataIndex >= activeGroupCount || !gDeferred.groups.contains(record.dataIndex)) {
         output[outputIndex] = packStreamColor(params.clearColor.xyz);
         return;
     }
-    GPUDrivenStreamAssetActiveGroup group = activeGroups[record.dataIndex];
+    GPUDrivenStreamAssetActiveGroup group = gDeferred.groups.data[record.dataIndex];
     record.instanceIndex = group.gpuSceneInstanceIndex;
     if (record.instanceIndex == kInvalidClusterIndex ||
         record.instanceIndex != group.gpuSceneInstanceIndex ||
-        group.pageIndex >= params.scenePageCount) {
+        group.pageIndex >= params.scenePageCount || !gDeferred.pageTable.contains(group.pageIndex)) {
         output[outputIndex] = packStreamColor(params.clearColor.xyz);
         return;
     }
-    GPUDrivenStreamAssetPageTableEntry pageEntry = pageTable[group.pageIndex];
+    GPUDrivenStreamAssetPageTableEntry pageEntry = gDeferred.pageTable.data[group.pageIndex];
     uint pageDeviceOffset = streamPageDeviceOffset(pageEntry);
     if (!streamPageDrawable(streamPageState(pageEntry)) ||
         pageDeviceOffset == kInvalidStreamDeviceOffset ||
@@ -4720,10 +4561,10 @@ void gpuDrivenStreamAssetDeferredMain(
     }
 
     uint pageWord = pageDeviceOffset / 4u;
-    uint payloadBytes = pageWords[pageWord + 12u];
-    uint clusterCount = pageWords[pageWord + 2u];
-    uint payloadVertexCount = pageWords[pageWord + 3u];
-    uint triangleIndexCount = pageWords[pageWord + 4u];
+    uint payloadBytes = pageWords.load(pageWord + 12u);
+    uint clusterCount = pageWords.load(pageWord + 2u);
+    uint payloadVertexCount = pageWords.load(pageWord + 3u);
+    uint triangleIndexCount = pageWords.load(pageWord + 4u);
     if (payloadBytes < kPayloadHeaderBytes ||
         payloadBytes > params.pageBufferBytes ||
         pageDeviceOffset > params.pageBufferBytes - payloadBytes ||
@@ -4732,17 +4573,17 @@ void gpuDrivenStreamAssetDeferredMain(
         return;
     }
 
-    uint clusterOffsetBytes = pageWords[pageWord + 9u];
-    uint positionOffsetBytes = pageWords[pageWord + 10u];
-    uint triangleOffsetBytes = pageWords[pageWord + 11u];
-    uint attributeFlags = pageWords[pageWord + 14u];
-    uint normalOffsetBytes = pageWords[pageWord + 16u];
-    uint texcoordOffsetBytes = pageWords[pageWord + 17u];
-    uint positionFormat = pageWords[pageWord + 20u];
-    uint normalFormat = pageWords[pageWord + 21u];
-    uint texcoordFormat = pageWords[pageWord + 22u];
-    uint tangentOffsetBytes = pageWords[pageWord + 24u];
-    uint tangentFormat = pageWords[pageWord + 25u];
+    uint clusterOffsetBytes = pageWords.load(pageWord + 9u);
+    uint positionOffsetBytes = pageWords.load(pageWord + 10u);
+    uint triangleOffsetBytes = pageWords.load(pageWord + 11u);
+    uint attributeFlags = pageWords.load(pageWord + 14u);
+    uint normalOffsetBytes = pageWords.load(pageWord + 16u);
+    uint texcoordOffsetBytes = pageWords.load(pageWord + 17u);
+    uint positionFormat = pageWords.load(pageWord + 20u);
+    uint normalFormat = pageWords.load(pageWord + 21u);
+    uint texcoordFormat = pageWords.load(pageWord + 22u);
+    uint tangentOffsetBytes = pageWords.load(pageWord + 24u);
+    uint tangentFormat = pageWords.load(pageWord + 25u);
     bool hasNormals = (attributeFlags & kPayloadAttributeNormal) != 0u;
     bool hasTexcoords = (attributeFlags & kPayloadAttributeTexcoord0) != 0u;
     bool hasTangents = (attributeFlags & kPayloadAttributeTangent) != 0u;
@@ -4793,10 +4634,10 @@ void gpuDrivenStreamAssetDeferredMain(
     }
     uint clusterWord = pageWord + clusterOffsetBytes / 4u +
         record.clusterIndex * kPayloadClusterWords;
-    uint vertexOffset = pageWords[clusterWord + 0u];
-    uint vertexCount = pageWords[clusterWord + 1u];
-    uint localTriangleOffset = pageWords[clusterWord + 2u];
-    uint triangleCount = pageWords[clusterWord + 3u];
+    uint vertexOffset = pageWords.load(clusterWord + 0u);
+    uint vertexCount = pageWords.load(clusterWord + 1u);
+    uint localTriangleOffset = pageWords.load(clusterWord + 2u);
+    uint triangleCount = pageWords.load(clusterWord + 3u);
     if (triangleIndex >= triangleCount ||
         triangleCount > kMaxMeshletTriangles ||
         vertexCount == 0u ||
@@ -4908,40 +4749,6 @@ void gpuDrivenStreamAssetDeferredMain(
         color = float3(0.18, 0.42, 0.12) * diffuse * tangentPattern;
     }
     output[outputIndex] = packStreamColor(color);
-}
-
-[shader("vertex")]
-GPUDrivenStreamAssetFullscreenOutput gpuDrivenStreamAssetCompositeVertexMain(
-    uint vertexID : SV_VertexID)
-{
-    GPUDrivenStreamAssetFullscreenOutput output;
-    float2 position = vertexID == 0u
-        ? float2(-1.0, -1.0)
-        : (vertexID == 1u ? float2(3.0, -1.0) : float2(-1.0, 3.0));
-    output.position = float4(position, 0.0, 1.0);
-    return output;
-}
-
-[shader("fragment")]
-float4 gpuDrivenStreamAssetCompositeFragmentMain(
-    GPUDrivenStreamAssetFullscreenOutput input,
-    uniform GPUDrivenStreamAssetPush push) : SV_Target0
-{
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rasterBindingsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(
-            push.rasterBindingsBuffer,
-            0));
-    StructuredBuffer<GPUDrivenStreamAssetRasterBindings> rasterBindingsBuffer = rasterBindingsHandle;
-    GPUDrivenStreamAssetRasterBindings rasterBindings = rasterBindingsBuffer[0];
-    uint width = max(rasterBindings.width, 1u);
-    uint height = max(rasterBindings.height, 1u);
-    uint2 pixel = min(uint2(input.position.xy), uint2(width - 1u, height - 1u));
-    DescriptorHandle<StructuredBuffer<uint>> colorHandle =
-        DescriptorHandle<StructuredBuffer<uint>>(uint2(
-            rasterBindings.deferredColorBuffer,
-            0));
-    StructuredBuffer<uint> colors = colorHandle;
-    return unpackStreamColor(colors[pixel.y * width + pixel.x]);
 }
 
 [shader("compute")]

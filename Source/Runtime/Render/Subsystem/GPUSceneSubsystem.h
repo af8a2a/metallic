@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Subsystem/GPUScene.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
@@ -29,40 +30,14 @@ struct GPUSceneGPUUploadStats {
     uint64_t drawSetRevision = 0;
 };
 
-struct GPUSceneCullRecordDesc {
-    GPUSceneCullPhase phase = GPUSceneCullPhase::Early;
-    BindlessHeap* bindlessHeap = nullptr;
-    ComputePipeline* resetPipeline = nullptr;
-    ComputePipeline* instanceCullPipeline = nullptr;
-    ComputePipeline* compactPipeline = nullptr;
-    const void* pushData = nullptr;
-    uint32_t pushDataSize = 0;
-    uint32_t instanceGroupCountX = 0;
-    uint32_t meshletGroupCountX = 0;
-};
-
 struct GPUSceneInstanceCullRecordDesc {
     GPUSceneCullPhase phase = GPUSceneCullPhase::Early;
-    BindlessHeap* bindlessHeap = nullptr;
-    ComputePipeline* resetPipeline = nullptr;
-    ComputePipeline* instanceCullPipeline = nullptr;
-    const void* pushData = nullptr;
-    uint32_t pushDataSize = 0;
-    uint32_t instanceGroupCountX = 0;
-};
-
-struct GPUSceneComputeDispatchDesc {
-    const void* pushData = nullptr;
-    uint32_t pushDataSize = 0;
-    uint32_t groupCountX = 0;
-    uint32_t groupCountY = 0;
-    uint32_t groupCountZ = 1;
+    PreparedComputeDispatch reset;
+    PreparedComputeDispatch cull;
 };
 
 struct GPUSceneHZBRecordDesc {
-    BindlessHeap* bindlessHeap = nullptr;
-    ComputePipeline* pipeline = nullptr;
-    std::span<const GPUSceneComputeDispatchDesc> dispatches;
+    std::span<const PreparedComputeDispatch> preparedDispatches;
     // SPD supplies one dispatch for the entire chain. Scratch is caller-owned
     // and retained through submission; resetSource contains one zero uint.
     bool singleDispatch = false;
@@ -256,12 +231,6 @@ public:
     [[nodiscard]] Result<GPUSceneConsumerBindings> createBindings(std::string& log) const;
     void releaseBindings(GPUSceneConsumerBindings& bindings) const;
 
-    Result<> recordCull(
-        CommandBuffer& commandBuffer,
-        GPUSceneViewId view,
-        uint32_t frameSlot,
-        const GPUSceneCullRecordDesc& desc,
-        std::string& log);
     Result<> recordInstanceCull(
         CommandBuffer& commandBuffer,
         GPUSceneViewId view,

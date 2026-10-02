@@ -16,7 +16,14 @@ void hzbSpdFixtureMain(uint3 id : SV_DispatchThreadID)
     if (id.x + 1u == push.width || id.y + 1u == push.height) {
         depth = push.reversedZ != 0u ? 0.0 : 1.0;
     }
-    if (id.x == 0u && id.y == 0u) { depth = asfloat(0x7fc00000u); }
+    if (id.x == 0u && id.y == 0u) {
+#if METALLIC_HZB_FIXTURE_FINITE
+        // Multi-dispatch streaming preserves the sampled depth, unlike SPD's NaN sanitization.
+        depth = push.reversedZ != 0u ? 0.0 : 1.0;
+#else
+        depth = asfloat(0x7fc00000u);
+#endif
+    }
     getResource<RWTexture2D<float>>(0)[id.xy] = depth;
     if (id.x == 0u && id.y == 0u) {
         getResource<RWStructuredBuffer<uint>>(1)[0] = 0u;

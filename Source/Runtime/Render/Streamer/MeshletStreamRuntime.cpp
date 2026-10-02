@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/StreamInstanceCullParameters.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
@@ -3001,7 +3002,25 @@ Result<> MeshletStreamRuntime::updateRasterBindings(
     }
     MeshletStreamGPURasterBindings resolved = bindings;
     resolved.visibleClusterBuffer = visibleClusterHandle_.shaderIndex();
-    return updateHostBuffer(*rasterBindingsBuffer_, &resolved, sizeof(resolved));
+    auto result = updateHostBuffer(*rasterBindingsBuffer_, &resolved, sizeof(resolved));
+    if (result) { rasterBindingsSnapshot_ = resolved; }
+    return result;
+}
+
+Result<EncodedParameters> MeshletStreamRuntime::encodeInstanceCull(ParameterWriter& writer,
+    Buffer* visibility, Buffer* visibleIds, Buffer* counter, Buffer* hzb, uint32_t phase) const
+{
+    if (!previousFrameParamsValid_ || phase > 1u) { return makeError(Error::InvalidArgument); }
+    const StreamInstanceCullParameters params{
+        .settings = {writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16), 1, sizeof(previousFrameParams_)},
+        .instances = writer.dataBuffer(instanceBuffer_.get(), sizeof(MeshletStreamGPUInstance), alignof(MeshletStreamGPUInstance)),
+        .visibility = writer.dataBuffer(visibility, 4, 4), .visibleIds = writer.dataBuffer(visibleIds, 4, 4),
+        .counter = writer.buffer(counter), .hzb = writer.buffer(hzb), .phase = phase,
+        .width = rasterBindingsSnapshot_.width, .height = rasterBindingsSnapshot_.height,
+        .mipCount = rasterBindingsSnapshot_.hzbMipCount, .hzbValid = rasterBindingsSnapshot_.hzbValid,
+        .cullingFlags = rasterBindingsSnapshot_.cullingFlags, .displacementBound = rasterBindingsSnapshot_.displacementBound,
+    };
+    return writer.encode(params, kStreamInstanceCullABI, ParameterTransport::InlinePush);
 }
 
 Result<> MeshletStreamRuntime::cmdPrepareVisibility(CommandBuffer& commandBuffer)

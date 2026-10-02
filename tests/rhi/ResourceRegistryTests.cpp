@@ -1,3 +1,10 @@
+#include "Runtime/Render/Core/StreamInstanceCullParameters.h"
+#include "Runtime/Render/Core/InstanceCullParameters.h"
+#include "Runtime/Render/Core/MaterialVisualizationParameters.h"
+#include "Runtime/Render/Core/StreamDeferredParameters.h"
+#include "Runtime/Render/Core/StreamCompositeParameters.h"
+#include "Runtime/Render/Core/MaterialRasterParameters.h"
+#include "Runtime/Render/Core/BunnyWireframeParameters.h"
 #include "Runtime/Render/Core/ImageSampleParameters.h"
 #include "Runtime/Render/Core/RenderGraphBufferParameters.h"
 #include "Runtime/Render/Core/StreamSceneParameters.h"
@@ -181,6 +188,15 @@ public:
             {"Metallic.DebugProbeParams", {FIELD(DebugProbeParams, source), FIELD(DebugProbeParams, output), FIELD(DebugProbeParams, settings), FIELD(DebugProbeParams, padding)}},
             {"Metallic.ImageSampleParams", {FIELD(ImageSampleParams, source)}},
             {"Metallic.RenderGraphBufferParams", {FIELD(RenderGraphBufferParams, source), FIELD(RenderGraphBufferParams, output)}},
+            {"Metallic.BunnyWireframeParameters", {FIELD(BunnyWireframeParameters, positions), FIELD(BunnyWireframeParameters, transforms), FIELD(BunnyWireframeParameters, settings)}},
+            {"Metallic.BunnyWireframeGPUParams", {FIELD(BunnyWireframeGPUParams, eye), FIELD(BunnyWireframeGPUParams, center), FIELD(BunnyWireframeGPUParams, upProjection), FIELD(BunnyWireframeGPUParams, viewport), FIELD(BunnyWireframeGPUParams, clipOrtho), FIELD(BunnyWireframeGPUParams, clearColor), FIELD(BunnyWireframeGPUParams, wireColor), FIELD(BunnyWireframeGPUParams, settings)}},
+            {"Metallic.MaterialRasterParameters", {FIELD(MaterialRasterParameters, positions), FIELD(MaterialRasterParameters, materialIndices), FIELD(MaterialRasterParameters, materials), FIELD(MaterialRasterParameters, transforms), FIELD(MaterialRasterParameters, camera), FIELD(MaterialRasterParameters, vertexOffset), FIELD(MaterialRasterParameters, padding0), FIELD(MaterialRasterParameters, padding1), FIELD(MaterialRasterParameters, padding2)}},
+            {"Metallic.StreamCompositeParameters", {FIELD(StreamCompositeParameters, colors), FIELD(StreamCompositeParameters, width), FIELD(StreamCompositeParameters, height)}},
+            {"Metallic.StreamDeferredParameters", {FIELD(StreamDeferredParameters, settings), FIELD(StreamDeferredParameters, records), FIELD(StreamDeferredParameters, groups), FIELD(StreamDeferredParameters, pageTable), FIELD(StreamDeferredParameters, header), FIELD(StreamDeferredParameters, output), FIELD(StreamDeferredParameters, pages), FIELD(StreamDeferredParameters, visibility), FIELD(StreamDeferredParameters, width), FIELD(StreamDeferredParameters, height), FIELD(StreamDeferredParameters, recordBase), FIELD(StreamDeferredParameters, recordCapacity)}},
+            {"Metallic.MaterialVisualizationParameters", {FIELD(MaterialVisualizationParameters, scene), FIELD(MaterialVisualizationParameters, output), FIELD(MaterialVisualizationParameters, vertices), FIELD(MaterialVisualizationParameters, indices), FIELD(MaterialVisualizationParameters, primitives), FIELD(MaterialVisualizationParameters, instances), FIELD(MaterialVisualizationParameters, materials), FIELD(MaterialVisualizationParameters, textures), FIELD(MaterialVisualizationParameters, positions), FIELD(MaterialVisualizationParameters, ntcLatents), FIELD(MaterialVisualizationParameters, ntcConstants), FIELD(MaterialVisualizationParameters, ntcWeights), FIELD(MaterialVisualizationParameters, ntcInfo), FIELD(MaterialVisualizationParameters, ntcSampler), FIELD(MaterialVisualizationParameters, settings)}},
+            {"Metallic.SceneMaterialVisualizationPush", {FIELD(SceneMaterialVisualizationPush, eye), FIELD(SceneMaterialVisualizationPush, center), FIELD(SceneMaterialVisualizationPush, upProjection), FIELD(SceneMaterialVisualizationPush, viewport), FIELD(SceneMaterialVisualizationPush, clipOrtho), FIELD(SceneMaterialVisualizationPush, width), FIELD(SceneMaterialVisualizationPush, height), FIELD(SceneMaterialVisualizationPush, mode), FIELD(SceneMaterialVisualizationPush, materialTextureCount), FIELD(SceneMaterialVisualizationPush, bitangentFlip), FIELD(SceneMaterialVisualizationPush, ntcTextureSetCount), FIELD(SceneMaterialVisualizationPush, padding1), FIELD(SceneMaterialVisualizationPush, padding2)}},
+            {"Metallic.InstanceCullParameters", {FIELD(InstanceCullParameters, settings), FIELD(InstanceCullParameters, instances), FIELD(InstanceCullParameters, visibility), FIELD(InstanceCullParameters, visibleIds), FIELD(InstanceCullParameters, streamOwners), FIELD(InstanceCullParameters, counter), FIELD(InstanceCullParameters, hzb), FIELD(InstanceCullParameters, phase), FIELD(InstanceCullParameters, padding)}},
+            {"Metallic.StreamInstanceCullParameters", {FIELD(StreamInstanceCullParameters, settings), FIELD(StreamInstanceCullParameters, instances), FIELD(StreamInstanceCullParameters, visibility), FIELD(StreamInstanceCullParameters, visibleIds), FIELD(StreamInstanceCullParameters, counter), FIELD(StreamInstanceCullParameters, hzb), FIELD(StreamInstanceCullParameters, phase), FIELD(StreamInstanceCullParameters, width), FIELD(StreamInstanceCullParameters, height), FIELD(StreamInstanceCullParameters, mipCount), FIELD(StreamInstanceCullParameters, hzbValid), FIELD(StreamInstanceCullParameters, cullingFlags), FIELD(StreamInstanceCullParameters, displacementBound), FIELD(StreamInstanceCullParameters, padding)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -216,12 +232,27 @@ public:
             {"Features/Material/MaterialError", "materialErrorMain", 20},
             {"Features/Debug/GPUProbe", "probe", 21},
             {"Features/Samples/ImageSample", "imageSampleFragmentMain", 22},
+            {"Features/GPUDriven/StreamComposite", "gpuDrivenStreamAssetCompositeFragmentMain", 27},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetDeferredMain", 28},
+            {"Features/Debug/SceneMaterialVisualize", "sceneMaterialVisualizeMain", 29},
+            {"Features/Debug/SceneMaterialVisualize", "sceneMaterialVisualizeMain", 30},
+            {"Features/Samples/MaterialShaderObject", "materialShaderObjectVertexMain", 26},
+            {"Features/Samples/MaterialShaderObject", "materialShaderObjectFragmentMain", 26},
+            {"Features/Samples/MaterialShaderObject", "materialShaderObjectAlternateFragmentMain", 26},
+            {"Features/Samples/BunnyWireframe", "bunnyWireframeVertexMain", 24},
+            {"Features/Samples/BunnyWireframe", "bunnyWireframeFragmentMain", 24},
+            {"Features/Samples/BunnyWireframe", "bunnyWireframeVertexMain", 25},
+            {"Features/Samples/BunnyWireframe", "bunnyWireframeFragmentMain", 25},
             {"Features/SmokeTests/RenderGraphBuffer", "renderGraphBufferWriteMain", 23},
             {"Features/SmokeTests/RenderGraphBuffer", "renderGraphBufferCopyMain", 23},
+            {"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewResetMain", 31},
+            {"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewInstanceCullMain", 31},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetCullResetMain", 32},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetInstanceCullMain", 32},
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                if ((program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
                 const char* capabilities[] = {"spvRayQueryKHR"};
                 std::span<const char* const> extraPaths;
@@ -268,7 +299,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -345,6 +376,55 @@ public:
     GraphBufferParameterLayoutTest() { category = 11; name = "graph_buffer_parameter_spirv_layout"; }
 };
 METALLIC_REGISTER_RHI_TEST(GraphBufferParameterLayoutTest);
+
+class BunnyWireframeParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    BunnyWireframeParameterLayoutTest() { category = 12; name = "bunny_wireframe_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(BunnyWireframeParameterLayoutTest);
+
+class MaterialRasterParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    MaterialRasterParameterLayoutTest() { category = 13; name = "material_raster_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(MaterialRasterParameterLayoutTest);
+
+class StreamCompositeParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamCompositeParameterLayoutTest() { category = 14; name = "stream_composite_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamCompositeParameterLayoutTest);
+
+class StreamDeferredParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamDeferredParameterLayoutTest() { category = 15; name = "stream_deferred_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamDeferredParameterLayoutTest);
+
+class MaterialVisualizationParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    MaterialVisualizationParameterLayoutTest() { category = 16; name = "material_visualization_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(MaterialVisualizationParameterLayoutTest);
+
+class InstanceCullParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    InstanceCullParameterLayoutTest() { category = 17; name = "instance_cull_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(InstanceCullParameterLayoutTest);
+
+class StreamInstanceCullParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamInstanceCullParameterLayoutTest() { category = 18; name = "stream_instance_cull_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamInstanceCullParameterLayoutTest);
+
+
+
+
+
+
+
 
 
 class SharcTypedMaintenanceTest final : public RHITest {
@@ -1268,7 +1348,15 @@ public:
         if (!shader) { return RHITestResult::fail(log); }
         REG_REQUIRE(kernel.initialize(*device, {.spirv = shader->spirv, .parameters = parameterAbi<Params>(kABI + 6)}, log));
         std::unique_ptr<Buffer> output;
-        REG_REQUIRE(makeBuffer(*device, output));
+        REG_REQUIRE(device->createBuffer({.size = 24 * sizeof(uint32_t), .structureStride = 4,
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
+            .transform([&](auto value) { output = std::move(value); }));
+        // Poison every result so a skipped invocation cannot look like a rejected input.
+        void* initial = output->map();
+        REG_CHECK(initial);
+        std::memset(initial, 0xff, 24 * sizeof(uint32_t));
+        output->flush();
+        output->unmap();
         QueueSubmissionTracker tracker;
         REG_REQUIRE(tracker.initialize(*device, queue));
         Commands recording;
@@ -1288,13 +1376,13 @@ public:
             params.stream.pageTable = {writer.data(table.data(), sizeof(table)), 1, 8};
             std::array<uint32_t, 24> instance{};
             instance[1] = 17;
-            const std::array<uint32_t, 3> header{0, 0, 23};
+            const std::array<uint32_t, 4> header{0, 0, 23, 0};
             params.stream.instances = {writer.data(instance.data(), sizeof(instance)), 1, 96};
             params.stream.header = {writer.data(header.data(), sizeof(header)), 3, 4};
             params.output = writer.dataBuffer(output.get(), 4, 4);
             auto encoded = writer.encode(params, kABI + 6);
             REG_CHECK(encoded);
-            REG_REQUIRE(kernel.dispatch(*recording.commands, *encoded, 1));
+            REG_REQUIRE(kernel.dispatch(*recording.commands, *encoded, 2));
         }
         const MemoryBarrierDesc hostRead{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
             {PipelineStageBits::Host, AccessBits::HostRead}};
@@ -1308,12 +1396,12 @@ public:
         output->invalidate();
         const auto* values = static_cast<const uint32_t*>(output->map());
         REG_CHECK(values);
-        std::array<uint32_t, 11> actual{};
+        std::array<uint32_t, 24> actual{};
         std::memcpy(actual.data(), values, sizeof(actual));
         output->unmap();
-        for (uint32_t i = 0; i < actual.size(); ++i) { REG_CHECK(actual[i] == (i == 9 ? 17u : i == 10 ? 23u : i == 0 ? 1u : 0u)); }
+        for (uint32_t i = 0; i < actual.size(); ++i) { REG_CHECK(actual[i] == (i == 9 ? 17u : i == 10 ? 23u : (i == 0 || i == 11) ? 1u : 0u)); }
         REG_CHECK((*registry)->stats().descriptorWrites == 0);
-        return RHITestResult::pass("BDA triangle values; invalid page/cluster/triangle, truncated buffers, empty table and wrong stride rejected");
+        return RHITestResult::pass("BDA triangle values; invalid page/cluster/triangle, truncated buffers, empty table, null resources, instance/header bounds and wrong strides rejected");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamDataDecodeTest);

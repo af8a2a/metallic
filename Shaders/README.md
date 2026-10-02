@@ -74,6 +74,32 @@ UpscalerGuideResolve 使用 40 字节 inline push，包含四个具名图像句�
 DLSS depth export / alpha resolve 共用 16 字节 `DLSSSupportParams`；图形入口绑定编码后的 inline 数据，
 compute 入口使用 ComputeKernel。两者均通过共享 registry 保留图像资源，不再维护私有 heap 或手写 shader index。
 
+[StreamDeferredParameters.h](../Source/Runtime/Render/Core/StreamDeferredParameters.h) 为 streaming deferred 提供
+136 字节 inline 参数，由 ComputeKernel 执行。设置、可见记录、active groups、页表、header、页数据和颜色输出均使用有界 BDA span，
+visibility 使用完整图像句柄。页数据通过静态泛型 reader 复用属性解码，读取范围同时受参数容量和 span 长度约束；
+其他 streaming 入口继续通过 descriptor reader 复用同一字节读取函数。
+旧 raster bindings 的间接资源查找和颜色 buffer descriptor 已移除；阶段同步沿用 RenderGraph 访问声明。
+
+[StreamCompositeParameters.h](../Source/Runtime/Render/Core/StreamCompositeParameters.h) 为 streaming 全屏合成提供
+24 字节 inline 参数（颜色 BDA span、宽、高），入口已拆到 `Features/GPUDriven/StreamComposite.slang`。
+合成不再传入 MeshletStreamUserPush，也不经 raster bindings descriptor 间接读取颜色；编码参数保留颜色资源，
+shader 检查范围与行偏移溢出。几何剔除和光栅入口仍使用原 ABI，留待后续迁移。
+
+[MaterialVisualizationParameters.h](../Source/Runtime/Render/Core/MaterialVisualizationParameters.h) 为材质 ray-query 可视化提供
+224 字节 inline 参数，共享 112 字节相机/模式设置和完整资源句柄。ComputeKernel/ParameterWriter 接管所有资源保留，
+包括 fallback position、材质贴图数组及可选 NTC 资源；移除编号 binding 表和 getResource/getConstants 依赖。
+GPU 回归覆盖 13 种材质模式、mapped/native 和奇数尺寸 resize 恢复；NTC SDK 未启用时不代表验证了 NTC 推理路径。
+
+[MaterialRasterParameters.h](../Source/Runtime/Render/Core/MaterialRasterParameters.h) 提供材质 shader-object
+共用的 160 字节 inline 参数：positions、material indices、materials、transforms 为有界 BDA，camera 与 batch offset 直接内联。
+每个批次在 beginRendering 前编码不可变快照；默认/备用 shader 共用 ABI，移除私有 heap、五个 descriptor 与可变参数 buffer。
+GPU 三材质回归验证 default/alternate/default 切换、非目标批次保持原色，以及奇数尺寸 resize 后恢复。
+
+[BunnyWireframeParameters.h](../Source/Runtime/Render/Core/BunnyWireframeParameters.h) 提供 wireframe shader-object
+共用的 160 字节 inline 参数：positions/transforms 为有界 BDA span，128 字节相机和线框设置直接内联。
+移除私有 heap、三个 buffer descriptor 和可变参数 buffer；资源由参数包保留，顶点解引用检查 span 范围。
+GPU 回归覆盖 mapped/native、vertex/fragment 布局、相机变化和奇数尺寸 resize 后的输出恢复。
+
 [ImageSampleParameters.h](../Source/Runtime/Render/Core/ImageSampleParameters.h) 提供 ImageSample 的
 8 字节 inline 图像句柄；图形入口使用共享 registry 和执行绑定，不再维护私有 heap 或截断 shader index。
 每帧从 prepared scene 获取当前图像并编码资源保留；GPU 回归检查连续帧与奇数尺寸 resize 后的输出恢复。
@@ -126,6 +152,24 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 `loadPathTraceTriangle` 在解引用前检查完整索引链，并用减法检查避免偏移溢出；fallback position 另查范围。
 无 guides 的 Standard/realtime/deferred 仍通过 ComputeProgram 的 DataBuffer 兼容表传递 span。
 
+[InstanceCullParameters.h](../Source/Runtime/Render/Core/InstanceCullParameters.h) 定义 resident 实例剔除/reset 的
+104 字节 inline 参数。settings 使用不可变 BDA 快照，instances、visibility、visible IDs 与 stream owner mask
+使用带范围的 span，counter/HZB 使用 canonical typed handle。CPU 按 early/late 选择 HZB，先准备 reset/cull
+参数包，再由 GPUScene 录制原有同步。
+[StreamInstanceCullParameters.h](../Source/Runtime/Render/Core/StreamInstanceCullParameters.h) 提供 streaming
+实例剔除/reset 的 112 字节 inline 参数；runtime 统一编码 settings 快照、实例/可见性 span、
+counter/HZB handle 与标量剔除设置，独立 StreamAsset 和混合 VisibilityBuffer 共用。
+GPUScene 实例剔除只接收 prepared dispatch，旧 pushData 字段及无调用方的 recordCull 接口已删除。
+
+[HZBParameters.h](../Source/Runtime/Render/Core/HZBParameters.h) 定义 resident/streaming 共用 HZB 的 56 字节 inline 参数。
+每个 mip 直接携带深度图像 handle、HZB 有界 span、源/目标尺寸与偏移及正反 Z 标志，
+不再读取 streaming params/rasterBindings 描述符或整份 MeshletStreamUserPush。
+CPU 先编码全部不可变 `PreparedComputeDispatch`，再由 GPUScene 按统一访问计划录制 mip 间 barrier；
+参数包负责保留 HZB 与深度资源；两条路径共用 `Features/GPUDriven/HZB.hzbMain`。
+[HZBSPDParameters.h](../Source/Runtime/Render/Core/HZBSPDParameters.h) 提供 SPD 的 40 字节 inline 参数，
+深度、输出与计数器均使用 canonical typed handle，保留 mip 6 与最后工作组计数器的 release/acquire。
+GPUScene HZB 录制只接收 prepared dispatch，旧 pipeline/heap/pushData 描述已移除。
+
 `StreamSceneRayQuery` 的 pages、page table、instances 和 header 也使用有界 BDA `DataSpan`。
 streaming deferred 外层保留 `ComputeProgram` 兼容入口；四个 span 已统一为共享 `StreamSceneParameters`，
 通过 settings 中的 BDA 根地址传递，不再使用 90–93 数字槽位或 buffer descriptor。
@@ -134,6 +178,9 @@ ScreenSpaceShadows 的 CLAS alpha-mask 查询复用同一声明，通过 16 字�
 同步移除旧 90–94 绑定。主追踪 settings 为 272 字节 BDA 数据，不是原生 push constant。
 续射页容量直接来自 span，不再读取 slot 94 的参数块。共享 stream 解码通过静态泛型 reader 同时支持 descriptor 和 BDA；
 属性解码必须在相同三角形的范围校验成功后调用。
+`StreamSceneDecode.slang` 显式接收 `StreamSceneParameters`，供 CLAS ray-query 与 GPU 边界测试共用；
+实例读取检查地址、stride 和索引，三角形解码检查 header、cluster stride、页表及页数据范围。
+`StreamSceneRayQuery` 不再以宏捕获局部 push；法线和 TBN 仍保持 authored/world-space 语义。
 
 [PathTraceParameters.h](../Source/Runtime/Render/Core/PathTraceParameters.h) 为
 Standard ScenePathTraceGuides、OpenPBRRayQueryPathTrace 和 OpenPBRRayQueryPathTraceGuides 提供 296 字节具名资源根，通过 BDA root 提交。

@@ -2954,10 +2954,10 @@ public:
         name = "render_graph_bunny_wireframe_preview";
     }
 
-    RHITestResult run(RHITestContext&) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
-        render::Result<> result = preview.initialize(false);
+        render::Result<> result = preview.initialize(context.enableValidation);
         if (!result) {
             return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
@@ -2992,10 +2992,10 @@ public:
         name = "render_graph_bunny_camera_sync";
     }
 
-    RHITestResult run(RHITestContext&) override
+    RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
-        render::Result<> result = preview.initialize(false);
+        render::Result<> result = preview.initialize(context.enableValidation);
         if (!result) {
             return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
@@ -3014,6 +3014,7 @@ public:
             return RHITestResult::fail("preview render did not clear graph dirty state");
         }
 
+        const auto initialPixels = preview.pixels();
         render::RenderGraphNode* bunnyNode = graph.findNode("Bunny");
         if (bunnyNode == nullptr) {
             return RHITestResult::fail("default Bunny graph did not create Bunny node");
@@ -3038,6 +3039,23 @@ public:
                 std::to_string(brightPixels));
         }
 
+        if (preview.pixels() == initialPixels) {
+            return RHITestResult::fail("Inline camera update did not change wireframe output");
+        }
+        const auto cameraPixels = preview.pixels();
+        result = preview.render(graph, 271, 193);
+        if (!result || countBrightPixels(preview.pixels()) < 256) {
+            return RHITestResult::fail("Wireframe odd-size resize failed: " + preview.lastLog());
+        }
+        result = preview.render(graph, 256, 256);
+        if (!result || preview.pixels() != cameraPixels) {
+            return RHITestResult::fail("Wireframe inline settings changed after extent restoration");
+        }
+        std::string log;
+        if (!saveRgba8Png(context.outputDirectory / "bunny-inline.png",
+            reinterpret_cast<const uint8_t*>(preview.pixels().data()), 256, 256, log)) {
+            return RHITestResult::fail(log);
+        }
         return RHITestResult::pass();
     }
 };
@@ -3175,7 +3193,7 @@ public:
         }
 
         render::RenderGraphPreviewRenderer preview;
-        render::Result<> result = preview.initialize(false, true);
+        render::Result<> result = preview.initialize(context.enableValidation, true);
         if (!result) {
             return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
@@ -3257,6 +3275,11 @@ public:
             }
         }
 
+        const auto original = preview.pixels();
+        if (!preview.render(sample.graph, 173, 151, sample.desc.previewOutput) ||
+            !preview.render(sample.graph, 160, 160, sample.desc.previewOutput) || preview.pixels() != original) {
+            return RHITestResult::fail("Material visualization inline parameters changed after resize: " + preview.lastLog());
+        }
         return RHITestResult::pass("wrote scene material visualization previews");
     }
 };
@@ -4020,7 +4043,7 @@ public:
             ShaderEntry{"Features/VisibilityBuffer/VisibilityBuffer", "visibilityBufferMaskedFragmentMain"},
             ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewResetMain"},
             ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewInstanceCullMain"},
-            ShaderEntry{"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewHzbMain"},
+            ShaderEntry{"Features/GPUDriven/HZB", "hzbMain"},
             ShaderEntry{"Features/VisibilityBuffer/VisibilityBufferComposite", "visibilityBufferCompositeVertexMain"},
             ShaderEntry{"Features/VisibilityBuffer/VisibilityBufferComposite", "visibilityBufferCompositeFragmentMain"},
         };
@@ -4118,7 +4141,10 @@ public:
         for (const char* entryPoint : kRasterEntryPoints) {
             render::ShaderCompileResult rasterCompile;
             result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
-                    .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
+                    .moduleName = (std::string_view(entryPoint) == render::kMeshletStreamCompositeVertexEntryPoint ||
+                        std::string_view(entryPoint) == render::kMeshletStreamCompositeFragmentEntryPoint)
+                        ? render::kMeshletStreamCompositeShaderModuleName : std::string_view(entryPoint) == render::kMeshletStreamHZBEntryPoint
+                            ? "Features/GPUDriven/HZB" : render::kMeshletStreamShaderModuleName,
                     .entryPointName = entryPoint,
                     .searchPath = kShaderSearchPath,
                 }, rasterCompile.diagnostics).transform([&](auto value) { rasterCompile = std::move(value); });
@@ -7871,6 +7897,72 @@ public:
         return RHITestResult::pass();
     }
 };
+
+class MaterialRasterInlinePixelsTest final : public RHITest {
+public:
+    MaterialRasterInlinePixelsTest() { type = RHITestType::Rendering; name = "material_raster_inline_batch_pixels"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        std::filesystem::path path;
+        std::string log;
+        if (!writeAlphaMaskScene(context.outputDirectory / "material-raster", path, log)) {
+            return RHITestResult::fail(log);
+        }
+        path = std::filesystem::absolute(path);
+        render::RenderGraphProperties source;
+        { std::ifstream input(path); input >> source; }
+        const auto primitive = source["meshes"][0]["primitives"][0];
+        source["meshes"] = render::RenderGraphProperties::array();
+        source["nodes"] = render::RenderGraphProperties::array();
+        const std::array<std::array<float, 4>, 3> colors{{{1,0,0,1}, {0,0,1,1}, {0,1,0,1}}};
+        for (uint32_t i = 0; i < 3; ++i) {
+            auto part = primitive; part["material"] = i;
+            source["meshes"].push_back({{"primitives", {part}}});
+            source["nodes"].push_back({{"mesh", i}, {"translation", {float(i) * 2.4f - 2.4f, 0.0f, 0.0f}}});
+            source["materials"][i] = {{"pbrMetallicRoughness", {{"baseColorFactor", colors[i]}}}};
+        }
+        source["scenes"][0]["nodes"] = {0, 1, 2};
+        { std::ofstream output(path); output << source.dump(); }
+        render::RenderGraphPreviewRenderer preview;
+        if (!preview.initialize(context.enableValidation)) { return RHITestResult::fail(preview.lastLog()); }
+        render::RenderGraph graph;
+        const auto node = graph.addNode("SceneMaterialShaderObjectPass", "Materials", {{"path", path.string()}});
+        graph.markOutput("Materials.color");
+        if (!preview.render(graph, 256, 128)) { return RHITestResult::fail(preview.lastLog()); }
+        const auto original = preview.pixels();
+        for (uint32_t color : {packRgba8(255,0,0,255), packRgba8(0,0,255,255), packRgba8(0,255,0,255)}) {
+            if (std::count(original.begin(), original.end(), color) < 100) {
+                return RHITestResult::fail("Three material batches did not preserve their distinct colors");
+            }
+        }
+        graph.setNodeRuntimeProperty(node->id, "debugAlternateShaders", true);
+        if (!preview.render(graph, 256, 128)) { return RHITestResult::fail(preview.lastLog()); }
+        const auto alternate = preview.pixels();
+        uint32_t changed = 0;
+        for (size_t i = 0; i < original.size(); ++i) {
+            if (original[i] != alternate[i]) {
+                ++changed;
+                if (original[i] != packRgba8(0,0,255,255)) {
+                    return RHITestResult::fail("Shader switch changed an even material batch or background");
+                }
+            }
+        }
+        if (changed < 100) { return RHITestResult::fail("Alternate shader did not change odd material batch"); }
+        if (!preview.render(graph, 273, 139) || !preview.render(graph, 256, 128) || preview.pixels() != alternate) {
+            return RHITestResult::fail("Batch inline parameters changed after odd-size resize: " + preview.lastLog());
+        }
+        graph.setNodeRuntimeProperty(node->id, "debugAlternateShaders", false);
+        if (!preview.render(graph, 256, 128) || preview.pixels() != original) {
+            return RHITestResult::fail("Default material shader did not restore batch colors");
+        }
+        if (!saveRgba8Png(context.outputDirectory / "material-raster-inline.png",
+            reinterpret_cast<const uint8_t*>(preview.pixels().data()), 256, 128, log)) {
+            return RHITestResult::fail(log);
+        }
+        return RHITestResult::pass("Three BDA material batches, default/alternate/default shader switching and resize restore");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(MaterialRasterInlinePixelsTest);
 
 class RenderGraphVisibilityBufferPassSmokeTest : public RHITest {
 public:

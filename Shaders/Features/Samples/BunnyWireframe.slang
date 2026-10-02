@@ -1,30 +1,6 @@
-struct BindlessHeapPush
-{
-    uint paramsBuffer;
-    uint positionBuffer;
-    uint transformBuffer;
-    uint padding;
-};
-
-struct SceneTransform
-{
-    float4 world0;
-    float4 world1;
-    float4 world2;
-    float4 world3;
-};
-
-struct BunnyWireframeParams
-{
-    float4 eye;
-    float4 center;
-    float4 upProjection;
-    float4 viewport;
-    float4 clipOrtho;
-    float4 clearColor;
-    float4 wireColor;
-    float4 settings;
-};
+#include "../../../Source/Runtime/Render/Core/BunnyWireframeParameters.h"
+using Metallic;
+[[vk::push_constant]] ConstantBuffer<BunnyWireframeParameters> gParams;
 
 struct BunnyWireframeVertexOutput
 {
@@ -38,7 +14,7 @@ float3 safeNormalize(float3 value, float3 fallback)
     return lengthSquared > 0.00000001 ? value * rsqrt(lengthSquared) : fallback;
 }
 
-float4 projectPosition(float3 worldPosition, BunnyWireframeParams params)
+float4 projectPosition(float3 worldPosition, BunnyWireframeGPUParams params)
 {
     float3 forward = safeNormalize(params.center.xyz - params.eye.xyz, float3(0.0, 0.0, -1.0));
     float3 cameraUp = safeNormalize(params.upProjection.xyz, float3(0.0, 1.0, 0.0));
@@ -87,21 +63,16 @@ float lineCoverage(float3 barycentric, float thickness, float smoothing)
 }
 
 [shader("vertex")]
-BunnyWireframeVertexOutput bunnyWireframeVertexMain(uint vertexIndex : SV_VertexID, uniform BindlessHeapPush bindless)
+BunnyWireframeVertexOutput bunnyWireframeVertexMain(uint vertexIndex : SV_VertexID)
 {
-    DescriptorHandle<StructuredBuffer<BunnyWireframeParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<BunnyWireframeParams>>(uint2(bindless.paramsBuffer, 0));
-    DescriptorHandle<StructuredBuffer<float4>> positionsHandle =
-        DescriptorHandle<StructuredBuffer<float4>>(uint2(bindless.positionBuffer, 0));
-    DescriptorHandle<StructuredBuffer<SceneTransform>> transformsHandle =
-        DescriptorHandle<StructuredBuffer<SceneTransform>>(uint2(bindless.transformBuffer, 0));
-
-    StructuredBuffer<BunnyWireframeParams> paramsBuffer = paramsHandle;
-    StructuredBuffer<float4> positions = positionsHandle;
-    StructuredBuffer<SceneTransform> transforms = transformsHandle;
-    BunnyWireframeParams params = paramsBuffer[0];
-    float4 localPosition = positions[vertexIndex];
-    SceneTransform transform = transforms[(uint)localPosition.w];
+    BunnyWireframeVertexOutput invalid = (BunnyWireframeVertexOutput)0;
+    invalid.position = float4(0, 0, 2, 1);
+    if (!gParams.positions.contains(vertexIndex)) { return invalid; }
+    float4 localPosition = gParams.positions.data[vertexIndex];
+    const uint transformIndex = (uint)localPosition.w;
+    if (!gParams.transforms.contains(transformIndex)) { return invalid; }
+    BunnyTransform transform = gParams.transforms.data[transformIndex];
+    BunnyWireframeGPUParams params = gParams.settings;
     float3 worldPosition =
         transform.world0.xyz * localPosition.x +
         transform.world1.xyz * localPosition.y +
@@ -118,12 +89,9 @@ BunnyWireframeVertexOutput bunnyWireframeVertexMain(uint vertexIndex : SV_Vertex
 }
 
 [shader("fragment")]
-float4 bunnyWireframeFragmentMain(BunnyWireframeVertexOutput input, uniform BindlessHeapPush bindless) : SV_Target0
+float4 bunnyWireframeFragmentMain(BunnyWireframeVertexOutput input) : SV_Target0
 {
-    DescriptorHandle<StructuredBuffer<BunnyWireframeParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<BunnyWireframeParams>>(uint2(bindless.paramsBuffer, 0));
-    StructuredBuffer<BunnyWireframeParams> paramsBuffer = paramsHandle;
-    BunnyWireframeParams params = paramsBuffer[0];
+    BunnyWireframeGPUParams params = gParams.settings;
 
     float thickness = max(params.settings.x, 0.01);
     float smoothing = max(params.settings.y, 0.01);

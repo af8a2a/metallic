@@ -190,24 +190,12 @@ public uint hzbMipOffset(GPUDrivenPreviewParams params, uint mipLevel)
     return offset;
 }
 
-public float loadHzb(
-    GPUDrivenPreviewPush push,
-    uint hzbBufferIndex,
-    uint elementIndex)
-{
-    uint handleIndex = hzbBufferIndex == 0 ? push.hzbBuffer0 : push.hzbBuffer1;
-    DescriptorHandle<RWStructuredBuffer<float>> hzbHandle =
-        DescriptorHandle<RWStructuredBuffer<float>>(uint2(handleIndex, 0));
-    return hzbHandle[elementIndex];
-}
-
 public bool sphereOccluded(
     float3 center,
     float radius,
     CameraData camera,
     GPUDrivenPreviewParams params,
-    GPUDrivenPreviewPush push,
-    uint hzbBufferIndex)
+    DescriptorHandle<RWStructuredBuffer<float>> hzb)
 {
     float3 viewCenter = worldToView(center, camera);
     float zNear = max(camera.clipOrtho.x, 0.0001);
@@ -232,16 +220,25 @@ public bool sphereOccluded(
     uint2 maxTexel = min(uint2(maxPixels * mipScale), uint2(mipWidth - 1u, mipHeight - 1u));
     if (any(maxTexel - minTexel > 1u)) { return false; }
     uint mipOffset = hzbMipOffset(params, mipLevel);
-    float depth00 = loadHzb(push, hzbBufferIndex, mipOffset + minTexel.y * mipWidth + minTexel.x);
-    float depth10 = loadHzb(push, hzbBufferIndex, mipOffset + minTexel.y * mipWidth + maxTexel.x);
-    float depth01 = loadHzb(push, hzbBufferIndex, mipOffset + maxTexel.y * mipWidth + minTexel.x);
-    float depth11 = loadHzb(push, hzbBufferIndex, mipOffset + maxTexel.y * mipWidth + maxTexel.x);
+    float depth00 = hzb[mipOffset + minTexel.y * mipWidth + minTexel.x];
+    float depth10 = hzb[mipOffset + minTexel.y * mipWidth + maxTexel.x];
+    float depth01 = hzb[mipOffset + maxTexel.y * mipWidth + minTexel.x];
+    float depth11 = hzb[mipOffset + maxTexel.y * mipWidth + maxTexel.x];
     float nearestZ = max(viewCenter.z - radius, zNear);
     // Pull the test sphere slightly toward the camera and require a strict depth
     // separation to avoid toggling instances on quantized HZB boundaries.
     float depthBias = max(0.001, radius * 0.01);
     float nearestDepth = projectDepth(max(nearestZ - depthBias, zNear), camera);
     return conservativeDepthOccluded(nearestDepth, float4(depth00, depth10, depth01, depth11), camera.clipOrtho.w > 0.5);
+}
+
+// Legacy raster callers remain on their existing push layout until their migration.
+public bool sphereOccluded(float3 center, float radius, CameraData camera,
+    GPUDrivenPreviewParams params, GPUDrivenPreviewPush push, uint hzbBufferIndex)
+{
+    uint index = hzbBufferIndex == 0u ? push.hzbBuffer0 : push.hzbBuffer1;
+    return sphereOccluded(center, radius, camera, params,
+        DescriptorHandle<RWStructuredBuffer<float>>(uint2(index, 0)));
 }
 
 public bool meshletVisibleInOcclusionPhase(float3 center, float radius, uint instanceState,

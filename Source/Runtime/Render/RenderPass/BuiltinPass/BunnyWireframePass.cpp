@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/BunnyWireframeParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 
@@ -49,7 +50,6 @@ public:
 
         std::vector<BunnyWireframeGPUPosition> positions;
         std::vector<SceneGPUTransform> transforms;
-        BunnyWireframeGPUParams params;
         if (!buildBunnyGeometry(properties(), runtimeScene, positions, transforms, drawBounds_, log)) {
             return makeError(Error::Failure);
         }
@@ -64,10 +64,6 @@ public:
         if (transforms.empty()) {
             transforms.emplace_back();
         }
-        if (drawBounds_.valid) {
-            buildBunnyParams(context.width, context.height, properties(), drawBounds_, params);
-        }
-
         Result<> result = uploadStorageBuffer(
             *context.device,
             positions.data(),
@@ -88,63 +84,6 @@ public:
         if (!result) {
             return result;
         }
-        result = uploadStorageBuffer(
-            *context.device,
-            &params,
-            sizeof(params),
-            paramsBuffer_,
-            log,
-            "BunnyWireframePass params");
-        if (!result) {
-            return result;
-        }
-
-        result = context.device->createBindlessHeap(BindlessHeapDesc{
-                .maxBuffers = 3,
-            }).transform([&](auto rhiValue) { bindlessHeap_ = std::move(rhiValue); });
-        if (!result || bindlessHeap_ == nullptr) {
-            log += resultMessage("createBindlessHeap(BunnyWireframePass)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        result = bindlessHeap_->allocateBuffer().transform([&](auto rhiValue) { paramsHandle_ = std::move(rhiValue); });
-        if (!result || !paramsHandle_.valid()) {
-            log += resultMessage("allocateBuffer(BunnyWireframePass params)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-        result = bindlessHeap_->allocateBuffer().transform([&](auto rhiValue) { positionHandle_ = std::move(rhiValue); });
-        if (!result || !positionHandle_.valid()) {
-            log += resultMessage("allocateBuffer(BunnyWireframePass positions)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-        result = bindlessHeap_->allocateBuffer().transform([&](auto rhiValue) { transformHandle_ = std::move(rhiValue); });
-        if (!result || !transformHandle_.valid()) {
-            log += resultMessage("allocateBuffer(BunnyWireframePass transforms)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-        result = bindlessHeap_->writeStorageBuffer(paramsHandle_, *paramsBuffer_);
-        if (!result) {
-            log += resultMessage("writeStorageBuffer(BunnyWireframePass params)", result);
-            log += '\n';
-            return result;
-        }
-        result = bindlessHeap_->writeStorageBuffer(positionHandle_, *positionBuffer_);
-        if (!result) {
-            log += resultMessage("writeStorageBuffer(BunnyWireframePass positions)", result);
-            log += '\n';
-            return result;
-        }
-        result = bindlessHeap_->writeStorageBuffer(transformHandle_, *transformBuffer_);
-        if (!result) {
-            log += resultMessage("writeStorageBuffer(BunnyWireframePass transforms)", result);
-            log += '\n';
-            return result;
-        }
-
         ShaderCompileResult vertexCompile;
         result = compileSlangShader(
             kBunnyWireframeShaderModuleName,
@@ -172,7 +111,7 @@ public:
                 .vertexShader = {vertexModule->get()},
                 .fragmentShader = {fragmentModule->get()},
                 .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(BunnyWireframeUserPush),
+                .bindlessUserPushDataSize = sizeof(BunnyWireframeParameters),
             }).transform([&](auto rhiValue) { program_ = std::move(rhiValue); });
         if (!result || program_ == nullptr) {
             log += resultMessage("createGraphicsShaderObjectProgram(BunnyWireframePass)", result);
@@ -199,16 +138,27 @@ public:
         TextureHandle depth = context.outputTexture("depth");
         if (!color.valid() ||
             !depth.valid() ||
-            bindlessHeap_ == nullptr ||
+            device_ == nullptr ||
             program_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
+        auto& commands = context.commandBuffer();
+        EncodedParameters encoded;
         if (drawVertexCount_ > 0) {
-            Result<> result = updateParamsBuffer(context.width(), context.height(), context.properties());
-            if (!result) {
-                return result;
-            }
+            if (!drawBounds_.valid) { return makeError(Error::InvalidArgument); }
+            auto registry = device_->resourceRegistry();
+            if (!registry) { return makeError(registry.error()); }
+            ParameterWriter writer(*device_, **registry, commands.frameContext());
+            BunnyWireframeParameters params{
+                .positions = writer.dataBuffer(positionBuffer_.get(), sizeof(BunnyWireframeGPUPosition), 16),
+                .transforms = writer.dataBuffer(transformBuffer_.get(), sizeof(SceneGPUTransform), 16),
+            };
+            buildBunnyParams(context.width(), context.height(), context.properties(), drawBounds_, params.settings);
+            auto packet = writer.encode(params, kBunnyWireframeABI, ParameterTransport::InlinePush);
+            if (!packet) { return makeError(packet.error()); }
+            encoded = std::move(*packet);
+            if (auto result = encoded.bindResources(commands); !result) { return result; }
         }
 
         const Rect renderArea{
@@ -251,17 +201,11 @@ public:
             .maxDepth = 1.0f,
         });
         context.commandBuffer().setScissor(renderArea);
-        context.commandBuffer().bindBindlessHeap(*bindlessHeap_);
         const auto execution = program_->execution({.depthStencil = {
             .depthTestEnable = true, .depthWriteEnable = true, .depthCompareOp = depthCompareOp(reversedZ)}});
-        auto bound = context.commandBuffer().bindExecution(execution);
+        const auto bytes = encoded.inlineData();
+        auto bound = commands.bindExecution(execution, bytes.data(), uint32_t(bytes.size()));
         if (!bound) { context.commandBuffer().endRendering(); return bound; }
-        const BunnyWireframeUserPush push{
-            .paramsBuffer = paramsHandle_.shaderIndex,
-            .positionBuffer = positionHandle_.shaderIndex,
-            .transformBuffer = transformHandle_.shaderIndex,
-        };
-        context.commandBuffer().pushBindlessData(&push, sizeof(push));
         context.commandBuffer().draw(drawVertexCount_);
         context.commandBuffer().endRendering();
         return {};
@@ -340,7 +284,7 @@ private:
 
     Result<> rebuildRuntimeGeometry(const scene::Scene& runtimeScene)
     {
-        if (device_ == nullptr || bindlessHeap_ == nullptr) {
+        if (device_ == nullptr) {
             return makeError(Error::InvalidArgument);
         }
 
@@ -386,15 +330,6 @@ private:
         if (!result) {
             return result;
         }
-        result = bindlessHeap_->writeStorageBuffer(positionHandle_, *positionBuffer);
-        if (!result) {
-            return result;
-        }
-        result = bindlessHeap_->writeStorageBuffer(transformHandle_, *transformBuffer);
-        if (!result) {
-            return result;
-        }
-
         positionBuffer_ = std::move(positionBuffer);
         transformBuffer_ = std::move(transformBuffer);
         drawBounds_ = bounds;
@@ -403,28 +338,6 @@ private:
         structuralRevision_ = runtimeScene.sceneGraph().structuralRevision();
         transformRevision_ = runtimeScene.transformRevision();
         visibilityRevision_ = runtimeScene.visibilityRevision();
-        return {};
-    }
-
-    Result<> updateParamsBuffer(
-        uint32_t width,
-        uint32_t height,
-        const RenderGraphProperties& properties)
-    {
-        if (paramsBuffer_ == nullptr || !drawBounds_.valid) {
-            return makeError(Error::InvalidArgument);
-        }
-
-        BunnyWireframeGPUParams params;
-        buildBunnyParams(width, height, properties, drawBounds_, params);
-
-        void* mapped = paramsBuffer_->map();
-        if (mapped == nullptr) {
-            return makeError(Error::Failure);
-        }
-        std::memcpy(mapped, &params, sizeof(params));
-        paramsBuffer_->flush({0, sizeof(params)});
-        paramsBuffer_->unmap();
         return {};
     }
 
@@ -643,11 +556,6 @@ private:
 
     std::unique_ptr<Buffer> positionBuffer_;
     std::unique_ptr<Buffer> transformBuffer_;
-    std::unique_ptr<Buffer> paramsBuffer_;
-    std::unique_ptr<BindlessHeap> bindlessHeap_;
-    BindlessHandle positionHandle_;
-    BindlessHandle transformHandle_;
-    BindlessHandle paramsHandle_;
     std::unique_ptr<GraphicsShaderObjectProgram> program_;
     scene::Bounds drawBounds_;
     Device* device_ = nullptr;

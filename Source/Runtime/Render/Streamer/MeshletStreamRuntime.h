@@ -47,6 +47,7 @@ inline constexpr const char* kMeshletStreamShaderModuleName = "Features/GPUDrive
 inline constexpr const char* kMeshletStreamMeshEntryPoint = "gpuDrivenStreamAssetMeshMain";
 inline constexpr const char* kMeshletStreamFragmentEntryPoint = "gpuDrivenStreamAssetFragmentMain";
 inline constexpr const char* kMeshletStreamDeferredEntryPoint = "gpuDrivenStreamAssetDeferredMain";
+inline constexpr const char* kMeshletStreamCompositeShaderModuleName = "Features/GPUDriven/StreamComposite";
 inline constexpr const char* kMeshletStreamCompositeVertexEntryPoint =
     "gpuDrivenStreamAssetCompositeVertexMain";
 inline constexpr const char* kMeshletStreamCompositeFragmentEntryPoint =
@@ -55,8 +56,7 @@ inline constexpr const char* kMeshletStreamCullResetEntryPoint =
     "gpuDrivenStreamAssetCullResetMain";
 inline constexpr const char* kMeshletStreamInstanceCullEntryPoint =
     "gpuDrivenStreamAssetInstanceCullMain";
-inline constexpr const char* kMeshletStreamHZBEntryPoint =
-    "gpuDrivenStreamAssetHzbMain";
+inline constexpr const char* kMeshletStreamHZBEntryPoint = "hzbMain";
 inline constexpr const char* kMeshletStreamPageTableInitEntryPoint = "gpuDrivenStreamAssetInitializePageTableMain";
 inline constexpr const char* kMeshletStreamUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
 inline constexpr const char* kMeshletStreamTraversalEntryPoint = "gpuDrivenStreamAssetTraversalMain";
@@ -630,6 +630,8 @@ public:
     BindlessHeap* bindlessHeap() const { return registry_ ? registry_->heap() : nullptr; }
     MeshletStreamUserPush userPush() const;
     Result<> updateRasterBindings(const MeshletStreamGPURasterBindings& bindings);
+    Result<EncodedParameters> encodeInstanceCull(ParameterWriter& writer, Buffer* visibility,
+        Buffer* visibleIds, Buffer* counter, Buffer* hzb, uint32_t phase) const;
     Result<> cmdPrepareVisibility(CommandBuffer& commandBuffer);
     Result<> cmdPrepareDeferred(CommandBuffer& commandBuffer);
     MeshletStreamDeferredGPUResourcesView deferredGpuResources() const;
@@ -903,6 +905,7 @@ private:
     bool topLevelBuildPending_ = false;
     std::vector<FallbackBLASPrimitive> fallbackBlasPrimitives_;
     uint32_t currentFrameUploadCount_ = 0;
+    MeshletStreamGPURasterBindings rasterBindingsSnapshot_{};
     MeshletStreamGPUParams previousFrameParams_;
     bool previousFrameParamsValid_ = false;
 };

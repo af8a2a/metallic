@@ -3,84 +3,37 @@
 #define SCENE_RAYQUERY_ENABLE_POSITION_FETCH 0
 #endif
 
-import Core;
+import ShaderCore;
 using Metallic;
 
-// NTC resources are shared with the path tracer and occupy bindings 29-33.
+// Canonical typed resources share one inline ABI.
 import NeuralTextures;
 using Metallic.Interop.NeuralTextures;
-#include "../../Interop/NeuralTextureBindings.hlsli"
-
-#define gScene getResource<RaytracingAccelerationStructure>(0)
-
-#define gOutput getResource<RWTexture2D<float4>>(1)
-
-struct MaterialVisualizePrimitive
+#include "../../../Source/Runtime/Render/Core/MaterialVisualizationParameters.h"
+[[vk::push_constant]] ConstantBuffer<MaterialVisualizationParameters> gParams;
+NeuralTextureBindings sceneNeuralTextures()
 {
-    uint firstVertex;
-    uint vertexCount;
-    uint firstIndex;
-    uint indexCount;
-    uint flags;
-    uint padding0;
-    uint padding1;
-    uint padding2;
-};
+#if METALLIC_HAS_NTC
+    return {gParams.ntcLatents, resolveDescriptor(gParams.ntcConstants), resolveDescriptor(gParams.ntcWeights),
+        resolveDescriptor(gParams.ntcInfo), resolveDescriptor(gParams.ntcSampler)};
+#else
+    return (NeuralTextureBindings)0;
+#endif
+}
 
-struct MaterialVisualizeInstance
-{
-    uint primitiveIndex;
-    uint materialIndex;
-    uint flags;
-    uint padding;
-};
+#define gScene resolveDescriptor(gParams.scene)
 
-struct MaterialVisualizeTextureInfo
-{
-    uint textureIndex;
-    uint texCoord;
-    uint ntcTextureSetIndex;
-    uint ntcChannelMapping;
-    float4 transform0;
-    float4 transform1;
-};
+#define gOutput resolveDescriptor(gParams.output)
 
-struct MaterialVisualizeMaterial
-{
-    float4 baseColor;
-    float4 emissive;
-    float4 params;
-    float4 textureParams;
-    float4 glassParams;
-    float4 attenuationColor;
-    float4 diffuseTransmission;
-    float4 rtxcrHairBaseColor;
-    float4 rtxcrHairParams0;
-    float4 rtxcrHairParams1;
-    float4 rtxcrHairDiffuseTint;
-    MaterialVisualizeTextureInfo baseColorTexture;
-    MaterialVisualizeTextureInfo metallicRoughnessTexture;
-    MaterialVisualizeTextureInfo normalTexture;
-    MaterialVisualizeTextureInfo occlusionTexture;
-    MaterialVisualizeTextureInfo emissiveTexture;
-    MaterialVisualizeTextureInfo transmissionTexture;
-    MaterialVisualizeTextureInfo thicknessTexture;
-    MaterialVisualizeTextureInfo diffuseTransmissionTexture;
-    MaterialVisualizeTextureInfo diffuseTransmissionColorTexture;
-    float4 specular;
-    MaterialVisualizeTextureInfo specularTexture;
-    MaterialVisualizeTextureInfo specularColorTexture;
-};
+#define gIndices resolveDescriptor(gParams.indices)
 
-#define gIndices getResource<StructuredBuffer<uint>>(3)
+#define gPrimitives resolveDescriptor(gParams.primitives)
 
-#define gPrimitives getResource<StructuredBuffer<MaterialVisualizePrimitive>>(4)
+#define gInstances resolveDescriptor(gParams.instances)
 
-#define gInstances getResource<StructuredBuffer<MaterialVisualizeInstance>>(5)
+#define gMaterials resolveDescriptor(gParams.materials)
 
-#define gMaterials getResource<StructuredBuffer<MaterialVisualizeMaterial>>(6)
-
-#define gMaterialTextures(index) getResourceArray<Texture2D<float4>>(7, index)
+#define gMaterialTextures(index) resolveDescriptor(nonuniform(gParams.textures[index]))
 
 
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
@@ -98,23 +51,6 @@ static const uint kModeBitangent = 10u;
 static const uint kModeNRDNormalRoughness = 11u;
 static const uint kModeNormalDeviation = 12u;
 static const uint kPrimitiveHasAuthoredTangents = 1u;
-
-struct SceneMaterialVisualizationPush
-{
-    float4 eye;
-    float4 center;
-    float4 upProjection;
-    float4 viewport;
-    float4 clipOrtho;
-    uint width;
-    uint height;
-    uint mode;
-    uint materialTextureCount;
-    float bitangentFlip;
-    uint ntcTextureSetCount;
-    uint padding1;
-    uint padding2;
-};
 
 struct Ray
 {
@@ -297,9 +233,9 @@ float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
     uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
     uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-    return getResource<StructuredBuffer<SceneShadingVertex>>(2)[i0].texcoord.xy * weights.x +
-        getResource<StructuredBuffer<SceneShadingVertex>>(2)[i1].texcoord.xy * weights.y +
-        getResource<StructuredBuffer<SceneShadingVertex>>(2)[i2].texcoord.xy * weights.z;
+    return resolveDescriptor(gParams.vertices)[i0].texcoord.xy * weights.x +
+        resolveDescriptor(gParams.vertices)[i1].texcoord.xy * weights.y +
+        resolveDescriptor(gParams.vertices)[i2].texcoord.xy * weights.z;
 }
 
 bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, SceneMaterialVisualizationPush push)
@@ -399,9 +335,9 @@ bool traceClosest(Ray ray, SceneMaterialVisualizationPush push, out HitInfo hit)
     uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
     uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
     uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    SceneShadingVertex v0 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i0];
-    SceneShadingVertex v1 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i1];
-    SceneShadingVertex v2 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i2];
+    SceneShadingVertex v0 = resolveDescriptor(gParams.vertices)[i0];
+    SceneShadingVertex v1 = resolveDescriptor(gParams.vertices)[i1];
+    SceneShadingVertex v2 = resolveDescriptor(gParams.vertices)[i2];
 
     float2 bary = query.CommittedTriangleBarycentrics();
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
@@ -412,9 +348,9 @@ bool traceClosest(Ray ray, SceneMaterialVisualizationPush push, out HitInfo hit)
     float3 p1 = positions[1];
     float3 p2 = positions[2];
 #else
-    float3 p0 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i0);
-    float3 p1 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i1);
-    float3 p2 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i2);
+    float3 p0 = loadSceneVertexPosition(resolveDescriptor(gParams.positions), i0);
+    float3 p1 = loadSceneVertexPosition(resolveDescriptor(gParams.positions), i1);
+    float3 p2 = loadSceneVertexPosition(resolveDescriptor(gParams.positions), i2);
 #endif
     float2 uv0 = v0.texcoord;
     float2 uv1 = v1.texcoord;
@@ -566,7 +502,7 @@ float3 visualizeHit(HitInfo hit, SceneMaterialVisualizationPush push)
 [numthreads(8, 8, 1)]
 void sceneMaterialVisualizeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    SceneMaterialVisualizationPush push = getConstants<SceneMaterialVisualizationPush>();
+    SceneMaterialVisualizationPush push = gParams.settings;
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;

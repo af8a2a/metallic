@@ -86,7 +86,6 @@ inline constexpr const char* kVisibilityBufferMaskedFragmentEntryPoint =
     "visibilityBufferMaskedFragmentMain";
 inline constexpr const char* kGPUDrivenPreviewResetEntryPoint = "gpuDrivenPreviewResetMain";
 inline constexpr const char* kGPUDrivenPreviewInstanceCullEntryPoint = "gpuDrivenPreviewInstanceCullMain";
-inline constexpr const char* kGPUDrivenPreviewHZBEntryPoint = "gpuDrivenPreviewHzbMain";
 inline constexpr const char* kVisibilityBufferCompositeVertexEntryPoint =
     "visibilityBufferCompositeVertexMain";
 inline constexpr const char* kVisibilityBufferCompositeFragmentEntryPoint =
@@ -408,24 +407,6 @@ struct BunnyWireframeGPUPosition {
     float w = 1.0f;
 };
 
-struct BunnyWireframeGPUParams {
-    float eye[4] = {};
-    float center[4] = {};
-    float upProjection[4] = {};
-    float viewport[4] = {};
-    float clipOrtho[4] = {};
-    float clearColor[4] = {};
-    float wireColor[4] = {};
-    float settings[4] = {};
-};
-
-struct BunnyWireframeUserPush {
-    uint32_t paramsBuffer = 0;
-    uint32_t positionBuffer = 0;
-    uint32_t transformBuffer = 0;
-    uint32_t padding = 0;
-};
-
 struct MaterialShaderObjectGPUPosition {
     float x = 0.0f;
     float y = 0.0f;
@@ -435,25 +416,6 @@ struct MaterialShaderObjectGPUPosition {
 
 struct MaterialShaderObjectGPUMaterial {
     float baseColor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-};
-
-struct MaterialShaderObjectGPUParams {
-    float eye[4] = {};
-    float center[4] = {};
-    float upProjection[4] = {};
-    float viewport[4] = {};
-    float clipOrtho[4] = {};
-};
-
-struct MaterialShaderObjectUserPush {
-    uint32_t positionBuffer = 0;
-    uint32_t materialIndexBuffer = 0;
-    uint32_t materialBuffer = 0;
-    uint32_t paramsBuffer = 0;
-    uint32_t vertexOffset = 0;
-    uint32_t materialVariant = 0;
-    uint32_t transformBuffer = 0;
-    uint32_t padding = 0;
 };
 
 struct MaterialShaderObjectBatch {
@@ -734,22 +696,6 @@ static_assert(sizeof(GPUSceneGPUInstanceRecord) == 160);
 static_assert(sizeof(GPUSceneGPUGeometryRecord) == 96);
 static_assert(sizeof(GPUDrivenPreviewGPUParams) == 352);
 static_assert(sizeof(GPUDrivenPreviewUserPush) == 132);
-
-struct SceneMaterialVisualizationPush {
-    float eye[4] = {};
-    float center[4] = {};
-    float upProjection[4] = {};
-    float viewport[4] = {};
-    float clipOrtho[4] = {};
-    uint32_t width = 1;
-    uint32_t height = 1;
-    uint32_t mode = kSceneMaterialVisualizationModeMaterial;
-    uint32_t materialTextureCount = 0;
-    float bitangentFlip = 1.0f;
-    uint32_t ntcTextureSetCount = 0;
-    uint32_t padding1 = 0;
-    uint32_t padding2 = 0;
-};
 
 struct ScenePathTracePush {
     float eye[4] = {};
