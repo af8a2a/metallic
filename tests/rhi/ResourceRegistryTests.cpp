@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/MaterialSampleParameters.h"
+#include "Runtime/Render/Core/DebugVisualizationParameters.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -164,6 +166,10 @@ public:
             {"Metallic.UpscalerGuideResolveParams", {FIELD(UpscalerGuideResolveParams, depth), FIELD(UpscalerGuideResolveParams, motion),
                 FIELD(UpscalerGuideResolveParams, outputDepth), FIELD(UpscalerGuideResolveParams, outputMotion),
                 FIELD(UpscalerGuideResolveParams, jitterX), FIELD(UpscalerGuideResolveParams, jitterY)}},
+            {"Metallic.DLSSSupportParams", {FIELD(DLSSSupportParams, depth), FIELD(DLSSSupportParams, color)}},
+            {"Metallic.SceneRayQueryVisualizationParams", {FIELD(SceneRayQueryVisualizationParams, scene), FIELD(SceneRayQueryVisualizationParams, output), FIELD(SceneRayQueryVisualizationParams, settings)}},
+            {"Metallic.SceneRayQueryVisualizationPush", {FIELD(SceneRayQueryVisualizationPush, eye), FIELD(SceneRayQueryVisualizationPush, center), FIELD(SceneRayQueryVisualizationPush, upProjection), FIELD(SceneRayQueryVisualizationPush, viewport), FIELD(SceneRayQueryVisualizationPush, clipOrtho), FIELD(SceneRayQueryVisualizationPush, mode), FIELD(SceneRayQueryVisualizationPush, width), FIELD(SceneRayQueryVisualizationPush, height), FIELD(SceneRayQueryVisualizationPush, padding)}},
+            {"Metallic.RTXCRMaterialSampleParams", {FIELD(RTXCRMaterialSampleParams, output), FIELD(RTXCRMaterialSampleParams, settings)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -190,15 +196,25 @@ public:
             {"Features/PathTracing/OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain", 13},
             {"Features/PathTracing/ScenePathTraceGuides", "scenePathTraceGuidesMain", 13},
             {"Features/PostProcess/UpscalerGuideResolve", "upscalerGuideResolveMain", 14},
+            {"Features/PostProcess/StreamlineDLSSSupport", "streamlineDlssAlphaMain", 15},
+            {"Features/PostProcess/StreamlineDLSSSupport", "streamlineDlssDepthFragmentMain", 15},
+            {"Features/Debug/SceneRayQueryVisualize", "sceneRayQueryVisualizeMain", 16},
+            {"Features/Debug/SceneRayQueryVisualize", "sceneRayQueryVisualizeMain", 17},
+            {"Features/Samples/RTXCRMaterialSample", "rtxcrMaterialSampleMain", 18},
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout == 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                if ((program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
                 const char* capabilities[] = {"spvRayQueryKHR"};
+                std::span<const char* const> extraPaths;
+#if METALLIC_HAS_RTXCR
+                const char* rtxcrPaths[] = {METALLIC_RTXCR_SHADER_INCLUDE_DIR};
+                if (category == 6) { extraPaths = rtxcrPaths; }
+#endif
                 std::string log;
                 auto shader = compileSlangShaderToSpirv({.moduleName = program.module, .entryPointName = program.entry,
-                    .searchPath = PROJECT_SOURCE_DIR "/Shaders", .capabilities = category == 4 ? std::span<const char* const>(capabilities) : std::span<const char* const>{}, .macroDefines = defines, .descriptorHeapMode = mode}, log);
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders", .additionalSearchPaths = extraPaths, .capabilities = category >= 4 ? std::span<const char* const>(capabilities) : std::span<const char* const>{}, .macroDefines = defines, .descriptorHeapMode = mode}, log);
                 if (!shader) { return RHITestResult::fail(log); }
                 const auto& layout = layouts[program.layout];
                 std::vector<uint32_t> ids;
@@ -235,7 +251,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -268,6 +284,20 @@ public:
     PathTraceParameterLayoutTest() { category = 4; name = "path_trace_parameter_spirv_layout"; }
 };
 METALLIC_REGISTER_RHI_TEST(PathTraceParameterLayoutTest);
+
+class DebugVisualizationParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    DebugVisualizationParameterLayoutTest() { category = 5; name = "debug_visualization_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(DebugVisualizationParameterLayoutTest);
+
+#if METALLIC_HAS_RTXCR
+class MaterialSampleParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    MaterialSampleParameterLayoutTest() { category = 6; name = "material_sample_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(MaterialSampleParameterLayoutTest);
+#endif
 
 class SharcTypedMaintenanceTest final : public RHITest {
 public:

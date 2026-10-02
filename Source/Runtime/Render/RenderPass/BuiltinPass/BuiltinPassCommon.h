@@ -466,18 +466,6 @@ struct MaterialShaderObjectBatch {
     uint32_t vertexCount = 0;
 };
 
-struct SceneRayQueryVisualizationPush {
-    float eye[4] = {};
-    float center[4] = {};
-    float upProjection[4] = {};
-    float viewport[4] = {};
-    float clipOrtho[4] = {};
-    uint32_t mode = kRayQueryVisualizationGranularityInstance;
-    uint32_t width = 1;
-    uint32_t height = 1;
-    uint32_t padding = 0;
-};
-
 struct GPUDrivenPreviewGPUVertex {
     float position[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     float normal[4] = {0.0f, 0.0f, 1.0f, 0.0f};

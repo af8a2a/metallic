@@ -84,6 +84,11 @@ struct AutoExposureParams {
     PostUInt padding;
 };
 
+struct DLSSSupportParams {
+    PostSampled2DScalar depth;
+    PostStorage2D color;
+};
+
 struct UpscalerGuideResolveParams {
     PostSampled2DScalar depth;
     PostSampled2DMotion motion;
@@ -112,6 +117,8 @@ struct ColorGradingLUTParams {
 };
 
 #ifdef __cplusplus
+inline constexpr uint64_t kDLSSSupportABI = 0x444c535353550001ull;
+static_assert(sizeof(DLSSSupportParams) == 16 && offsetof(DLSSSupportParams, color) == 8);
 inline constexpr uint64_t kUpscalerGuideResolveABI = 0x5550475549440001ull;
 static_assert(sizeof(UpscalerGuideResolveParams) == 40 && offsetof(UpscalerGuideResolveParams, jitterX) == 32);
 inline constexpr uint64_t kFinalBlitABI = 0x46424c4954000001ull;

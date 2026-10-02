@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/DebugVisualizationParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -151,22 +152,11 @@ public:
             return result;
         }
 
-        const ComputeProgramBindingDesc bindings[] = {
-            ComputeProgramBindingDesc{
-                .binding = 0,
-                .kind = ComputeResourceBindingKind::AccelerationStructure,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 1,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            },
-        };
         result = rayQueryProgram_.initialize(
             *context.device,
-            ComputeProgramDesc{
+            ComputeKernelDesc{
                 .spirv = computeCompile.spirv,
-                .pushConstantSize = sizeof(SceneRayQueryVisualizationPush),
-                .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
+                .parameters = parameterAbi<SceneRayQueryVisualizationParams>(kSceneRayQueryVisualizationABI, ParameterTransport::InlinePush),
                 .debugName = "SceneRayQueryVisualizationPass",
             },
             log);
@@ -193,36 +183,27 @@ public:
             return {};
         }
 
-        SceneRayQueryVisualizationPush push;
+        SceneRayQueryVisualizationPush push{};
         buildPush(context.width(), context.height(), context.properties(), drawBounds_, push);
         const bool useClusterId = push.mode == kRayQueryVisualizationGranularityClusterId;
         if (useClusterId && !(clusterAccelerationStructure_ && clusterAccelerationStructure_->valid())) {
             return makeError(Error::Unsupported);
         }
 
-        const ComputeDispatchBinding bindings[] = {
-            ComputeDispatchBinding{
-                .binding = 0,
-                .accelerationStructure = useClusterId
-                    ? clusterAccelerationStructure_->accelerationStructure()
-                    : context.inputAccelerationStructure("accelerationStructure")
-                        ? context.inputAccelerationStructure("accelerationStructure")
-                        : sceneResources_.accelerationStructure().accelerationStructure(),
-            },
-            ComputeDispatchBinding{
-                .binding = 1,
-                .textureView = color.view(),
-            },
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        const SceneRayQueryVisualizationParams params{
+            .scene = writer.accelerationStructure(useClusterId ? clusterAccelerationStructure_->accelerationStructure()
+                : context.inputAccelerationStructure("accelerationStructure") ? context.inputAccelerationStructure("accelerationStructure")
+                : sceneResources_.accelerationStructure().accelerationStructure()),
+            .output = writer.storageImage(color.view()),
+            .settings = push,
         };
-        return rayQueryProgram_.dispatch(ComputeDispatchDesc{
-            .commandBuffer = &context.commandBuffer(),
-            .bindings = {bindings, static_cast<uint32_t>(std::size(bindings))},
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-            .groupCountZ = 1,
-        });
+        auto encoded = writer.encode(params, kSceneRayQueryVisualizationABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        return rayQueryProgram_.dispatch(commands, *encoded, (context.width() + 7u) / 8u, (context.height() + 7u) / 8u);
     }
 
 private:
@@ -399,7 +380,7 @@ private:
 
     ScenePathTraceResources sceneResources_;
     std::shared_ptr<SceneClusterAccelerationStructureBuilder> clusterAccelerationStructure_;
-    ComputeProgram rayQueryProgram_;
+    ComputeKernel rayQueryProgram_;
     scene::Bounds drawBounds_;
     uint64_t resourceIdentity_ = 0;
     uint64_t structuralRevision_ = 0;

@@ -38,9 +38,6 @@ inline constexpr const char* kStreamlineDLSSDepthFragmentEntryPoint =
 inline constexpr const char* kStreamlineDLSSAlphaEntryPoint =
     "streamlineDlssAlphaMain";
 
-struct StreamlineDLSSAlphaUserPush {
-    uint32_t outputImage = 0;
-};
 
 class StreamlineDLSSPass final : public UnsafePass {
 public:
@@ -198,7 +195,7 @@ public:
                   preparedSettings_,
                   log);
         preparedValid_ = result.has_value();
-        if (result && variant_ == DLSSVariant::SuperResolution && auxiliaryHeap_ != nullptr) {
+        if (result && variant_ == DLSSVariant::SuperResolution && depthExportPipeline_ != nullptr) {
             // Resource-only graph rebuilds reuse this pass. Resize its private
             // D32 export together with the newly negotiated input dimensions.
             return prepareSuperResolutionResources(*context.device, preparedSettings_.renderWidth,
@@ -817,28 +814,6 @@ private:
         }
 
         Result<> result;
-        if (auxiliaryHeap_ == nullptr) {
-            result = device.createBindlessHeap(BindlessHeapDesc{
-                    .maxSampledImages = 1,
-                    .maxStorageImages = 1,
-                }).transform([&](auto rhiValue) { auxiliaryHeap_ = std::move(rhiValue); });
-            if (!result || auxiliaryHeap_ == nullptr) {
-                log += resultMessage("createBindlessHeap(StreamlineDLSSSRPass)", result);
-                log += '\n';
-                return result ? makeError(Error::Failure) : result;
-            }
-            result = auxiliaryHeap_->allocateSampledImage().transform([&](auto rhiValue) { depthGuideHandle_ = std::move(rhiValue); });
-            if (!result || !depthGuideHandle_.valid()) {
-                log = "StreamlineDLSSSRPass failed to allocate its depth guide descriptor";
-                return result ? makeError(Error::Failure) : result;
-            }
-            result = auxiliaryHeap_->allocateStorageImage().transform([&](auto rhiValue) { outputColorHandle_ = std::move(rhiValue); });
-            if (!result || !outputColorHandle_.valid()) {
-                log = "StreamlineDLSSSRPass failed to allocate its output descriptor";
-                return result ? makeError(Error::Failure) : result;
-            }
-        }
-
         if (depthExportPipeline_ == nullptr) {
             result = createSlangShaderModule(
                 device,
@@ -877,26 +852,16 @@ private:
             }
         }
 
-        if (alphaResolvePipeline_ == nullptr) {
-            result = createSlangShaderModule(
-                device,
-                kStreamlineDLSSSupportShaderModuleName,
-                kStreamlineDLSSAlphaEntryPoint,
-                alphaShader_,
-                log);
-            if (!result) {
-                return result;
-            }
-            result = device.createComputePipeline(ComputePipelineDesc{
-                .computeShader = {alphaShader_.get()},
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(StreamlineDLSSAlphaUserPush),
-            }).transform([&](auto rhiValue) { alphaResolvePipeline_ = std::move(rhiValue); });
-            if (!result || alphaResolvePipeline_ == nullptr) {
-                log += resultMessage("createComputePipeline(StreamlineDLSSSRPass alpha resolve)", result);
-                log += '\n';
-                return result ? makeError(Error::Failure) : result;
-            }
+        if (!alphaResolve_.valid()) {
+            ShaderCompileResult shader;
+            result = compileSlangShaderToSpirv({.moduleName = kStreamlineDLSSSupportShaderModuleName,
+                .entryPointName = kStreamlineDLSSAlphaEntryPoint, .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
+                shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+            if (!result) { log = shader.diagnostics; return result; }
+            result = alphaResolve_.initialize(device, {.spirv = shader.spirv,
+                .parameters = parameterAbi<DLSSSupportParams>(kDLSSSupportABI, ParameterTransport::InlinePush),
+                .debugName = "DLSSAlphaResolve"}, log);
+            if (!result) { return result; }
         }
 
         if (dlssDepth_ != nullptr &&
@@ -948,20 +913,20 @@ private:
         if (!validTexture(depthGuide) ||
             dlssDepth_ == nullptr ||
             dlssDepthView_ == nullptr ||
-            auxiliaryHeap_ == nullptr ||
             depthExportPipeline_ == nullptr ||
             renderWidth != dlssDepthWidth_ ||
             renderHeight != dlssDepthHeight_) {
             return makeError(Error::InvalidArgument);
         }
 
-        Result<> result = auxiliaryHeap_->writeSampledImage(
-            depthGuideHandle_,
-            *depthGuide.view(),
-            ResourceState::ShaderRead);
-        if (!result) {
-            return result;
-        }
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, commandBuffer.frameContext());
+        const DLSSSupportParams params{.depth = writer.sampledImage(depthGuide.view())};
+        auto encoded = writer.encode(params, kDLSSSupportABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        if (auto result = encoded->bindResources(commandBuffer); !result) { return result; }
+        const auto bytes = encoded->inlineData();
 
         const Rect renderArea{
             .x = 0,
@@ -989,9 +954,10 @@ private:
             .maxDepth = 1.0f,
         });
         commandBuffer.setScissor(renderArea);
-        commandBuffer.bindBindlessHeap(*auxiliaryHeap_);
-        if (auto commandResult = commandBuffer.bindExecution((depthExportPipeline_)->execution()); !commandResult) { return commandResult; }
-        commandBuffer.pushBindlessData(&depthGuideHandle_.shaderIndex, sizeof(depthGuideHandle_.shaderIndex));
+        if (auto commandResult = commandBuffer.bindExecution(depthExportPipeline_->execution(), bytes.data(), uint32_t(bytes.size())); !commandResult) {
+            commandBuffer.endRendering();
+            return commandResult;
+        }
         commandBuffer.draw(3);
         commandBuffer.endRendering();
 
@@ -1002,29 +968,15 @@ private:
         CommandBuffer& commandBuffer,
         TextureHandle outputColor)
     {
-        if (!validTexture(outputColor) ||
-            auxiliaryHeap_ == nullptr ||
-            alphaResolvePipeline_ == nullptr ||
-            !outputColorHandle_.valid()) {
-            return makeError(Error::InvalidArgument);
-        }
-        Result<> result = auxiliaryHeap_->writeStorageImage(
-            outputColorHandle_,
-            *outputColor.view());
-        if (!result) {
-            return result;
-        }
-
-        commandBuffer.bindBindlessHeap(*auxiliaryHeap_);
-        const StreamlineDLSSAlphaUserPush push{
-            .outputImage = outputColorHandle_.shaderIndex,
-        };
-        if (auto commandResult = commandBuffer.bindExecution((alphaResolvePipeline_)->execution(), &push, sizeof(push)); !commandResult) { return commandResult; }
-        commandBuffer.dispatch(
-            (outputColor.desc().width + 7u) / 8u,
-            (outputColor.desc().height + 7u) / 8u,
-            1);
-        return {};
+        if (!validTexture(outputColor) || !alphaResolve_.valid()) { return makeError(Error::InvalidArgument); }
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, commandBuffer.frameContext());
+        const DLSSSupportParams params{.color = writer.storageImage(outputColor.view())};
+        auto encoded = writer.encode(params, kDLSSSupportABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        return alphaResolve_.dispatch(commandBuffer, *encoded,
+            (outputColor.desc().width + 7u) / 8u, (outputColor.desc().height + 7u) / 8u);
     }
 
     Device* device_ = nullptr;
@@ -1048,14 +1000,10 @@ private:
     uint32_t preparedOutputHeight_ = 0;
     bool preparedValid_ = false;
     bool forceReset_ = true;
-    std::unique_ptr<BindlessHeap> auxiliaryHeap_;
-    BindlessHandle depthGuideHandle_;
-    BindlessHandle outputColorHandle_;
     std::unique_ptr<ShaderModule> depthVertexShader_;
     std::unique_ptr<ShaderModule> depthFragmentShader_;
-    std::unique_ptr<ShaderModule> alphaShader_;
     std::unique_ptr<GraphicsPipeline> depthExportPipeline_;
-    std::unique_ptr<ComputePipeline> alphaResolvePipeline_;
+    ComputeKernel alphaResolve_;
     std::unique_ptr<Texture> dlssDepth_;
     std::unique_ptr<TextureView> dlssDepthView_;
     uint32_t dlssDepthWidth_ = 0;

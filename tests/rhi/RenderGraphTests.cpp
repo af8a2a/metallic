@@ -5502,6 +5502,37 @@ public:
     }
 };
 
+class RenderGraphRTXCRInlineTest final : public RHITest {
+public:
+    RenderGraphRTXCRInlineTest() { type = RHITestType::Rendering; name = "render_graph_rtxcr_inline_material"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        render::RenderGraphPreviewRenderer preview;
+        auto initialized = preview.initialize(context.enableValidation, true);
+        if (!initialized) { return RHITestResult::fail(toString(initialized)); }
+        render::RenderGraph graph;
+        graph.addNode("RTXCRMaterialSamplePass", "Material");
+        graph.markOutput("Material.color");
+        std::vector<uint32_t> previous;
+        for (const char* view : {"overview", "chiang", "far-field", "subsurface"}) {
+            graph.setNodeRuntimeProperty(graph.findNode("Material")->id, "view", view);
+            if (!preview.render(graph, 129, 97)) { return RHITestResult::fail(preview.lastLog()); }
+            if (countVisiblePixels(preview.pixels()) < 128) { return RHITestResult::fail(std::string(view) + " has too little coverage"); }
+            if (previous == preview.pixels()) { return RHITestResult::fail("View selection did not change output"); }
+            previous = preview.pixels();
+            std::string log;
+            if (!saveRgba8Png(context.outputDirectory / (std::string("RTXCRInline-") + view + ".png"),
+                reinterpret_cast<const uint8_t*>(previous.data()), 129, 97, log)) { return RHITestResult::fail(log); }
+        }
+        graph.setNodeRuntimeProperty(graph.findNode("Material")->id, "exposure", 0.5f);
+        if (!preview.render(graph, 129, 97)) { return RHITestResult::fail(preview.lastLog()); }
+        if (previous == preview.pixels()) { return RHITestResult::fail("Exposure did not change output"); }
+        if (!preview.render(graph, 65, 49)) { return RHITestResult::fail(preview.lastLog()); }
+        return RHITestResult::pass("Four RTXCR views, exposure update and odd-size resize");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(RenderGraphRTXCRInlineTest);
+
 #if defined(METALLIC_HAS_RTXCR_GEOMETRY) && METALLIC_HAS_RTXCR_GEOMETRY && \
     defined(METALLIC_HAS_RTXCR_ASSETS) && METALLIC_HAS_RTXCR_ASSETS
 class RenderGraphRTXCRMaterialPreviewTest : public RHITest {

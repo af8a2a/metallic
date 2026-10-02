@@ -71,6 +71,16 @@ shader 使用对应 `DescriptorHandle<T>` 和 `resolveDescriptor()`；普通数�
 FinalBlit、SliderDebug（包括 DLSS-NR overlay）和 AutoExposure 使用 inline push，ColorGradingLUT 使用 BDA 参数块。
 UpscalerGuideResolve 使用 40 字节 inline push，包含四个具名图像句柄与 jitter；通过 ComputeKernel 提交，
 不再构造编号资源表。GPU 回归直接验证前景深度选择、UV motion、jitter 和非整工作组尺寸。
+DLSS depth export / alpha resolve 共用 16 字节 `DLSSSupportParams`；图形入口绑定编码后的 inline 数据，
+compute 入口使用 ComputeKernel。两者均通过共享 registry 保留图像资源，不再维护私有 heap 或手写 shader index。
+
+[DebugVisualizationParameters.h](../Source/Runtime/Render/Core/DebugVisualizationParameters.h) 提供
+普通场景和 streaming RTAS 可视化共用的 112 字节 inline 参数（AS、输出图像、camera/mode）。
+两条 CPU 路径使用 ParameterWriter / ComputeKernel；AS 使用完整规范句柄，支持 mapped/native 描述符模式。
+
+[MaterialSampleParameters.h](../Source/Runtime/Render/Core/MaterialSampleParameters.h) 提供 RTXCR 材质演示的
+72 字节 inline 参数（输出句柄和 64 字节材质设置），直接通过 ComputeKernel 提交。
+独立 pass 回归覆盖 overview、Chiang hair、far-field hair、subsurface、曝光更新和奇数尺寸 resize。
 AutoExposure 的 Histogram、Reduce、Apply 复用同一份不可变参数；barrier 来自阶段读写声明，不能从 handle 推测访问。
 新增参数 ABI 时应验证字段偏移、GPU 读回、mapped/native 路径和生命周期；共享声明不等于自动完成布局验证。
 

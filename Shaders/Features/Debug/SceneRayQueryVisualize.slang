@@ -1,9 +1,10 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/DebugVisualizationParameters.h"
+[[vk::push_constant]] ConstantBuffer<SceneRayQueryVisualizationParams> gParams;
 using Metallic;
 
-#define gScene getResource<RaytracingAccelerationStructure>(0)
+#define gScene resolveDescriptor(gParams.scene)
 
-#define gOutput getResource<RWTexture2D<float4>>(1)
+#define gOutput resolveDescriptor(gParams.output)
 
 #ifndef SCENE_RAYQUERY_ENABLE_CLUSTER_ID
 #define SCENE_RAYQUERY_ENABLE_CLUSTER_ID 0
@@ -13,18 +14,6 @@ static const uint kRayQueryVisualizationModeInstance = 0u;
 static const uint kRayQueryVisualizationModePrimitive = 1u;
 static const uint kRayQueryVisualizationModeClusterId = 2u;
 
-struct SceneRayQueryVisualizationPush
-{
-    float4 eye;
-    float4 center;
-    float4 upProjection;
-    float4 viewport;
-    float4 clipOrtho;
-    uint mode;
-    uint width;
-    uint height;
-    uint padding;
-};
 
 float3 safeNormalize(float3 value, float3 fallback)
 {
@@ -109,7 +98,7 @@ float3 rayOriginFromPixel(uint2 pixel, SceneRayQueryVisualizationPush push)
 [numthreads(8, 8, 1)]
 void sceneRayQueryVisualizeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    SceneRayQueryVisualizationPush push = getConstants<SceneRayQueryVisualizationPush>();
+    SceneRayQueryVisualizationPush push = gParams.settings;
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;
