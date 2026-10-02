@@ -3,26 +3,7 @@ using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
-// Debug consumer ABI; the raster push layout remains unchanged.
-struct VisibilityBufferCompositePush
-{
-
-    uint paramsBuffer, visibilityImage, depthImage;
-    uint residentRecords, meshletBuffer, residentRecordCapacity;
-    uint streamRecords, streamGroups;
-    uint shadedColors;
-};
-
-// Matches MeshletStreamGPUActiveGroup. Logical pageIndex survives compaction
-// and physical page eviction/reload; dataIndex and pageDeviceOffset do not.
-struct VisibilityDebugActiveGroup
-{
-    uint pageDeviceOffset, pageIndex, clusterCount, primitiveIndex;
-    uint lodLevel, materialIndex, mask, flags;
-    uint instanceIndex, gpuSceneInstanceIndex, padding0, padding1;
-    float4 world0, world1, world2, world3;
-};
-
+#include "../../../Source/Runtime/Render/Core/VisibilityCompositeParameters.h"
 struct FullscreenVertexOutput
 {
     float4 position : SV_Position;
@@ -65,16 +46,16 @@ float3 visibilityHashColor(uint value)
 
 // Resolve the temporary visibility slot to geometry identity before coloring.
 // Instances of the same geometry intentionally share meshlet colors.
-bool visibilityDebugIdentity(uint index, VisibilityBufferCompositePush push,
+bool visibilityDebugIdentity(uint index, VisibilityCompositeParameters push,
     out uint clusterSeed, out uint lodLevel)
 {
     clusterSeed = lodLevel = 0u;
     uint count, stride;
     if (index < push.residentRecordCapacity) {
         DescriptorHandle<StructuredBuffer<VisibleClusterRecord>> recordsHandle =
-            DescriptorHandle<StructuredBuffer<VisibleClusterRecord>>(uint2(push.residentRecords, 0));
+            push.residentRecords;
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>> clustersHandle =
-            DescriptorHandle<StructuredBuffer<GPUDrivenPreviewMeshlet>>(uint2(push.meshletBuffer, 0));
+            push.meshletBuffer;
         StructuredBuffer<VisibleClusterRecord> records = recordsHandle;
         StructuredBuffer<GPUDrivenPreviewMeshlet> clusters = clustersHandle;
         records.GetDimensions(count, stride);
@@ -86,11 +67,11 @@ bool visibilityDebugIdentity(uint index, VisibilityBufferCompositePush push,
         lodLevel = clusters[record.clusterIndex].lod.x;
         return true;
     }
-    if (push.streamRecords == 0xffffffffu || push.streamGroups == 0xffffffffu) { return false; }
+    if (push.streamEnabled == 0u) { return false; }
     DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>> recordsHandle =
-        DescriptorHandle<StructuredBuffer<CompactStreamVisibleRecord>>(uint2(push.streamRecords, 0));
+        push.streamRecords;
     DescriptorHandle<StructuredBuffer<VisibilityDebugActiveGroup>> groupsHandle =
-        DescriptorHandle<StructuredBuffer<VisibilityDebugActiveGroup>>(uint2(push.streamGroups, 0));
+        push.streamGroups;
     StructuredBuffer<CompactStreamVisibleRecord> records = recordsHandle;
     StructuredBuffer<VisibilityDebugActiveGroup> groups = groupsHandle;
     index -= push.residentRecordCapacity;
@@ -183,14 +164,12 @@ float debugGeometryLighting(uint2 pixel, Texture2D<uint> visibility, Texture2D<f
 [shader("fragment")]
 float4 visibilityBufferCompositeFragmentMain(
     FullscreenVertexOutput input,
-    uniform VisibilityBufferCompositePush push) : SV_Target0
+    uniform VisibilityCompositeParameters push) : SV_Target0
 {
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>> paramsHandle =
-        DescriptorHandle<StructuredBuffer<GPUDrivenPreviewParams>>(uint2(
-            push.paramsBuffer, 0));
+        push.paramsBuffer;
     DescriptorHandle<Texture2D<uint>> visibilityHandle =
-        DescriptorHandle<Texture2D<uint>>(uint2(
-            push.visibilityImage, 0));
+        push.visibilityImage;
     GPUDrivenPreviewParams params = paramsHandle[0];
     uint2 pixel = min(uint2(input.position.xy), uint2(params.width - 1u, params.height - 1u));
     Texture2D<uint> visibility = visibilityHandle;
@@ -202,8 +181,7 @@ float4 visibilityBufferCompositeFragmentMain(
     }
     if (params.mode == 4u) {
         DescriptorHandle<Texture2D<float>> depthHandle =
-            DescriptorHandle<Texture2D<float>>(uint2(
-                push.depthImage, 0));
+            push.depthImage;
         Texture2D<float> depth = depthHandle;
         float z = saturate(depth.Load(int3(pixel, 0)));
         return float4(z, z, z, 1.0);
@@ -219,8 +197,7 @@ float4 visibilityBufferCompositeFragmentMain(
     if (params.mode == 3u || params.mode == 7u) { seed = visibilityHash(clusterSeed) ^ visibilityHash(triangleIndex + 1u); }
     float3 color = visibilityHashColor(seed);
     if (push.shadedColors != 0u) {
-        DescriptorHandle<Texture2D<float>> depthHandle = DescriptorHandle<Texture2D<float>>(
-            uint2(push.depthImage, 0));
+        DescriptorHandle<Texture2D<float>> depthHandle = push.depthImage;
         Texture2D<float> depth = depthHandle;
         color *= debugGeometryLighting(pixel, visibility, depth, params);
     }

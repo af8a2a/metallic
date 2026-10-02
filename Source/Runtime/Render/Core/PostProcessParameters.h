@@ -104,16 +104,16 @@ struct GradingPush {
 };
 
 #ifdef __cplusplus
-struct alignas(16) ColorGradingLUTParams {
+using GradingSettings = uint64_t;
 #else
-struct ColorGradingLUTParams {
+typealias GradingSettings = GradingPush*;
 #endif
+struct ColorGradingLUTParams {
     PostStorage3D output;
     PostSampled2D custom0, custom1, custom2, custom3;
     PostSampled2DScalar reach, gamut, gammaTable;
     PostSampler sampler;
-    PostUInt padding0, padding1;
-    GradingPush display;
+    GradingSettings display;
 };
 
 #ifdef __cplusplus
@@ -124,12 +124,12 @@ static_assert(sizeof(UpscalerGuideResolveParams) == 40 && offsetof(UpscalerGuide
 inline constexpr uint64_t kFinalBlitABI = 0x46424c4954000001ull;
 inline constexpr uint64_t kSliderDebugABI = 0x534c494445000001ull;
 inline constexpr uint64_t kAutoExposureABI = 0x4558504f53000001ull;
-inline constexpr uint64_t kColorGradingLUTABI = 0x4752414445000001ull;
+inline constexpr uint64_t kColorGradingLUTABI = 0x4752414445000002ull;
 static_assert(sizeof(FinalBlitParams) == 72 && offsetof(FinalBlitParams, display) == 32);
 static_assert(sizeof(SliderDebugParams) == 40 && offsetof(SliderDebugParams, display) == 24);
 static_assert(sizeof(AutoExposureParams) == 144 && offsetof(AutoExposureParams, display) == 64);
-static_assert(alignof(ColorGradingLUTParams) == 16);
-static_assert(sizeof(ColorGradingLUTParams) == 224 && offsetof(ColorGradingLUTParams, display) == 80);
+static_assert(alignof(ColorGradingLUTParams) == 8);
+static_assert(sizeof(ColorGradingLUTParams) == 80 && offsetof(ColorGradingLUTParams, display) == 72);
 static_assert(offsetof(ColorGradingLUTParams, sampler) == 64 && offsetof(GradingPush, grade) == 16);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

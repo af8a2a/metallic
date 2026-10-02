@@ -86,5 +86,5 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define gIsRectChanged (((REBLUR_ClassifyTilesConstants*)gNrdPush.constants)->nrd_gIsRectChanged)
 #define gResetHistory (((REBLUR_ClassifyTilesConstants*)gNrdPush.constants)->nrd_gResetHistory)
 #define gReturnHistoryLengthInsteadOfOcclusion (((REBLUR_ClassifyTilesConstants*)gNrdPush.constants)->nrd_gReturnHistoryLengthInsteadOfOcclusion)
-#define gIn_ViewZ (*DescriptorHandle<Texture2D<float>>(uint2(gNrdPush.resources->sampled[0], 0)))
-#define gOut_Tiles (*DescriptorHandle<RWTexture2D<REBLUR_TILE_TYPE>>(uint2(gNrdPush.resources->storage[0], 0)))
+#define gIn_ViewZ (*DescriptorHandle<Texture2D<float>>(gNrdPush.resources->sampled[0]))
+#define gOut_Tiles (*DescriptorHandle<RWTexture2D<REBLUR_TILE_TYPE>>(gNrdPush.resources->storage[0]))

@@ -1,9 +1,6 @@
 #include "../../../Source/Runtime/Render/Core/StreamSceneParameters.h"
 #include "../../Interop/MaterialTextureDecode.hlsli"
 #include "../../Interop/AlphaCoverage.hlsli"
-#if !METALLIC_PATH_TRACE_TYPED
-import Core;
-#endif
 using Metallic;
 import Material;
 using Metallic.Material;
@@ -77,7 +74,7 @@ using Metallic.Interop.NeuralTextures;
 #define METALLIC_CACHE_MODE_SHARC 1
 #define METALLIC_CACHE_MODE_NRC 2
 
-// Per-frame radiance-cache parameters (binding 20). Layout must match
+// Immutable radiance-cache settings referenced by the inline root. Layout matches
 // ScenePathTraceCacheParams in BuiltinPassCommon.h byte for byte.
 struct ScenePathTraceCacheParams
 {
@@ -124,110 +121,36 @@ struct ScenePathTraceCacheParams
 #define gNrcCounters resolveDescriptor(gNRCTrace.counters)
 #endif
 
-#if METALLIC_PATH_TRACE_TYPED
 #define gScene resolveDescriptor(gPathTraceParameters.scene)
-#else
-#define gScene getResource<RaytracingAccelerationStructure>(0)
-#endif
 
-#if METALLIC_PATH_TRACE_TYPED
 #define gOutput resolveDescriptor(gPathTraceParameters.output)
-#else
-#define gOutput getResource<RWTexture2D<float4>>(1)
-#endif
 
-#if !METALLIC_PATH_TRACE_TYPED
-struct PathTracePrimitive
-{
-    uint firstVertex;
-    uint vertexCount;
-    uint firstIndex;
-    uint indexCount;
-    uint flags;
-    uint padding0;
-    uint padding1;
-    uint padding2;
-};
 
-struct PathTraceInstance
-{
-    uint primitiveIndex;
-    uint materialIndex;
-    uint flags;
-    float rayConeLodConstant;
-};
-
-#endif
-
-#if METALLIC_PATH_TRACE_TYPED
 #define gIndices gPathTraceParameters.indices
-#else
-#define gIndices getData<uint>(3)
-#endif
 
-#if METALLIC_PATH_TRACE_TYPED
 #define gPrimitives gPathTraceParameters.primitives
-#else
-#define gPrimitives getData<PathTracePrimitive>(4)
-#endif
 
-#if METALLIC_PATH_TRACE_TYPED
 #define gInstances gPathTraceParameters.instances
-#else
-#define gInstances getData<PathTraceInstance>(5)
-#endif
 
-#if METALLIC_PATH_TRACE_TYPED
 #define gMaterials resolveDescriptor(gPathTraceParameters.materials)
-#else
-#define gMaterials getResource<StructuredBuffer<PathTraceMaterial>>(6)
-#endif
 
-#if METALLIC_PATH_TRACE_TYPED
 #define gHistoryCurrent resolveDescriptor(gPathTraceParameters.historyCurrent)
-#else
-#define gHistoryCurrent getResource<RWTexture2D<float4>>(7)
-#endif
 
-#if METALLIC_PATH_TRACE_TYPED
 #define gHistoryPrevious resolveDescriptor(gPathTraceParameters.historyPrevious)
-#else
-#define gHistoryPrevious getResource<RWTexture2D<float4>>(8)
-#endif
 
-#if METALLIC_PATH_TRACE_TYPED
 #define gMaterialTextures(index) resolveDescriptor(nonuniform(gPathTraceParameters.materialTextures[index]))
-#else
-#define gMaterialTextures(index) getResourceArray<Texture2D<float4>>(9, index)
-#endif
 
-#if METALLIC_PATH_TRACE_TYPED
 #define gEnvironmentMap resolveDescriptor(gPathTraceParameters.environment)
-#else
-#define gEnvironmentMap getResource<Texture2D<float4>>(10)
-#endif
 
-#if METALLIC_PATH_TRACE_TYPED
 #define gEnvironmentImportancePdf resolveDescriptor(gPathTraceParameters.environmentPdf)
-#else
-#define gEnvironmentImportancePdf getResource<Texture2D<float>>(13)
-#endif
 
 
 
-#if METALLIC_PATH_TRACE_TYPED
 #define gPathTraceVertices gPathTraceParameters.vertices
 #define gPathTracePositions gPathTraceParameters.positions
 #define gPathTraceLights resolveDescriptor(gPathTraceParameters.lights)
 #define gPathTraceReGIR resolveDescriptor(gPathTraceParameters.reGIR)
 #define gPathTracePunctualPdf resolveDescriptor(gPathTraceParameters.punctualPdf)
-#else
-#define gPathTraceVertices getData<SceneShadingVertex>(2)
-#define gPathTracePositions getData<SceneVertexPosition>(54)
-#define gPathTraceLights getResource<StructuredBuffer<GPUPunctualLight>>(50)
-#define gPathTraceReGIR getResource<StructuredBuffer<uint4>>(52)
-#define gPathTracePunctualPdf getResource<Texture2D<float>>(53)
-#endif
 
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
 static const uint kPrimitiveHasAuthoredTangents = 1u;
@@ -277,11 +200,7 @@ struct ScenePathTracePush
 
 ScenePathTracePush scenePathTraceSettings()
 {
-#if METALLIC_PATH_TRACE_TYPED
     return *((ScenePathTracePush*)gPathTraceParameters.settings);
-#else
-    return getConstants<ScenePathTracePush>();
-#endif
 }
 
 struct Ray
@@ -1225,8 +1144,8 @@ float3 faceForwardShadingNormal(float3 normal, float3 geometryNormal, float3 ray
 #if METALLIC_STREAM_RAY_QUERIES || (METALLIC_STREAM_SHADOWS && METALLIC_STREAM_TLAS)
 #include "StreamSceneRayQuery.slang"
 
-// Adapt either the canonical typed root or the remaining ComputeProgram callers
-// here; the shared stream query implementation does not know either ABI.
+// Adapt the canonical typed scene resources at the call boundary.
+// The shared stream query implementation does not depend on the dispatch ABI.
 struct SceneStreamRayMaterials : IStreamRayMaterials
 {
     ScenePathTracePush settings;
@@ -2082,7 +2001,7 @@ PathTraceCacheContext makeCacheContext()
     return cache;
 }
 
-#if !METALLIC_PATH_TRACE_TYPED || defined(METALLIC_PATH_TRACE_INLINE)
+#if defined(METALLIC_PATH_TRACE_INLINE)
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)

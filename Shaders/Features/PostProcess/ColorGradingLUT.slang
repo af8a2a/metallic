@@ -4,15 +4,15 @@ using Metallic;
 using Metallic.ColorGrading;
 
 #include "../../../Source/Runtime/Render/Core/PostProcessParameters.h"
-import ParameterRoot;
+[[vk::push_constant]] ConstantBuffer<ColorGradingLUTParams> gColorGrading;
 
 [shader("compute")]
 [numthreads(4, 4, 4)]
 void composeColorGradingLUT(uint3 id : SV_DispatchThreadID)
 {
-    ColorGradingLUTParams params = getParameters<ColorGradingLUTParams>();
+    ColorGradingLUTParams params = gColorGrading;
     RWTexture3D<float4> lut = resolveDescriptor(params.output);
-    GradingPush p = params.display;
+    GradingPush p = *params.display;
     GradingResources resources = {
         resolveDescriptor(params.custom0), resolveDescriptor(params.custom1),
         resolveDescriptor(params.custom2), resolveDescriptor(params.custom3),

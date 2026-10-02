@@ -90,43 +90,8 @@ static const uint kStreamRequestPrefetchCounterWord = 14u;
 static const uint kStreamRequestPrefetchDroppedWord = 15u;
 static const uint kStreamPrefetchPageTag = 1u << 31u;
 
-struct GPUDrivenStreamAssetPush
-{
-    uint pageBuffer;
-    uint activeGroupBuffer;
-    uint pageTableBuffer;
-    uint paramsBuffer;
-    uint requestBuffer;
-    uint reservedResidentPages;
-    uint reservedUpdate;
-    uint activeHeaderBuffer;
-    uint instanceBuffer;
-    uint primitiveBuffer;
-    uint lodLevelBuffer;
-    uint groupBuffer;
-    uint nodeBuffer;
-    uint drawIndirectBuffer;
-    uint traversalHeaderBuffer;
-    uint traversalWorkBuffer;
-    uint reservedClasAddressBuffer;
-    uint reservedClasPageTableBuffer;
-    uint reservedBlasHeaderBuffer;
-    uint reservedInstanceBlasBuffer;
-    uint reservedBlasBuildInfoBuffer;
-    uint reservedBlasClusterReferenceBuffer;
-    uint reservedFallbackBLASAddresses;
-    uint reservedDynamicBlasAddressBuffer;
-    uint reservedTLASInstances;
-    uint traversalPhase;
-    uint activeBuildPhase;
-    uint rasterBindingsBuffer;
-    uint hybridQueueBuffer;
-    uint hybridClusterBuffer;
-    uint reservedCLASPublicationRevision;
-    float tessellationEdgePixels;
-    uint tessellationMaxFactor;
-    uint tessellationMaxSplitDepth;
-};
+#include "../../../Source/Runtime/Render/Core/StreamHardwareParameters.h"
+
 
 struct GPUDrivenStreamAssetRasterBindings
 {
@@ -134,10 +99,6 @@ struct GPUDrivenStreamAssetRasterBindings
     uint instanceVisibilityBuffer;
     uint hzbBuffer0;
     uint hzbBuffer1;
-    uint depthImage;
-    uint visibilityImage;
-    uint deferredColorBuffer;
-    uint visibleInstanceIdsBuffer;
     uint visibleRecordBase;
     uint visibleRecordCapacity;
     uint hzbMipCount;
@@ -145,7 +106,6 @@ struct GPUDrivenStreamAssetRasterBindings
     uint cullingFlags;
     uint width;
     uint height;
-    uint visibleInstanceCounterBuffer;
     uint gpuSceneInstanceBuffer;
     uint tessellationBuffer;
     float displacementBound;
@@ -3861,23 +3821,21 @@ bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool pu
     return true;
 }
 
-// Legacy raster callers resolve their wire indices here. The shared loader above
-// accepts canonical resource handles and explicit phase/camera data only.
-StreamRasterResources legacyStreamRasterResources(GPUDrivenStreamAssetPush push,
+// Hardware raster reads immutable settings snapshots. Nested resource indices
+// are resolved at this boundary until the raster settings migration.
+StreamRasterResources hardwareStreamRasterResources(StreamHardwareParameters push,
     out GPUDrivenStreamAssetParams params, out GPUDrivenStreamAssetRasterBindings raster)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>> settings =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetParams>>(uint2(push.paramsBuffer, 0));
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> bindings =
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
+    GPUDrivenStreamAssetParams* settings = push.settings;
+    GPUDrivenStreamAssetRasterBindings* bindings = push.rasterSettings;
     params = settings[0];
     raster = bindings[0];
     StreamRasterResources resources;
-    resources.pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
-    resources.groups = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveGroup>>(uint2(push.activeGroupBuffer, 0));
-    resources.header = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetActiveHeader>>(uint2(push.activeHeaderBuffer, 0));
-    resources.pageTable = DescriptorHandle<RWStructuredBuffer<GPUDrivenStreamAssetPageTableEntry>>(uint2(push.pageTableBuffer, 0));
-    resources.requests = DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.requestBuffer, 0));
+    resources.pages = push.pageBuffer;
+    resources.groups = push.activeGroupBuffer;
+    resources.header = push.activeHeaderBuffer;
+    resources.pageTable = push.pageTableBuffer;
+    resources.requests = push.requestBuffer;
     resources.instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(raster.gpuSceneInstanceBuffer, 0));
     resources.visibility = DescriptorHandle<StructuredBuffer<uint>>(uint2(raster.instanceVisibilityBuffer, 0));
     resources.records = DescriptorHandle<RWStructuredBuffer<CompactStreamVisibleRecord>>(uint2(raster.visibleClusterBuffer, 0));
@@ -3891,11 +3849,11 @@ StreamRasterResources legacyStreamRasterResources(GPUDrivenStreamAssetPush push,
 }
 
 bool loadStreamRasterCluster(uint localRecordIndex, bool testVisibility, bool publishRecord,
-    GPUDrivenStreamAssetPush push, out StreamRasterCluster output, out bool retryLate)
+    StreamHardwareParameters push, out StreamRasterCluster output, out bool retryLate)
 {
     GPUDrivenStreamAssetParams params;
     GPUDrivenStreamAssetRasterBindings raster;
-    StreamRasterResources resources = legacyStreamRasterResources(push, params, raster);
+    StreamRasterResources resources = hardwareStreamRasterResources(push, params, raster);
     return loadStreamRasterCluster(localRecordIndex, testVisibility, publishRecord,
         params, raster, resources, push.traversalPhase, output, retryLate);
 }
@@ -3910,9 +3868,9 @@ float4 streamClusterClip(StreamRasterCluster c, uint vertex, DescriptorHandle<St
     clip.y = -clip.y;
     return clip;
 }
-float4 streamClusterClip(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push)
+float4 streamClusterClip(StreamRasterCluster c, uint vertex, StreamHardwareParameters push)
 {
-    return streamClusterClip(c, vertex, DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0)));
+    return streamClusterClip(c, vertex, push.pageBuffer);
 }
 
 
@@ -3958,9 +3916,9 @@ float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, DescriptorHan
     clip.y=-clip.y;
     return clip;
 }
-float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push, StreamRasterProjection r)
+float4 streamClusterClipCached(StreamRasterCluster c, uint vertex, StreamHardwareParameters push, StreamRasterProjection r)
 {
-    return streamClusterClipCached(c, vertex, DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0)), r);
+    return streamClusterClipCached(c, vertex, push.pageBuffer, r);
 }
 
 groupshared StreamRasterProjection g_StreamRasterProjection;
@@ -3978,15 +3936,15 @@ uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, DescriptorHand
     bool reflected = dot(cross(c.group.world0.xyz, c.group.world1.xyz), c.group.world2.xyz) < 0.0;
     return reflected ? indices.xzy : indices;
 }
-uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, GPUDrivenStreamAssetPush push)
+uint3 streamClusterTriangle(StreamRasterCluster c, uint triangle, StreamHardwareParameters push)
 {
-    return streamClusterTriangle(c, triangle, DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0)));
+    return streamClusterTriangle(c, triangle, push.pageBuffer);
 }
 
 
-float2 streamClusterUv(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetPush push)
+float2 streamClusterUv(StreamRasterCluster c, uint vertex, StreamHardwareParameters push)
 {
-    DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint>> pages = push.pageBuffer;
     uint bytes = pages[c.pageWord + 12u], offset = pages[c.pageWord + 17u];
     if ((pages[c.pageWord + 14u] & 4u) == 0u || pages[c.pageWord + 22u] != 1u ||
         (offset & 3u) != 0u || offset > bytes || c.vertexOffset + vertex >= (bytes - offset) / 8u) { return float2(0); }
@@ -3996,9 +3954,9 @@ float2 streamClusterUv(StreamRasterCluster c, uint vertex, GPUDrivenStreamAssetP
 
 // Alpha is evaluated before depth/visibility writes. Masked and blended
 // clusters bypass the software queue, which has no material coverage stage.
-bool streamAlphaAccepts(uint instanceIndex, float2 uv, GPUDrivenStreamAssetPush push)
+bool streamAlphaAccepts(uint instanceIndex, float2 uv, StreamHardwareParameters push)
 {
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rh = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
+    GPUDrivenStreamAssetRasterBindings* rh = push.rasterSettings;
     GPUDrivenStreamAssetRasterBindings bindings = rh[0];
     if (bindings.gpuSceneInstanceBuffer == 0xffffffffu || bindings.materialBuffer == 0xffffffffu) { return true; }
     DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(bindings.gpuSceneInstanceBuffer, 0));
@@ -4018,11 +3976,11 @@ bool streamAlphaAccepts(uint instanceIndex, float2 uv, GPUDrivenStreamAssetPush 
 }
 
 // Used by the bounded-queue HW fallback as well as tessellation task shaders.
-void publishStreamHardwareRetry(uint record, bool retryLate, GPUDrivenStreamAssetPush push)
+void publishStreamHardwareRetry(uint record, bool retryLate, StreamHardwareParameters push)
 {
     if (push.traversalPhase == 0u && retryLate) {
         DescriptorHandle<RWStructuredBuffer<uint>> bins =
-            DescriptorHandle<RWStructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+            push.writableBins;
         InterlockedOr(bins[hybridRetryBase(bins[5]) + record / bins[13]], 1u << (record % bins[13]));
     }
 }
@@ -4041,16 +3999,16 @@ void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_Gro
     out vertices GPUDrivenStreamAssetVertexOutput vertices[kMaxMeshletVertices],
     out indices uint3 triangles[kMaxMeshletTriangles],
     out primitives GPUDrivenStreamAssetPrimitiveOutput primitives[kMaxMeshletTriangles],
-    uniform GPUDrivenStreamAssetPush push)
+    uniform StreamHardwareParameters push)
 {
     uint draw = hybridFlatGroup(groupID);
-    bool prebinned = push.hybridClusterBuffer != 0xffffffffu;
+    bool prebinned = push.hasBins != 0u;
     uint record = prebinned ? draw : draw / kMeshletTriangleChunkCount;
     uint chunk = prebinned ? 0u : draw % kMeshletTriangleChunkCount;
     bool overflowHardware = false;
     if (prebinned) {
         DescriptorHandle<StructuredBuffer<uint>> bins =
-            DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+            push.hybridClusterBuffer;
         uint item = record;
         overflowHardware = bins[14] != 0u;
         if (!hybridStreamHardwareRecord(bins, item, record)) { SetMeshOutputCounts(0, 0); return; }
@@ -4068,7 +4026,7 @@ void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_Gro
     if (start >= c.triangleCount) { SetMeshOutputCounts(0, 0); return; }
     uint count = prebinned ? c.triangleCount : min(c.triangleCount - start, kMeshletTriangleChunkSize);
     SetMeshOutputCounts(c.vertexCount, count);
-    bool queueTriangles = !prebinned && push.hybridQueueBuffer != 0xffffffffu && (c.instanceFlags & 12u) == 0u;
+    bool queueTriangles = !prebinned && push.hasQueue != 0u && (c.instanceFlags & 12u) == 0u;
     for (uint vertex = lane; vertex < c.vertexCount; vertex += 64u) {
         float4 clip = streamClusterClip(c, vertex, push);
         vertices[vertex].position = clip;
@@ -4085,7 +4043,7 @@ void gpuDrivenStreamAssetMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_Gro
         if (queueTriangles) {
             queued = hybridEnqueueTriangle(g_StreamMeshClip[indices.x], g_StreamMeshClip[indices.y],
                 g_StreamMeshClip[indices.z], id, (c.instanceFlags & 2u) != 0u,
-                push.hybridQueueBuffer);
+                push.hybridQueueBuffer, push.hasQueue != 0u);
         }
         triangles[i] = queued ? uint3(0u) : indices;
         primitives[i].visibilityId = id;
@@ -4366,12 +4324,12 @@ void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetParams para
     }
 }
 
-void rasterStreamCluster(uint3 group, uint lane, GPUDrivenStreamAssetPush push, bool prepared, bool incrementalDepth)
+void rasterStreamCluster(uint3 group, uint lane, StreamHardwareParameters push, bool prepared, bool incrementalDepth)
 {
     GPUDrivenStreamAssetParams params;
     GPUDrivenStreamAssetRasterBindings raster;
-    StreamRasterResources resources = legacyStreamRasterResources(push, params, raster);
-    DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+    StreamRasterResources resources = hardwareStreamRasterResources(push, params, raster);
+    DescriptorHandle<StructuredBuffer<uint>> bins = push.hybridClusterBuffer;
     rasterStreamCluster(group, lane, params, raster, resources, bins,
         DescriptorHandle<RWStructuredBuffer<uint64_t>>(uint2(bins[11], 0)), prepared, incrementalDepth);
 }
@@ -4772,7 +4730,7 @@ void gpuDrivenStreamAssetApplyUpdatesMain(uint3 id : SV_DispatchThreadID)
 [shader("fragment")]
 uint gpuDrivenStreamAssetFragmentMain(GPUDrivenStreamAssetVertexOutput input, uint visibilityId : SV_PrimitiveID,
     bool frontFace : SV_IsFrontFace,
-    uniform GPUDrivenStreamAssetPush push) : SV_Target0
+    uniform StreamHardwareParameters push) : SV_Target0
 {
     if (!frontFace && input.doubleSided == 0u) { discard; }
     if (!streamAlphaAccepts(input.instanceIndex, input.texcoord, push)) { discard; }

@@ -26,21 +26,24 @@ public:
             {"Features/Debug/ShaderToHumanExample", "shaderToHumanExampleFragmentMain", "/include/s2h_3d.hlsl"},
             {"Features/Debug/ShaderToHumanScatterExample", "shaderToHumanScatterExampleMain", "/include/s2h_scatter.hlsl"},
         };
-        for (const ShaderEntry& entry : entries) {
-            render::ShaderCompileResult shader;
-            const auto result = render::compileSlangShaderToSpirv({
-                .moduleName = entry.module,
-                .entryPointName = entry.entry,
-                .searchPath = PROJECT_SOURCE_DIR "/Shaders",
-            }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
-            if (!result || shader.spirv.empty()) {
-                return RHITestResult::fail(std::string(entry.entry) + ": " + shader.diagnostics);
-            }
-            // The vendored HLSL must participate in Slang cache invalidation
-            // and hot reload just like the surrounding .slang files.
-            if (!std::any_of(shader.dependencies.begin(), shader.dependencies.end(),
-                    [&](const std::string& path) { return path.ends_with(entry.dependency); })) {
-                return RHITestResult::fail(std::string("Missing ShaderToHuman dependency: ") + entry.dependency);
+        for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
+            for (const ShaderEntry& entry : entries) {
+                render::ShaderCompileResult shader;
+                const auto result = render::compileSlangShaderToSpirv({
+                    .moduleName = entry.module,
+                    .entryPointName = entry.entry,
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders",
+                    .descriptorHeapMode = mode,
+                }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
+                if (!result || shader.spirv.empty()) {
+                    return RHITestResult::fail(std::string(entry.entry) + ": " + shader.diagnostics);
+                }
+                // The vendored HLSL must participate in Slang cache invalidation
+                // and hot reload just like the surrounding .slang files.
+                if (!std::any_of(shader.dependencies.begin(), shader.dependencies.end(),
+                        [&](const std::string& path) { return path.ends_with(entry.dependency); })) {
+                    return RHITestResult::fail(std::string("Missing ShaderToHuman dependency: ") + entry.dependency);
+                }
             }
         }
         return RHITestResult::pass("ShaderToHuman gather/3D in compute and fragment, scatter callback, HLSL dependency tracking");

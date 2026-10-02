@@ -1,3 +1,4 @@
+#include "TextureBindingProbeParameters.h"
 #include "Fixtures.h"
 #include "TraceRecorder.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -348,15 +349,13 @@ public:
     }
     RHITestResult run(RHITestContext& context) override
     {
-        struct Params { uint64_t images; ShaderSampler samplers[2]; ShaderBuffer output; };
-        static_assert(sizeof(Params) == 32);
-        constexpr uint64_t abi = 0x544253414d504c45ull;
+        using Params = NonuniformTextureParams;
         std::string log;
         auto shader = compileSlangShaderToSpirv({.moduleName = "TestbenchBindings", .entryPointName = "main",
-            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log);
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = SlangDescriptorHeapMode::Default}, log);
         if (!shader) { return RHITestResult::fail(log); }
         ComputeKernel kernel;
-        CASE_REQUIRE(kernel.initialize(context.device, {.spirv = shader->spirv, .parameters = parameterAbi<Params>(abi)}, log));
+        CASE_REQUIRE(kernel.initialize(context.device, {.spirv = shader->spirv, .parameters = parameterAbi<Params>(kNonuniformTextureABI, ParameterTransport::InlinePush)}, log));
         auto registry = context.device.resourceRegistry();
         CASE_REQUIRE(registry);
         std::array<std::unique_ptr<Texture>, 2> images;
@@ -375,7 +374,7 @@ public:
         TextureView* pointers[]{views[0].get(), views[1].get()};
         const Params params{writer.sampledImages(pointers), {writer.sampler({.minFilter = SamplerFilter::Nearest,
             .magFilter = SamplerFilter::Nearest}), writer.sampler({})}, writer.buffer(output->get())};
-        auto packet = writer.encode(params, abi);
+        auto packet = writer.encode(params, kNonuniformTextureABI, ParameterTransport::InlinePush);
         CASE_REQUIRE(packet);
         for (uint32_t iteration = 0; iteration < 2; ++iteration) {
             std::array<std::byte, 33 * 16> sentinel;

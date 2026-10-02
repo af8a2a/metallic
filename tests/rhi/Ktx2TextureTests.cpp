@@ -1,9 +1,10 @@
+#include "TextureResidencyProbe.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include "Runtime/Render/Streamer/SceneResourceManager.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/TextureProbeParameters.h"
 #include "json.hpp"
 #include <zstd.h>
 #include <fstream>
@@ -148,21 +149,9 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
                                        .entryPointName = "main",
                                        .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),
             shader.diagnostics);
-    const ComputeProgramBindingDesc layout[] = {
-        {.binding = 0,
-         .kind = ComputeResourceBindingKind::SampledImage,
-         .descriptorCount = resources.materialTextureCount()},
-        {.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
-    ComputeProgram program;
-    require(program.initialize(context.device,
-                               {
-                                   .spirv = shader.spirv,
-                                   .pushConstantSize = 16,
-                                   .bindings = {layout, 2},
-                                   .requiresRayQuery = false,
-                               },
-                               log),
-            log);
+    ComputeKernel program;
+    require(program.initialize(context.device, {.spirv = shader.spirv,
+        .parameters = parameterAbi<TextureResourceProbeParameters>(kTextureResourceProbeABI, ParameterTransport::InlinePush)}, log), log);
     std::unique_ptr<Buffer> output;
     require(context.device.createBuffer({.size = 48,
                                          .structureStride = 16,
@@ -171,36 +160,32 @@ std::array<float, 12> sampleTexture(RHITestContext& context, ScenePathTraceResou
             "sample buffer");
     std::unique_ptr<CommandPool> pool;
     std::unique_ptr<CommandBuffer> commands;
-    std::unique_ptr<Fence> fence;
+    QueueSubmissionTracker tracker;
+    RenderFrameContext frame;
     require(context.device.createCommandPool(context.graphicsQueue).transform([&](auto rhiValue) { pool = std::move(rhiValue); }), "sample pool");
     require(pool->createCommandBuffer().transform([&](auto rhiValue) { commands = std::move(rhiValue); }), "sample commands");
-    require(context.device.createFence({}).transform([&](auto rhiValue) { fence = std::move(rhiValue); }), "sample fence");
-    require(commands->begin(), "sample begin");
+    require(tracker.initialize(context.device, context.graphicsQueue), "sample tracker");
+    require(frame.begin(1), "sample frame");
+    require(commands->begin(&frame), "sample begin");
     const BufferBarrierDesc ready{
         .buffer = output.get(),
         .before = {},
         .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
     };
     if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-    const ComputeDispatchBinding bindings[] = {{
-        .binding = 0,
-        .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()},
-    },
-                                               {.binding = 1, .buffer = output.get()}};
-    const uint32_t push[] = {index, mip, flags, 0};
-    require(program.dispatch({
-        .commandBuffer = commands.get(),
-        .bindings = {bindings, 2},
-        .pushData = push,
-        .pushDataSize = 16,
-    }),
-            log);
+    require(index < resources.materialTextureViews().size(), "sample texture index");
+    auto registry = context.device.resourceRegistry();
+    require(bool(registry), "sample registry");
+    ParameterWriter writer(context.device, **registry, &frame);
+    const TextureResourceProbeParameters params{
+        writer.sampledImage(resources.materialTextureViews()[index]), writer.dataBuffer(output.get(), 16, 4), mip, flags};
+    auto encoded = writer.encode(params, kTextureResourceProbeABI, ParameterTransport::InlinePush);
+    require(bool(encoded), "sample parameters");
+    require(program.dispatch(*commands, *encoded, 1), "sample dispatch");
     require(commands->end(), "sample end");
     CommandBuffer* command = commands.get();
-    require(context.graphicsQueue.submit(
-                {.commandBuffers = {&command, 1}, .signalFence = fence.get()}),
-            "sample submit");
-    require(fence->wait(), "sample wait");
+    require(tracker.submit({.commandBuffers = {&command, 1}}, frame), "sample submit");
+    require(frame.wait(), "sample wait");
     output->invalidate();
     std::array<float, 12> result;
     auto* mapped = output->map();
@@ -571,14 +556,9 @@ public:
         ShaderCompileResult shader;
         require(compileSlangShaderToSpirv({.moduleName="Features/Debug/TextureResidencyProbe",.entryPointName="main",
             .searchPath=PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }),shader.diagnostics);
-        ComputeProgram program;
-        const ComputeProgramBindingDesc binding{.binding=0};
-        require(program.initialize(context.device,{
-            .spirv = shader.spirv,
-            .pushConstantSize = 16,
-            .bindings = {&binding, 1},
-            .requiresRayQuery = false,
-        },log),log);
+        ComputeKernel program;
+        require(program.initialize(context.device, {.spirv = shader.spirv,
+            .parameters = parameterAbi<TextureResidencyProbeParameters>(kTextureResidencyProbeABI, ParameterTransport::InlinePush)}, log), log);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
         QueueSubmissionTracker tracker;
@@ -604,14 +584,8 @@ public:
                 sawTextureSchedule |= timing.name=="Candidates and allocation queries";
             }
             require(resources.uploadMaterialTextures(*commands),"retain current texture generation");
-            ComputeDispatchBinding view{.binding=0,.buffer=feedback};
-            const uint32_t push[]{imageSlot,0,visible ? 1000u : 0u,0};
-            require(program.dispatch({
-                .commandBuffer = commands.get(),
-                .bindings = {&view, 1},
-                .pushData = push,
-                .pushDataSize = 16,
-            }),"feedback dispatch");
+            require(dispatchTextureResidencyProbe(context.device, program, *commands, *feedback,
+                imageSlot, 0, visible ? 1000u : 0u), "feedback dispatch");
             require(resources.endTextureStreaming(*commands,index,&textureProfile),"feedback readback");
             require(commands->end(),"feedback end");
             if (cancel) { frame.cancel(); return; }
@@ -709,10 +683,9 @@ public:
         require(compileSlangShaderToSpirv({.moduleName = "Features/Debug/TextureResidencyProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics)
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
-        ComputeProgram program;
-        const ComputeProgramBindingDesc layout{.binding = 0};
-        require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
-            .bindings = {&layout,1}, .requiresRayQuery = false}, log), log);
+        ComputeKernel program;
+        require(program.initialize(context.device, {.spirv = shader.spirv,
+            .parameters = parameterAbi<TextureResidencyProbeParameters>(kTextureResidencyProbeABI, ParameterTransport::InlinePush)}, log), log);
         std::unique_ptr<CommandPool> pool;
         std::array<std::unique_ptr<CommandBuffer>, 3> commands;
         QueueSubmissionTracker tracker;
@@ -731,10 +704,8 @@ public:
         } drain{context.graphicsQueue,frame};
         uint64_t frameIndex = 0;
         const auto dispatch = [&](CommandBuffer& command, Buffer& feedback, uint32_t mip, uint32_t samples) {
-            const ComputeDispatchBinding binding{.binding = 0, .buffer = &feedback};
-            const uint32_t push[]{slot,mip,samples,0};
-            require(program.dispatch({.commandBuffer = &command, .bindings = {&binding,1},
-                .pushData = push, .pushDataSize = sizeof(push)}), "feedback contract demand");
+            require(dispatchTextureResidencyProbe(context.device, program, command, feedback,
+                slot, mip, samples), "feedback contract demand");
         };
         const auto tick = [&](bool fineDemand, bool cancelReadback = false) {
             require(frame.wait(), "feedback contract wait");
@@ -836,12 +807,9 @@ public:
         require(compileSlangShaderToSpirv({.moduleName = "TextureStreamingProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
                 .transform([&](auto value) { shader = std::move(value); }), shader.diagnostics);
-        const ComputeProgramBindingDesc layout[] = {
-            {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = resources.materialTextureCount()},
-            {.binding = 1}, {.binding = 2}, {.binding = 3, .kind = ComputeResourceBindingKind::Sampler}};
-        ComputeProgram program;
-        require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
-            .bindings = layout, .requiresRayQuery = false}, log), log);
+        ComputeKernel program;
+        require(program.initialize(context.device, {.spirv = shader.spirv,
+            .parameters = parameterAbi<TextureStreamingProbeParameters>(kTextureStreamingProbeABI, ParameterTransport::InlinePush)}, log), log);
         const SamplerDesc sampler{.mipFilter = SamplerFilter::Linear,
             .addressU = SamplerAddressMode::Repeat, .addressV = SamplerAddressMode::Repeat};
         std::unique_ptr<Buffer> output;
@@ -873,14 +841,17 @@ public:
             const BufferBarrierDesc ready{.buffer = output.get(), .before = {},
                 .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
             require(commands->synchronize({.buffers = {&ready, 1}}), "stability output ready");
-            const ComputeDispatchBinding bindings[] = {
-                {.binding = 0, .sampledImages = resources.materialTextureSnapshot()},
-                {.binding = 1, .buffer = feedback}, {.binding = 2, .buffer = output.get()},
-                {.binding = 3, .sampler = &sampler}};
-            struct Push { uint32_t slot, visible; float nearSourceLod, farSourceLod; };
-            const Push push{imageSlot, visible ? 1u : 0u, .25f, 5.25f};
-            require(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings,
-                .pushData = &push, .pushDataSize = sizeof(push)}), "stability probe dispatch");
+            require(imageSlot < resources.materialTextureViews().size(), "stability texture index");
+            auto registry = context.device.resourceRegistry();
+            require(bool(registry), "stability registry");
+            ParameterWriter writer(context.device, **registry, &frame);
+            const TextureStreamingProbeParameters params{
+                writer.sampledImage(resources.materialTextureViews()[imageSlot]), writer.sampler(sampler),
+                writer.dataBuffer(feedback, 4, 4), writer.dataBuffer(output.get(), 16, 4),
+                imageSlot, visible ? 1u : 0u, .25f, 5.25f};
+            auto encoded = writer.encode(params, kTextureStreamingProbeABI, ParameterTransport::InlinePush);
+            require(bool(encoded), "stability parameters");
+            require(program.dispatch(*commands, *encoded, 1), "stability probe dispatch");
             require(resources.endTextureStreaming(*commands, frameIndex), "stability feedback readback");
             require(commands->end(), "stability end");
             auto* command = commands.get();

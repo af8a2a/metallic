@@ -12,15 +12,15 @@ struct ReferenceStreamVertexOutput
 [outputtopology("triangle")]
 void referenceStreamMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupIndex,
     out vertices ReferenceStreamVertexOutput vertices[192],
-    out indices uint3 triangles[kMeshletTriangleChunkSize], uniform GPUDrivenStreamAssetPush push)
+    out indices uint3 triangles[kMeshletTriangleChunkSize], uniform StreamHardwareParameters push)
 {
     uint draw = hybridFlatGroup(groupID);
     uint record = draw / kMeshletTriangleChunkCount;
     uint chunk = draw % kMeshletTriangleChunkCount;
-    bool prebinned = push.hybridClusterBuffer != 0xffffffffu;
+    bool prebinned = push.hasBins != 0u;
     if (prebinned) {
         DescriptorHandle<StructuredBuffer<uint>> bins =
-            DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+            push.hybridClusterBuffer;
         uint item = record;
         if (!hybridBinRecord(bins, 0u, item, record)) { SetMeshOutputCounts(0, 0); return; }
     }
@@ -51,14 +51,14 @@ void referenceStreamMeshMain(uint3 groupID : SV_GroupID, uint lane : SV_GroupInd
         vertices[i * 3u].doubleSided = (c.instanceFlags & 2u) != 0u;
         vertices[i * 3u + 1u].doubleSided = (c.instanceFlags & 2u) != 0u;
         vertices[i * 3u + 2u].doubleSided = (c.instanceFlags & 2u) != 0u;
-        bool queued = !prebinned && hybridEnqueueTriangle(a, b, d, id, (c.instanceFlags & 2u) != 0u, push.hybridQueueBuffer);
+        bool queued = !prebinned && hybridEnqueueTriangle(a, b, d, id, (c.instanceFlags & 2u) != 0u, push.hybridQueueBuffer, push.hasQueue != 0u);
         triangles[i] = queued ? uint3(0u) : uint3(i * 3u, i * 3u + 1u, i * 3u + 2u);
     }
 }
 
 [shader("fragment")]
 uint referenceStreamFragmentMain(ReferenceStreamVertexOutput input, bool frontFace : SV_IsFrontFace,
-    uniform GPUDrivenStreamAssetPush push) : SV_Target0
+    uniform StreamHardwareParameters push) : SV_Target0
 {
     if (!frontFace && input.doubleSided == 0u) { discard; }
     return input.visibilityId;

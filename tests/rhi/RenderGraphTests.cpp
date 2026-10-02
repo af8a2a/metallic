@@ -1,3 +1,4 @@
+#include "TextureResidencyProbe.h"
 #include "Runtime/Render/Core/StreamActiveBuildParameters.h"
 #include "Runtime/Render/Core/StreamTraversalParameters.h"
 #include "RHITest.h"
@@ -823,10 +824,10 @@ public:
             .moduleName = "Features/Debug/TextureResidencyProbe", .entryPointName = "main",
             .searchPath = kShaderSearchPath}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc binding{.binding = 0};
-        return program_.initialize(*context.device, {
-            .spirv = shader.spirv, .pushConstantSize = 16, .bindings = {&binding, 1},
-            .requiresRayQuery = false}, log);
+        device_ = context.device;
+        return program_.initialize(*context.device, {.spirv = shader.spirv,
+            .parameters = render::parameterAbi<render::TextureResidencyProbeParameters>(
+                render::kTextureResidencyProbeABI, render::ParameterTransport::InlinePush)}, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -846,14 +847,13 @@ public:
             state.resources = resources;
             state.feedback = prepared->textureFeedback;
         }
-        const render::ComputeDispatchBinding binding{.binding = 0, .buffer = prepared->textureFeedback};
-        const uint32_t push[]{resources->logicalTextureIndices()[0], context.properties().value("wantedMip", 0u), 1u, 0u};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {&binding, 1},
-            .pushData = push, .pushDataSize = sizeof(push)});
+        return dispatchTextureResidencyProbe(*device_, program_, context.commandBuffer(), *prepared->textureFeedback,
+            resources->logicalTextureIndices()[0], context.properties().value("wantedMip", 0u), 1u);
     }
 
 private:
-    render::ComputeProgram program_;
+    render::Device* device_ = nullptr;
+    render::ComputeKernel program_;
 };
 
 class TestEnvironmentConsumerPass final : public render::ComputePass {

@@ -68,7 +68,7 @@ public:
         }
         return program_.initialize(*context.device,
                                    {.spirv = shader.spirv,
-                                    .parameters = parameterAbi<ColorGradingLUTParams>(kColorGradingLUTABI),
+                                    .parameters = parameterAbi<ColorGradingLUTParams>(kColorGradingLUTABI, ParameterTransport::InlinePush),
                                     .debugName = "ColorGradingLUT"},
                                    log);
     }
@@ -97,8 +97,8 @@ public:
         params.gamut = writer.sampledImage(views[5]);
         params.gammaTable = writer.sampledImage(views[6]);
         params.sampler = writer.sampler(SamplerDesc{});
-        params.display = push;
-        auto encoded = writer.encode(params, kColorGradingLUTABI);
+        params.display = writer.data(&push, sizeof(push), alignof(GradingPush));
+        auto encoded = writer.encode(params, kColorGradingLUTABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }
         return program_.dispatch(commands, *encoded, 16, 16, 16);
     }

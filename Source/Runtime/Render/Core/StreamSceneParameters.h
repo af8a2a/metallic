@@ -33,7 +33,6 @@ using StreamSceneAddress = uint64_t;
 typealias StreamSceneAddress = StreamSceneParameters*;
 #endif
 #ifdef __cplusplus
-inline constexpr uint64_t kStreamSceneABI = 0x53545245414d0001ull;
 static_assert(sizeof(StreamSceneParameters) == 64);
 static_assert(offsetof(StreamSceneParameters, pageTable) == 16);
 static_assert(offsetof(StreamSceneParameters, instances) == 32);

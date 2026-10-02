@@ -58,7 +58,7 @@ Result<MaterialBinningResult> MaterialBinning::record(
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result.transform([&] { return std::move(output); }); }
         result = programs_[i].initialize(device, {.spirv = shader.spirv,
-            .parameters = parameterAbi<MaterialBinningParams>(kMaterialBinningABI), .debugName = entries[i]}, log);
+            .parameters = parameterAbi<MaterialBinningParams>(kMaterialBinningABI, ParameterTransport::InlinePush), .debugName = entries[i]}, log);
         if (!result) { return makeError(result.error()); }
     }
 
@@ -118,19 +118,22 @@ Result<MaterialBinningResult> MaterialBinning::record(
     auto result = device.resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
     if (!result) { return makeError(result.error()); }
     ParameterWriter writer(device, *frame, *registry);
-    const MaterialBinningParams params{
-        .visibility = writer.sampledImage(desc.visibility),
+    const MaterialBinningResources inputs{
         .records = writer.dataBuffer(desc.records, 16, 16), .instances = writer.dataBuffer(desc.instances, 160, 16),
         .materials = writer.dataBuffer(desc.materials, 560, 16), .shadingMaterials = writer.dataBuffer(desc.shadingMaterials, 720, 16),
-        .bins = writer.dataBuffer(buffers[0].get(), 8, 8), .tiles = writer.dataBuffer(buffers[1].get(), 8, 8),
-        .arguments = writer.dataBuffer(buffers[2].get(), 4, 4),
         .streamRecords = desc.streamRecords ? writer.dataBuffer(desc.streamRecords, 4, 4) : ShaderDataSpan{},
         .streamGroups = desc.streamGroups ? writer.dataBuffer(desc.streamGroups, 112, 16) : ShaderDataSpan{},
+    };
+    const MaterialBinningParams params{
+        .visibility = writer.sampledImage(desc.visibility),
+        .resources = writer.data(&inputs, sizeof(inputs)),
+        .bins = writer.dataBuffer(buffers[0].get(), 8, 8), .tiles = writer.dataBuffer(buffers[1].get(), 8, 8),
+        .arguments = writer.dataBuffer(buffers[2].get(), 4, 4),
         .width = desc.width, .height = desc.height, .tileCount = static_cast<uint32_t>(tileCount),
         .residentRecordCount = desc.residentRecordCount,
     };
     EncodedParameters encoded;
-    result = writer.encode(params, kMaterialBinningABI).transform([&](auto value) { encoded = std::move(value); });
+    result = writer.encode(params, kMaterialBinningABI, ParameterTransport::InlinePush).transform([&](auto value) { encoded = std::move(value); });
     if (!result) { return makeError(result.error()); }
     for (size_t i = 0; i < programs_.size(); ++i) {
         result = recordGraphAccessBarriers(commands, plan->passes[i], bindings);

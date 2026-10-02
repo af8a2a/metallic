@@ -68,7 +68,9 @@ shader 使用对应 `DescriptorHandle<T>` 和 `resolveDescriptor()`；普通数�
 不要截断 64 位 handle：AS 仍保留完整地址语义。
 
 [PostProcessParameters.h](../Source/Runtime/Render/Core/PostProcessParameters.h) 共用 C++/Slang 字段声明与显式 padding：
-FinalBlit、SliderDebug（包括 DLSS-NR overlay）和 AutoExposure 使用 inline push，ColorGradingLUT 使用 BDA 参数块。
+FinalBlit、SliderDebug（包括 DLSS-NR overlay）、AutoExposure 和 ColorGradingLUT 使用 inline push。
+ColorGradingLUT 的 80 字节根携带九个 typed handle 和调色设置地址；144 字节 GradingPush 作为不可变 BDA 快照，
+由同一 ParameterWriter 参数包保留至提交完成，运行时设置变化在下一次执行重新编码。
 UpscalerGuideResolve 使用 40 字节 inline push，包含四个具名图像句柄与 jitter；通过 ComputeKernel 提交，
 不再构造编号资源表。GPU 回归直接验证前景深度选择、UV motion、jitter 和非整工作组尺寸。
 DLSS depth export / alpha resolve 共用 16 字节 `DLSSSupportParams`；图形入口绑定编码后的 inline 数据，
@@ -185,7 +187,7 @@ ScreenSpaceShadows 的 CLAS alpha-mask 查询复用同一声明，通过 `Shadow
 CLAS surface 通过 `decodeStreamRaySurface` 统一执行三角形校验和属性解码，避免未校验的属性读取。
 `StreamSceneDecode.slang` 显式接收 `StreamSceneParameters`，供 CLAS ray-query 与 GPU 边界测试共用；
 实例读取检查地址、stride 和索引，三角形解码检查 header、cluster stride、页表及页数据范围。
-CPU 的 deferred 与 alpha shadow 共用 `encodeRayQueryParameters`，保持 span 布局、编码及资源保留一致。
+CPU 的 deferred 与 alpha shadow 共用 `encodeRayQuerySnapshot`，保持 span 布局、编码及资源保留一致。
 [ShadowTraceParameters.h](../Source/Runtime/Render/Core/ShadowTraceParameters.h) 定义阴影入口的 88 字节 inline ABI。
 常规、NTC/CoopVec、stream TLAS 与 pending 五种变体统一使用 ComputeKernel；深度和五路输出为 typed handle，
 320 字节设置为有界 BDA span，几何为共享 PathTraceParameters 的不可变快照。移除编号资源表、
@@ -198,6 +200,9 @@ CPU 的 deferred 与 alpha shadow 共用 `encodeRayQueryParameters`，保持 spa
 法线和 TBN 仍保持 authored/world-space 语义。`stream_data_decode_bounds` 的 GPU 探针覆盖
 显式材质 provider、正反向射线、bitangent 翻转、无效材质/实例/三角形及 mask/blend alpha 阈值；
 这些辅助层检查不等同于 CLAS 遍历或完整场景的视觉验证。
+共享 `ScenePathTrace.slang` 仅提供 typed 场景辅助实现；标准生产入口为 `ScenePathTraceInline.slang`。
+旧 `PathTraceParameterRoot.hlsli` 和编号槽位分支已移除。stream surface 探针使用显式材质 provider，
+不创建场景资源根；motion-vector 探针使用 16 字节 inline 有界输出 span，不再占用 slot 63。
 
 [PathTraceParameters.h](../Source/Runtime/Render/Core/PathTraceParameters.h) 为
 Standard ScenePathTraceGuides、OpenPBRRayQueryPathTrace 和 OpenPBRRayQueryPathTraceGuides 提供 296 字节具名场景资源快照，由共享 inline 根通过 BDA 地址引用。
@@ -261,13 +266,13 @@ Streaming 页表初始化/更新使用共享 `StreamPageTableParameters`（32 �
 `pages` 与 `patches` 均为有界 BDA span。每次更新由 `ParameterWriter` 保存独立 patch 快照，
 替代按 frame slot 复用的可变 upload buffer；提交前多次录制不会覆盖前一次数据。
 更新只修改 residency word，保留 `lastRequestFrame`；初始化清零两个 word。
-旧 update descriptor/header 已移除，legacy raster push 的对应字段暂保留为 reserved，保持其他入口偏移。
+旧 update descriptor/header 及 raster 根中的对应 reserved 字段均已移除。
 
 Streaming traversal 使用共享 `StreamTraversalParameters`（96 字节 inline push），由 `ComputeKernel` 录制。
 设置与 resident page 列表为每次录制保留的 BDA 快照，instances 为有界 BDA；
 primitives/groups/nodes 及含原子操作的 page table/requests 通过 canonical typed handles
 传给现有共享遍历 helper。旧 resident-page upload ring 和 descriptor 已移除；
-该入口不再读取 `MeshletStreamUserPush`，其他尚未迁移的入口保持其 reserved 字段偏移。
+该入口不再读取旧 raster 根；旧根及 reserved 字段现已移除。
 
 Streaming active build、cooperative LOD 与 distributed demand 共用 168 字节
 `StreamActiveBuildParameters` inline ABI。设置由 BDA 快照保留，资源统一为 canonical
@@ -399,3 +404,87 @@ GPUScene 的八类 raster 视图编码为有界 BDA span，保留 offset/size/st
 保留间接参数切片和各分类 kernel；各类写入互斥像素，阶段同步及取消/提交资源保留保持原契约。
 ScenePathTracePass 的普通、缓存与 deferred 入口均已使用 ComputeKernel，旧 ComputeProgram 数组与绑定表已移除。
 `deferred_shading_parameter_spirv_layout` 覆盖 direct/binned 的 mapped/native 根和资源快照字段偏移。
+
+Material binning 的 reset/classify/arguments 三阶段共用 `MaterialBinningParams.h` 的 80 字节 inline 根。
+visibility 为 typed handle，bins/tiles/indirect 输出为有界 span；六组 resident/streaming 输入 span
+通过 96 字节不可变资源快照传递。同一参数包保留全部资源，原有阶段访问计划负责同步。
+
+`TextureResidencyProbe` 使用共享 `TextureResidencyProbeParameters.h` 的 32 字节 inline 参数，
+反馈缓冲为有界 BDA span；不再通过 slot 0、getConstants 或 GetDimensions 取资源与范围。
+streaming、分段提交/取消和 RenderGraph 多消费者测试共用 typed 参数编码，参数包保留反馈缓冲。
+
+纹理采样探针共用 `TextureProbeParameters.h`：TextureResourceProbe 使用 32 字节 inline 参数，
+TextureStreamingProbe 使用 64 字节。CPU 将所选纹理编码为单个 typed handle，不上传整张编号资源表；
+输出与反馈为有界 BDA span，sampler 使用 typed handle，所有资源由帧参数包保留。
+KTX2 资源、压缩上传和 streaming 稳定性测试覆盖实际采样与物理 mip tail 替换。
+
+位置获取与压缩顶点 smoke-test 共用 `SceneProbeParameters.h` 的两个 32 字节 inline ABI。
+位置探针引用 typed 场景资源快照，输出为有界 span；顶点探针的输入和输出均为有界 span。
+位置测试继续覆盖扩展/回退、实例移动、authored tangent 与截断 CPU slice，移除旧 slot 63 和编号几何绑定。
+
+`OpacityMicromapProbe` 同样使用 `SceneProbeParameters.h` 中的 32 字节 inline 根，
+引用 typed 场景快照和有界 uint2 输出 span；OMM 开关、材质更新与 standard/partitioned TLAS 切换
+继续通过逐射线 CPU alpha 参考验证。KHR OMM 的 validation 运行需要 1.4.357 或更新的验证层；
+较旧验证层下只验证 shader alpha 回退，真实 OMM 测试需明确传入 `--rhi-no-validation`。
+
+ShaderToHuman gather/scatter 示例使用 `ShaderToHumanParameters.h` 的 8 字节 inline 输出句柄。
+调用方应通过 ParameterWriter.storageImage 编码目标图像，以 kShaderToHumanABI / InlinePush
+创建 ComputeKernel 并提交参数包；scatter 仍需要在先前图像写入之后同步。fragment 示例只使用
+SV_Position，不访问输出图像。现有测试覆盖 mapped/native 的三个入口编译及 vendor include 依赖。
+
+NRD 各算法入口使用共享 `NRDParameters.h` 的 16 字节 inline 根，直接传入算法常量与资源表的
+BDA 地址，移除 ParameterRoot 的额外根读取。两个不可变快照仍由同一 ParameterWriter 参数包保留；
+算法资源槽表、dispatch plan、同步与历史恢复逻辑保持原有语义。
+
+NRD 资源快照统一为 `NRDResourceHandles`（400 字节）：CPU 使用 ShaderSampledImage、
+ShaderStorageImage 和 ShaderSampler，shader 保存完整 uint2 wire handle，由生成 binding 按算法类型
+构造 DescriptorHandle<T>。不再截断为 uint32 索引或补零重建句柄；VendorNrd.py 同步生成此格式。
+
+StreamSceneParameters 是普通 64 字节 BDA 数据快照，不再有独立 dispatch ABI。
+shadow/deferred 的父 ParameterWriter 同时保留四个 span 与快照，最终 inline 参数包统一绑定并保留资源，
+移除嵌套 EncodedParameters 和提前 bindResources。
+
+stream 解码与 surface/alpha GPU 探针共用测试侧 `StreamProbeParameters.h` 的 80 字节 inline 根，
+直接携带 StreamSceneParameters 和输出 span；40 个 GPU 检查保留 null、错误 stride、截断范围、
+材质 provider、TBN 和 alpha 阈值覆盖，并确认不产生 descriptor 写入。
+
+MaterialBinningProbe 的 PROBE_TYPED 分支使用共享 80 字节 inline ABI，reset 和间接消费共用
+四个有界数据 span；旧 fixture/对照分支单独编译。回归保留错误 ABI、非法 indirect 偏移、
+大于单维 group 上限的调度、逐像素唯一覆盖和跨帧复用检查。
+
+registry 纹理数组寿命与非一致 image/sampler 索引测试共用 `TextureBindingProbeParameters.h`，
+分别使用 24/32 字节 inline 根。保留 descriptor 输出以验证 registry 生命周期；图像数组仍为
+不可变完整 handle 快照。两条路径均支持 mapped/native 模式，包含提前释放和提交完成后复用检查。
+
+DataSliceProbe 的普通数据生产和间接消费使用共享 56 字节 inline ABI；兼容 getData adapter
+仅在 DATA_PROBE_ADAPTER 分支编译。测试继续验证 transfer-only 拒绝、slice 偏移/范围、
+间接参数与输出边界、数据值及提交期资源保留。
+
+VisibilityBufferComposite 使用共享 `VisibilityCompositeParameters.h` 的 72 字节 inline 参数。
+图像与 resident/stream buffer 均传递完整 typed handle，由 ParameterWriter 参数包保留。
+stream-only 场景不要求 resident buffer；关闭 debug 显示时保留清屏行为而不编码未使用资源。
+
+剔除 GPU 探针共用测试侧 `CullingProbeParameters.h`：法线锥为 16 字节 inline 有界输出，
+两阶段遮挡为 32 字节 inline 输出 span 与两个 typed HZB handle，均通过 ComputeKernel 提交。
+共享遮挡判定显式接收阶段编号、历史/当前 HZB，不再依赖整份旧 raster push；
+raster 调用边界负责按 frameIndex 选择 ping-pong HZB。
+
+Resident raster 的 mesh、细分、分箱与软件入口共用 `ResidentRasterParameters.h`：
+48 字节 inline 根携带绘制设置与 136 字节 typed 资源快照地址。
+混合队列/分箱使用独立具名字段；当前/历史 HZB 在 CPU 编码边界选择，
+每个提交参数包保留快照及对应 lease，不再使用 132 字节混合索引根。
+
+旧 `VisibilityBufferShading` 的未调度着色实现、静态 LUT 索引宏及重复的 resident push 声明
+已移除。生产材质解析继续使用 `VisibilityBufferDeferred` 的共享 typed inline ABI。
+
+Stream mesh/细分及独立 stream pass 共用 `StreamHardwareParameters.h` 的 104 字节 inline 根。
+八个 typed handle 保留完整 wire 值，分箱读/写 view 分别声明；显式 flags 控制可选队列/分箱。
+settings 与 raster settings 通过两个不可变 BDA 地址传递，不再读取设置 buffer descriptor；
+快照由同一父参数包保留，根大小保持 104 字节，ABI 已升级。
+`MeshletStreamRuntime.hardwareParameters` 将自身资源加入父 ParameterWriter；调用方同时保留
+混合光栅资源并提交统一参数包。旧 136 字节 raster 根与遍历/BLAS reserved 槽位已删除。
+嵌套 raster settings 仍有索引字段，后续独立迁移，不代表整条资源链已去除裸索引。
+
+Stream raster settings 已移除无消费者的 depth/visibility/deferred-color 图像输出、
+visible-instance ID 列表与计数器索引，结构从 96 缩为 76 字节。相关数据继续通过
+各自的 typed cull/deferred 参数传递；hardware、cluster cull、active build ABI 同步升级。

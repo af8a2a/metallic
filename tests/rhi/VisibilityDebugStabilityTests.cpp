@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/VisibilityCompositeParameters.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "RHITest.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
@@ -35,15 +36,12 @@ public:
         const uint32_t strides[] = {sizeof(builtin_pass::GPUDrivenPreviewGPUParams), sizeof(VisibleClusterRecord),
             80, sizeof(CompactStreamVisibleRecord), sizeof(MeshletStreamGPUActiveGroup)};
         const uint32_t counts[] = {1, capacity, 8, capacity, 8};
-        std::unique_ptr<BindlessHeap> heap;
-        DEBUG_REQUIRE(device->createBindlessHeap({.maxSampledImages = 2, .maxBuffers = InputCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
-        std::array<BindlessHandle, InputCount> handles;
+        auto registry = device->resourceRegistry();
+        if (!registry) { return RHITestResult::fail("registry unavailable"); }
         std::array<std::unique_ptr<Buffer>, InputCount> buffers;
         for (uint32_t i = 0; i < InputCount; ++i) {
             DEBUG_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
-            DEBUG_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
-            DEBUG_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
         }
         const auto upload = [](Buffer& buffer, const void* data, size_t size) -> Result<> {
             void* mapped = buffer.map();
@@ -71,7 +69,6 @@ public:
         std::array<std::unique_ptr<Texture>, 3> textures;
         std::array<std::unique_ptr<TextureView>, 3> views;
         std::array<std::unique_ptr<Buffer>, 2> uploads;
-        std::array<BindlessHandle, 2> images;
         for (uint32_t i = 0; i < 3; ++i) {
             const Format format = i == 0 ? Format::R32Uint : i == 1 ? Format::R32Sfloat : Format::RGBA8Unorm;
             DEBUG_REQUIRE(device->createTexture({.usage = i < 2 ? TextureUsageBits::Sampled | TextureUsageBits::TransferDestination :
@@ -79,8 +76,6 @@ public:
                 .format = format, .width = width, .height = 1}).transform([&](auto rhiValue) { textures[i] = std::move(rhiValue); }));
             DEBUG_REQUIRE(device->createTextureView(*textures[i], {.format = format}).transform([&](auto rhiValue) { views[i] = std::move(rhiValue); }));
             if (i < 2) {
-                DEBUG_REQUIRE(heap->allocateSampledImage().transform([&](auto rhiValue) { images[i] = std::move(rhiValue); }));
-                DEBUG_REQUIRE(heap->writeSampledImage(images[i], *views[i], ResourceState::ShaderRead));
                 DEBUG_REQUIRE(device->createBuffer({.size = width * 4, .usage = BufferUsageBits::TransferSource,
                     .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { uploads[i] = std::move(rhiValue); }));
             }
@@ -168,11 +163,18 @@ public:
                 if (auto commandResult = commands->beginRendering({.renderArea = {.width = width, .height = 1}, .colorAttachments = {&color, 1}}); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                 commands->setViewport({.width = float(width), .height = 1.f, .maxDepth = 1.f});
                 commands->setScissor({.width = width, .height = 1});
-                commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                const VisibilityBufferCompositeUserPush push{.paramsBuffer = handles[Params].shaderIndex, .visibilityImage = images[0].shaderIndex,
-                    .depthImage = images[1].shaderIndex, .residentRecords = handles[Resident].shaderIndex, .meshletBuffer = handles[Clusters].shaderIndex,
-                    .residentRecordCapacity = base, .streamRecords = handles[Stream].shaderIndex, .streamGroups = handles[Groups].shaderIndex};
-                commands->pushBindlessData(&push, sizeof(push)); commands->draw(3); commands->endRendering();
+                ParameterWriter writer(*device, **registry);
+                const VisibilityCompositeParameters push{
+                    .paramsBuffer = writer.buffer(buffers[Params].get()), .visibilityImage = writer.sampledImage(views[0].get()),
+                    .depthImage = writer.sampledImage(views[1].get()), .residentRecords = writer.buffer(buffers[Resident].get()),
+                    .meshletBuffer = writer.buffer(buffers[Clusters].get()), .streamRecords = writer.buffer(buffers[Stream].get()),
+                    .streamGroups = writer.buffer(buffers[Groups].get()), .residentRecordCapacity = base, .streamEnabled = 1};
+                auto encoded = writer.encode(push, kVisibilityCompositeABI, ParameterTransport::InlinePush);
+                if (!encoded) { return RHITestResult::fail("composite encode failed"); }
+                DEBUG_REQUIRE(encoded->bindResources(*commands));
+                DEBUG_REQUIRE(commands->bindExecution(pipeline->execution()));
+                commands->pushBindlessData(encoded->inlineData().data(), static_cast<uint32_t>(encoded->inlineData().size()));
+                commands->draw(3); commands->endRendering();
                 barrier.oldLayout = TextureLayout::ColorAttachment; barrier.before = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite}; barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                 if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 commands->copyTextureToBuffer({.texture = textures[2].get(), .buffer = readback.get(), .width = width, .height = 1});

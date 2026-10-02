@@ -1,4 +1,5 @@
 #pragma once
+#include "Runtime/Render/Core/StreamHardwareParameters.h"
 
 #include "Runtime/Render/Core/RenderFrameContext.h"
 
@@ -373,10 +374,6 @@ struct MeshletStreamGPURasterBindings {
     uint32_t instanceVisibilityBuffer = 0;
     uint32_t hzbBuffer0 = 0;
     uint32_t hzbBuffer1 = 0;
-    uint32_t depthImage = 0;
-    uint32_t visibilityImage = 0;
-    uint32_t deferredColorBuffer = 0;
-    uint32_t visibleInstanceIdsBuffer = 0;
     // Stream records keep a local storage index while visibility IDs address
     // the common resident + stream record namespace.
     uint32_t visibleRecordBase = 0;
@@ -386,7 +383,6 @@ struct MeshletStreamGPURasterBindings {
     uint32_t cullingFlags = 0;
     uint32_t width = 0;
     uint32_t height = 0;
-    uint32_t visibleInstanceCounterBuffer = 0;
     uint32_t gpuSceneInstanceBuffer = UINT32_MAX;
     uint32_t tessellationBuffer = UINT32_MAX;
     float displacementBound = 0.0f;
@@ -412,7 +408,7 @@ struct MeshletStreamDeferredGPUResourcesView {
     uint32_t visibleRecordCapacity = 0;
     RayTracingAccelerationStructure* accelerationStructure = nullptr;
 
-    Result<EncodedParameters> encodeRayQueryParameters(ParameterWriter& writer) const;
+    uint64_t encodeRayQuerySnapshot(ParameterWriter& writer) const;
 
     bool valid() const
     {
@@ -426,42 +422,7 @@ struct MeshletStreamDeferredGPUResourcesView {
     }
 };
 
-struct MeshletStreamUserPush {
-    uint32_t pageBuffer = 0;
-    uint32_t activeGroupBuffer = 0;
-    uint32_t pageTableBuffer = 0;
-    uint32_t paramsBuffer = 0;
-    uint32_t requestBuffer = 0;
-    uint32_t reservedResidentPages = 0;
-    uint32_t reservedUpdate = 0;
-    uint32_t activeHeaderBuffer = 0;
-    uint32_t instanceBuffer = 0;
-    uint32_t primitiveBuffer = 0;
-    uint32_t lodLevelBuffer = 0;
-    uint32_t groupBuffer = 0;
-    uint32_t nodeBuffer = 0;
-    uint32_t drawIndirectBuffer = 0;
-    uint32_t traversalHeaderBuffer = 0;
-    uint32_t traversalWorkBuffer = 0;
-    uint32_t reservedClasAddressBuffer = 0;
-    uint32_t reservedClasPageTableBuffer = 0;
-    uint32_t reservedBlasHeaderBuffer = 0;
-    uint32_t reservedInstanceBlasBuffer = 0;
-    uint32_t reservedBlasBuildInfoBuffer = 0;
-    uint32_t reservedBlasClusterReferenceBuffer = 0;
-    uint32_t reservedFallbackBLASAddresses = 0;
-    uint32_t reservedDynamicBlasAddressBuffer = 0;
-    uint32_t reservedTLASInstances = 0;
-    uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
-    uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
-    uint32_t rasterBindingsBuffer = UINT32_MAX;
-    uint32_t hybridQueueBuffer = UINT32_MAX;
-    uint32_t hybridClusterBuffer = UINT32_MAX;
-    uint32_t reservedCLASPublicationRevision = 0;
-    float tessellationEdgePixels = 8.0f;
-    uint32_t tessellationMaxFactor = 4;
-    uint32_t tessellationMaxSplitDepth = 2;
-};
+
 
 static_assert(sizeof(MeshletStreamGPUActiveHeader) == 32);
 static_assert(sizeof(MeshletStreamGPUActiveGroup) == 112);
@@ -480,8 +441,8 @@ static_assert(sizeof(StreamPageTableEntry) == 8);
 static_assert(sizeof(MeshletStreamGPUParams) == 624);
 // VisibilityStreamDecode.slang reads the pool capacity from the immutable frame params.
 static_assert(offsetof(MeshletStreamGPUParams, pageBufferBytes) == 100);
-static_assert(sizeof(MeshletStreamGPURasterBindings) == 96);
-static_assert(sizeof(MeshletStreamUserPush) == 136);
+static_assert(sizeof(MeshletStreamGPURasterBindings) == 76);
+
 
 struct MeshletStreamRuntimeDesc {
     std::filesystem::path sourcePath;
@@ -632,7 +593,7 @@ public:
 
     ResourceRegistry* resourceRegistry() const { return registry_.get(); }
     BindlessHeap* bindlessHeap() const { return registry_ ? registry_->heap() : nullptr; }
-    MeshletStreamUserPush userPush() const;
+    StreamHardwareParameters hardwareParameters(ParameterWriter& writer) const;
     Result<> updateRasterBindings(const MeshletStreamGPURasterBindings& bindings);
     Result<EncodedParameters> encodeSoftwareRaster(ParameterWriter& writer, Buffer* bins, Buffer* pixels, Buffer* instances, std::vector<uint8_t>* settingsSnapshot = nullptr) const;
     Result<EncodedParameters> encodeSoftwareWorkload(ParameterWriter& writer, Buffer* bins, Buffer* counters, Buffer* instances) const;

@@ -80,7 +80,7 @@ public:
             CANDIDATE_REQUIRE(device->createComputePipeline({
                 .computeShader = {shaders[i].get()},
                 .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = i == 0 ? uint32_t(sizeof(MeshletStreamUserPush)) : 12u,
+                .bindlessUserPushDataSize = i == 0 ? uint32_t(sizeof(StreamHardwareParameters)) : 12u,
             }).transform([&](auto rhiValue) { pipelines[i] = std::move(rhiValue); }));
         }
         std::unique_ptr<Buffer> readback, arguments, binned, drawArguments;

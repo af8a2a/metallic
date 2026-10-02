@@ -1,15 +1,15 @@
 #include "../../../Source/Runtime/Render/Core/StreamSceneParameters.h"
-import ParameterRoot;
+#include "../StreamProbeParameters.h"
 import GPUDriven;
 using Metallic;
 using Metallic.GPUDriven;
 #include "../../../Shaders/Features/PathTracing/StreamSceneDecode.slang"
-struct StreamDecodeParams { StreamSceneParameters stream; DataSpan<uint> output; };
+[[vk::push_constant]] ConstantBuffer<StreamProbeParameters> gStreamProbe;
 [shader("compute")]
 [numthreads(16, 1, 1)]
 void streamDataDecodeMain(uint3 id : SV_DispatchThreadID)
 {
-    StreamDecodeParams p = getParameters<StreamDecodeParams>();
+    StreamProbeParameters p = gStreamProbe;
     if (id.x >= 24 || !p.output.contains(id.x)) { return; }
     if (id.x == 9) { p.output.data[id.x] = p.stream.instances.length() == 1 ? p.stream.instances.data[0].materialIndex : 0; return; }
     if (id.x == 10) { p.output.data[id.x] = p.stream.header.contains(2) ? p.stream.header.data[2] : 0; return; }

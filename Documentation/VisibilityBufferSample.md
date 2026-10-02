@@ -89,10 +89,12 @@ Wave 版本减少的 LDS 占用和块内同步次数可由生成的 SPIR-V 确�
 `hzb_spd_visibility_equivalence_timing` 验证 SPD wave/LDS/逐 mip 的可见三角形一致，记录 GPU 时间，
 并覆盖 4097×65 自动回退。
 
-本 Pass 不再创建 OpenPBR compute 管线、LUT 或 deferred color buffer，也不依赖环境光子系统。材质贴图只上传 MASK 几何所需的 base-color alpha 贴图；这属于可见性判定，不是着色。`VisibilityBufferShading.slang` 暂保留源码供后续独立着色阶段使用，当前 Pass 不编译、不调度它。
+本 Pass 不再创建 OpenPBR compute 管线、LUT 或 deferred color buffer，也不依赖环境光子系统。材质贴图只上传 MASK 几何所需的 base-color alpha 贴图；这属于可见性判定，不是着色。旧的独立着色源码及混合索引 push ABI 已移除。
 
 独立着色阶段现由 [VisibilityBufferDeferredPass](VisibilityBufferDeferred.md) 提供，
-使用新的 `VisibilityBufferDeferred.slang` 和共享 OpenPBR 光照函数。
+使用 `VisibilityBufferDeferred.slang` 的 typed inline 参数和共享 OpenPBR 光照函数。
+resident raster 的硬件、软件与细分入口共用 48 字节 inline 根和 136 字节 typed 资源快照；
+资源由 ParameterWriter 参数包保留。
 本 Pass 另发布 `rasterInfo` buffer，供延迟节点读取实际观察相机及 scene identity；
 resident LookDev 比较通过 `LookDev.exe --sample lookdev-vbuffer` 启动。
 

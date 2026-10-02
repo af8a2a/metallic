@@ -1,3 +1,7 @@
+#include "DataSliceProbeParameters.h"
+#include "TextureBindingProbeParameters.h"
+#include "StreamProbeParameters.h"
+#include "Runtime/Render/MaterialBinningParams.h"
 #include "Runtime/Render/Core/DeferredShadingParameters.h"
 #include "Runtime/Render/Core/RealtimeLightingParameters.h"
 #include "Runtime/Render/Core/PathTraceGuidesInlineParameters.h"
@@ -169,7 +173,7 @@ public:
             {"Metallic.ColorGradingLUTParams", {FIELD(ColorGradingLUTParams, output), FIELD(ColorGradingLUTParams, custom0),
                 FIELD(ColorGradingLUTParams, custom1), FIELD(ColorGradingLUTParams, custom2), FIELD(ColorGradingLUTParams, custom3),
                 FIELD(ColorGradingLUTParams, reach), FIELD(ColorGradingLUTParams, gamut), FIELD(ColorGradingLUTParams, gammaTable),
-                FIELD(ColorGradingLUTParams, sampler), FIELD(ColorGradingLUTParams, padding0), FIELD(ColorGradingLUTParams, padding1),
+                FIELD(ColorGradingLUTParams, sampler),
                 FIELD(ColorGradingLUTParams, display)}},
             {"Metallic.ClusterLightGridBuildParams", {FIELD(ClusterLightGridBuildParams, grid), FIELD(ClusterLightGridBuildParams, lights),
                 FIELD(ClusterLightGridBuildParams, candidates), FIELD(ClusterLightGridBuildParams, cells), FIELD(ClusterLightGridBuildParams, indices)}},
@@ -243,10 +247,16 @@ public:
             {"Metallic.RealtimeLightingParameters", {FIELD(RealtimeLightingParameters, path), FIELD(RealtimeLightingParameters, irradiance)}},
             {"Metallic.DeferredShadingParameters", {FIELD(DeferredShadingParameters, path), FIELD(DeferredShadingParameters, resources), FIELD(DeferredShadingParameters, visibility), FIELD(DeferredShadingParameters, depth), FIELD(DeferredShadingParameters, domain), FIELD(DeferredShadingParameters, motion), FIELD(DeferredShadingParameters, deviceDepth), FIELD(DeferredShadingParameters, binIndex), FIELD(DeferredShadingParameters, padding)}},
             {"Metallic.DeferredShadingResources", {FIELD(DeferredShadingResources, vertices), FIELD(DeferredShadingResources, meshlets), FIELD(DeferredShadingResources, records), FIELD(DeferredShadingResources, meshletVertices), FIELD(DeferredShadingResources, triangles), FIELD(DeferredShadingResources, geometries), FIELD(DeferredShadingResources, instances), FIELD(DeferredShadingResources, materials), FIELD(DeferredShadingResources, bins), FIELD(DeferredShadingResources, tiles), FIELD(DeferredShadingResources, irradiance), FIELD(DeferredShadingResources, specular), FIELD(DeferredShadingResources, gridParams), FIELD(DeferredShadingResources, gridLights), FIELD(DeferredShadingResources, gridCandidates), FIELD(DeferredShadingResources, gridCells), FIELD(DeferredShadingResources, gridIndices), FIELD(DeferredShadingResources, shadow), FIELD(DeferredShadingResources, shadowParams), FIELD(DeferredShadingResources, view), FIELD(DeferredShadingResources, streamRecords), FIELD(DeferredShadingResources, streamGroups), FIELD(DeferredShadingResources, streamPages), FIELD(DeferredShadingResources, streamTable), FIELD(DeferredShadingResources, frameInfo), FIELD(DeferredShadingResources, streamParams), FIELD(DeferredShadingResources, feedback), FIELD(DeferredShadingResources, sampler)}},
+            {"Metallic.MaterialBinningParams", {FIELD(MaterialBinningParams, visibility), FIELD(MaterialBinningParams, resources), FIELD(MaterialBinningParams, bins), FIELD(MaterialBinningParams, tiles), FIELD(MaterialBinningParams, arguments), FIELD(MaterialBinningParams, width), FIELD(MaterialBinningParams, height), FIELD(MaterialBinningParams, tileCount), FIELD(MaterialBinningParams, residentRecordCount)}},
+            {"Metallic.MaterialBinningResources", {FIELD(MaterialBinningResources, records), FIELD(MaterialBinningResources, instances), FIELD(MaterialBinningResources, materials), FIELD(MaterialBinningResources, shadingMaterials), FIELD(MaterialBinningResources, streamRecords), FIELD(MaterialBinningResources, streamGroups)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; const char* define = nullptr; };
         const Program programs[] = {
+            {"Features/VisibilityBuffer/VisibilityMaterialBinning", "materialBinningResetMain", 56},
+            {"Features/VisibilityBuffer/VisibilityMaterialBinning", "materialBinningClassifyMain", 56},
+            {"Features/VisibilityBuffer/VisibilityMaterialBinning", "materialBinningArgumentsMain", 56},
+            {"Features/VisibilityBuffer/VisibilityMaterialBinning", "materialBinningClassifyMain", 57},
             {"Features/PostProcess/FinalBlit", "finalBlitMain", 0},
             {"Features/PostProcess/FinalBlit", "finalBlitUvMain", 0},
             {"Features/Debug/SliderDebug", "sliderDebugMain", 1},
@@ -353,7 +363,7 @@ public:
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout >= 54 ? 40u : program.layout == 53 ? 39u : program.layout == 52 ? 38u : program.layout == 51 ? 37u : program.layout == 50 ? 36u : program.layout == 49 ? 35u : program.layout == 48 ? 34u : program.layout == 47 ? 33u : program.layout == 46 ? 32u : program.layout == 45 ? 31u : program.layout == 44 ? 30u : program.layout == 43 ? 29u : program.layout == 42 ? 28u : program.layout == 41 ? 27u : program.layout == 40 ? 26u : program.layout == 39 ? 25u : program.layout == 38 ? 24u : program.layout == 37 ? 23u : program.layout == 36 ? 22u : program.layout == 35 ? 21u : program.layout == 34 ? 20u : program.layout == 33 ? 19u : program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                if ((program.layout >= 56 ? 41u : program.layout >= 54 ? 40u : program.layout == 53 ? 39u : program.layout == 52 ? 38u : program.layout == 51 ? 37u : program.layout == 50 ? 36u : program.layout == 49 ? 35u : program.layout == 48 ? 34u : program.layout == 47 ? 33u : program.layout == 46 ? 32u : program.layout == 45 ? 31u : program.layout == 44 ? 30u : program.layout == 43 ? 29u : program.layout == 42 ? 28u : program.layout == 41 ? 27u : program.layout == 40 ? 26u : program.layout == 39 ? 25u : program.layout == 38 ? 24u : program.layout == 37 ? 23u : program.layout == 36 ? 22u : program.layout == 35 ? 21u : program.layout == 34 ? 20u : program.layout == 33 ? 19u : program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"},
                     {program.define ? program.define : "METALLIC_TEST_PARAMETER_LAYOUT", "1"}};
                 const char* capabilities[] = {"spvRayQueryKHR"};
@@ -401,7 +411,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 40 ? "DeferredShadingParameters.h" : category == 39 ? "RealtimeLightingParameters.h" : category == 38 ? "PathTraceGuidesInlineParameters.h" : category == 37 ? "NRCTraceParameters.h" : category == 36 ? "SharcTraceParameters.h" : category == 35 ? "PathTraceInlineParameters.h" : category == 34 ? "RTXDITraceParameters.h" : category == 33 ? "ShadowTraceParameters.h" : category == 32 ? "StreamWorkloadParameters.h" : category == 31 ? "StreamRasterParameters.h" : category == 30 ? "HybridResolveParameters.h" : category == 29 ? "HybridRasterParameters.h" : category == 28 ? "HybridBinParameters.h" : category == 27 ? "StreamClusterCullParameters.h" : category == 26 ? "StreamClassifyParameters.h" : category == 25 ? "StreamCandidateParameters.h" : category == 24 ? "StreamBLASParameters.h" : category == 23 ? "StreamTLASParameters.h" : category == 22 ? "StreamActiveBuildParameters.h" : category == 21 ? "StreamTraversalParameters.h" : category == 20 ? "StreamPageTableParameters.h" : category == 19 ? "ResidentLODParameters.h" : category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 41 ? "MaterialBinningParams.h" : category == 40 ? "DeferredShadingParameters.h" : category == 39 ? "RealtimeLightingParameters.h" : category == 38 ? "PathTraceGuidesInlineParameters.h" : category == 37 ? "NRCTraceParameters.h" : category == 36 ? "SharcTraceParameters.h" : category == 35 ? "PathTraceInlineParameters.h" : category == 34 ? "RTXDITraceParameters.h" : category == 33 ? "ShadowTraceParameters.h" : category == 32 ? "StreamWorkloadParameters.h" : category == 31 ? "StreamRasterParameters.h" : category == 30 ? "HybridResolveParameters.h" : category == 29 ? "HybridRasterParameters.h" : category == 28 ? "HybridBinParameters.h" : category == 27 ? "StreamClusterCullParameters.h" : category == 26 ? "StreamClassifyParameters.h" : category == 25 ? "StreamCandidateParameters.h" : category == 24 ? "StreamBLASParameters.h" : category == 23 ? "StreamTLASParameters.h" : category == 22 ? "StreamActiveBuildParameters.h" : category == 21 ? "StreamTraversalParameters.h" : category == 20 ? "StreamPageTableParameters.h" : category == 19 ? "ResidentLODParameters.h" : category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -1053,8 +1063,7 @@ public:
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
         REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
-        struct Params { render::ShaderStorageImage image; uint64_t samples; render::ShaderBuffer output; };
-        static_assert(sizeof(Params) == 24);
+        using Params = RegistryTextureParams;
         const char* entries[] = {"registryTextureWriteMain", "registryTextureReadMain"};
         std::array<render::ComputeKernel, 2> kernels;
         std::string log;
@@ -1063,7 +1072,7 @@ public:
             REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "RegistryTextureProbe",
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             REG_REQUIRE(kernels[i].initialize(*device, {.spirv = shader.spirv,
-                .parameters = render::parameterAbi<Params>(kABI + 3)}, log));
+                .parameters = render::parameterAbi<Params>(kRegistryTextureABI, render::ParameterTransport::InlinePush)}, log));
         }
         std::unique_ptr<render::Texture> image;
         std::unique_ptr<render::TextureView> view;
@@ -1086,7 +1095,7 @@ public:
             const std::array<render::TextureView*, 3> views{view.get(), view.get(), view.get()};
             Params params{writer.storageImage(view.get()), writer.sampledImages(views), writer.buffer(output.get())};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kABI + 3).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kRegistryTextureABI, render::ParameterTransport::InlinePush).transform([&](auto value) { encoded = std::move(value); }));
             REG_CHECK(registry->stats().descriptorWrites == 3); // storage image, sampled image, output
             render::TextureBarrierDesc barrier{
                 .texture = image.get(),
@@ -1222,8 +1231,7 @@ public:
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
         REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
-        struct Params { render::ShaderDataSpan source, output, arguments; uint32_t add; };
-        static_assert(sizeof(Params) == 56 && offsetof(Params, add) == 48);
+        using Params = DataProbeParams;
         std::array<render::ComputeKernel, 2> kernels;
         const char* entries[] = {"dataProduceMain", "dataIndirectMain"};
         std::string log;
@@ -1233,11 +1241,13 @@ public:
                 .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { return RHITestResult::fail(shader.diagnostics); }
             REG_REQUIRE(kernels[i].initialize(*device, {.spirv = shader.spirv,
-                .parameters = render::parameterAbi<Params>(kABI + 5)}, log));
+                .parameters = render::parameterAbi<Params>(kDataProbeABI, render::ParameterTransport::InlinePush)}, log));
         }
+        const render::SlangMacroDefine adapterDefines[] = {{"DATA_PROBE_ADAPTER", "1"}};
         render::ShaderCompileResult shader;
         REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "DataSliceProbe",
-            .entryPointName = "dataAdapterMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
+            .entryPointName = "dataAdapterMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
+            .macroDefines = adapterDefines}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
         render::ComputeProgram adapter;
         const render::ComputeProgramBindingDesc layout{.binding = 0,
             .kind = render::ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4};
@@ -1304,7 +1314,7 @@ public:
             const Params params{writer.dataBuffer<uint32_t>(data), writer.dataBuffer<uint32_t>(to),
                 writer.dataBuffer<uint32_t>(arguments), 7};
             render::EncodedParameters encoded;
-            REG_REQUIRE(writer.encode(params, kABI + 5).transform([&](auto value) { encoded = std::move(value); }));
+            REG_REQUIRE(writer.encode(params, kDataProbeABI, render::ParameterTransport::InlinePush).transform([&](auto value) { encoded = std::move(value); }));
             REG_REQUIRE(kernels[0].dispatch(*recording.commands, encoded, 1));
             outputBarrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
             workBarrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite}; workBarrier.after = {render::PipelineStageBits::DrawIndirect, render::AccessBits::IndirectRead};
@@ -1507,6 +1517,12 @@ public:
     RealtimeLightingLayoutTest() { category = 39; name = "realtime_lighting_parameter_spirv_layout"; }
 };
 METALLIC_REGISTER_RHI_TEST(RealtimeLightingLayoutTest);
+class MaterialBinningLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    MaterialBinningLayoutTest() { category = 41; name = "material_binning_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(MaterialBinningLayoutTest);
+
 class DeferredShadingLayoutTest final : public PostProcessParameterLayoutTest {
 public:
     DeferredShadingLayoutTest() { category = 40; name = "deferred_shading_parameter_spirv_layout"; }
@@ -1764,17 +1780,16 @@ public:
         auto& queue = *device->getQueue(QueueType::Graphics);
         auto registry = device->resourceRegistry();
         REG_CHECK(registry);
-        struct Params { StreamSceneParameters stream; ShaderDataSpan output; };
         ComputeKernel kernel, surfaceKernel;
         std::string log;
         auto shader = compileSlangShaderToSpirv({.moduleName = "StreamDataDecodeProbe",
             .entryPointName = "streamDataDecodeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
         if (!shader) { return RHITestResult::fail(log); }
-        REG_REQUIRE(kernel.initialize(*device, {.spirv = shader->spirv, .parameters = parameterAbi<Params>(kABI + 6)}, log));
+        REG_REQUIRE(kernel.initialize(*device, {.spirv = shader->spirv, .parameters = parameterAbi<StreamProbeParameters>(kStreamProbeABI, ParameterTransport::InlinePush)}, log));
         auto surfaceShader = compileSlangShaderToSpirv({.moduleName = "StreamRaySurfaceProbe",
             .entryPointName = "streamRaySurfaceMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
         if (!surfaceShader) { return RHITestResult::fail(log); }
-        REG_REQUIRE(surfaceKernel.initialize(*device, {.spirv = surfaceShader->spirv, .parameters = parameterAbi<Params>(kABI + 6)}, log));
+        REG_REQUIRE(surfaceKernel.initialize(*device, {.spirv = surfaceShader->spirv, .parameters = parameterAbi<StreamProbeParameters>(kStreamProbeABI, ParameterTransport::InlinePush)}, log));
         std::unique_ptr<Buffer> output;
         REG_REQUIRE(device->createBuffer({.size = 40 * sizeof(uint32_t), .structureStride = 4,
             .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
@@ -1799,7 +1814,7 @@ public:
             words[55] = 0x3f800000; words[59] = 0x3f800000; words[61] = 0x00020100;
             const std::array<uint32_t, 2> table{2, 0};
             ParameterWriter writer(*device, **registry, &recording.frame);
-            Params params{};
+            StreamProbeParameters params{};
             params.stream.pages = {writer.data(words.data(), sizeof(words)), uint32_t(words.size()), 4};
             params.stream.pageTable = {writer.data(table.data(), sizeof(table)), 1, 8};
             std::array<uint32_t, 24> instance{};
@@ -1809,7 +1824,7 @@ public:
             params.stream.instances = {writer.data(instance.data(), sizeof(instance)), 1, 96};
             params.stream.header = {writer.data(header.data(), sizeof(header)), 3, 4};
             params.output = writer.dataBuffer(output.get(), 4, 4);
-            auto encoded = writer.encode(params, kABI + 6);
+            auto encoded = writer.encode(params, kStreamProbeABI, ParameterTransport::InlinePush);
             REG_CHECK(encoded);
             REG_REQUIRE(kernel.dispatch(*recording.commands, *encoded, 2));
             REG_REQUIRE(surfaceKernel.dispatch(*recording.commands, *encoded, 1));

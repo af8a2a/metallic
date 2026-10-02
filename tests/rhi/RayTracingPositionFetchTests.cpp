@@ -1,7 +1,8 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/SceneProbeParameters.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -160,24 +161,10 @@ public:
             }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             log = shader.diagnostics;
             FETCH_REQUIRE(compiled);
-            std::vector<render::ComputeProgramBindingDesc> layout = {
-                {0, render::ComputeResourceBindingKind::AccelerationStructure},
-                {2, render::ComputeResourceBindingKind::DataBuffer, 1, 16, 8},
-                {3, render::ComputeResourceBindingKind::DataBuffer, 1, 4, 4},
-                {4, render::ComputeResourceBindingKind::DataBuffer, 1, 32, 4},
-                {5, render::ComputeResourceBindingKind::DataBuffer, 1, 16, 4}, {6},
-                {9, render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()},
-                {63},
-            };
-            if (!positionFetch) {
-                layout.push_back({render::kSceneFallbackPositionsBinding, render::ComputeResourceBindingKind::DataBuffer, 1, 12, 4});
-            }
-            render::ComputeProgram program;
-            const auto initialized = program.initialize(*device, {
-                .spirv = shader.spirv,
-                .pushConstantSize = sizeof(float),
-                .bindings = {layout.data(), static_cast<uint32_t>(std::size(layout))},
-            }, log);
+            render::ComputeKernel program;
+            const auto initialized = program.initialize(*device, {.spirv = shader.spirv,
+                .parameters = render::parameterAbi<render::ScenePositionProbeParameters>(
+                    render::kScenePositionProbeABI, render::ParameterTransport::InlinePush)}, log);
             if (native_ && render::hasError(initialized, render::Error::Unsupported)) {
                 return RHITestResult::skip("native descriptor heaps require KHR untyped pointers");
             }
@@ -218,39 +205,35 @@ public:
                 FETCH_REQUIRE(pool->reset());
                 FETCH_REQUIRE(commands->begin(&frame));
                 FETCH_REQUIRE(resources.uploadMaterialTextures(*commands));
-                std::vector<render::ComputeDispatchBinding> bindings = {
-                    {.binding = 0, .accelerationStructure = resources.accelerationStructure().accelerationStructure()},
-                    {.binding = 2, .buffer = resources.shadingVertexBuffer()},
-                    {.binding = 3, .buffer = resources.indexBuffer()},
-                    {.binding = 4, .buffer = resources.primitiveBuffer()},
-                    {.binding = 5, .buffer = resources.instanceBuffer()},
-                    {.binding = 6, .buffer = resources.materialBuffer()},
-                    {
-                        .binding = 9,
-                        .textureViews = {resources.materialTextureViews().data(), resources.materialTextureCount()},
-                    },
-                    {.binding = 63, .buffer = output.get()},
-                };
+                auto registry = device->resourceRegistry();
+                FETCH_REQUIRE(registry.transform([](auto&) {}));
+                render::ParameterWriter writer(*device, **registry, &frame);
+                // A valid TLAS must not allow hit indices to escape a CPU slice.
+                auto vertices = resources.shadingVertexBuffer()->slice(
+                    {.size = step == 2 ? 16u : resources.shadingVertexBuffer()->desc().size});
+                auto indices = resources.indexBuffer()->slice(
+                    {.size = step == 3 ? 4u : resources.indexBuffer()->desc().size});
+                FETCH_REQUIRE(vertices.transform([](auto&) {}));
+                FETCH_REQUIRE(indices.transform([](auto&) {}));
+                render::PathTraceParameters sceneParameters{};
+                sceneParameters.scene = writer.accelerationStructure(resources.accelerationStructure().accelerationStructure());
+                sceneParameters.vertices = writer.dataBuffer(*vertices, 16, 8);
+                sceneParameters.indices = writer.dataBuffer(*indices, 4, 4);
+                sceneParameters.primitives = writer.dataBuffer(resources.primitiveBuffer(), 32, 4);
+                sceneParameters.instances = writer.dataBuffer(resources.instanceBuffer(), 16, 4);
+                sceneParameters.materials = writer.buffer(resources.materialBuffer());
+                sceneParameters.materialTextures = writer.sampledImages(resources.materialTextureViews());
                 if (!positionFetch) {
-                    bindings.push_back({.binding = render::kSceneFallbackPositionsBinding,
-                        .buffer = resources.fallbackPositionBuffer()});
+                    auto positions = resources.fallbackPositionBuffer()->slice(
+                        {.size = step == 4 ? 12u : resources.fallbackPositionBuffer()->desc().size});
+                    FETCH_REQUIRE(positions.transform([](auto&) {}));
+                    sceneParameters.positions = writer.dataBuffer(*positions, 12, 4);
                 }
-                // A valid TLAS must not allow its hit indices to escape a supplied
-                // CPU slice. Keep the geometry allocated, but expose one element.
-                if (step >= 2) {
-                    const uint32_t bindingToTruncate = step == 2 ? 2u : step == 3 ? 3u : render::kSceneFallbackPositionsBinding;
-                    for (auto& binding : bindings) {
-                        if (binding.binding == bindingToTruncate) {
-                            binding.range = {.offset = 0, .size = step == 2 ? 16u : step == 3 ? 4u : 12u};
-                        }
-                    }
-                }
-                FETCH_REQUIRE(program.dispatch({
-                    .commandBuffer = commands.get(),
-                    .bindings = {bindings.data(), static_cast<uint32_t>(std::size(bindings))},
-                    .pushData = &translationX,
-                    .pushDataSize = sizeof(translationX),
-                }));
+                const render::ScenePositionProbeParameters parameters{
+                    writer.data(&sceneParameters, sizeof(sceneParameters)), writer.dataBuffer(output.get(), 16, 4), translationX, 0};
+                auto encoded = writer.encode(parameters, render::kScenePositionProbeABI, render::ParameterTransport::InlinePush);
+                FETCH_REQUIRE(encoded.transform([](auto&) {}));
+                FETCH_REQUIRE(program.dispatch(*commands, *encoded, 1));
                 FETCH_REQUIRE(commands->end());
                 render::CommandBuffer* submitted[] = {commands.get()};
                 FETCH_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));
@@ -380,13 +363,10 @@ public:
         }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         log = shader.diagnostics;
         FETCH_REQUIRE(compiled);
-        const render::ComputeProgramBindingDesc layout[] = {{2}, {63}};
-        render::ComputeProgram program;
-        FETCH_REQUIRE(program.initialize(*device, {
-            .spirv = shader.spirv,
-            .bindings = {layout, 2},
-            .requiresRayQuery = false,
-        }, log));
+        render::ComputeKernel program;
+        FETCH_REQUIRE(program.initialize(*device, {.spirv = shader.spirv,
+            .parameters = render::parameterAbi<render::SceneVertexProbeParameters>(
+                render::kSceneVertexProbeABI, render::ParameterTransport::InlinePush)}, log));
         render::QueueSubmissionTracker tracker;
         FETCH_REQUIRE(tracker.initialize(*device, queue));
         std::unique_ptr<render::CommandPool> pool;
@@ -406,12 +386,14 @@ public:
         } drain{frame, *pool};
         FETCH_REQUIRE(frame.begin(0));
         FETCH_REQUIRE(commands->begin(&frame));
-        const render::ComputeDispatchBinding bindings[] = {{.binding = 2, .buffer = input.get()}, {.binding = 63, .buffer = output.get()}};
-        FETCH_REQUIRE(program.dispatch({
-            .commandBuffer = commands.get(),
-            .bindings = {bindings, 2},
-            .groupCountX = static_cast<uint32_t>(vertices.size()),
-        }));
+        auto registry = device->resourceRegistry();
+        FETCH_REQUIRE(registry.transform([](auto&) {}));
+        render::ParameterWriter writer(*device, **registry, &frame);
+        const render::SceneVertexProbeParameters parameters{
+            writer.dataBuffer(input.get(), 16, 8), writer.dataBuffer(output.get(), 16, 4)};
+        auto encoded = writer.encode(parameters, render::kSceneVertexProbeABI, render::ParameterTransport::InlinePush);
+        FETCH_REQUIRE(encoded.transform([](auto&) {}));
+        FETCH_REQUIRE(program.dispatch(*commands, *encoded, static_cast<uint32_t>(vertices.size())));
         FETCH_REQUIRE(commands->end());
         render::CommandBuffer* submitted[] = {commands.get()};
         FETCH_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));

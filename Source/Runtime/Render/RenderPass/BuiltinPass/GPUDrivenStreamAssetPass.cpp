@@ -643,15 +643,11 @@ public:
             .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex(),
             .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
             .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
-            .depthImage = depthImageHandle_.shaderIndex(),
-            .visibilityImage = visibilityImageHandle_.shaderIndex(),
-            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.shaderIndex(),
             .hzbMipCount = hzbMipCount_,
             .hzbValid = 0u,
             .cullingFlags = cullingFlagsFromProperties(properties()),
             .width = frameWidth_,
             .height = frameHeight_,
-            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex(),
         });
         if (!result) {
             log = "GPUDrivenStreamAssetPass failed to publish raster bindings";
@@ -1125,15 +1121,11 @@ private:
             .instanceVisibilityBuffer = instanceVisibilityHandle_.shaderIndex(),
             .hzbBuffer0 = hzbHandles_[0].shaderIndex(),
             .hzbBuffer1 = hzbHandles_[1].shaderIndex(),
-            .depthImage = depthImageHandle_.shaderIndex(),
-            .visibilityImage = visibilityImageHandle_.shaderIndex(),
-            .visibleInstanceIdsBuffer = visibleInstanceIdsHandle_.shaderIndex(),
             .hzbMipCount = hzbMipCount_,
             .hzbValid = hzbValid_ ? 1u : 0u,
             .cullingFlags = cullingFlagsFromProperties(properties()),
             .width = frameWidth_,
             .height = frameHeight_,
-            .visibleInstanceCounterBuffer = visibleInstanceCounterHandle_.shaderIndex(),
         });
     }
 
@@ -1369,9 +1361,16 @@ private:
         if (streamRuntime_->drawTaskCount() > 0) {
             context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
             if (auto commandResult = context.commandBuffer().bindExecution((visibilityPipelines_[reversedZ ? 1u : 0u])->execution()); !commandResult) { return commandResult; }
-            MeshletStreamUserPush push = streamRuntime_->userPush();
+            auto registry = device_->resourceRegistry();
+            if (!registry) { return makeError(registry.error()); }
+            auto& commands = context.commandBuffer();
+            ParameterWriter writer(*device_, **registry, commands.frameContext());
+            auto push = streamRuntime_->hardwareParameters(writer);
             push.traversalPhase = phase == GPUSceneCullPhase::Early ? 0u : 1u;
-            context.commandBuffer().pushBindlessData(&push, sizeof(push));
+            auto encoded = writer.encode(push, kStreamHardwareABI, ParameterTransport::InlinePush);
+            if (!encoded) { return makeError(encoded.error()); }
+            if (auto retained = encoded->bindResources(commands); !retained) { return retained; }
+            commands.pushBindlessData(encoded->inlineData().data(), static_cast<uint32_t>(encoded->inlineData().size()));
             streamRuntime_->cmdDrawMeshTasks(context.commandBuffer());
         }
         context.commandBuffer().endRendering();

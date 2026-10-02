@@ -1,5 +1,6 @@
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "CullingProbeParameters.h"
 #include "Runtime/Render/RenderSample.h"
 #include "Runtime/Render/Core/RenderView.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -27,20 +28,27 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "GPUDrivenConeProbe",
             .entryPointName = "gpuDrivenConeProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}};
-        return program_.initialize(*context.device, {
+        device_ = context.device;
+        return kernel_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .bindings = {bindings, 1},
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<ConeProbeParameters>(kConeProbeABI, render::ParameterTransport::InlinePush),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = context.outputBuffer("data").buffer()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 1}});
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return render::makeError(registry.error()); }
+        auto& command = context.commandBuffer();
+        render::ParameterWriter writer(*device_, **registry, command.frameContext());
+        const ConeProbeParameters parameters{
+            writer.dataBuffer(context.outputBuffer("data").buffer(), 16, 16)};
+        auto encoded = writer.encode(parameters, kConeProbeABI, render::ParameterTransport::InlinePush);
+        if (!encoded) { return render::makeError(encoded.error()); }
+        return kernel_.dispatch(command, *encoded, 1);
     }
 private:
-    render::ComputeProgram program_;
+    render::Device* device_ = nullptr;
+    render::ComputeKernel kernel_;
 };
 
 class GPUDrivenConeScaleTest final : public RHITest {
@@ -99,23 +107,29 @@ public:
         auto result = render::compileSlangShaderToSpirv({.moduleName = "TwoPassOcclusionProbe",
             .entryPointName = "twoPassOcclusionProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        const render::ComputeProgramBindingDesc bindings[] = {{.binding = 0}, {.binding = 1}, {.binding = 2}};
-        return program_.initialize(*context.device, {
+        device_ = context.device;
+        return kernel_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .bindings = {bindings, 3},
-            .requiresRayQuery = false,
+            .parameters = render::parameterAbi<OcclusionProbeParameters>(kOcclusionProbeABI, render::ParameterTransport::InlinePush),
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        const render::ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = context.outputBuffer("data").buffer()},
-            {.binding = 1, .buffer = context.outputBuffer("history").buffer()},
-            {.binding = 2, .buffer = context.outputBuffer("current").buffer()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {bindings, 3}});
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return render::makeError(registry.error()); }
+        auto& command = context.commandBuffer();
+        render::ParameterWriter writer(*device_, **registry, command.frameContext());
+        const OcclusionProbeParameters parameters{
+            writer.dataBuffer(context.outputBuffer("data").buffer(), 16, 16),
+            writer.buffer(context.outputBuffer("history").buffer()),
+            writer.buffer(context.outputBuffer("current").buffer())};
+        auto encoded = writer.encode(parameters, kOcclusionProbeABI, render::ParameterTransport::InlinePush);
+        if (!encoded) { return render::makeError(encoded.error()); }
+        return kernel_.dispatch(command, *encoded, 1);
     }
 private:
-    render::ComputeProgram program_;
+    render::Device* device_ = nullptr;
+    render::ComputeKernel kernel_;
 };
 
 class GPUDrivenTwoPassOcclusionTest final : public RHITest {

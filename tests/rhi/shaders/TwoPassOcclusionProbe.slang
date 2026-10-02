@@ -1,9 +1,11 @@
-import Core;
+#include "../CullingProbeParameters.h"
 using Metallic;
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
+
+[[vk::push_constant]] ConstantBuffer<OcclusionProbeParameters> gOcclusionProbe;
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
@@ -11,8 +13,8 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
 {
     // Full ceil-divided 17x9 pyramid: 153 + 45 + 15 + 6 + 2 + 1.
     for (uint i = id.x; i < 222u; i += 32u) {
-        getResource<RWStructuredBuffer<float>>(1)[i] = 0.25;
-        getResource<RWStructuredBuffer<float>>(2)[i] = 1.0;
+        gOcclusionProbe.history[i] = 0.25;
+        gOcclusionProbe.current[i] = 1.0;
     }
     AllMemoryBarrierWithGroupSync();
     GPUDrivenPreviewParams params = {};
@@ -26,9 +28,8 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
     params.hzbValid = 1;
     params.frameIndex = 1;
     params.cullingFlags = kCullMeshletHZB;
-    GPUDrivenPreviewPush push = {};
-    push.hzbBuffer0 = getComputeResources().resources[1].handle.x;
-    push.hzbBuffer1 = getComputeResources().resources[2].handle.x;
+    CullingProbeHZB hzb0 = gOcclusionProbe.history;
+    CullingProbeHZB hzb1 = gOcclusionProbe.current;
     float3 center = float3(0, 0, 5);
     float radius = 0.25;
     uint instanceState = 1;
@@ -36,7 +37,7 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
     switch (id.x) {
     case 0: params.hzbValid = 0; break;                       // no history
     case 1: break;                                          // disoccluded this frame
-    case 2: push.hzbBuffer1 = push.hzbBuffer0; break;         // occluded in both
+    case 2: hzb1 = hzb0; break;         // occluded in both
     case 3: params.frameIndex = 0; break;                    // already drawn early
     case 4: instanceState = 3; break;                       // recovered instance
     case 5: params.cullingFlags = 0; break;                 // disabled
@@ -48,10 +49,10 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
     case 11: params.hzbValid = 0; instanceState = 3; break;  // late uses current HZB
     default: break;
     }
-    push.passIndex = 0;
-    bool early = meshletVisibleInOcclusionPhase(center, radius, instanceState, params, push);
-    push.passIndex = 1;
-    bool late = meshletVisibleInOcclusionPhase(center, radius, instanceState, params, push);
+    CullingProbeHZB previousHZB = (params.frameIndex & 1u) == 0u ? hzb1 : hzb0;
+    CullingProbeHZB currentHZB = (params.frameIndex & 1u) == 0u ? hzb0 : hzb1;
+    bool early = meshletVisibleInOcclusionPhase(center, radius, instanceState, params, 0u, previousHZB, currentHZB);
+    bool late = meshletVisibleInOcclusionPhase(center, radius, instanceState, params, 1u, previousHZB, currentHZB);
 
     // An independent surface-sampling oracle exercises off-axis projection,
     // tiny/large bounds, odd sizes, orthographic views and subpixel jitter.
@@ -101,6 +102,7 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
         float3 point = transformPoint(transform, float3(cos(angle), sin(angle), 0));
         depthErrors += length(point) > scale + 1e-6 ? 1u : 0u;
     }
-    getResource<RWStructuredBuffer<float4>>(0)[id.x] =
+    if (!gOcclusionProbe.output.contains(id.x)) { return; }
+    gOcclusionProbe.output.data[id.x] =
         float4(early ? 1.0 : 0.0, late ? 1.0 : 0.0, float(rectErrors), float(depthErrors));
 }

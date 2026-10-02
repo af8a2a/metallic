@@ -1,15 +1,17 @@
-import Core;
+#include "../CullingProbeParameters.h"
 using Metallic;
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
+[[vk::push_constant]] ConstantBuffer<ConeProbeParameters> gConeProbe;
+
 [shader("compute")]
 [numthreads(32, 1, 1)]
 void gpuDrivenConeProbeMain(uint3 id : SV_DispatchThreadID)
 {
-    if (id.x >= 16u) { return; }
+    if (id.x >= 16u || !gConeProbe.output.contains(id.x * 2u + 1u)) { return; }
     const float scales[8] = {1.0, 0.008, 0.001, 0.0001, 0.1, 10.0, 1000.0, 100000.0};
     float scale = scales[id.x % 8u];
     bool rotated = id.x >= 8u;
@@ -26,7 +28,7 @@ void gpuDrivenConeProbeMain(uint3 id : SV_DispatchThreadID)
     bool front = meshletVisible(meshlet, 0, transform, params);
     params.eye = float4(-expected, 0);
     bool back = meshletVisible(meshlet, 0, transform, params);
-    getResource<RWStructuredBuffer<float4>>(0)[id.x * 2u] =
+    gConeProbe.output.data[id.x * 2u] =
         float4(transformNormal(transform, float3(0, 1, 0)), front ? 1.0 : 0.0);
-    getResource<RWStructuredBuffer<float4>>(0)[id.x * 2u + 1u] = float4(expected, back ? 1.0 : 0.0);
+    gConeProbe.output.data[id.x * 2u + 1u] = float4(expected, back ? 1.0 : 0.0);
 }

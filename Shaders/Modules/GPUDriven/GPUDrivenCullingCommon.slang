@@ -232,31 +232,23 @@ public bool sphereOccluded(
     return conservativeDepthOccluded(nearestDepth, float4(depth00, depth10, depth01, depth11), camera.clipOrtho.w > 0.5);
 }
 
-// Legacy raster callers remain on their existing push layout until their migration.
-public bool sphereOccluded(float3 center, float radius, CameraData camera,
-    GPUDrivenPreviewParams params, GPUDrivenPreviewPush push, uint hzbBufferIndex)
-{
-    uint index = hzbBufferIndex == 0u ? push.hzbBuffer0 : push.hzbBuffer1;
-    return sphereOccluded(center, radius, camera, params,
-        DescriptorHandle<RWStructuredBuffer<float>>(uint2(index, 0)));
-}
-
 public bool meshletVisibleInOcclusionPhase(float3 center, float radius, uint instanceState,
-    GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
+    GPUDrivenPreviewParams params, uint passIndex,
+    DescriptorHandle<RWStructuredBuffer<float>> previousHZB,
+    DescriptorHandle<RWStructuredBuffer<float>> currentHZB)
 {
-    bool early = push.passIndex == 0u;
+    bool early = passIndex == 0u;
     if ((params.cullingFlags & kCullMeshletHZB) == 0u) {
         return instanceState == (early ? 1u : 3u);
     }
     if (early ? instanceState != 1u : (instanceState != 1u && instanceState != 3u)) { return false; }
-    uint currentHzb = params.frameIndex & 1u;
     // Re-evaluate the immutable early predicate in the second task-shader pass.
     // This reconstructs the deferred set without a bounded append queue (and
     // without dropping geometry if a queue would overflow).
     bool deferred = instanceState == 3u || (params.hzbValid != 0u &&
-        sphereOccluded(center, radius, previousCullingCamera(params), params, push, currentHzb ^ 1u));
+        sphereOccluded(center, radius, previousCullingCamera(params), params, previousHZB));
     if (early) { return !deferred; }
-    return deferred && !sphereOccluded(center, radius, cullingCamera(params), params, push, currentHzb);
+    return deferred && !sphereOccluded(center, radius, cullingCamera(params), params, currentHZB);
 }
 
 public bool meshletVisible(

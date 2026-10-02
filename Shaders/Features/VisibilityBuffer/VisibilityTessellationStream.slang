@@ -10,17 +10,17 @@ groupshared uint4 g_StreamTessPattern;
 [shader("amplification")]
 [numthreads(32, 1, 1)]
 void streamTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
-    uniform GPUDrivenStreamAssetPush push)
+    uniform StreamHardwareParameters push)
 {
     uint draw = hybridFlatGroup(group);
     uint candidate = draw / kTessTasksPerCluster;
     uint first = (draw % kTessTasksPerCluster) * kTessRootsPerTask;
-    bool prebinned = push.hybridClusterBuffer != 0xffffffffu;
+    bool prebinned = push.hasBins != 0u;
     uint record = candidate;
     bool valid = true;
     bool overflowHardware = false;
     if (prebinned) {
-        DescriptorHandle<StructuredBuffer<uint>> bins = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.hybridClusterBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>> bins = push.hybridClusterBuffer;
         overflowHardware = bins[14] != 0u;
         valid = hybridStreamHardwareRecord(bins, candidate, record);
     }
@@ -36,11 +36,11 @@ void streamTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     StreamRasterCluster c = g_StreamMeshCluster;
     uint count = 0u;
     if (valid) {
-        DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rh = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
+        GPUDrivenStreamAssetRasterBindings* rh = push.rasterSettings;
         GPUDrivenStreamAssetRasterBindings bindings = rh[0];
         DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>> instances = DescriptorHandle<StructuredBuffer<GPUDrivenPreviewInstance>>(uint2(bindings.gpuSceneInstanceBuffer, 0));
         DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(bindings.tessellationBuffer, 0));
-        DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
+        DescriptorHandle<StructuredBuffer<uint>> pages = push.pageBuffer;
         uint material = instances[c.group.gpuSceneInstanceIndex].identity.y;
         bool attributes = (pages[c.pageWord + 14u] & 6u) == 6u && streamNormalStride(pages[c.pageWord + 21u]) != 0u && pages[c.pageWord + 22u] == 1u;
         bool enabled = attributes && tessMaterial(data, material).enabled != 0u;
@@ -78,7 +78,7 @@ void streamTessellationTask(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
 [outputtopology("triangle")]
 void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
     in payload TessPatchPayload payload, out vertices TessVertex vertices[128],
-    out indices uint3 triangles[128], out primitives TessPrimitive primitives[128], uniform GPUDrivenStreamAssetPush push)
+    out indices uint3 triangles[128], out primitives TessPrimitive primitives[128], uniform StreamHardwareParameters push)
 {
     if (lane == 0u) {
         bool retry;
@@ -104,9 +104,9 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
         }
         return;
     }
-    DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>> rh = DescriptorHandle<StructuredBuffer<GPUDrivenStreamAssetRasterBindings>>(uint2(push.rasterBindingsBuffer, 0));
+    GPUDrivenStreamAssetRasterBindings* rh = push.rasterSettings;
     DescriptorHandle<StructuredBuffer<uint>> data = DescriptorHandle<StructuredBuffer<uint>>(uint2(rh[0].tessellationBuffer, 0));
-    DescriptorHandle<StructuredBuffer<uint>> pages = DescriptorHandle<StructuredBuffer<uint>>(uint2(push.pageBuffer, 0));
+    DescriptorHandle<StructuredBuffer<uint>> pages = push.pageBuffer;
     TessMaterial material = tessMaterial(data, payload.material);
     uint source = tessPayloadRoot(payload, group.x);
     uint originalTriangle = payload.first + source;
@@ -168,7 +168,7 @@ void streamTessellationMesh(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
 }
 
 [shader("fragment")]
-TessFragment streamTessellationFragment(TessVertex input, uint visibilityId : SV_PrimitiveID, bool front : SV_IsFrontFace, uniform GPUDrivenStreamAssetPush push)
+TessFragment streamTessellationFragment(TessVertex input, uint visibilityId : SV_PrimitiveID, bool front : SV_IsFrontFace, uniform StreamHardwareParameters push)
 {
     if (!front && input.doubleSided == 0u) { discard; }
     if (!streamAlphaAccepts(input.streamInstance, input.uv, push)) { discard; }

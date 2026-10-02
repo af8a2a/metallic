@@ -96,7 +96,7 @@ inline constexpr const char* kGPUDrivenStreamAssetFragmentEntryPoint = "gpuDrive
 inline constexpr const char* kGPUDrivenStreamAssetUpdateEntryPoint = "gpuDrivenStreamAssetApplyUpdatesMain";
 inline constexpr const char* kSceneMaterialVisualizationShaderModuleName = "Features/Debug/SceneMaterialVisualize";
 inline constexpr const char* kSceneMaterialVisualizationEntryPoint = "sceneMaterialVisualizeMain";
-inline constexpr const char* kScenePathTraceShaderModuleName = "Features/PathTracing/ScenePathTrace";
+inline constexpr const char* kScenePathTraceShaderModuleName = "Features/PathTracing/ScenePathTraceInline";
 inline constexpr const char* kScenePathTraceEntryPoint = "scenePathTraceMain";
 inline constexpr const char* kSceneRTXDIShaderModuleName = "Features/ReSTIR/SceneRTXDI";
 inline constexpr const char* kSceneRTXDIEntryPoint = "sceneRtxdiMain";
@@ -645,42 +645,6 @@ struct GPUDrivenPreviewGPUParams {
     uint32_t tessellationPadding[2] = {};
 };
 
-struct GPUDrivenPreviewUserPush {
-    uint32_t positionBuffer = 0;
-    uint32_t meshletBuffer = 0;
-    uint32_t meshletDrawBuffer = 0;
-    uint32_t meshletVertexBuffer = 0;
-    uint32_t meshletTriangleBuffer = 0;
-    uint32_t paramsBuffer = 0;
-    uint32_t transformBuffer = 0;
-    uint32_t instanceBuffer = 0;
-    uint32_t instanceVisibilityBuffer = 0;
-    uint32_t visibleInstanceIdsBuffer = 0;
-    uint32_t visibleInstanceCounterBuffer = 0;
-    uint32_t visibleMeshletBuffer0 = 0;
-    uint32_t visibleMeshletBuffer1 = 0;
-    uint32_t indirectBuffer0 = 0;
-    uint32_t indirectBuffer1 = 0;
-    uint32_t hzbBuffer0 = 0;
-    uint32_t hzbBuffer1 = 0;
-    uint32_t deferredColorBuffer = 0;
-    uint32_t depthImage = 0;
-    uint32_t visibilityImage = 0;
-    uint32_t passIndex = 0;
-    uint32_t mipLevel = 0;
-    uint32_t projectWithCullingCamera = 0;
-    uint32_t materialBuffer = 0;
-    uint32_t materialTextureRemapBuffer = 0;
-    uint32_t environmentImage = 0;
-    uint32_t environmentSHBuffer = 0;
-    uint32_t streamDeferredBindingsBuffer = std::numeric_limits<uint32_t>::max();
-    uint32_t residentRecordCapacity = 0;
-    uint32_t streamOwnerMaskBuffer = std::numeric_limits<uint32_t>::max();
-    float tessellationEdgePixels = 8.0f;
-    uint32_t tessellationMaxFactor = 4;
-    uint32_t tessellationMaxSplitDepth = 2;
-};
-
 static_assert(sizeof(GPUDrivenPreviewGPUVertex) == 64);
 static_assert(sizeof(GPUDrivenPreviewGPUTextureInfo) == 48);
 static_assert(sizeof(GPUDrivenPreviewGPUMaterial) == sizeof(GPUSceneGPUMaterialRecord));
@@ -695,7 +659,6 @@ static_assert(sizeof(GPUSceneGPUMeshletDrawRecord) == 16);
 static_assert(sizeof(GPUSceneGPUInstanceRecord) == 160);
 static_assert(sizeof(GPUSceneGPUGeometryRecord) == 96);
 static_assert(sizeof(GPUDrivenPreviewGPUParams) == 352);
-static_assert(sizeof(GPUDrivenPreviewUserPush) == 132);
 
 struct ScenePathTracePush {
     float eye[4] = {};

@@ -283,11 +283,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         scene.materialTextures = writer.sampledImages({geometry->materialTextureViews().data(), textureCount});
         params.materialTextureCount = textureCount;
         if (streamed) {
-            auto encodedScene = streamGeometry->encodeRayQueryParameters(writer);
-            if (!encodedScene) { return makeError(encodedScene.error()); }
-            result = encodedScene->bindResources(commands);
-            if (!result) { return makeError(result.error()); }
-            params.streamScene = encodedScene->address();
+            params.streamScene = streamGeometry->encodeRayQuerySnapshot(writer);
         } else {
             scene.vertices = writer.dataBuffer(geometry->shadingVertexBuffer(), 16, 8);
             scene.indices = writer.dataBuffer(geometry->indexBuffer(), 4, 4);

@@ -1,8 +1,9 @@
-#include "../../../Shaders/Interop/PathTraceParameterRoot.hlsli"
+#include "UnusedPathTraceScene.hlsli"
+#include "../StreamProbeParameters.h"
 #include "../../../Shaders/Features/PathTracing/ScenePathTrace.slang"
 #include "../../../Shaders/Features/PathTracing/StreamSceneRayQuery.slang"
 
-struct StreamSurfaceParams { StreamSceneParameters stream; DataSpan<uint> output; };
+[[vk::push_constant]] ConstantBuffer<StreamProbeParameters> gStreamProbe;
 // Deliberately no path-tracing root or descriptor resources: the production
 // surface/alpha helpers must consume only the explicitly supplied provider.
 struct ProbeMaterials : IStreamRayMaterials
@@ -27,7 +28,7 @@ struct ProbeMaterials : IStreamRayMaterials
 [numthreads(16, 1, 1)]
 void streamRaySurfaceMain(uint3 id : SV_DispatchThreadID)
 {
-    StreamSurfaceParams p = getParameters<StreamSurfaceParams>();
+    StreamProbeParameters p = gStreamProbe;
     if (id.x >= 16u || !p.output.contains(24u + id.x)) { return; }
     ProbeMaterials materials;
     materials.test = id.x;

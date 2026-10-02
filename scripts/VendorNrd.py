@@ -62,10 +62,10 @@ for source in SOURCE.glob('*.cs.hlsl'):
         if match:
             access, texture, dtype, field, slot = match.groups()
             table = 'sampled' if access == 'INPUT' else 'storage'
-            binding += f'#define {field} (*DescriptorHandle<{texture}<{dtype}>>(uint2(gNrdPush.resources->{table}[{slot}], 0)))\n'
+            binding += f'#define {field} (*DescriptorHandle<{texture}<{dtype}>>(gNrdPush.resources->{table}[{slot}]))\n'
         elif sampler:
             dtype, field, slot = sampler.groups()
-            binding += f'#define {field} (*DescriptorHandle<{dtype}>(uint2(gNrdPush.resources->samplers[{slot}], 0)))\n'
+            binding += f'#define {field} (*DescriptorHandle<{dtype}>(gNrdPush.resources->samplers[{slot}]))\n'
         elif re.match(r'\s*#\s*(if|elif|else|endif)\b', line):
             binding += line + '\n'
     (DEST / (name + '.bindings.hlsli')).write_text(binding)

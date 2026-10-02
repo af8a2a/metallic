@@ -1,14 +1,13 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/TextureResidencyProbeParameters.h"
 using Metallic;
-struct Push { uint slot; uint wantedMip; uint samples; uint unused; };
+[[vk::push_constant]] ConstantBuffer<TextureResidencyProbeParameters> push;
 [shader("compute")]
 [numthreads(1, 1, 1)]
 void main()
 {
-    Push push = getConstants<Push>();
-    RWStructuredBuffer<uint> feedback = getResource<RWStructuredBuffer<uint>>(0);
-    uint count, stride;
-    feedback.GetDimensions(count, stride);
+    uint count = push.feedback.length();
+    if (push.slot >= count / 8u) { return; }
+    uint* feedback = push.feedback.data;
     uint offset = push.slot * 8;
     if (offset + 7 < count && feedback[offset] != 0 && push.samples != 0) {
         uint ignored;

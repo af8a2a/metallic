@@ -1,11 +1,12 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/ShaderToHumanParameters.h"
 using Metallic;
 
 // Standalone linear-color example. A 320x192 output shows the entire overlay.
 // Compile either the compute or fragment entry; only compute binds gOutput.
 #include "ShaderToHuman.slang"
 
-#define gOutput getResource<RWTexture2D<float4>>(0)
+[[vk::push_constant]] ConstantBuffer<ShaderToHumanParameters> gShaderToHuman;
+#define gOutput resolveDescriptor(gShaderToHuman.output)
 
 float4 shaderToHumanExampleColor(float2 pixelCenter)
 {

@@ -1,4 +1,8 @@
+#if defined(PROBE_TYPED)
+#include "../MaterialBinningProbeParameters.h"
+#else
 import Core;
+#endif
 using Metallic;
 import GPUDriven;
 using Metallic.GPUDriven;
@@ -11,18 +15,11 @@ using Metallic.Material;
 #define gMaterials getResource<RWStructuredBuffer<GPUDrivenPreviewMaterial>>(3)
 #define gShadingMaterials getResource<RWStructuredBuffer<PathTraceMaterial>>(4)
 #if defined(PROBE_TYPED)
-import ParameterRoot;
-struct MaterialProbeParams {
-    DataSpan<MaterialBin> bins;
-    DataSpan<MaterialTile> tiles;
-    DataSpan<uint> arguments;
-    DataSpan<uint> output;
-    uint width; uint height; uint binCount; uint bin;
-};
-#define gBins getParameters<MaterialProbeParams>().bins.data
-#define gTiles getParameters<MaterialProbeParams>().tiles.data
-#define gArguments getParameters<MaterialProbeParams>().arguments.data
-#define gResult getParameters<MaterialProbeParams>().output.data
+[[vk::push_constant]] ConstantBuffer<MaterialProbeParams> gMaterialProbe;
+#define gBins gMaterialProbe.bins.data
+#define gTiles gMaterialProbe.tiles.data
+#define gArguments gMaterialProbe.arguments.data
+#define gResult gMaterialProbe.output.data
 #else
 #define gBins getResource<StructuredBuffer<MaterialBin>>(5)
 #define gTiles getResource<StructuredBuffer<MaterialTile>>(6)
@@ -34,7 +31,7 @@ struct ProbePush { uint width; uint height; uint binCount; uint bin; };
 ProbePush probePush()
 {
 #if defined(PROBE_TYPED)
-    MaterialProbeParams params = getParameters<MaterialProbeParams>();
+    MaterialProbeParams params = gMaterialProbe;
     return {params.width, params.height, params.binCount, params.bin};
 #else
     return getConstants<ProbePush>();
@@ -42,6 +39,7 @@ ProbePush probePush()
 }
 static const uint kProbeHeader = 27u;
 
+#if !defined(PROBE_TYPED)
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void materialFixtureMain(uint3 id : SV_DispatchThreadID)
@@ -87,6 +85,8 @@ void materialFixtureMain(uint3 id : SV_DispatchThreadID)
         gVisibility[uint2(i % push.width, i / push.width)] = visibility;
     }
 }
+
+#endif
 
 [shader("compute")]
 [numthreads(64, 1, 1)]

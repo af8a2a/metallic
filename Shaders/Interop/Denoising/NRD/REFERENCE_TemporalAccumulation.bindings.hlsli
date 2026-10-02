@@ -12,5 +12,5 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define gAccumSpeed (((REFERENCE_TemporalAccumulationConstants*)gNrdPush.constants)->nrd_gAccumSpeed)
 #define gDebug (((REFERENCE_TemporalAccumulationConstants*)gNrdPush.constants)->nrd_gDebug)
 #define gViewZScale (((REFERENCE_TemporalAccumulationConstants*)gNrdPush.constants)->nrd_gViewZScale)
-#define gIn_Input (*DescriptorHandle<Texture2D<float4>>(uint2(gNrdPush.resources->sampled[0], 0)))
-#define gInOut_History (*DescriptorHandle<RWTexture2D<float4>>(uint2(gNrdPush.resources->storage[0], 0)))
+#define gIn_Input (*DescriptorHandle<Texture2D<float4>>(gNrdPush.resources->sampled[0]))
+#define gInOut_History (*DescriptorHandle<RWTexture2D<float4>>(gNrdPush.resources->storage[0]))

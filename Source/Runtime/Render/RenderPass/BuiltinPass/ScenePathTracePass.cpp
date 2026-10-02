@@ -913,8 +913,6 @@ public:
 #endif
         }
         cacheMode_ = cacheMode;
-        const bool standardInlinePathTrace = !useOpenPBR && !exportGuides;
-        if (standardInlinePathTrace) { moduleName = "Features/PathTracing/ScenePathTraceInline"; }
 
         if (!cacheWarning.empty()) {
             log += cacheWarning;
@@ -1597,7 +1595,9 @@ public:
         const auto encodePathTraceResources = [&](ParameterWriter& writer) {
             writer.retain(std::make_shared<ScenePathTraceResources>(sceneResources_));
             PathTraceParameters params{};
-            params.settings = writer.data(&push, sizeof(push));
+            auto settings = push;
+            if (streamRayQueries_) { settings.streamScene = deferredStream->encodeRayQuerySnapshot(writer); }
+            params.settings = writer.data(&settings, sizeof(settings));
             params.output = writer.storageImage(color.view());
             if (!streamMaterials_ || streamRayQueries_) {
                 auto* acceleration = context.inputAccelerationStructure("accelerationStructure");
@@ -1700,14 +1700,6 @@ public:
                     spdlog::error("Stream BLEND/transmission requires enableClusterRtx=true and a ready stream TLAS");
                     return makeError(Error::InvalidArgument);
                 }
-                auto registry = device_->resourceRegistry();
-                if (!registry) { return makeError(registry.error()); }
-                ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
-                auto encoded = deferredStream->encodeRayQueryParameters(writer);
-                if (!encoded) { return makeError(encoded.error()); }
-                result = encoded->bindResources(context.commandBuffer());
-                if (!result) { return result; }
-                push.streamScene = encoded->address();
             }
             Buffer* fallback = deferredViews->geometries.buffer;
             if (materialBinningEnabled(context.properties())) {

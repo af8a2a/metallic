@@ -140,7 +140,6 @@ struct PathTraceParameters {
     PathTraceNTCSampler ntcSampler;
 };
 #ifdef __cplusplus
-inline constexpr uint64_t kPathTraceABI = 0x4f50425250540001ull;
 static_assert(sizeof(PathTraceParameters) == 296);
 #endif
 } // namespace metallic::render (C++) / Metallic (Slang)

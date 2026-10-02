@@ -2541,36 +2541,18 @@ Result<> MeshletStreamRuntime::cmdEndFrame(CommandBuffer& commandBuffer)
     return {};
 }
 
-MeshletStreamUserPush MeshletStreamRuntime::userPush() const
+StreamHardwareParameters MeshletStreamRuntime::hardwareParameters(ParameterWriter& writer) const
 {
-    return MeshletStreamUserPush{
-        .pageBuffer = pageHandle_.shaderIndex(),
-        .activeGroupBuffer = activeGroupHandle_.shaderIndex(),
-        .pageTableBuffer = pageTableHandle_.shaderIndex(),
-        .paramsBuffer = paramsHandle_.shaderIndex(),
-        .requestBuffer = requestHandle_.shaderIndex(),
-        .reservedResidentPages = 0u,
-        .reservedUpdate = 0u,
-        .activeHeaderBuffer = activeHeaderHandle_.shaderIndex(),
-        .instanceBuffer = instanceHandle_.shaderIndex(),
-        .primitiveBuffer = primitiveHandle_.shaderIndex(),
-        .lodLevelBuffer = lodLevelHandle_.shaderIndex(),
-        .groupBuffer = groupHandle_.shaderIndex(),
-        .nodeBuffer = nodeHandle_.shaderIndex(),
-        .drawIndirectBuffer = drawIndirectHandle_.shaderIndex(),
-        .traversalHeaderBuffer = traversalHeaderHandle_.shaderIndex(),
-        .traversalWorkBuffer = traversalWorkHandle_.shaderIndex(),
-        .reservedClasAddressBuffer = 0u,
-        .reservedClasPageTableBuffer = 0u,
-        .reservedBlasHeaderBuffer = 0u,
-        .reservedInstanceBlasBuffer = 0u,
-        .reservedBlasBuildInfoBuffer = 0u,
-        .reservedBlasClusterReferenceBuffer = 0u,
-        .reservedFallbackBLASAddresses = 0u,
-        .reservedDynamicBlasAddressBuffer = 0u,
-        .reservedTLASInstances = 0u,
-        .rasterBindingsBuffer = rasterBindingsHandle_.shaderIndex(),
-        .reservedCLASPublicationRevision = 0u,
+    const auto use = [&](const ResourceLease& lease) -> ShaderBuffer {
+        (void)writer.use(lease);
+        return {lease.shaderValue()};
+    };
+    return StreamHardwareParameters{
+        .pageBuffer = use(pageHandle_), .activeGroupBuffer = use(activeGroupHandle_),
+        .pageTableBuffer = use(pageTableHandle_), .settings = writer.data(&previousFrameParams_, sizeof(previousFrameParams_), 16),
+        .requestBuffer = use(requestHandle_), .activeHeaderBuffer = use(activeHeaderHandle_),
+        .rasterSettings = writer.data(&rasterBindingsSnapshot_, sizeof(rasterBindingsSnapshot_), 16),
+        .tessellationEdgePixels = 8.0f, .tessellationMaxFactor = 4, .tessellationMaxSplitDepth = 2,
     };
 }
 
@@ -2710,7 +2692,7 @@ Result<> MeshletStreamRuntime::cmdPrepareDeferred(CommandBuffer& commandBuffer)
     return {};
 }
 
-Result<EncodedParameters> MeshletStreamDeferredGPUResourcesView::encodeRayQueryParameters(ParameterWriter& writer) const
+uint64_t MeshletStreamDeferredGPUResourcesView::encodeRayQuerySnapshot(ParameterWriter& writer) const
 {
     const StreamSceneParameters params{
         .pages = writer.dataBuffer(pageBuffer, sizeof(uint32_t), alignof(uint32_t)),
@@ -2719,7 +2701,7 @@ Result<EncodedParameters> MeshletStreamDeferredGPUResourcesView::encodeRayQueryP
             sizeof(MeshletStreamGPUInstance), alignof(MeshletStreamGPUInstance)),
         .header = writer.dataBuffer(activeHeaderBuffer, sizeof(uint32_t), alignof(uint32_t)),
     };
-    return writer.encode(params, kStreamSceneABI);
+    return writer.data(&params, sizeof(params), alignof(StreamSceneParameters));
 }
 
 MeshletStreamDeferredGPUResourcesView MeshletStreamRuntime::deferredGpuResources() const

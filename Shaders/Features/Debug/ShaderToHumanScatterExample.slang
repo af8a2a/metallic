@@ -1,11 +1,12 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/ShaderToHumanParameters.h"
 using Metallic;
 
 // Dispatch after the destination is initialized, with a storage-write barrier
 // between this dispatch and earlier image writes. One invocation owns all text.
 #include "ShaderToHumanScatter.slang"
 
-#define gOutput getResource<RWTexture2D<float4>>(0)
+[[vk::push_constant]] ConstantBuffer<ShaderToHumanParameters> gShaderToHuman;
+#define gOutput resolveDescriptor(gShaderToHuman.output)
 
 void onGfxForAllScatter(int2 pxPos, float4 color)
 {

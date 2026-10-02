@@ -1,3 +1,4 @@
+#include "MaterialBinningProbeParameters.h"
 #include "RHITest.h"
 #include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -14,13 +15,6 @@ namespace {
 
 constexpr uint32_t kBinCount = render::kMaterialClassCount;
 constexpr uint32_t kProbeHeader = kBinCount * 5 + 2;
-constexpr uint64_t kProbeABI = 0x4d42505200000002ull;
-struct MaterialProbeParams {
-    render::ShaderDataSpan bins, tiles, arguments, output;
-    uint32_t width, height, binCount, bin;
-};
-static_assert(sizeof(MaterialProbeParams) == 80);
-
 class MaterialBinningProbePass final : public render::UnsafePass {
 public:
     explicit MaterialBinningProbePass(bool fixture, bool typed = false) : fixture_(fixture), typed_(typed) {}
@@ -61,7 +55,7 @@ public:
                 }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
                 if (!result) { log = shader.diagnostics; return result; }
                 result = kernels_[i].initialize(*device_, {.spirv = shader.spirv,
-                    .parameters = render::parameterAbi<MaterialProbeParams>(kProbeABI)}, log);
+                    .parameters = render::parameterAbi<MaterialProbeParams>(kProbeABI, render::ParameterTransport::InlinePush)}, log);
                 if (!result) { return result; }
             }
             return {};
@@ -214,7 +208,7 @@ private:
         // Ordinary data, including the output, never allocates descriptors.
         if (registry->stats().descriptorWrites != writes) { return render::makeError(render::Error::Failure); }
         render::EncodedParameters encoded;
-        result = writer.encode(params, kProbeABI).transform([&](auto value) { encoded = std::move(value); });
+        result = writer.encode(params, kProbeABI, render::ParameterTransport::InlinePush).transform([&](auto value) { encoded = std::move(value); });
         if (!result) { return result; }
         render::BufferBarrierDesc argumentBarrier{
             .buffer = bins.arguments,
@@ -231,7 +225,7 @@ private:
                 render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
         }
         render::EncodedParameters wrongAbi;
-        result = writer.encode(params, kProbeABI + 1).transform([&](auto value) { wrongAbi = std::move(value); });
+        result = writer.encode(params, kProbeABI + 1, render::ParameterTransport::InlinePush).transform([&](auto value) { wrongAbi = std::move(value); });
         if (!result) { return result; }
         if (!render::hasError(kernels_[1].dispatchIndirect(commands, wrongAbi, *bins.arguments),
             render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
@@ -242,7 +236,7 @@ private:
         };
         for (uint32_t bin = 0; bin < bins.binCount; ++bin) {
             params.bin = bin;
-            result = writer.encode(params, kProbeABI).transform([&](auto value) { encoded = std::move(value); });
+            result = writer.encode(params, kProbeABI, render::ParameterTransport::InlinePush).transform([&](auto value) { encoded = std::move(value); });
             if (!result) { return result; }
             if (auto commandResult = commands.synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return commandResult; }
             const size_t permutation = (context.frameIndex() & 1u) && (bin & 1u) ? 2 : 1;

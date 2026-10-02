@@ -13,7 +13,7 @@
 - GPUScene 上传后发布 `ResourceLease`，移除额外 `BufferView` 和 consumer 私有 descriptor 分配。`createBindings()` 只复制当前 generation/revision 对应的 leases。
 - `MeshletStreamRuntime` 与两个 raster 消费者不再创建私有 heap。resident/stream 共用材质纹理索引、材质 remap buffer 和 tessellation buffer，删除第二套上传及重映射。
 - `ComputeProgram` 的 Core 资源表路径成为兼容适配器，ScenePathTrace、deferred shading 等现有调用者复用 registry 身份。它只编码参数，创建与录制统一委托 `ComputeKernel`。旧 SPIR-V mapping 诊断已移到测试内的原始 RHI fixture。
-- NRD 使用 `ComputeKernel` / `ParameterWriter`，取消 sampler/image slot 池与逐帧游标。SDK 调度计划、历史状态、barrier 和取消恢复逻辑仍由 NRD 适配层管理；常量与资源索引存入同一提交参数区，不再借用 Streamer 常量缓冲。
+- NRD 使用 `ComputeKernel` / `ParameterWriter`，取消 sampler/image slot 池与逐帧游标。SDK 调度计划、历史状态、barrier 和取消恢复逻辑仍由 NRD 适配层管理；16 字节 inline 根引用常量和 400 字节完整 canonical handle 快照，存入同一提交参数区；不再截断为 uint32 索引，也不借用 Streamer 常量缓冲。
 
 **迁移边界：** ComputeProgram 的命名 typed 参数尚未全面替换数字 slot；raster/stream 的既有 push struct 也继续使用原 ABI。共享的是资源身份、descriptor 分配和提交期所有权。BDA buffer API、同步模型、NRC/DLSS 原生 SDK 资源包装和 lazy native view 不在本批范围。
 

@@ -1,16 +1,15 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/SceneProbeParameters.h"
 using Metallic;
-
+[[vk::push_constant]] ConstantBuffer<ScenePositionProbeParameters> gProbePush;
+#define gPathTraceParameters (*gProbePush.resources)
 #include "../PathTracing/ScenePathTrace.slang"
-
-#define gProbeOutput getResource<RWStructuredBuffer<float4>>(63)
-struct ProbePush { float translationX; };
-#define gProbePush getConstants<ProbePush>()
+#define gProbeOutput gProbePush.output.data
 
 [shader("compute")]
 [numthreads(4, 1, 1)]
 void scenePositionFetchProbeMain(uint3 id : SV_DispatchThreadID)
 {
+    if (id.x >= 4u || !gProbePush.output.contains(id.x * 6u + 5u)) { return; }
     // Two indexed triangles, a back-face hit, and a miss. The fixture has a
     // nonuniform object transform, so treating fetched positions as world space
     // or changing the authored normal orientation cannot pass unnoticed.

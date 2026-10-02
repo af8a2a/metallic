@@ -6,43 +6,6 @@ namespace Metallic.GPUDriven
 // Shared GPUScene ABI for culling, visibility rasterization and material resolve.
 public static const uint kInvalidTextureIndex = 0xffffffffu;
 
-public struct GPUDrivenPreviewPush
-{
-    public uint positionBuffer;
-    public uint meshletBuffer;
-    public uint meshletDrawBuffer;
-    public uint meshletVertexBuffer;
-    public uint meshletTriangleBuffer;
-    public uint paramsBuffer;
-    public uint transformBuffer;
-    public uint instanceBuffer;
-    public uint instanceVisibilityBuffer;
-    public uint visibleInstanceIdsBuffer;
-    public uint visibleInstanceCounterBuffer;
-    public uint visibleMeshletBuffer0;
-    public uint visibleMeshletBuffer1;
-    public uint indirectBuffer0;
-    public uint indirectBuffer1;
-    public uint hzbBuffer0;
-    public uint hzbBuffer1;
-    public uint deferredColorBuffer;
-    public uint depthImage;
-    public uint visibilityImage;
-    public uint passIndex;
-    public uint mipLevel;
-    public uint projectWithCullingCamera;
-    public uint materialBuffer;
-    public uint materialTextureRemapBuffer;
-    public uint environmentImage;
-    public uint environmentSHBuffer;
-    public uint streamDeferredBindingsBuffer;
-    public uint residentRecordCapacity;
-    public uint streamOwnerMaskBuffer;
-    public float tessellationEdgePixels;
-    public uint tessellationMaxFactor;
-    public uint tessellationMaxSplitDepth;
-};
-
 public struct GPUDrivenPreviewVertex
 {
     public float4 position;
@@ -196,7 +159,7 @@ public struct GPUDrivenPreviewParams
     public uint2 tessellationPadding;
 };
 
-public uint residentLodRecordIndex(uint candidate, GPUDrivenPreviewParams params, GPUDrivenPreviewPush push)
+public uint residentLodRecordIndex(uint candidate, GPUDrivenPreviewParams params)
 {
     if (params.lodSelectionEnabled == 0u) { return params.meshletOffset + candidate; }
     DescriptorHandle<StructuredBuffer<uint4>> selections =

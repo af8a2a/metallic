@@ -1,6 +1,7 @@
 #include "Runtime/Render/RenderGraph/NRDRuntime.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/NRDParameters.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #if METALLIC_HAS_NRD
 #include "Runtime/Render/Denoising/NRDPlan.h"
@@ -117,20 +118,6 @@ Format formatFromNrd(denoising::Format format)
     return Format::Unknown;
 }
 
-constexpr uint64_t kNRDABI = 0x4e52445000000001ull;
-struct NRDPushData {
-    uint64_t constants;
-    uint64_t resources;
-};
-struct NRDResourceIndices {
-    uint32_t sampled[32]{};
-    uint32_t storage[16]{};
-    uint32_t samplers[2]{};
-};
-static_assert(sizeof(NRDPushData) == 16);
-static_assert(sizeof(NRDResourceIndices) == 200);
-static_assert(offsetof(NRDResourceIndices, storage) == 128);
-static_assert(offsetof(NRDResourceIndices, samplers) == 192);
 #endif
 } // namespace
 
@@ -183,7 +170,7 @@ struct NRDRuntime::Impl {
         }
         std::string log;
         return pipelines[index].initialize(*device, {.spirv = compiled.spirv,
-            .parameters = parameterAbi<NRDPushData>(kNRDABI), .debugName = recipe.shaderName.c_str()}, log);
+            .parameters = parameterAbi<NRDPushData>(kNRDABI, ParameterTransport::InlinePush), .debugName = recipe.shaderName.c_str()}, log);
     }
 };
 
@@ -539,12 +526,12 @@ Result<> NRDRuntime::dispatch(CommandBuffer& commands, const denoising::Dispatch
     std::span<const NRDTextureRef> textures)
 {
     ParameterWriter writer(*impl_->device, *commands.frameContext(), *impl_->registry);
-    NRDResourceIndices indices;
+    NRDResourceHandles handles{};
     for (uint32_t i = 0; i < 2; ++i) {
         const auto filter = i == 0 ? SamplerFilter::Nearest : SamplerFilter::Linear;
-        indices.samplers[i] = static_cast<uint32_t>(writer.sampler({.minFilter = filter, .magFilter = filter,
+        handles.samplers[i] = writer.sampler({.minFilter = filter, .magFilter = filter,
             .mipFilter = SamplerFilter::Nearest, .addressU = SamplerAddressMode::ClampToEdge,
-            .addressV = SamplerAddressMode::ClampToEdge, .addressW = SamplerAddressMode::ClampToEdge}).value);
+            .addressV = SamplerAddressMode::ClampToEdge, .addressW = SamplerAddressMode::ClampToEdge});
     }
     uint32_t sampled = 0, storage = 0;
     for (uint32_t i = 0; i < stage.resourcesNum; ++i) {
@@ -552,15 +539,15 @@ Result<> NRDRuntime::dispatch(CommandBuffer& commands, const denoising::Dispatch
         const auto& texture = textures[i];
         const bool output = resource.descriptorType == denoising::DescriptorType::STORAGE_TEXTURE;
         if (output)
-            indices.storage[storage++] = static_cast<uint32_t>(writer.storageImage(texture.view).value);
+            handles.storage[storage++] = writer.storageImage(texture.view);
         else
-            indices.sampled[sampled++] = static_cast<uint32_t>(writer.sampledImage(texture.view, ResourceState::General).value);
+            handles.sampled[sampled++] = writer.sampledImage(texture.view, ResourceState::General);
     }
     if (!writer.status()) { return writer.status(); }
     const NRDPushData params{stage.constantBufferDataSize ? writer.data(stage.constantBufferData, stage.constantBufferDataSize) : 0,
-        writer.data(&indices, sizeof(indices))};
+        writer.data(&handles, sizeof(handles))};
     EncodedParameters encoded;
-    auto result = writer.encode(params, kNRDABI).transform([&](auto value) { encoded = std::move(value); });
+    auto result = writer.encode(params, kNRDABI, ParameterTransport::InlinePush).transform([&](auto value) { encoded = std::move(value); });
     if (!result) { return result; }
     return impl_->pipelines[stage.pipelineIndex].dispatch(commands, encoded, stage.gridWidth, stage.gridHeight);
 }

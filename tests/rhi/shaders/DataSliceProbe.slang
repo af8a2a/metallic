@@ -1,20 +1,21 @@
+#if defined(DATA_PROBE_ADAPTER)
 import Core;
 using Metallic;
-import ParameterRoot;
-
-struct DataProbeParams
+[shader("compute")]
+[numthreads(8, 1, 1)]
+void dataAdapterMain(uint3 id : SV_DispatchThreadID)
 {
-    DataSpan<uint> source;
-    DataSpan<uint> output;
-    DataSpan<uint> arguments;
-    uint add;
-};
-
+    DataSpan<uint> output = getData<uint>(0);
+    if (output.contains(id.x)) { output.data[id.x] += 3; }
+}
+#else
+#include "../DataSliceProbeParameters.h"
+[[vk::push_constant]] ConstantBuffer<DataProbeParams> gDataProbe;
 [shader("compute")]
 [numthreads(8, 1, 1)]
 void dataProduceMain(uint3 id : SV_DispatchThreadID)
 {
-    DataProbeParams params = getParameters<DataProbeParams>();
+    DataProbeParams params = gDataProbe;
     if (params.source.contains(id.x) && params.output.contains(id.x)) {
         params.output.data[id.x] = params.source.data[id.x] + params.add;
     }
@@ -29,14 +30,8 @@ void dataProduceMain(uint3 id : SV_DispatchThreadID)
 [numthreads(8, 1, 1)]
 void dataIndirectMain(uint3 id : SV_DispatchThreadID)
 {
-    DataProbeParams params = getParameters<DataProbeParams>();
+    DataProbeParams params = gDataProbe;
     if (params.output.contains(id.x)) { params.output.data[id.x] *= 2; }
 }
 
-[shader("compute")]
-[numthreads(8, 1, 1)]
-void dataAdapterMain(uint3 id : SV_DispatchThreadID)
-{
-    DataSpan<uint> output = getData<uint>(0);
-    if (output.contains(id.x)) { output.data[id.x] += 3; }
-}
+#endif

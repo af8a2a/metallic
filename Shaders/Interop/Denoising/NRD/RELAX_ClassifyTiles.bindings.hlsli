@@ -89,5 +89,5 @@ license agreement from NVIDIA CORPORATION is strictly prohibited.
 #define gHasHistoryConfidence (((RELAX_ClassifyTilesConstants*)gNrdPush.constants)->nrd_gHasHistoryConfidence)
 #define gHasDisocclusionThresholdMix (((RELAX_ClassifyTilesConstants*)gNrdPush.constants)->nrd_gHasDisocclusionThresholdMix)
 #define gResetHistory (((RELAX_ClassifyTilesConstants*)gNrdPush.constants)->nrd_gResetHistory)
-#define gIn_ViewZ (*DescriptorHandle<Texture2D<float>>(uint2(gNrdPush.resources->sampled[0], 0)))
-#define gOut_Tiles (*DescriptorHandle<RWTexture2D<float>>(uint2(gNrdPush.resources->storage[0], 0)))
+#define gIn_ViewZ (*DescriptorHandle<Texture2D<float>>(gNrdPush.resources->sampled[0]))
+#define gOut_Tiles (*DescriptorHandle<RWTexture2D<float>>(gNrdPush.resources->storage[0]))
