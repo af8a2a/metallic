@@ -206,7 +206,10 @@ public:
             OMM_EXPECT(render::vulkan::enableOpacityMicromapSpirv(compiled.spirv, patched, true) && patched != compiled.spirv &&
                 render::vulkan::enableOpacityMicromapSpirv(patched, twice, true) && patched == twice, "RayQuery EXT OMM capability missing or not idempotent");
             const render::ComputeProgramBindingDesc layout[] = {
-                {0, render::ComputeResourceBindingKind::AccelerationStructure}, {2}, {3}, {4}, {5}, {6},
+                {0, render::ComputeResourceBindingKind::AccelerationStructure}, {2, render::ComputeResourceBindingKind::DataBuffer, 1, 16, 8},
+                {3, render::ComputeResourceBindingKind::DataBuffer, 1, 4, 4},
+                {4, render::ComputeResourceBindingKind::DataBuffer, 1, 32, 4},
+                {5, render::ComputeResourceBindingKind::DataBuffer, 1, 16, 4}, {6},
                 {9, render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()}, {63}};
             render::ComputeProgram program;
             OMM_REQUIRE(program.initialize(*device, {

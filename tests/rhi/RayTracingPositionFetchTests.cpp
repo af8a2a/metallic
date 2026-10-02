@@ -162,12 +162,15 @@ public:
             FETCH_REQUIRE(compiled);
             std::vector<render::ComputeProgramBindingDesc> layout = {
                 {0, render::ComputeResourceBindingKind::AccelerationStructure},
-                {2}, {3}, {4}, {5}, {6},
+                {2, render::ComputeResourceBindingKind::DataBuffer, 1, 16, 8},
+                {3, render::ComputeResourceBindingKind::DataBuffer, 1, 4, 4},
+                {4, render::ComputeResourceBindingKind::DataBuffer, 1, 32, 4},
+                {5, render::ComputeResourceBindingKind::DataBuffer, 1, 16, 4}, {6},
                 {9, render::ComputeResourceBindingKind::SampledImage, resources.materialTextureCount()},
                 {63},
             };
             if (!positionFetch) {
-                layout.push_back({render::kSceneFallbackPositionsBinding});
+                layout.push_back({render::kSceneFallbackPositionsBinding, render::ComputeResourceBindingKind::DataBuffer, 1, 12, 4});
             }
             render::ComputeProgram program;
             const auto initialized = program.initialize(*device, {
@@ -203,9 +206,9 @@ public:
                     (void)frame.reset();
                 }
             } drain{frame, *pool};
-            for (uint32_t step = 0; step < 2; ++step) {
-                const float translationX = static_cast<float>(step);
-                if (step != 0) {
+            for (uint32_t step = 0; step < (positionFetch ? 4u : 5u); ++step) {
+                const float translationX = step == 0 ? 0.0f : 1.0f;
+                if (step == 1) {
                     auto moved = scene.nodes()[0].localMatrix;
                     moved.a03 += translationX;
                     if (!scene.setNodeLocalMatrix(0, moved)) { return RHITestResult::fail("instance edit failed"); }
@@ -232,6 +235,16 @@ public:
                     bindings.push_back({.binding = render::kSceneFallbackPositionsBinding,
                         .buffer = resources.fallbackPositionBuffer()});
                 }
+                // A valid TLAS must not allow its hit indices to escape a supplied
+                // CPU slice. Keep the geometry allocated, but expose one element.
+                if (step >= 2) {
+                    const uint32_t bindingToTruncate = step == 2 ? 2u : step == 3 ? 3u : render::kSceneFallbackPositionsBinding;
+                    for (auto& binding : bindings) {
+                        if (binding.binding == bindingToTruncate) {
+                            binding.range = {.offset = 0, .size = step == 2 ? 16u : step == 3 ? 4u : 12u};
+                        }
+                    }
+                }
                 FETCH_REQUIRE(program.dispatch({
                     .commandBuffer = commands.get(),
                     .bindings = {bindings.data(), static_cast<uint32_t>(std::size(bindings))},
@@ -249,6 +262,17 @@ public:
                 std::memcpy(actual.data(), mapped, sizeof(actual));
                 output->unmap();
                 bench::readbackEvidence(context, "readback.bin", std::span<const float>(actual));
+                for (uint32_t check = 92; check < 96; ++check) {
+                    if (actual[check] != 1.0f) { return RHITestResult::fail("invalid/overflowing geometry index accepted"); }
+                }
+                if (step >= 2) {
+                    for (uint32_t ray = 0; ray < 4; ++ray) {
+                        if (actual[ray * 24 + 11] != 0.0f) {
+                            return RHITestResult::fail("truncated BDA slice reported a hit at step " + std::to_string(step));
+                        }
+                    }
+                    continue;
+                }
                 observations.insert(observations.end(), actual.begin(), actual.end());
                 auto near = [](float a, float b) { return std::isfinite(a) && std::abs(a - b) < 0.0001f; };
                 for (uint32_t ray = 0; ray < 3; ++ray) {
@@ -282,7 +306,7 @@ public:
             {"scene", bench::fileHash(path)}, {"authoredTangents", authoredTangents_}, {"native", native_}, {"steps", 2}}, observations,
             context.deviceDesc && context.deviceDesc->enableRayTracingPositionFetch);
         if (context.evidence) { return RHITestResult::pass("analytic transformed hits and refit passed; pair comparison is performed by parent"); }
-        return RHITestResult::pass("fetch/fallback agree after BLAS compaction and TLAS refit, including UVs and back-face TBN");
+        return RHITestResult::pass("fetch/fallback agree after BLAS compaction and TLAS refit, including UVs, back-face TBN and truncated BDA slices");
     }
 
 private:

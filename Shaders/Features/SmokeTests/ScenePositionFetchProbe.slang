@@ -36,4 +36,14 @@ void scenePositionFetchProbeMain(uint3 id : SV_DispatchThreadID)
     gProbeOutput[base + 3u] = hit.tangent;
     gProbeOutput[base + 4u] = float4(hit.bitangent, float(hit.triangleIndex));
     gProbeOutput[base + 5u] = float4(hit.texcoord, float(hit.materialIndex), float(hit.instanceIndex));
+    if (id.x == 3u) {
+        PathTraceInstance instance;
+        PathTracePrimitive primitive;
+        uint3 indices;
+        gProbeOutput[base + 5u] = float4(
+            !loadPathTraceTriangle(0xffffffffu, 0u, instance, primitive, indices),
+            !loadPathTraceTriangle(gInstances.length(), 0u, instance, primitive, indices),
+            !loadPathTraceTriangle(0u, 0xffffffffu, instance, primitive, indices),
+            !loadPathTraceTriangle(0u, 0x55555556u, instance, primitive, indices));
+    }
 }

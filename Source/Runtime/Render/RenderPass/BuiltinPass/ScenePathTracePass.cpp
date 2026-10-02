@@ -994,19 +994,23 @@ public:
             },
             ComputeProgramBindingDesc{
                 .binding = 2,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::DataBuffer,
+                .dataStride = 16, .dataAlignment = 8,
             },
             ComputeProgramBindingDesc{
                 .binding = 3,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::DataBuffer,
+                .dataStride = 4, .dataAlignment = 4,
             },
             ComputeProgramBindingDesc{
                 .binding = 4,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::DataBuffer,
+                .dataStride = 32, .dataAlignment = 4,
             },
             ComputeProgramBindingDesc{
                 .binding = 5,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
+                .kind = ComputeResourceBindingKind::DataBuffer,
+                .dataStride = 16, .dataAlignment = 4,
             },
             ComputeProgramBindingDesc{
                 .binding = 6,
@@ -1035,7 +1039,7 @@ public:
             },
         };
         if (!positionFetch && !streamMaterials_) {
-            baseBindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 12, .dataAlignment = 4});
         }
         if (realtime_) {
             baseBindings.push_back(ComputeProgramBindingDesc{

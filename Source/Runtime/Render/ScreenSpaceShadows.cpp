@@ -182,7 +182,11 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             for (uint32_t i = 90; i <= 94; ++i) { layout.push_back({.binding = i}); }
         }
         if (!streamed) {
-            for (uint32_t i = 2; i <= 6; ++i) { layout.push_back({.binding = i}); }
+            layout.push_back({.binding = 2, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 16, .dataAlignment = 8});
+            layout.push_back({.binding = 3, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4});
+            layout.push_back({.binding = 4, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 32, .dataAlignment = 4});
+            layout.push_back({.binding = 5, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 16, .dataAlignment = 4});
+            layout.push_back({.binding = 6});
             layout.push_back({.binding = 9, .kind = ComputeResourceBindingKind::SampledImage,
                 .descriptorCount = geometry->materialTextureCount()});
         }

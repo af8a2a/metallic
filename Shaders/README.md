@@ -88,6 +88,11 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 因此这三个缓存 buffer 使用具名 descriptor handle；维护阶段直接读取 settings，不再依赖 cacheParams 的公共前缀。
 主追踪及其 OpenPBR、NTC、VisibilityBuffer 共享资源表仍使用下述兼容入口。
 
+主追踪共享的 shading vertex、index、primitive、instance 和 fallback position 已使用带范围的 `DataSpan<T>`，
+覆盖 Standard/OpenPBR、guides、VisibilityBuffer deferred 和 alpha shadow；不再为这五类普通数据注册 buffer descriptor。
+`loadPathTraceTriangle` 在解引用前检查完整索引链，并用减法检查避免偏移溢出；fallback position 另查范围。
+这一批仍通过 ComputeProgram 的 DataBuffer 兼容表传递 span，主追踪的完整具名参数根与图像句柄迁移尚未完成。
+
 `Core` 保留 `getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
 作为尚未迁移的 ComputeProgram / SDK 调用的兼容入口。它导入 `ParameterRoot`，通过根地址读取资源表和常量，
 因此不能和另一份 inline push 声明混用。数组通过 slot 的 `payload` 地址读取 registry 的句柄，

@@ -142,11 +142,11 @@ struct PathTraceInstance
     float rayConeLodConstant;
 };
 
-#define gIndices getResource<StructuredBuffer<uint>>(3)
+#define gIndices getData<uint>(3)
 
-#define gPrimitives getResource<StructuredBuffer<PathTracePrimitive>>(4)
+#define gPrimitives getData<PathTracePrimitive>(4)
 
-#define gInstances getResource<StructuredBuffer<PathTraceInstance>>(5)
+#define gInstances getData<PathTraceInstance>(5)
 
 #define gMaterials getResource<StructuredBuffer<PathTraceMaterial>>(6)
 
@@ -1043,30 +1043,50 @@ bool materialNeedsDeterministicTextureMip0(PathTraceMaterial material)
     return material.glassParams.x > 0.01;
 }
 
-float2 triangleTexcoord(uint instanceIndex, uint triangleIndex, float2 bary)
+// Validate the complete index chain before dereferencing ordinary BDA data.
+// Subtraction-based checks avoid wrapping firstIndex + triangleIndex * 3 and
+// firstVertex + localIndex when scene metadata is malformed or stale.
+bool loadPathTraceTriangle(uint instanceIndex, uint triangleIndex,
+    out PathTraceInstance instance, out PathTracePrimitive primitive, out uint3 indices)
 {
-    PathTraceInstance instance = gInstances[instanceIndex];
-    PathTracePrimitive primitive = gPrimitives[instance.primitiveIndex];
+    instance = (PathTraceInstance)0;
+    primitive = (PathTracePrimitive)0;
+    indices = uint3(0);
+    if (!gInstances.contains(instanceIndex)) { return false; }
+    instance = gInstances.data[instanceIndex];
+    if (!gPrimitives.contains(instance.primitiveIndex)) { return false; }
+    primitive = gPrimitives.data[instance.primitiveIndex];
+    if (triangleIndex >= primitive.indexCount / 3u ||
+        primitive.firstIndex > gIndices.length() ||
+        primitive.indexCount > gIndices.length() - primitive.firstIndex) { return false; }
     uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
-    uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
-    uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
-    uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
-    return getResource<StructuredBuffer<SceneShadingVertex>>(2)[i0].texcoord.xy * weights.x +
-        getResource<StructuredBuffer<SceneShadingVertex>>(2)[i1].texcoord.xy * weights.y +
-        getResource<StructuredBuffer<SceneShadingVertex>>(2)[i2].texcoord.xy * weights.z;
+    uint3 local = uint3(gIndices.data[indexOffset], gIndices.data[indexOffset + 1u], gIndices.data[indexOffset + 2u]);
+    DataSpan<SceneShadingVertex> vertices = getData<SceneShadingVertex>(2);
+    if (primitive.firstVertex > vertices.length() ||
+        primitive.vertexCount > vertices.length() - primitive.firstVertex ||
+        any(local >= primitive.vertexCount)) { return false; }
+    indices = primitive.firstVertex + local;
+    return true;
 }
 
 bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, ScenePathTracePush push)
 {
-    PathTraceInstance instance = gInstances[instanceIndex];
+    PathTraceInstance instance;
+    PathTracePrimitive primitive;
+    uint3 indices;
+    if (!loadPathTraceTriangle(instanceIndex, triangleIndex, instance, primitive, indices)) { return false; }
+    uint materialCount, materialStride;
+    gMaterials.GetDimensions(materialCount, materialStride);
+    if (instance.materialIndex >= materialCount) { return false; }
     PathTraceMaterial material = gMaterials[instance.materialIndex];
     bool blend = abs(material.textureParams.w - 2.0) < 0.25;
     if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
         return true;
     }
-
-    float2 uv = triangleTexcoord(instanceIndex, triangleIndex, bary);
+    DataSpan<SceneShadingVertex> vertices = getData<SceneShadingVertex>(2);
+    float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
+    float2 uv = vertices.data[indices.x].texcoord * weights.x +
+        vertices.data[indices.y].texcoord * weights.y + vertices.data[indices.z].texcoord * weights.z;
     float alpha = material.baseColor.a * loadMaterialAlphaCoverage(material.baseColorTexture, uv, push);
     // OMM leaves partial BLEND coverage unknown. Preserve the current opaque
     // transport for those hits, while zero-alpha holes remain transparent.
@@ -1200,17 +1220,19 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     }
 
     uint instanceIndex = query.CommittedInstanceIndex();
-    PathTraceInstance instance = gInstances[instanceIndex];
-    PathTracePrimitive primitive = gPrimitives[instance.primitiveIndex];
+    PathTraceInstance instance;
+    PathTracePrimitive primitive;
+    uint3 indices;
     uint triangleIndex = query.CommittedPrimitiveIndex();
-    uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
-
-    uint i0 = primitive.firstVertex + gIndices[indexOffset + 0u];
-    uint i1 = primitive.firstVertex + gIndices[indexOffset + 1u];
-    uint i2 = primitive.firstVertex + gIndices[indexOffset + 2u];
-    SceneShadingVertex v0 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i0];
-    SceneShadingVertex v1 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i1];
-    SceneShadingVertex v2 = getResource<StructuredBuffer<SceneShadingVertex>>(2)[i2];
+    if (!loadPathTraceTriangle(instanceIndex, triangleIndex, instance, primitive, indices)) { return false; }
+    uint materialCount, materialStride;
+    gMaterials.GetDimensions(materialCount, materialStride);
+    if (instance.materialIndex >= materialCount) { return false; }
+    DataSpan<SceneShadingVertex> vertices = getData<SceneShadingVertex>(2);
+    uint i0 = indices.x, i1 = indices.y, i2 = indices.z;
+    SceneShadingVertex v0 = vertices.data[i0];
+    SceneShadingVertex v1 = vertices.data[i1];
+    SceneShadingVertex v2 = vertices.data[i2];
 
     float2 bary = query.CommittedTriangleBarycentrics();
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
@@ -1223,9 +1245,12 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     float3 p1 = positions[1];
     float3 p2 = positions[2];
 #else
-    float3 p0 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i0);
-    float3 p1 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i1);
-    float3 p2 = loadSceneVertexPosition(getResource<StructuredBuffer<SceneVertexPosition>>(54), i2);
+    DataSpan<SceneVertexPosition> positions = getData<SceneVertexPosition>(54);
+    if (!positions.contains(i0) || !positions.contains(i1) || !positions.contains(i2)) { return false; }
+    SceneVertexPosition a = positions.data[i0], b = positions.data[i1], c = positions.data[i2];
+    float3 p0 = float3(a.x, a.y, a.z);
+    float3 p1 = float3(b.x, b.y, b.z);
+    float3 p2 = float3(c.x, c.y, c.z);
 #endif
     float2 uv0 = v0.texcoord;
     float2 uv1 = v1.texcoord;
