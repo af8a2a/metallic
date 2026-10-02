@@ -161,6 +161,9 @@ public:
             {"Metallic.PathTraceTonemapParams", {FIELD(PathTraceTonemapParams, source), FIELD(PathTraceTonemapParams, output),
                 FIELD(PathTraceTonemapParams, historyPrevious), FIELD(PathTraceTonemapParams, settings)}},
             {"Metallic.PathTraceParameters", {FIELD(PathTraceParameters, settings), FIELD(PathTraceParameters, scene), FIELD(PathTraceParameters, output), FIELD(PathTraceParameters, vertices), FIELD(PathTraceParameters, indices), FIELD(PathTraceParameters, primitives), FIELD(PathTraceParameters, instances), FIELD(PathTraceParameters, positions), FIELD(PathTraceParameters, materials), FIELD(PathTraceParameters, historyCurrent), FIELD(PathTraceParameters, historyPrevious), FIELD(PathTraceParameters, materialTextures), FIELD(PathTraceParameters, environment), FIELD(PathTraceParameters, environmentPdf), FIELD(PathTraceParameters, lut2D), FIELD(PathTraceParameters, lut3D), FIELD(PathTraceParameters, lights), FIELD(PathTraceParameters, reGIR), FIELD(PathTraceParameters, punctualPdf), FIELD(PathTraceParameters, albedo), FIELD(PathTraceParameters, specularAlbedo), FIELD(PathTraceParameters, normalRoughness), FIELD(PathTraceParameters, motionVectors), FIELD(PathTraceParameters, linearDepth), FIELD(PathTraceParameters, specularHitDistance), FIELD(PathTraceParameters, depth), FIELD(PathTraceParameters, materialValues), FIELD(PathTraceParameters, ntcLatents), FIELD(PathTraceParameters, ntcConstants), FIELD(PathTraceParameters, ntcWeights), FIELD(PathTraceParameters, ntcInfo), FIELD(PathTraceParameters, ntcSampler)}},
+            {"Metallic.UpscalerGuideResolveParams", {FIELD(UpscalerGuideResolveParams, depth), FIELD(UpscalerGuideResolveParams, motion),
+                FIELD(UpscalerGuideResolveParams, outputDepth), FIELD(UpscalerGuideResolveParams, outputMotion),
+                FIELD(UpscalerGuideResolveParams, jitterX), FIELD(UpscalerGuideResolveParams, jitterY)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -186,10 +189,11 @@ public:
             {"Features/PathTracing/OpenPBRRayQueryPathTrace", "openPbrRayQueryPathTraceMain", 13},
             {"Features/PathTracing/OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain", 13},
             {"Features/PathTracing/ScenePathTraceGuides", "scenePathTraceGuidesMain", 13},
+            {"Features/PostProcess/UpscalerGuideResolve", "upscalerGuideResolveMain", 14},
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                if ((program.layout == 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
                 const char* capabilities[] = {"spvRayQueryKHR"};
                 std::string log;
@@ -1075,6 +1079,95 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(BufferSliceSubmissionTest);
+
+class UpscalerGuideInlineTest final : public RHITest {
+public:
+    UpscalerGuideInlineTest() { type = RHITestType::Resource; name = "upscaler_guide_inline_output"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Inline guide resolve",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { device = std::move(value); }));
+        auto& queue = *device->getQueue(QueueType::Graphics);
+        auto registry = device->resourceRegistry(); REG_CHECK(registry);
+        ComputeKernel fill, resolve;
+        std::string log;
+        auto shader = compileSlangShaderToSpirv({.moduleName = "UpscalerGuideProbe", .entryPointName = "guideFillMain",
+            .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
+        if (!shader) { return RHITestResult::fail(log); }
+        const auto abi = parameterAbi<UpscalerGuideResolveParams>(kUpscalerGuideResolveABI, ParameterTransport::InlinePush);
+        REG_REQUIRE(fill.initialize(*device, {.spirv = shader->spirv, .parameters = abi}, log));
+        shader = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/UpscalerGuideResolve",
+            .entryPointName = "upscalerGuideResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, log);
+        if (!shader) { return RHITestResult::fail(log); }
+        REG_REQUIRE(resolve.initialize(*device, {.spirv = shader->spirv, .parameters = abi}, log));
+        std::array<std::unique_ptr<Texture>, 4> textures;
+        std::array<std::unique_ptr<TextureView>, 4> views;
+        for (uint32_t i = 0; i < 4; ++i) {
+            REG_REQUIRE(device->createTexture({.usage = TextureUsageBits::Sampled | TextureUsageBits::Storage | TextureUsageBits::TransferSource,
+                .format = i % 2 == 0 ? Format::R32Sfloat : Format::RG32Sfloat, .width = i < 2 ? 2u : 3u, .height = i < 2 ? 2u : 3u})
+                .transform([&](auto value) { textures[i] = std::move(value); }));
+            REG_REQUIRE(device->createTextureView(*textures[i], {}).transform([&](auto value) { views[i] = std::move(value); }));
+        }
+        std::array<std::unique_ptr<Buffer>, 2> readbacks;
+        for (uint32_t i = 0; i < 2; ++i) {
+            REG_REQUIRE(device->createBuffer({.size = 9u * (i + 1) * sizeof(float), .usage = BufferUsageBits::TransferDestination,
+                .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto value) { readbacks[i] = std::move(value); }));
+        }
+        QueueSubmissionTracker tracker; REG_REQUIRE(tracker.initialize(*device, queue));
+        Commands recording; REG_REQUIRE(recording.initialize(*device, queue)); REG_REQUIRE(recording.begin(0));
+        for (const auto& texture : textures) {
+            TextureBarrierDesc barrier{.texture = texture.get(), .oldLayout = TextureLayout::Undefined, .newLayout = TextureLayout::General,
+                .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}};
+            REG_REQUIRE(recording.commands->synchronize({.textures = {&barrier, 1}}));
+        }
+        {
+            ParameterWriter writer(*device, **registry, &recording.frame);
+            UpscalerGuideResolveParams params{};
+            params.outputDepth = writer.storageImage(views[0].get()); params.outputMotion = writer.storageImage(views[1].get());
+            auto encoded = writer.encode(params, kUpscalerGuideResolveABI, ParameterTransport::InlinePush); REG_CHECK(encoded);
+            REG_REQUIRE(fill.dispatch(*recording.commands, *encoded, 1));
+            for (uint32_t i = 0; i < 2; ++i) {
+                TextureBarrierDesc barrier{.texture = textures[i].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::ShaderRead,
+                    .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .after = {PipelineStageBits::ComputeShader, AccessBits::ShaderRead}};
+                REG_REQUIRE(recording.commands->synchronize({.textures = {&barrier, 1}}));
+            }
+            params.depth = writer.sampledImage(views[0].get()); params.motion = writer.sampledImage(views[1].get());
+            params.outputDepth = writer.storageImage(views[2].get()); params.outputMotion = writer.storageImage(views[3].get());
+            params.jitterX = 0.25f; params.jitterY = -0.25f;
+            encoded = writer.encode(params, kUpscalerGuideResolveABI, ParameterTransport::InlinePush); REG_CHECK(encoded);
+            REG_REQUIRE(resolve.dispatch(*recording.commands, *encoded, 1));
+        }
+        for (uint32_t i = 0; i < 2; ++i) {
+            TextureBarrierDesc barrier{.texture = textures[i + 2].get(), .oldLayout = TextureLayout::General, .newLayout = TextureLayout::TransferSource,
+                .before = {PipelineStageBits::ComputeShader, AccessBits::ShaderWrite}, .after = {PipelineStageBits::Transfer, AccessBits::TransferRead}};
+            REG_REQUIRE(recording.commands->synchronize({.textures = {&barrier, 1}}));
+            recording.commands->copyTextureToBuffer({.texture = textures[i + 2].get(), .buffer = readbacks[i].get(), .width = 3, .height = 3});
+        }
+        const MemoryBarrierDesc host{{PipelineStageBits::Transfer, AccessBits::TransferWrite}, {PipelineStageBits::Host, AccessBits::HostRead}};
+        REG_REQUIRE(recording.commands->synchronize({.memory = {&host, 1}}));
+        std::unique_ptr<Semaphore> gate; REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+        Drain drain{queue, *gate}; REG_REQUIRE(recording.submit(tracker, *gate)); REG_REQUIRE(gate->signal(1));
+        REG_REQUIRE(recording.frame.wait(5'000'000'000ull));
+        for (uint32_t i = 0; i < 2; ++i) {
+            readbacks[i]->invalidate(); const auto* data = static_cast<const float*>(readbacks[i]->map()); REG_CHECK(data);
+            std::array<float, 18> values{}; std::memcpy(values.data(), data, 9 * (i + 1) * sizeof(float)); readbacks[i]->unmap();
+            for (uint32_t y = 0; y < 3; ++y) { for (uint32_t x = 0; x < 3; ++x) {
+                const bool foreground = x > 0;
+                const uint32_t pixel = y * 3 + x;
+                if (i == 0) { REG_CHECK(values[pixel] == (foreground ? 0.25f : 0.75f)); }
+                else {
+                    REG_CHECK(values[pixel * 2] == (foreground ? 0.125f : 0.0f));
+                    REG_CHECK(values[pixel * 2 + 1] == ((foreground || y == 2) ? 0.125f : 0.0f));
+                }
+            }}
+        }
+        return RHITestResult::pass("Inline handles/jitter, nearest foreground depth, UV motion and partial workgroup");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(UpscalerGuideInlineTest);
 
 class StreamDataDecodeTest final : public RHITest {
 public:

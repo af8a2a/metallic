@@ -10,6 +10,9 @@ namespace metallic::render {
 using PostUInt = uint32_t;
 using PostSampled2D = ShaderSampledImage;
 using PostSampled2DScalar = ShaderSampledImage;
+using PostSampled2DMotion = ShaderSampledImage;
+using PostStorage2DScalar = ShaderStorageImage;
+using PostStorage2DMotion = ShaderStorageImage;
 using PostSampled3D = ShaderSampledImage;
 using PostStorage2D = ShaderStorageImage;
 using PostStorage3D = ShaderStorageImage;
@@ -25,6 +28,9 @@ namespace Metallic {
 typealias PostUInt = uint;
 typealias PostSampled2D = DescriptorHandle<Texture2D<float4>>;
 typealias PostSampled2DScalar = DescriptorHandle<Texture2D<float>>;
+typealias PostSampled2DMotion = DescriptorHandle<Texture2D<float2>>;
+typealias PostStorage2DScalar = DescriptorHandle<RWTexture2D<float>>;
+typealias PostStorage2DMotion = DescriptorHandle<RWTexture2D<float2>>;
 typealias PostSampled3D = DescriptorHandle<Texture3D<float4>>;
 typealias PostStorage2D = DescriptorHandle<RWTexture2D<float4>>;
 typealias PostStorage3D = DescriptorHandle<RWTexture3D<float4>>;
@@ -78,6 +84,14 @@ struct AutoExposureParams {
     PostUInt padding;
 };
 
+struct UpscalerGuideResolveParams {
+    PostSampled2DScalar depth;
+    PostSampled2DMotion motion;
+    PostStorage2DScalar outputDepth;
+    PostStorage2DMotion outputMotion;
+    float jitterX, jitterY;
+};
+
 struct GradingPush {
     PostUInt transform, hdr;
     float peak, paperWhite;
@@ -98,6 +112,8 @@ struct ColorGradingLUTParams {
 };
 
 #ifdef __cplusplus
+inline constexpr uint64_t kUpscalerGuideResolveABI = 0x5550475549440001ull;
+static_assert(sizeof(UpscalerGuideResolveParams) == 40 && offsetof(UpscalerGuideResolveParams, jitterX) == 32);
 inline constexpr uint64_t kFinalBlitABI = 0x46424c4954000001ull;
 inline constexpr uint64_t kSliderDebugABI = 0x534c494445000001ull;
 inline constexpr uint64_t kAutoExposureABI = 0x4558504f53000001ull;

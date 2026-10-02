@@ -1,12 +1,10 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/PostProcessParameters.h"
 using Metallic;
-
-#define gMotion getResource<Texture2D<float2>>(0)
-#define gDepth getResource<Texture2D<float>>(1)
-#define gOutputMotion getResource<RWTexture2D<float2>>(2)
-#define gOutputDepth getResource<RWTexture2D<float>>(3)
-
-struct UpscalerGuideResolvePush { float2 jitter; };
+[[vk::push_constant]] ConstantBuffer<UpscalerGuideResolveParams> gParams;
+#define gMotion resolveDescriptor(gParams.motion)
+#define gDepth resolveDescriptor(gParams.depth)
+#define gOutputMotion resolveDescriptor(gParams.outputMotion)
+#define gOutputDepth resolveDescriptor(gParams.outputDepth)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
@@ -16,9 +14,8 @@ void upscalerGuideResolveMain(uint3 id : SV_DispatchThreadID)
     gOutputDepth.GetDimensions(width, height);
     if (id.x >= width || id.y >= height) { return; }
     gDepth.GetDimensions(sourceWidth, sourceHeight);
-    UpscalerGuideResolvePush push = getConstants<UpscalerGuideResolvePush>();
     float2 uv = (float2(id.xy) + 0.5) / float2(width, height);
-    int2 base = int2(floor(uv * float2(sourceWidth, sourceHeight) - push.jitter - 0.5));
+    int2 base = int2(floor(uv * float2(sourceWidth, sourceHeight) - float2(gParams.jitterX, gParams.jitterY) - 0.5));
     int2 selected = clamp(base, int2(0), int2(sourceWidth, sourceHeight) - 1);
     float nearest = 1.0;
     // Standard depth: choose the foreground sample across an edge. Motion stays

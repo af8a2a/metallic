@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
@@ -216,23 +217,16 @@ public:
             log = std::string(passTypeName()) + " requires a device and graphics queue";
             return makeError(Error::InvalidArgument);
         }
+        device_ = context.device;
         if (boolProperty(&properties(), "exportOutputGuides", false)) {
             ShaderCompileResult shader;
             auto result = compileSlangShaderToSpirv({.moduleName = "Features/PostProcess/UpscalerGuideResolve",
                 .entryPointName = "upscalerGuideResolveMain", .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!result) { log = shader.diagnostics; return result; }
-            const ComputeProgramBindingDesc bindings[] = {
-                {.binding = 0, .kind = ComputeResourceBindingKind::SampledImage},
-                {.binding = 1, .kind = ComputeResourceBindingKind::SampledImage},
-                {.binding = 2, .kind = ComputeResourceBindingKind::StorageImage},
-                {.binding = 3, .kind = ComputeResourceBindingKind::StorageImage},
-            };
             result = guideResolve_.initialize(*context.device, {
                 .spirv = shader.spirv,
-                .pushConstantSize = 8,
-                .bindings = {bindings, 4},
+                .parameters = parameterAbi<UpscalerGuideResolveParams>(kUpscalerGuideResolveABI, ParameterTransport::InlinePush),
                 .debugName = "UpscalerGuideResolve",
-                .requiresRayQuery = false,
             }, log);
             if (!result) { return result; }
         }
@@ -523,22 +517,19 @@ private:
     {
         if (!boolProperty(&properties(), "exportOutputGuides", false)) { return {}; }
         auto& command = context.commandBuffer();
-        auto* mv = motion.view();
-        auto* z = depth.view();
-        const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureViews = {&mv, 1}},
-            {.binding = 1, .textureViews = {&z, 1}},
-            {.binding = 2, .textureView = context.outputTexture("motionVectors").view()},
-            {.binding = 3, .textureView = context.outputTexture("depth").view()},
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, command.frameContext());
+        const UpscalerGuideResolveParams params{
+            .depth = writer.sampledImage(depth.view()),
+            .motion = writer.sampledImage(motion.view()),
+            .outputDepth = writer.storageImage(context.outputTexture("depth").view()),
+            .outputMotion = writer.storageImage(context.outputTexture("motionVectors").view()),
+            .jitterX = jitter[0], .jitterY = jitter[1],
         };
-        return guideResolve_.dispatch({
-            .commandBuffer = &command,
-            .bindings = {bindings, 4},
-            .pushData = jitter.data(),
-            .pushDataSize = 8,
-            .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8,
-        });
+        auto encoded = writer.encode(params, kUpscalerGuideResolveABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        return guideResolve_.dispatch(command, *encoded, (context.width() + 7) / 8, (context.height() + 7) / 8);
     }
 
     const char* passTypeName() const
@@ -1036,7 +1027,8 @@ private:
         return {};
     }
 
-    ComputeProgram guideResolve_;
+    Device* device_ = nullptr;
+    ComputeKernel guideResolve_;
     uint64_t lastFrame_ = 0;
     uint64_t lastHistoryRevision_ = 0;
     DLSSVariant variant_ = DLSSVariant::SuperResolution;

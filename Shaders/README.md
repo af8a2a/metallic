@@ -69,6 +69,8 @@ shader 使用对应 `DescriptorHandle<T>` 和 `resolveDescriptor()`；普通数�
 
 [PostProcessParameters.h](../Source/Runtime/Render/Core/PostProcessParameters.h) 共用 C++/Slang 字段声明与显式 padding：
 FinalBlit、SliderDebug（包括 DLSS-NR overlay）和 AutoExposure 使用 inline push，ColorGradingLUT 使用 BDA 参数块。
+UpscalerGuideResolve 使用 40 字节 inline push，包含四个具名图像句柄与 jitter；通过 ComputeKernel 提交，
+不再构造编号资源表。GPU 回归直接验证前景深度选择、UV motion、jitter 和非整工作组尺寸。
 AutoExposure 的 Histogram、Reduce、Apply 复用同一份不可变参数；barrier 来自阶段读写声明，不能从 handle 推测访问。
 新增参数 ABI 时应验证字段偏移、GPU 读回、mapped/native 路径和生命周期；共享声明不等于自动完成布局验证。
 
