@@ -1,4 +1,11 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/DeferredShadingParameters.h"
+#define METALLIC_DEFERRED_SHADING_INLINE 1
+#define METALLIC_PATH_TRACE_TYPED 1
+[[vk::push_constant]] ConstantBuffer<DeferredShadingParameters> gDeferredShading;
+#define gDeferredResources (*gDeferredShading.resources)
+#define gPathTraceInline gDeferredShading.path
+#define gMaterialFeedback resolveDescriptor(gDeferredResources.feedback)
+#define gMaterialSampler resolveDescriptor(gDeferredResources.sampler)
 using Metallic;
 import GPUDriven;
 using Metallic.GPUDriven;
@@ -17,9 +24,9 @@ using Metallic.Material;
 
 ScenePathTracePush deferredViewPush()
 {
-    ScenePathTracePush push = getConstants<ScenePathTracePush>();
+    ScenePathTracePush push = scenePathTraceSettings();
 #if METALLIC_GLOBAL_VIEW
-    ViewConstants view = getResource<StructuredBuffer<ViewConstants>>(80)[0];
+    ViewConstants view = resolveDescriptor(gDeferredResources.view)[0];
     push.eye = view.current.eye;
     push.center = view.current.center;
     push.upProjection = view.current.upProjection;
@@ -35,26 +42,27 @@ ScenePathTracePush deferredViewPush()
     push.previousCameraValid = view.frame.y;
     push.temporalJitter = view.frame.z;
 #endif
+    push.deferredSettings = (push.deferredSettings & 0xffff0000u) | gDeferredShading.binIndex;
     return push;
 }
 
-#define gVisibility getResource<Texture2D<uint>>(60)
-#define gVisibilityDepth getResource<Texture2D<float>>(61)
-#define gRasterVertices getResource<StructuredBuffer<GPUDrivenPreviewVertex>>(62)
-#define gRasterMeshlets getResource<StructuredBuffer<GPUDrivenPreviewMeshlet>>(63)
-#define gRasterRecords getResource<StructuredBuffer<VisibleClusterRecord>>(64)
-#define gRasterMeshletVertices getResource<StructuredBuffer<uint>>(65)
-#define gRasterTriangles getResource<StructuredBuffer<uint>>(66)
-#define gRasterGeometries getResource<StructuredBuffer<GPUDrivenPreviewGeometry>>(67)
-#define gRasterInstances getResource<StructuredBuffer<GPUDrivenPreviewInstance>>(68)
-#define gRasterMaterials getResource<StructuredBuffer<GPUDrivenPreviewMaterial>>(69)
+#define gVisibility resolveDescriptor(gDeferredShading.visibility)
+#define gVisibilityDepth resolveDescriptor(gDeferredShading.depth)
+#define gRasterVertices gDeferredResources.vertices.data
+#define gRasterMeshlets gDeferredResources.meshlets.data
+#define gRasterRecords gDeferredResources.records.data
+#define gRasterMeshletVertices gDeferredResources.meshletVertices.data
+#define gRasterTriangles gDeferredResources.triangles.data
+#define gRasterGeometries gDeferredResources.geometries.data
+#define gRasterInstances gDeferredResources.instances.data
+#define gRasterMaterials gDeferredResources.materials.data
 #include "VisibilityStreamDecode.slang"
-#define gStreamRecords getResource<StructuredBuffer<CompactStreamVisibleRecord>>(83)
-#define gStreamGroups getResource<StructuredBuffer<StreamActiveGroup>>(84)
-#define gStreamPages getResource<StructuredBuffer<uint>>(85)
-#define gStreamPageTable getResource<StructuredBuffer<uint2>>(86)
-#define gRasterFrameInfo getResource<ByteAddressBuffer>(87)
-#define gRasterDomain getResource<Texture2D<float4>>(88)
+#define gStreamRecords resolveDescriptor(gDeferredResources.streamRecords)
+#define gStreamGroups resolveDescriptor(gDeferredResources.streamGroups)
+#define gStreamPages resolveDescriptor(gDeferredResources.streamPages)
+#define gStreamPageTable resolveDescriptor(gDeferredResources.streamTable)
+#define gRasterFrameInfo resolveDescriptor(gDeferredResources.frameInfo)
+#define gRasterDomain resolveDescriptor(gDeferredShading.domain)
 
 float4 rasterDomain(uint2 pixel)
 {
@@ -77,12 +85,19 @@ float rasterRayDistance(uint2 pixel, Ray ray, ScenePathTracePush push)
     float3 forward = cameraForwardFrom(push.eye, push.center);
     return (viewDepth - dot(ray.origin - push.eye.xyz, forward)) / max(dot(ray.direction, forward), 1e-6);
 }
-#define gMaterialBins getData<MaterialBin>(70).data
-#define gMaterialTiles getData<MaterialTile>(71).data
+#define gMaterialBins gDeferredResources.bins.data
+#define gMaterialTiles gDeferredResources.tiles.data
 #if METALLIC_DEFERRED_UPSCALER_GUIDES
-#define gUpscalerMotion getResource<RWTexture2D<float2>>(72)
-#define gUpscalerDepth getResource<RWTexture2D<float>>(73)
+#define gUpscalerMotion resolveDescriptor(gDeferredShading.motion)
+#define gUpscalerDepth resolveDescriptor(gDeferredShading.deviceDepth)
 #endif
+
+uint deferredTriangleIndex(uint firstWord, uint triangleIndex, uint corner)
+{
+    uint byteOffset = triangleIndex * 3u + corner;
+    uint word = gRasterTriangles[firstWord + (byteOffset >> 2u)];
+    return (word >> ((byteOffset & 3u) * 8u)) & 0xffu;
+}
 
 float3 rasterWorldPosition(GPUDrivenPreviewInstance instance, float3 position)
 {
@@ -118,9 +133,9 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     VisibleClusterRecord record;
     float3 a, b, c;
     if (!decodeStreamTriangle(recordIndex, triangleIndex, gStreamRecords, gStreamGroups,
-        gStreamPages, gStreamPageTable, streamPageWordCount(getResource<ByteAddressBuffer>(94)), record, a, b, c)) { return false; }
+        gStreamPages, gStreamPageTable, streamPageWordCount(resolveDescriptor(gDeferredResources.streamParams)), record, a, b, c)) { return false; }
     uint count, stride;
-    gRasterInstances.GetDimensions(count, stride);
+    count = gDeferredResources.instances.length();
     if (record.instanceIndex >= count) { return false; }
     GPUDrivenPreviewInstance instance = gRasterInstances[record.instanceIndex];
     float3 localNormal = safeTriangleNormal(b - a, c - a, float3(0, 1, 0));
@@ -165,7 +180,7 @@ bool reconstructStreamSurface(uint2 pixel, uint recordIndex, uint triangleIndex,
     }
     hit.tangent = float4(tangent, tangentSign * push.bitangentFlip);
     hit.bitangent = cross(hit.normal, tangent) * tangentSign * push.bitangentFlip;
-    gRasterMaterials.GetDimensions(count, stride);
+    count = gDeferredResources.materials.length();
     if (instance.identity.y >= count) { return false; }
     hit.materialIndex = gRasterMaterials[instance.identity.y].identity.z;
     gMaterials.GetDimensions(count, stride);
@@ -186,24 +201,24 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
         return reconstructStreamSurface(pixel, recordIndex - residentCount, triangleIndex, ray, push, hit);
     }
     uint count, stride;
-    gRasterRecords.GetDimensions(count, stride);
+    count = gDeferredResources.records.length();
     if (recordIndex >= count) { return false; }
     VisibleClusterRecord record = gRasterRecords[recordIndex];
     if (visibleClusterSource(record) != kVisibleClusterSourceResident) { return false; }
-    gRasterMeshlets.GetDimensions(count, stride);
+    count = gDeferredResources.meshlets.length();
     if (record.clusterIndex >= count) { return false; }
     GPUDrivenPreviewMeshlet meshlet = gRasterMeshlets[record.clusterIndex];
     if (triangleIndex >= meshlet.ranges.w) { return false; }
-    gRasterGeometries.GetDimensions(count, stride);
+    count = gDeferredResources.geometries.length();
     if (record.dataIndex >= count) { return false; }
     GPUDrivenPreviewGeometry geometry = gRasterGeometries[record.dataIndex];
-    gRasterInstances.GetDimensions(count, stride);
+    count = gDeferredResources.instances.length();
     if (record.instanceIndex >= count) { return false; }
     GPUDrivenPreviewInstance instance = gRasterInstances[record.instanceIndex];
     uint3 localIndices = uint3(
-        loadPackedMeshletTriangleIndex(gRasterTriangles, meshlet.ranges.z, triangleIndex, 0u),
-        loadPackedMeshletTriangleIndex(gRasterTriangles, meshlet.ranges.z, triangleIndex, 1u),
-        loadPackedMeshletTriangleIndex(gRasterTriangles, meshlet.ranges.z, triangleIndex, 2u));
+        deferredTriangleIndex( meshlet.ranges.z, triangleIndex, 0u),
+        deferredTriangleIndex( meshlet.ranges.z, triangleIndex, 1u),
+        deferredTriangleIndex( meshlet.ranges.z, triangleIndex, 2u));
     uint3 indices = geometry.payload.x + uint3(
         gRasterMeshletVertices[meshlet.ranges.x + localIndices.x],
         gRasterMeshletVertices[meshlet.ranges.x + localIndices.y],
@@ -255,7 +270,7 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
     }
     hit.tangent = float4(tangent, sign * push.bitangentFlip);
     hit.bitangent = bitangent * push.bitangentFlip;
-    gRasterMaterials.GetDimensions(count, stride);
+    count = gDeferredResources.materials.length();
     if (instance.identity.y >= count) { return false; }
     uint sourceMaterial = gRasterMaterials[instance.identity.y].identity.z;
     gMaterials.GetDimensions(count, stride);
@@ -351,10 +366,10 @@ void visibilityBufferDeferredBinnedMain(uint3 group : SV_GroupID)
 {
     ScenePathTracePush push = deferredViewPush();
     uint binIndex = push.deferredSettings & 0xffffu;
-    if (!getData<MaterialBin>(70).contains(binIndex)) { return; }
+    if (!gDeferredResources.bins.contains(binIndex)) { return; }
     MaterialBin bin = gMaterialBins[binIndex];
     uint index = group.y * kMaterialBinMaxGroupsX + group.x;
-    uint tileCount = getData<MaterialTile>(71).length();
+    uint tileCount = gDeferredResources.tiles.length();
     if (index >= bin.count || bin.offset >= tileCount || index >= tileCount - bin.offset) { return; }
     MaterialTile tile = gMaterialTiles[bin.offset + index];
     uint lane = WaveGetLaneIndex();

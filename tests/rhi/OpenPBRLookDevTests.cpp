@@ -14,7 +14,7 @@ public:
     explicit OpenPBRTypedGuidesTest(bool standard = false, bool guides = true) : standard_(standard), guides_(guides)
     {
         type = RHITestType::Rendering;
-        name = !guides ? "standard_inline_path_trace_history" : standard ? "standard_typed_guides_outputs" : "openpbr_typed_guides_outputs";
+        name = !guides ? (standard ? "standard_inline_path_trace_history" : "openpbr_inline_path_trace_history") : standard ? "standard_typed_guides_outputs" : "openpbr_typed_guides_outputs";
     }
     RHITestResult run(RHITestContext& context) override
     {
@@ -36,9 +36,9 @@ public:
         auto initialized = preview.initialize(context.enableValidation, true);
         if (!initialized) { return RHITestResult::fail(toString(initialized)); }
         preview.setRawReadbackEnabled(true);
-        for (uint32_t mode = 0; mode < (guides_ ? 1u : 3u); ++mode) {
+        for (uint32_t mode = 0; mode < (!guides_ && standard_ ? 3u : 1u); ++mode) {
             if (!guides_) {
-                pass->properties["cacheMode"] = mode == 1 ? "sharc" : "off";
+                pass->properties["cacheMode"] = standard_ && mode == 1 ? "sharc" : "off";
                 sample.graph.markDirty();
             }
             for (uint32_t width : {31u, 63u}) {
@@ -88,8 +88,9 @@ public:
                 }
             }
         }
-        return RHITestResult::pass(guides_ ? "Eight typed outputs, finite HDR, normalized normals, bounded guides and resize/history" :
-            "Standard inline path tracing, finite HDR, history/resize and off/SHaRC/off ABI transitions");
+        return RHITestResult::pass(guides_ ? "Eight inline outputs, finite HDR, normalized normals, bounded guides and resize/history" :
+            standard_ ? "Standard inline path tracing, finite HDR, history/resize and off/SHaRC/off ABI transitions" :
+                "OpenPBR inline path tracing, finite HDR and history/resize");
     }
 private:
     bool standard_ = false;
@@ -107,6 +108,12 @@ public:
     StandardInlinePathTraceTest() : OpenPBRTypedGuidesTest(true, false) {}
 };
 METALLIC_REGISTER_RHI_TEST(StandardInlinePathTraceTest);
+class OpenPBRInlinePathTraceTest final : public OpenPBRTypedGuidesTest {
+public:
+    OpenPBRInlinePathTraceTest() : OpenPBRTypedGuidesTest(false, false) {}
+};
+METALLIC_REGISTER_RHI_TEST(OpenPBRInlinePathTraceTest);
+
 
 
 class OpenPBRLookDevTest final : public RHITest {

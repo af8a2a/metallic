@@ -145,12 +145,12 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 [PathTraceStageParameters.h](../Source/Runtime/Render/Core/PathTraceStageParameters.h) 提供 SHaRC clear/resolve（96 字节）
 和 NRC 输出累积/tonemap（48 字节）的共享 inline 参数。SHaRC SDK 需要 StructuredBuffer 对象进行原子操作，
 因此这三个缓存 buffer 使用具名 descriptor handle；维护阶段直接读取 settings，不再依赖 cacheParams 的公共前缀。
-无 guides 的 Standard 主追踪与 VisibilityBuffer 的共享资源表仍使用下述兼容入口。
+Standard 主追踪与 VisibilityBuffer 主着色现已通过共享 inline 根提交。
 
 主追踪共享的 shading vertex、index、primitive、instance 和 fallback position 已使用带范围的 `DataSpan<T>`，
 覆盖 Standard/OpenPBR、guides、VisibilityBuffer deferred 和 alpha shadow；不再为这五类普通数据注册 buffer descriptor。
 `loadPathTraceTriangle` 在解引用前检查完整索引链，并用减法检查避免偏移溢出；fallback position 另查范围。
-无 guides 的 Standard/realtime/deferred 仍通过 ComputeProgram 的 DataBuffer 兼容表传递 span。
+Standard/realtime/deferred 均通过 ComputeKernel inline 根引用这些有界 span。
 
 [ResidentLODParameters.h](../Source/Runtime/Render/Core/ResidentLODParameters.h) 为 resident LOD 的
 reset/select/arguments/scatter 共用 184 字节 inline 参数，所有输入、输出及 scratch 使用有界 BDA span。
@@ -176,7 +176,7 @@ CPU 先编码全部不可变 `PreparedComputeDispatch`，再由 GPUScene 按统�
 GPUScene HZB 录制只接收 prepared dispatch，旧 pipeline/heap/pushData 描述已移除。
 
 `StreamSceneRayQuery` 的 pages、page table、instances 和 header 也使用有界 BDA `DataSpan`。
-streaming deferred 外层保留 `ComputeProgram` 兼容入口；四个 span 已统一为共享 `StreamSceneParameters`，
+streaming deferred 外层使用 `ComputeKernel` inline 入口；四个 span 已统一为共享 `StreamSceneParameters`，
 通过 settings 中的 BDA 根地址传递，不再使用 90–93 数字槽位或 buffer descriptor。
 `ParameterWriter` 编码不可变快照，并将四个资源保留至提交完成；material bin dispatch 复用同一快照。
 ScreenSpaceShadows 的 CLAS alpha-mask 查询复用同一声明，通过 `ShadowTraceParameters.streamScene` 传递根地址。
@@ -193,18 +193,18 @@ CPU 的 deferred 与 alpha shadow 共用 `encodeRayQueryParameters`，保持 spa
 原有 RenderGraph 阶段同步、参数池供 deferred 消费和 SIGMA 接入保持不变。
 `StreamSceneRayQuery` 显式接收 `StreamSceneParameters`、加速结构、bitangentFlip 与静态泛型
 `IStreamRayMaterials`；不读取 `gScene` / `gMaterials`，不依赖 `ScenePathTracePush` 或参数根。
-`ScenePathTrace` 在调用边界适配 typed root / 现存 ComputeProgram 的材质和 alpha 采样，
+`ScenePathTrace` 在调用边界适配 typed root 的材质和 alpha 采样，
 `ScreenSpaceShadows` 共用同一适配器；空场景根地址在边界拒绝。CPU 的 64 字节场景布局与资源保留不变。
 法线和 TBN 仍保持 authored/world-space 语义。`stream_data_decode_bounds` 的 GPU 探针覆盖
 显式材质 provider、正反向射线、bitangent 翻转、无效材质/实例/三角形及 mask/blend alpha 阈值；
 这些辅助层检查不等同于 CLAS 遍历或完整场景的视觉验证。
 
 [PathTraceParameters.h](../Source/Runtime/Render/Core/PathTraceParameters.h) 为
-Standard ScenePathTraceGuides、OpenPBRRayQueryPathTrace 和 OpenPBRRayQueryPathTraceGuides 提供 296 字节具名资源根，通过 BDA root 提交。
+Standard ScenePathTraceGuides、OpenPBRRayQueryPathTrace 和 OpenPBRRayQueryPathTraceGuides 提供 296 字节具名场景资源快照，由共享 inline 根通过 BDA 地址引用。
 CPU 使用 ParameterWriter 编码不可变 settings、几何 span、场景/历史/环境/LUT/光源/NTC 和七路 guide 句柄，
 直接调用 ComputeKernel，不构造编号 binding 表；参数包保留资源直到 GPU 完成。
 自定义材质继续支持事务式编译和热重载。NeuralTextures 只导入 ShaderCore，显式接收推理资源。
-OpenPBRDirectLighting 显式选择兼容入口，维持 realtime/deferred 现有布局；不应让 typed 入口读取 Core 的资源根。
+OpenPBRDirectLighting 的 realtime/deferred 分支均使用 inline 根，不读取 Core 的资源根。
 
 `Core` 保留 `getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
 作为尚未迁移的 ComputeProgram / SDK 调用的兼容入口。它导入 `ParameterRoot`，通过根地址读取资源表和常量，
@@ -353,5 +353,49 @@ fallback position 也检查范围。NTC、环境与 ReGIR 资源显式编码；�
 [PathTraceInlineParameters.h](../Source/Runtime/Render/Core/PathTraceInlineParameters.h) 为标准无缓存路径追踪提供
 40 字节 inline 根，直接携带 settings 地址、输出和两路历史句柄；其余资源复用 PathTraceParameters 场景快照。
 生产入口为 `ScenePathTraceInline.scenePathTraceMain`，CPU 复用 guides/OpenPBR 的 ParameterWriter 编码链，
-无编号 binding 表，也不因贴图数量变化重建管线。SHaRC/NRC 暂保留 ScenePathTrace 的旧资源入口；
+无编号 binding 表，也不因贴图数量变化重建管线。NRC 的独立 inline 入口见下文；
 标准回归覆盖 off/SHaRC/off 的 ABI 切换、逐帧 fallback 检查、有限 HDR 与奇数尺寸 resize。
+
+[SharcTraceParameters.h](../Source/Runtime/Render/Core/SharcTraceParameters.h) 将 SHaRC update/query 主追踪统一到
+72 字节 inline ABI，包含标准追踪的 40 字节根、不可变缓存设置地址及三个 canonical 缓存 handle。
+两阶段共享同一参数包；场景编码与标准/OpenPBR/guides 共用，移除 SHaRC binding 20–23 及可变缓存设置 buffer。
+clear/update/resolve/query 的资源访问和取消后的清理语义保持不变；维护阶段仍使用独立的 96 字节 inline 参数。
+布局测试分别编译 update/query 的 mapped/native 变体，场景测试验证 off/SHaRC/off 切换、历史发布和取消。
+
+[NRCTraceParameters.h](../Source/Runtime/Render/Core/NRCTraceParameters.h) 为 NRC update/query 提供 88 字节 inline ABI：
+共享标准主追踪参数、不可变 cache settings BDA 和五个具名 buffer handle。
+两个阶段共用 BeginFrame 之后编码的快照，移除 binding 20、24–28 和旧缓存参数池；
+QueryRadianceParams 保持 ScalarDataLayout。SDK train/resolve 与提交后 EndFrame 顺序保持不变。
+`nrc_trace_parameter_spirv_layout` 覆盖 update/query 的 mapped/native 字段偏移和共享头缓存依赖。
+启用 `METALLIC_TEST_NRC_CACHE=1` 可运行真实阶段/取消回归及 `nrc_context_lifecycle`：
+后者只执行 initialize/configure/destroy，不执行 shader，用来隔离 SDK 资源生命周期问题。
+当前 NRC 0.15 环境在 context-only 测试的设备销毁阶段仍报告原生对象泄漏，
+同一进程销毁设备后再次初始化 NRC 还观察到无效原生句柄及访问异常，诊断时应单独进程运行该测试。
+因此 ABI 布局与 shader warmup 通过不代表 NRC 完整运行验证通过。
+
+[PathTraceGuidesInlineParameters.h](../Source/Runtime/Render/Core/PathTraceGuidesInlineParameters.h) 定义标准/OpenPBR guides 共用的
+96 字节 inline ABI：40 字节主追踪参数加七路 guides 的 typed handle。
+不带 guides 的 OpenPBR 复用 40 字节 PathTraceInlineParameters；所有普通主追踪入口均由 ComputeKernel inline 提交。
+`PathTraceInlineRoot.hlsli` 集中声明根参数和 shader 访问器，SHaRC/NRC 嵌套根也复用该访问器。
+CPU 只编码一次不可变场景快照；已移到 inline 的 settings、输出、历史和 guides 在快照中清零，
+避免保存两份有效资源表示。几何、材质、光源、LUT 和 NTC 资源仍由快照及 ParameterWriter 保留。
+布局回归同时检查 inline 根与场景快照的 C++/SPIR-V 偏移；实际 guides 回归读取八路输出，
+检查有限 HDR、法线长度、roughness/depth 范围、静态 motion 和奇数尺寸 resize。
+
+[RealtimeLightingParameters.h](../Source/Runtime/Render/Core/RealtimeLightingParameters.h) 将 SceneRealtimeLighting 主入口迁到
+48 字节 inline ABI：共享 PathTraceInlineParameters 加环境 irradiance SH 的具名 buffer handle。
+材质、几何、LUT 和灯光沿用不可变场景快照；不再为该入口构造编号 binding 表或按贴图数量重建管线。
+OpenPBRDirectLighting 的灯光读取统一经过 gPathTraceLights，deferred 分箱算法保持原样。
+共享 CPU 编码器仅在实际需要时编码 ReGIR/PDF，避免普通 realtime 未分配这些资源时编码失败。
+`realtime_lighting_parameter_spirv_layout` 验证 mapped/native 字段布局；光度回归覆盖 lux/EV 等价、删灯、
+手动/HDR 输出与自动曝光，对照回归比较透视/正交下的 baseColor、shadingNormal 和最终着色。
+
+[DeferredShadingParameters.h](../Source/Runtime/Render/Core/DeferredShadingParameters.h) 定义 VisibilityBufferDeferred 的
+96 字节 inline 根和 304 字节不可变资源快照。直接与分箱入口共用 ABI，根中显式传递 binIndex、
+visibility/depth/domain、motion/deviceDepth 输出及场景快照地址。
+GPUScene 的八类 raster 视图编码为有界 BDA span，保留 offset/size/stride；分箱和 tile 数据也使用 span。
+灯光网格、环境、阴影、纹理反馈、sampler 和 stream 解码资源使用具名 typed handle，不再构造数字槽位表。
+每个材质类仅编码一份 inline 根，场景与 deferred 快照在批次内复用，借助 ComputeKernel.prepareIndirectBatch
+保留间接参数切片和各分类 kernel；各类写入互斥像素，阶段同步及取消/提交资源保留保持原契约。
+ScenePathTracePass 的普通、缓存与 deferred 入口均已使用 ComputeKernel，旧 ComputeProgram 数组与绑定表已移除。
+`deferred_shading_parameter_spirv_layout` 覆盖 direct/binned 的 mapped/native 根和资源快照字段偏移。

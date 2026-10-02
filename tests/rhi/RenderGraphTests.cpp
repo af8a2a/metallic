@@ -4,6 +4,7 @@
 #include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
+#include "Runtime/Render/GAPI/Vulkan/VulkanNRCWrapper.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -3529,6 +3530,51 @@ public:
     RenderGraphSharcStagesTest() { type = RHITestType::Rendering; name = "render_graph_sharc_stages_history_and_cancel"; }
     RHITestResult run(RHITestContext& context) override { return runPathTraceCacheStages(context, false); }
 };
+
+// Isolate SDK ownership from shader ABI and render-graph submission.
+class NRCContextLifecycleTest final : public RHITest {
+public:
+    NRCContextLifecycleTest() { type = RHITestType::Resource; name = "nrc_context_lifecycle"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+#if METALLIC_HAS_NRC
+        const char* enabled = std::getenv("METALLIC_TEST_NRC_CACHE");
+        if (!enabled || std::string_view(enabled) != "1") { return RHITestResult::skip("set METALLIC_TEST_NRC_CACHE=1 for NRC SDK lifecycle"); }
+        std::atomic_uint errors{0};
+        std::unique_ptr<render::Device> device;
+        auto created = render::createDevice({.applicationName = "NRC context lifecycle",
+            .enableValidation = context.enableValidation,
+            .validationSink = {[](void* target, const render::ValidationMessage& message) noexcept {
+                if (message.severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+                    ++*static_cast<std::atomic_uint*>(target);
+                }
+            }, &errors}}).transform([&](auto value) { device = std::move(value); });
+        if (!created) { return RHITestResult::fail("NRC lifecycle device creation failed"); }
+        const auto outcome = [&]() -> RHITestResult {
+            render::vulkan::NRCIntegration cache;
+            std::string log;
+            auto initialized = cache.initialize(*device, log);
+            if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip(log); }
+            if (!initialized) { return RHITestResult::fail(log); }
+            nrc::ContextSettings settings{};
+            settings.sceneBoundsMin = {-1, -1, -1};
+            settings.sceneBoundsMax = {1, 1, 1};
+            settings.frameDimensions = {64, 48};
+            settings.trainingDimensions = {64, 48};
+            if (!cache.configure(settings, *device, log)) { return RHITestResult::fail(log); }
+            if (!device->waitIdle()) { return RHITestResult::fail("NRC configure completion failed"); }
+            return RHITestResult::pass("NRC initialize/configure/destroy without any shader dispatch");
+        }();
+        device.reset();
+        if (errors != 0) { return RHITestResult::fail("NRC context-only lifecycle emitted " + std::to_string(errors.load()) + " Vulkan validation errors: " + outcome.message); }
+        return outcome;
+#else
+        (void)context;
+        return RHITestResult::skip("built without the NRC SDK");
+#endif
+    }
+};
+METALLIC_REGISTER_RHI_TEST(NRCContextLifecycleTest);
 
 class RenderGraphNRCStagesTest final : public RHITest {
 public:

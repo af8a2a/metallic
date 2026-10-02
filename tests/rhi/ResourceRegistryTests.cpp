@@ -1,3 +1,8 @@
+#include "Runtime/Render/Core/DeferredShadingParameters.h"
+#include "Runtime/Render/Core/RealtimeLightingParameters.h"
+#include "Runtime/Render/Core/PathTraceGuidesInlineParameters.h"
+#include "Runtime/Render/Core/NRCTraceParameters.h"
+#include "Runtime/Render/Core/SharcTraceParameters.h"
 #include "Runtime/Render/Core/PathTraceInlineParameters.h"
 #include "Runtime/Render/Core/RTXDITraceParameters.h"
 #include "Runtime/Render/Core/ShadowTraceParameters.h"
@@ -232,9 +237,15 @@ public:
             {"Metallic.ShadowTraceParameters", {FIELD(ShadowTraceParameters, settings), FIELD(ShadowTraceParameters, scene), FIELD(ShadowTraceParameters, streamScene), FIELD(ShadowTraceParameters, depth), FIELD(ShadowTraceParameters, penumbra), FIELD(ShadowTraceParameters, normal), FIELD(ShadowTraceParameters, viewZ), FIELD(ShadowTraceParameters, motion), FIELD(ShadowTraceParameters, shadow), FIELD(ShadowTraceParameters, materialTextureCount), FIELD(ShadowTraceParameters, ntcTextureSetCount)}},
             {"Metallic.RTXDITraceParameters", {FIELD(RTXDITraceParameters, settings), FIELD(RTXDITraceParameters, scene), FIELD(RTXDITraceParameters, output), FIELD(RTXDITraceParameters, reservoirCurrent), FIELD(RTXDITraceParameters, reservoirPrevious), FIELD(RTXDITraceParameters, positionCurrent), FIELD(RTXDITraceParameters, positionPrevious), FIELD(RTXDITraceParameters, normalCurrent), FIELD(RTXDITraceParameters, normalPrevious), FIELD(RTXDITraceParameters, noisyDiffuse), FIELD(RTXDITraceParameters, noisySpecular), FIELD(RTXDITraceParameters, normalRoughness), FIELD(RTXDITraceParameters, motionVectors), FIELD(RTXDITraceParameters, viewZ), FIELD(RTXDITraceParameters, baseColorMetalness), FIELD(RTXDITraceParameters, emissive)}},
             {"Metallic.PathTraceInlineParameters", {FIELD(PathTraceInlineParameters, resources), FIELD(PathTraceInlineParameters, settings), FIELD(PathTraceInlineParameters, output), FIELD(PathTraceInlineParameters, historyCurrent), FIELD(PathTraceInlineParameters, historyPrevious)}},
+            {"Metallic.SharcTraceParameters", {FIELD(SharcTraceParameters, path), FIELD(SharcTraceParameters, cacheSettings), FIELD(SharcTraceParameters, hashEntries), FIELD(SharcTraceParameters, accumulation), FIELD(SharcTraceParameters, resolved)}},
+            {"Metallic.NRCTraceParameters", {FIELD(NRCTraceParameters, path), FIELD(NRCTraceParameters, cacheSettings), FIELD(NRCTraceParameters, queryPath), FIELD(NRCTraceParameters, trainingPath), FIELD(NRCTraceParameters, vertices), FIELD(NRCTraceParameters, radiance), FIELD(NRCTraceParameters, counters)}},
+            {"Metallic.PathTraceGuidesInlineParameters", {FIELD(PathTraceGuidesInlineParameters, path), FIELD(PathTraceGuidesInlineParameters, albedo), FIELD(PathTraceGuidesInlineParameters, specularAlbedo), FIELD(PathTraceGuidesInlineParameters, normalRoughness), FIELD(PathTraceGuidesInlineParameters, motionVectors), FIELD(PathTraceGuidesInlineParameters, linearDepth), FIELD(PathTraceGuidesInlineParameters, specularHitDistance), FIELD(PathTraceGuidesInlineParameters, depth)}},
+            {"Metallic.RealtimeLightingParameters", {FIELD(RealtimeLightingParameters, path), FIELD(RealtimeLightingParameters, irradiance)}},
+            {"Metallic.DeferredShadingParameters", {FIELD(DeferredShadingParameters, path), FIELD(DeferredShadingParameters, resources), FIELD(DeferredShadingParameters, visibility), FIELD(DeferredShadingParameters, depth), FIELD(DeferredShadingParameters, domain), FIELD(DeferredShadingParameters, motion), FIELD(DeferredShadingParameters, deviceDepth), FIELD(DeferredShadingParameters, binIndex), FIELD(DeferredShadingParameters, padding)}},
+            {"Metallic.DeferredShadingResources", {FIELD(DeferredShadingResources, vertices), FIELD(DeferredShadingResources, meshlets), FIELD(DeferredShadingResources, records), FIELD(DeferredShadingResources, meshletVertices), FIELD(DeferredShadingResources, triangles), FIELD(DeferredShadingResources, geometries), FIELD(DeferredShadingResources, instances), FIELD(DeferredShadingResources, materials), FIELD(DeferredShadingResources, bins), FIELD(DeferredShadingResources, tiles), FIELD(DeferredShadingResources, irradiance), FIELD(DeferredShadingResources, specular), FIELD(DeferredShadingResources, gridParams), FIELD(DeferredShadingResources, gridLights), FIELD(DeferredShadingResources, gridCandidates), FIELD(DeferredShadingResources, gridCells), FIELD(DeferredShadingResources, gridIndices), FIELD(DeferredShadingResources, shadow), FIELD(DeferredShadingResources, shadowParams), FIELD(DeferredShadingResources, view), FIELD(DeferredShadingResources, streamRecords), FIELD(DeferredShadingResources, streamGroups), FIELD(DeferredShadingResources, streamPages), FIELD(DeferredShadingResources, streamTable), FIELD(DeferredShadingResources, frameInfo), FIELD(DeferredShadingResources, streamParams), FIELD(DeferredShadingResources, feedback), FIELD(DeferredShadingResources, sampler)}},
         };
 #undef FIELD
-        struct Program { const char* module; const char* entry; uint32_t layout; };
+        struct Program { const char* module; const char* entry; uint32_t layout; const char* define = nullptr; };
         const Program programs[] = {
             {"Features/PostProcess/FinalBlit", "finalBlitMain", 0},
             {"Features/PostProcess/FinalBlit", "finalBlitUvMain", 0},
@@ -320,6 +331,18 @@ public:
             {"Features/Lighting/ScreenSpaceShadows", "rayTracedShadowsMain", 47},
             {"Features/ReSTIR/SceneRTXDI", "sceneRtxdiMain", 48},
             {"Features/PathTracing/ScenePathTraceInline", "scenePathTraceMain", 49},
+            {"Features/PathTracing/OpenPBRRayQueryPathTrace", "openPbrRayQueryPathTraceMain", 49},
+            {"Features/PathTracing/ScenePathTraceGuides", "scenePathTraceGuidesMain", 52},
+            {"Features/Lighting/SceneRealtimeLighting", "sceneRealtimeLightingMain", 53},
+            {"Features/VisibilityBuffer/VisibilityBufferDeferred", "visibilityBufferDeferredMain", 54, "METALLIC_DEFERRED_LIGHT_GRID"},
+            {"Features/VisibilityBuffer/VisibilityBufferDeferred", "visibilityBufferDeferredBinnedMain", 54, "METALLIC_DEFERRED_LIGHT_GRID"},
+            {"Features/VisibilityBuffer/VisibilityBufferDeferred", "visibilityBufferDeferredMain", 55, "METALLIC_DEFERRED_LIGHT_GRID"},
+            {"Features/VisibilityBuffer/VisibilityBufferDeferred", "visibilityBufferDeferredBinnedMain", 55, "METALLIC_DEFERRED_LIGHT_GRID"},
+            {"Features/PathTracing/OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain", 52},
+            {"Features/PathTracing/ScenePathTraceSharc", "scenePathTraceMain", 50, "SHARC_UPDATE"},
+            {"Features/PathTracing/ScenePathTraceSharc", "scenePathTraceMain", 50, "SHARC_QUERY"},
+            {"Features/PathTracing/ScenePathTraceNRC", "scenePathTraceMain", 51, "NRC_UPDATE"},
+            {"Features/PathTracing/ScenePathTraceNRC", "scenePathTraceMain", 51, "NRC_QUERY"},
             {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup32Main", 45},
             {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup64Main", 45},
             {"Features/GPUDriven/GPUDrivenStreamGroupRaster", "streamClusterRasterGroup128Main", 45},
@@ -330,8 +353,9 @@ public:
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout == 49 ? 35u : program.layout == 48 ? 34u : program.layout == 47 ? 33u : program.layout == 46 ? 32u : program.layout == 45 ? 31u : program.layout == 44 ? 30u : program.layout == 43 ? 29u : program.layout == 42 ? 28u : program.layout == 41 ? 27u : program.layout == 40 ? 26u : program.layout == 39 ? 25u : program.layout == 38 ? 24u : program.layout == 37 ? 23u : program.layout == 36 ? 22u : program.layout == 35 ? 21u : program.layout == 34 ? 20u : program.layout == 33 ? 19u : program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
-                const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
+                if ((program.layout >= 54 ? 40u : program.layout == 53 ? 39u : program.layout == 52 ? 38u : program.layout == 51 ? 37u : program.layout == 50 ? 36u : program.layout == 49 ? 35u : program.layout == 48 ? 34u : program.layout == 47 ? 33u : program.layout == 46 ? 32u : program.layout == 45 ? 31u : program.layout == 44 ? 30u : program.layout == 43 ? 29u : program.layout == 42 ? 28u : program.layout == 41 ? 27u : program.layout == 40 ? 26u : program.layout == 39 ? 25u : program.layout == 38 ? 24u : program.layout == 37 ? 23u : program.layout == 36 ? 22u : program.layout == 35 ? 21u : program.layout == 34 ? 20u : program.layout == 33 ? 19u : program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"},
+                    {program.define ? program.define : "METALLIC_TEST_PARAMETER_LAYOUT", "1"}};
                 const char* capabilities[] = {"spvRayQueryKHR"};
                 std::span<const char* const> extraPaths;
 #if METALLIC_HAS_RTXCR
@@ -377,7 +401,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 35 ? "PathTraceInlineParameters.h" : category == 34 ? "RTXDITraceParameters.h" : category == 33 ? "ShadowTraceParameters.h" : category == 32 ? "StreamWorkloadParameters.h" : category == 31 ? "StreamRasterParameters.h" : category == 30 ? "HybridResolveParameters.h" : category == 29 ? "HybridRasterParameters.h" : category == 28 ? "HybridBinParameters.h" : category == 27 ? "StreamClusterCullParameters.h" : category == 26 ? "StreamClassifyParameters.h" : category == 25 ? "StreamCandidateParameters.h" : category == 24 ? "StreamBLASParameters.h" : category == 23 ? "StreamTLASParameters.h" : category == 22 ? "StreamActiveBuildParameters.h" : category == 21 ? "StreamTraversalParameters.h" : category == 20 ? "StreamPageTableParameters.h" : category == 19 ? "ResidentLODParameters.h" : category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 40 ? "DeferredShadingParameters.h" : category == 39 ? "RealtimeLightingParameters.h" : category == 38 ? "PathTraceGuidesInlineParameters.h" : category == 37 ? "NRCTraceParameters.h" : category == 36 ? "SharcTraceParameters.h" : category == 35 ? "PathTraceInlineParameters.h" : category == 34 ? "RTXDITraceParameters.h" : category == 33 ? "ShadowTraceParameters.h" : category == 32 ? "StreamWorkloadParameters.h" : category == 31 ? "StreamRasterParameters.h" : category == 30 ? "HybridResolveParameters.h" : category == 29 ? "HybridRasterParameters.h" : category == 28 ? "HybridBinParameters.h" : category == 27 ? "StreamClusterCullParameters.h" : category == 26 ? "StreamClassifyParameters.h" : category == 25 ? "StreamCandidateParameters.h" : category == 24 ? "StreamBLASParameters.h" : category == 23 ? "StreamTLASParameters.h" : category == 22 ? "StreamActiveBuildParameters.h" : category == 21 ? "StreamTraversalParameters.h" : category == 20 ? "StreamPageTableParameters.h" : category == 19 ? "ResidentLODParameters.h" : category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -1463,6 +1487,35 @@ public:
     PathTraceInlineLayoutTest() { category = 35; name = "path_trace_inline_parameter_spirv_layout"; }
 };
 METALLIC_REGISTER_RHI_TEST(PathTraceInlineLayoutTest);
+class SharcTraceLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    SharcTraceLayoutTest() { category = 36; name = "sharc_trace_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(SharcTraceLayoutTest);
+class NRCTraceLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    NRCTraceLayoutTest() { category = 37; name = "nrc_trace_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(NRCTraceLayoutTest);
+class PathTraceGuidesInlineLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    PathTraceGuidesInlineLayoutTest() { category = 38; name = "path_trace_guides_inline_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(PathTraceGuidesInlineLayoutTest);
+class RealtimeLightingLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    RealtimeLightingLayoutTest() { category = 39; name = "realtime_lighting_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(RealtimeLightingLayoutTest);
+class DeferredShadingLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    DeferredShadingLayoutTest() { category = 40; name = "deferred_shading_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(DeferredShadingLayoutTest);
+
+
+
+
 
 
 

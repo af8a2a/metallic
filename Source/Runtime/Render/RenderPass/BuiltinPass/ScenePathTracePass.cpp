@@ -1,3 +1,8 @@
+#include "Runtime/Render/Core/DeferredShadingParameters.h"
+#include "Runtime/Render/Core/RealtimeLightingParameters.h"
+#include "Runtime/Render/Core/PathTraceGuidesInlineParameters.h"
+#include "Runtime/Render/Core/NRCTraceParameters.h"
+#include "Runtime/Render/Core/SharcTraceParameters.h"
 #include "Runtime/Render/Core/PathTraceInlineParameters.h"
 #include "Runtime/Render/Core/PathTraceParameters.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
@@ -801,7 +806,7 @@ public:
     {
         // Resource-only graph rebuilds reuse compiled passes. Deferred compile-time
         // settings must rebuild their matching shader and descriptor variants.
-        if (visibilityDeferred_ && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
+        if (visibilityDeferred_ && typedPathTraceProgram_.valid() &&
             (compiledMaterialBinning_ != boolProperty(properties(), "materialBinning", true) ||
                 compiledSupplementaryPathTracing_ != boolProperty(properties(), "supplementaryPathTracing", false) ||
                 compiledRealtimeDeferred_ != (properties().value("lightingMode", "reference") == "realtime") ||
@@ -908,9 +913,8 @@ public:
 #endif
         }
         cacheMode_ = cacheMode;
-        const bool typedPathTrace = !realtime_ && !visibilityDeferred_ && cacheMode == kScenePathTraceCacheModeOff;
-        const bool inlinePathTrace = typedPathTrace && !useOpenPBR && !exportGuides;
-        if (inlinePathTrace) { moduleName = "Features/PathTracing/ScenePathTraceInline"; }
+        const bool standardInlinePathTrace = !useOpenPBR && !exportGuides;
+        if (standardInlinePathTrace) { moduleName = "Features/PathTracing/ScenePathTraceInline"; }
 
         if (!cacheWarning.empty()) {
             log += cacheWarning;
@@ -923,7 +927,6 @@ public:
             "|streamMaterials=" + (streamMaterials_ ? "1" : "0") +
             "|streamRayQueries=" + (streamRayQueries_ ? "1" : "0") +
             "|supplementaryPathTracing=" + (supplementaryPathTracing ? "1" : "0") +
-            "|textureCount=" + std::to_string(typedPathTrace ? 0 : sceneResources_.materialTextureCount()) +
             "|view=" + (globalView ? "1" : "0") +
             "|cache=" + std::to_string(cacheMode_) +
             "|ntc=" + (ntcActive ? "1" : "0") +
@@ -953,16 +956,16 @@ public:
             log += "Deferred material classification requires native wave32; disable materialBinning on this device\n";
             return makeError(Error::Unsupported);
         }
-        const bool baseReady = (typedPathTrace ? typedPathTraceProgram_.valid() : programs_[static_cast<size_t>(PathTracePermutation::Base)].valid()) &&
+        const bool baseReady = typedPathTraceProgram_.valid() &&
             (!classified || std::all_of(classifiedPrograms_.begin(), classifiedPrograms_.end(),
-                [](const ComputeProgram& program) { return program.valid(); }));
+                [](const ComputeKernel& program) { return program.valid(); }));
         const bool sharcReady = cacheMode_ != kScenePathTraceCacheModeSharc ||
-            (programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid() &&
-                programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid() &&
+            (sharcTracePrograms_[0].valid() &&
+                sharcTracePrograms_[1].valid() &&
                 sharcClearProgram_.valid() && sharcResolveProgram_.valid());
         const bool nrcReady = cacheMode_ != kScenePathTraceCacheModeNRC ||
-            (programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)].valid() &&
-                programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)].valid() &&
+            (nrcTracePrograms_[0].valid() &&
+                nrcTracePrograms_[1].valid() &&
                 tonemapProgram_.valid());
         if (baseReady && sharcReady && nrcReady) {
             return {};
@@ -987,189 +990,12 @@ public:
             capabilities.push_back("spvCooperativeVectorNV");
         }
 
-        std::vector<ComputeProgramBindingDesc> baseBindings;
-        if (!typedPathTrace) {
-            baseBindings = {
-                ComputeProgramBindingDesc{.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
-                ComputeProgramBindingDesc{
-                    .binding = 0,
-                    .kind = ComputeResourceBindingKind::AccelerationStructure,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 1,
-                    .kind = ComputeResourceBindingKind::StorageImage,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 2,
-                    .kind = ComputeResourceBindingKind::DataBuffer,
-                    .dataStride = 16, .dataAlignment = 8,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 3,
-                    .kind = ComputeResourceBindingKind::DataBuffer,
-                    .dataStride = 4, .dataAlignment = 4,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 4,
-                    .kind = ComputeResourceBindingKind::DataBuffer,
-                    .dataStride = 32, .dataAlignment = 4,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 5,
-                    .kind = ComputeResourceBindingKind::DataBuffer,
-                    .dataStride = 16, .dataAlignment = 4,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 6,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 7,
-                    .kind = ComputeResourceBindingKind::StorageImage,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 8,
-                    .kind = ComputeResourceBindingKind::StorageImage,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 9,
-                    .kind = ComputeResourceBindingKind::SampledImage,
-                    .descriptorCount = sceneResources_.materialTextureCount(),
-                },
-                ComputeProgramBindingDesc{
-                    .binding = 10,
-                    .kind = ComputeResourceBindingKind::SampledImage,
-                },
-                ComputeProgramBindingDesc{
-                    .binding = kEnvironmentImportancePdfBinding,
-                    .kind = ComputeResourceBindingKind::SampledImage,
-                },
-            };
-            if (!positionFetch && !streamMaterials_) {
-                baseBindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 12, .dataAlignment = 4});
-            }
-            if (realtime_) {
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-            }
-            if (supplementaryPathTracing || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
-                baseBindings.push_back({.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer});
-                baseBindings.push_back({.binding = 53, .kind = ComputeResourceBindingKind::SampledImage});
-            }
-            if (visibilityDeferred_) {
-                for (uint32_t binding = 75; binding <= 79; ++binding) {
-                    baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
-                }
-                if (globalView) { baseBindings.push_back({.binding = 80, .kind = ComputeResourceBindingKind::StorageBuffer}); }
-                if (properties().value("lightingMode", "reference") == "realtime") {
-                    baseBindings.push_back({.binding = 74, .kind = ComputeResourceBindingKind::StorageBuffer});
-                    baseBindings.push_back({.binding = 81, .kind = ComputeResourceBindingKind::SampledImage});
-                    baseBindings.push_back({.binding = 82, .kind = ComputeResourceBindingKind::StorageBuffer});
-                }
-                if (boolProperty(properties(), "exportUpscalerGuides", false)) {
-                    baseBindings.push_back({.binding = 72, .kind = ComputeResourceBindingKind::StorageImage});
-                    baseBindings.push_back({.binding = 73, .kind = ComputeResourceBindingKind::StorageImage});
-                }
-                baseBindings.push_back({.binding = 60, .kind = ComputeResourceBindingKind::SampledImage});
-                baseBindings.push_back({.binding = 61, .kind = ComputeResourceBindingKind::SampledImage});
-                baseBindings.push_back({.binding = 88, .kind = ComputeResourceBindingKind::SampledImage});
-                for (uint32_t binding = 62; binding <= 69; ++binding) {
-                    baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
-                }
-                baseBindings.push_back({.binding = 94, .kind = ComputeResourceBindingKind::StorageBuffer});
-                baseBindings.push_back({.binding = 95, .kind = ComputeResourceBindingKind::StorageBuffer});
-                baseBindings.push_back({.binding = 96, .kind = ComputeResourceBindingKind::Sampler});
-                for (uint32_t binding = 83; binding <= 87; ++binding) {
-                    baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
-                }
-                if (materialBinningEnabled(properties())) {
-                    baseBindings.push_back({.binding = 70, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
-                    baseBindings.push_back({.binding = 71, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
-                }
-            }
-            if (useOpenPBR) {
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kOpenPBRLut2DBinding,
-                    .kind = ComputeResourceBindingKind::SampledImage,
-                    .descriptorCount = kOpenPBRLut2DCount,
-                });
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kOpenPBRLut3DBinding,
-                    .kind = ComputeResourceBindingKind::SampledImage,
-                    .descriptorCount = kOpenPBRLut3DCount,
-                });
-            }
-            if (exportGuides) {
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kDLSSRRAlbedoBinding,
-                    .kind = ComputeResourceBindingKind::StorageImage,
-                });
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kDLSSRRSpecularAlbedoBinding,
-                    .kind = ComputeResourceBindingKind::StorageImage,
-                });
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kDLSSRRNormalRoughnessBinding,
-                    .kind = ComputeResourceBindingKind::StorageImage,
-                });
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kDLSSRRMotionVectorsBinding,
-                    .kind = ComputeResourceBindingKind::StorageImage,
-                });
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kDLSSRRLinearDepthBinding,
-                    .kind = ComputeResourceBindingKind::StorageImage,
-                });
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kDLSSRRSpecularHitDistanceBinding,
-                    .kind = ComputeResourceBindingKind::StorageImage,
-                });
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kDLSSDepthBinding,
-                    .kind = ComputeResourceBindingKind::StorageImage,
-                });
-            }
-            if (ntcActive) {
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kNeuralTextureLatentsBinding,
-                    .kind = ComputeResourceBindingKind::SampledImage,
-                    .descriptorCount = kMaxNeuralTextureSets,
-                });
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kNeuralTextureConstantsBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kNeuralTextureWeightsBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kNeuralTextureSetInfoBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                baseBindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kNeuralTextureSamplerBinding,
-                    .kind = ComputeResourceBindingKind::Sampler,
-                });
-            }
-
-            if (streamMaterials_) {
-                std::erase_if(baseBindings, [this](const auto& binding) {
-                    return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
-                });
-            }
-            if (hasValuePrograms()) {
-                baseBindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
-            }
-        }
         auto compilePermutation =
             [&](PathTracePermutation permutation,
                 std::span<const SlangMacroDefine> extraDefines,
-                const std::vector<ComputeProgramBindingDesc>& permutationBindings,
-                ComputeProgram& outProgram) -> Result<> {
+                ComputeKernel& outProgram) -> Result<> {
             std::vector<SlangMacroDefine> defines{
-                {.name = "METALLIC_PATH_TRACE_TYPED", .value = typedPathTrace ? "1" : "0"},
+                {.name = "METALLIC_PATH_TRACE_TYPED", .value = "1"},
                 {.name = "METALLIC_CUSTOM_MATERIALS", .value = hasValuePrograms() ? "1" : "0"},
                 {.name = "METALLIC_STREAM_MATERIALS", .value = streamMaterials_ ? "1" : "0"},
                 {.name = "METALLIC_STREAM_RAY_QUERIES", .value = streamRayQueries_ ? "1" : "0"},
@@ -1213,19 +1039,28 @@ public:
             std::shared_ptr<const MaterialExecutableArtifact> artifact;
             const std::string debugName = std::string("ScenePathTracePass.") + toString(permutation);
             std::string diagnostics;
-            const SlangShaderDesc source{.moduleName = moduleName, .entryPointName = entryPointName,
+            const bool sharcTrace = permutation == PathTracePermutation::SharcUpdate || permutation == PathTracePermutation::SharcQuery;
+            const bool nrcTrace = permutation == PathTracePermutation::NRCUpdate || permutation == PathTracePermutation::NRCQuery;
+            const SlangShaderDesc source{.moduleName = sharcTrace ? "Features/PathTracing/ScenePathTraceSharc" : nrcTrace ? "Features/PathTracing/ScenePathTraceNRC" : moduleName, .entryPointName = entryPointName,
                 .searchPath = kTriangleShaderSearchPath, .additionalSearchPaths = additionalSearchPaths,
                 .capabilities = capabilities, .macroDefines = defines};
-            auto compiled = typedPathTrace
+            auto compiled = nrcTrace
                 ? compileMaterialExecutable(*context.device, source,
-                    ComputeKernelDesc{.parameters = inlinePathTrace
-                        ? parameterAbi<PathTraceInlineParameters>(kPathTraceInlineABI, ParameterTransport::InlinePush)
-                        : parameterAbi<PathTraceParameters>(kPathTraceABI),
-                        .debugName = debugName.c_str()}, typedPathTraceProgram_, artifact, diagnostics)
+                    ComputeKernelDesc{.parameters = parameterAbi<NRCTraceParameters>(kNRCTraceABI, ParameterTransport::InlinePush),
+                        .debugName = debugName.c_str()}, nrcTracePrograms_[permutation == PathTracePermutation::NRCUpdate ? 0 : 1], artifact, diagnostics)
+                : sharcTrace
+                ? compileMaterialExecutable(*context.device, source,
+                    ComputeKernelDesc{.parameters = parameterAbi<SharcTraceParameters>(kSharcTraceABI, ParameterTransport::InlinePush),
+                        .debugName = debugName.c_str()}, sharcTracePrograms_[permutation == PathTracePermutation::SharcUpdate ? 0 : 1], artifact, diagnostics)
                 : compileMaterialExecutable(*context.device, source,
-                    ComputeProgramDesc{.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
-                        .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get()},
-                    outProgram, artifact, diagnostics);
+                    ComputeKernelDesc{.parameters = visibilityDeferred_
+                        ? parameterAbi<DeferredShadingParameters>(kDeferredShadingABI, ParameterTransport::InlinePush)
+                        : realtime_
+                        ? parameterAbi<RealtimeLightingParameters>(kRealtimeLightingABI, ParameterTransport::InlinePush)
+                        : exportGuides
+                        ? parameterAbi<PathTraceGuidesInlineParameters>(kPathTraceGuidesInlineABI, ParameterTransport::InlinePush)
+                        : parameterAbi<PathTraceInlineParameters>(kPathTraceInlineABI, ParameterTransport::InlinePush),
+                        .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get()}, outProgram, artifact, diagnostics);
             if (!diagnostics.empty()) { log += diagnostics + '\n'; }
             if (!compiled) {
                 // Reload creates replacement passes. Reject the entire transaction
@@ -1241,22 +1076,12 @@ public:
             return {};
         };
 
-        const std::vector<ComputeProgramBindingDesc> cacheBindings = [baseBindings]() {
-            std::vector<ComputeProgramBindingDesc> bindings = baseBindings;
-            bindings.push_back(ComputeProgramBindingDesc{
-                .binding = kScenePathTraceCacheParamsBinding,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            return bindings;
-        }();
-
-        if (!(typedPathTrace ? typedPathTraceProgram_.valid() : programs_[static_cast<size_t>(PathTracePermutation::Base)].valid())) {
+        if (!typedPathTraceProgram_.valid()) {
             const SlangMacroDefine transmissionClass[] = {{"MATERIAL_CLASS", "4"}};
             result = compilePermutation(
                 PathTracePermutation::Base,
                 classified ? std::span<const SlangMacroDefine>(transmissionClass) : std::span<const SlangMacroDefine>{},
-                baseBindings,
-                programs_[static_cast<size_t>(PathTracePermutation::Base)]);
+                typedPathTraceProgram_);
             if (!result) {
                 return result;
             }
@@ -1268,39 +1093,21 @@ public:
                 if (classifiedPrograms_[type].valid()) { continue; }
                 const std::string typeValue = std::to_string(type);
                 const SlangMacroDefine classDefine[] = {{"MATERIAL_CLASS", typeValue.c_str()}};
-                result = compilePermutation(PathTracePermutation::Base, classDefine, baseBindings, classifiedPrograms_[type]);
+                result = compilePermutation(PathTracePermutation::Base, classDefine, classifiedPrograms_[type]);
                 if (!result) { return result; }
             }
         }
 
         if (errorProgram_.valid()) { return {}; }
         if (cacheMode_ == kScenePathTraceCacheModeSharc) {
-            const std::vector<ComputeProgramBindingDesc> sharcBindings = [cacheBindings]() {
-                std::vector<ComputeProgramBindingDesc> bindings = cacheBindings;
-                bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceSharcHashEntriesBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceSharcAccumulationBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceSharcResolvedBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                return bindings;
-            }();
-
             const std::array<SlangMacroDefine, 1> sharcUpdateDefines{
                 SlangMacroDefine{.name = "SHARC_UPDATE", .value = "1"},
             };
-            if (!programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid()) {
+            if (!sharcTracePrograms_[0].valid()) {
                 result = compilePermutation(
                     PathTracePermutation::SharcUpdate,
                     sharcUpdateDefines,
-                    sharcBindings,
-                    programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)]);
+                        sharcTracePrograms_[0]);
                 if (!result) {
                     return result;
                 }
@@ -1309,12 +1116,11 @@ public:
             const std::array<SlangMacroDefine, 1> sharcQueryDefines{
                 SlangMacroDefine{.name = "SHARC_QUERY", .value = "1"},
             };
-            if (!programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid()) {
+            if (!sharcTracePrograms_[1].valid()) {
                 result = compilePermutation(
                     PathTracePermutation::SharcQuery,
                     sharcQueryDefines,
-                    sharcBindings,
-                    programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)]);
+                        sharcTracePrograms_[1]);
                 if (!result) {
                     return result;
                 }
@@ -1383,40 +1189,14 @@ public:
 
 #if METALLIC_HAS_NRC
         if (cacheMode_ == kScenePathTraceCacheModeNRC) {
-            const std::vector<ComputeProgramBindingDesc> nrcBindings = [cacheBindings]() {
-                std::vector<ComputeProgramBindingDesc> bindings = cacheBindings;
-                bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceNRCQueryPathInfoBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceNRCTrainingPathInfoBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceNRCTrainingPathVerticesBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceNRCQueryRadianceParamsBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                bindings.push_back(ComputeProgramBindingDesc{
-                    .binding = kScenePathTraceNRCCountersBinding,
-                    .kind = ComputeResourceBindingKind::StorageBuffer,
-                });
-                return bindings;
-            }();
-
             const std::array<SlangMacroDefine, 1> nrcUpdateDefines{
                 SlangMacroDefine{.name = "NRC_UPDATE", .value = "1"},
             };
-            if (!programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)].valid()) {
+            if (!nrcTracePrograms_[0].valid()) {
                 result = compilePermutation(
                     PathTracePermutation::NRCUpdate,
                     nrcUpdateDefines,
-                    nrcBindings,
-                    programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)]);
+                        nrcTracePrograms_[0]);
                 if (!result) {
                     return result;
                 }
@@ -1425,12 +1205,11 @@ public:
             const std::array<SlangMacroDefine, 1> nrcQueryDefines{
                 SlangMacroDefine{.name = "NRC_QUERY", .value = "1"},
             };
-            if (!programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)].valid()) {
+            if (!nrcTracePrograms_[1].valid()) {
                 result = compilePermutation(
                     PathTracePermutation::NRCQuery,
                     nrcQueryDefines,
-                    nrcBindings,
-                    programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)]);
+                        nrcTracePrograms_[1]);
                 if (!result) {
                     return result;
                 }
@@ -1600,9 +1379,6 @@ public:
         const auto& materialTextureViews = sceneResources_.materialTextureViews();
         TextureView* environmentTextureView = environment.radianceView;
         TextureView* environmentImportancePdfView = environment.pdfView;
-        TextureView* const environmentTextureViews[] = {environmentTextureView};
-        TextureView* const environmentImportancePdfViews[] = {environmentImportancePdfView};
-        TextureView* const punctualPdfViews[] = {lights_.lightPdfView()};
         const bool useOpenPBR = useOpenPBRBsdf(properties());
         const bool exportGuides = exportDenoiserGuides(properties());
         TextureHandle albedo = exportGuides ? context.outputTexture("albedo") : TextureHandle{};
@@ -1614,28 +1390,22 @@ public:
         TextureHandle depth = exportGuides ? context.outputTexture("depth") : TextureHandle{};
 
         uint32_t cacheMode = cacheMode_;
-        ComputeProgram* renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
         if (cacheMode == kScenePathTraceCacheModeSharc) {
-            if (!programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)].valid() ||
-                !programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)].valid() ||
+            if (!sharcTracePrograms_[1].valid() ||
+                !sharcTracePrograms_[0].valid() ||
                 !sharcClearProgram_.valid() ||
                 !sharcResolveProgram_.valid()) {
                 cacheMode = kScenePathTraceCacheModeOff;
-                renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
-            } else {
-                renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::SharcQuery)];
             }
         } else if (cacheMode == kScenePathTraceCacheModeNRC) {
 #if METALLIC_HAS_NRC
-            if (!programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)].valid() ||
-                !programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)].valid() ||
+            if (!nrcTracePrograms_[1].valid() ||
+                !nrcTracePrograms_[0].valid() ||
                 !tonemapProgram_.valid()) {
                 cacheMode = kScenePathTraceCacheModeOff;
-                renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
             }
 #else
             cacheMode = kScenePathTraceCacheModeOff;
-            renderProgram = &programs_[static_cast<size_t>(PathTracePermutation::Base)];
 #endif
         }
         cacheMode_ = cacheMode;
@@ -1643,8 +1413,7 @@ public:
 
         if (!color.valid() ||
             color.view() == nullptr ||
-            renderProgram == nullptr ||
-            (!renderProgram->valid() && !typedPathTraceProgram_.valid()) ||
+            !typedPathTraceProgram_.valid() ||
             !sceneResources_.valid() ||
             materialTextureViews[0] == nullptr ||
             environmentTextureView == nullptr ||
@@ -1825,280 +1594,135 @@ public:
             }
         }
 
-        profile.next("Prepare dispatch bindings");
-        MaterialBinningResult materialBins;
-        ScreenSpaceShadowResult shadow;
-        std::vector<ComputeDispatchBinding> bindings;
-        if (!typedPathTraceProgram_.valid()) {
-            bindings = {
-                ComputeDispatchBinding{.binding = 50, .buffer = lights_.buffer()},
-                ComputeDispatchBinding{
-                    .binding = 0,
-                    .accelerationStructure =
-                        context.inputAccelerationStructure("accelerationStructure")
-                            ? context.inputAccelerationStructure("accelerationStructure")
-                            : sceneResources_.accelerationStructure().accelerationStructure(),
-                },
-                ComputeDispatchBinding{
-                    .binding = 1,
-                    .textureView = color.view(),
-                },
-                ComputeDispatchBinding{
-                    .binding = 2,
-                    .buffer = sceneResources_.shadingVertexBuffer(),
-                },
-                ComputeDispatchBinding{
-                    .binding = 3,
-                    .buffer = sceneResources_.indexBuffer(),
-                },
-                ComputeDispatchBinding{
-                    .binding = 4,
-                    .buffer = sceneResources_.primitiveBuffer(),
-                },
-                ComputeDispatchBinding{
-                    .binding = 5,
-                    .buffer = sceneResources_.instanceBuffer(),
-                },
-                ComputeDispatchBinding{
-                    .binding = 6,
-                    .buffer = sceneResources_.materialBuffer(),
-                },
-                ComputeDispatchBinding{
-                    .binding = 7,
-                    .textureView = historyCurrentView,
-                },
-                ComputeDispatchBinding{
-                    .binding = 8,
-                    .textureView = historyPreviousView,
-                },
-                ComputeDispatchBinding{
-                    .binding = 9,
-                    .textureViews = materialTextureViews,
-                    // Streaming publishes a new immutable snapshot after mip changes;
-                    // completed descriptor tables reuse unchanged image bindings.
-                    .sampledImages = visibilityDeferred_ ? sceneResources_.materialTextureSnapshot() : nullptr,
-                },
-                ComputeDispatchBinding{
-                    .binding = 10,
-                    .textureViews = {environmentTextureViews, static_cast<uint32_t>(std::size(environmentTextureViews))},
-                },
-                ComputeDispatchBinding{
-                    .binding = kEnvironmentImportancePdfBinding,
-                    .textureViews = {environmentImportancePdfViews, static_cast<uint32_t>(std::size(environmentImportancePdfViews))},
-                },
-            };
-            if (sceneResources_.fallbackPositionBuffer() != nullptr) {
-                bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
+        const auto encodePathTraceResources = [&](ParameterWriter& writer) {
+            writer.retain(std::make_shared<ScenePathTraceResources>(sceneResources_));
+            PathTraceParameters params{};
+            params.settings = writer.data(&push, sizeof(push));
+            params.output = writer.storageImage(color.view());
+            if (!streamMaterials_ || streamRayQueries_) {
+                auto* acceleration = context.inputAccelerationStructure("accelerationStructure");
+                if (!acceleration) { acceleration = streamMaterials_ ? deferredStream->accelerationStructure
+                    : sceneResources_.accelerationStructure().accelerationStructure(); }
+                params.scene = writer.accelerationStructure(acceleration);
             }
-            if (hasValuePrograms()) {
-                bindings.push_back({.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()});
-            }
-            if (streamMaterials_) {
-                std::erase_if(bindings, [this](const auto& binding) {
-                    return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
-                });
-            }
-            if (realtime_) {
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,
-                });
-            }
-            if (compiledSupplementaryPathTracing_ || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
-                bindings.push_back({.binding = 52, .buffer = lights_.reGIRBuffer()});
-                bindings.push_back({.binding = 53, .textureViews = {punctualPdfViews, 1}});
-            }
-            if (visibilityDeferred_) {
-                if (context.viewConstantsBuffer() != nullptr) {
-                    bindings.push_back({.binding = 80, .buffer = context.viewConstantsBuffer()});
-                }
-                const std::array<Buffer*, 5> gridBuffers{deferredGrid->parameters, deferredGrid->lights,
-                    deferredGrid->candidates, deferredGrid->cells, deferredGrid->lightIndices};
-                for (uint32_t i = 0; i < gridBuffers.size(); ++i) {
-                    bindings.push_back({.binding = 75 + i, .buffer = gridBuffers[i]});
-                }
-                if (context.properties().value("lightingMode", "reference") == "realtime") {
-                    bindings.push_back({.binding = 74, .buffer = environment.prefilteredSpecularBuffer});
-                    const auto externalShadow = context.inputTexture("shadow");
-                    const auto externalParameters = context.inputBuffer("shadowParameters");
-                    if (externalShadow.valid() != externalParameters.valid()) {
-                        spdlog::error("Deferred shadows require both shadow and shadowParameters inputs");
-                        return makeError(Error::InvalidArgument);
-                    }
-                    if (externalShadow.valid()) {
-                        if (externalShadow.desc().width != context.width() || externalShadow.desc().height != context.height() ||
-                            externalParameters.desc().size != sizeof(ScreenSpaceShadowParameters)) {
-                            return makeError(Error::InvalidArgument);
-                        }
-                        shadow = {.texture = externalShadow.texture(), .shadow = externalShadow.view(),
-                            .parameters = externalParameters.buffer()};
-                    } else {
-                        CPUProfileScope shadowProfile(profiler, "Record inline shadows");
-                        // Preserve realtime graphs authored before the explicit shadow stage.
-                        if (context.streamer() == nullptr) { return makeError(Error::InvalidArgument); }
-                        ViewConstants shadowView{};
-                        if (const auto* view = context.viewConstants()) {
-                            shadowView = *view;
-                        } else {
-                            std::memcpy(&shadowView.current, push.eye, sizeof(ViewCameraConstants));
-                            std::memcpy(&shadowView.previous, push.previousEye, sizeof(ViewCameraConstants));
-                            shadowView.jitter[0] = push.jitterOffsetX;
-                            shadowView.jitter[1] = push.jitterOffsetY;
-                            shadowView.jitter[2] = previousShadowJitter_[0];
-                            shadowView.jitter[3] = previousShadowJitter_[1];
-                            shadowView.frame[0] = push.sampleFrame;
-                            shadowView.frame[1] = push.previousCameraValid;
-                            shadowView.frame[2] = push.temporalJitter;
-                        }
-                        const auto settings = screenSpaceShadowSettings(context.properties());
-                        const auto lightRecords = buildScreenSpaceShadowLightRecords(lightScene, resolvedLighting);
-                        std::string shadowLog;
-                        result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(), *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(), lightScene->transformRevision(), settings, shadowLog, &sceneResources_, streamMaterials_ ? deferredStream : nullptr, profiler, context.inputAccelerationStructure("accelerationStructure")).transform([&](auto value) { shadow = std::move(value); });
-                        if (!result) { spdlog::error("Ray-traced shadows: {} ({})", shadowLog, resultToString(result)); return result; }
-                        previousShadowJitter_ = {shadowView.jitter[0], shadowView.jitter[1]};
-                    }
-                    bindings.push_back({.binding = 81, .textureViews = {&shadow.shadow, 1}});
-                    bindings.push_back({.binding = 82, .buffer = shadow.parameters});
-                }
-                if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
-                    bindings.push_back({.binding = 72, .textureView = context.outputTexture("motionVectors").view()});
-                    bindings.push_back({.binding = 73, .textureView = context.outputTexture("deviceDepth").view()});
-                }
-                bindings.push_back({.binding = 60, .textureViews = {&visibilityView, 1}});
-                bindings.push_back({.binding = 61, .textureViews = {&visibilityDepthView, 1}});
-                bindings.push_back({.binding = 88, .textureViews = {&domainView, 1}});
-                const GPUSceneBufferView* views[] = {&deferredViews->vertices, &deferredViews->meshlets,
-                    &deferredViews->meshletDraws, &deferredViews->meshletVertices, &deferredViews->meshletTriangleWords,
-                    &deferredViews->geometries, &deferredViews->instances, &deferredViews->materials};
-                for (uint32_t i = 0; i < std::size(views); ++i) {
-                    const auto& view = views[i]->buffer ? *views[i] : deferredViews->geometries;
-                    bindings.push_back({
-                        .binding = 62 + i,
-                        .buffer = view.buffer,
-                        .range = {.offset = view.offset, .size = view.size},
-                    });
-                }
-                if (streamRayQueries_) {
-                    if (deferredStream == nullptr || deferredStream->accelerationStructure == nullptr) {
-                        spdlog::error("Stream BLEND/transmission requires enableClusterRtx=true and a ready stream TLAS");
-                        return makeError(Error::InvalidArgument);
-                    }
-                    auto* graphAcceleration = context.inputAccelerationStructure("accelerationStructure");
-                    for (auto& binding : bindings) {
-                        if (binding.binding == 0) { binding.accelerationStructure = graphAcceleration
-                            ? graphAcceleration : deferredStream->accelerationStructure; }
-                    }
-                    auto registry = device_->resourceRegistry();
-                    if (!registry) { return makeError(registry.error()); }
-                    ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
-                    auto encoded = deferredStream->encodeRayQueryParameters(writer);
-                    if (!encoded) { return makeError(encoded.error()); }
-                    result = encoded->bindResources(context.commandBuffer());
-                    if (!result) { return result; }
-                    push.streamScene = encoded->address();
-                }
-                Buffer* fallback = deferredViews->geometries.buffer;
-                bindings.push_back({.binding = 94, .buffer = deferredStream ? deferredStream->paramsBuffer : fallback});
-                bindings.push_back({.binding = 95, .buffer = textureFeedback});
-                bindings.push_back({.binding = 96, .sampler = &materialSampler_});
-                const std::array streamBuffers{
-                    deferredStream ? deferredStream->visibleClusterBuffer : fallback,
-                    deferredStream ? deferredStream->activeGroupBuffer : fallback,
-                    deferredStream ? deferredStream->pageBuffer : fallback,
-                    deferredStream ? deferredStream->pageTableBuffer : fallback, deferredFrameInfo};
-                for (uint32_t i = 0; i < streamBuffers.size(); ++i) {
-                    bindings.push_back({.binding = 83 + i, .buffer = streamBuffers[i]});
-                }
-                if (materialBinningEnabled(context.properties())) {
-                    CPUProfileScope binningProfile(profiler, "Record material binning");
-                    std::string binningLog;
-                    result = materialBinning_.record(*device_, context.commandBuffer(), {
-                        .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer
-                            ? deferredViews->meshletDraws.buffer : fallback,
-                        .instances = deferredViews->instances.buffer, .materials = deferredViews->materials.buffer,
-                        .shadingMaterials = sceneResources_.materialBuffer(),
-                        .width = push.width, .height = push.height,
-                        .streamRecords = deferredStream ? deferredStream->visibleClusterBuffer : nullptr,
-                        .streamGroups = deferredStream ? deferredStream->activeGroupBuffer : nullptr,
-                        .residentRecordCount = info.residentRecordCount}, binningLog).transform([&](auto value) { materialBins = std::move(value); });
-                    if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
-                    bindings.push_back({.binding = 70, .buffer = materialBins.bins});
-                    bindings.push_back({.binding = 71, .buffer = materialBins.tiles});
+            if (!streamMaterials_) {
+                params.vertices = writer.dataBuffer(sceneResources_.shadingVertexBuffer(), 16, 8);
+                params.indices = writer.dataBuffer(sceneResources_.indexBuffer(), 4, 4);
+                params.primitives = writer.dataBuffer(sceneResources_.primitiveBuffer(), 32, 4);
+                params.instances = writer.dataBuffer(sceneResources_.instanceBuffer(), 16, 4);
+                if (sceneResources_.fallbackPositionBuffer()) {
+                    params.positions = writer.dataBuffer(sceneResources_.fallbackPositionBuffer(), 12, 4);
                 }
             }
+            params.materials = writer.buffer(sceneResources_.materialBuffer());
+            params.historyCurrent = writer.storageImage(historyCurrentView);
+            params.historyPrevious = writer.storageImage(historyPreviousView);
+            params.materialTextures = writer.sampledImages(materialTextureViews);
+            params.environment = writer.sampledImage(environmentTextureView);
+            params.environmentPdf = writer.sampledImage(environmentImportancePdfView);
             if (useOpenPBR) {
-                const auto& lut2DViews = openPBRLuts_.lut2DViews();
-                const auto& lut3DViews = openPBRLuts_.lut3DViews();
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kOpenPBRLut2DBinding,
-                    .textureViews = lut2DViews,
-                });
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kOpenPBRLut3DBinding,
-                    .textureViews = lut3DViews,
-                });
+                params.lut2D = writer.sampledImages(openPBRLuts_.lut2DViews());
+                params.lut3D = writer.sampledImages(openPBRLuts_.lut3DViews());
+            }
+            params.lights = writer.buffer(lights_.buffer());
+            if (compiledSupplementaryPathTracing_ || !realtime_ ||
+                (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
+                params.reGIR = writer.buffer(lights_.reGIRBuffer());
+                params.punctualPdf = writer.sampledImage(lights_.lightPdfView());
             }
             if (exportGuides) {
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kDLSSRRAlbedoBinding,
-                    .textureView = albedo.view(),
-                });
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kDLSSRRSpecularAlbedoBinding,
-                    .textureView = specularAlbedo.view(),
-                });
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kDLSSRRNormalRoughnessBinding,
-                    .textureView = normalRoughness.view(),
-                });
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kDLSSRRMotionVectorsBinding,
-                    .textureView = motionVectors.view(),
-                });
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kDLSSRRLinearDepthBinding,
-                    .textureView = linearDepth.view(),
-                });
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kDLSSRRSpecularHitDistanceBinding,
-                    .textureView = specularHitDistance.view(),
-                });
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kDLSSDepthBinding,
-                    .textureView = depth.view(),
-                });
+                params.albedo = writer.storageImage(albedo.view());
+                params.specularAlbedo = writer.storageImage(specularAlbedo.view());
+                params.normalRoughness = writer.storageImage(normalRoughness.view());
+                params.motionVectors = writer.storageImage(motionVectors.view());
+                params.linearDepth = writer.storageImage(linearDepth.view());
+                params.specularHitDistance = writer.storageImage(specularHitDistance.view());
+                params.depth = writer.storageImage(depth.view());
             }
-            const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
-            if (neuralTextures.active()) {
-                const auto& latentViews = neuralTextures.latentTextureViews();
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kNeuralTextureLatentsBinding,
-                    .textureViews = latentViews,
-                });
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kNeuralTextureConstantsBinding,
-                    .buffer = neuralTextures.constantsBuffer(),
-                });
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kNeuralTextureWeightsBinding,
-                    .buffer = neuralTextures.weightsBuffer(),
-                });
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kNeuralTextureSetInfoBinding,
-                    .buffer = neuralTextures.setInfoBuffer(),
-                });
-                bindings.push_back(ComputeDispatchBinding{
-                    .binding = kNeuralTextureSamplerBinding,
-                    .sampler = &neuralTextures.latentSampler(),
-                });
+            if (hasValuePrograms()) { params.materialValues = writer.buffer(sceneResources_.materialBinding()->valueBuffer()); }
+            const auto& neural = sceneResources_.neuralTextures();
+            if (neural.active()) {
+                params.ntcLatents = writer.sampledImages(neural.latentTextureViews());
+                params.ntcConstants = writer.buffer(neural.constantsBuffer());
+                params.ntcWeights = writer.buffer(neural.weightsBuffer());
+                params.ntcInfo = writer.buffer(neural.setInfoBuffer());
+                params.ntcSampler = writer.sampler(neural.latentSampler());
             }
+            return params;
+        };
 
-        } // Legacy shared realtime/deferred/standard resource table.
-
-        profile.next("Prepare radiance cache parameters");
-        if (cacheMode != kScenePathTraceCacheModeOff) {
-            result = ensureCacheParamsBuffer(*device_);
-            if (!result) {
-                return result;
+        profile.next("Prepare deferred stages");
+        MaterialBinningResult materialBins;
+        ScreenSpaceShadowResult shadow;
+        if (visibilityDeferred_) {
+            if (context.properties().value("lightingMode", "reference") == "realtime") {
+                const auto externalShadow = context.inputTexture("shadow");
+                const auto externalParameters = context.inputBuffer("shadowParameters");
+                if (externalShadow.valid() != externalParameters.valid()) {
+                    spdlog::error("Deferred shadows require both shadow and shadowParameters inputs");
+                    return makeError(Error::InvalidArgument);
+                }
+                if (externalShadow.valid()) {
+                    if (externalShadow.desc().width != context.width() || externalShadow.desc().height != context.height() ||
+                        externalParameters.desc().size != sizeof(ScreenSpaceShadowParameters)) {
+                        return makeError(Error::InvalidArgument);
+                    }
+                    shadow = {.texture = externalShadow.texture(), .shadow = externalShadow.view(),
+                        .parameters = externalParameters.buffer()};
+                } else {
+                    CPUProfileScope shadowProfile(profiler, "Record inline shadows");
+                    // Preserve realtime graphs authored before the explicit shadow stage.
+                    if (context.streamer() == nullptr) { return makeError(Error::InvalidArgument); }
+                    ViewConstants shadowView{};
+                    if (const auto* view = context.viewConstants()) {
+                        shadowView = *view;
+                    } else {
+                        std::memcpy(&shadowView.current, push.eye, sizeof(ViewCameraConstants));
+                        std::memcpy(&shadowView.previous, push.previousEye, sizeof(ViewCameraConstants));
+                        shadowView.jitter[0] = push.jitterOffsetX;
+                        shadowView.jitter[1] = push.jitterOffsetY;
+                        shadowView.jitter[2] = previousShadowJitter_[0];
+                        shadowView.jitter[3] = previousShadowJitter_[1];
+                        shadowView.frame[0] = push.sampleFrame;
+                        shadowView.frame[1] = push.previousCameraValid;
+                        shadowView.frame[2] = push.temporalJitter;
+                    }
+                    const auto settings = screenSpaceShadowSettings(context.properties());
+                    const auto lightRecords = buildScreenSpaceShadowLightRecords(lightScene, resolvedLighting);
+                    std::string shadowLog;
+                    result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(), *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(), lightScene->transformRevision(), settings, shadowLog, &sceneResources_, streamMaterials_ ? deferredStream : nullptr, profiler, context.inputAccelerationStructure("accelerationStructure")).transform([&](auto value) { shadow = std::move(value); });
+                    if (!result) { spdlog::error("Ray-traced shadows: {} ({})", shadowLog, resultToString(result)); return result; }
+                    previousShadowJitter_ = {shadowView.jitter[0], shadowView.jitter[1]};
+                }
+            }
+            if (streamRayQueries_) {
+                if (deferredStream == nullptr || deferredStream->accelerationStructure == nullptr) {
+                    spdlog::error("Stream BLEND/transmission requires enableClusterRtx=true and a ready stream TLAS");
+                    return makeError(Error::InvalidArgument);
+                }
+                auto registry = device_->resourceRegistry();
+                if (!registry) { return makeError(registry.error()); }
+                ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
+                auto encoded = deferredStream->encodeRayQueryParameters(writer);
+                if (!encoded) { return makeError(encoded.error()); }
+                result = encoded->bindResources(context.commandBuffer());
+                if (!result) { return result; }
+                push.streamScene = encoded->address();
+            }
+            Buffer* fallback = deferredViews->geometries.buffer;
+            if (materialBinningEnabled(context.properties())) {
+                CPUProfileScope binningProfile(profiler, "Record material binning");
+                std::string binningLog;
+                result = materialBinning_.record(*device_, context.commandBuffer(), {
+                    .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer
+                        ? deferredViews->meshletDraws.buffer : fallback,
+                    .instances = deferredViews->instances.buffer, .materials = deferredViews->materials.buffer,
+                    .shadingMaterials = sceneResources_.materialBuffer(),
+                    .width = push.width, .height = push.height,
+                    .streamRecords = deferredStream ? deferredStream->visibleClusterBuffer : nullptr,
+                    .streamGroups = deferredStream ? deferredStream->activeGroupBuffer : nullptr,
+                    .residentRecordCount = info.residentRecordCount}, binningLog).transform([&](auto value) { materialBins = std::move(value); });
+                if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
             }
         }
 
@@ -2107,9 +1731,9 @@ public:
             result = executeSharcFrame(
                 context,
                 push,
-                bindings,
-                *renderProgram,
-                programs_[static_cast<size_t>(PathTracePermutation::SharcUpdate)]);
+                encodePathTraceResources,
+                sharcTracePrograms_[1],
+                sharcTracePrograms_[0]);
             if (!result) {
                 return result;
             }
@@ -2118,9 +1742,9 @@ public:
             result = executeNrcFrame(
                 context,
                 push,
-                bindings,
-                programs_[static_cast<size_t>(PathTracePermutation::NRCUpdate)],
-                programs_[static_cast<size_t>(PathTracePermutation::NRCQuery)],
+                encodePathTraceResources,
+                nrcTracePrograms_[0],
+                nrcTracePrograms_[1],
                 historyCurrentView,
                 historyPreviousView);
             if (!result) {
@@ -2145,99 +1769,121 @@ public:
                         auto registry = device_->resourceRegistry();
                         if (!registry) { return makeError(registry.error()); }
                         ParameterWriter writer(*device_, **registry, commands.frameContext());
-                        PathTraceParameters params{};
-                        params.settings = writer.data(&push, sizeof(push));
-                        params.scene = writer.accelerationStructure(context.inputAccelerationStructure("accelerationStructure")
-                            ? context.inputAccelerationStructure("accelerationStructure")
-                            : sceneResources_.accelerationStructure().accelerationStructure());
-                        params.output = writer.storageImage(color.view());
-                        params.vertices = writer.dataBuffer(sceneResources_.shadingVertexBuffer(), 16, 8);
-                        params.indices = writer.dataBuffer(sceneResources_.indexBuffer(), 4, 4);
-                        params.primitives = writer.dataBuffer(sceneResources_.primitiveBuffer(), 32, 4);
-                        params.instances = writer.dataBuffer(sceneResources_.instanceBuffer(), 16, 4);
-                        if (sceneResources_.fallbackPositionBuffer()) {
-                            params.positions = writer.dataBuffer(sceneResources_.fallbackPositionBuffer(), 12, 4);
-                        }
-                        params.materials = writer.buffer(sceneResources_.materialBuffer());
-                        params.historyCurrent = writer.storageImage(historyCurrentView);
-                        params.historyPrevious = writer.storageImage(historyPreviousView);
-                        params.materialTextures = writer.sampledImages(materialTextureViews);
-                        params.environment = writer.sampledImage(environmentTextureView);
-                        params.environmentPdf = writer.sampledImage(environmentImportancePdfView);
-                        if (useOpenPBR) {
-                            params.lut2D = writer.sampledImages(openPBRLuts_.lut2DViews());
-                            params.lut3D = writer.sampledImages(openPBRLuts_.lut3DViews());
-                        }
-                        params.lights = writer.buffer(lights_.buffer());
-                        params.reGIR = writer.buffer(lights_.reGIRBuffer());
-                        params.punctualPdf = writer.sampledImage(lights_.lightPdfView());
-                        if (exportGuides) {
-                            params.albedo = writer.storageImage(albedo.view());
-                            params.specularAlbedo = writer.storageImage(specularAlbedo.view());
-                            params.normalRoughness = writer.storageImage(normalRoughness.view());
-                            params.motionVectors = writer.storageImage(motionVectors.view());
-                            params.linearDepth = writer.storageImage(linearDepth.view());
-                            params.specularHitDistance = writer.storageImage(specularHitDistance.view());
-                            params.depth = writer.storageImage(depth.view());
-                        }
-                        if (hasValuePrograms()) { params.materialValues = writer.buffer(sceneResources_.materialBinding()->valueBuffer()); }
-                        const auto& neural = sceneResources_.neuralTextures();
-                        if (neural.active()) {
-                            params.ntcLatents = writer.sampledImages(neural.latentTextureViews());
-                            params.ntcConstants = writer.buffer(neural.constantsBuffer());
-                            params.ntcWeights = writer.buffer(neural.weightsBuffer());
-                            params.ntcInfo = writer.buffer(neural.setInfoBuffer());
-                            params.ntcSampler = writer.sampler(neural.latentSampler());
-                        }
+                        PathTraceParameters params = encodePathTraceResources(writer);
                         Result<EncodedParameters> encoded;
-                        if (!useOpenPBR && !exportGuides) {
-                            PathTraceInlineParameters root{};
-                            root.settings = params.settings;
-                            root.output = params.output;
-                            root.historyCurrent = params.historyCurrent;
-                            root.historyPrevious = params.historyPrevious;
-                            params.settings = 0;
-                            params.output = {};
-                            params.historyCurrent = {};
-                            params.historyPrevious = {};
+                        PathTraceInlineParameters root{};
+                        root.settings = params.settings;
+                        root.output = params.output;
+                        root.historyCurrent = params.historyCurrent;
+                        root.historyPrevious = params.historyPrevious;
+                        params.settings = 0;
+                        params.output = {};
+                        params.historyCurrent = {};
+                        params.historyPrevious = {};
+                        if (visibilityDeferred_) {
+                            DeferredShadingResources resources{};
+                            const GPUSceneBufferView* views[] = {&deferredViews->vertices, &deferredViews->meshlets,
+                                &deferredViews->meshletDraws, &deferredViews->meshletVertices, &deferredViews->meshletTriangleWords,
+                                &deferredViews->geometries, &deferredViews->instances, &deferredViews->materials};
+                            ShaderDataSpan* spans[] = {&resources.vertices, &resources.meshlets, &resources.records,
+                                &resources.meshletVertices, &resources.triangles, &resources.geometries,
+                                &resources.instances, &resources.materials};
+                            for (size_t i = 0; i < std::size(views); ++i) {
+                                const auto& view = *views[i];
+                                if (!view.buffer) { continue; }
+                                auto slice = view.buffer->slice({view.offset, view.size});
+                                if (!slice) { return makeError(slice.error()); }
+                                *spans[i] = writer.dataBuffer(*slice, view.structureStride, 4);
+                            }
+                            resources.irradiance = writer.buffer(environment.sphericalHarmonicsBuffer);
+                            resources.gridParams = writer.buffer(deferredGrid->parameters);
+                            resources.gridLights = writer.buffer(deferredGrid->lights);
+                            resources.gridCandidates = writer.buffer(deferredGrid->candidates);
+                            resources.gridCells = writer.buffer(deferredGrid->cells);
+                            resources.gridIndices = writer.buffer(deferredGrid->lightIndices);
+                            if (context.viewConstantsBuffer()) { resources.view = writer.buffer(context.viewConstantsBuffer()); }
+                            if (shadow.shadow) {
+                                resources.shadow = writer.sampledImage(shadow.shadow);
+                                resources.shadowParams = writer.buffer(shadow.parameters);
+                                resources.specular = writer.buffer(environment.prefilteredSpecularBuffer);
+                            }
+                            resources.frameInfo = writer.buffer(deferredFrameInfo);
+                            resources.feedback = writer.buffer(textureFeedback);
+                            resources.sampler = writer.sampler(materialSampler_);
+                            if (deferredStream) {
+                                resources.streamRecords = writer.buffer(deferredStream->visibleClusterBuffer);
+                                resources.streamGroups = writer.buffer(deferredStream->activeGroupBuffer);
+                                resources.streamPages = writer.buffer(deferredStream->pageBuffer);
+                                resources.streamTable = writer.buffer(deferredStream->pageTableBuffer);
+                                resources.streamParams = writer.buffer(deferredStream->paramsBuffer);
+                            }
+                            if (materialBins.arguments) {
+                                resources.bins = writer.dataBuffer(materialBins.bins, 8, 8);
+                                resources.tiles = writer.dataBuffer(materialBins.tiles, 8, 8);
+                            }
+                            DeferredShadingParameters deferred{};
+                            root.resources = writer.data(&params, sizeof(params));
+                            deferred.path = root;
+                            deferred.resources = writer.data(&resources, sizeof(resources));
+                            deferred.visibility = writer.sampledImage(visibilityView);
+                            deferred.depth = writer.sampledImage(visibilityDepthView);
+                            deferred.domain = writer.sampledImage(domainView);
+                            if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
+                                deferred.motion = writer.storageImage(context.outputTexture("motionVectors").view());
+                                deferred.deviceDepth = writer.storageImage(context.outputTexture("deviceDepth").view());
+                            }
+                            if (materialBins.arguments) {
+                                if (materialBins.binCount > kMaterialClassCount) { return makeError(Error::InvalidArgument); }
+                                std::vector<ComputeIndirectParameters> dispatches;
+                                dispatches.reserve(materialBins.binCount);
+                                for (uint32_t bin = 0; bin < materialBins.binCount; ++bin) {
+                                    deferred.binIndex = bin;
+                                    auto packet = writer.encode(deferred, kDeferredShadingABI, ParameterTransport::InlinePush);
+                                    if (!packet) { return makeError(packet.error()); }
+                                    auto arguments = materialBins.arguments->slice({uint64_t(bin) * 12, 12});
+                                    if (!arguments) { return makeError(arguments.error()); }
+                                    dispatches.push_back({.parameters = std::move(*packet), .arguments = *arguments,
+                                        .kernel = bin < classifiedPrograms_.size() ? &classifiedPrograms_[bin] : &typedPathTraceProgram_});
+                                }
+                                auto prepared = typedPathTraceProgram_.prepareIndirectBatch(dispatches);
+                                if (!prepared) { return makeError(prepared.error()); }
+                                return prepared->record(commands);
+                            }
+                            encoded = writer.encode(deferred, kDeferredShadingABI, ParameterTransport::InlinePush);
+                        } else if (realtime_) {
+                            root.resources = writer.data(&params, sizeof(params));
+                            RealtimeLightingParameters realtime{};
+                            realtime.path = root;
+                            realtime.irradiance = writer.buffer(environment.sphericalHarmonicsBuffer);
+                            encoded = writer.encode(realtime, kRealtimeLightingABI, ParameterTransport::InlinePush);
+                        } else if (exportGuides) {
+                            PathTraceGuidesInlineParameters guides{};
+                            guides.albedo = params.albedo;
+                            guides.specularAlbedo = params.specularAlbedo;
+                            guides.normalRoughness = params.normalRoughness;
+                            guides.motionVectors = params.motionVectors;
+                            guides.linearDepth = params.linearDepth;
+                            guides.specularHitDistance = params.specularHitDistance;
+                            guides.depth = params.depth;
+                            params.albedo = {};
+                            params.specularAlbedo = {};
+                            params.normalRoughness = {};
+                            params.motionVectors = {};
+                            params.linearDepth = {};
+                            params.specularHitDistance = {};
+                            params.depth = {};
+                            root.resources = writer.data(&params, sizeof(params));
+                            guides.path = root;
+                            encoded = writer.encode(guides, kPathTraceGuidesInlineABI, ParameterTransport::InlinePush);
+                        } else {
                             root.resources = writer.data(&params, sizeof(params));
                             encoded = writer.encode(root, kPathTraceInlineABI, ParameterTransport::InlinePush);
-                        } else {
-                            encoded = writer.encode(params, kPathTraceABI);
                         }
                         if (!encoded) { return makeError(encoded.error()); }
                         return typedPathTraceProgram_.dispatch(commands, *encoded,
                             (context.width() + 7) / 8, (context.height() + 7) / 8);
                     }
-                    if (materialBins.arguments != nullptr) {
-                        // Mixed tiles carry disjoint masks. Permutations share one immutable
-                        // descriptor table, avoiding repeated scene texture writes per class.
-                        std::array<ScenePathTracePush, kMaterialClassCount> binPushes;
-                        std::array<ComputeIndirectDispatch, kMaterialClassCount> dispatches;
-                        for (uint32_t bin = 0; bin < materialBins.binCount; ++bin) {
-                            binPushes[bin] = push;
-                            binPushes[bin].deferredSettings = (push.deferredSettings & 0xffff0000u) | bin;
-                            dispatches[bin] = {.pushData = &binPushes[bin], .argumentOffset = uint64_t(bin) * 12,
-                                .program = bin < classifiedPrograms_.size() ? &classifiedPrograms_[bin] : renderProgram};
-                        }
-                        return renderProgram->dispatchIndirectBatch({
-                            .commandBuffer = &commands,
-                            .bindings = bindings,
-                            .pushDataSize = sizeof(push),
-                            .indirectArguments = materialBins.arguments,
-                            .profiler = profiler,
-                        }, dispatches);
-                    }
-                    return renderProgram->dispatch({
-                        .commandBuffer = &commands,
-                        .bindings = bindings,
-                        .pushData = &push,
-                        .pushDataSize = sizeof(push),
-                        .groupCountX = (context.width() + 7) / 8,
-                        .groupCountY = (context.height() + 7) / 8,
-                        .groupCountZ = 1,
-                        .profiler = profiler,
-                    });
+                    return makeError(Error::InvalidArgument);
                 }}};
             result = context.executeStages(stages, resources.buffers, resources.textures);
             if (!result) { return result; }
@@ -2417,68 +2063,14 @@ private:
     {
         errorProgram_.clear();
         typedPathTraceProgram_.clear();
+        for (auto& program : sharcTracePrograms_) { program.clear(); }
+        for (auto& program : nrcTracePrograms_) { program.clear(); }
         materialArtifacts_.clear();
-        for (ComputeProgram& program : classifiedPrograms_) { program.clear(); }
-        for (ComputeProgram& program : programs_) {
-            program.clear();
-        }
+        for (ComputeKernel& program : classifiedPrograms_) { program.clear(); }
         sharcClearProgram_.clear();
         sharcResolveProgram_.clear();
         tonemapProgram_.clear();
         materialBinning_.clear();
-    }
-
-    Result<> ensureCacheParamsBuffer(Device& device)
-    {
-        if (cacheParamsBuffer_ != nullptr) {
-            return {};
-        }
-        BufferDesc desc{
-            .size = sizeof(ScenePathTraceCacheParams),
-            .usage = BufferUsageBits::Storage,
-            .memoryLocation = MemoryLocation::HostUpload,
-        };
-        std::unique_ptr<Buffer> buffer;
-        Result<> result = device.createBuffer(desc).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
-        if (!result || buffer == nullptr) {
-            spdlog::warn("[ScenePathTracePass] failed to create cache parameter buffer: {}",
-                result ? "null buffer" : resultToString(result));
-            return result ? makeError(Error::Failure) : result;
-        }
-        cacheParamsBuffer_ = std::move(buffer);
-        return {};
-    }
-
-    Result<> writeCacheParamsBuffer(CommandBuffer& commandBuffer, const ScenePathTraceCacheParams& params,
-        bool acquireAllocation = true)
-    {
-        if (cacheParamsBuffer_ == nullptr) {
-            return makeError(Error::Failure);
-        }
-        if (RenderFrameContext* frame = commandBuffer.frameContext(); frame && acquireAllocation) {
-            auto allocation = std::find_if(cacheParamsAllocations_.begin(), cacheParamsAllocations_.end(),
-                [](const auto& candidate) { return candidate.completion.isComplete(); });
-            if (allocation == cacheParamsAllocations_.end()) {
-                std::unique_ptr<Buffer> buffer;
-                Result<> result = device_->createBuffer(cacheParamsBuffer_->desc()).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
-                if (!result) {
-                    return result;
-                }
-                cacheParamsAllocations_.push_back({std::move(buffer), frame->completion()});
-                allocation = std::prev(cacheParamsAllocations_.end());
-            }
-            allocation->completion = frame->completion();
-            cacheParamsBuffer_ = allocation->buffer;
-            frame->retain(cacheParamsBuffer_);
-        }
-        void* mapped = cacheParamsBuffer_->map();
-        if (mapped == nullptr) {
-            return makeError(Error::Failure);
-        }
-        std::memcpy(mapped, &params, sizeof(params));
-        cacheParamsBuffer_->flush({0, sizeof(params)});
-        cacheParamsBuffer_->unmap();
-        return {};
     }
 
     Result<> ensureSharcBuffers(Device& device, uint32_t entryCount)
@@ -2526,9 +2118,9 @@ private:
     Result<> executeSharcFrame(
         RenderGraphExecutionContext& context,
         ScenePathTracePush& push,
-        const std::vector<ComputeDispatchBinding>& baseBindings,
-        ComputeProgram& queryProgram,
-        ComputeProgram& updateProgram)
+        const std::function<PathTraceParameters(ParameterWriter&)>& encodeResources,
+        ComputeKernel& queryProgram,
+        ComputeKernel& updateProgram)
     {
         const uint32_t entriesLog2 = uintProperty(
             context.properties(),
@@ -2583,14 +2175,27 @@ private:
             8,
             1024);
 
-        result = writeCacheParamsBuffer(commandBuffer, params);
-        if (!result) {
-            return result;
-        }
-
-        // SHaRC update: sparse tracing over a stride x stride pixel block.
-        std::vector<ComputeDispatchBinding> updateBindings = baseBindings;
-        appendSharcDispatchBindings(updateBindings);
+        // One immutable named-resource packet is shared by update and query.
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        ParameterWriter writer(*device_, **registry, commandBuffer.frameContext());
+        auto scene = encodeResources(writer);
+        SharcTraceParameters trace{};
+        trace.path.settings = scene.settings;
+        trace.path.output = scene.output;
+        trace.path.historyCurrent = scene.historyCurrent;
+        trace.path.historyPrevious = scene.historyPrevious;
+        scene.settings = 0;
+        scene.output = {};
+        scene.historyCurrent = {};
+        scene.historyPrevious = {};
+        trace.path.resources = writer.data(&scene, sizeof(scene));
+        trace.cacheSettings = writer.data(&params, sizeof(params));
+        trace.hashEntries = writer.buffer(sharcHashEntriesBuffer_.get());
+        trace.accumulation = writer.buffer(sharcAccumulationBuffer_.get());
+        trace.resolved = writer.buffer(sharcResolvedBuffer_.get());
+        auto encoded = writer.encode(trace, kSharcTraceABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
         const uint32_t stride = std::max(params.sharcUpdateStride, 1u);
         const uint32_t updateWidth = (push.width + stride - 1u) / stride;
         const uint32_t updateHeight = (push.height + stride - 1u) / stride;
@@ -2604,19 +2209,15 @@ private:
         resolvePush.staleFrameNumMax = params.sharcStaleFrameNumMax;
         resolvePush.frameIndex = push.accumulationFrame;
         // SHaRC render/query at full resolution with early termination.
-        std::vector<ComputeDispatchBinding> queryBindings = baseBindings;
-        appendSharcDispatchBindings(queryBindings);
         auto resources = stageResources(context, push);
-        const std::array buffers{cacheParamsBuffer_.get(), sharcHashEntriesBuffer_.get(),
-            sharcAccumulationBuffer_.get(), sharcResolvedBuffer_.get()};
-        const std::array names{"cacheParams", "sharcHash", "sharcAccumulation", "sharcResolved"};
+        const std::array buffers{sharcHashEntriesBuffer_.get(), sharcAccumulationBuffer_.get(), sharcResolvedBuffer_.get()};
+        const std::array names{"sharcHash", "sharcAccumulation", "sharcResolved"};
         std::vector<RenderGraphStageUse> maintenanceUses;
         for (size_t i = 0; i < buffers.size(); ++i) {
             result = importBuffer(resources, names[i], buffers[i]);
             if (!result) { return result; }
-            const auto access = i == 0 ? RenderGraphResourceAccess::BufferShaderRead
-                : RenderGraphResourceAccess::BufferStorageReadWrite;
-            if (i != 0) { maintenanceUses.push_back({names[i], access}); }
+            const auto access = RenderGraphResourceAccess::BufferStorageReadWrite;
+            maintenanceUses.push_back({names[i], access});
             resources.uses.push_back({names[i], access});
         }
         SceneSharcMaintenancePush clearPush{};
@@ -2630,29 +2231,13 @@ private:
             }});
         }
         stages.push_back({"SHaRC update", resources.uses, [&](CommandBuffer& commands) {
-            return updateProgram.dispatch({
-                .commandBuffer = &commands,
-                .bindings = updateBindings,
-                .pushData = &push,
-                .pushDataSize = sizeof(push),
-                .groupCountX = (updateWidth + 7) / 8,
-                .groupCountY = (updateHeight + 7) / 8,
-                .groupCountZ = 1,
-            });
+            return updateProgram.dispatch(commands, *encoded, (updateWidth + 7) / 8, (updateHeight + 7) / 8);
         }});
         stages.push_back({"SHaRC resolve", maintenanceUses, [&](CommandBuffer& commands) {
             return dispatchSharcMaintenance(commands, sharcResolveProgram_, resolvePush, maintenanceGroups);
         }});
         stages.push_back({"SHaRC query", resources.uses, [&](CommandBuffer& commands) {
-            return queryProgram.dispatch({
-                .commandBuffer = &commands,
-                .bindings = queryBindings,
-                .pushData = &push,
-                .pushDataSize = sizeof(push),
-                .groupCountX = (push.width + 7) / 8,
-                .groupCountY = (push.height + 7) / 8,
-                .groupCountZ = 1,
-            });
+            return queryProgram.dispatch(commands, *encoded, (push.width + 7) / 8, (push.height + 7) / 8);
         }});
         const auto discarded = sharcDiscarded_;
         result = commandBuffer.addSubmissionTransaction(std::make_shared<SubmissionTransaction>([] {},
@@ -2683,26 +2268,6 @@ private:
         return program.dispatch(commandBuffer, *encoded, std::max(groupCount, 1u));
     }
 
-    void appendSharcDispatchBindings(std::vector<ComputeDispatchBinding>& bindings) const
-    {
-        bindings.push_back(ComputeDispatchBinding{
-            .binding = kScenePathTraceCacheParamsBinding,
-            .buffer = cacheParamsBuffer_.get(),
-        });
-        bindings.push_back(ComputeDispatchBinding{
-            .binding = kScenePathTraceSharcHashEntriesBinding,
-            .buffer = sharcHashEntriesBuffer_.get(),
-        });
-        bindings.push_back(ComputeDispatchBinding{
-            .binding = kScenePathTraceSharcAccumulationBinding,
-            .buffer = sharcAccumulationBuffer_.get(),
-        });
-        bindings.push_back(ComputeDispatchBinding{
-            .binding = kScenePathTraceSharcResolvedBinding,
-            .buffer = sharcResolvedBuffer_.get(),
-        });
-    }
-
 #if METALLIC_HAS_NRC
     static NrcResolveMode nrcResolveModeFromProperties(const RenderGraphProperties& properties)
     {
@@ -2725,9 +2290,9 @@ private:
     Result<> executeNrcFrame(
         RenderGraphExecutionContext& context,
         ScenePathTracePush& push,
-        const std::vector<ComputeDispatchBinding>& baseBindings,
-        ComputeProgram& updateProgram,
-        ComputeProgram& queryProgram,
+        const std::function<PathTraceParameters(ParameterWriter&)>& encodeResources,
+        ComputeKernel& updateProgram,
+        ComputeKernel& queryProgram,
         TextureView* historyCurrentView,
         TextureView* historyPreviousView)
     {
@@ -2794,11 +2359,11 @@ private:
         frameSettings.maxExpectedAverageRadianceValue =
             floatProperty(context.properties(), "nrc.maxExpectedRadiance", 1.0f);
         frameSettings.resolveMode = nrcResolveModeFromProperties(context.properties());
-        // Select the retained per-frame allocation before compiling stage
-        // identities. BeginFrame provides constants later, without replacing it.
+        // BeginFrame supplies constants; encode their immutable snapshot only
+        // after it succeeds, before either trace stage records a dispatch.
         ScenePathTraceCacheParams params;
-        Result<> result = writeCacheParamsBuffer(commandBuffer, params);
-        if (!result) { return result; }
+        Result<> result;
+        EncodedParameters traceEncoded;
         auto prepareParams = [&]() -> Result<> {
             const auto constants = nrc_.populateShaderConstants();
             if (!constants) {
@@ -2836,14 +2401,33 @@ private:
             params.nrcTerminationHeuristicThreshold = nrcConstants.terminationHeuristicThreshold;
             params.nrcTrainingTerminationHeuristicThreshold = nrcConstants.trainingTerminationHeuristicThreshold;
             params.nrcProportionUnbiased = nrcConstants.proportionUnbiased;
-            return writeCacheParamsBuffer(commandBuffer, params, false);
+            auto registry = device_->resourceRegistry();
+            if (!registry) { return makeError(registry.error()); }
+            ParameterWriter writer(*device_, **registry, commandBuffer.frameContext());
+            auto scene = encodeResources(writer);
+            NRCTraceParameters trace{};
+            trace.path.settings = scene.settings;
+            trace.path.output = scene.output;
+            trace.path.historyCurrent = scene.historyCurrent;
+            trace.path.historyPrevious = scene.historyPrevious;
+            scene.settings = 0;
+            scene.output = {};
+            scene.historyCurrent = {};
+            scene.historyPrevious = {};
+            trace.path.resources = writer.data(&scene, sizeof(scene));
+            trace.cacheSettings = writer.data(&params, sizeof(params));
+            trace.queryPath = writer.buffer(nrc_.buffer(static_cast<uint32_t>(nrc::BufferIdx::QueryPathInfo)));
+            trace.trainingPath = writer.buffer(nrc_.buffer(static_cast<uint32_t>(nrc::BufferIdx::TrainingPathInfo)));
+            trace.vertices = writer.buffer(nrc_.buffer(static_cast<uint32_t>(nrc::BufferIdx::TrainingPathVertices)));
+            trace.radiance = writer.buffer(nrc_.buffer(static_cast<uint32_t>(nrc::BufferIdx::QueryRadianceParams)));
+            trace.counters = writer.buffer(nrc_.buffer(static_cast<uint32_t>(nrc::BufferIdx::Counter)));
+            auto encoded = writer.encode(trace, kNRCTraceABI, ParameterTransport::InlinePush);
+            if (!encoded) { return makeError(encoded.error()); }
+            traceEncoded = std::move(*encoded);
+            return {};
+
         };
 
-        std::vector<ComputeDispatchBinding> traceBindings = baseBindings;
-        traceBindings.push_back(ComputeDispatchBinding{
-            .binding = kScenePathTraceCacheParamsBinding,
-            .buffer = cacheParamsBuffer_.get(),
-        });
         static constexpr nrc::BufferIdx kTraceBuffers[] = {
             nrc::BufferIdx::QueryPathInfo,
             nrc::BufferIdx::TrainingPathInfo,
@@ -2851,20 +2435,6 @@ private:
             nrc::BufferIdx::QueryRadianceParams,
             nrc::BufferIdx::Counter,
         };
-        static constexpr uint32_t kTraceBindings[] = {
-            kScenePathTraceNRCQueryPathInfoBinding,
-            kScenePathTraceNRCTrainingPathInfoBinding,
-            kScenePathTraceNRCTrainingPathVerticesBinding,
-            kScenePathTraceNRCQueryRadianceParamsBinding,
-            kScenePathTraceNRCCountersBinding,
-        };
-        for (size_t index = 0; index < std::size(kTraceBuffers); ++index) {
-            traceBindings.push_back(ComputeDispatchBinding{
-                .binding = kTraceBindings[index],
-                .buffer = nrc_.buffer(static_cast<uint32_t>(kTraceBuffers[index])),
-            });
-        }
-
         const uint32_t trainingWidth = std::max(nrcContextSettings_.trainingDimensions.x, 1u);
         const uint32_t trainingHeight = std::max(nrcContextSettings_.trainingDimensions.y, 1u);
         ScenePathTraceTonemapPush tonemapPush{
@@ -2888,9 +2458,6 @@ private:
         if (!tonemapEncoded) { return makeError(tonemapEncoded.error()); }
         using Access = RenderGraphResourceAccess;
         auto resources = stageResources(context, push);
-        result = importBuffer(resources, "cacheParams", cacheParamsBuffer_.get());
-        if (!result) { return result; }
-        resources.uses.push_back({"cacheParams", Access::BufferShaderRead});
         std::array<std::string, vulkan::NRCIntegration::kBufferCount> names;
         std::vector<RenderGraphStageUse> sdkUses;
         for (uint32_t i = 0; i < names.size(); ++i) {
@@ -2919,26 +2486,10 @@ private:
                 return begun ? prepareParams() : begun;
             }, RenderGraphPassKind::Unsafe},
             RenderGraphStage{"NRC update", resources.uses, [&](CommandBuffer& commands) {
-                return updateProgram.dispatch({
-                    .commandBuffer = &commands,
-                    .bindings = traceBindings,
-                    .pushData = &push,
-                    .pushDataSize = sizeof(push),
-                    .groupCountX = (trainingWidth + 7) / 8,
-                    .groupCountY = (trainingHeight + 7) / 8,
-                    .groupCountZ = 1,
-                });
+                return updateProgram.dispatch(commands, traceEncoded, (trainingWidth + 7) / 8, (trainingHeight + 7) / 8);
             }},
             RenderGraphStage{"NRC query", resources.uses, [&](CommandBuffer& commands) {
-                return queryProgram.dispatch({
-                    .commandBuffer = &commands,
-                    .bindings = traceBindings,
-                    .pushData = &push,
-                    .pushDataSize = sizeof(push),
-                    .groupCountX = (push.width + 7) / 8,
-                    .groupCountY = (push.height + 7) / 8,
-                    .groupCountZ = 1,
-                });
+                return queryProgram.dispatch(commands, traceEncoded, (push.width + 7) / 8, (push.height + 7) / 8);
             }},
             RenderGraphStage{"NRC train", sdkUses,
                 [&](CommandBuffer& commands) { return nrc_.queryAndTrain(commands, nullptr); }, RenderGraphPassKind::Unsafe},
@@ -3327,7 +2878,7 @@ private:
     MaterialBinning materialBinning_;
     ScreenSpaceShadows shadows_;
     std::array<float, 2> previousShadowJitter_{};
-    std::array<ComputeProgram, kMaterialClassCount - 1> classifiedPrograms_;
+    std::array<ComputeKernel, kMaterialClassCount - 1> classifiedPrograms_;
     bool compiledMaterialBinning_ = true;
     bool compiledSupplementaryPathTracing_ = false;
     bool compiledRealtimeDeferred_ = false;
@@ -3350,19 +2901,14 @@ private:
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     OpenPBRLutResources openPBRLuts_;
-    std::array<ComputeProgram, static_cast<size_t>(PathTracePermutation::Count)> programs_;
     ComputeKernel typedPathTraceProgram_;
+    std::array<ComputeKernel, 2> sharcTracePrograms_;
+    std::array<ComputeKernel, 2> nrcTracePrograms_;
     ComputeKernel sharcClearProgram_;
     ComputeKernel sharcResolveProgram_;
     ComputeKernel tonemapProgram_;
     std::string compiledShaderKey_;
     uint32_t cacheMode_ = kScenePathTraceCacheModeOff;
-    struct CacheParamsAllocation {
-        std::shared_ptr<Buffer> buffer;
-        GPUCompletionPoint completion;
-    };
-    std::vector<CacheParamsAllocation> cacheParamsAllocations_;
-    std::shared_ptr<Buffer> cacheParamsBuffer_;
     std::unique_ptr<Buffer> sharcHashEntriesBuffer_;
     std::unique_ptr<Buffer> sharcAccumulationBuffer_;
     std::unique_ptr<Buffer> sharcResolvedBuffer_;

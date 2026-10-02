@@ -97,29 +97,31 @@ struct ScenePathTraceCacheParams
     NrcConstants nrc;
 };
 
-// Match the tightly packed CPU constants, including NRC at byte offset 76.
-typedef StructuredBuffer<ScenePathTraceCacheParams, ScalarDataLayout> ScenePathTraceCacheBuffer;
-#define gCacheParams getResource<ScenePathTraceCacheBuffer>(20)
+// Match the scalar CPU constants, including NRC at byte offset 76.
+#if METALLIC_PT_SHARC
+#define gCacheParams ((ScenePathTraceCacheParams*)gSharcTrace.cacheSettings)
+#elif METALLIC_PT_NRC
+#define gCacheParams ((ScenePathTraceCacheParams*)gNRCTrace.cacheSettings)
+#endif
 
 #if METALLIC_PT_SHARC
-#define gSharcHashEntries getResource<RWStructuredBuffer<uint64_t>>(21)
+#define gSharcHashEntries resolveDescriptor(gSharcTrace.hashEntries)
 
-#define gSharcAccumulation getResource<RWStructuredBuffer<SharcAccumulationData>>(22)
+#define gSharcAccumulation resolveDescriptor(gSharcTrace.accumulation)
 
-#define gSharcResolved getResource<RWStructuredBuffer<SharcPackedData>>(23)
+#define gSharcResolved resolveDescriptor(gSharcTrace.resolved)
 #endif
 
 #if METALLIC_PT_NRC
-#define gNrcQueryPathInfo getResource<RWStructuredBuffer<NrcPackedQueryPathInfo>>(24)
+#define gNrcQueryPathInfo resolveDescriptor(gNRCTrace.queryPath)
 
-#define gNrcTrainingPathInfo getResource<RWStructuredBuffer<NrcPackedTrainingPathInfo>>(25)
+#define gNrcTrainingPathInfo resolveDescriptor(gNRCTrace.trainingPath)
 
-#define gNrcTrainingPathVertices getResource<RWStructuredBuffer<NrcPackedPathVertex>>(26)
+#define gNrcTrainingPathVertices resolveDescriptor(gNRCTrace.vertices)
 
-typedef RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> NRCQueryRadianceBuffer;
-#define gNrcQueryRadianceParams getResource<NRCQueryRadianceBuffer>(27)
+#define gNrcQueryRadianceParams resolveDescriptor(gNRCTrace.radiance)
 
-#define gNrcCounters getResource<RWStructuredBuffer<uint>>(28)
+#define gNrcCounters resolveDescriptor(gNRCTrace.counters)
 #endif
 
 #if METALLIC_PATH_TRACE_TYPED
@@ -913,7 +915,7 @@ STF_SamplerState makeMaterialStfSampler(ScenePathTracePush push, inout uint seed
 float materialTextureSamplingFloor(uint textureIndex)
 {
 #if METALLIC_DEFERRED_LIGHT_GRID
-    RWStructuredBuffer<uint> metadata = getResource<RWStructuredBuffer<uint>>(95);
+    RWStructuredBuffer<uint> metadata = gMaterialFeedback;
     uint count, stride;
     metadata.GetDimensions(count, stride);
     uint offset = textureIndex * 8u;
@@ -972,7 +974,7 @@ float4 loadMaterialTextureMip0(
     // Glass explicitly requests deterministic finest-available sampling in
     // both comparison modes, including the streaming publication floor.
     return decodeMaterialTextureSample(sampleResidentMaterialTexture(gMaterialTextures(textureIndex),
-        getResource<SamplerState>(96), wrappedUv, 0.0, materialTextureSamplingFloor(textureIndex)),
+        gMaterialSampler, wrappedUv, 0.0, materialTextureSamplingFloor(textureIndex)),
         textureInfo.transform0.w);
 #else
     uint2 texel = min(uint2(wrappedUv * float2(width, height)), uint2(width - 1u, height - 1u));
@@ -1074,7 +1076,7 @@ float4 loadMaterialTexture(
         // comparing filtering modes; only the texture estimator changes.
         rand4(seed);
         return decodeMaterialTextureSample(sampleResidentMaterialTexture(gMaterialTextures(textureIndex),
-            getResource<SamplerState>(96), transformMaterialUv(textureInfo, uv), mipLevel, mipFloor),
+            gMaterialSampler, transformMaterialUv(textureInfo, uv), mipLevel, mipFloor),
             textureInfo.transform0.w);
     }
 #endif
@@ -1100,7 +1102,7 @@ float4 loadMaterialTextureForMaterial(
     // Demand uses the source dimensions, never the currently coarse resident tail.
     // The same UV transform and ray-cone footprint drive sampling and residency.
     if (hasMaterialTexture(textureInfo, push) && (seed & 7u) == 0u) {
-        RWStructuredBuffer<uint> feedback = getResource<RWStructuredBuffer<uint>>(95);
+        RWStructuredBuffer<uint> feedback = gMaterialFeedback;
         uint count, stride;
         feedback.GetDimensions(count, stride);
         uint offset = textureInfo.textureIndex * 8u;

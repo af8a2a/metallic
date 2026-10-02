@@ -1,3 +1,4 @@
+#define METALLIC_PATH_TRACE_GUIDES_INLINE 1
 #include "OpenPBRRayQueryPathTrace.slang"
 
 #define gDlssRrAlbedo resolveDescriptor(gPathTraceParameters.albedo)

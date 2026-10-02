@@ -1,4 +1,8 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/RealtimeLightingParameters.h"
+#define METALLIC_REALTIME_LIGHTING_INLINE 1
+#define METALLIC_PATH_TRACE_TYPED 1
+[[vk::push_constant]] ConstantBuffer<RealtimeLightingParameters> gRealtimeLighting;
+#define gPathTraceInline gRealtimeLighting.path
 using Metallic;
 
 #include "OpenPBRDirectLighting.slang"
@@ -8,7 +12,7 @@ using Metallic;
 [numthreads(8, 8, 1)]
 void sceneRealtimeLightingMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    ScenePathTracePush push = getConstants<ScenePathTracePush>();
+    ScenePathTracePush push = scenePathTraceSettings();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
     float2 samplePixel = float2(pixel) + 0.5;
@@ -24,7 +28,7 @@ void sceneRealtimeLightingMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         gOutput[pixel] = float4(max(radiance, float3(0.0)), 1.0);
         return;
     }
-    float3 exposed = max(radiance * lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50)), float3(0.0));
+    float3 exposed = max(radiance * lightingExposure(gPathTraceLights), float3(0.0));
     float3 color = pow(exposed / (exposed + 1.0), 1.0 / 2.2);
     gOutput[pixel] = float4(saturate(color), 1.0);
 }

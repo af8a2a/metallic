@@ -142,7 +142,8 @@ inline std::vector<ShaderWarmupRequest> shaderWarmupRequests()
             if (cacheDefine[0] != '\0') {
                 defines.emplace_back(cacheDefine, "1");
             }
-            add(cacheDefine[0] == '\0' ? "Features/PathTracing/ScenePathTraceInline" : "Features/PathTracing/ScenePathTrace",
+            add(cacheDefine[0] == '\0' ? "Features/PathTracing/ScenePathTraceInline" :
+                    std::string_view(cacheDefine).starts_with("SHARC") ? "Features/PathTracing/ScenePathTraceSharc" : "Features/PathTracing/ScenePathTraceNRC",
                 {"scenePathTraceMain"}, pathCapabilities, defines, rtxcrPaths);
             if (cacheDefine[0] != '\0') { continue; }
             add("Features/PathTracing/ScenePathTraceGuides", {"scenePathTraceGuidesMain"}, pathCapabilities, defines, rtxcrPaths);

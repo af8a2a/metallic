@@ -2,7 +2,7 @@
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "MaterialProbeParameters.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -152,6 +152,20 @@ std::array<render::LegacyMaterialPayload, 3> probeMaterials()
     return values;
 }
 
+render::Result<> dispatchMaterialProbe(render::Device& device, const render::ComputeKernel& program,
+    render::CommandBuffer& commands, render::Buffer& materials, render::Buffer& output,
+    std::shared_ptr<void> owner = {})
+{
+    auto registry = device.resourceRegistry();
+    if (!registry) { return render::makeError(registry.error()); }
+    render::ParameterWriter writer(device, **registry, commands.frameContext());
+    writer.retain(std::move(owner));
+    const MaterialProbeParameters params{writer.buffer(&materials), writer.buffer(&output)};
+    auto encoded = writer.encode(params, kMaterialProbeABI, render::ParameterTransport::InlinePush);
+    if (!encoded) { return render::makeError(encoded.error()); }
+    return program.dispatch(commands, *encoded, 1);
+}
+
 class MaterialRuntimeProbePass final : public render::ComputePass
 {
 public:
@@ -182,23 +196,20 @@ public:
             .entryPointName = "materialRuntimeProbeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"},
             log).transform([&](auto value) { shader = std::move(value); });
         if (!result) { return result; }
-        const std::array bindings{
-            ComputeProgramBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeProgramBindingDesc{.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
+        device_ = context.device;
         return program_.initialize(*context.device, {.spirv = shader.spirv,
-            .bindings = bindings, .requiresRayQuery = false}, log);
+            .parameters = parameterAbi<MaterialProbeParameters>(kMaterialProbeABI, ParameterTransport::InlinePush)}, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        const std::array bindings{
-            render::ComputeDispatchBinding{.binding = 0, .buffer = input_.get()},
-            render::ComputeDispatchBinding{.binding = 1, .buffer = context.outputBuffer("result").buffer()}};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = bindings});
+        return dispatchMaterialProbe(*device_, program_, context.commandBuffer(),
+            *input_, *context.outputBuffer("result").buffer());
     }
 private:
+    render::Device* device_ = nullptr;
     std::unique_ptr<render::Buffer> input_;
-    render::ComputeProgram program_;
+    render::ComputeKernel program_;
 };
 
 class MaterialRuntimeABITest final : public RHITest
@@ -387,21 +398,18 @@ public:
         if (!published) { return RHITestResult::fail(log); }
         const auto originalParameters = published->generation();
         std::weak_ptr<MaterialBindingGeneration> oldBinding = published;
-        ComputeProgram program;
+        ComputeKernel program;
         std::shared_ptr<const MaterialExecutableArtifact> artifact;
-        const ComputeProgramBindingDesc layout[] = {{.binding = 0}, {.binding = 1}};
         SlangShaderDesc source{.moduleName = "MaterialRuntimeProbe", .entryPointName = "materialRuntimeProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"};
-        const ComputeProgramDesc description{.bindings = layout, .requiresRayQuery = false};
+        const ComputeKernelDesc description{.parameters = parameterAbi<MaterialProbeParameters>(kMaterialProbeABI, ParameterTransport::InlinePush)};
         if (!compileMaterialExecutable(*device, source, description, program, artifact, log)) {
             return RHITestResult::fail(log);
         }
+        if (artifact->parameters != description.parameters) { return RHITestResult::fail("Executable lost its parameter ABI"); }
         const auto originalArtifact = artifact;
         if (!frame.begin(0) || !commands->begin(&frame)) { return RHITestResult::fail("Begin failed"); }
-        frame.retain(published);
-        const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .buffer = published->buffer()}, {.binding = 1, .buffer = output.get()}};
-        if (!program.dispatch({.commandBuffer = commands.get(), .bindings = bindings}) || !commands->end()) {
+        if (!dispatchMaterialProbe(*device, program, *commands, *published->buffer(), *output, published) || !commands->end()) {
             return RHITestResult::fail("Material dispatch failed");
         }
         CommandBuffer* recorded[] = {commands.get()};
@@ -415,10 +423,10 @@ public:
             return RHITestResult::fail("Compile failure replaced last successful executable");
         }
         source.entryPointName = "materialRuntimeProbeMain";
-        const ComputeProgramBindingDesc invalidManifest[] = {{.binding = 0}, {.binding = 0}};
-        if (compileMaterialExecutable(*device, source,
-                {.bindings = invalidManifest, .requiresRayQuery = false}, program, artifact, log) ||
-            artifact != originalArtifact) { return RHITestResult::fail("Invalid manifest was published"); }
+        auto invalidABI = description;
+        invalidABI.parameters.alignment = 3;
+        if (compileMaterialExecutable(*device, source, invalidABI, program, artifact, log) ||
+            artifact != originalArtifact || !program.valid()) { return RHITestResult::fail("Invalid ABI replaced the published executable"); }
         const SlangMacroDefine revision{"MATERIAL_PROBE_REVISION", "1"};
         source.macroDefines = {&revision, 1};
         if (!compileMaterialExecutable(*device, source, description, program, artifact, log) ||
@@ -444,9 +452,7 @@ public:
         // Submit the recovered executable and new parameters, verifying that the
         // previous output was not merely a permanently stale dispatch.
         if (!frame.begin(1) || !commands->begin(&frame)) { return RHITestResult::fail("Recovery begin failed"); }
-        const ComputeDispatchBinding next[] = {
-            {.binding = 0, .buffer = published->buffer()}, {.binding = 1, .buffer = output.get()}};
-        if (!program.dispatch({.commandBuffer = commands.get(), .bindings = next}) || !commands->end() ||
+        if (!dispatchMaterialProbe(*device, program, *commands, *published->buffer(), *output, published) || !commands->end() ||
             !tracker.submit({.commandBuffers = recorded}, frame) || !frame.wait(5'000'000'000ull)) {
             return RHITestResult::fail("Recovered dispatch failed");
         }
@@ -454,7 +460,7 @@ public:
         correct = mapped && std::memcmp(mapped, &published->generation()->parameters()[0], 720) == 0 && mapped[180] == 11;
         if (mapped) { output->unmap(); }
         (void)pool->reset(); (void)frame.reset();
-        return correct ? RHITestResult::pass("Gated old submission retained code/data/descriptors; failed compile/manifest preserved state; recovery and retirement verified")
+        return correct ? RHITestResult::pass("Gated old submission retained code/data/descriptors; failed compile/ABI preserved state; recovery and retirement verified")
             : RHITestResult::fail("Recovered generation was not executed");
     }
 };

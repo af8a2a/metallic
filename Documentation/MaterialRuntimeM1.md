@@ -4,7 +4,7 @@
 
 ## 运行时与参数
 
-[MaterialRuntime](../Source/Runtime/Render/Material/MaterialRuntime.h) 集中注册 Definition / Program / Instance / Schema / Capabilities。1000 个只改变颜色或贴图句柄的实例共享同一 Program；加入 Fiber 后是两个模型 Program。实例参数不参与语义 Program key，实际 executable key 由 SPIR-V、参数 ABI、资源 manifest、常量大小及 ray-query 要求构成。
+[MaterialRuntime](../Source/Runtime/Render/Material/MaterialRuntime.h) 集中注册 Definition / Program / Instance / Schema / Capabilities。1000 个只改变颜色或贴图句柄的实例共享同一 Program；加入 Fiber 后是两个模型 Program。实例参数不参与语义 Program key，实际 executable key 由 SPIR-V 和完整 ParameterABI（ID、大小、对齐、传输方式）构成。
 
 - `MaterialGeneration` 是不可变实例/参数快照，保留 source material revision、唯一序号及源材质索引。
 - Schema 用稳定参数 ID、类型、偏移和大小描述布局。校验拒绝重复 ID、重叠、越界、无效大小/对齐与未支持类型。
@@ -18,17 +18,17 @@
 
 ## 编译、发布与退休
 
-[MaterialExecutable](../Source/Runtime/Render/Material/MaterialExecutable.h) 已接入 `ScenePathTracePass` 的普通、OpenPBR、VBuffer 分箱及缓存 permutation 编译。编译产物包含 SPIR-V、依赖、内容 key、参数 ABI 和资源 manifest。manifest 直接用于 `ComputeProgram` 的检查与参数编码；不是只记录在文档中的描述。当前 manifest 由受控内置程序声明，尚不代表能自动证明任意外部 Slang 的资源访问安全。
+[MaterialExecutable](../Source/Runtime/Render/Material/MaterialExecutable.h) 已接入 `ScenePathTracePass` 的普通、OpenPBR、VBuffer 分箱及缓存 permutation 编译。编译产物包含 SPIR-V、依赖、内容 key 和完整 ParameterABI。2026-10-02 inline 迁移后，编译接口只接受 ComputeKernelDesc，旧 ComputeProgram 重载和编号 binding manifest 已移除。参数由各入口共享 C++/Slang 定义及 ParameterWriter 编码；资源访问与同步仍由 pass 的 RenderGraph 声明和资源保留建立，不把参数 ABI 当作任意外部 Slang 的访问安全证明。
 
-编译和 pipeline 创建先在候选对象完成，全部成功才替换 executable 与 artifact。编译或 manifest/pipeline 创建失败保留旧对象及诊断；没有成功版本时，实际 PT / Deferred pass 使用独立错误材质显示品红棋盘格。错误路径同时初始化已声明的辅助输出。
+编译和 pipeline 创建先在候选对象完成，全部成功才替换 executable 与 artifact。编译或 ABI/pipeline 创建失败保留旧对象及诊断；没有成功版本时，实际 PT / Deferred pass 使用独立错误材质显示品红棋盘格。错误路径同时初始化已声明的辅助输出。
 
 `RenderGraphCompileContext::shaderReload` 区分初次创建与整图替换。热重载候选失败必须使事务失败，不能用错误材质覆盖已有成功图。成功的图替换继续复用现有帧边界和历史重置契约。Slang 首次 `loadModule` 失败时，入口与诊断中的源码位置也进入追踪；修复报错 include 即可触发重试。
 
 `MaterialBindingGeneration` 同时拥有 CPU 快照与 GPU 参数 buffer。resident、materials-only 上传和编辑均发布这个对象；材质编辑先创建/映射候选 buffer，成功后才替换发布对象并推进 material revision。可选分配策略用于预算拒绝及故障注入，默认仍调用 `Device::createBuffer`。
 
-帧准备通过已有 `RenderFrameContext` 保留材质发布对象。ComputeProgram/PreparedComputeDispatch 继续保留 executable、编码参数和 descriptor 所用分配，纹理沿用现有不可变纹理快照。旧提交完成、命令记录和帧所有权释放后才回收；没有另建一套 fence 或资源回收器。材质 revision 变化使现有 PT / Deferred 累积历史和相关缓存失效。
+帧准备通过 ParameterWriter 和已有 `RenderFrameContext` 保留材质发布对象。ComputeKernel/PreparedComputeDispatch 继续保留 executable、编码参数和 descriptor 所用分配，纹理沿用现有不可变纹理快照。旧提交完成、命令记录和帧所有权释放后才回收；没有另建一套 fence 或资源回收器。材质 revision 变化使现有 PT / Deferred 累积历史和相关缓存失效。
 
-这些入口要求沿用现有帧协调器，不能在并发录制中途修改发布状态。现有 `Buffer::flush` 为 void，驱动级 flush/device-loss 错误仍遵循 RHI 的设备错误处理；本批故障注入验证的是可观察的分配、映射、编译和 pipeline/manifest 拒绝。
+这些入口要求沿用现有帧协调器，不能在并发录制中途修改发布状态。现有 `Buffer::flush` 为 void，驱动级 flush/device-loss 错误仍遵循 RHI 的设备错误处理；本批故障注入验证的是可观察的分配、映射、编译和 pipeline/ABI 拒绝。
 
 ## 散射与几何约定
 
@@ -79,3 +79,11 @@ Claire 验证现已覆盖 256 帧静态积累并启用 Vulkan validation；没�
 ## M1 之后
 
 M2 继续推进真正的自定义 Value Program、Coverage / TextureFootprint、稀疏 Program 调度及 RT 程序选择。M3 补编辑与持久化，M4 补可组合散射的独立数学验证。M0 的性能采样和完整基线维护仍独立记录；本次 HDR 与兼容性验收不代替性能结果。
+
+## Inline 编译接口回归
+
+`material_runtime_gpu_abi` 使用 16 字节共享 inline 根中的两个具名 buffer handle，仍逐字段验证三条
+720 字节模型载荷与 Slang 的一致性。模型数据 schema ABI 与 dispatch ParameterABI 是独立契约。
+`material_runtime_inflight_reload` 使用同一 inline 路径，将旧提交停在 timeline gate 上，
+确认失败编译和非法 ABI 不替换已发布 executable/artifact，成功重载不影响旧提交的代码和数据，
+ParameterWriter 保留的材质所有者只在完成并释放命令/帧后退休，随后新一代代码和参数实际执行。

@@ -1,4 +1,5 @@
-#include "../../Interop/PathTraceParameterRoot.hlsli"
+#define METALLIC_PATH_TRACE_GUIDES_INLINE 1
+#include "../../Interop/PathTraceInlineRoot.hlsli"
 using Metallic;
 
 #include "ScenePathTrace.slang"

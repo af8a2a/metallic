@@ -2,7 +2,7 @@
 #define METALLIC_PATH_TRACE_TYPED 1
 #endif
 #if METALLIC_PATH_TRACE_TYPED
-#include "../../Interop/PathTraceParameterRoot.hlsli"
+#include "../../Interop/PathTraceInlineRoot.hlsli"
 #else
 import Core;
 #endif
