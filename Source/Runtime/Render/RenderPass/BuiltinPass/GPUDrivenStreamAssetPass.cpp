@@ -1360,7 +1360,6 @@ private:
         context.commandBuffer().setScissor(renderArea);
         if (streamRuntime_->drawTaskCount() > 0) {
             context.commandBuffer().bindBindlessHeap(*streamRuntime_->bindlessHeap());
-            if (auto commandResult = context.commandBuffer().bindExecution((visibilityPipelines_[reversedZ ? 1u : 0u])->execution()); !commandResult) { return commandResult; }
             auto registry = device_->resourceRegistry();
             if (!registry) { return makeError(registry.error()); }
             auto& commands = context.commandBuffer();
@@ -1370,7 +1369,9 @@ private:
             auto encoded = writer.encode(push, kStreamHardwareABI, ParameterTransport::InlinePush);
             if (!encoded) { return makeError(encoded.error()); }
             if (auto retained = encoded->bindResources(commands); !retained) { return retained; }
-            commands.pushBindlessData(encoded->inlineData().data(), static_cast<uint32_t>(encoded->inlineData().size()));
+            const auto bytes = encoded->inlineData();
+            if (auto result = commands.bindExecution(visibilityPipelines_[reversedZ ? 1u : 0u]->execution(),
+                    bytes.data(), static_cast<uint32_t>(bytes.size())); !result) { return result; }
             streamRuntime_->cmdDrawMeshTasks(context.commandBuffer());
         }
         context.commandBuffer().endRendering();

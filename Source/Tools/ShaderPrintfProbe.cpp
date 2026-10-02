@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "../../tests/rhi/ShaderDiagnosticParameters.h"
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -174,18 +175,25 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
         {"driverInfo", driver.driverInfo}, {"vendorId", properties.properties.vendorID}, {"deviceId", properties.properties.deviceID},
         {"descriptorHeap", native.descriptorHeapEnabled}};
     report["loadedLayerModule"] = loadedModule(L"VkLayer_khronos_validation.dll");
-    auto shader = require(device->createShaderModule({
-        .spirv = compiled.spirv,
-    }), "createShaderModule");
     metallic::tests::ShaderDiagnosticParameters push{};
     push.cookie = 305397763;
     report["phase"] = "pipeline-create";
     save(directory / "Report.json", report);
-    auto pipeline = require(device->createComputePipeline({
-        .computeShader = {shader.get(), "main"},
-        .usesBindlessHeap = heapMode,
-        .bindlessUserPushDataSize = heapMode ? sizeof(push) : 0,
-    }), "createComputePipeline");
+    render::ComputeKernel kernel;
+    std::unique_ptr<render::ShaderModule> shader;
+    std::unique_ptr<render::ComputePipeline> pipeline;
+    if (heapMode) {
+        std::string log;
+        require(kernel.initialize(*device, {.spirv = compiled.spirv,
+            .parameters = render::parameterAbi<metallic::tests::ShaderDiagnosticParameters>(
+                metallic::tests::kShaderDiagnosticABI, render::ParameterTransport::InlinePush),
+            .debugName = "Shader diagnostic probe"}, log), "initializeKernel");
+    } else {
+        shader = require(device->createShaderModule({.spirv = compiled.spirv}), "createShaderModule");
+        pipeline = require(device->createComputePipeline({
+            .computeShader = {shader.get(), "main"},
+        }), "createComputePipeline");
+    }
     std::unique_ptr<render::Buffer> input, output;
     render::ShaderBuffer outputHandle{};
     render::EncodedParameters encoded;
@@ -216,12 +224,11 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     require(frame.begin(trace ? debug::debugUnsigned(trace->plan().at("execution")) : 0), "beginFrame");
     require(commands->begin(&frame), "beginCommands");
     if (heapMode) {
-        require(encoded.bindResources(*commands), "bindParameters");
-        if (auto commandResult = commands->bindExecution((pipeline)->execution(), &push, sizeof(push)); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); }
+        require(kernel.dispatch(*commands, encoded, 2), "dispatchKernel");
     } else {
-        if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); }
+        require(commands->bindExecution(pipeline->execution()), "bindOrdinaryExecution");
+        commands->dispatch(2, 1, 1);
     }
-    commands->dispatch(2, 1, 1);
     if (heapMode) {
         VkMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
             .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, .srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT,

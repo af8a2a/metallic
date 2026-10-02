@@ -592,6 +592,14 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
             }
             report["classificationAsyncSoftwareRequested"] = asyncSoftware;
             graph.setNodeRuntimeProperty(node, "asyncSoftwareRaster", asyncSoftware);
+            bool reference128 = false;
+            if (const char* setting = std::getenv("METALLIC_TEST_CLASSIFICATION_REFERENCE128")) {
+                const std::string_view value(setting);
+                require(value == "0" || value == "1", "METALLIC_TEST_CLASSIFICATION_REFERENCE128 must be 0 or 1");
+                reference128 = value == "1";
+            }
+            report["classificationSoftwareReference128Requested"] = reference128;
+            graph.setNodeRuntimeProperty(node, "benchmarkSoftwareReference128", reference128);
             graph.setNodeRuntimeProperty(node, "softwareRasterMaxPixels", 64.0f);
             for (uint32_t frame = 0; frame < 3; ++frame) { renderFrame(); }
             uint64_t mismatch = 0, coverageMismatch = 0, interiorMismatch = 0;

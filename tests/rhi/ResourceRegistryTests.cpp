@@ -896,6 +896,7 @@ public:
     RegistryPipelinedParametersTest() { type = RHITestType::Command; name = "registry_pipelined_parameter_append"; }
     RHITestResult run(RHITestContext& context) override
     {
+        for (auto transport : {render::ParameterTransport::DeviceAddress, render::ParameterTransport::InlinePush}) {
         for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             bench::TestDevice device;
             REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Pipelined parameters", .enableValidation = context.enableValidation,
@@ -905,7 +906,7 @@ public:
             REG_REQUIRE(device->resourceRegistry().transform([&](auto value) { registry = std::move(value); }));
             render::ComputeKernel kernel;
             std::string log;
-            REG_REQUIRE(makeKernel(*device, kernel, log, mode));
+            REG_REQUIRE(makeKernel(*device, kernel, log, mode, transport));
             std::unique_ptr<render::Buffer> source, output;
             REG_REQUIRE(makeBuffer(*device, source, 11));
             REG_REQUIRE(makeBuffer(*device, output));
@@ -925,8 +926,13 @@ public:
                 // iteration 2 appends after prior batches complete, frame open.
                 params.add = (i + 1) * 100;
                 params.index = i;
-                REG_REQUIRE(writer.encode(params, kABI).transform([&](auto value) { packets[i] = std::move(value); }));
-                if (i) { REG_CHECK(packets[i].address() > packets[i - 1].address()); }
+                REG_REQUIRE(writer.encode(params, kABI, transport).transform([&](auto value) { packets[i] = std::move(value); }));
+                if (transport == render::ParameterTransport::DeviceAddress) {
+                    if (i) { REG_CHECK(packets[i].address() > packets[i - 1].address()); }
+                } else {
+                    REG_CHECK(packets[i].address() == 0 && packets[i].inlineData().size() == sizeof(params));
+                    REG_CHECK(std::memcmp(packets[i].inlineData().data(), &params, sizeof(params)) == 0);
+                }
                 REG_REQUIRE(recordings[i].initialize(*device, queue));
                 render::CommandBuffer* commands = nullptr;
                 REG_REQUIRE(recordings[i].prepare(frame).transform([&](auto value) { commands = value; }));
@@ -962,7 +968,7 @@ public:
             }
             REG_REQUIRE(frame.sealRecording());
             render::EncodedParameters rejected;
-            REG_CHECK(!writer.encode(params, kABI).transform([&](auto value) { rejected = std::move(value); }));
+            REG_CHECK(!writer.encode(params, kABI, transport).transform([&](auto value) { rejected = std::move(value); }));
             REG_REQUIRE(frame.finishSubmission());
             REG_REQUIRE(frame.wait(5'000'000'000ull));
             output->invalidate();
@@ -974,7 +980,8 @@ public:
             output->unmap();
             REG_CHECK((values == std::array<uint32_t, 3>{111, 211, 311}));
         }
-        return RHITestResult::pass();
+        }
+        return RHITestResult::pass("Mapped/native inline and BDA packets remain immutable across pending and completed prefix submissions");
     }
 };
 METALLIC_REGISTER_RHI_TEST(RegistryPipelinedParametersTest);

@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "RHITest.h"
 #include "HybridProbeParameters.h"
 #include "Runtime/Task/TaskSystem.h"
@@ -90,10 +91,9 @@ public:
                 .additionalSearchPaths = {paths, 1},
             }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
             log=compiled.diagnostics;
-            std::unique_ptr<ShaderModule> shader;
-            std::unique_ptr<ComputePipeline> compute;
-            HYBRID_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
-            HYBRID_REQUIRE(device->createComputePipeline({.computeShader = {shader.get()}, .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(PreparedRasterProbeParameters)}).transform([&](auto rhiValue) { compute = std::move(rhiValue); }));
+            ComputeKernel compute;
+            HYBRID_REQUIRE(compute.initialize(*device, {.spirv = compiled.spirv,
+                .parameters = parameterAbi<PreparedRasterProbeParameters>(kPreparedRasterProbeABI, ParameterTransport::InlinePush)}, log));
             ShaderCompileResult workCompiled;
             HYBRID_REQUIRE(compileSlangShaderToSpirv({
                 .moduleName = "PreparedRasterProbe",
@@ -101,10 +101,9 @@ public:
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
                 .additionalSearchPaths = {paths, 1},
             }, workCompiled.diagnostics).transform([&](auto value) { workCompiled = std::move(value); }));
-            std::unique_ptr<ShaderModule> workShader;
-            std::unique_ptr<ComputePipeline> workCompute;
-            HYBRID_REQUIRE(device->createShaderModule({.spirv = workCompiled.spirv}).transform([&](auto rhiValue) { workShader = std::move(rhiValue); }));
-            HYBRID_REQUIRE(device->createComputePipeline({.computeShader = {workShader.get()}, .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(PreparedRasterProbeParameters)}).transform([&](auto rhiValue) { workCompute = std::move(rhiValue); }));
+            ComputeKernel workCompute;
+            HYBRID_REQUIRE(workCompute.initialize(*device, {.spirv = workCompiled.spirv,
+                .parameters = parameterAbi<PreparedRasterProbeParameters>(kPreparedRasterProbeABI, ParameterTransport::InlinePush)}, log));
             ShaderCompileResult workloadCompiled;
             const auto workloadResult = compileSlangShaderToSpirv({
                 .moduleName = "PreparedRasterProbe",
@@ -114,10 +113,9 @@ public:
             }, workloadCompiled.diagnostics).transform([&](auto value) { workloadCompiled = std::move(value); });
             log=workloadCompiled.diagnostics;
             HYBRID_REQUIRE(workloadResult);
-            std::unique_ptr<ShaderModule> workloadShader;
-            std::unique_ptr<ComputePipeline> workloadCompute;
-            HYBRID_REQUIRE(device->createShaderModule({.spirv = workloadCompiled.spirv}).transform([&](auto rhiValue) { workloadShader = std::move(rhiValue); }));
-            HYBRID_REQUIRE(device->createComputePipeline({.computeShader = {workloadShader.get()}, .usesBindlessHeap = true, .bindlessUserPushDataSize = sizeof(PreparedRasterProbeParameters)}).transform([&](auto rhiValue) { workloadCompute = std::move(rhiValue); }));
+            ComputeKernel workloadCompute;
+            HYBRID_REQUIRE(workloadCompute.initialize(*device, {.spirv = workloadCompiled.spirv,
+                .parameters = parameterAbi<PreparedRasterProbeParameters>(kPreparedRasterProbeABI, ParameterTransport::InlinePush)}, log));
             std::array<std::unique_ptr<Buffer>,2> pixels;
             for (size_t i=0;i<2;++i) {
                 HYBRID_REQUIRE(device->createBuffer({.size=pixelCount*8,.structureStride=8,.usage=BufferUsageBits::Storage | BufferUsageBits::TransferSource,
@@ -139,17 +137,15 @@ public:
                     std::memset(data,0,pixelCount*8); output->flush(); output->unmap();
                 }
                 HYBRID_REQUIRE(commands->begin());
-                if (auto commandResult = commands->bindExecution((plane==4u ? *workloadCompute : plane>=2u ? *workCompute : *compute).execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                 ParameterWriter writer(*device, **registry);
                 const PreparedRasterProbeParameters push{
                     writer.dataBuffer(input.get(), 16, 16), writer.buffer(pixels[0].get()), writer.buffer(pixels[1].get()),
                     width, height, reversed, sided, bits, plane, count, 0};
                 auto encoded = writer.encode(push, kPreparedRasterProbeABI, ParameterTransport::InlinePush);
                 if (!encoded) { return RHITestResult::fail("Cannot encode hybrid probe parameters"); }
-                HYBRID_REQUIRE(encoded->bindResources(*commands));
-                commands->pushBindlessData(encoded->inlineData().data(), uint32_t(encoded->inlineData().size()));
                 const uint32_t lanes=plane>=2u ? 128u : 64u;
-                commands->dispatch(std::max(1u,(push.triangleCount+lanes-1u)/lanes));
+                auto& kernel = plane == 4u ? workloadCompute : plane >= 2u ? workCompute : compute;
+                HYBRID_REQUIRE(kernel.dispatch(*commands, *encoded, std::max(1u, (push.triangleCount + lanes - 1u) / lanes)));
                 HYBRID_REQUIRE(commands->end()); CommandBuffer* list[]={commands.get()};
                 HYBRID_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));
                 HYBRID_REQUIRE(fence->wait()); submitted=true;
@@ -386,14 +382,9 @@ public:
         const auto compile = compileSlangShaderToSpirv({.moduleName = "HybridClusterProbe", .entryPointName = "classifyMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
         log = compiled.diagnostics; HYBRID_REQUIRE(compile);
-        std::unique_ptr<ShaderModule> shader;
-        std::unique_ptr<ComputePipeline> pipeline;
-        HYBRID_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
-        HYBRID_REQUIRE(device->createComputePipeline({
-            .computeShader = {shader.get()},
-            .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = sizeof(HybridClusterProbeParameters),
-        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
+        ComputeKernel kernel;
+        HYBRID_REQUIRE(kernel.initialize(*device, {.spirv = compiled.spirv,
+            .parameters = parameterAbi<HybridClusterProbeParameters>(kHybridClusterProbeABI, ParameterTransport::InlinePush)}, log));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -435,16 +426,14 @@ public:
                 return RHITestResult::fail("Oversized cluster input was accepted");
             }
             HYBRID_REQUIRE(rasterizer.beginClusters(*commands, 8, true, test.count, test.stream));
-            if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
             ParameterWriter writer(*device, **registry);
             const HybridClusterProbeParameters push{
                 writer.dataBuffer(input.get(), 8, 8), writer.buffer(&rasterizer.clusterBuffer()), test.count, 0};
             auto encoded = writer.encode(push, kHybridClusterProbeABI, ParameterTransport::InlinePush);
             if (!encoded) { return RHITestResult::fail("Cannot encode hybrid probe parameters"); }
-            HYBRID_REQUIRE(encoded->bindResources(*commands));
-            commands->pushBindlessData(encoded->inlineData().data(), uint32_t(encoded->inlineData().size()));
             if (test.count != 0) {
-                commands->dispatch(std::min(test.count, 65535u), (test.count + 65534u) / 65535u);
+                HYBRID_REQUIRE(kernel.dispatch(*commands, *encoded,
+                    std::min(test.count, 65535u), (test.count + 65534u) / 65535u));
             }
             HYBRID_REQUIRE(rasterizer.finishClusterBins(*commands));
             const BufferBarrierDesc barriers[] = {

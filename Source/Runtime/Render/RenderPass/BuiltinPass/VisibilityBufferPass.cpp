@@ -1588,23 +1588,6 @@ private:
             if (!hzbResult) { return hzbResult; }
         }
 
-        auto createCompute = [&](ShaderModule& shader, std::unique_ptr<ComputePipeline>& pipeline, const char* label) {
-            const auto pipelineBegin = GPUDrivenCompileClock::now();
-            Result<> result = device.createComputePipeline(ComputePipelineDesc{
-                .computeShader = {&shader, "main"},
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(ResidentRasterParameters),
-                .pipelineCache = pipelineCache_.get(),
-            }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
-            if (!result || pipeline == nullptr) {
-                log += resultMessage(std::string("createComputePipeline(VisibilityBufferPass ") + label + ")", result);
-                log += '\n';
-                return result ? makeError(Error::Failure) : result;
-            }
-            logGPUDrivenCompileStage(std::string("compute pipeline ") + label, pipelineBegin);
-            return result;
-        };
-
         Result<> result = createInlineKernel(kGPUDrivenCullingShaderModuleName, kGPUDrivenPreviewResetEntryPoint,
             parameterAbi<InstanceCullParameters>(kInstanceCullABI, ParameterTransport::InlinePush), resetKernel_);
         if (!result) { return result; }
@@ -1612,17 +1595,13 @@ private:
             parameterAbi<InstanceCullParameters>(kInstanceCullABI, ParameterTransport::InlinePush), instanceCullKernel_);
         if (!result) { return result; }
         if (hybridRasterizer_) {
-            result = createShader(device, kVisibilityBufferShaderModuleName,
-                "visibilityClusterCountMain", false, clusterCountShader_, log);
-            if (result) { result = createCompute(*clusterCountShader_, clusterCountPipeline_, "cluster count"); }
-            if (!result) { return result; }
-            result = createShader(device, kVisibilityBufferShaderModuleName,
-                "visibilityClusterBinMain", false, clusterBinShader_, log);
-            if (result) { result = createCompute(*clusterBinShader_, clusterBinPipeline_, "cluster bin"); }
-            if (result) { result = createShader(device, kVisibilityBufferShaderModuleName,
-                "visibilityClusterRasterMain", false, clusterRasterShader_, log); }
-            if (result) { result = createCompute(*clusterRasterShader_, clusterRasterPipeline_, "cluster raster"); }
-            if (!result) { return result; }
+            const auto residentABI = parameterAbi<ResidentRasterParameters>(kResidentRasterABI, ParameterTransport::InlinePush);
+            for (auto [entry, kernel] : {std::pair{"visibilityClusterCountMain", &clusterCountKernel_},
+                     std::pair{"visibilityClusterBinMain", &clusterBinKernel_},
+                     std::pair{"visibilityClusterRasterMain", &clusterRasterKernel_}}) {
+                result = createInlineKernel(kVisibilityBufferShaderModuleName, entry, residentABI, *kernel);
+                if (!result) { return result; }
+            }
         }
         if (!streamEnabled_) {
             return result;
@@ -2223,18 +2202,12 @@ private:
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify resident clusters"});
             auto push = encodeResidentParameters(commandBuffer, passIndex, 0, projectWithCullingCamera);
             if (!push) { return makeError(push.error()); }
-            if (auto result = push->bindResources(commandBuffer); !result) { return result; }
             const PrivateBufferComputeStage classification[] = {
                 {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() -> Result<> {
-                    if (auto commandResult = commandBuffer.bindExecution((clusterCountPipeline_)->execution()); !commandResult) { return commandResult; }
-                    commandBuffer.pushBindlessData(push->inlineData().data(), static_cast<uint32_t>(push->inlineData().size()));
-                    commandBuffer.dispatch(1);
-                    return {};
+                    return clusterCountKernel_.dispatch(commandBuffer, *push, 1);
                 }},
                 {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
-                    if (auto commandResult = commandBuffer.bindExecution((clusterBinPipeline_)->execution()); !commandResult) { return commandResult; }
-                    commandBuffer.pushBindlessData(push->inlineData().data(), static_cast<uint32_t>(push->inlineData().size()));
-                    return commandBuffer.dispatchIndirect(residentLods_[activeFrameSlot_]->arguments());
+                    return clusterBinKernel_.dispatchIndirect(commandBuffer, *push, residentLods_[activeFrameSlot_]->arguments());
                 }},
             };
             result = recordPrivateBufferComputeStages(commandBuffer, hybridRasterizer_->clusterBuffer(), classification);
@@ -2258,12 +2231,9 @@ private:
             // and pixel writes visible to this compute branch.
             commands.beginDebugLabel({.name = "Hybrid raster: resident software clusters"});
             commands.bindBindlessHeap(*registry_->heap());
-            if (auto commandResult = commands.bindExecution((clusterRasterPipeline_)->execution()); !commandResult) { return commandResult; }
             auto push = encodeResidentParameters(commands, passIndex, 0, projectWithCullingCamera);
             if (!push) { return makeError(push.error()); }
-            if (auto result = push->bindResources(commands); !result) { return result; }
-            commands.pushBindlessData(push->inlineData().data(), static_cast<uint32_t>(push->inlineData().size()));
-            const Result<> result = commands.dispatchIndirect(hybridRasterizer_->clusterArguments(),
+            const Result<> result = clusterRasterKernel_.dispatchIndirect(commands, *push, hybridRasterizer_->clusterArguments(),
                 VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
             commands.endDebugLabel();
             return result;
@@ -2292,11 +2262,11 @@ private:
                 const auto& pipelines = tessellationEnabled() && projectWithCullingCamera
                     ? (reversedZ ? frozenVisibilityPipelines_ : frozenStandardZVisibilityPipelines_)
                     : (reversedZ ? visibilityPipelines_ : standardZVisibilityPipelines_);
-                if (auto commandResult = commands.bindExecution((pipelines[bucketIndex])->execution()); !commandResult) { return commandResult; }
                 auto push = encodeResidentParameters(commands, passIndex, bucketIndex, projectWithCullingCamera);
                 if (!push) { return makeError(push.error()); }
                 if (auto result = push->bindResources(commands); !result) { return result; }
-                commands.pushBindlessData(push->inlineData().data(), static_cast<uint32_t>(push->inlineData().size()));
+                const auto bytes = push->inlineData();
+                if (auto result = commands.bindExecution((pipelines[bucketIndex])->execution(), bytes.data(), static_cast<uint32_t>(bytes.size())); !result) { return result; }
                 if (prebin) {
                     commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments(), bucketIndex * 3u * sizeof(uint32_t));
                 } else {
@@ -2449,8 +2419,8 @@ private:
         auto encoded = writer.encode(push, kVisibilityCompositeABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }
         if (auto result = encoded->bindResources(commandBuffer); !result) { return result; }
-        if (auto result = commandBuffer.bindExecution(compositePipeline_->execution()); !result) { return result; }
-        commandBuffer.pushBindlessData(encoded->inlineData().data(), static_cast<uint32_t>(encoded->inlineData().size()));
+        const auto bytes = encoded->inlineData();
+        if (auto result = commandBuffer.bindExecution(compositePipeline_->execution(), bytes.data(), static_cast<uint32_t>(bytes.size())); !result) { return result; }
         commandBuffer.draw(3);
         commandBuffer.endRendering();
         return {};
@@ -3044,7 +3014,6 @@ private:
             });
             commands.setScissor(renderArea);
             commands.bindBindlessHeap(*streamRuntime_->bindlessHeap());
-            if (auto commandResult = commands.bindExecution(((reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_))->execution()); !commandResult) { return commandResult; }
             ParameterWriter writer(*device_, *registry_, commands.frameContext());
             auto push = streamRuntime_->hardwareParameters(writer);
             push.hasQueue = hybridRasterEnabled() && !prebin ? 1u : 0u;
@@ -3064,7 +3033,8 @@ private:
             auto encoded = writer.encode(push, kStreamHardwareABI, ParameterTransport::InlinePush);
             if (!encoded) { return makeError(encoded.error()); }
             if (auto retained = encoded->bindResources(commands); !retained) { return retained; }
-            commands.pushBindlessData(encoded->inlineData().data(), static_cast<uint32_t>(encoded->inlineData().size()));
+            const auto bytes = encoded->inlineData();
+            if (auto result = commands.bindExecution(((reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_))->execution(), bytes.data(), static_cast<uint32_t>(bytes.size())); !result) { return result; }
             if (prebin) {
                 commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments());
             } else {
@@ -4509,13 +4479,10 @@ private:
     ResourceLease streamHybridClusterHandle_;
     ResourceLease streamHybridPixelHandle_;
     ComputeKernel streamClusterPrepareKernel_;
-    std::unique_ptr<ShaderModule> clusterBinShader_;
-    std::unique_ptr<ShaderModule> clusterCountShader_;
-    std::unique_ptr<ShaderModule> clusterRasterShader_;
     std::array<ComputeKernel, 9> streamRasterKernels_;
-    std::unique_ptr<ComputePipeline> clusterBinPipeline_;
-    std::unique_ptr<ComputePipeline> clusterCountPipeline_;
-    std::unique_ptr<ComputePipeline> clusterRasterPipeline_;
+    ComputeKernel clusterBinKernel_;
+    ComputeKernel clusterCountKernel_;
+    ComputeKernel clusterRasterKernel_;
     ComputeKernel streamClusterBinKernel_;
     ComputeKernel streamClusterBinP0Kernel_;
     ComputeKernel streamClusterCullKernel_;
