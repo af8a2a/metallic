@@ -1,26 +1,27 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/VisibilityMaterialParameters.h"
+[[vk::push_constant]] ConstantBuffer<VisibilityMaterialParams> gParams;
 using Metallic;
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
-struct MaterialPush { uint width, height, residentCount, streamCount, mode; float3 eye; };
+typealias MaterialPush = VisibilityMaterialSettings;
 #include "VisibilityStreamDecode.slang"
-#define gOutput getResource<RWTexture2D<float4>>(0)
-#define gVisibility getResource<Texture2D<uint>>(1)
-#define gInstances getResource<StructuredBuffer<GPUDrivenPreviewInstance>>(2)
-#define gMaterials getResource<StructuredBuffer<GPUDrivenPreviewMaterial>>(3)
-#define gRecords getResource<StructuredBuffer<VisibleClusterRecord>>(4)
-#define gMeshlets getResource<StructuredBuffer<GPUDrivenPreviewMeshlet>>(5)
-#define gVertices getResource<StructuredBuffer<GPUDrivenPreviewVertex>>(6)
-#define gVertexIndices getResource<StructuredBuffer<uint>>(7)
-#define gTriangles getResource<StructuredBuffer<uint>>(8)
-#define gGeometries getResource<StructuredBuffer<GPUDrivenPreviewGeometry>>(9)
-#define gStreamRecords getResource<StructuredBuffer<CompactStreamVisibleRecord>>(10)
-#define gGroups getResource<StructuredBuffer<StreamActiveGroup>>(11)
-#define gPages getResource<StructuredBuffer<uint>>(12)
-#define gPageTable getResource<StructuredBuffer<uint2>>(13)
+#define gOutput resolveDescriptor(gParams.output)
+#define gVisibility resolveDescriptor(gParams.visibility)
+#define gInstances resolveDescriptor(gParams.instances)
+#define gMaterials resolveDescriptor(gParams.materials)
+#define gRecords resolveDescriptor(gParams.records)
+#define gMeshlets resolveDescriptor(gParams.meshlets)
+#define gVertices resolveDescriptor(gParams.vertices)
+#define gVertexIndices resolveDescriptor(gParams.vertexIndices)
+#define gTriangles resolveDescriptor(gParams.triangles)
+#define gGeometries resolveDescriptor(gParams.geometries)
+#define gStreamRecords resolveDescriptor(gParams.streamRecords)
+#define gGroups resolveDescriptor(gParams.groups)
+#define gPages resolveDescriptor(gParams.pages)
+#define gPageTable resolveDescriptor(gParams.pageTable)
 
 float3 worldPosition(GPUDrivenPreviewInstance instance, float3 p)
 {
@@ -48,7 +49,7 @@ bool decodeTriangle(uint id, MaterialPush push, out uint instanceId, out float3 
     } else {
         index -= push.residentCount;
         if (index >= push.streamCount) { return false; }
-        if (!decodeStreamTriangle(index, triangle, gStreamRecords, gGroups, gPages, gPageTable, streamPageWordCount(getResource<ByteAddressBuffer>(14)), record, a, b, c)) { return false; }
+        if (!decodeStreamTriangle(index, triangle, gStreamRecords, gGroups, gPages, gPageTable, streamPageWordCount(resolveDescriptor(gParams.streamParams)), record, a, b, c)) { return false; }
     }
     uint count, stride;
     gInstances.GetDimensions(count, stride);
@@ -63,7 +64,7 @@ bool decodeTriangle(uint id, MaterialPush push, out uint instanceId, out float3 
 [numthreads(8, 8, 1)]
 void visibilityBufferMaterialMain(uint3 thread : SV_DispatchThreadID)
 {
-    MaterialPush push = getConstants<MaterialPush>();
+    MaterialPush push = gParams.settings;
     if (thread.x >= push.width || thread.y >= push.height) { return; }
     uint id = gVisibility.Load(int3(thread.xy, 0)), instanceId;
     float3 a, b, c;
@@ -72,7 +73,7 @@ void visibilityBufferMaterialMain(uint3 thread : SV_DispatchThreadID)
         GPUDrivenPreviewMaterial material = gMaterials[gInstances[instanceId].identity.y];
         float3 n = cross(b - a, c - a);
         n *= rsqrt(max(dot(n, n), 1e-30));
-        if (dot(n, push.eye - (a + b + c) / 3) < 0 && material.params.w > 0.5) { n = -n; }
+        if (dot(n, float3(push.eyeX, push.eyeY, push.eyeZ) - (a + b + c) / 3) < 0 && material.params.w > 0.5) { n = -n; }
         float3 base = material.baseColor.rgb;
         if (push.mode == 1) { color = base; }
         else if (push.mode == 2) { color = n * 0.5 + 0.5; }
@@ -81,7 +82,7 @@ void visibilityBufferMaterialMain(uint3 thread : SV_DispatchThreadID)
             color = float3(seed & 255u, (seed >> 8) & 255u, (seed >> 16) & 255u) / 255;
         } else {
             float3 light = normalize(float3(-0.4, 0.8, 0.5));
-            float3 view = normalize(push.eye - (a + b + c) / 3);
+            float3 view = normalize(float3(push.eyeX, push.eyeY, push.eyeZ) - (a + b + c) / 3);
             float3 halfway = normalize(light + view);
             float roughness = clamp(material.params.y, 0.05, 1.0);
             float metallic = saturate(material.params.x);

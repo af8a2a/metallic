@@ -421,7 +421,7 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
         readback->buffers.push_back(std::move(buffer));
     }
     if (!probes.empty()) {
-        if (!probeProgram_) { probeProgram_ = std::make_unique<ComputeProgram>(); }
+        if (!probeProgram_) { probeProgram_ = std::make_unique<ComputeKernel>(); }
         std::string log;
         auto result = initializeDebugProbe(*device_, *probeProgram_, log);
         if (!result) { reject("ProbeInitializationFailed", log); return; }
@@ -483,7 +483,7 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
     if (!probes.empty()) {
         const auto result = commands.recordIsolatedCompute([&]() -> Result<> {
             for (size_t i = 0; i < probes.size(); ++i) {
-                const auto result = recordDebugProbe(commands, *probeProgram_, probes[i], *readback->probeOutputs[i], *readback->buffers[copies.size() + i]);
+                const auto result = recordDebugProbe(*device_, commands, *probeProgram_, probes[i], *readback->probeOutputs[i], *readback->buffers[copies.size() + i]);
                 if (!result) { return result; }
             }
             return {};

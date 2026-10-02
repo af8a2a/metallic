@@ -1,5 +1,6 @@
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/VisibilityMaterialParameters.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
@@ -56,18 +57,11 @@ public:
             .entryPointName = "visibilityBufferMaterialMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
         if (!result) { log = shader.diagnostics; return result; }
-        std::array<ComputeProgramBindingDesc, 15> bindings;
-        for (uint32_t slot = 0; slot < bindings.size(); ++slot) {
-            bindings[slot] = {.binding = slot, .kind = ComputeResourceBindingKind::StorageBuffer};
-        }
-        bindings[0].kind = ComputeResourceBindingKind::StorageImage;
-        bindings[1].kind = ComputeResourceBindingKind::SampledImage;
+        device_ = context.device;
         return program_.initialize(*context.device, {
             .spirv = shader.spirv,
-            .pushConstantSize = 32,
-            .bindings = bindings,
+            .parameters = parameterAbi<VisibilityMaterialParams>(kVisibilityMaterialABI, ParameterTransport::InlinePush),
             .debugName = "VisibilityBufferMaterial",
-            .requiresRayQuery = false,
         }, log);
     }
 
@@ -106,47 +100,43 @@ private:
         const auto* stream = gpuScene->visibilityStream({info.lightGridViewIndex, info.lightGridViewGeneration},
             info.frameIndex, info.sceneIdentity);
         if (info.hasStreamGeometry && !stream) { return makeError(Error::InvalidArgument); }
-        // Unused optional descriptors point at a valid metadata buffer; the shader
-        // selects its producer before accessing any geometry descriptor.
-        Buffer* fallback = views.geometries.buffer;
-        const auto optional = [fallback](Buffer* buffer) { return buffer ? buffer : fallback; };
-        TextureView* image = visibility.view();
-        const ComputeDispatchBinding bindings[] = {
-            {.binding = 0, .textureView = color.view()},
-            {.binding = 1, .textureViews = {&image, 1}},
-            {.binding = 2, .buffer = views.instances.buffer},
-            {.binding = 3, .buffer = views.materials.buffer},
-            {.binding = 4, .buffer = optional(views.meshletDraws.buffer)},
-            {.binding = 5, .buffer = optional(views.meshlets.buffer)},
-            {.binding = 6, .buffer = optional(views.vertices.buffer)},
-            {.binding = 7, .buffer = optional(views.meshletVertices.buffer)},
-            {.binding = 8, .buffer = optional(views.meshletTriangleWords.buffer)},
-            {.binding = 9, .buffer = views.geometries.buffer},
-            {.binding = 10, .buffer = stream ? stream->visibleClusterBuffer : fallback},
-            {.binding = 11, .buffer = stream ? stream->activeGroupBuffer : fallback},
-            {.binding = 12, .buffer = stream ? stream->pageBuffer : fallback},
-            {.binding = 13, .buffer = stream ? stream->pageTableBuffer : fallback},
-            {.binding = 14, .buffer = stream ? stream->paramsBuffer : fallback},
-        };
-        struct Push { uint32_t width, height, residentCount, streamCount, mode; float eye[3]; };
         const auto mode = properties().value("visualization", "shaded");
-        const Push push{info.width, info.height, info.residentRecordCount, stream ? stream->visibleRecordCapacity : 0u,
-            mode == "baseColor" ? 1u : mode == "normal" ? 2u : mode == "instance" ? 3u : 0u,
-            {info.eye[0], info.eye[1], info.eye[2]}};
-        ComputeDispatchDesc desc{
-            .bindings = {bindings, uint32_t(std::size(bindings))},
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = (info.width + 7) / 8,
-            .groupCountY = (info.height + 7) / 8,
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return makeError(registry.error()); }
+        auto& commands = context.commandBuffer();
+        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        const auto optional = [&writer](Buffer* buffer) { return buffer ? writer.buffer(buffer) : ShaderBuffer{}; };
+        const VisibilityMaterialParams params{
+            .output = writer.storageImage(color.view()),
+            .visibility = writer.sampledImage(visibility.view()),
+            .instances = optional(views.instances.buffer),
+            .materials = optional(views.materials.buffer),
+            .records = optional(views.meshletDraws.buffer),
+            .meshlets = optional(views.meshlets.buffer),
+            .vertices = optional(views.vertices.buffer),
+            .vertexIndices = optional(views.meshletVertices.buffer),
+            .triangles = optional(views.meshletTriangleWords.buffer),
+            .geometries = optional(views.geometries.buffer),
+            .streamRecords = optional(stream ? stream->visibleClusterBuffer : nullptr),
+            .groups = optional(stream ? stream->activeGroupBuffer : nullptr),
+            .pages = optional(stream ? stream->pageBuffer : nullptr),
+            .pageTable = optional(stream ? stream->pageTableBuffer : nullptr),
+            .streamParams = optional(stream ? stream->paramsBuffer : nullptr),
+            .settings = {info.width, info.height, info.residentRecordCount, stream ? stream->visibleRecordCapacity : 0u,
+                mode == "baseColor" ? 1u : mode == "normal" ? 2u : mode == "instance" ? 3u : 0u,
+                info.eye[0], info.eye[1], info.eye[2]},
         };
-        if (prepare) { return program_.prepareDispatch(*context.commandBuffer().frameContext(), desc).transform([&](auto value) { prepared_ = std::move(value); }); }
-        desc.commandBuffer = &context.commandBuffer();
-        return program_.dispatch(desc);
+        auto encoded = writer.encode(params, kVisibilityMaterialABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
+        auto dispatch = program_.prepareDispatch(*encoded, (info.width + 7) / 8, (info.height + 7) / 8);
+        if (!dispatch) { return makeError(dispatch.error()); }
+        if (prepare) { prepared_ = std::move(*dispatch); return {}; }
+        return dispatch->record(commands);
     }
 
     PreparedComputeDispatch prepared_;
-    ComputeProgram program_;
+    Device* device_ = nullptr;
+    ComputeKernel program_;
 };
 } // namespace
 

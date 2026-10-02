@@ -1,12 +1,11 @@
+#include "../../../Source/Runtime/Render/Core/ImageSampleParameters.h"
+using Metallic;
+[[vk::push_constant]] ConstantBuffer<ImageSampleParams> gParams;
+
 struct ImageSampleVertexOutput
 {
     float4 position : SV_Position;
     float2 uv : TEXCOORD0;
-};
-
-struct SampledImagePush
-{
-    uint sourceImage;
 };
 
 static const float2 kFullscreenTrianglePositions[3] =
@@ -33,11 +32,9 @@ ImageSampleVertexOutput imageSampleVertexMain(uint vertexIndex : SV_VertexID)
 }
 
 [shader("fragment")]
-float4 imageSampleFragmentMain(ImageSampleVertexOutput input, uniform SampledImagePush bindless) : SV_Target0
+float4 imageSampleFragmentMain(ImageSampleVertexOutput input) : SV_Target0
 {
-    DescriptorHandle<Texture2D<float4>> imageHandle =
-        DescriptorHandle<Texture2D<float4>>(uint2(bindless.sourceImage, 0));
-    Texture2D<float4> image = imageHandle;
+    Texture2D<float4> image = resolveDescriptor(gParams.source);
 
     uint width = 1;
     uint height = 1;

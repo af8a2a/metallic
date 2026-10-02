@@ -74,6 +74,14 @@ UpscalerGuideResolve 使用 40 字节 inline push，包含四个具名图像句�
 DLSS depth export / alpha resolve 共用 16 字节 `DLSSSupportParams`；图形入口绑定编码后的 inline 数据，
 compute 入口使用 ComputeKernel。两者均通过共享 registry 保留图像资源，不再维护私有 heap 或手写 shader index。
 
+[ImageSampleParameters.h](../Source/Runtime/Render/Core/ImageSampleParameters.h) 提供 ImageSample 的
+8 字节 inline 图像句柄；图形入口使用共享 registry 和执行绑定，不再维护私有 heap 或截断 shader index。
+每帧从 prepared scene 获取当前图像并编码资源保留；GPU 回归检查连续帧与奇数尺寸 resize 后的输出恢复。
+
+[RenderGraphBufferParameters.h](../Source/Runtime/Render/Core/RenderGraphBufferParameters.h) 提供
+Write/Copy 共用的 32 字节 inline 参数，普通 buffer 通过有界 BDA span 访问，无需分配 view/descriptor。
+GPU aliasing 回归覆盖独立/复用分配、graphics/compute 队列、串行/并行录制、joined/pipelined 提交与跨帧读回。
+
 [DebugVisualizationParameters.h](../Source/Runtime/Render/Core/DebugVisualizationParameters.h) 提供
 普通场景和 streaming RTAS 可视化共用的 112 字节 inline 参数（AS、输出图像、camera/mode）。
 两条 CPU 路径使用 ParameterWriter / ComputeKernel；AS 使用完整规范句柄，支持 mapped/native 描述符模式。
@@ -81,6 +89,19 @@ compute 入口使用 ComputeKernel。两者均通过共享 registry 保留图像
 [MaterialSampleParameters.h](../Source/Runtime/Render/Core/MaterialSampleParameters.h) 提供 RTXCR 材质演示的
 72 字节 inline 参数（输出句柄和 64 字节材质设置），直接通过 ComputeKernel 提交。
 独立 pass 回归覆盖 overview、Chiang hair、far-field hair、subsurface、曝光更新和奇数尺寸 resize。
+
+[VisibilityMaterialParameters.h](../Source/Runtime/Render/Core/VisibilityMaterialParameters.h) 提供
+VisibilityBufferMaterial 的 152 字节 inline 参数，统一 resident/streaming 图像与 buffer 句柄及标量设置。
+串行和并行准备均使用 ComputeKernel 的不可变 prepared dispatch；未使用的可选资源不注册占位 descriptor。
+`StreamActiveGroup` 的 shader 布局统一位于 GPUDriven 模块，供材质解码和 ray-query 解码复用。
+
+[MaterialErrorParameters.h](../Source/Runtime/Render/Core/MaterialErrorParameters.h) 提供错误材质的
+16 字节 inline 参数。首次材质编译失败时，color 输出错误棋盘，其余 guide 清零；共享初始化/分派函数
+使用 ComputeKernel 和 ParameterWriter，测试覆盖 mapped/native、多种标量/向量格式及奇数尺寸。
+
+[DebugProbeParameters.h](../Source/Runtime/Render/Core/DebugProbeParameters.h) 提供 GPU probe 的 72 字节
+inline 参数及共享归约记录布局。参数在 barrier 录制前完成编码；源/输出通过共享 registry 保留，
+probe 后恢复原资源状态和执行绑定。GPU 回归覆盖大于单组的扫描、非有限值、位字段、watch 与绑定恢复。
 AutoExposure 的 Histogram、Reduce、Apply 复用同一份不可变参数；barrier 来自阶段读写声明，不能从 handle 推测访问。
 新增参数 ABI 时应验证字段偏移、GPU 读回、mapped/native 路径和生命周期；共享声明不等于自动完成布局验证。
 
@@ -106,7 +127,11 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 无 guides 的 Standard/realtime/deferred 仍通过 ComputeProgram 的 DataBuffer 兼容表传递 span。
 
 `StreamSceneRayQuery` 的 pages、page table、instances 和 header 也使用有界 BDA `DataSpan`。
-streaming deferred 外层保留 `ComputeProgram` 兼容入口（90–93 为 DataBuffer），这四项不再分配 buffer descriptor；
+streaming deferred 外层保留 `ComputeProgram` 兼容入口；四个 span 已统一为共享 `StreamSceneParameters`，
+通过 settings 中的 BDA 根地址传递，不再使用 90–93 数字槽位或 buffer descriptor。
+`ParameterWriter` 编码不可变快照，并将四个资源保留至提交完成；material bin dispatch 复用同一快照。
+ScreenSpaceShadows 的 CLAS alpha-mask 查询复用同一声明，通过 16 字节 `ShadowGeometryPush` 传递根地址，
+同步移除旧 90–94 绑定。主追踪 settings 为 272 字节 BDA 数据，不是原生 push constant。
 续射页容量直接来自 span，不再读取 slot 94 的参数块。共享 stream 解码通过静态泛型 reader 同时支持 descriptor 和 BDA；
 属性解码必须在相同三角形的范围校验成功后调用。
 

@@ -1,3 +1,9 @@
+#include "Runtime/Render/Core/ImageSampleParameters.h"
+#include "Runtime/Render/Core/RenderGraphBufferParameters.h"
+#include "Runtime/Render/Core/StreamSceneParameters.h"
+#include "Runtime/Render/Core/DebugProbeParameters.h"
+#include "Runtime/Render/Core/MaterialErrorParameters.h"
+#include "Runtime/Render/Core/VisibilityMaterialParameters.h"
 #include "Runtime/Render/Core/MaterialSampleParameters.h"
 #include "Runtime/Render/Core/DebugVisualizationParameters.h"
 #include "RHITest.h"
@@ -170,6 +176,11 @@ public:
             {"Metallic.SceneRayQueryVisualizationParams", {FIELD(SceneRayQueryVisualizationParams, scene), FIELD(SceneRayQueryVisualizationParams, output), FIELD(SceneRayQueryVisualizationParams, settings)}},
             {"Metallic.SceneRayQueryVisualizationPush", {FIELD(SceneRayQueryVisualizationPush, eye), FIELD(SceneRayQueryVisualizationPush, center), FIELD(SceneRayQueryVisualizationPush, upProjection), FIELD(SceneRayQueryVisualizationPush, viewport), FIELD(SceneRayQueryVisualizationPush, clipOrtho), FIELD(SceneRayQueryVisualizationPush, mode), FIELD(SceneRayQueryVisualizationPush, width), FIELD(SceneRayQueryVisualizationPush, height), FIELD(SceneRayQueryVisualizationPush, padding)}},
             {"Metallic.RTXCRMaterialSampleParams", {FIELD(RTXCRMaterialSampleParams, output), FIELD(RTXCRMaterialSampleParams, settings)}},
+            {"Metallic.VisibilityMaterialParams", {FIELD(VisibilityMaterialParams, output), FIELD(VisibilityMaterialParams, visibility), FIELD(VisibilityMaterialParams, instances), FIELD(VisibilityMaterialParams, materials), FIELD(VisibilityMaterialParams, records), FIELD(VisibilityMaterialParams, meshlets), FIELD(VisibilityMaterialParams, vertices), FIELD(VisibilityMaterialParams, vertexIndices), FIELD(VisibilityMaterialParams, triangles), FIELD(VisibilityMaterialParams, geometries), FIELD(VisibilityMaterialParams, streamRecords), FIELD(VisibilityMaterialParams, groups), FIELD(VisibilityMaterialParams, pages), FIELD(VisibilityMaterialParams, pageTable), FIELD(VisibilityMaterialParams, streamParams), FIELD(VisibilityMaterialParams, settings)}},
+            {"Metallic.MaterialErrorParams", {FIELD(MaterialErrorParams, output), FIELD(MaterialErrorParams, color), FIELD(MaterialErrorParams, padding)}},
+            {"Metallic.DebugProbeParams", {FIELD(DebugProbeParams, source), FIELD(DebugProbeParams, output), FIELD(DebugProbeParams, settings), FIELD(DebugProbeParams, padding)}},
+            {"Metallic.ImageSampleParams", {FIELD(ImageSampleParams, source)}},
+            {"Metallic.RenderGraphBufferParams", {FIELD(RenderGraphBufferParams, source), FIELD(RenderGraphBufferParams, output)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -201,10 +212,16 @@ public:
             {"Features/Debug/SceneRayQueryVisualize", "sceneRayQueryVisualizeMain", 16},
             {"Features/Debug/SceneRayQueryVisualize", "sceneRayQueryVisualizeMain", 17},
             {"Features/Samples/RTXCRMaterialSample", "rtxcrMaterialSampleMain", 18},
+            {"Features/VisibilityBuffer/VisibilityBufferMaterial", "visibilityBufferMaterialMain", 19},
+            {"Features/Material/MaterialError", "materialErrorMain", 20},
+            {"Features/Debug/GPUProbe", "probe", 21},
+            {"Features/Samples/ImageSample", "imageSampleFragmentMain", 22},
+            {"Features/SmokeTests/RenderGraphBuffer", "renderGraphBufferWriteMain", 23},
+            {"Features/SmokeTests/RenderGraphBuffer", "renderGraphBufferCopyMain", 23},
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                if ((program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
                 const char* capabilities[] = {"spvRayQueryKHR"};
                 std::span<const char* const> extraPaths;
@@ -251,7 +268,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -298,6 +315,37 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(MaterialSampleParameterLayoutTest);
 #endif
+
+class VisibilityMaterialParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    VisibilityMaterialParameterLayoutTest() { category = 7; name = "visibility_material_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(VisibilityMaterialParameterLayoutTest);
+
+class MaterialErrorParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    MaterialErrorParameterLayoutTest() { category = 8; name = "material_error_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(MaterialErrorParameterLayoutTest);
+
+class DebugProbeParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    DebugProbeParameterLayoutTest() { category = 9; name = "debug_probe_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(DebugProbeParameterLayoutTest);
+
+class ImageSampleParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    ImageSampleParameterLayoutTest() { category = 10; name = "image_sample_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(ImageSampleParameterLayoutTest);
+
+class GraphBufferParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    GraphBufferParameterLayoutTest() { category = 11; name = "graph_buffer_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(GraphBufferParameterLayoutTest);
+
 
 class SharcTypedMaintenanceTest final : public RHITest {
 public:
@@ -1212,7 +1260,7 @@ public:
         auto& queue = *device->getQueue(QueueType::Graphics);
         auto registry = device->resourceRegistry();
         REG_CHECK(registry);
-        struct Params { ShaderDataSpan pages, table, output; };
+        struct Params { StreamSceneParameters stream; ShaderDataSpan output; };
         ComputeKernel kernel;
         std::string log;
         auto shader = compileSlangShaderToSpirv({.moduleName = "StreamDataDecodeProbe",
@@ -1236,8 +1284,13 @@ public:
             const std::array<uint32_t, 2> table{2, 0};
             ParameterWriter writer(*device, **registry, &recording.frame);
             Params params{};
-            params.pages = {writer.data(words.data(), sizeof(words)), uint32_t(words.size()), 4};
-            params.table = {writer.data(table.data(), sizeof(table)), 1, 8};
+            params.stream.pages = {writer.data(words.data(), sizeof(words)), uint32_t(words.size()), 4};
+            params.stream.pageTable = {writer.data(table.data(), sizeof(table)), 1, 8};
+            std::array<uint32_t, 24> instance{};
+            instance[1] = 17;
+            const std::array<uint32_t, 3> header{0, 0, 23};
+            params.stream.instances = {writer.data(instance.data(), sizeof(instance)), 1, 96};
+            params.stream.header = {writer.data(header.data(), sizeof(header)), 3, 4};
             params.output = writer.dataBuffer(output.get(), 4, 4);
             auto encoded = writer.encode(params, kABI + 6);
             REG_CHECK(encoded);
@@ -1255,10 +1308,10 @@ public:
         output->invalidate();
         const auto* values = static_cast<const uint32_t*>(output->map());
         REG_CHECK(values);
-        std::array<uint32_t, 9> actual{};
+        std::array<uint32_t, 11> actual{};
         std::memcpy(actual.data(), values, sizeof(actual));
         output->unmap();
-        for (uint32_t i = 0; i < actual.size(); ++i) { REG_CHECK(actual[i] == (i == 0 ? 1u : 0u)); }
+        for (uint32_t i = 0; i < actual.size(); ++i) { REG_CHECK(actual[i] == (i == 9 ? 17u : i == 10 ? 23u : i == 0 ? 1u : 0u)); }
         REG_CHECK((*registry)->stats().descriptorWrites == 0);
         return RHITestResult::pass("BDA triangle values; invalid page/cluster/triangle, truncated buffers, empty table and wrong stride rejected");
     }

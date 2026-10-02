@@ -7757,7 +7757,7 @@ public:
     RHITestResult run(RHITestContext& context) override
     {
         render::RenderGraphPreviewRenderer preview;
-        render::Result<> result = preview.initialize(false);
+        render::Result<> result = preview.initialize(context.enableValidation);
         if (!result) {
             return RHITestResult::skip(std::string("RenderGraphPreviewRenderer::initialize returned ") + toString(result));
         }
@@ -7780,6 +7780,21 @@ public:
             return RHITestResult::fail(
                 std::string("image sample pass produced too few visible pixels: ") +
                 std::to_string(visiblePixelCount));
+        }
+
+        const auto firstFrame = preview.pixels();
+        result = preview.render(graph, 160, 120);
+        if (!result || preview.pixels() != firstFrame) {
+            return RHITestResult::fail("Image inline parameters changed consecutive-frame output: " + preview.lastLog());
+        }
+        result = preview.render(graph, 173, 127);
+        if (!result || preview.width() != 173 || preview.height() != 127 ||
+            countVisiblePixels(preview.pixels()) < 173 * 127 / 2) {
+            return RHITestResult::fail("Image inline parameters failed odd-size resize: " + preview.lastLog());
+        }
+        result = preview.render(graph, 160, 120);
+        if (!result || preview.pixels() != firstFrame) {
+            return RHITestResult::fail("Image output changed after restoring original extent: " + preview.lastLog());
         }
 
         std::string outputMessage;

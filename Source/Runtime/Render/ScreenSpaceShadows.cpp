@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/StreamSceneParameters.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
@@ -179,7 +180,6 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         if (streamTlas) {
             layout.push_back({.binding = 6});
             layout.push_back({.binding = 9, .kind = ComputeResourceBindingKind::SampledImage, .descriptorCount = textureCount});
-            for (uint32_t i = 90; i <= 94; ++i) { layout.push_back({.binding = i}); }
         }
         if (!streamed) {
             layout.push_back({.binding = 2, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 16, .dataAlignment = 8});
@@ -200,7 +200,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         }
         result = trace.initialize(device, {
             .spirv = shader.spirv,
-            .pushConstantSize = 8u,
+            .pushConstantSize = sizeof(ShadowGeometryPush),
             .bindings = layout,
             .debugName = "Ray-traced shadows",
             .requiresRayQuery = true,
@@ -309,7 +309,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     for (uint32_t i = 0; i < 5; ++i) {
         bindings.push_back({.binding = kShadowBinding + i + 2, .textureView = state->views[i].get()});
     }
-    uint32_t geometryPush[2]{};
+    ShadowGeometryPush geometryPush{};
     if (streamed) {
         if (streamTlas) {
             CPUProfileScope resources(profiler, "Prepare material textures");
@@ -318,12 +318,22 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
                 ? accelerationStructure : streamGeometry->accelerationStructure});
             bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
             bindings.push_back({.binding = 9, .textureViews = {geometry->materialTextureViews().data(), textureCount}, .sampledImages = geometry->materialTextureSnapshot()});
-            bindings.push_back({.binding = 90, .buffer = streamGeometry->pageBuffer});
-            bindings.push_back({.binding = 91, .buffer = streamGeometry->pageTableBuffer});
-            bindings.push_back({.binding = 92, .buffer = streamGeometry->instanceBuffer});
-            bindings.push_back({.binding = 93, .buffer = streamGeometry->activeHeaderBuffer});
-            bindings.push_back({.binding = 94, .buffer = streamGeometry->paramsBuffer});
-            geometryPush[0] = textureCount;
+            auto registry = device.resourceRegistry();
+            if (!registry) { return makeError(registry.error()); }
+            ParameterWriter writer(device, **registry, commands.frameContext());
+            const StreamSceneParameters streamParams{
+                .pages = writer.dataBuffer(streamGeometry->pageBuffer, 4, 4),
+                .pageTable = writer.dataBuffer(streamGeometry->pageTableBuffer, 8, 8),
+                .instances = writer.dataBuffer(streamGeometry->instanceBuffer,
+                    sizeof(MeshletStreamGPUInstance), alignof(MeshletStreamGPUInstance)),
+                .header = writer.dataBuffer(streamGeometry->activeHeaderBuffer, 4, 4),
+            };
+            auto encoded = writer.encode(streamParams, kStreamSceneABI);
+            if (!encoded) { return makeError(encoded.error()); }
+            result = encoded->bindResources(commands);
+            if (!result) { return makeError(result.error()); }
+            geometryPush.streamScene = encoded->address();
+            geometryPush.materialTextureCount = textureCount;
         }
     } else {
         CPUProfileScope resources(profiler, "Prepare material textures");
@@ -340,8 +350,8 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             .textureViews = {geometry->materialTextureViews().data(), geometry->materialTextureCount()},
             .sampledImages = geometry->materialTextureSnapshot(),
         });
-        geometryPush[0] = geometry->materialTextureCount();
-        geometryPush[1] = neural->textureSetCount();
+        geometryPush.materialTextureCount = geometry->materialTextureCount();
+        geometryPush.ntcTextureSetCount = neural->textureSetCount();
     }
     if (ntc) {
         bindings.push_back({
@@ -360,7 +370,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     result = trace.dispatch({
         .commandBuffer = &commands,
         .bindings = bindings,
-        .pushData = geometryPush,
+        .pushData = &geometryPush,
         .pushDataSize = sizeof(geometryPush),
         .groupCountX = (width + 7) / 8,
         .groupCountY = (height + 7) / 8,

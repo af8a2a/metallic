@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/StreamSceneParameters.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
@@ -377,12 +378,7 @@ inline void appendCameraRuntimeSettings(
     settings.push_back(runtimeFloatSetting("camera.fovDegrees", "FOV", fovDegrees, 1.0f, 179.0f, invalidateHistory));
 }
 
-struct RenderGraphBufferUserPush {
-    uint32_t inputBuffer = 0;
-    uint32_t outputBuffer = 0;
-    uint32_t passIndex = 0;
-    uint32_t padding = 0;
-};
+
 
 struct SceneGPUTransform {
     float world[16] = {
@@ -791,9 +787,10 @@ struct ScenePathTracePush {
     float jitterOffsetY = 0.0f;
     uint32_t sampleFrame = 0;
     uint32_t temporalJitter = 0;
-    // Keep the shared push ABI within the descriptor heap's 256-byte limit.
     // Bits 0:15 material bin, 16:20 transmission samples, 21:25 ray depth.
     uint32_t deferredSettings = (2u << 16u) | (8u << 21u);
+    uint64_t streamScene = 0;
+    uint64_t streamPadding = 0;
 };
 
 // Per-frame parameters for the radiance-cache permutations of
@@ -837,7 +834,8 @@ struct ScenePathTraceCacheParams {
 
 static_assert(sizeof(ScenePathTraceCacheParams) == 172);
 static_assert(offsetof(ScenePathTraceCacheParams, nrcFrameDimensions) == 76);
-static_assert(sizeof(ScenePathTracePush) == 256);
+static_assert(sizeof(ScenePathTracePush) == 272);
+static_assert(offsetof(ScenePathTracePush, streamScene) == 256);
 
 struct SceneRTXDIPush {
     float eye[4] = {};

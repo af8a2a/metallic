@@ -1,4 +1,5 @@
 #pragma once
+#include "Runtime/Render/Core/MaterialErrorParameters.h"
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -24,6 +25,8 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
 Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source,
     const ComputeKernelDesc& layout, ComputeKernel& program,
     std::shared_ptr<const MaterialExecutableArtifact>& artifact, std::string& log);
-Result<> initializeMaterialErrorProgram(Device& device, ComputeProgram& program, std::string& log);
+Result<> initializeMaterialErrorKernel(Device& device, ComputeKernel& program, std::string& log);
+Result<> dispatchMaterialError(Device& device, const ComputeKernel& program, CommandBuffer& commands,
+    TextureView& output, uint32_t width, uint32_t height, bool color);
 
 } // namespace metallic::render

@@ -2,16 +2,11 @@
 import GPUDriven;
 using Metallic.GPUDriven;
 #include "../VisibilityBuffer/VisibilityStreamDecode.slang"
-struct StreamRayInstance
-{
-    uint primitiveIndex, materialIndex, visible, gpuSceneInstanceIndex;
-    float4 world0, world1, world2, world3;
-    float4 bounds;
-};
-#define gRayStreamPages getData<uint>(90)
-#define gRayStreamPageTable getData<uint2>(91)
-#define gRayStreamInstances getData<StreamRayInstance>(92)
-#define gRayStreamHeader getData<uint>(93)
+// The immutable settings snapshot owns the named, bounded stream parameters.
+#define gRayStreamPages push.streamScene.pages
+#define gRayStreamPageTable push.streamScene.pageTable
+#define gRayStreamInstances push.streamScene.instances
+#define gRayStreamHeader push.streamScene.header
 
 float3 streamRayVector(StreamRayInstance instance, float3 v)
 {
@@ -30,6 +25,7 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
     Ray ray, float t, ScenePathTracePush push, out HitInfo hit)
 {
     hit = (HitInfo)0;
+    if (push.streamScene == nullptr) { return false; }
     uint count, stride;
     count = gRayStreamInstances.length();
     if (instanceIndex >= count) { return false; }
@@ -81,6 +77,7 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
 bool streamRayAlphaAccepts(uint instanceIndex, uint clusterId, uint triangle, float2 bary,
     Ray ray, float t, ScenePathTracePush push)
 {
+    if (push.streamScene == nullptr) { return false; }
     uint count, stride;
     count = gRayStreamInstances.length();
     if (instanceIndex >= count) { return false; }

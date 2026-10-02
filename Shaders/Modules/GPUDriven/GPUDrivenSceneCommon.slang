@@ -125,6 +125,13 @@ public struct GPUDrivenPreviewTextureInfo
     public float4 transform1;
 };
 
+public struct StreamActiveGroup {
+    uint pageOffset, pageIndex, clusterCount, primitiveIndex;
+    uint lodLevel, materialIndex, mask, flags;
+    uint instanceIndex, gpuSceneInstanceIndex, padding0, padding1;
+    float4 world0, world1, world2, world3;
+};
+
 public struct GPUDrivenPreviewMaterial
 {
     public float4 baseColor;

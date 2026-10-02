@@ -17,12 +17,6 @@ using Metallic.Interop.NRDEncoding;
 #define gMotion getResource<RWTexture2D<float4>>(85)
 #define gShadow getResource<RWTexture2D<float>>(86)
 
-struct ShadowGeometryPush
-{
-    uint materialTextureCount;
-    uint ntcTextureSetCount;
-};
-
 float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
 {
 #if METALLIC_STREAM_SHADOWS && !METALLIC_STREAM_TLAS
@@ -32,6 +26,7 @@ float traceGeometryShadow(float3 origin, float3 direction, float maxDistance)
     ScenePathTracePush push = (ScenePathTracePush)0;
     push.materialTextureCount = geometry.materialTextureCount;
     push.ntcTextureSetCount = geometry.ntcTextureSetCount;
+    push.streamScene = geometry.streamScene;
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = direction;

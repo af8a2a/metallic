@@ -117,26 +117,30 @@ debug::DebugResult<std::vector<PreparedDebugProbe>> prepareDebugProbes(
     catch (const std::exception& error) { return std::unexpected(debug::DebugError{"InvalidArgument", error.what()}); }
 }
 
-Result<> initializeDebugProbe(Device& device, ComputeProgram& program, std::string& log)
+Result<> initializeDebugProbe(Device& device, ComputeKernel& program, std::string& log)
 {
     if (program.valid()) { return {}; }
     ShaderCompileResult shader;
     auto result = compileSlangShaderToSpirv({.moduleName = "Features/Debug/GPUProbe", .entryPointName = "probe",
         .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
     if (!result) { log = shader.diagnostics; return result; }
-    const ComputeProgramBindingDesc bindings[] = {{0}, {1}};
     return program.initialize(device, {
         .spirv = shader.spirv,
-        .pushConstantSize = sizeof(DebugProbePush),
-        .bindings = {bindings, 2},
+        .parameters = parameterAbi<DebugProbeParams>(kDebugProbeABI, ParameterTransport::InlinePush),
         .debugName = "DebugGPUProbe",
-        .requiresRayQuery = false,
     }, log);
 }
 
-Result<> recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
+Result<> recordDebugProbe(Device& device, CommandBuffer& commands, ComputeKernel& program,
     const PreparedDebugProbe& probe, Buffer& output, Buffer& readback)
 {
+    auto registry = device.resourceRegistry();
+    if (!registry) { return makeError(registry.error()); }
+    ParameterWriter writer(device, **registry, commands.frameContext());
+    const DebugProbeParams params{.source = writer.buffer(probe.source->buffer),
+        .output = writer.buffer(&output), .settings = probe.push};
+    auto encoded = writer.encode(params, kDebugProbeABI, ParameterTransport::InlinePush);
+    if (!encoded) { return makeError(encoded.error()); }
     BufferBarrierDesc source{
         .buffer = probe.source->buffer,
         .before = resourceSyncScope(probe.source->state, PipelineStageBits::AllCommands),
@@ -146,14 +150,7 @@ Result<> recordDebugProbe(CommandBuffer& commands, ComputeProgram& program,
     BufferBarrierDesc destination{.buffer = &output, .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
     if (auto commandResult = commands.synchronize({.buffers = {&source, 1}}); !commandResult) { return commandResult; }
     if (auto commandResult = commands.synchronize({.buffers = {&destination, 1}}); !commandResult) { return commandResult; }
-    const ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = probe.source->buffer}, {.binding = 1, .buffer = &output}};
-    const auto result = program.dispatch({
-        .commandBuffer = &commands,
-        .bindings = {bindings, 2},
-        .pushData = &probe.push,
-        .pushDataSize = sizeof(probe.push),
-        .groupCountX = probe.push.groupCount,
-    });
+    const auto result = program.dispatch(commands, *encoded, probe.push.groupCount);
     std::swap(source.before, source.after);
     if (auto commandResult = commands.synchronize({.buffers = {&source, 1}}); !commandResult) { return commandResult; }
     if (!result) { return result; }

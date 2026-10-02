@@ -68,15 +68,27 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
     return {};
 }
 
-Result<> initializeMaterialErrorProgram(Device& device, ComputeProgram& program, std::string& log)
+Result<> initializeMaterialErrorKernel(Device& device, ComputeKernel& program, std::string& log)
 {
-    const ComputeProgramBindingDesc output{.binding = 0, .kind = ComputeResourceBindingKind::StorageImage};
     std::shared_ptr<const MaterialExecutableArtifact> artifact;
     return compileMaterialExecutable(device,
         {.moduleName = "Features/Material/MaterialError", .entryPointName = "materialErrorMain",
             .searchPath = PROJECT_SOURCE_DIR "/Shaders"},
-        {.pushConstantSize = 4, .bindings = {&output, 1}, .requiresRayQuery = false},
+        ComputeKernelDesc{.parameters = parameterAbi<MaterialErrorParams>(kMaterialErrorABI, ParameterTransport::InlinePush),
+            .debugName = "MaterialError"},
         program, artifact, log);
+}
+
+Result<> dispatchMaterialError(Device& device, const ComputeKernel& program, CommandBuffer& commands,
+    TextureView& output, uint32_t width, uint32_t height, bool color)
+{
+    auto registry = device.resourceRegistry();
+    if (!registry) { return makeError(registry.error()); }
+    ParameterWriter writer(device, **registry, commands.frameContext());
+    const MaterialErrorParams params{.output = writer.storageImage(&output), .color = uint32_t(color)};
+    auto encoded = writer.encode(params, kMaterialErrorABI, ParameterTransport::InlinePush);
+    if (!encoded) { return makeError(encoded.error()); }
+    return program.dispatch(commands, *encoded, (width + 7u) / 8u, (height + 7u) / 8u);
 }
 
 } // namespace metallic::render

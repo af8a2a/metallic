@@ -10,12 +10,7 @@ uint streamPageWordCount(ByteAddressBuffer params)
 }
 // Shared validation and position decoding for the cooked StreamAsset format.
 // Callers supply their descriptors; no pass-specific bindings live here.
-struct StreamActiveGroup {
-    uint pageOffset, pageIndex, clusterCount, primitiveIndex;
-    uint lodLevel, materialIndex, mask, flags;
-    uint instanceIndex, gpuSceneInstanceIndex, padding0, padding1;
-    float4 world0, world1, world2, world3;
-};
+
 uint streamPageByte<Pages : IStreamReadBuffer<uint>>(Pages pages, uint address)
 {
     return (pages.load(address / 4) >> ((address & 3u) * 8u)) & 255u;

@@ -466,30 +466,32 @@ public:
     render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
     {
         render::RenderPassReflection reflection;
-        reflection.addTextureOutput("color").storageWrite().format = render::Format::RGBA32Sfloat;
+        const auto format = properties().value("format", "rgba32");
+        reflection.addTextureOutput("color").storageWrite().format = format == "r32" ? render::Format::R32Sfloat :
+            format == "rg16" ? render::Format::RG16Sfloat : format == "rgba16" ? render::Format::RGBA16Sfloat : render::Format::RGBA32Sfloat;
         return reflection;
     }
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
+        device_ = context.device;
         std::shared_ptr<const render::MaterialExecutableArtifact> artifact;
         const auto failed = render::compileMaterialExecutable(*context.device,
             {.moduleName = "MaterialRuntimeProbe", .entryPointName = "missingMaterialEntry",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"},
-            {.requiresRayQuery = false}, program_, artifact, log);
+            render::ComputeKernelDesc{.parameters = render::parameterAbi<render::MaterialErrorParams>(render::kMaterialErrorABI, render::ParameterTransport::InlinePush)}, program_, artifact, log);
         if (failed || program_.valid() || artifact || log.empty()) { return render::makeError(render::Error::Failure); }
         std::string fallbackLog;
-        return render::initializeMaterialErrorProgram(*context.device, program_, fallbackLog);
+        return render::initializeMaterialErrorKernel(*context.device, program_, fallbackLog);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        const uint32_t color = 1;
-        const render::ComputeDispatchBinding binding{.binding = 0, .textureView = context.outputTexture("color").view()};
-        return program_.dispatch({.commandBuffer = &context.commandBuffer(), .bindings = {&binding, 1},
-            .pushData = &color, .pushDataSize = sizeof(color), .groupCountX = (context.width() + 7) / 8,
-            .groupCountY = (context.height() + 7) / 8});
+        return render::dispatchMaterialError(*device_, program_, context.commandBuffer(),
+            *context.outputTexture("color").view(), context.width(), context.height(),
+            properties().value("showError", true));
     }
 private:
-    render::ComputeProgram program_;
+    render::Device* device_ = nullptr;
+    render::ComputeKernel program_;
 };
 
 class MaterialErrorTest final : public RHITest
@@ -522,7 +524,16 @@ public:
                 }
             }
         }
-        return RHITestResult::pass("First compile failure produced a deterministic magenta checker in floating point");
+        graph.setNodeRuntimeProperty(graph.findNode("Error")->id, "showError", false);
+        for (const char* format : {"rgba32", "r32", "rg16", "rgba16"}) {
+            graph.setNodeRuntimeProperty(graph.findNode("Error")->id, "format", format);
+            if (!preview.render(graph, 19, 11, "Error.color")) { return RHITestResult::fail(preview.lastLog()); }
+            const auto& bytes = preview.readbackBytes();
+            if (bytes.empty() || !std::all_of(bytes.begin(), bytes.end(), [](auto byte) { return byte == decltype(byte){}; })) {
+                return RHITestResult::fail(std::string("Error fallback did not clear guide format ") + format);
+            }
+        }
+        return RHITestResult::pass("Compile failure checker and resized scalar/vector guide clears via inline ABI");
     }
 };
 METALLIC_REGISTER_RHI_TEST(MaterialErrorTest);

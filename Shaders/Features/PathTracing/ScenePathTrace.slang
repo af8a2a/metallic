@@ -1,3 +1,4 @@
+#include "../../../Source/Runtime/Render/Core/StreamSceneParameters.h"
 #include "../../Interop/MaterialTextureDecode.hlsli"
 #include "../../Interop/AlphaCoverage.hlsli"
 #if !METALLIC_PATH_TRACE_TYPED
@@ -268,6 +269,8 @@ struct ScenePathTracePush
     uint sampleFrame;
     uint temporalJitter;
     uint deferredSettings; // shading class:16, transmission samples:5, ray depth:5
+    StreamSceneParameters* streamScene;
+    uint64_t streamPadding;
 };
 
 ScenePathTracePush scenePathTraceSettings()

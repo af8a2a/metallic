@@ -1155,13 +1155,6 @@ public:
                     return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
                 });
             }
-            if (streamRayQueries_) {
-                baseBindings.push_back({.binding = 90, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4});
-                baseBindings.push_back({.binding = 91, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
-                baseBindings.push_back({.binding = 92, .kind = ComputeResourceBindingKind::DataBuffer,
-                    .dataStride = sizeof(MeshletStreamGPUInstance), .dataAlignment = alignof(MeshletStreamGPUInstance)});
-                baseBindings.push_back({.binding = 93, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4});
-            }
             if (hasValuePrograms()) {
                 baseBindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
@@ -1234,7 +1227,7 @@ public:
                 if (context.shaderReload || outProgram.valid() || typedPathTraceProgram_.valid()) { return compiled; }
                 log += "Initial material compilation failed; displaying the error material.\n";
                 std::string errorLog;
-                auto fallback = initializeMaterialErrorProgram(*context.device, errorProgram_, errorLog);
+                auto fallback = initializeMaterialErrorKernel(*context.device, errorProgram_, errorLog);
                 if (!fallback) { log += errorLog; return fallback; }
                 return {};
             }
@@ -1512,11 +1505,8 @@ public:
                     "motionVectors", "deviceDepth", "linearDepth", "specularHitDistance", "depth"}) {
                 auto output = context.outputTexture(name);
                 if (!output.valid()) { continue; }
-                const uint32_t color = std::string_view(name) == "color";
-                const ComputeDispatchBinding binding{.binding = 0, .textureView = output.view()};
-                auto result = errorProgram_.dispatch({.commandBuffer = &context.commandBuffer(),
-                    .bindings = {&binding, 1}, .pushData = &color, .pushDataSize = sizeof(color),
-                    .groupCountX = (context.width() + 7) / 8, .groupCountY = (context.height() + 7) / 8});
+                auto result = dispatchMaterialError(*device_, errorProgram_, context.commandBuffer(),
+                    *output.view(), context.width(), context.height(), std::string_view(name) == "color");
                 if (!result) { return result; }
             }
             return {};
@@ -1990,10 +1980,21 @@ public:
                         if (binding.binding == 0) { binding.accelerationStructure = graphAcceleration
                             ? graphAcceleration : deferredStream->accelerationStructure; }
                     }
-                    bindings.push_back({.binding = 90, .buffer = deferredStream->pageBuffer});
-                    bindings.push_back({.binding = 91, .buffer = deferredStream->pageTableBuffer});
-                    bindings.push_back({.binding = 92, .buffer = deferredStream->instanceBuffer});
-                    bindings.push_back({.binding = 93, .buffer = deferredStream->activeHeaderBuffer});
+                    auto registry = device_->resourceRegistry();
+                    if (!registry) { return makeError(registry.error()); }
+                    ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
+                    const StreamSceneParameters streamParams{
+                        .pages = writer.dataBuffer(deferredStream->pageBuffer, 4, 4),
+                        .pageTable = writer.dataBuffer(deferredStream->pageTableBuffer, 8, 8),
+                        .instances = writer.dataBuffer(deferredStream->instanceBuffer,
+                            sizeof(MeshletStreamGPUInstance), alignof(MeshletStreamGPUInstance)),
+                        .header = writer.dataBuffer(deferredStream->activeHeaderBuffer, 4, 4),
+                    };
+                    auto encoded = writer.encode(streamParams, kStreamSceneABI);
+                    if (!encoded) { return makeError(encoded.error()); }
+                    result = encoded->bindResources(context.commandBuffer());
+                    if (!result) { return result; }
+                    push.streamScene = encoded->address();
                 }
                 Buffer* fallback = deferredViews->geometries.buffer;
                 bindings.push_back({.binding = 94, .buffer = deferredStream ? deferredStream->paramsBuffer : fallback});
@@ -3303,7 +3304,7 @@ private:
         }
     }
 
-    ComputeProgram errorProgram_;
+    ComputeKernel errorProgram_;
     std::vector<std::shared_ptr<const MaterialExecutableArtifact>> materialArtifacts_;
     bool realtime_ = false;
     bool visibilityDeferred_ = false;

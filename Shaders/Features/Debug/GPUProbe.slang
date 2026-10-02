@@ -1,37 +1,13 @@
-import Core;
+#include "../../../Source/Runtime/Render/Core/DebugProbeParameters.h"
+[[vk::push_constant]] ConstantBuffer<DebugProbeParams> gParams;
 using Metallic;
 
 // Fixed read-only probes. No floating-point atomics, wave-size assumptions or
 // user shader text. CPU merges at most 256 associative group summaries.
-struct ProbePush
-{
-    uint byteOffset;
-    uint stride;
-    uint fieldOffset;
-    uint count;
-    uint scalarType; // 0 u32, 1 i32, 2 f32
-    uint operation; // 0 count, 1 outOfBounds, 2 nonFinite, 3 minMax
-    uint predicate; // all, eq, ne, lt, le, gt, ge
-    uint lowerBits;
-    uint upperBits;
-    uint groupCount;
-    uint bitOffset;
-    uint bitMask;
-    uint scale;
-};
-struct Partial
-{
-    uint finiteCount;
-    uint matchedCount;
-    uint nanCount;
-    uint infCount;
-    uint minBits;
-    uint maxBits;
-    uint firstIndex;
-    uint firstBits;
-};
-#define gInput getResource<ByteAddressBuffer>(0)
-#define gOutput getResource<RWStructuredBuffer<Partial>>(1)
+typealias ProbePush = DebugProbePush;
+typealias Partial = DebugProbePartial;
+#define gInput resolveDescriptor(gParams.source)
+#define gOutput resolveDescriptor(gParams.output)
 groupshared Partial partials[128];
 
 bool lessValue(uint a, uint b, uint type)
@@ -65,7 +41,7 @@ Partial merge(Partial a, Partial b, uint type)
 void probe(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID,
     uint3 local : SV_GroupThreadID)
 {
-    ProbePush push = getConstants<ProbePush>();
+    ProbePush push = gParams.settings;
     Partial result = {};
     result.firstIndex = 0xffffffff;
     for (uint i = tid.x; i < push.count; i += push.groupCount * 128) {
