@@ -3,10 +3,10 @@ NeuralTextureBindings sceneNeuralTextures()
 {
 #if !METALLIC_HAS_NTC
     return (NeuralTextureBindings)0;
-#elif METALLIC_OPENPBR_TYPED
-    return {gOpenPBRParameters.ntcLatents, resolveDescriptor(gOpenPBRParameters.ntcConstants),
-        resolveDescriptor(gOpenPBRParameters.ntcWeights), resolveDescriptor(gOpenPBRParameters.ntcInfo),
-        resolveDescriptor(gOpenPBRParameters.ntcSampler)};
+#elif METALLIC_PATH_TRACE_TYPED
+    return {gPathTraceParameters.ntcLatents, resolveDescriptor(gPathTraceParameters.ntcConstants),
+        resolveDescriptor(gPathTraceParameters.ntcWeights), resolveDescriptor(gPathTraceParameters.ntcInfo),
+        resolveDescriptor(gPathTraceParameters.ntcSampler)};
 #else
     uint2 address = getComputeResources().resources[29].payload;
     return {(DescriptorHandle<Texture2DArray<float4>>*)(uint64_t(address.x) | (uint64_t(address.y) << 32)),

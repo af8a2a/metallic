@@ -1,11 +1,8 @@
-#ifndef METALLIC_OPENPBR_TYPED
-#define METALLIC_OPENPBR_TYPED 1
+#ifndef METALLIC_PATH_TRACE_TYPED
+#define METALLIC_PATH_TRACE_TYPED 1
 #endif
-#if METALLIC_OPENPBR_TYPED
-#include "../../../Source/Runtime/Render/Core/OpenPBRPathTraceParameters.h"
-import ParameterRoot;
-#define gOpenPBRParameters getParameters<OpenPBRPathTraceParameters>()
-#define METALLIC_LOAD_MATERIAL_VALUE(index) resolveDescriptor(gOpenPBRParameters.materialValues)[index]
+#if METALLIC_PATH_TRACE_TYPED
+#include "../../Interop/PathTraceParameterRoot.hlsli"
 #else
 import Core;
 #endif
@@ -21,9 +18,9 @@ using Metallic;
 #define OPENPBR_FEATURE_EnableMetallic true
 #define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
 
-#if METALLIC_OPENPBR_TYPED
-#define gOpenPBRLut2D(index) resolveDescriptor(nonuniform(gOpenPBRParameters.lut2D[index]))
-#define gOpenPBRLut3D(index) resolveDescriptor(nonuniform(gOpenPBRParameters.lut3D[index]))
+#if METALLIC_PATH_TRACE_TYPED
+#define gOpenPBRLut2D(index) resolveDescriptor(nonuniform(gPathTraceParameters.lut2D[index]))
+#define gOpenPBRLut3D(index) resolveDescriptor(nonuniform(gPathTraceParameters.lut3D[index]))
 #else
 #define gOpenPBRLut2D(index) getResourceArray<Texture2D<float4>>(11, index)
 #define gOpenPBRLut3D(index) getResourceArray<Texture3D<float4>>(12, index)

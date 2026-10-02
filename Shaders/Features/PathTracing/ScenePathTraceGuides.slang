@@ -1,21 +1,21 @@
-import Core;
+#include "../../Interop/PathTraceParameterRoot.hlsli"
 using Metallic;
 
 #include "ScenePathTrace.slang"
 
-#define gDlssRrAlbedo getResource<RWTexture2D<float4>>(14)
+#define gDlssRrAlbedo resolveDescriptor(gPathTraceParameters.albedo)
 
-#define gDlssRrSpecularAlbedo getResource<RWTexture2D<float4>>(15)
+#define gDlssRrSpecularAlbedo resolveDescriptor(gPathTraceParameters.specularAlbedo)
 
-#define gDlssRrNormalRoughness getResource<RWTexture2D<float4>>(16)
+#define gDlssRrNormalRoughness resolveDescriptor(gPathTraceParameters.normalRoughness)
 
-#define gDlssRrMotionVectors getResource<RWTexture2D<float2>>(17)
+#define gDlssRrMotionVectors resolveDescriptor(gPathTraceParameters.motionVectors)
 
-#define gDlssRrLinearDepth getResource<RWTexture2D<float>>(18)
+#define gDlssRrLinearDepth resolveDescriptor(gPathTraceParameters.linearDepth)
 
-#define gDlssRrSpecularHitDistance getResource<RWTexture2D<float>>(19)
+#define gDlssRrSpecularHitDistance resolveDescriptor(gPathTraceParameters.specularHitDistance)
 
-#define gDlssDepth getResource<RWTexture2D<float>>(20)
+#define gDlssDepth resolveDescriptor(gPathTraceParameters.depth)
 
 struct DLSSRRGuideData
 {
@@ -129,7 +129,7 @@ DLSSRRGuideData evaluateStandardDlssRrGuides(
 [numthreads(8, 8, 1)]
 void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    ScenePathTracePush push = getConstants<ScenePathTracePush>();
+    ScenePathTracePush push = scenePathTraceSettings();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;
@@ -178,6 +178,6 @@ void scenePathTraceGuidesMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         gHistoryCurrent[pixel] = float4(color, 1.0);
     }
 
-    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50))), 1.0);
+    gOutput[pixel] = float4(color * (push.outputLinear != 0u ? 1.0 : lightingExposure(gPathTraceLights)), 1.0);
     writeDlssRrGuides(pixel, guides, push);
 }

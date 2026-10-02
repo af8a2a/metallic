@@ -1,6 +1,6 @@
 #include "../../Interop/MaterialTextureDecode.hlsli"
 #include "../../Interop/AlphaCoverage.hlsli"
-#if !METALLIC_OPENPBR_TYPED
+#if !METALLIC_PATH_TRACE_TYPED
 import Core;
 #endif
 using Metallic;
@@ -121,19 +121,19 @@ typedef RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> NRCQueryRadiance
 #define gNrcCounters getResource<RWStructuredBuffer<uint>>(28)
 #endif
 
-#if METALLIC_OPENPBR_TYPED
-#define gScene resolveDescriptor(gOpenPBRParameters.scene)
+#if METALLIC_PATH_TRACE_TYPED
+#define gScene resolveDescriptor(gPathTraceParameters.scene)
 #else
 #define gScene getResource<RaytracingAccelerationStructure>(0)
 #endif
 
-#if METALLIC_OPENPBR_TYPED
-#define gOutput resolveDescriptor(gOpenPBRParameters.output)
+#if METALLIC_PATH_TRACE_TYPED
+#define gOutput resolveDescriptor(gPathTraceParameters.output)
 #else
 #define gOutput getResource<RWTexture2D<float4>>(1)
 #endif
 
-#if !METALLIC_OPENPBR_TYPED
+#if !METALLIC_PATH_TRACE_TYPED
 struct PathTracePrimitive
 {
     uint firstVertex;
@@ -156,68 +156,68 @@ struct PathTraceInstance
 
 #endif
 
-#if METALLIC_OPENPBR_TYPED
-#define gIndices gOpenPBRParameters.indices
+#if METALLIC_PATH_TRACE_TYPED
+#define gIndices gPathTraceParameters.indices
 #else
 #define gIndices getData<uint>(3)
 #endif
 
-#if METALLIC_OPENPBR_TYPED
-#define gPrimitives gOpenPBRParameters.primitives
+#if METALLIC_PATH_TRACE_TYPED
+#define gPrimitives gPathTraceParameters.primitives
 #else
 #define gPrimitives getData<PathTracePrimitive>(4)
 #endif
 
-#if METALLIC_OPENPBR_TYPED
-#define gInstances gOpenPBRParameters.instances
+#if METALLIC_PATH_TRACE_TYPED
+#define gInstances gPathTraceParameters.instances
 #else
 #define gInstances getData<PathTraceInstance>(5)
 #endif
 
-#if METALLIC_OPENPBR_TYPED
-#define gMaterials resolveDescriptor(gOpenPBRParameters.materials)
+#if METALLIC_PATH_TRACE_TYPED
+#define gMaterials resolveDescriptor(gPathTraceParameters.materials)
 #else
 #define gMaterials getResource<StructuredBuffer<PathTraceMaterial>>(6)
 #endif
 
-#if METALLIC_OPENPBR_TYPED
-#define gHistoryCurrent resolveDescriptor(gOpenPBRParameters.historyCurrent)
+#if METALLIC_PATH_TRACE_TYPED
+#define gHistoryCurrent resolveDescriptor(gPathTraceParameters.historyCurrent)
 #else
 #define gHistoryCurrent getResource<RWTexture2D<float4>>(7)
 #endif
 
-#if METALLIC_OPENPBR_TYPED
-#define gHistoryPrevious resolveDescriptor(gOpenPBRParameters.historyPrevious)
+#if METALLIC_PATH_TRACE_TYPED
+#define gHistoryPrevious resolveDescriptor(gPathTraceParameters.historyPrevious)
 #else
 #define gHistoryPrevious getResource<RWTexture2D<float4>>(8)
 #endif
 
-#if METALLIC_OPENPBR_TYPED
-#define gMaterialTextures(index) resolveDescriptor(nonuniform(gOpenPBRParameters.materialTextures[index]))
+#if METALLIC_PATH_TRACE_TYPED
+#define gMaterialTextures(index) resolveDescriptor(nonuniform(gPathTraceParameters.materialTextures[index]))
 #else
 #define gMaterialTextures(index) getResourceArray<Texture2D<float4>>(9, index)
 #endif
 
-#if METALLIC_OPENPBR_TYPED
-#define gEnvironmentMap resolveDescriptor(gOpenPBRParameters.environment)
+#if METALLIC_PATH_TRACE_TYPED
+#define gEnvironmentMap resolveDescriptor(gPathTraceParameters.environment)
 #else
 #define gEnvironmentMap getResource<Texture2D<float4>>(10)
 #endif
 
-#if METALLIC_OPENPBR_TYPED
-#define gEnvironmentImportancePdf resolveDescriptor(gOpenPBRParameters.environmentPdf)
+#if METALLIC_PATH_TRACE_TYPED
+#define gEnvironmentImportancePdf resolveDescriptor(gPathTraceParameters.environmentPdf)
 #else
 #define gEnvironmentImportancePdf getResource<Texture2D<float>>(13)
 #endif
 
 
 
-#if METALLIC_OPENPBR_TYPED
-#define gPathTraceVertices gOpenPBRParameters.vertices
-#define gPathTracePositions gOpenPBRParameters.positions
-#define gPathTraceLights resolveDescriptor(gOpenPBRParameters.lights)
-#define gPathTraceReGIR resolveDescriptor(gOpenPBRParameters.reGIR)
-#define gPathTracePunctualPdf resolveDescriptor(gOpenPBRParameters.punctualPdf)
+#if METALLIC_PATH_TRACE_TYPED
+#define gPathTraceVertices gPathTraceParameters.vertices
+#define gPathTracePositions gPathTraceParameters.positions
+#define gPathTraceLights resolveDescriptor(gPathTraceParameters.lights)
+#define gPathTraceReGIR resolveDescriptor(gPathTraceParameters.reGIR)
+#define gPathTracePunctualPdf resolveDescriptor(gPathTraceParameters.punctualPdf)
 #else
 #define gPathTraceVertices getData<SceneShadingVertex>(2)
 #define gPathTracePositions getData<SceneVertexPosition>(54)
@@ -272,8 +272,8 @@ struct ScenePathTracePush
 
 ScenePathTracePush scenePathTraceSettings()
 {
-#if METALLIC_OPENPBR_TYPED
-    return *((ScenePathTracePush*)gOpenPBRParameters.settings);
+#if METALLIC_PATH_TRACE_TYPED
+    return *((ScenePathTracePush*)gPathTraceParameters.settings);
 #else
     return getConstants<ScenePathTracePush>();
 #endif
@@ -2038,7 +2038,7 @@ PathTraceCacheContext makeCacheContext()
     return cache;
 }
 
-#if !METALLIC_OPENPBR_TYPED
+#if !METALLIC_PATH_TRACE_TYPED
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)

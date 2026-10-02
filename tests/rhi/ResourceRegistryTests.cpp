@@ -6,7 +6,7 @@
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/RTXDIPostProcessParameters.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
-#include "Runtime/Render/Core/OpenPBRPathTraceParameters.h"
+#include "Runtime/Render/Core/PathTraceParameters.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -160,7 +160,7 @@ public:
                 FIELD(SharcMaintenanceParams, settings)}},
             {"Metallic.PathTraceTonemapParams", {FIELD(PathTraceTonemapParams, source), FIELD(PathTraceTonemapParams, output),
                 FIELD(PathTraceTonemapParams, historyPrevious), FIELD(PathTraceTonemapParams, settings)}},
-            {"Metallic.OpenPBRPathTraceParameters", {FIELD(OpenPBRPathTraceParameters, settings), FIELD(OpenPBRPathTraceParameters, scene), FIELD(OpenPBRPathTraceParameters, output), FIELD(OpenPBRPathTraceParameters, vertices), FIELD(OpenPBRPathTraceParameters, indices), FIELD(OpenPBRPathTraceParameters, primitives), FIELD(OpenPBRPathTraceParameters, instances), FIELD(OpenPBRPathTraceParameters, positions), FIELD(OpenPBRPathTraceParameters, materials), FIELD(OpenPBRPathTraceParameters, historyCurrent), FIELD(OpenPBRPathTraceParameters, historyPrevious), FIELD(OpenPBRPathTraceParameters, materialTextures), FIELD(OpenPBRPathTraceParameters, environment), FIELD(OpenPBRPathTraceParameters, environmentPdf), FIELD(OpenPBRPathTraceParameters, lut2D), FIELD(OpenPBRPathTraceParameters, lut3D), FIELD(OpenPBRPathTraceParameters, lights), FIELD(OpenPBRPathTraceParameters, reGIR), FIELD(OpenPBRPathTraceParameters, punctualPdf), FIELD(OpenPBRPathTraceParameters, albedo), FIELD(OpenPBRPathTraceParameters, specularAlbedo), FIELD(OpenPBRPathTraceParameters, normalRoughness), FIELD(OpenPBRPathTraceParameters, motionVectors), FIELD(OpenPBRPathTraceParameters, linearDepth), FIELD(OpenPBRPathTraceParameters, specularHitDistance), FIELD(OpenPBRPathTraceParameters, depth), FIELD(OpenPBRPathTraceParameters, materialValues), FIELD(OpenPBRPathTraceParameters, ntcLatents), FIELD(OpenPBRPathTraceParameters, ntcConstants), FIELD(OpenPBRPathTraceParameters, ntcWeights), FIELD(OpenPBRPathTraceParameters, ntcInfo), FIELD(OpenPBRPathTraceParameters, ntcSampler)}},
+            {"Metallic.PathTraceParameters", {FIELD(PathTraceParameters, settings), FIELD(PathTraceParameters, scene), FIELD(PathTraceParameters, output), FIELD(PathTraceParameters, vertices), FIELD(PathTraceParameters, indices), FIELD(PathTraceParameters, primitives), FIELD(PathTraceParameters, instances), FIELD(PathTraceParameters, positions), FIELD(PathTraceParameters, materials), FIELD(PathTraceParameters, historyCurrent), FIELD(PathTraceParameters, historyPrevious), FIELD(PathTraceParameters, materialTextures), FIELD(PathTraceParameters, environment), FIELD(PathTraceParameters, environmentPdf), FIELD(PathTraceParameters, lut2D), FIELD(PathTraceParameters, lut3D), FIELD(PathTraceParameters, lights), FIELD(PathTraceParameters, reGIR), FIELD(PathTraceParameters, punctualPdf), FIELD(PathTraceParameters, albedo), FIELD(PathTraceParameters, specularAlbedo), FIELD(PathTraceParameters, normalRoughness), FIELD(PathTraceParameters, motionVectors), FIELD(PathTraceParameters, linearDepth), FIELD(PathTraceParameters, specularHitDistance), FIELD(PathTraceParameters, depth), FIELD(PathTraceParameters, materialValues), FIELD(PathTraceParameters, ntcLatents), FIELD(PathTraceParameters, ntcConstants), FIELD(PathTraceParameters, ntcWeights), FIELD(PathTraceParameters, ntcInfo), FIELD(PathTraceParameters, ntcSampler)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -185,6 +185,7 @@ public:
             {"Features/PostProcess/ScenePathTraceTonemap", "scenePathTraceTonemapMain", 12},
             {"Features/PathTracing/OpenPBRRayQueryPathTrace", "openPbrRayQueryPathTraceMain", 13},
             {"Features/PathTracing/OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain", 13},
+            {"Features/PathTracing/ScenePathTraceGuides", "scenePathTraceGuidesMain", 13},
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
@@ -230,7 +231,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 4 ? "OpenPBRPathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -258,11 +259,11 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(PathTraceStageParameterLayoutTest);
 
-class OpenPBRParameterLayoutTest final : public PostProcessParameterLayoutTest {
+class PathTraceParameterLayoutTest final : public PostProcessParameterLayoutTest {
 public:
-    OpenPBRParameterLayoutTest() { category = 4; name = "openpbr_parameter_spirv_layout"; }
+    PathTraceParameterLayoutTest() { category = 4; name = "path_trace_parameter_spirv_layout"; }
 };
-METALLIC_REGISTER_RHI_TEST(OpenPBRParameterLayoutTest);
+METALLIC_REGISTER_RHI_TEST(PathTraceParameterLayoutTest);
 
 class SharcTypedMaintenanceTest final : public RHITest {
 public:

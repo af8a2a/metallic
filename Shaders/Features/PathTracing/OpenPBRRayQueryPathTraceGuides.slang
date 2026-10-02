@@ -1,18 +1,18 @@
 #include "OpenPBRRayQueryPathTrace.slang"
 
-#define gDlssRrAlbedo resolveDescriptor(gOpenPBRParameters.albedo)
+#define gDlssRrAlbedo resolveDescriptor(gPathTraceParameters.albedo)
 
-#define gDlssRrSpecularAlbedo resolveDescriptor(gOpenPBRParameters.specularAlbedo)
+#define gDlssRrSpecularAlbedo resolveDescriptor(gPathTraceParameters.specularAlbedo)
 
-#define gDlssRrNormalRoughness resolveDescriptor(gOpenPBRParameters.normalRoughness)
+#define gDlssRrNormalRoughness resolveDescriptor(gPathTraceParameters.normalRoughness)
 
-#define gDlssRrMotionVectors resolveDescriptor(gOpenPBRParameters.motionVectors)
+#define gDlssRrMotionVectors resolveDescriptor(gPathTraceParameters.motionVectors)
 
-#define gDlssRrLinearDepth resolveDescriptor(gOpenPBRParameters.linearDepth)
+#define gDlssRrLinearDepth resolveDescriptor(gPathTraceParameters.linearDepth)
 
-#define gDlssRrSpecularHitDistance resolveDescriptor(gOpenPBRParameters.specularHitDistance)
+#define gDlssRrSpecularHitDistance resolveDescriptor(gPathTraceParameters.specularHitDistance)
 
-#define gDlssDepth resolveDescriptor(gOpenPBRParameters.depth)
+#define gDlssDepth resolveDescriptor(gPathTraceParameters.depth)
 
 struct DLSSRRGuideData
 {

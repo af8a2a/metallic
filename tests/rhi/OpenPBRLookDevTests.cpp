@@ -9,9 +9,13 @@
 namespace metallic::tests {
 namespace {
 
-class OpenPBRTypedGuidesTest final : public RHITest {
+class OpenPBRTypedGuidesTest : public RHITest {
 public:
-    OpenPBRTypedGuidesTest() { type = RHITestType::Rendering; name = "openpbr_typed_guides_outputs"; }
+    explicit OpenPBRTypedGuidesTest(bool standard = false) : standard_(standard)
+    {
+        type = RHITestType::Rendering;
+        name = standard ? "standard_typed_guides_outputs" : "openpbr_typed_guides_outputs";
+    }
     RHITestResult run(RHITestContext& context) override
     {
         render::RenderSampleLoadResult sample;
@@ -20,6 +24,7 @@ public:
         scene::SceneDocument document;
         if (!document.load(std::filesystem::path(PROJECT_SOURCE_DIR) / sample.desc.scenePath)) { return RHITestResult::fail("Load LookDev"); }
         auto* pass = sample.graph.findNode("PathTrace");
+        pass->properties["bsdf"] = standard_ ? "standard" : "openpbr";
         pass->properties["exportDenoiserGuides"] = true;
         pass->properties["samples"] = 1;
         pass->properties["temporalJitter"] = false;
@@ -70,8 +75,16 @@ public:
         }
         return RHITestResult::pass("Eight typed outputs, finite HDR, normalized normals, bounded guides and resize/history");
     }
+private:
+    bool standard_ = false;
 };
 METALLIC_REGISTER_RHI_TEST(OpenPBRTypedGuidesTest);
+
+class StandardTypedGuidesTest final : public OpenPBRTypedGuidesTest {
+public:
+    StandardTypedGuidesTest() : OpenPBRTypedGuidesTest(true) {}
+};
+METALLIC_REGISTER_RHI_TEST(StandardTypedGuidesTest);
 
 class OpenPBRLookDevTest final : public RHITest {
 public:

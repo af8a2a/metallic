@@ -1,4 +1,4 @@
-#include "Runtime/Render/Core/OpenPBRPathTraceParameters.h"
+#include "Runtime/Render/Core/PathTraceParameters.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -948,8 +948,8 @@ public:
             log += "Deferred material classification requires native wave32; disable materialBinning on this device\n";
             return makeError(Error::Unsupported);
         }
-        const bool typedOpenPBR = useOpenPBR && !realtime_ && !visibilityDeferred_;
-        const bool baseReady = (typedOpenPBR ? openPBRProgram_.valid() : programs_[static_cast<size_t>(PathTracePermutation::Base)].valid()) &&
+        const bool typedPathTrace = (useOpenPBR || exportGuides) && !realtime_ && !visibilityDeferred_;
+        const bool baseReady = (typedPathTrace ? typedPathTraceProgram_.valid() : programs_[static_cast<size_t>(PathTracePermutation::Base)].valid()) &&
             (!classified || std::all_of(classifiedPrograms_.begin(), classifiedPrograms_.end(),
                 [](const ComputeProgram& program) { return program.valid(); }));
         const bool sharcReady = cacheMode_ != kScenePathTraceCacheModeSharc ||
@@ -984,7 +984,7 @@ public:
         }
 
         std::vector<ComputeProgramBindingDesc> baseBindings;
-        if (!typedOpenPBR) {
+        if (!typedPathTrace) {
             baseBindings = {
                 ComputeProgramBindingDesc{.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
                 ComputeProgramBindingDesc{
@@ -1168,7 +1168,7 @@ public:
                 const std::vector<ComputeProgramBindingDesc>& permutationBindings,
                 ComputeProgram& outProgram) -> Result<> {
             std::vector<SlangMacroDefine> defines{
-                {.name = "METALLIC_OPENPBR_TYPED", .value = typedOpenPBR ? "1" : "0"},
+                {.name = "METALLIC_PATH_TRACE_TYPED", .value = typedPathTrace ? "1" : "0"},
                 {.name = "METALLIC_CUSTOM_MATERIALS", .value = hasValuePrograms() ? "1" : "0"},
                 {.name = "METALLIC_STREAM_MATERIALS", .value = streamMaterials_ ? "1" : "0"},
                 {.name = "METALLIC_STREAM_RAY_QUERIES", .value = streamRayQueries_ ? "1" : "0"},
@@ -1215,10 +1215,10 @@ public:
             const SlangShaderDesc source{.moduleName = moduleName, .entryPointName = entryPointName,
                 .searchPath = kTriangleShaderSearchPath, .additionalSearchPaths = additionalSearchPaths,
                 .capabilities = capabilities, .macroDefines = defines};
-            auto compiled = typedOpenPBR
+            auto compiled = typedPathTrace
                 ? compileMaterialExecutable(*context.device, source,
-                    ComputeKernelDesc{.parameters = parameterAbi<OpenPBRPathTraceParameters>(kOpenPBRPathTraceABI),
-                        .debugName = debugName.c_str()}, openPBRProgram_, artifact, diagnostics)
+                    ComputeKernelDesc{.parameters = parameterAbi<PathTraceParameters>(kPathTraceABI),
+                        .debugName = debugName.c_str()}, typedPathTraceProgram_, artifact, diagnostics)
                 : compileMaterialExecutable(*context.device, source,
                     ComputeProgramDesc{.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
                         .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get()},
@@ -1227,7 +1227,7 @@ public:
             if (!compiled) {
                 // Reload creates replacement passes. Reject the entire transaction
                 // so a failure can never replace a previously successful graph.
-                if (context.shaderReload || outProgram.valid() || openPBRProgram_.valid()) { return compiled; }
+                if (context.shaderReload || outProgram.valid() || typedPathTraceProgram_.valid()) { return compiled; }
                 log += "Initial material compilation failed; displaying the error material.\n";
                 std::string errorLog;
                 auto fallback = initializeMaterialErrorProgram(*context.device, errorProgram_, errorLog);
@@ -1247,7 +1247,7 @@ public:
             return bindings;
         }();
 
-        if (!(typedOpenPBR ? openPBRProgram_.valid() : programs_[static_cast<size_t>(PathTracePermutation::Base)].valid())) {
+        if (!(typedPathTrace ? typedPathTraceProgram_.valid() : programs_[static_cast<size_t>(PathTracePermutation::Base)].valid())) {
             const SlangMacroDefine transmissionClass[] = {{"MATERIAL_CLASS", "4"}};
             result = compilePermutation(
                 PathTracePermutation::Base,
@@ -1643,7 +1643,7 @@ public:
         if (!color.valid() ||
             color.view() == nullptr ||
             renderProgram == nullptr ||
-            (!renderProgram->valid() && !openPBRProgram_.valid()) ||
+            (!renderProgram->valid() && !typedPathTraceProgram_.valid()) ||
             !sceneResources_.valid() ||
             materialTextureViews[0] == nullptr ||
             environmentTextureView == nullptr ||
@@ -1828,7 +1828,7 @@ public:
         MaterialBinningResult materialBins;
         ScreenSpaceShadowResult shadow;
         std::vector<ComputeDispatchBinding> bindings;
-        if (!openPBRProgram_.valid()) {
+        if (!typedPathTraceProgram_.valid()) {
             bindings = {
                 ComputeDispatchBinding{.binding = 50, .buffer = lights_.buffer()},
                 ComputeDispatchBinding{
@@ -2136,11 +2136,11 @@ public:
             }
             const std::array stages{RenderGraphStage{visibilityDeferred_ ? "Deferred shading" : "Path trace shading", resources.uses,
                 [&](CommandBuffer& commands) -> Result<> {
-                    if (openPBRProgram_.valid()) {
+                    if (typedPathTraceProgram_.valid()) {
                         auto registry = device_->resourceRegistry();
                         if (!registry) { return makeError(registry.error()); }
                         ParameterWriter writer(*device_, **registry, commands.frameContext());
-                        OpenPBRPathTraceParameters params{};
+                        PathTraceParameters params{};
                         params.settings = writer.data(&push, sizeof(push));
                         params.scene = writer.accelerationStructure(context.inputAccelerationStructure("accelerationStructure")
                             ? context.inputAccelerationStructure("accelerationStructure")
@@ -2159,8 +2159,10 @@ public:
                         params.materialTextures = writer.sampledImages(materialTextureViews);
                         params.environment = writer.sampledImage(environmentTextureView);
                         params.environmentPdf = writer.sampledImage(environmentImportancePdfView);
-                        params.lut2D = writer.sampledImages(openPBRLuts_.lut2DViews());
-                        params.lut3D = writer.sampledImages(openPBRLuts_.lut3DViews());
+                        if (useOpenPBR) {
+                            params.lut2D = writer.sampledImages(openPBRLuts_.lut2DViews());
+                            params.lut3D = writer.sampledImages(openPBRLuts_.lut3DViews());
+                        }
                         params.lights = writer.buffer(lights_.buffer());
                         params.reGIR = writer.buffer(lights_.reGIRBuffer());
                         params.punctualPdf = writer.sampledImage(lights_.lightPdfView());
@@ -2182,9 +2184,9 @@ public:
                             params.ntcInfo = writer.buffer(neural.setInfoBuffer());
                             params.ntcSampler = writer.sampler(neural.latentSampler());
                         }
-                        auto encoded = writer.encode(params, kOpenPBRPathTraceABI);
+                        auto encoded = writer.encode(params, kPathTraceABI);
                         if (!encoded) { return makeError(encoded.error()); }
-                        return openPBRProgram_.dispatch(commands, *encoded,
+                        return typedPathTraceProgram_.dispatch(commands, *encoded,
                             (context.width() + 7) / 8, (context.height() + 7) / 8);
                     }
                     if (materialBins.arguments != nullptr) {
@@ -2394,7 +2396,7 @@ private:
     void clearPrograms()
     {
         errorProgram_.clear();
-        openPBRProgram_.clear();
+        typedPathTraceProgram_.clear();
         materialArtifacts_.clear();
         for (ComputeProgram& program : classifiedPrograms_) { program.clear(); }
         for (ComputeProgram& program : programs_) {
@@ -3329,7 +3331,7 @@ private:
     Queue* graphicsQueue_ = nullptr;
     OpenPBRLutResources openPBRLuts_;
     std::array<ComputeProgram, static_cast<size_t>(PathTracePermutation::Count)> programs_;
-    ComputeKernel openPBRProgram_;
+    ComputeKernel typedPathTraceProgram_;
     ComputeKernel sharcClearProgram_;
     ComputeKernel sharcResolveProgram_;
     ComputeKernel tonemapProgram_;

@@ -86,15 +86,15 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 [PathTraceStageParameters.h](../Source/Runtime/Render/Core/PathTraceStageParameters.h) 提供 SHaRC clear/resolve（96 字节）
 和 NRC 输出累积/tonemap（48 字节）的共享 inline 参数。SHaRC SDK 需要 StructuredBuffer 对象进行原子操作，
 因此这三个缓存 buffer 使用具名 descriptor handle；维护阶段直接读取 settings，不再依赖 cacheParams 的公共前缀。
-Standard 主追踪与 VisibilityBuffer 的共享资源表仍使用下述兼容入口。
+无 guides 的 Standard 主追踪与 VisibilityBuffer 的共享资源表仍使用下述兼容入口。
 
 主追踪共享的 shading vertex、index、primitive、instance 和 fallback position 已使用带范围的 `DataSpan<T>`，
 覆盖 Standard/OpenPBR、guides、VisibilityBuffer deferred 和 alpha shadow；不再为这五类普通数据注册 buffer descriptor。
 `loadPathTraceTriangle` 在解引用前检查完整索引链，并用减法检查避免偏移溢出；fallback position 另查范围。
-Standard/realtime/deferred 仍通过 ComputeProgram 的 DataBuffer 兼容表传递 span。
+无 guides 的 Standard/realtime/deferred 仍通过 ComputeProgram 的 DataBuffer 兼容表传递 span。
 
-[OpenPBRPathTraceParameters.h](../Source/Runtime/Render/Core/OpenPBRPathTraceParameters.h) 为
-OpenPBRRayQueryPathTrace 和 OpenPBRRayQueryPathTraceGuides 提供 296 字节具名资源根，通过 BDA root 提交。
+[PathTraceParameters.h](../Source/Runtime/Render/Core/PathTraceParameters.h) 为
+Standard ScenePathTraceGuides、OpenPBRRayQueryPathTrace 和 OpenPBRRayQueryPathTraceGuides 提供 296 字节具名资源根，通过 BDA root 提交。
 CPU 使用 ParameterWriter 编码不可变 settings、几何 span、场景/历史/环境/LUT/光源/NTC 和七路 guide 句柄，
 直接调用 ComputeKernel，不构造编号 binding 表；参数包保留资源直到 GPU 完成。
 自定义材质继续支持事务式编译和热重载。NeuralTextures 只导入 ShaderCore，显式接收推理资源。
