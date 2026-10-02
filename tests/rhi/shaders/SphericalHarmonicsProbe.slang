@@ -1,4 +1,4 @@
-import Core;
+import ShaderCore;
 #include "../SphericalHarmonicsProbeParameters.h"
 using Metallic;
 

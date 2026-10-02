@@ -1,6 +1,7 @@
 #include "RHITest.h"
 #include "harness/Fixtures.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "NativeNestedProbeParameters.h"
 #include "Runtime/Render/Core/NativeDescriptorHeapSPIRV.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -56,7 +57,7 @@ public:
         for (auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
             render::ShaderCompileResult shader;
             NATIVE_REQUIRE(render::compileSlangShaderToSpirv({
-                .moduleName = "NativeDescriptorHandles", .entryPointName = "nestedBufferMain",
+                .moduleName = "NativeDescriptorNestedProbe", .entryPointName = "nestedBufferMain",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode,
             }, {.enableDiskCache = false}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             std::vector<uint32_t> normalized;
@@ -67,12 +68,10 @@ public:
             std::ofstream binary(context.outputDirectory / name /
                 (mode == render::SlangDescriptorHeapMode::Native ? "native.spv" : "mapped.spv"), std::ios::binary);
             binary.write(reinterpret_cast<const char*>(shader.spirv.data()), shader.spirv.size() * sizeof(uint32_t));
-            render::ComputeProgram program;
-            const render::ComputeProgramBindingDesc layout[] = {{0}, {1}};
+            render::ComputeKernel program;
             const auto initialized = program.initialize(*device, {
                 .spirv = shader.spirv,
-                .bindings = {layout, 2},
-                .requiresRayQuery = false,
+                .parameters = render::parameterAbi<NativeNestedProbeParameters>(kNativeNestedProbeABI, render::ParameterTransport::InlinePush),
             }, log);
             if (mode == render::SlangDescriptorHeapMode::Native && render::hasError(initialized, render::Error::Unsupported)) {
                 return RHITestResult::skip("mapped passed; native requires KHR untyped pointers");
@@ -102,8 +101,14 @@ public:
             } drain{frame, *pool};
             NATIVE_REQUIRE(frame.begin(0));
             NATIVE_REQUIRE(commands->begin(&frame));
-            const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = records.get()}, {.binding = 1, .buffer = output.get()}};
-            NATIVE_REQUIRE(program.dispatch({.commandBuffer = commands.get(), .bindings = {bindings, 2}}));
+            auto registry = device->resourceRegistry();
+            if (!registry) { return RHITestResult::fail("Native probe registry unavailable"); }
+            render::ParameterWriter writer(*device, **registry, &frame);
+            const auto recordsHandle = writer.buffer(records.get());
+            const NativeNestedProbeParameters params{recordsHandle, recordsHandle, recordsHandle, writer.buffer(output.get())};
+            auto encoded = writer.encode(params, kNativeNestedProbeABI, render::ParameterTransport::InlinePush);
+            if (!encoded) { return RHITestResult::fail("Native probe parameter encoding failed"); }
+            NATIVE_REQUIRE(program.dispatch(*commands, *encoded, 1));
             NATIVE_REQUIRE(commands->end());
             render::CommandBuffer* submitted[] = {commands.get()};
             NATIVE_REQUIRE(tracker.submit({.commandBuffers = {submitted, 1}}, frame));

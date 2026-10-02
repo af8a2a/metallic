@@ -6,7 +6,8 @@
 #include <cstring>
 #include <bit>
 #include <limits>
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "DebugRestoreProbeParameters.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
 namespace metallic::tests {
@@ -177,16 +178,23 @@ public:
         executor.syncRuntimeProperties(graph);
         const auto abandoned = capture(runtime, "Early");
         DEBUG_REQUIRE(frame.begin(71));
-        if (executor.execute(*frame.commands)) { return RHITestResult::fail("Expected fixture recording failure"); }
+        if (!hasError(executor.execute(*frame.commands), Error::Failure)) {
+            return RHITestResult::fail("Expected fixture recording failure");
+        }
         DEBUG_REQUIRE(frame.pool->reset()); frame.frame.cancel(); runtime.poll();
         if (call(runtime, "jobs.get", {{"job", abandoned}})["result"]["state"] == "Ready") {
             return RHITestResult::fail("Abandoned recording produced evidence");
         }
         // Submit a recorded prefix after the pass reports failure, then reject
         // a later segment. Already accepted evidence must survive frame.cancel.
+        // Failed recording advances resource state, so rebuild the graph before
+        // retrying. Queue the capture after compile to use the new generation.
+        DEBUG_REQUIRE(executor.compile(context.device, graph, 8, 8, log));
         const auto prefixJob = capture(runtime, "Early");
         DEBUG_REQUIRE(frame.begin(72));
-        if (executor.execute(*frame.commands)) { return RHITestResult::fail("Expected prefix fixture failure"); }
+        if (!hasError(executor.execute(*frame.commands), Error::Failure)) {
+            return RHITestResult::fail("Expected prefix fixture failure");
+        }
         DEBUG_REQUIRE(frame.commands->end());
         CommandBuffer* raw = frame.commands.get();
         GPUCompletionPoint prefix, failed;
@@ -198,6 +206,7 @@ public:
             prefixResult["result"]["evidence"]["provenance"]["executionComplete"] != false) {
             return RHITestResult::fail("Submitted prefix capture was released early or attributed to a complete execution");
         }
+        DEBUG_REQUIRE(executor.compile(context.device, graph, 8, 8, log));
         const auto legacyJob = capture(runtime, "Early");
         DEBUG_REQUIRE(frame.pool->reset()); DEBUG_REQUIRE(frame.commands->begin());
         (void)executor.execute(*frame.commands); DEBUG_REQUIRE(frame.commands->end());
@@ -309,16 +318,13 @@ public:
         const auto watch = call(runtime, "watch.create", {{"probe", lateSpec}, {"everyExecutions", 2},
             {"trigger", {{"probe", "bounds"}, {"value", 0}}}})["result"]["watch"];
         ShaderCompileResult shader;
-        DEBUG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "FrameResourceProbe", .entryPointName = "copyValue",
+        DEBUG_REQUIRE(compileSlangShaderToSpirv({.moduleName = "DebugRestoreProbe", .entryPointName = "debugRestoreMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
-        ComputeProgram original;
-        const ComputeProgramBindingDesc programBindings[] = {{0}, {1}};
+        ComputeKernel original;
         std::string log;
         DEBUG_REQUIRE(original.initialize(*device, {
             .spirv = shader.spirv,
-            .pushConstantSize = 4,
-            .bindings = {programBindings, 2},
-            .requiresRayQuery = false,
+            .parameters = parameterAbi<DebugRestoreProbeParameters>(kDebugRestoreProbeABI, ParameterTransport::InlinePush),
         }, log));
         DEBUG_REQUIRE(frame.begin(1));
         auto& commands = *frame.commands;
@@ -336,14 +342,13 @@ public:
         if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         BufferBarrierDesc outBarrier{.buffer = sentinel.get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}};
         if (auto commandResult = commands.synchronize({.buffers = {&outBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        const ComputeDispatchBinding originalBindings[] = {{.binding = 0, .buffer = ids.get()}, {.binding = 1, .buffer = sentinel.get()}};
-        const uint32_t index = 0;
-        DEBUG_REQUIRE(original.dispatch({
-            .commandBuffer = &commands,
-            .bindings = {originalBindings, 2},
-            .pushData = &index,
-            .pushDataSize = 4,
-        }));
+        auto registry = device->resourceRegistry();
+        if (!registry) { return RHITestResult::fail("Resource registry unavailable"); }
+        ParameterWriter writer(*device, **registry, &frame.frame);
+        const DebugRestoreProbeParameters params{writer.buffer(ids.get()), writer.dataBuffer(sentinel.get(), 4, 4), 0, 0};
+        auto encoded = writer.encode(params, kDebugRestoreProbeABI, ParameterTransport::InlinePush);
+        if (!encoded) { return RHITestResult::fail("Inline debug restoration parameters failed to encode"); }
+        DEBUG_REQUIRE(original.dispatch(commands, *encoded, 1));
         runtime.beginExecution(*device, {.graph = "probe-graph", .generation = 1, .execution = 9}, nullptr);
         runtime.boundary(commands, "Early", 0, "Probe", bindings, DebugValue::object());
         std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
@@ -356,7 +361,8 @@ public:
         }
         std::swap(sourceBarrier.before, sourceBarrier.after); if (auto commandResult = commands.synchronize({.buffers = {&sourceBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         outBarrier.before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}; if (auto commandResult = commands.synchronize({.buffers = {&outBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        // No rebind: debug instrumentation must restore heap, pipeline and push data.
+        // No rebind: debug instrumentation must restore heap, pipeline and the
+        // complete 32-byte inline block, including the BDA span and typed handle.
         commands.dispatch(1);
         runtime.boundary(commands, "Late", 0, "Probe", bindings, DebugValue::object());
         runtime.endExecution(true); runtime.poll();

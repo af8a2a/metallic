@@ -1,3 +1,4 @@
+#include "BatchBarrierProbeParameters.h"
 #include "DataSliceProbeParameters.h"
 #include "TextureBindingProbeParameters.h"
 #include "StreamProbeParameters.h"
@@ -1780,7 +1781,7 @@ public:
         auto& queue = *device->getQueue(QueueType::Graphics);
         auto registry = device->resourceRegistry();
         REG_CHECK(registry);
-        ComputeKernel kernel, surfaceKernel;
+        ComputeKernel kernel, surfaceKernel, uvKernel;
         std::string log;
         auto shader = compileSlangShaderToSpirv({.moduleName = "StreamDataDecodeProbe",
             .entryPointName = "streamDataDecodeMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
@@ -1790,14 +1791,18 @@ public:
             .entryPointName = "streamRaySurfaceMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
         if (!surfaceShader) { return RHITestResult::fail(log); }
         REG_REQUIRE(surfaceKernel.initialize(*device, {.spirv = surfaceShader->spirv, .parameters = parameterAbi<StreamProbeParameters>(kStreamProbeABI, ParameterTransport::InlinePush)}, log));
+        auto uvShader = compileSlangShaderToSpirv({.moduleName = "StreamRaySurfaceProbe",
+            .entryPointName = "streamRayUVMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
+        if (!uvShader) { return RHITestResult::fail(log); }
+        REG_REQUIRE(uvKernel.initialize(*device, {.spirv = uvShader->spirv, .parameters = parameterAbi<StreamProbeParameters>(kStreamProbeABI, ParameterTransport::InlinePush)}, log));
         std::unique_ptr<Buffer> output;
-        REG_REQUIRE(device->createBuffer({.size = 44 * sizeof(uint32_t), .structureStride = 4,
+        REG_REQUIRE(device->createBuffer({.size = 52 * sizeof(uint32_t), .structureStride = 4,
             .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
             .transform([&](auto value) { output = std::move(value); }));
         // Poison every result so a skipped invocation cannot look like a rejected input.
         void* initial = output->map();
         REG_CHECK(initial);
-        std::memset(initial, 0xff, 44 * sizeof(uint32_t));
+        std::memset(initial, 0xff, 52 * sizeof(uint32_t));
         output->flush();
         output->unmap();
         QueueSubmissionTracker tracker;
@@ -1828,6 +1833,27 @@ public:
             REG_CHECK(encoded);
             REG_REQUIRE(kernel.dispatch(*recording.commands, *encoded, 2));
             REG_REQUIRE(surfaceKernel.dispatch(*recording.commands, *encoded, 1));
+            // Eight independent pages: valid UV, malformed optional ranges/formats,
+            // and two barycentric positions on opposite sides of the alpha cutoff.
+            std::array<uint32_t, 8 * 76> uvPages{};
+            for (uint32_t i = 0; i < 8; ++i) {
+                auto* page = uvPages.data() + i * 76;
+                std::copy(words.begin(), words.end(), page);
+                page[12] = 276; page[14] = 23;
+                page[16] = page[24] = 0xfffffffcu; // Invalid normal/tangent ranges.
+                page[21] = page[25] = 1;
+                page[17] = 252; page[22] = 1;
+                page[65] = page[68] = 0x3f800000; // UV: (0,0), (1,0), (0,1).
+                if (i == 1) { page[17] = 280; }
+                if (i == 2) { page[17] = 253; }
+                if (i == 3) { page[22] = 0; }
+                if (i == 4) { page[12] = 272; }
+                if (i == 5) { page[14] &= ~4u; }
+            }
+            params.stream.pages = {writer.data(uvPages.data(), sizeof(uvPages)), uint32_t(uvPages.size()), 4};
+            auto uvEncoded = writer.encode(params, kStreamProbeABI, ParameterTransport::InlinePush);
+            REG_CHECK(uvEncoded);
+            REG_REQUIRE(uvKernel.dispatch(*recording.commands, *uvEncoded, 1));
         }
         const MemoryBarrierDesc hostRead{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
             {PipelineStageBits::Host, AccessBits::HostRead}};
@@ -1841,7 +1867,7 @@ public:
         output->invalidate();
         const auto* values = static_cast<const uint32_t*>(output->map());
         REG_CHECK(values);
-        std::array<uint32_t, 44> actual{};
+        std::array<uint32_t, 52> actual{};
         std::memcpy(actual.data(), values, sizeof(actual));
         output->unmap();
         for (uint32_t i = 0; i < 24; ++i) { REG_CHECK(actual[i] == (i == 9 ? 17u : i == 10 ? 23u : (i == 0 || i == 11) ? 1u : 0u)); }
@@ -1849,8 +1875,9 @@ public:
             const bool expected = i <= 2 || i == 7 || i == 10 || i == 11;
             REG_CHECK(actual[24 + i] == uint32_t(expected));
         }
+        for (uint32_t i = 44; i < 52; ++i) { REG_CHECK(actual[i] == 1u); }
         REG_CHECK((*registry)->stats().descriptorWrites == 0);
-        return RHITestResult::pass("BDA triangle values; invalid page/cluster/triangle, truncated buffers, empty table, null resources, instance/header bounds and wrong strides rejected; explicit surface/alpha provider, ray-independent normals/TBN, bitangent flip and mask/blend thresholds and invalid opaque geometry");
+        return RHITestResult::pass("BDA triangle values; invalid page/cluster/triangle, truncated buffers, empty table, null resources, instance/header bounds and wrong strides rejected; explicit surface/alpha provider, ray-independent normals/TBN, bitangent flip and mask/blend thresholds and invalid opaque geometry; UV-sensitive alpha interpolation and malformed optional UV fallbacks");
     }
 };
 METALLIC_REGISTER_RHI_TEST(StreamDataDecodeTest);
@@ -2355,27 +2382,39 @@ public:
     PreparedDispatchParallelTest() { type = RHITestType::Rendering; name = "prepared_dispatch_parallel_snapshot_lifetime"; }
     RHITestResult run(RHITestContext& context) override
     {
-        for (const auto mode : {render::SlangDescriptorHeapMode::Mapped, render::SlangDescriptorHeapMode::Native}) {
+        const std::array variants{
+            std::pair{false, render::SlangDescriptorHeapMode::Mapped},
+            std::pair{false, render::SlangDescriptorHeapMode::Native},
+            std::pair{true, render::SlangDescriptorHeapMode::Mapped},
+            std::pair{true, render::SlangDescriptorHeapMode::Native}};
+        for (const auto& [inlinePush, mode] : variants) {
             bench::TestDevice device;
             REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Prepared dispatch snapshot",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
             auto& queue = *device->getQueue(render::QueueType::Graphics);
+            auto registry = device->resourceRegistry();
+            REG_CHECK(registry);
+            render::ComputeKernel kernels[2];
             render::ShaderCompileResult shader;
-            REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "FrameResourceProbe", .entryPointName = "copyValue",
-                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
+            if (!inlinePush) { REG_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "FrameResourceProbe", .entryPointName = "copyValue",
+                .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders", .descriptorHeapMode = mode}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); })); }
             render::ComputeProgram programs[2];
             render::ComputeProgramBindingDesc layout[] = {
                 {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer},
                 {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
             std::string log;
-            for (auto& program : programs) {
-                REG_REQUIRE(program.initialize(*device, {
-                    .spirv = shader.spirv,
-                    .pushConstantSize = 4,
-                    .bindings = {layout, 2},
-                    .requiresRayQuery = false,
-                }, log));
-                std::swap(layout[0], layout[1]);
+            if (inlinePush) {
+                for (auto& kernel : kernels) { REG_REQUIRE(makeKernel(*device, kernel, log, mode, render::ParameterTransport::InlinePush)); }
+            } else {
+                for (auto& program : programs) {
+                    REG_REQUIRE(program.initialize(*device, {
+                        .spirv = shader.spirv,
+                        .pushConstantSize = 4,
+                        .bindings = {layout, 2},
+                        .requiresRayQuery = false,
+                    }, log));
+                    std::swap(layout[0], layout[1]);
+                }
             }
             std::unique_ptr<render::Buffer> input, output, arguments;
             REG_REQUIRE(makeBuffer(*device, input, 137));
@@ -2399,6 +2438,15 @@ public:
             uint32_t indices[] = {0, 1, 2};
             const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = input.get()}, {.binding = 1, .buffer = output.get()}};
             std::jthread first([&] {
+                if (inlinePush) {
+                    render::ParameterWriter writer(*device, **registry, &frame);
+                    ProbeParams params{writer.buffer(input.get()), writer.buffer(output.get()), 0, indices[0]};
+                    auto encoded = writer.encode(params, kABI, render::ParameterTransport::InlinePush);
+                    outcomes[0] = encoded ? kernels[0].prepareDispatch(*encoded, 1).transform(
+                        [&](auto value) { packets[0] = std::move(value); }) : render::makeError(encoded.error());
+                    params.index = 15; // Encoding owns the bytes, not this stack object.
+                    return;
+                }
                 outcomes[0] = programs[0].prepareDispatch(frame, {
                     .bindings = {bindings, 2},
                     .pushData = &indices[0],
@@ -2406,6 +2454,20 @@ public:
                 }).transform([&](auto value) { packets[0] = std::move(value); });
             });
             std::jthread second([&] {
+                if (inlinePush) {
+                    render::ParameterWriter writer(*device, **registry, &frame);
+                    render::ComputeIndirectParameters items[2];
+                    for (uint32_t i = 0; i < 2; ++i) {
+                        ProbeParams params{writer.buffer(input.get()), writer.buffer(output.get()), 0, indices[i + 1]};
+                        auto encoded = writer.encode(params, kABI, render::ParameterTransport::InlinePush);
+                        auto slice = arguments->slice({12 * i, 12});
+                        if (!encoded || !slice) { outcomes[1] = render::makeError(render::Error::InvalidArgument); return; }
+                        items[i] = {*encoded, *slice, &kernels[i]};
+                        params.index = 15;
+                    }
+                    outcomes[1] = kernels[0].prepareIndirectBatch(items).transform([&](auto value) { packets[1] = std::move(value); });
+                    return;
+                }
                 const render::ComputeIndirectDispatch items[] = {
                     {.pushData = &indices[1]}, {.pushData = &indices[2], .argumentOffset = 12, .program = &programs[1]}};
                 outcomes[1] = programs[0].prepareIndirectBatch(frame, {
@@ -2416,15 +2478,24 @@ public:
             });
             first.join(); second.join();
             for (const auto& outcome : outcomes) { REG_REQUIRE(outcome); }
-            const auto failed = programs[0].prepareDispatch(frame, {
-                .bindings = {bindings, 2},
-                .pushData = &indices[0],
-                .pushDataSize = 3,
-            });
-            REG_CHECK(render::hasError(failed, render::Error::InvalidArgument) && packets[0].valid());
+            if (inlinePush) {
+                render::ParameterWriter writer(*device, **registry, &frame);
+                ProbeParams params{writer.buffer(input.get()), writer.buffer(output.get()), 0, 0};
+                auto wrongAbi = writer.encode(params, kABI + 1, render::ParameterTransport::InlinePush);
+                REG_CHECK(wrongAbi);
+                REG_CHECK(render::hasError(kernels[0].prepareDispatch(*wrongAbi, 1), render::Error::InvalidArgument) && packets[0].valid());
+            } else {
+                const auto failed = programs[0].prepareDispatch(frame, {
+                    .bindings = {bindings, 2},
+                    .pushData = &indices[0],
+                    .pushDataSize = 3,
+                });
+                REG_CHECK(render::hasError(failed, render::Error::InvalidArgument) && packets[0].valid());
+            }
             // Preparation owns constant bytes, permutations, descriptors and argument ranges.
             indices[0] = indices[1] = indices[2] = 15;
             input.reset(); arguments.reset(); programs[0].clear(); programs[1].clear();
+            kernels[0].clear(); kernels[1].clear();
             REG_CHECK(!inputLife.expired() && !argumentLife.expired());
             render::CommandBuffer* commands[2]{};
             for (uint32_t i = 0; i < 2; ++i) {
@@ -2467,7 +2538,7 @@ public:
             frame.cancel();
             REG_REQUIRE(contexts[0].reset()); REG_REQUIRE(frame.reset());
         }
-        return RHITestResult::pass("Mapped/native: concurrent preparation and recording, frozen constants, indirect permutations, lifetime and stale generation");
+        return RHITestResult::pass("Adapter/inline, mapped/native: concurrent preparation and recording, frozen constants, indirect permutations, lifetime and stale generation");
     }
 };
 METALLIC_REGISTER_RHI_TEST(PreparedDispatchParallelTest);
@@ -2583,7 +2654,7 @@ public:
 };
 METALLIC_REGISTER_RHI_TEST(KernelPreparedDispatchTest);
 
-// Exercise the common prepared resource-table path in mapped and native modes.
+// Exercise adapter and inline prepared batches in mapped and native modes.
 // Two writes to the same word require a memory-only dependency between dispatches.
 class BatchMemoryBarrierTest final : public RHITest {
 public:
@@ -2595,27 +2666,33 @@ public:
     BatchMemoryBarrierTest() { type = RHITestType::Rendering; name = "compute_batch_memory_barrier_and_error_propagation"; }
     RHITestResult run(RHITestContext& context) override
     {
-        for (uint32_t path = 0; path < 2; ++path) {
+        for (uint32_t path = 0; path < 4; ++path) {
             bench::TestDevice device;
             REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Batch barriers",
                 .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
                 .transform([&](auto value) { device = std::move(value); }));
             auto& queue = *device->getQueue(render::QueueType::Graphics);
+            const bool inlineABI = path >= 2;
+            const render::SlangMacroDefine inlineDefine{"BATCH_PROBE_INLINE", "1"};
             render::ShaderCompileResult shader;
             REG_REQUIRE(render::compileSlangShaderToSpirv({
                 .moduleName = "BatchBarrierProbe",
                 .entryPointName = "batchBarrierMain",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
-                .descriptorHeapMode = path == 1 ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped,
+                .macroDefines = {&inlineDefine, inlineABI ? 1u : 0u},
+                .descriptorHeapMode = (path & 1u) != 0 ? render::SlangDescriptorHeapMode::Native : render::SlangDescriptorHeapMode::Mapped,
             }, shader.diagnostics).transform([&](auto value) { shader = std::move(value); }));
             const render::ComputeProgramBindingDesc layout{.binding = 0, .kind = render::ComputeResourceBindingKind::StorageBuffer};
             render::ComputeProgram program;
             std::string log;
-            REG_REQUIRE(program.initialize(*device, {
-                .spirv = shader.spirv,
-                .bindings = {&layout, 1},
-                .requiresRayQuery = false,
-            }, log));
+            render::ComputeKernel kernel;
+            if (inlineABI) {
+                REG_REQUIRE(kernel.initialize(*device, {.spirv = shader.spirv,
+                    .parameters = render::parameterAbi<BatchBarrierProbeParameters>(kBatchProbeABI, render::ParameterTransport::InlinePush)}, log));
+            } else {
+                REG_REQUIRE(program.initialize(*device, {.spirv = shader.spirv,
+                    .bindings = {&layout, 1}, .requiresRayQuery = false}, log));
+            }
             std::unique_ptr<render::Buffer> output, arguments;
             REG_REQUIRE(makeBuffer(*device, output));
             REG_REQUIRE(makeBuffer(*device, arguments));
@@ -2642,7 +2719,23 @@ public:
                 .bindings = {&binding, 1},
                 .indirectArguments = arguments.get(),
             };
-            REG_REQUIRE(program.dispatchIndirectBatch(dispatch, items, barrier));
+            auto dispatchBatch = [&]() -> render::Result<> {
+                if (!inlineABI) { return program.dispatchIndirectBatch(dispatch, items, barrier); }
+                auto registry = device->resourceRegistry();
+                if (!registry) { return render::makeError(registry.error()); }
+                render::ParameterWriter writer(*device, **registry, &recording.frame);
+                const BatchBarrierProbeParameters params{writer.dataBuffer(output.get(), 4, 4)};
+                auto encoded = writer.encode(params, kBatchProbeABI, render::ParameterTransport::InlinePush);
+                if (!encoded) { return render::makeError(encoded.error()); }
+                auto first = arguments->slice({0, 12});
+                auto second = arguments->slice({12, 12});
+                if (!first || !second) { return render::makeError(render::Error::InvalidArgument); }
+                const render::ComputeIndirectParameters batches[] = {{*encoded, *first}, {*encoded, *second}};
+                auto prepared = kernel.prepareIndirectBatch(batches);
+                if (!prepared) { return render::makeError(prepared.error()); }
+                return prepared->record(*recording.commands, barrier);
+            };
+            REG_REQUIRE(dispatchBatch());
             REG_CHECK(recording.commands->synchronizationStats().memoryBarriers == 1);
             REG_REQUIRE(recording.submit(tracker, *gate));
             REG_REQUIRE(recording.frame.wait());
@@ -2656,11 +2749,11 @@ public:
 
             REG_REQUIRE(recording.begin(1));
             memory.after = {render::PipelineStageBits::Transfer, render::AccessBits::ShaderRead};
-            REG_CHECK(render::hasError(program.dispatchIndirectBatch(dispatch, items, barrier), render::Error::InvalidArgument));
+            REG_CHECK(render::hasError(dispatchBatch(), render::Error::InvalidArgument));
             REG_CHECK(recording.commands->synchronizationStats().calls == 0);
             recording.frame.cancel(); // Discard the first dispatch of the rejected batch.
         }
-        return RHITestResult::pass("Prepared mapped/native: memory-only ordering and barrier errors");
+        return RHITestResult::pass("Adapter and inline mapped/native: memory-only ordering and barrier errors");
     }
 };
 METALLIC_REGISTER_RHI_TEST(BatchMemoryBarrierTest);

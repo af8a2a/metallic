@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/BindlessSmokeParameters.h"
 #include "VulkanSynchronization.h"
 #include "VulkanTrace.h"
 #include "Runtime/Render/Profiling/NvPerf.h"
@@ -6530,6 +6531,17 @@ void CommandBuffer::setDepthStencilState(const DepthStencilState& state)
 
 namespace {
 
+// Vertex-based shader objects must explicitly unbind every enabled mesh stage,
+// including on the first draw in a fresh command buffer.
+void clearMeshShaderObjects(detail::CommandBufferImpl& commandBuffer)
+{
+    std::array<VkShaderStageFlagBits, 2> stages{};
+    uint32_t count = 0;
+    if (commandBuffer.device->capabilities.taskShader) { stages[count++] = VK_SHADER_STAGE_TASK_BIT_EXT; }
+    if (commandBuffer.device->capabilities.meshShader) { stages[count++] = VK_SHADER_STAGE_MESH_BIT_EXT; }
+    if (count != 0) { vkCmdBindShadersEXT(commandBuffer.commandBuffer, count, stages.data(), nullptr); }
+}
+
 void clearGraphicsShaderObjects(detail::CommandBufferImpl& commandBuffer)
 {
     if (!commandBuffer.currentGraphicsShaderObjectBound ||
@@ -6627,6 +6639,7 @@ Result<> CommandBuffer::bindExecutionImpl(
             VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
             VK_SHADER_STAGE_GEOMETRY_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
         const std::array<VkShaderEXT, 5> shaders{program.vertexShader, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, program.fragmentShader};
+        clearMeshShaderObjects(*impl_);
         vkCmdBindShadersEXT(impl_->commandBuffer, uint32_t(stages.size()), stages.data(), shaders.data());
         impl_->currentGraphicsPipelineLayout = VK_NULL_HANDLE;
         impl_->currentGraphicsPipelineUsesBindlessHeap = false;
@@ -12788,7 +12801,8 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                     commandBuffer->setScissor(renderArea);
                     if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return 1; }
                     commandBuffer->bindBindlessHeap(*bindlessHeap);
-                    commandBuffer->pushBindlessData(&sourceImageHandle.shaderIndex, sizeof(sourceImageHandle.shaderIndex));
+                    const BindlessSmokeParameters params{ShaderSampledImage{sourceImageHandle.shaderIndex}};
+                    commandBuffer->pushBindlessData(&params, sizeof(params));
                     commandBuffer->draw(3);
                     commandBuffer->endRendering();
 

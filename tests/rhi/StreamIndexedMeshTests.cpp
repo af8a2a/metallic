@@ -39,15 +39,15 @@ public:
             sizeof(MeshletStreamGPUParams), 4, sizeof(StreamPageTableEntry), sizeof(MeshletStreamGPURasterBindings),
             4, sizeof(CompactStreamVisibleRecord), sizeof(GPUSceneGPUInstanceRecord), 4};
         const uint32_t counts[] = {1, 2, 1, pageBytes / 4, 1, 1, 2, capacity, 2, 16 + 9 * capacity + 5};
-        std::unique_ptr<BindlessHeap> heap;
-        MESH_REQUIRE(device->createBindlessHeap({.maxBuffers = InputCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
-        std::array<BindlessHandle, InputCount> handles;
-        for (auto& handle : handles) { MESH_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
+        auto registry = device->resourceRegistry();
+        if (!registry) { return RHITestResult::fail("Missing mesh fixture registry"); }
+        ParameterWriter fixtureWriter(*device, **registry);
+        std::array<ShaderBuffer, InputCount> handles;
         std::array<std::unique_ptr<Buffer>, Queue> inputs;
         for (size_t i = 0; i < inputs.size(); ++i) {
             MESH_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[i] = std::move(rhiValue); }));
-            MESH_REQUIRE(heap->writeStorageBuffer(handles[i], *inputs[i]));
+            handles[i] = fixtureWriter.buffer(inputs[i].get());
         }
         const auto upload = [&](size_t index, const void* data, size_t size) -> Result<> {
             void* mapped = inputs[index]->map();
@@ -56,7 +56,7 @@ public:
         };
         VisibilityHybridRasterizer rasterizer;
         MESH_REQUIRE(rasterizer.initialize(*device, width, height, log));
-        MESH_REQUIRE(heap->writeStorageBuffer(handles[Queue], rasterizer.queueBuffer()));
+        handles[Queue] = fixtureWriter.buffer(&rasterizer.queueBuffer());
         std::array<std::unique_ptr<ShaderModule>, 4> shaders;
         const char* entries[] = {"referenceStreamMeshMain", "referenceStreamFragmentMain",
             "gpuDrivenStreamAssetMeshMain", "gpuDrivenStreamAssetFragmentMain"};
@@ -164,9 +164,9 @@ public:
                 params.renderEye[0] = .1f; params.renderEye[3] = .35f; params.renderCenter[3] = -.2f;
             }
             const StreamPageTableEntry entry{.deviceOffsetAndState = packStreamPageTableEntry(0, MeshletStreamPageResidencyState::Resident)};
-            MeshletStreamGPURasterBindings bindings{.visibleClusterBuffer = {uint64_t(handles[Records].shaderIndex)},
-                .instanceVisibilityBuffer = {uint64_t(handles[Visibility].shaderIndex)}, .visibleRecordBase = kVisibilityMaxRecordCount - capacity,
-                .visibleRecordCapacity = capacity, .gpuSceneInstanceBuffer = {uint64_t(handles[Instances].shaderIndex)}};
+            MeshletStreamGPURasterBindings bindings{.visibleClusterBuffer = handles[Records],
+                .instanceVisibilityBuffer = handles[Visibility], .visibleRecordBase = kVisibilityMaxRecordCount - capacity,
+                .visibleRecordCapacity = capacity, .gpuSceneInstanceBuffer = handles[Instances]};
             updateStreamRasterResourceFlags(bindings);
             const std::array<uint32_t, 2> visibility{test == 7 ? 3u : 1u, test == 7 ? 3u : 1u};
             std::array<uint32_t, 16 + 9 * capacity + 5> bins{};
@@ -218,26 +218,25 @@ public:
                     }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
                     commands->setViewport({.width = float(width), .height = float(height), .maxDepth = 1.f});
                     commands->setScissor({.width = width, .height = height});
-                    commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipelines[(reversed ? 2 : 0) + indexed])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = commands->bindExecution((pipelines[(reversed ? 2 : 0) + indexed])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                     auto hardwareRegistry = device->resourceRegistry();
                     if (!hardwareRegistry) { return RHITestResult::fail("Missing hardware registry"); }
                     ParameterWriter hardwareWriter(*device, **hardwareRegistry, commands->frameContext());
-                    StreamHardwareParameters push{.pageBuffer = {uint64_t(handles[Pages].shaderIndex)},
-                        .activeGroupBuffer = {uint64_t(handles[Groups].shaderIndex)},
-                        .pageTableBuffer = {uint64_t(handles[PageTable].shaderIndex)},
+                    StreamHardwareParameters push{.pageBuffer = handles[Pages],
+                        .activeGroupBuffer = handles[Groups],
+                        .pageTableBuffer = handles[PageTable],
                         .settings = hardwareWriter.data(&params, sizeof(params), 16),
-                        .activeHeaderBuffer = {uint64_t(handles[Header].shaderIndex)},
+                        .activeHeaderBuffer = handles[Header],
                         .rasterSettings = hardwareWriter.data(&bindings, sizeof(bindings), 16),
-                        .hybridQueueBuffer = {uint64_t(hybridQueue ? handles[Queue].shaderIndex : UINT32_MAX)},
-                        .hybridClusterBuffer = {uint64_t(prebinned && (!fallback || indexed != 0) ? handles[Bins].shaderIndex : UINT32_MAX)},
+                        .hybridQueueBuffer = hybridQueue ? handles[Queue] : ShaderBuffer{},
+                        .hybridClusterBuffer = prebinned && (!fallback || indexed != 0) ? handles[Bins] : ShaderBuffer{},
                         .traversalPhase = test == 7 ? 1u : 0u, .tessellationEdgePixels = 8.0f, .tessellationMaxFactor = 4, .tessellationMaxSplitDepth = 2};
                     push.writableBins = push.hybridClusterBuffer;
-                    push.hasBins = push.hybridClusterBuffer.value != UINT32_MAX;
-                    push.hasQueue = push.hybridQueueBuffer.value != UINT32_MAX;
+                    push.hasBins = prebinned && (!fallback || indexed != 0);
+                    push.hasQueue = hybridQueue;
                     auto hardwareParameters = hardwareWriter.encode(push, kStreamHardwareABI, ParameterTransport::InlinePush);
                     if (!hardwareParameters) { return RHITestResult::fail("Hardware parameter encoding failed"); }
                     MESH_REQUIRE(hardwareParameters->bindResources(*commands));
-                    commands->bindBindlessHeap(*heap);
                     commands->pushBindlessData(hardwareParameters->inlineData().data(), static_cast<uint32_t>(hardwareParameters->inlineData().size()));
                     commands->drawMeshTasks(prebinned && indexed ? capacity : capacity * 2);
                     commands->endRendering();

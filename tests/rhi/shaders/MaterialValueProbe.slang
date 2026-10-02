@@ -1,4 +1,4 @@
-import Core;
+import ShaderCore;
 using Metallic;
 import Material;
 using Metallic.Material;

@@ -1,16 +1,18 @@
 import ShaderTrace;
-struct Push { uint inputBuffer; uint cookie; };
+#include "../ShaderDiagnosticParameters.h"
+[[vk::push_constant]] ConstantBuffer<ShaderDiagnosticParameters> gDiagnostic;
 
 [shader("compute")]
 [numthreads(32, 1, 1)]
-void heapMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex, uniform Push push)
+void heapMain(uint3 group : SV_GroupID, uint lane : SV_GroupIndex)
 {
     if (group.x == 1 && lane == 3) {
-        ByteAddressBuffer input = DescriptorHandle<ByteAddressBuffer>(uint2(push.inputBuffer, 0));
-        uint outputIndex = input.Load(0);
-        uint value = input.Load(4);
-        RWByteAddressBuffer output = DescriptorHandle<RWByteAddressBuffer>(uint2(outputIndex, 0));
-        output.Store4(0, uint4(value + 1, push.cookie, push.inputBuffer, outputIndex));
+        ShaderDiagnosticParameters push = gDiagnostic;
+        ByteAddressBuffer input = resolveDescriptor(push.input);
+        uint2 outputHandle = input.Load2(0);
+        uint value = input.Load(8);
+        RWByteAddressBuffer output = resolveDescriptor(DescriptorHandle<RWByteAddressBuffer>(outputHandle));
+        output.Store4(0, uint4(value + 1, push.cookie, value, outputHandle.x));
         ShaderTraceIdentity id;
         id.session = uint2(TRACE_SESSION_LO, TRACE_SESSION_HI);
         id.run = uint2(TRACE_RUN_LO, TRACE_RUN_HI);

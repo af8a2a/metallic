@@ -192,7 +192,19 @@ struct StreamerImpl {
             return makeError(Error::InvalidArgument);
         }
         uploadSlots.resize(desc.queuedFrameCount);
-        UploadSlot& slot = uploadSlots[frame.slotIndex()];
+        // Frame slot numbers are local to each executor. A shared streamer
+        // assigns its bounded upload slots by completion identity, not that
+        // local number. Reopening a recording must find its existing offsets.
+        auto selected = std::find_if(uploadSlots.begin(), uploadSlots.end(),
+            [&](const UploadSlot& slot) { return slot.completion.sameSubmission(frame.completion()); });
+        if (selected == uploadSlots.end()) {
+            auto preferred = uploadSlots.begin() + frame.slotIndex();
+            selected = preferred->completion.isComplete() ? preferred :
+                std::find_if(uploadSlots.begin(), uploadSlots.end(),
+                    [](const UploadSlot& slot) { return slot.completion.isComplete(); });
+        }
+        if (selected == uploadSlots.end()) { return makeError(Error::InvalidArgument); }
+        UploadSlot& slot = *selected;
         if (!slot.completion.sameSubmission(frame.completion())) {
             if (!slot.completion.isComplete()) {
                 return makeError(Error::InvalidArgument);
@@ -205,7 +217,7 @@ struct StreamerImpl {
             dynamicBufferOffset = slot.dynamicOffset;
             constantBufferOffset = slot.constantOffset;
         }
-        frameIndex = frame.slotIndex();
+        frameIndex = static_cast<uint32_t>(selected - uploadSlots.begin());
         activeFrame = &frame;
         completionTracked = true;
         frame.retain(constantBuffer);

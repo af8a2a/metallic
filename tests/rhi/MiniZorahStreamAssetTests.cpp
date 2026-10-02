@@ -335,19 +335,83 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
             require(gpuScene->materials().empty() && gpuScene->drawSet().generation != 0,
                 "Stream-only view must have an empty but valid DrawSet");
         };
+        // Diagnostic copies add GPU synchronization; keep them opt-in so a
+        // passing instrumented run cannot replace the normal equivalence check.
+        const char* captureBinsSetting = std::getenv("METALLIC_TEST_CLASSIFICATION_BINS");
+        const bool captureBins = captureBinsSetting && std::string_view(captureBinsSetting) == "1";
+        report["classificationBinCapture"] = captureBins;
+        const auto classificationHeaders = [&]() {
+            Json jobs = Json::array();
+            if (!captureBins) { return jobs; }
+            for (const char* checkpoint : {"AfterStreamEarlyBins", "AfterStreamLateBins"}) {
+                auto response = observer.debug.core().dispatch({{"id", "classification-evidence"}, {"method", "capture.batch"},
+                    {"params", {{"pass", "GPUDriven"}, {"checkpoint", checkpoint},
+                        {"resources", {{{"id", "hybrid.GPUDriven.clusters"}, {"count", 16}}}}}}});
+                require(response.value("status", "") == "ok", response.dump());
+                jobs.push_back(response.at("result").at("job"));
+            }
+            return jobs;
+        };
+        const auto readClassificationHeaders = [&](const Json& jobs) {
+            Json headers = Json::array();
+            for (const auto& job : jobs) {
+                auto response = observer.debug.core().dispatch({{"id", "classification-evidence"}, {"method", "eval"},
+                    {"params", {{"job", job}, {"expression", "buffers[\"hybrid.GPUDriven.clusters\"]"}, {"count", 16}}}});
+                require(response.value("status", "") == "ok", response.dump());
+                headers.push_back(response.at("result").at("value"));
+            }
+            return headers;
+        };
         const auto compareClassification = [&](bool fastMetadata, const std::string& pose) {
             graph.setNodeRuntimeProperty(node, "metadataFastClassification", fastMetadata);
             graph.setNodeRuntimeProperty(node, "cullHardwareClassification", false);
-            for (uint32_t frame = 0; frame < 3; ++frame) { renderFrame(); }
+            for (uint32_t frame = 0; frame < 2; ++frame) { renderFrame(); }
+            const std::vector<uint32_t> p0PreviousVisibility(preview.pixels().begin(), preview.pixels().end());
+            const auto p0Jobs = classificationHeaders();
+            renderFrame();
+            const auto p0Headers = readClassificationHeaders(p0Jobs);
             const std::vector<uint32_t> p0Visibility(preview.pixels().begin(), preview.pixels().end());
             renderFrame("GPUDriven.depth");
             const std::vector<uint32_t> p0Depth(preview.pixels().begin(), preview.pixels().end());
             renderFrame("GPUDriven.depth");
             const std::vector<uint32_t> p0RepeatDepth(preview.pixels().begin(), preview.pixels().end());
             graph.setNodeRuntimeProperty(node, "cullHardwareClassification", true);
-            for (uint32_t frame = 0; frame < 3; ++frame) { renderFrame(); }
-            require(std::equal(p0Visibility.begin(), p0Visibility.end(), preview.pixels().begin(), preview.pixels().end()),
-                "P1/P0 visibility differs");
+            for (uint32_t frame = 0; frame < 2; ++frame) { renderFrame(); }
+            const std::vector<uint32_t> p1PreviousVisibility(preview.pixels().begin(), preview.pixels().end());
+            const auto p1Jobs = classificationHeaders();
+            renderFrame();
+            const auto p1Headers = readClassificationHeaders(p1Jobs);
+            report["p1BinHeaders"].push_back({{"pose", pose}, {"metadataFastClassification", fastMetadata},
+                {"p0", p0Headers}, {"p1", p1Headers}});
+            const std::vector<uint32_t> p1Visibility(preview.pixels().begin(), preview.pixels().end());
+            uint32_t visibilityMismatch = 0, coverageMismatch = 0, p0RepeatMismatch = 0, p1RepeatMismatch = 0;
+            Json firstMismatches = Json::array();
+            for (size_t pixel = 0; pixel < p0Visibility.size(); ++pixel) {
+                p0RepeatMismatch += p0Visibility[pixel] != p0PreviousVisibility[pixel];
+                p1RepeatMismatch += p1Visibility[pixel] != p1PreviousVisibility[pixel];
+                if (p0Visibility[pixel] == p1Visibility[pixel]) { continue; }
+                ++visibilityMismatch;
+                coverageMismatch += (p0Visibility[pixel] == 0) != (p1Visibility[pixel] == 0);
+                if (firstMismatches.size() < 16) {
+                    firstMismatches.push_back({{"x", pixel % width}, {"y", pixel / width},
+                        {"p0", p0Visibility[pixel]}, {"p1", p1Visibility[pixel]}});
+                }
+            }
+            const Json visibilityDifference{{"pose", pose}, {"metadataFastClassification", fastMetadata},
+                {"pixels", visibilityMismatch}, {"coverageMismatch", coverageMismatch},
+                {"p0RepeatPixels", p0RepeatMismatch}, {"p1RepeatPixels", p1RepeatMismatch}, {"first", firstMismatches}};
+            report["p1VisibilityStability"].push_back(visibilityDifference);
+            if (visibilityMismatch || p0RepeatMismatch || p1RepeatMismatch) {
+                const auto saveVisibility = [&](const char* suffix, const auto& pixels) {
+                    const auto path = context.outputDirectory / (label + "-" + pose + suffix);
+                    std::ofstream raw(path, std::ios::binary);
+                    raw.write(reinterpret_cast<const char*>(pixels.data()), pixels.size() * sizeof(uint32_t));
+                };
+                saveVisibility("-p0-visibility.bin", p0Visibility);
+                saveVisibility("-p1-visibility.bin", p1Visibility);
+                saveVisibility("-p0-previous-visibility.bin", p0PreviousVisibility);
+                saveVisibility("-p1-previous-visibility.bin", p1PreviousVisibility);
+            }
             renderFrame("GPUDriven.depth");
             const std::vector<uint32_t> p1Depth(preview.pixels().begin(), preview.pixels().end());
             renderFrame("GPUDriven.depth");
@@ -364,8 +428,26 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
                 {"p0Repeat", difference(p0Depth, p0RepeatDepth)},
                 {"p1Repeat", difference(p1Depth, preview.pixels())}, {"p0p1", depthDifference}};
             report["p1DepthStability"].push_back(depthStability);
+            if (depthDifference.at("pixels") != 0 || depthStability.at("p0Repeat").at("pixels") != 0 ||
+                depthStability.at("p1Repeat").at("pixels") != 0) {
+                const auto saveDepth = [&](const char* suffix, const auto& pixels) {
+                    const auto path = context.outputDirectory / (label + "-" + pose + suffix);
+                    std::ofstream raw(path, std::ios::binary);
+                    raw.write(reinterpret_cast<const char*>(pixels.data()), pixels.size() * sizeof(uint32_t));
+                    require(bool(raw), "Cannot write classification depth evidence: " + path.string());
+                };
+                saveDepth("-p0-depth.bin", p0Depth);
+                saveDepth("-p0-repeat-depth.bin", p0RepeatDepth);
+                saveDepth("-p1-depth.bin", p1Depth);
+                saveDepth("-p1-repeat-depth.bin", preview.pixels());
+            }
+
             require(depthStability.at("p0Repeat").at("pixels") == 0 && depthStability.at("p1Repeat").at("pixels") == 0,
                 "Classifier image comparison has unstable depth history: " + depthStability.dump());
+            require(p0RepeatMismatch == 0 && p1RepeatMismatch == 0,
+                "Classifier image comparison has unstable visibility history: " + visibilityDifference.dump());
+            require(visibilityMismatch == 0, "P1/P0 visibility differs: " + visibilityDifference.dump() +
+                "; depth: " + depthStability.dump());
             require(depthDifference.at("pixels") == 0, "P1/P0 depth differs: " + depthStability.dump());
             report["p1ClassificationEquivalence"].push_back({{"metadataFastClassification", fastMetadata},
                 {"pose", pose}, {"pixels", p0Visibility.size()}, {"visibilityMismatch", 0}, {"depthMismatch", 0}});
@@ -502,7 +584,14 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
         }
         if (unified) {
             graph.setNodeRuntimeProperty(node, "hybridRaster", true);
-            graph.setNodeRuntimeProperty(node, "asyncSoftwareRaster", true);
+            bool asyncSoftware = true;
+            if (const char* setting = std::getenv("METALLIC_TEST_CLASSIFICATION_ASYNC_SOFTWARE")) {
+                const std::string_view value(setting);
+                require(value == "0" || value == "1", "METALLIC_TEST_CLASSIFICATION_ASYNC_SOFTWARE must be 0 or 1");
+                asyncSoftware = value == "1";
+            }
+            report["classificationAsyncSoftwareRequested"] = asyncSoftware;
+            graph.setNodeRuntimeProperty(node, "asyncSoftwareRaster", asyncSoftware);
             graph.setNodeRuntimeProperty(node, "softwareRasterMaxPixels", 64.0f);
             for (uint32_t frame = 0; frame < 3; ++frame) { renderFrame(); }
             uint64_t mismatch = 0, coverageMismatch = 0, interiorMismatch = 0;
@@ -557,6 +646,15 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
             }
             cameras.push_back({{"name", "near"}, {"camera", nearCamera}});
         }
+        uint32_t cameraSettleFrames = miniZorah ? 48u : 16u;
+        if (const char* setting = std::getenv("METALLIC_TEST_CAMERA_SETTLE_FRAMES")) {
+            char* end = nullptr;
+            const auto value = std::strtoul(setting, &end, 10);
+            require(end != setting && *end == '\0' && value > 0 && value <= 240,
+                "METALLIC_TEST_CAMERA_SETTLE_FRAMES must be in [1, 240]");
+            cameraSettleFrames = static_cast<uint32_t>(value);
+        }
+        report["cameraSettleFrames"] = cameraSettleFrames;
         for (const auto& camera : cameras) {
             report["currentCamera"] = camera;
             if (miniZorah) {
@@ -564,7 +662,7 @@ RHITestResult runStreamStartup(RHITestContext& context, bool miniZorah, bool uni
             } else {
                 graph.setNodeRuntimeProperty(node, "camera", camera.at("camera"));
             }
-            for (uint32_t frame = 0; frame < (miniZorah ? 48u : 16u); ++frame) { renderFrame(); }
+            for (uint32_t frame = 0; frame < cameraSettleFrames; ++frame) { renderFrame(); }
             if (unified) {
                 // Freeze this camera's settled live LOD cut while comparing both
                 // producer/consumer pairs with HZB enabled. Restore live streaming

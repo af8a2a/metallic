@@ -36,21 +36,17 @@ public:
         constexpr uint32_t poison = 0xa5a5a5a5u;
         VisibilityHybridRasterizer rasterizer;
         CANDIDATE_REQUIRE(rasterizer.initialize(*device, 1, 1, log, 1, capacity));
-        std::unique_ptr<BindlessHeap> heap;
-        CANDIDATE_REQUIRE(device->createBindlessHeap({.maxBuffers = 7}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
-        std::array<BindlessHandle, 7> handles;
-        for (auto& handle : handles) { CANDIDATE_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
-        std::array<std::unique_ptr<Buffer>, 5> inputs;
+        std::array<std::unique_ptr<Buffer>, 4> inputs;
         const uint32_t strides[] = {sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUActiveGroup),
-            sizeof(MeshletStreamGPURasterBindings), 4, 8};
-        const uint32_t counts[] = {1, groupCapacity, 1, instances, capacity};
+            4, 8};
+        const uint32_t counts[] = {1, groupCapacity, instances, capacity};
         for (size_t i = 0; i < inputs.size(); ++i) {
             CANDIDATE_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[i] = std::move(rhiValue); }));
-            CANDIDATE_REQUIRE(heap->writeStorageBuffer(handles[i], *inputs[i]));
+
         }
-        CANDIDATE_REQUIRE(heap->writeStorageBuffer(handles[5], rasterizer.clusterBuffer()));
-        CANDIDATE_REQUIRE(heap->writeStorageBuffer(handles[6], rasterizer.candidateArguments()));
+
+
         const auto upload = [&](size_t index, const void* data, size_t size) {
             void* mapped = inputs[index]->map();
             if (!mapped) { return false; }
@@ -59,10 +55,8 @@ public:
             inputs[index]->unmap();
             return true;
         };
-        ComputeKernel candidateKernel;
-        std::array<std::unique_ptr<ShaderModule>, 2> shaders;
-        std::array<std::unique_ptr<ComputePipeline>, 2> pipelines;
-        for (size_t i = 0; i < shaders.size(); ++i) {
+        ComputeKernel candidateKernel, seedKernel;
+        for (size_t i = 0; i < 2; ++i) {
             ShaderCompileResult compiled;
             const auto result = compileSlangShaderToSpirv({
                 .moduleName = i == 0 ? "Features/GPUDriven/GPUDrivenStreamAsset" : "HybridClusterProbe",
@@ -75,14 +69,8 @@ public:
                     .parameters = parameterAbi<StreamCandidateParameters>(kStreamCandidateABI, ParameterTransport::InlinePush)}, log));
                 continue;
             }
-            CANDIDATE_REQUIRE(device->createShaderModule({
-                .spirv = compiled.spirv,
-            }).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
-            CANDIDATE_REQUIRE(device->createComputePipeline({
-                .computeShader = {shaders[i].get()},
-                .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = i == 0 ? uint32_t(sizeof(StreamHardwareParameters)) : uint32_t(sizeof(HybridClusterProbeParameters)),
-            }).transform([&](auto rhiValue) { pipelines[i] = std::move(rhiValue); }));
+            CANDIDATE_REQUIRE(seedKernel.initialize(*device, {.spirv = compiled.spirv,
+                .parameters = parameterAbi<HybridClusterProbeParameters>(kHybridClusterProbeABI, ParameterTransport::InlinePush)}, log));
         }
         std::unique_ptr<Buffer> readback, arguments, binned, drawArguments;
         const uint64_t bytes = rasterizer.clusterBuffer().desc().size;
@@ -136,28 +124,23 @@ public:
             if (overflow) { expected.clear(); }
             MeshletStreamGPUActiveHeader header{.activeGroupCount = test.count, .activeGroupCapacity = groupCapacity,
                 .maxActiveGroupClusters = 32};
-            MeshletStreamGPURasterBindings bindings{.instanceVisibilityBuffer = {uint64_t(handles[3].shaderIndex)}};
-            updateStreamRasterResourceFlags(bindings);
             if (!upload(0, &header, sizeof(header)) || !upload(1, groups.data(), groups.size() * sizeof(groups[0])) ||
-                !upload(2, &bindings, sizeof(bindings)) || !upload(3, visibility.data(), sizeof(visibility)) ||
-                !upload(4, retries.data(), retries.size() * sizeof(retries[0]))) {
+                !upload(2, visibility.data(), sizeof(visibility)) ||
+                !upload(3, retries.data(), retries.size() * sizeof(retries[0]))) {
                 return RHITestResult::fail("Cannot upload candidate input");
             }
             if (submitted) { CANDIDATE_REQUIRE(fence->reset()); CANDIDATE_REQUIRE(pool->reset()); }
             CANDIDATE_REQUIRE(commands->begin());
             CANDIDATE_REQUIRE(rasterizer.beginClusters(*commands, 8, true, groupCapacity * 32, true, true));
-            commands->bindBindlessHeap(*heap);
-            if (auto commandResult = commands->bindExecution((pipelines[1])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+
             auto seedRegistry = device->resourceRegistry();
             if (!seedRegistry) { return RHITestResult::fail("Missing seed registry"); }
             ParameterWriter seedWriter(*device, **seedRegistry);
             const HybridClusterProbeParameters seedPush{
-                seedWriter.dataBuffer(inputs[4].get(), 8, 8), seedWriter.buffer(&rasterizer.clusterBuffer()), capacity, 0};
+                seedWriter.dataBuffer(inputs[3].get(), 8, 8), seedWriter.buffer(&rasterizer.clusterBuffer()), capacity, 0};
             auto seedEncoded = seedWriter.encode(seedPush, kHybridClusterProbeABI, ParameterTransport::InlinePush);
             if (!seedEncoded) { return RHITestResult::fail("Cannot encode seed probe parameters"); }
-            CANDIDATE_REQUIRE(seedEncoded->bindResources(*commands));
-            commands->pushBindlessData(seedEncoded->inlineData().data(), uint32_t(seedEncoded->inlineData().size()));
-            commands->dispatch((capacity + 127) / 128);
+            CANDIDATE_REQUIRE(seedKernel.dispatch(*commands, *seedEncoded, (capacity + 127) / 128));
             BufferBarrierDesc ready{
                 .buffer = &rasterizer.clusterBuffer(),
                 .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
@@ -170,10 +153,10 @@ public:
             const StreamCandidateParameters candidateParams{
                 .headers = candidateWriter.dataBuffer(inputs[0].get(), sizeof(MeshletStreamGPUActiveHeader), 16),
                 .groups = candidateWriter.dataBuffer(inputs[1].get(), sizeof(MeshletStreamGPUActiveGroup), 16),
-                .visibility = candidateWriter.buffer(inputs[3].get()), .late = test.phase,
+                .visibility = candidateWriter.buffer(inputs[2].get()), .late = test.phase,
             };
             CANDIDATE_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, candidateKernel, candidateWriter, candidateParams));
-            commands->bindBindlessHeap(*heap);
+
             const BufferBarrierDesc copies[] = {
                 {
                     .buffer = &rasterizer.clusterBuffer(),

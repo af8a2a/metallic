@@ -1,3 +1,4 @@
+#include "FrameHistoryProbeParameters.h"
 #include "FrameEnvironmentProbeParameters.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include <stdexcept>
@@ -544,9 +545,9 @@ public:
             FRAME_REQUIRE(device->createTextureView(*images->textures[i], {}).transform([&](auto rhiValue) { view = std::move(rhiValue); }));
             images->views[i] = std::move(view);
         }
-        auto a = std::make_shared<const render::ComputeSampledImageSnapshot>(render::ComputeSampledImageSnapshot{
+        auto a = std::make_shared<const render::SampledImageSnapshot>(render::SampledImageSnapshot{
             images, {images->views[0], images->views[1]}});
-        auto b = std::make_shared<const render::ComputeSampledImageSnapshot>(render::ComputeSampledImageSnapshot{
+        auto b = std::make_shared<const render::SampledImageSnapshot>(render::SampledImageSnapshot{
             images, {images->views[0], images->views[2]}});
         const render::ComputeProgramBindingDesc bindings[] = {
             {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage, .descriptorCount = 2},
@@ -651,7 +652,7 @@ public:
         render::QueueSubmissionTracker tracker;
         std::array<Commands, 3> frames;
         render::HistoryResourceManager history;
-        render::ComputeProgram program;
+        render::ComputeKernel program;
         std::unique_ptr<render::Buffer> output;
         std::unique_ptr<render::Semaphore> gate;
         FRAME_REQUIRE(tracker.initialize(*device, queue));
@@ -665,13 +666,15 @@ public:
         textureDesc.height = 1;
         textureDesc.format = render::Format::RGBA32Sfloat;
         FRAME_REQUIRE(history.ensureTexture("history", textureDesc));
-        const render::ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageImage},
-            {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-        };
         std::string log;
-        FRAME_REQUIRE(createProbe(*device, "accumulateHistory", bindings, program, log));
+        render::ShaderCompileResult shader;
+        FRAME_REQUIRE(render::compileSlangShaderToSpirv({.moduleName = "FrameHistoryProbe",
+            .entryPointName = "accumulateHistory", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log)
+            .transform([&](auto value) { shader = std::move(value); }));
+        FRAME_REQUIRE(program.initialize(*device, {.spirv = shader.spirv,
+            .parameters = render::parameterAbi<FrameHistoryProbeParameters>(kFrameHistoryProbeABI, render::ParameterTransport::InlinePush)}, log));
+        auto registry = device->resourceRegistry();
+        if (!registry) { return RHITestResult::fail("History probe registry unavailable"); }
         QueueDrain drain{queue, gate.get()};
         for (uint32_t index = 0; index < 3; ++index) {
             auto& commands = frames[index];
@@ -681,17 +684,14 @@ public:
             FRAME_REQUIRE(history.transitionTexture(*commands.buffer, "history", render::HistorySlot::Current, render::ResourceState::General));
             FRAME_REQUIRE(history.transitionTexture(*commands.buffer, "history", render::HistorySlot::Previous, render::ResourceState::General));
             storageBarrier(*commands.buffer, *output);
-            const render::ComputeDispatchBinding resources[] = {
-                {.binding = 0, .textureView = history.texture("history", render::HistorySlot::Previous).view},
-                {.binding = 1, .textureView = history.texture("history", render::HistorySlot::Current).view},
-                {.binding = 2, .buffer = output.get()},
-            };
-            FRAME_REQUIRE(program.dispatch({
-                .commandBuffer = commands.buffer.get(),
-                .bindings = {resources, 3},
-                .pushData = &index,
-                .pushDataSize = 4,
-            }));
+            render::ParameterWriter writer(*device, **registry, &commands.frame);
+            const FrameHistoryProbeParameters params{
+                writer.storageImage(history.texture("history", render::HistorySlot::Previous).view),
+                writer.storageImage(history.texture("history", render::HistorySlot::Current).view),
+                writer.dataBuffer(output.get(), 4, 4), index, 0};
+            auto encoded = writer.encode(params, kFrameHistoryProbeABI, render::ParameterTransport::InlinePush);
+            if (!encoded) { return RHITestResult::fail("History probe parameter encoding failed"); }
+            FRAME_REQUIRE(program.dispatch(*commands.buffer, *encoded, 1));
             history.markWritten("history");
             FRAME_REQUIRE(commands.submit(tracker, index == 0 ? gate.get() : nullptr));
         }
@@ -708,6 +708,71 @@ public:
         return RHITestResult::pass();
     }
 };
+
+// Different executors can both use local frame slot zero. Upload allocations
+// must be keyed by completion identity, while retaining bounded backpressure.
+class FrameSharedStreamerSlotsTest final : public RHITest {
+public:
+    FrameSharedStreamerSlotsTest() { type = RHITestType::Command; name = "frame_shared_streamer_local_slots"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        render::QueueSubmissionTracker tracker;
+        std::array<Commands, 3> frames{Commands{0}, Commands{0}, Commands{0}};
+        std::unique_ptr<render::Streamer> streamer;
+        std::unique_ptr<render::Buffer> output;
+        std::unique_ptr<render::Semaphore> gate;
+        FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
+        for (auto& frame : frames) { FRAME_REQUIRE(frame.initialize(context.device, context.graphicsQueue)); }
+        FRAME_REQUIRE(context.device.createStreamer({.dynamicBufferSizePerFrame = 64 * 1024,
+            .queuedFrameCount = 2}).transform([&](auto value) { streamer = std::move(value); }));
+        FRAME_REQUIRE(context.device.createBuffer({.size = 4 * sizeof(uint32_t),
+            .usage = render::BufferUsageBits::TransferDestination,
+            .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto value) { output = std::move(value); }));
+        FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+        QueueDrain drain{context.graphicsQueue, gate.get()};
+        GateWatchdog watchdog(*gate);
+        const auto upload = [&](Commands& commands, uint32_t index, uint32_t value) -> render::Result<> {
+            const render::StreamDataChunk chunk{.data = &value, .size = sizeof(value)};
+            if (!streamer->streamBufferData({.dataChunks = {&chunk, 1}, .dstBuffer = output.get(),
+                    .dstOffset = index * sizeof(value)}).buffer) { return render::makeError(render::Error::Failure); }
+            return streamer->copyStreamedData(*commands.buffer);
+        };
+        FRAME_REQUIRE(frames[0].begin(0));
+        FRAME_REQUIRE(streamer->beginFrame(frames[0].frame));
+        FRAME_REQUIRE(upload(frames[0], 0, 101));
+        streamer->endFrame();
+        // Reopening the same recording must preserve its allocated offsets.
+        FRAME_REQUIRE(streamer->beginFrame(frames[0].frame));
+        FRAME_REQUIRE(upload(frames[0], 1, 102));
+        streamer->endFrame();
+        FRAME_REQUIRE(frames[0].submit(tracker, gate.get()));
+        FRAME_REQUIRE(frames[1].begin(0));
+        FRAME_REQUIRE(streamer->beginFrame(frames[1].frame));
+        FRAME_REQUIRE(upload(frames[1], 2, 201));
+        streamer->endFrame();
+        FRAME_REQUIRE(frames[1].submit(tracker, gate.get()));
+        if (frames[0].frame.completion().isComplete()) {
+            return RHITestResult::fail("Shared streamer waited for the first view instead of using a free upload slot");
+        }
+        FRAME_REQUIRE(frames[2].begin(0));
+        if (streamer->beginFrame(frames[2].frame)) {
+            return RHITestResult::fail("Shared streamer reused an in-flight upload slot when capacity was full");
+        }
+        FRAME_REQUIRE(gate->signal(1));
+        FRAME_REQUIRE(frames[1].frame.wait(kWaitTimeout));
+        FRAME_REQUIRE(streamer->beginFrame(frames[2].frame));
+        FRAME_REQUIRE(upload(frames[2], 3, 301));
+        streamer->endFrame();
+        FRAME_REQUIRE(frames[2].submit(tracker));
+        FRAME_REQUIRE(frames[2].frame.wait(kWaitTimeout));
+        std::array<uint32_t, 4> actual{};
+        if (!readWords(*output, actual.data(), actual.size()) || actual != std::array<uint32_t, 4>{101, 102, 201, 301}) {
+            return RHITestResult::fail("Shared upload slots overwrote another view or reset a reopened frame's offsets");
+        }
+        return RHITestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(FrameSharedStreamerSlotsTest);
 
 class FrameTwoSlotGraphTest : public RHITest {
 public:

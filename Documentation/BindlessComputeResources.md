@@ -1,10 +1,15 @@
 # Bindless compute resources
 
-All application compute shaders that previously declared `vk::binding` now import `Core`. Its ABI is declared in
-`Shaders/Modules/Core/ComputeResources.slang`. This covers RTXDI/ReGIR,
-Standard and OpenPBR path tracing and guides, SHaRC/NRC, neural textures,
-visibility-buffer deferred shading/material binning, environment precomputation,
-post processing and debug passes. NRD already uses its own native bindless ABI.
+Production compute entry points use named C++/Slang parameter layouts with
+`ComputeKernel` and `ParameterWriter`. Shaders import `ShaderCore`, carry full
+`DescriptorHandle<T>` values for descriptor resources, and use bounded `DataSpan<T>`
+for ordinary BDA data. The program's inline push block contains those fields or
+addresses of larger immutable snapshots; it is not an application resource-slot table.
+NRD follows the same ownership model through its SDK adapter.
+
+`Core` and `ComputeProgram` remain resource-table compatibility adapters exercised
+by legacy/typed comparison and lifetime tests. They are not the template for new passes.
+See [shader conventions](../Shaders/README.md) for a minimal inline example.
 
 ## Shader and runtime contract
 
@@ -14,17 +19,22 @@ indirect dispatch and immutable prepared batches all record through
 existing Core shaders; it has no private heap, descriptor-table pool or separate
 command-recording implementation.
 
-- The application push data is one 64-bit `ParameterRoot` address for both typed
-  kernels and Core resource tables. The RHI adds its heap header where required.
-- Core loads `ComputeResourceParameters {resources, constants}` from that root.
-  Existing `getResource<T>()`, `getResourceArray<T>()`, `getData<T>()` and
-  `getConstants<T>()` accessors continue to work. CPU parameter layouts remain
-  explicit; all affected shaders must be recompiled for the new root ABI.
-- `ComputeProgramBindingDesc::binding` selects an application slot in `[0, 255]`,
-  independent of Vulkan descriptor binding or layout declaration order.
-  A slot is 16 bytes: a canonical handle and a payload. Image-array payloads point
-  to immutable lists of handles, without requiring contiguous descriptor indices.
-  DataBuffer slots hold a device address plus element count and stride.
+- `ParameterTransport::InlinePush` places the declared parameter block at user
+  push byte zero. CPU encoding and the shader's `ConstantBuffer<Params>` must
+  agree on field offsets, size and transport; use a shared header and explicit
+  padding. No root or resource-slot table is uploaded for this transport.
+- `ParameterTransport::DeviceAddress` instead pushes a 64-bit `ParameterRoot`
+  address and reads `getParameters<Params>()`. It remains available for large
+  parameter blocks. Do not combine its push declaration with inline push.
+  The transport participates in ABI compatibility checks.
+- The RHI binds descriptor heaps independently; it does not prepend a heap
+  header to application push bytes. Mapped/native lowering does not change the
+  application's named parameter layout.
+- Only the `ComputeProgram` adapter encodes `ComputeResourceParameters
+  {resources, constants}` with numbered slots. Its `getResource<T>()`,
+  `getResourceArray<T>()`, `getData<T>()` and `getConstants<T>()` accessors retain
+  their compatibility contract. Each slot holds a canonical handle and payload;
+  arrays reference immutable handle lists and DataBuffer payloads carry bounds.
 - Acceleration structures retain the full 64-bit device address. Ordinary and
   partitioned top-level structures use the same resource type and resolver.
 - `ParameterWriter` owns resource leases and immutable uploads. Frame writers use
@@ -52,9 +62,11 @@ Vulkan's common-array mapping is described in
 
 `compute_kernel_prepared_standalone_batch` checks typed direct/indirect packets,
 standalone storage, ABI rejection, a stale tail before recording any batch prefix,
-and wrapper destruction. `prepared_dispatch_parallel_snapshot_lifetime` also
-checks equivalent layouts declared in different orders. Both exercise mapped
-and native lowering.
+and wrapper destruction. `prepared_dispatch_parallel_snapshot_lifetime` covers
+both inline and compatibility encoders with concurrent preparation and recording,
+indirect kernel permutations, frozen parameters, early wrapper release, GPU-gated
+ownership and stale frame rejection. Its compatibility branch also checks equivalent
+slot layouts declared in different orders. Both exercise mapped and native lowering.
 
 The results below are historical validation records, not the current run.
 

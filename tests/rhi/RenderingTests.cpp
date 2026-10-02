@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/MaterialRasterParameters.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 
@@ -33,25 +34,6 @@ constexpr const char* kMaterialShaderModuleName = "Features/Samples/MaterialShad
 constexpr const char* kMaterialVertexEntryPoint = "materialShaderObjectVertexMain";
 constexpr const char* kMaterialFragmentEntryPoint = "materialShaderObjectFragmentMain";
 constexpr const char* kMaterialAlternateFragmentEntryPoint = "materialShaderObjectAlternateFragmentMain";
-
-struct MaterialGPUParams {
-    float eye[4] = {};
-    float center[4] = {};
-    float upProjection[4] = {};
-    float viewport[4] = {};
-    float clipOrtho[4] = {};
-};
-
-struct MaterialUserPush {
-    uint32_t positionBuffer = 0;
-    uint32_t materialIndexBuffer = 0;
-    uint32_t materialBuffer = 0;
-    uint32_t paramsBuffer = 0;
-    uint32_t vertexOffset = 0;
-    uint32_t materialVariant = 0;
-    uint32_t padding0 = 0;
-    uint32_t padding1 = 0;
-};
 
 RHITestResult createTriangleShaderModule(
     render::Device& device,
@@ -729,7 +711,7 @@ public:
                 .vertexShader = {vertexModule->get()},
                 .fragmentShader = {fragmentModule->get()},
                 .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MaterialUserPush),
+                .bindlessUserPushDataSize = sizeof(render::MaterialRasterParameters),
             }).transform([&](auto rhiValue) { defaultProgram = std::move(rhiValue); });
         if (!result || defaultProgram == nullptr) {
             return RHITestResult::fail(std::string("createGraphicsShaderObjectProgram(default) returned ") + toString(result));
@@ -740,7 +722,7 @@ public:
                 .vertexShader = {vertexModule->get()},
                 .fragmentShader = {alternateFragmentModule->get()},
                 .usesBindlessHeap = true,
-                .bindlessUserPushDataSize = sizeof(MaterialUserPush),
+                .bindlessUserPushDataSize = sizeof(render::MaterialRasterParameters),
             }).transform([&](auto rhiValue) { alternateProgram = std::move(rhiValue); });
         if (!result || alternateProgram == nullptr) {
             return RHITestResult::fail(std::string("createGraphicsShaderObjectProgram(alternate) returned ") + toString(result));
@@ -759,7 +741,7 @@ public:
             1.0f, 0.0f, 0.0f, 1.0f,
             0.0f, 0.0f, 1.0f, 1.0f,
         };
-        const MaterialGPUParams params{
+        const render::MaterialShaderObjectGPUParams params{
             .eye = {0.0f, 0.0f, 2.0f, 0.0f},
             .center = {0.0f, 0.0f, 0.0f, 0.0f},
             .upProjection = {0.0f, 1.0f, 0.0f, 0.0f},
@@ -802,60 +784,30 @@ public:
         if (!testResult.passed) {
             return testResult;
         }
-        std::unique_ptr<render::Buffer> paramsBuffer;
-        testResult = createUploadStorageBuffer(
-            *device,
-            &params,
-            sizeof(params),
-            "params",
-            paramsBuffer);
-        if (!testResult.passed) {
-            return testResult;
-        }
-
-        std::unique_ptr<render::BindlessHeap> bindlessHeap;
-        result = device->createBindlessHeap(render::BindlessHeapDesc{.maxBuffers = 4}).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
-        if (!result || bindlessHeap == nullptr) {
-            return RHITestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
-        }
-
-        render::BindlessHandle positionHandle;
-        render::BindlessHandle materialIndexHandle;
-        render::BindlessHandle materialHandle;
-        render::BindlessHandle paramsHandle;
-        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { positionHandle = std::move(rhiValue); });
-        if (!result) {
-            return RHITestResult::fail(std::string("allocateBuffer(position) returned ") + toString(result));
-        }
-        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { materialIndexHandle = std::move(rhiValue); });
-        if (!result) {
-            return RHITestResult::fail(std::string("allocateBuffer(materialIndex) returned ") + toString(result));
-        }
-        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { materialHandle = std::move(rhiValue); });
-        if (!result) {
-            return RHITestResult::fail(std::string("allocateBuffer(material) returned ") + toString(result));
-        }
-        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { paramsHandle = std::move(rhiValue); });
-        if (!result) {
-            return RHITestResult::fail(std::string("allocateBuffer(params) returned ") + toString(result));
-        }
-
-        result = bindlessHeap->writeStorageBuffer(positionHandle, *positionBuffer);
-        if (!result) {
-            return RHITestResult::fail(std::string("writeStorageBuffer(position) returned ") + toString(result));
-        }
-        result = bindlessHeap->writeStorageBuffer(materialIndexHandle, *materialIndexBuffer);
-        if (!result) {
-            return RHITestResult::fail(std::string("writeStorageBuffer(materialIndex) returned ") + toString(result));
-        }
-        result = bindlessHeap->writeStorageBuffer(materialHandle, *materialBuffer);
-        if (!result) {
-            return RHITestResult::fail(std::string("writeStorageBuffer(material) returned ") + toString(result));
-        }
-        result = bindlessHeap->writeStorageBuffer(paramsHandle, *paramsBuffer);
-        if (!result) {
-            return RHITestResult::fail(std::string("writeStorageBuffer(params) returned ") + toString(result));
-        }
+        // Position.w is the transform index in the production raster ABI.
+        // Keep slot 0 poisoned so using it instead of slot 1 fails the readback.
+        std::array<float, 32> transforms{};
+        transforms[16] = transforms[21] = transforms[26] = transforms[31] = 1.0f;
+        std::unique_ptr<render::Buffer> transformBuffer;
+        testResult = createUploadStorageBuffer(*device, transforms.data(), sizeof(transforms),
+            "transforms", transformBuffer);
+        if (!testResult.passed) { return testResult; }
+        auto registry = device->resourceRegistry();
+        if (!registry) { return RHITestResult::fail("Missing material resource registry"); }
+        render::ParameterWriter writer(*device, **registry);
+        render::MaterialRasterParameters push{
+            .positions = writer.dataBuffer(positionBuffer.get(), 16, 16),
+            .materialIndices = writer.dataBuffer(materialIndexBuffer.get(), 4, 4),
+            .materials = writer.dataBuffer(materialBuffer.get(), 16, 16),
+            .transforms = writer.dataBuffer(transformBuffer.get(), 64, 16),
+            .camera = params,
+        };
+        auto firstDraw = writer.encode(push, render::kMaterialRasterABI, render::ParameterTransport::InlinePush);
+        if (!firstDraw) { return RHITestResult::fail("Failed to encode first material draw"); }
+        push.vertexOffset = 3;
+        auto secondDraw = writer.encode(push, render::kMaterialRasterABI, render::ParameterTransport::InlinePush);
+        if (!secondDraw) { return RHITestResult::fail("Failed to encode second material draw"); }
+        // Standalone packets remain alive through the fence wait below.
 
         std::unique_ptr<render::Texture> colorTexture;
         result = device->createTexture(render::TextureDesc{
@@ -927,7 +879,7 @@ public:
                 .renderArea = renderArea,
                 .colorAttachments = {&colorAttachment, 1},
             }); !commandResult) { return RHITestResult::fail(std::string("beginRendering failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->bindBindlessHeap(*bindlessHeap);
+        if (auto bind = firstDraw->bindResources(*commandBuffer); !bind) { return RHITestResult::fail("First material resources failed"); }
         if (auto commandResult = commandBuffer->bindExecution((defaultProgram)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
         commandBuffer->setViewport(
             render::Viewport{
@@ -940,20 +892,12 @@ public:
             });
         commandBuffer->setScissor(renderArea);
 
-        MaterialUserPush push{
-            .positionBuffer = positionHandle.shaderIndex,
-            .materialIndexBuffer = materialIndexHandle.shaderIndex,
-            .materialBuffer = materialHandle.shaderIndex,
-            .paramsBuffer = paramsHandle.shaderIndex,
-            .vertexOffset = 0,
-        };
-        commandBuffer->pushBindlessData(&push, sizeof(push));
+        commandBuffer->pushBindlessData(firstDraw->inlineData().data(), static_cast<uint32_t>(firstDraw->inlineData().size()));
         commandBuffer->draw(3);
 
         if (auto commandResult = commandBuffer->bindExecution((alternateProgram)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-        push.vertexOffset = 3;
-        push.materialVariant = 1;
-        commandBuffer->pushBindlessData(&push, sizeof(push));
+        if (auto bind = secondDraw->bindResources(*commandBuffer); !bind) { return RHITestResult::fail("Second material resources failed"); }
+        commandBuffer->pushBindlessData(secondDraw->inlineData().data(), static_cast<uint32_t>(secondDraw->inlineData().size()));
         commandBuffer->draw(3);
         commandBuffer->endRendering();
 

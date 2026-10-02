@@ -4540,7 +4540,7 @@ private:
     std::shared_ptr<MeshletStreamRuntime> streamRuntime_;
     std::vector<TextureView*> materialViews_;
     std::shared_ptr<ScenePathTraceResources> sharedTextureResources_;
-    std::shared_ptr<const ComputeSampledImageSnapshot> materialSnapshot_;
+    std::shared_ptr<const SampledImageSnapshot> materialSnapshot_;
     Device* device_ = nullptr;
     GPUSceneSubsystem* gpuSceneSubsystem_ = nullptr;
     const scene::Scene* gpuSceneSource_ = nullptr;

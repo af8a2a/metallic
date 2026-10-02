@@ -264,7 +264,7 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
         }
         if (binding->data.valid()) { return makeError(Error::InvalidArgument); }
         if (binding->sampledImages) {
-            writer.retain(std::const_pointer_cast<ComputeSampledImageSnapshot>(binding->sampledImages));
+            writer.retain(std::const_pointer_cast<SampledImageSnapshot>(binding->sampledImages));
         }
         const uint32_t count = std::max(expected.descriptorCount, 1u);
         std::vector<uint64_t> handles;

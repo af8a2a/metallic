@@ -71,3 +71,42 @@ void streamRaySurfaceMain(uint3 id : SV_DispatchThreadID)
     }
     p.output.data[24u + id.x] = valid ? 1u : 0u;
 }
+
+// UV-sensitive coverage catches accidentally sampling zero UV or the wrong vertex.
+struct UVProbeMaterials : IStreamRayMaterials
+{
+    bool load(uint index, out PathTraceMaterial material)
+    {
+        material = (PathTraceMaterial)0;
+        material.baseColor.a = 0.5;
+        material.params.z = 0.25;
+        material.textureParams.w = 1.0;
+        return index == 17u;
+    }
+    float alpha(PathTraceTextureInfo texture, float2 uv)
+    {
+        return uv.x + uv.y;
+    }
+};
+
+[shader("compute")]
+[numthreads(8, 1, 1)]
+void streamRayUVMain(uint3 id : SV_DispatchThreadID)
+{
+    StreamProbeParameters p = gStreamProbe;
+    if (id.x >= 8u || !p.output.contains(44u + id.x)) { return; }
+    p.stream.pages.data = &p.stream.pages.data[id.x * 76u];
+    p.stream.pages.count = 76u;
+    float2 bary = id.x == 6u ? float2(0.1) : id.x == 7u ? float2(0.75, 0) : float2(0.25);
+    UVProbeMaterials materials;
+    bool accepted = streamRayAlphaAccepts(0u, 0u, 0u, bary, p.stream, materials);
+    float3 a, b, c, normals[3]; float2 uvs[3]; float4 tangents[3];
+    uint attributes;
+    bool valid = decodeStreamRaySurface(p.stream, 0u, 0u, a, b, c, normals, uvs, tangents, attributes);
+    bool hasUV = id.x == 0u || id.x >= 6u;
+    float2 expectedUV = hasUV ? bary : float2(0);
+    valid = valid && attributes == (hasUV ? 4u : 0u) &&
+        all(abs(uvs[0] * (1.0 - bary.x - bary.y) + uvs[1] * bary.x + uvs[2] * bary.y - expectedUV) < 1e-5);
+    // Both surface and alpha keep the existing zero-UV fallback for invalid streams.
+    p.output.data[44u + id.x] = valid && accepted == (id.x == 0u || id.x == 7u) ? 1u : 0u;
+}

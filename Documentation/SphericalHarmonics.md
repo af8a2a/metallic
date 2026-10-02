@@ -29,7 +29,7 @@ Y-up 经纬环境图只决定 texel 到方向的映射，不改变这套系数�
 
 ```hlsl
 // From a shader in Shaders/Features/<Feature>/:
-import Core;
+import ShaderCore;
 using Metallic;
 
 SH::L2RGB radianceSH = SH::L2RGB::zero();

@@ -36,16 +36,16 @@ public:
             sizeof(MeshletStreamGPUParams), 4, sizeof(StreamPageTableEntry), sizeof(MeshletStreamGPURasterBindings),
             4, 8, sizeof(GPUSceneGPUInstanceRecord)};
         const uint32_t counts[] = {1, 1, 1, pageBytes / 4, 1, 1, 21, pixelCount + 16, 1};
-        std::unique_ptr<BindlessHeap> heap;
-        GROUP_REQUIRE(device->createBindlessHeap({.maxBuffers = Count}).transform([&](auto v) { heap = std::move(v); }));
+        auto registry = device->resourceRegistry();
+        if (!registry) { return RHITestResult::fail("Missing group raster registry"); }
+        ParameterWriter fixtureWriter(*device, **registry);
         std::array<std::unique_ptr<Buffer>, Count> buffers;
-        std::array<BindlessHandle, Count> handles;
+        std::array<ShaderBuffer, Count> handles;
         for (size_t i=0; i<Count; ++i) {
             GROUP_REQUIRE(device->createBuffer({.size = uint64_t(strides[i])*counts[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                 .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto v) { buffers[i] = std::move(v); }));
-            GROUP_REQUIRE(heap->allocateBuffer().transform([&](auto v) { handles[i] = v; }));
-            GROUP_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
+            handles[i] = fixtureWriter.buffer(buffers[i].get());
         }
         const auto upload = [&](size_t index, const void* data, size_t bytes) -> Result<> {
             void* mapped = buffers[index]->map();
@@ -127,7 +127,7 @@ public:
             StreamPageTableEntry table;
             table.deviceOffsetAndState=packStreamPageTableEntry(0,test.fault == 4 ? MeshletStreamPageResidencyState::Unloaded : MeshletStreamPageResidencyState::Resident);
             MeshletStreamGPURasterBindings bindings{.visibleRecordBase=371, .visibleRecordCapacity=1,
-                .gpuSceneInstanceBuffer = {uint64_t(handles[Instances].shaderIndex)}};
+                .gpuSceneInstanceBuffer = handles[Instances]};
             updateStreamRasterResourceFlags(bindings);
             GPUSceneGPUInstanceRecord instance;
             instance.identity[3]=2; // two-sided; reflected winding must preserve coverage
@@ -144,7 +144,7 @@ public:
                 std::fill(pixels.begin()+pixelCount,pixels.end(),0x1234567887654321ull);
                 GROUP_REQUIRE(upload(Pixels,pixels.data(),pixels.size()*8));
                 if (submitted) { GROUP_REQUIRE(fence->reset()); GROUP_REQUIRE(pool->reset()); }
-                GROUP_REQUIRE(commands->begin()); commands->bindBindlessHeap(*heap);
+                GROUP_REQUIRE(commands->begin());
                 {
                     auto registry = device->resourceRegistry();
                     if (!registry) { return RHITestResult::fail("Missing raster registry"); }

@@ -3709,7 +3709,10 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
     phase.next("graph.subsystemBegin");
     result = impl_->subsystemHost->beginFrame(frameIndex, slot.frame.slotIndex(),
         desc.historyResources, log, &slot.frame);
-    if (!result) { return abort(result); }
+    if (!result) {
+        spdlog::error("[RenderGraph] Subsystem beginFrame failed: {} ({})", log, resultToString(result));
+        return abort(result);
+    }
     RenderSubsystemFrameEndScope subsystemFrameScope(*impl_->subsystemHost);
     phase.next("graph.record");
     impl_->beginDebugExecution(frameIndex, slot.frame.slotIndex());
@@ -3789,7 +3792,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             for (size_t i = first; i < last; ++i) { commands.push_back(segments[i].commandBuffer); }
             PendingBatch batch{.end = last, .readyNs = readyNs ? readyNs : schedulingCapture.elapsed()};
             auto sealed = batch.commands.seal(slot.frame, commands);
-            if (!sealed) { return sealed; }
+            if (!sealed) { spdlog::error("[RenderGraph] Seal batch [{}..{}): {}", first, last, resultToString(sealed)); return sealed; }
             if (impl_->activeExecutionCapture) {
                 auto& capture = *impl_->activeExecutionCapture;
                 batch.captureId = uint32_t(capture.batches.size());
@@ -3823,7 +3826,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
                 for (size_t predecessor : segments[i].predecessors) {
                     if (predecessor >= nextSubmission && predecessor < end) { continue; }
                     const auto& producer = segments[predecessor];
-                    if (!producer.completion.isSubmitted()) { return makeError(Error::InvalidArgument); }
+                    if (!producer.completion.isSubmitted()) { spdlog::error("[RenderGraph] Batch {} predecessor {} not submitted", nextSubmission, predecessor); return makeError(Error::InvalidArgument); }
                     if (!producer.queue->sameQueue(*queue)) {
                         auto appended = producer.completion.appendWaits(waits);
                         if (!appended) { return appended; }
@@ -3840,7 +3843,7 @@ Result<> RenderGraphExecutor::execute(const RenderGraphSubmitDesc& desc)
             auto accepted = impl_->submissionTrackers.at(queue)->submitBatch(ready->second.commands, {
                 .waitSemaphores = waits,
             }, slot.frame).transform([&](auto value) { receipt = std::move(value); });
-            if (!accepted) { return accepted; }
+            if (!accepted) { spdlog::error("[RenderGraph] Submit batch [{}..{}): {}", nextSubmission, end, resultToString(accepted)); return accepted; }
             if (capturedBatch) {
                 capturedBatch->accepted = true;
                 for (size_t index = nextSubmission; index < end; ++index) {

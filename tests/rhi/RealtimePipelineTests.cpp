@@ -284,6 +284,83 @@ private:
     render::ComputeKernel kernel_;
 };
 
+// Exercise the migrated guide readback without requiring DLSS or scene loading.
+class RealtimeGuideFixturePass final : public render::UnsafePass {
+public:
+    render::RenderPassReflection reflect(const render::RenderGraphCompileContext&) const override
+    {
+        render::RenderPassReflection reflection;
+        reflection.addTextureOutput("color").transferWrite().format = render::Format::RGBA8Unorm;
+        reflection.addTextureOutput("motion").transferWrite().format = render::Format::RG16Sfloat;
+        reflection.addTextureOutput("depth").transferWrite().format = render::Format::R32Sfloat;
+        return reflection;
+    }
+    render::Result<> execute(render::RenderGraphExecutionContext& context) override
+    {
+        auto& commands = context.commandBuffer();
+        commands.clearColorTexture(*context.outputTexture("color").texture(),
+            render::ResourceState::TransferDestination, {1.0f, 0.0f, 0.0f, 1.0f});
+        commands.clearColorTexture(*context.outputTexture("motion").texture(),
+            render::ResourceState::TransferDestination, {-2.0f, 0.5f, 0.0f, 0.0f});
+        commands.clearColorTexture(*context.outputTexture("depth").texture(),
+            render::ResourceState::TransferDestination, {0.25f, 0.0f, 0.0f, 0.0f});
+        return {};
+    }
+};
+
+class RealtimeGuideInlineTest final : public RHITest {
+public:
+    RealtimeGuideInlineTest() { type = RHITestType::Rendering; name = "realtime_guide_inline_readback"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        std::unique_ptr<render::Device> device;
+        auto initialized = render::createDevice({.applicationName = "Realtime guide inline",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { device = std::move(value); });
+        if (render::hasError(initialized, render::Error::Unsupported)) { return RHITestResult::skip("Requires bindless descriptors"); }
+        if (!initialized) { return realtimeFailure("Guide device initialization failed"); }
+        render::registerRenderGraphPassType("RealtimeGuideFixture", "Guide inputs",
+            [] { return std::make_unique<RealtimeGuideFixturePass>(); });
+        render::registerRenderGraphPassType("RealtimeReadbackPass", "Realtime GPU regression readback",
+            [] { return std::make_unique<RealtimeReadbackPass>(); });
+        render::RenderGraph graph;
+        graph.addNode("RealtimeGuideFixture", "Source");
+        graph.addNode("RealtimeReadbackPass", "Readback");
+        for (const char* name : {"color", "motion", "depth"}) {
+            graph.addEdge(std::string("Source.") + name, std::string("Readback.") + name);
+        }
+        graph.markOutput("Readback.guides");
+        graph.markOutput("Readback.pixels");
+        render::RenderGraphExecutor executor;
+        std::string log;
+        for (const auto size : {std::array<uint32_t, 2>{17, 9}, {1, 1}, {63, 37}}) {
+            if (!executor.compile(*device, graph, size[0], size[1], log)) { return realtimeFailure(log); }
+            if (!executor.execute({.graphicsQueue = device->getQueue(render::QueueType::Graphics)}) ||
+                !executor.waitForSubmittedWork()) { return realtimeFailure("Guide execution failed"); }
+            auto* guides = executor.outputResource("Readback.guides")->buffer;
+            guides->invalidate();
+            const auto* values = static_cast<const std::array<float, 4>*>(guides->map());
+            if (!values) { return realtimeFailure("Guide map failed"); }
+            bool matches = true;
+            for (uint32_t i = 0; i < size[0] * size[1]; ++i) {
+                matches &= values[i] == std::array<float, 4>{-2.0f, 0.5f, 0.25f, 1.0f};
+            }
+            guides->unmap();
+            auto* color = executor.outputResource("Readback.pixels")->buffer;
+            color->invalidate();
+            const auto* pixels = static_cast<const std::array<uint8_t, 4>*>(color->map());
+            if (!pixels) { return realtimeFailure("Color map failed"); }
+            for (uint32_t i = 0; i < size[0] * size[1]; ++i) {
+                matches &= pixels[i] == std::array<uint8_t, 4>{255, 0, 0, 255};
+            }
+            color->unmap();
+            if (!matches) { return realtimeFailure("Guide component, pixel coverage or transfer readback mismatch"); }
+        }
+        return RHITestResult::pass("Signed motion, depth, alpha and color readback exact across odd extents and resize; no DLSS dependency");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(RealtimeGuideInlineTest);
+
 class RealtimePipelineTest : public RHITest {
 public:
     explicit RealtimePipelineTest(bool sponza = false) : sponza_(sponza)

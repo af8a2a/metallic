@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/BindlessSmokeParameters.h"
 #include "TextureResidencyProbe.h"
 #include "Runtime/Render/Core/StreamActiveBuildParameters.h"
 #include "Runtime/Render/Core/StreamTraversalParameters.h"
@@ -18,7 +19,7 @@
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
@@ -396,6 +397,7 @@ public:
             return render::makeError(render::Error::InvalidArgument);
         }
 
+        device_ = context.device;
         render::Result<> result = createSlangShaderModule(
             *context.device,
             kBindlessSmokeShaderModuleName,
@@ -430,14 +432,20 @@ public:
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        const render::BindlessHandle* sourceHandle = context.bindlessInput("source");
+        const auto source = context.inputTexture("source");
         render::TextureHandle color = context.outputTexture("color");
-        if (sourceHandle == nullptr ||
-            sourceHandle->kind != render::BindlessHandleKind::SampledImage ||
+        if (!source.valid() || device_ == nullptr ||
             !color.valid() ||
             pipeline_ == nullptr) {
             return render::makeError(render::Error::InvalidArgument);
         }
+
+        auto registry = device_->resourceRegistry();
+        if (!registry) { return render::makeError(registry.error()); }
+        render::ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
+        const render::BindlessSmokeParameters params{writer.sampledImage(source.view())};
+        auto encoded = writer.encode(params, render::kBindlessSmokeABI, render::ParameterTransport::InlinePush);
+        if (!encoded) { return render::makeError(encoded.error()); }
 
         const render::Rect renderArea{
             .x = 0,
@@ -466,13 +474,15 @@ public:
         });
         context.commandBuffer().setScissor(renderArea);
         if (auto commandResult = context.commandBuffer().bindExecution((pipeline_)->execution()); !commandResult) { return commandResult; }
-        context.commandBuffer().pushBindlessData(&sourceHandle->shaderIndex, sizeof(sourceHandle->shaderIndex));
+        if (auto result = encoded->bindResources(context.commandBuffer()); !result) { return result; }
+        context.commandBuffer().pushBindlessData(encoded->inlineData().data(), static_cast<uint32_t>(encoded->inlineData().size()));
         context.commandBuffer().draw(3);
         context.commandBuffer().endRendering();
         return {};
     }
 
 private:
+    render::Device* device_ = nullptr;
     std::unique_ptr<render::ShaderModule> vertexShader_;
     std::unique_ptr<render::ShaderModule> fragmentShader_;
     std::unique_ptr<render::GraphicsPipeline> pipeline_;
@@ -4875,102 +4885,6 @@ public:
             return RHITestResult::fail(std::string("writeHostBuffer(resident pages) returned ") + toString(result));
         }
 
-        std::unique_ptr<render::BindlessHeap> bindlessHeap;
-        result = device->createBindlessHeap(render::BindlessHeapDesc{
-                .maxSamplers = 0,
-                .maxSampledImages = 0,
-                .maxBuffers = 15,
-            }).transform([&](auto rhiValue) { bindlessHeap = std::move(rhiValue); });
-        if (!result || bindlessHeap == nullptr) {
-            return RHITestResult::fail(std::string("createBindlessHeap returned ") + toString(result));
-        }
-
-        auto allocateStorageBuffer = [&bindlessHeap](
-            render::Buffer& buffer,
-            const char* label,
-            render::BindlessHandle& outHandle) -> RHITestResult {
-            render::Result<> bindlessResult = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { outHandle = std::move(rhiValue); });
-            if (!bindlessResult || !outHandle.valid()) {
-                return RHITestResult::fail(std::string("allocateBuffer(") + label + ") returned " + toString(bindlessResult));
-            }
-            bindlessResult = bindlessHeap->writeStorageBuffer(outHandle, buffer);
-            if (!bindlessResult) {
-                return RHITestResult::fail(std::string("writeStorageBuffer(") + label + ") returned " + toString(bindlessResult));
-            }
-            return RHITestResult::pass();
-        };
-
-        render::BindlessHandle instanceHandle;
-        testResult = allocateStorageBuffer(*instanceBuffer, "instances", instanceHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle primitiveHandle;
-        testResult = allocateStorageBuffer(*primitiveBuffer, "primitives", primitiveHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle lodLevelHandle;
-        testResult = allocateStorageBuffer(*lodLevelBuffer, "lod levels", lodLevelHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle groupHandle;
-        testResult = allocateStorageBuffer(*groupBuffer, "groups", groupHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle pageHandle;
-        testResult = allocateStorageBuffer(*pageBuffer, "stream pages", pageHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle nodeHandle;
-        testResult = allocateStorageBuffer(*nodeBuffer, "hierarchy nodes", nodeHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle pageTableHandle;
-        testResult = allocateStorageBuffer(*pageTableBuffer, "page table", pageTableHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle paramsHandle;
-        testResult = allocateStorageBuffer(*paramsBuffer, "params", paramsHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle requestHandle;
-        testResult = allocateStorageBuffer(*requestBuffer, "request", requestHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle activeGroupHandle;
-        testResult = allocateStorageBuffer(*activeGroupBuffer, "active groups", activeGroupHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle activeHeaderHandle;
-        testResult = allocateStorageBuffer(*activeHeaderBuffer, "active header", activeHeaderHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle drawIndirectHandle;
-        testResult = allocateStorageBuffer(*drawIndirectBuffer, "draw indirect", drawIndirectHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle traversalHeaderHandle;
-        testResult = allocateStorageBuffer(*traversalHeaderBuffer, "traversal header", traversalHeaderHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-        render::BindlessHandle traversalWorkHandle;
-        testResult = allocateStorageBuffer(*traversalWorkBuffer, "traversal work", traversalWorkHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
-
         render::ShaderCompileResult compileResult;
         result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
                 .moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
@@ -5079,7 +4993,6 @@ public:
             .buffers = generalBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
-        commandBuffer->bindBindlessHeap(*bindlessHeap);
         auto activeRegistry = device->resourceRegistry();
         if (!activeRegistry) { return RHITestResult::fail("Missing active registry"); }
         render::ParameterWriter activeWriter(*device, **activeRegistry);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/SampledImageSnapshot.h"
 
 #include <cstdint>
 #include <memory>
@@ -42,13 +43,6 @@ struct ComputeProgramDesc {
 
 struct CPUProfileRecorder;
 
-// Publish through shared_ptr<const ...> and never mutate afterwards. The owner
-// retains the underlying images, while views supply stable ownership identities.
-struct ComputeSampledImageSnapshot {
-    std::shared_ptr<const void> owner;
-    std::vector<std::shared_ptr<TextureView>> views;
-};
-
 struct ComputeDispatchStats {
     uint32_t sampledImageWrites = 0;
     uint32_t sampledImageCacheHits = 0;
@@ -68,7 +62,7 @@ struct ComputeDispatchBinding {
     BufferSlice data;
     // Optional immutable sampled-image array; takes precedence over textureViews.
     // The shared registry also deduplicates individual resource registrations.
-    std::shared_ptr<const ComputeSampledImageSnapshot> sampledImages;
+    std::shared_ptr<const SampledImageSnapshot> sampledImages;
 };
 
 struct ComputeDispatchDesc {

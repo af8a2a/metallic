@@ -5,7 +5,7 @@
 #include "Runtime/Render/Core/DebugVisualizationParameters.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Core/HistoryResources.h"
 #include "Runtime/Render/Core/RenderView.h"

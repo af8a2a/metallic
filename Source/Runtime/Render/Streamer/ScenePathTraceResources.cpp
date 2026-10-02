@@ -1,6 +1,5 @@
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
 #include "Runtime/Scene/SceneDocument.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
@@ -1369,7 +1368,7 @@ struct ScenePathTraceResources::Impl {
     };
     using TextureGeneration = std::vector<TextureImageOwner>;
     std::shared_ptr<TextureGeneration> textureGeneration;
-    std::shared_ptr<const ComputeSampledImageSnapshot> materialTextureSnapshot;
+    std::shared_ptr<const SampledImageSnapshot> materialTextureSnapshot;
     GPUCompletionPoint texturePublication;
     struct TextureFeedbackBuffers {
         std::shared_ptr<Buffer> seed;
@@ -1429,7 +1428,7 @@ struct ScenePathTraceResources::Impl {
             generation->push_back({materialTextures[slot].texture,materialTextures[slot].view});
             materialTextureViews[slot] = materialTextures[slot].view.get();
         }
-        auto snapshot = std::make_shared<ComputeSampledImageSnapshot>();
+        auto snapshot = std::make_shared<SampledImageSnapshot>();
         snapshot->owner = generation;
         snapshot->views.reserve(generation->size());
         for (const auto& image : *generation) { snapshot->views.push_back(image.view); }
@@ -3708,7 +3707,7 @@ Result<> ScenePathTraceResources::syncRuntimeScene(
     return {};
 }
 
-std::shared_ptr<const ComputeSampledImageSnapshot> ScenePathTraceResources::materialTextureSnapshot() const
+std::shared_ptr<const SampledImageSnapshot> ScenePathTraceResources::materialTextureSnapshot() const
 {
     return impl_->materialTextureSnapshot;
 }

@@ -28,19 +28,31 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 ## 使用库
 
 ```slang
-import Core;
+import ShaderCore;
 import GPUDriven;
 using Metallic;
 using Metallic.GPUDriven;
+
+struct ExampleParameters
+{
+    DataSpan<uint> output;
+};
+[[vk::push_constant]] ConstantBuffer<ExampleParameters> gExample;
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void main(uint3 id : SV_DispatchThreadID)
 {
-    RWStructuredBuffer<uint> output = getResource<RWStructuredBuffer<uint>>(0);
-    output[id.x] = packVisibilityId(id.x, 0);
+    ExampleParameters p = gExample;
+    if (p.output.contains(id.x)) {
+        p.output.data[id.x] = packVisibilityId(id.x, 0);
+    }
 }
 ```
+
+实际 pass 应把参数字段放在 C++/Slang 共用头文件中；CPU 通过 `ParameterWriter::dataBuffer()`
+编码输出 span，再以 `ParameterTransport::InlinePush` 交给 `ComputeKernel`。普通数据无需资源 slot，
+图像、sampler 和 AS 使用完整 typed handle。上例参数为 16 字节，输出元素 stride 为 4。
 
 模块入口列出同一子系统的实现，例如 `GPUDriven.slang`：
 
@@ -199,7 +211,7 @@ CPU 的 deferred 与 alpha shadow 共用 `encodeRayQuerySnapshot`，保持 span 
 `ScreenSpaceShadows` 共用同一适配器；空场景根地址在边界拒绝。CPU 的 64 字节场景布局与资源保留不变。
 法线和 TBN 仍保持 authored/world-space 语义。`stream_data_decode_bounds` 的 GPU 探针覆盖
 显式材质 provider、正反向射线、bitangent 翻转、无效材质/实例/三角形及 mask/blend alpha 阈值；
-alpha 候选判定只接收场景与材质 provider，单次加载材质、插值 UV，不构建完整 TBN；
+alpha 候选判定只接收场景与材质 provider，单次加载材质、仅解码并插值 UV，不读取法线/切线属性或构建完整 TBN；
 不透明候选也先检查几何范围，探针覆盖无效三角形、空 pages、截短 header 与空 page table。
 这些辅助层检查不等同于 CLAS 遍历或完整场景的视觉验证。
 共享 `ScenePathTrace.slang` 仅提供 typed 场景辅助实现；标准生产入口为 `ScenePathTraceInline.slang`。
@@ -214,7 +226,7 @@ CPU 使用 ParameterWriter 编码不可变 settings、几何 span、场景/历�
 OpenPBRDirectLighting 的 realtime/deferred 分支均使用 inline 根，不读取 Core 的资源根。
 
 `Core` 保留 `getResource<T>(slot)`、`getResourceArray<T>(slot, index)`、`getConstants<T>()`
-作为尚未迁移的 ComputeProgram / SDK 调用的兼容入口。它导入 `ParameterRoot`，通过根地址读取资源表和常量，
+作为 ComputeProgram 兼容性与对照测试的入口；新的生产 shader 不使用这层编号资源表。它导入 `ParameterRoot`，通过根地址读取资源表和常量，
 因此不能和另一份 inline push 声明混用。数组通过 slot 的 `payload` 地址读取 registry 的句柄，
 再用 `nonuniform` 选择 descriptor，不要求连续分配。RHI 不在用户 push 数据前插入 heap header。
 
@@ -241,7 +253,7 @@ Lighting 的算法显式接收 `StructuredBuffer<GPUPunctualLight>` 或 `Punctua
 `SlangShaderDesc::moduleName` 仍是相对 program 搜索根的路径，例如
 `Features/Environment/EnvironmentLightingPrecompute`，入口名保持不变。
 编译器先搜索 program 根和显式 SDK 路径，再搜索根目录及项目 `Shaders/` 下的 `Modules/`
-和 `Interop/`。测试根和独立 SDK 根因此也可以直接 `import Core;`。
+和 `Interop/`。测试根和独立 SDK 根因此也可以直接 `import ShaderCore;`；只有资源表兼容测试导入 `Core`。
 
 独立使用 CLI 时需传入模块路径，例如：
 
@@ -447,8 +459,9 @@ shadow/deferred 的父 ParameterWriter 同时保留四个 span 与快照，最�
 移除嵌套 EncodedParameters 和提前 bindResources。
 
 stream 解码与 surface/alpha GPU 探针共用测试侧 `StreamProbeParameters.h` 的 80 字节 inline 根，
-直接携带 StreamSceneParameters 和输出 span；40 个 GPU 检查保留 null、错误 stride、截断范围、
+直接携带 StreamSceneParameters 和输出 span；52 个 GPU 检查保留 null、错误 stride、截断范围、
 材质 provider、TBN 和 alpha 阈值覆盖，并确认不产生 descriptor 写入。
+UV 敏感的 alpha 回归覆盖重心插值、缺失 UV、错误格式、不对齐偏移、越界及截短属性范围的零 UV 回退。
 
 MaterialBinningProbe 的 PROBE_TYPED 分支使用共享 80 字节 inline ABI，reset 和间接消费共用
 四个有界数据 span；旧 fixture/对照分支单独编译。回归保留错误 ABI、非法 indirect 偏移、

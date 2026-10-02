@@ -1,3 +1,5 @@
+#include "TessellationSplitProbeParameters.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -49,17 +51,14 @@ public:
                 item.options = {1, 8, float(pair / 64), ortho ? 1.f : 0.f};
             }
         }
-        std::unique_ptr<BindlessHeap> heap;
-        TESS_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<std::unique_ptr<Buffer>, 2> buffers;
-        std::array<BindlessHandle, 2> handles;
         const uint64_t sizes[] = {input.size() * sizeof(Input), output.size() * sizeof(Record)};
         const void* initial[] = {input.data(), output.data()};
         for (uint32_t i = 0; i < 2; ++i) {
             TESS_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = i == 0 ? 96u : 16u,
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
-            TESS_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
-            TESS_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
+
+
             void* p = buffers[i]->map();
             if (!p) { return RHITestResult::fail("Cannot map split probe buffer"); }
             std::memcpy(p, initial[i], sizes[i]); buffers[i]->flush(); buffers[i]->unmap();
@@ -68,14 +67,10 @@ public:
         const auto compilation = compileSlangShaderToSpirv({.moduleName = "TessellationSplitProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
         if (!compilation) { return RHITestResult::fail(compiled.diagnostics); }
-        std::unique_ptr<ShaderModule> shader;
-        TESS_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
-        std::unique_ptr<ComputePipeline> pipeline;
-        TESS_REQUIRE(device->createComputePipeline({
-            .computeShader = {shader.get()},
-            .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = 8,
-        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
+        ComputeKernel kernel;
+        std::string log;
+        TESS_REQUIRE(kernel.initialize(*device, {.spirv = compiled.spirv,
+            .parameters = parameterAbi<TessellationSplitProbeParameters>(kTessellationSplitProbeABI, ParameterTransport::InlinePush)}, log));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -87,9 +82,14 @@ public:
             {.buffer = buffers[0].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}},
             {.buffer = buffers[1].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}}};
         if (auto commandResult = commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-        const uint32_t push[] = {handles[0].shaderIndex, handles[1].shaderIndex};
-        commands->pushBindlessData(push, sizeof(push)); commands->dispatch(count / 16);
+        auto registry = device->resourceRegistry();
+        if (!registry) { return RHITestResult::fail("Missing probe registry"); }
+        ParameterWriter writer(*device, **registry);
+        const TessellationSplitProbeParameters params{writer.dataBuffer(buffers[0].get(), 96, 4),
+            writer.dataBuffer(buffers[1].get(), 16, 4)};
+        auto encoded = writer.encode(params, kTessellationSplitProbeABI, ParameterTransport::InlinePush);
+        if (!encoded) { return RHITestResult::fail("Cannot encode probe parameters"); }
+        TESS_REQUIRE(kernel.dispatch(*commands, *encoded, count / 16));
         TESS_REQUIRE(commands->end());
         CommandBuffer* list[] = {commands.get()};
         TESS_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));

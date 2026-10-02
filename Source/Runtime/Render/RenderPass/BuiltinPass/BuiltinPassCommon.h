@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/StreamSceneParameters.h"
 #include "Runtime/Render/RayTracing/SceneAccelerationStructureExtensions.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -220,17 +220,6 @@ inline constexpr uint32_t kScenePathTraceDebugStochasticTextureFiltering = 1u <<
 inline constexpr uint32_t kScenePathTraceCacheModeOff = 0;
 inline constexpr uint32_t kScenePathTraceCacheModeSharc = 1;
 inline constexpr uint32_t kScenePathTraceCacheModeNRC = 2;
-// Extra descriptor bindings used by the radiance-cache permutations of
-// ScenePathTrace.slang. Must match its getResource<T>() application slots.
-inline constexpr uint32_t kScenePathTraceCacheParamsBinding = 20;
-inline constexpr uint32_t kScenePathTraceSharcHashEntriesBinding = 21;
-inline constexpr uint32_t kScenePathTraceSharcAccumulationBinding = 22;
-inline constexpr uint32_t kScenePathTraceSharcResolvedBinding = 23;
-inline constexpr uint32_t kScenePathTraceNRCQueryPathInfoBinding = 24;
-inline constexpr uint32_t kScenePathTraceNRCTrainingPathInfoBinding = 25;
-inline constexpr uint32_t kScenePathTraceNRCTrainingPathVerticesBinding = 26;
-inline constexpr uint32_t kScenePathTraceNRCQueryRadianceParamsBinding = 27;
-inline constexpr uint32_t kScenePathTraceNRCCountersBinding = 28;
 inline constexpr uint32_t kNRDDenoiserModeReblur = 0;
 inline constexpr uint32_t kNRDDenoiserModeRelax = 1;
 inline constexpr uint32_t kNRDDenoiserModeReference = 2;
@@ -703,7 +692,7 @@ struct ScenePathTracePush {
 };
 
 // Per-frame parameters for the radiance-cache permutations of
-// ScenePathTrace.slang (binding kScenePathTraceCacheParamsBinding). Layout
+// ScenePathTrace.slang, passed through the typed root as BDA data. Layout
 // must match struct ScenePathTraceCacheParams in the shader byte for byte;
 // nrc mirrors ::NrcConstants from the NRC SDK headers.
 struct ScenePathTraceCacheParams {

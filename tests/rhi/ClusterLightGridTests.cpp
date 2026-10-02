@@ -1,7 +1,8 @@
 #include "RHITest.h"
 
 #include "Runtime/Render/ClusterLightGrid.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "ClusterLightGridProbeParameters.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
@@ -139,13 +140,9 @@ public:
                 .entryPointName = "clusterLightGridLookupProbeMain",
                 .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics).transform([&](auto value) { shader = std::move(value); });
             if (!compiled) { return RHITestResult::fail("ClusterLightGrid lookup probe: " + shader.diagnostics); }
-            const std::array<render::ComputeProgramBindingDesc, 6> bindings{{
-                {.binding = 0}, {.binding = 1}, {.binding = 2},
-                {.binding = 3}, {.binding = 4}, {.binding = 5}}};
             GRID_CHECK(lookupProgram_.initialize(*device_, {
                 .spirv = shader.spirv,
-                .bindings = bindings,
-                .requiresRayQuery = false,
+                .parameters = render::parameterAbi<ClusterLightGridProbeParameters>(kGridProbeABI, render::ParameterTransport::InlinePush),
             }, log_));
         }
         std::unique_ptr<render::Buffer> probe;
@@ -158,18 +155,16 @@ public:
             .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
         };
         if (auto commandResult = commands_->synchronize({.buffers = {&probeToWrite, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        const std::array<render::ComputeDispatchBinding, 6> probeBindings{{
-            {.binding = 0, .buffer = output.snapshot.parameters},
-            {.binding = 1, .buffer = output.snapshot.lights},
-            {.binding = 2, .buffer = output.snapshot.candidates},
-            {.binding = 3, .buffer = output.snapshot.cells},
-            {.binding = 4, .buffer = output.snapshot.lightIndices},
-            {.binding = 5, .buffer = probe.get()},
-        }};
-        GRID_CHECK(lookupProgram_.dispatch({
-            .commandBuffer = commands_.get(),
-            .bindings = probeBindings,
-        }));
+        auto registry = device_->resourceRegistry();
+        GRID_CHECK(registry);
+        render::ParameterWriter writer(*device_, **registry, commands_->frameContext());
+        const ClusterLightGridProbeParameters probeParams{
+            writer.buffer(output.snapshot.parameters), writer.buffer(output.snapshot.lights),
+            writer.buffer(output.snapshot.candidates), writer.buffer(output.snapshot.cells),
+            writer.buffer(output.snapshot.lightIndices), writer.dataBuffer(probe.get(), 16, 4)};
+        auto encoded = writer.encode(probeParams, kGridProbeABI, render::ParameterTransport::InlinePush);
+        GRID_CHECK(encoded);
+        GRID_CHECK(lookupProgram_.dispatch(*commands_, *encoded, 1));
         std::unique_ptr<render::Buffer> readback;
         GRID_CHECK(device_->createBuffer({.size = cellBytes + indexBytes + sizeof(output.lookup),
             .usage = render::BufferUsageBits::TransferDestination,
@@ -369,7 +364,7 @@ private:
     bool enableValidation_ = false;
     render::RenderSubsystemHost host_;
     render::QueueSubmissionTracker tracker_;
-    render::ComputeProgram lookupProgram_;
+    render::ComputeKernel lookupProgram_;
     std::unique_ptr<render::CommandPool> pool_;
     std::unique_ptr<render::CommandBuffer> commands_;
     std::array<std::unique_ptr<render::RenderFrameContext>, 2> frames_;

@@ -84,7 +84,7 @@ bool streamRayAlphaAccepts<Materials : IStreamRayMaterials>(uint instanceIndex, 
     // Alpha coverage needs UV only, not world transforms, normals or a TBN.
     float3 normals[3]; float2 uvs[3]; float4 tangents[3];
     decodeStreamAttributesAtPage(pageIndex, cluster, triangle,
-        StreamDataBuffer<uint>(scene.pages), StreamDataBuffer<uint2>(scene.pageTable), normals, uvs, tangents);
+        StreamDataBuffer<uint>(scene.pages), StreamDataBuffer<uint2>(scene.pageTable), normals, uvs, tangents, 4u);
     float2 uv = uvs[0] * (1.0 - bary.x - bary.y) + uvs[1] * bary.x + uvs[2] * bary.y;
     float alpha = material.baseColor.a * materials.alpha(material.baseColorTexture, uv);
     return material.textureParams.w < 1.5 ? alpha >= material.params.z : alpha > 0.0;

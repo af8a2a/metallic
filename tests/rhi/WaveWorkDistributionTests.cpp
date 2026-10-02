@@ -1,3 +1,5 @@
+#include "WaveWorkProbeParameters.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -46,17 +48,14 @@ public:
             }
         }
         std::vector<Record> records(threadCount * 65u, Record{poison, poison, poison, poison});
-        std::unique_ptr<BindlessHeap> heap;
-        WAVE_WORK_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<std::unique_ptr<Buffer>, 2> buffers;
-        std::array<BindlessHandle, 2> handles;
         const uint64_t sizes[] = {counts.size() * sizeof(uint32_t), records.size() * sizeof(Record)};
         const void* data[] = {counts.data(), records.data()};
         for (uint32_t i = 0; i < 2; ++i) {
             WAVE_WORK_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = i == 0 ? 4u : 16u,
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
-            WAVE_WORK_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
-            WAVE_WORK_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
+
+
             void* mapped = buffers[i]->map();
             if (!mapped) { return RHITestResult::fail("Cannot map wave work input"); }
             std::memcpy(mapped, data[i], sizes[i]);
@@ -66,16 +65,10 @@ public:
         const auto compilation = compileSlangShaderToSpirv({.moduleName = "WaveWorkProbe", .entryPointName = "main",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
         if (!compilation) { return RHITestResult::fail(compiled.diagnostics); }
-        std::unique_ptr<ShaderModule> shader;
-        WAVE_WORK_REQUIRE(device->createShaderModule({
-            .spirv = compiled.spirv,
-        }).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
-        std::unique_ptr<ComputePipeline> pipeline;
-        WAVE_WORK_REQUIRE(device->createComputePipeline({
-            .computeShader = {shader.get()},
-            .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = 8,
-        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); }));
+        ComputeKernel kernel;
+        std::string log;
+        WAVE_WORK_REQUIRE(kernel.initialize(*device, {.spirv = compiled.spirv,
+            .parameters = parameterAbi<WaveWorkProbeParameters>(kWaveWorkProbeABI, ParameterTransport::InlinePush)}, log));
         auto* queue = device->getQueue(QueueType::Graphics);
         std::unique_ptr<CommandPool> pool;
         std::unique_ptr<CommandBuffer> commands;
@@ -89,9 +82,14 @@ public:
             {.buffer = buffers[0].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}},
             {.buffer = buffers[1].get(), .before = {}, .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite}}};
         if (auto commandResult = commands->synchronize({.buffers = {barriers, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commands->bindBindlessHeap(*heap); if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-        const uint32_t push[] = {handles[0].shaderIndex, handles[1].shaderIndex};
-        commands->pushBindlessData(push, sizeof(push)); commands->dispatch(groupCount);
+        auto registry = device->resourceRegistry();
+        if (!registry) { return RHITestResult::fail("Missing probe registry"); }
+        ParameterWriter writer(*device, **registry);
+        const WaveWorkProbeParameters params{writer.dataBuffer(buffers[0].get(), 4, 4),
+            writer.dataBuffer(buffers[1].get(), 16, 4)};
+        auto encoded = writer.encode(params, kWaveWorkProbeABI, ParameterTransport::InlinePush);
+        if (!encoded) { return RHITestResult::fail("Cannot encode probe parameters"); }
+        WAVE_WORK_REQUIRE(kernel.dispatch(*commands, *encoded, groupCount));
         WAVE_WORK_REQUIRE(commands->end());
         CommandBuffer* list[] = {commands.get()};
         WAVE_WORK_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));

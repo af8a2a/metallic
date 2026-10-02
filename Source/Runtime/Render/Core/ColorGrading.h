@@ -1,9 +1,12 @@
 #pragma once
 
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 
 #include <array>
+#include <memory>
+#include <string>
+#include <vector>
 
 namespace metallic::render {
 

@@ -90,13 +90,15 @@ bool decodeStreamTriangle(uint index, uint triangle, StructuredBuffer<CompactStr
 // Optional shading streams. Position-only pages continue to use geometric
 // normals and zero UV; every optional range is validated before dereferencing.
 // Call only after decodeStreamTriangleAtPage succeeds for the same triangle.
+// A constant attribute mask lets alpha queries omit normal/tangent decoding.
 uint decodeStreamAttributesAtPage<Pages : IStreamReadBuffer<uint>, Table : IStreamReadBuffer<uint2>>(uint pageIndex, uint clusterIndex, uint triangle,
     Pages pages,
-    Table pageTable, out float3 normals[3], out float2 uvs[3], out float4 tangents[3])
+    Table pageTable, out float3 normals[3], out float2 uvs[3], out float4 tangents[3],
+    uint requestedAttributes = 22u)
 {
     for (uint i = 0; i < 3; ++i) { normals[i] = float3(0); uvs[i] = float2(0); tangents[i] = float4(0); }
     uint page = (pageTable.load(pageIndex).x & 0xfffffff8u) / 4u;
-    uint bytes = pages.load(page + 12u), flags = pages.load(page + 14u);
+    uint bytes = pages.load(page + 12u), flags = pages.load(page + 14u) & requestedAttributes;
     uint cluster = page + pages.load(page + 9u) / 4u + clusterIndex * 24u;
     uint address = page * 4u + pages.load(page + 11u) + pages.load(cluster + 2u) + triangle * 3u;
     uint normalOffset = pages.load(page + 16u), uvOffset = pages.load(page + 17u);

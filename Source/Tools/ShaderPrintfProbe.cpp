@@ -1,3 +1,4 @@
+#include "../../tests/rhi/ShaderDiagnosticParameters.h"
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
@@ -176,39 +177,35 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     auto shader = require(device->createShaderModule({
         .spirv = compiled.spirv,
     }), "createShaderModule");
-    struct Push { uint32_t inputBuffer; uint32_t cookie; };
-    Push push{0, 305397763};
+    metallic::tests::ShaderDiagnosticParameters push{};
+    push.cookie = 305397763;
     report["phase"] = "pipeline-create";
     save(directory / "Report.json", report);
     auto pipeline = require(device->createComputePipeline({
         .computeShader = {shader.get(), "main"},
         .usesBindlessHeap = heapMode,
-        .bindlessUserPushDataSize = heapMode ? sizeof(Push) : 0,
+        .bindlessUserPushDataSize = heapMode ? sizeof(push) : 0,
     }), "createComputePipeline");
-    std::unique_ptr<render::BindlessHeap> heap;
     std::unique_ptr<render::Buffer> input, output;
-    render::BindlessHandle inputHandle{}, outputHandle{};
+    render::ShaderBuffer outputHandle{};
+    render::EncodedParameters encoded;
     if (heapMode) {
-        heap = require(device->createBindlessHeap({.maxSampledImages = 7, .maxBuffers = 4}), "createHeap");
-        (void)require(heap->allocateBuffer(), "reserveUnusedSlot");
-        inputHandle = require(heap->allocateBuffer(), "allocateInput");
-        outputHandle = require(heap->allocateBuffer(), "allocateOutput");
-        if (inputHandle.index == 0 || inputHandle.shaderIndex == inputHandle.index) {
-            throw std::runtime_error("Probe must use nonzero slot and final descriptor indices");
-        }
+        auto registry = require(device->resourceRegistry(), "resourceRegistry");
+        render::ParameterWriter writer(*device, *registry);
         input = require(device->createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
             .memoryLocation = render::MemoryLocation::HostUpload}), "createInput");
         output = require(device->createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
             .memoryLocation = render::MemoryLocation::HostReadback}), "createOutput");
-        require(heap->writeStorageBuffer(inputHandle, *input), "writeInputDescriptor");
-        require(heap->writeStorageBuffer(outputHandle, *output), "writeOutputDescriptor");
-        const std::array<uint32_t, 4> values{outputHandle.shaderIndex, 73, 0, 0};
+        outputHandle = writer.buffer(output.get());
+        const std::array<uint32_t, 4> values{uint32_t(outputHandle.value), uint32_t(outputHandle.value >> 32), 73, 0};
         void* mapped = input->map();
         if (!mapped) { throw std::runtime_error("Input map failed"); }
         std::memcpy(mapped, values.data(), sizeof(values));
         input->flush();
         input->unmap();
-        push.inputBuffer = inputHandle.shaderIndex;
+        push.input = writer.buffer(input.get());
+        encoded = require(writer.encode(push, metallic::tests::kShaderDiagnosticABI, render::ParameterTransport::InlinePush), "encodeParameters");
+        report["parameterABI"] = {{"size", sizeof(push)}, {"transport", "InlinePush"}, {"nestedHandleBits", 64}};
     }
     auto& queue = *device->getQueue(render::QueueType::Graphics);
     render::QueueSubmissionTracker tracker;
@@ -219,7 +216,7 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     require(frame.begin(trace ? debug::debugUnsigned(trace->plan().at("execution")) : 0), "beginFrame");
     require(commands->begin(&frame), "beginCommands");
     if (heapMode) {
-        commands->bindBindlessHeap(*heap);
+        require(encoded.bindResources(*commands), "bindParameters");
         if (auto commandResult = commands->bindExecution((pipeline)->execution(), &push, sizeof(push)); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); }
     } else {
         if (auto commandResult = commands->bindExecution((pipeline)->execution()); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); }
@@ -256,7 +253,7 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
         output->invalidate();
         std::memcpy(actual.data(), mapped, sizeof(actual));
         output->unmap();
-        const std::array<uint32_t, 4> expected{74, push.cookie, inputHandle.shaderIndex, outputHandle.shaderIndex};
+        const std::array<uint32_t, 4> expected{74, push.cookie, 73, uint32_t(outputHandle.value)};
         report["readback"] = {{"actual", actual}, {"expected", expected}, {"passed", actual == expected}};
         if (actual != expected) { throw std::runtime_error("Descriptor heap readback mismatch"); }
     }

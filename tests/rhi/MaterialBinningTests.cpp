@@ -1,4 +1,5 @@
 #include "MaterialBinningProbeParameters.h"
+#include "MaterialFixtureParameters.h"
 #include "RHITest.h"
 #include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -42,6 +43,13 @@ public:
     render::Result<> compile(const render::RenderGraphCompileContext& context, std::string& log) override
     {
         device_ = context.device;
+        if (fixture_) {
+            auto shader = render::compileSlangShaderToSpirv({.moduleName = "MaterialBinningFixture",
+                .entryPointName = "materialFixtureMain", .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, log);
+            if (!shader) { return render::makeError(shader.error()); }
+            return fixtureKernel_.initialize(*device_, {.spirv = shader->spirv,
+                .parameters = render::parameterAbi<MaterialFixtureParameters>(kMaterialFixtureABI, render::ParameterTransport::InlinePush)}, log);
+        }
         if (typed_) {
             const char* entries[] = {"materialReadbackResetMain", "materialIndirectProbeMain", "materialIndirectProbeMain"};
             for (uint32_t i = 0; i < kernels_.size(); ++i) {
@@ -61,12 +69,10 @@ public:
             return {};
         }
         const render::ComputeProgramBindingDesc layout[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::StorageImage},
-            {.binding = 1}, {.binding = 2}, {.binding = 3},
-            {.binding = 4}, {.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8}};
-        const char* entries[] = {fixture_ ? "materialFixtureMain" : "materialReadbackResetMain",
+            {.binding = 5}, {.binding = 6}, {.binding = 7}, {.binding = 8}};
+        const char* entries[] = {"materialReadbackResetMain",
             "materialIndirectProbeMain", "materialIndirectProbeMain"};
-        for (uint32_t i = 0; i < (fixture_ ? 1u : 3u); ++i) {
+        for (uint32_t i = 0; i < 3u; ++i) {
             const render::SlangMacroDefine alternate[] = {{"PROBE_ALTERNATE", "1"}};
             render::ShaderCompileResult shader;
             auto result = render::compileSlangShaderToSpirv({
@@ -79,15 +85,15 @@ public:
             result = programs_[i].initialize(*device_, {
                 .spirv = shader.spirv,
                 .pushConstantSize = 16,
-                .bindings = {fixture_ ? layout : layout + 5, fixture_ ? 5u : 4u},
+                .bindings = layout,
                 .requiresRayQuery = false,
             }, log);
             if (!result) { return result; }
-            if (!fixture_ && i == 0) {
+            if (i == 0) {
                 // Constant layout, rather than obsolete table counts, defines ABI compatibility.
                 result = incompatibleProgram_.initialize(*device_, {
                     .spirv = shader.spirv, .pushConstantSize = 20,
-                    .bindings = {layout + 5, 4}, .requiresRayQuery = false,
+                    .bindings = layout, .requiresRayQuery = false,
                 }, log);
                 if (!result) { return result; }
             }
@@ -103,20 +109,20 @@ public:
         const uint32_t fixtureGroups = (std::max(pixels, 260u) + 63) / 64;
         const uint32_t readbackGroups = (std::max(pixels, kBinCount) + 63) / 64;
         if (fixture_) {
-            const render::ComputeDispatchBinding bindings[] = {
-                {.binding = 0, .textureView = context.outputTexture("visibility").view()},
-                {.binding = 1, .buffer = context.outputBuffer("records").buffer()},
-                {.binding = 2, .buffer = context.outputBuffer("instances").buffer()},
-                {.binding = 3, .buffer = context.outputBuffer("materials").buffer()},
-                {.binding = 4, .buffer = context.outputBuffer("shadingMaterials").buffer()}};
-            return programs_[0].dispatch({
-                .commandBuffer = &commands,
-                .bindings = {bindings, 5},
-                .pushData = push,
-                .pushDataSize = sizeof(push),
-                .groupCountX = std::min(fixtureGroups, 65535u),
-                .groupCountY = (fixtureGroups + 65534) / 65535,
-            });
+            auto registry = device_->resourceRegistry();
+            if (!registry) { return render::makeError(registry.error()); }
+            render::ParameterWriter writer(*device_, **registry, commands.frameContext());
+            const MaterialFixtureParameters params{
+                writer.storageImage(context.outputTexture("visibility").view()),
+                writer.dataBuffer(context.outputBuffer("records").buffer(), 16, 4),
+                writer.dataBuffer(context.outputBuffer("instances").buffer(), 160, 4),
+                writer.dataBuffer(context.outputBuffer("materials").buffer(), 560, 4),
+                writer.dataBuffer(context.outputBuffer("shadingMaterials").buffer(), 720, 4),
+                push[0], push[1], push[2], push[3]};
+            auto encoded = writer.encode(params, kMaterialFixtureABI, render::ParameterTransport::InlinePush);
+            if (!encoded) { return render::makeError(encoded.error()); }
+            return fixtureKernel_.dispatch(commands, *encoded,
+                std::min(fixtureGroups, 65535u), (fixtureGroups + 65534) / 65535);
         }
         render::MaterialBinningResult bins;
         std::string log;
@@ -248,6 +254,7 @@ private:
     bool fixture_;
     bool typed_;
     render::Device* device_ = nullptr;
+    render::ComputeKernel fixtureKernel_;
     std::array<render::ComputeProgram, 3> programs_;
     render::ComputeProgram incompatibleProgram_;
     std::array<render::ComputeKernel, 3> kernels_;
