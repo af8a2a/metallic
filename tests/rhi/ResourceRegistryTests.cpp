@@ -6,6 +6,7 @@
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/RTXDIPostProcessParameters.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
+#include "Runtime/Render/Core/OpenPBRPathTraceParameters.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 
@@ -159,6 +160,7 @@ public:
                 FIELD(SharcMaintenanceParams, settings)}},
             {"Metallic.PathTraceTonemapParams", {FIELD(PathTraceTonemapParams, source), FIELD(PathTraceTonemapParams, output),
                 FIELD(PathTraceTonemapParams, historyPrevious), FIELD(PathTraceTonemapParams, settings)}},
+            {"Metallic.OpenPBRPathTraceParameters", {FIELD(OpenPBRPathTraceParameters, settings), FIELD(OpenPBRPathTraceParameters, scene), FIELD(OpenPBRPathTraceParameters, output), FIELD(OpenPBRPathTraceParameters, vertices), FIELD(OpenPBRPathTraceParameters, indices), FIELD(OpenPBRPathTraceParameters, primitives), FIELD(OpenPBRPathTraceParameters, instances), FIELD(OpenPBRPathTraceParameters, positions), FIELD(OpenPBRPathTraceParameters, materials), FIELD(OpenPBRPathTraceParameters, historyCurrent), FIELD(OpenPBRPathTraceParameters, historyPrevious), FIELD(OpenPBRPathTraceParameters, materialTextures), FIELD(OpenPBRPathTraceParameters, environment), FIELD(OpenPBRPathTraceParameters, environmentPdf), FIELD(OpenPBRPathTraceParameters, lut2D), FIELD(OpenPBRPathTraceParameters, lut3D), FIELD(OpenPBRPathTraceParameters, lights), FIELD(OpenPBRPathTraceParameters, reGIR), FIELD(OpenPBRPathTraceParameters, punctualPdf), FIELD(OpenPBRPathTraceParameters, albedo), FIELD(OpenPBRPathTraceParameters, specularAlbedo), FIELD(OpenPBRPathTraceParameters, normalRoughness), FIELD(OpenPBRPathTraceParameters, motionVectors), FIELD(OpenPBRPathTraceParameters, linearDepth), FIELD(OpenPBRPathTraceParameters, specularHitDistance), FIELD(OpenPBRPathTraceParameters, depth), FIELD(OpenPBRPathTraceParameters, materialValues), FIELD(OpenPBRPathTraceParameters, ntcLatents), FIELD(OpenPBRPathTraceParameters, ntcConstants), FIELD(OpenPBRPathTraceParameters, ntcWeights), FIELD(OpenPBRPathTraceParameters, ntcInfo), FIELD(OpenPBRPathTraceParameters, ntcSampler)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -181,14 +183,17 @@ public:
             {"Features/PathTracing/SceneSharcMaintenance", "sharcClearMain", 11},
             {"Features/PathTracing/SceneSharcMaintenance", "sharcResolveMain", 11},
             {"Features/PostProcess/ScenePathTraceTonemap", "scenePathTraceTonemapMain", 12},
+            {"Features/PathTracing/OpenPBRRayQueryPathTrace", "openPbrRayQueryPathTraceMain", 13},
+            {"Features/PathTracing/OpenPBRRayQueryPathTraceGuides", "openPbrRayQueryPathTraceGuidesMain", 13},
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                if ((program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
+                const char* capabilities[] = {"spvRayQueryKHR"};
                 std::string log;
                 auto shader = compileSlangShaderToSpirv({.moduleName = program.module, .entryPointName = program.entry,
-                    .searchPath = PROJECT_SOURCE_DIR "/Shaders", .macroDefines = defines, .descriptorHeapMode = mode}, log);
+                    .searchPath = PROJECT_SOURCE_DIR "/Shaders", .capabilities = category == 4 ? std::span<const char* const>(capabilities) : std::span<const char* const>{}, .macroDefines = defines, .descriptorHeapMode = mode}, log);
                 if (!shader) { return RHITestResult::fail(log); }
                 const auto& layout = layouts[program.layout];
                 std::vector<uint32_t> ids;
@@ -225,7 +230,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 4 ? "OpenPBRPathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -252,6 +257,12 @@ public:
     PathTraceStageParameterLayoutTest() { category = 3; name = "path_trace_stage_parameter_spirv_layout"; }
 };
 METALLIC_REGISTER_RHI_TEST(PathTraceStageParameterLayoutTest);
+
+class OpenPBRParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    OpenPBRParameterLayoutTest() { category = 4; name = "openpbr_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(OpenPBRParameterLayoutTest);
 
 class SharcTypedMaintenanceTest final : public RHITest {
 public:

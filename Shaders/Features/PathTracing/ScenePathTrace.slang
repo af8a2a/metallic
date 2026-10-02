@@ -1,6 +1,8 @@
 #include "../../Interop/MaterialTextureDecode.hlsli"
 #include "../../Interop/AlphaCoverage.hlsli"
+#if !METALLIC_OPENPBR_TYPED
 import Core;
+#endif
 using Metallic;
 import Material;
 using Metallic.Material;
@@ -25,6 +27,7 @@ using Metallic.Lighting;
 #include "../../../External/Rtxtf/STFSamplerState.hlsli"
 import NeuralTextures;
 using Metallic.Interop.NeuralTextures;
+#include "../../Interop/NeuralTextureBindings.hlsli"
 
 #ifndef METALLIC_HAS_RTXCR
 #define METALLIC_HAS_RTXCR 0
@@ -118,10 +121,19 @@ typedef RWStructuredBuffer<NrcRadianceParams, ScalarDataLayout> NRCQueryRadiance
 #define gNrcCounters getResource<RWStructuredBuffer<uint>>(28)
 #endif
 
+#if METALLIC_OPENPBR_TYPED
+#define gScene resolveDescriptor(gOpenPBRParameters.scene)
+#else
 #define gScene getResource<RaytracingAccelerationStructure>(0)
+#endif
 
+#if METALLIC_OPENPBR_TYPED
+#define gOutput resolveDescriptor(gOpenPBRParameters.output)
+#else
 #define gOutput getResource<RWTexture2D<float4>>(1)
+#endif
 
+#if !METALLIC_OPENPBR_TYPED
 struct PathTracePrimitive
 {
     uint firstVertex;
@@ -142,24 +154,77 @@ struct PathTraceInstance
     float rayConeLodConstant;
 };
 
+#endif
+
+#if METALLIC_OPENPBR_TYPED
+#define gIndices gOpenPBRParameters.indices
+#else
 #define gIndices getData<uint>(3)
+#endif
 
+#if METALLIC_OPENPBR_TYPED
+#define gPrimitives gOpenPBRParameters.primitives
+#else
 #define gPrimitives getData<PathTracePrimitive>(4)
+#endif
 
+#if METALLIC_OPENPBR_TYPED
+#define gInstances gOpenPBRParameters.instances
+#else
 #define gInstances getData<PathTraceInstance>(5)
+#endif
 
+#if METALLIC_OPENPBR_TYPED
+#define gMaterials resolveDescriptor(gOpenPBRParameters.materials)
+#else
 #define gMaterials getResource<StructuredBuffer<PathTraceMaterial>>(6)
+#endif
 
+#if METALLIC_OPENPBR_TYPED
+#define gHistoryCurrent resolveDescriptor(gOpenPBRParameters.historyCurrent)
+#else
 #define gHistoryCurrent getResource<RWTexture2D<float4>>(7)
+#endif
 
+#if METALLIC_OPENPBR_TYPED
+#define gHistoryPrevious resolveDescriptor(gOpenPBRParameters.historyPrevious)
+#else
 #define gHistoryPrevious getResource<RWTexture2D<float4>>(8)
+#endif
 
+#if METALLIC_OPENPBR_TYPED
+#define gMaterialTextures(index) resolveDescriptor(nonuniform(gOpenPBRParameters.materialTextures[index]))
+#else
 #define gMaterialTextures(index) getResourceArray<Texture2D<float4>>(9, index)
+#endif
 
+#if METALLIC_OPENPBR_TYPED
+#define gEnvironmentMap resolveDescriptor(gOpenPBRParameters.environment)
+#else
 #define gEnvironmentMap getResource<Texture2D<float4>>(10)
+#endif
 
+#if METALLIC_OPENPBR_TYPED
+#define gEnvironmentImportancePdf resolveDescriptor(gOpenPBRParameters.environmentPdf)
+#else
 #define gEnvironmentImportancePdf getResource<Texture2D<float>>(13)
+#endif
 
+
+
+#if METALLIC_OPENPBR_TYPED
+#define gPathTraceVertices gOpenPBRParameters.vertices
+#define gPathTracePositions gOpenPBRParameters.positions
+#define gPathTraceLights resolveDescriptor(gOpenPBRParameters.lights)
+#define gPathTraceReGIR resolveDescriptor(gOpenPBRParameters.reGIR)
+#define gPathTracePunctualPdf resolveDescriptor(gOpenPBRParameters.punctualPdf)
+#else
+#define gPathTraceVertices getData<SceneShadingVertex>(2)
+#define gPathTracePositions getData<SceneVertexPosition>(54)
+#define gPathTraceLights getResource<StructuredBuffer<GPUPunctualLight>>(50)
+#define gPathTraceReGIR getResource<StructuredBuffer<uint4>>(52)
+#define gPathTracePunctualPdf getResource<Texture2D<float>>(53)
+#endif
 
 static const uint kInvalidMaterialTextureIndex = 0xffffffffu;
 static const uint kPrimitiveHasAuthoredTangents = 1u;
@@ -204,6 +269,15 @@ struct ScenePathTracePush
     uint temporalJitter;
     uint deferredSettings; // shading class:16, transmission samples:5, ray depth:5
 };
+
+ScenePathTracePush scenePathTraceSettings()
+{
+#if METALLIC_OPENPBR_TYPED
+    return *((ScenePathTracePush*)gOpenPBRParameters.settings);
+#else
+    return getConstants<ScenePathTracePush>();
+#endif
+}
 
 struct Ray
 {
@@ -857,7 +931,8 @@ float4 loadMaterialTextureMip0(
         uint2 dimensions;
         uint mipCount;
         if (!metallicNeuralTextureDimensions(
-                textureInfo.ntcTextureSetIndex,
+            sceneNeuralTextures(),
+            textureInfo.ntcTextureSetIndex,
                 push.ntcTextureSetCount,
                 0u,
                 dimensions,
@@ -869,6 +944,7 @@ float4 loadMaterialTextureMip0(
             uint2(wrappedUv * float2(dimensions)),
             dimensions - uint2(1u, 1u)));
         return metallicSampleNeuralTexture(
+            sceneNeuralTextures(),
             textureInfo.ntcTextureSetIndex,
             push.ntcTextureSetCount,
             textureInfo.ntcChannelMapping,
@@ -924,7 +1000,8 @@ float4 loadMaterialTexture(
         uint2 baseDimensions;
         uint mipCount;
         if (!metallicNeuralTextureDimensions(
-                textureInfo.ntcTextureSetIndex,
+            sceneNeuralTextures(),
+            textureInfo.ntcTextureSetIndex,
                 push.ntcTextureSetCount,
                 0u,
                 baseDimensions,
@@ -951,6 +1028,7 @@ float4 loadMaterialTexture(
         uint2 mipDimensions;
         uint ignoredMipCount;
         metallicNeuralTextureDimensions(
+            sceneNeuralTextures(),
             textureInfo.ntcTextureSetIndex,
             push.ntcTextureSetCount,
             sampleMip,
@@ -964,6 +1042,7 @@ float4 loadMaterialTexture(
             border);
         int2 texel = int2(floor(samplePosition.xy * float2(mipDimensions)));
         return metallicSampleNeuralTexture(
+            sceneNeuralTextures(),
             textureInfo.ntcTextureSetIndex,
             push.ntcTextureSetCount,
             textureInfo.ntcChannelMapping,
@@ -1061,7 +1140,7 @@ bool loadPathTraceTriangle(uint instanceIndex, uint triangleIndex,
         primitive.indexCount > gIndices.length() - primitive.firstIndex) { return false; }
     uint indexOffset = primitive.firstIndex + triangleIndex * 3u;
     uint3 local = uint3(gIndices.data[indexOffset], gIndices.data[indexOffset + 1u], gIndices.data[indexOffset + 2u]);
-    DataSpan<SceneShadingVertex> vertices = getData<SceneShadingVertex>(2);
+    DataSpan<SceneShadingVertex> vertices = gPathTraceVertices;
     if (primitive.firstVertex > vertices.length() ||
         primitive.vertexCount > vertices.length() - primitive.firstVertex ||
         any(local >= primitive.vertexCount)) { return false; }
@@ -1083,7 +1162,7 @@ bool alphaMaskAcceptsHit(uint instanceIndex, uint triangleIndex, float2 bary, Sc
     if (!blend && abs(material.textureParams.w - 1.0) > 0.25) {
         return true;
     }
-    DataSpan<SceneShadingVertex> vertices = getData<SceneShadingVertex>(2);
+    DataSpan<SceneShadingVertex> vertices = gPathTraceVertices;
     float3 weights = float3(1.0 - bary.x - bary.y, bary.x, bary.y);
     float2 uv = vertices.data[indices.x].texcoord * weights.x +
         vertices.data[indices.y].texcoord * weights.y + vertices.data[indices.z].texcoord * weights.z;
@@ -1228,7 +1307,7 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     uint materialCount, materialStride;
     gMaterials.GetDimensions(materialCount, materialStride);
     if (instance.materialIndex >= materialCount) { return false; }
-    DataSpan<SceneShadingVertex> vertices = getData<SceneShadingVertex>(2);
+    DataSpan<SceneShadingVertex> vertices = gPathTraceVertices;
     uint i0 = indices.x, i1 = indices.y, i2 = indices.z;
     SceneShadingVertex v0 = vertices.data[i0];
     SceneShadingVertex v1 = vertices.data[i1];
@@ -1245,7 +1324,7 @@ bool traceClosest(Ray ray, ScenePathTracePush push, out HitInfo hit)
     float3 p1 = positions[1];
     float3 p2 = positions[2];
 #else
-    DataSpan<SceneVertexPosition> positions = getData<SceneVertexPosition>(54);
+    DataSpan<SceneVertexPosition> positions = gPathTracePositions;
     if (!positions.contains(i0) || !positions.contains(i1) || !positions.contains(i2)) { return false; }
     SceneVertexPosition a = positions.data[i0], b = positions.data[i1], c = positions.data[i2];
     float3 p0 = float3(a.x, a.y, a.z);
@@ -1614,8 +1693,8 @@ float3 pathTrace(
 
             uint hairLightIndex;
             float hairInverseSourcePdf;
-            if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, hairLightIndex, hairInverseSourcePdf)) {
-                PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), hairLightIndex, hit.position);
+            if (selectPunctualLight(PunctualSamplingResources(gPathTraceLights, gPathTraceReGIR, gPathTracePunctualPdf), hit.position, seed, hairLightIndex, hairInverseSourcePdf)) {
+                PunctualLightSample light = samplePunctualLight(gPathTraceLights, hairLightIndex, hit.position);
                 float3 hairBsdf = max(evalRTXCRMaterial(preparedHair, light.direction), 0.0);
                 if (luminanceMax(hairBsdf * light.illuminance) > 0.0) {
                     float3 shadowOrigin = offsetRay(hit.position,
@@ -1784,8 +1863,8 @@ float3 pathTrace(
         EnvironmentLightSample lightSample;
         uint punctualLightIndex;
         float punctualInverseSourcePdf;
-        if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
-            PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), punctualLightIndex, hit.position);
+        if (selectPunctualLight(PunctualSamplingResources(gPathTraceLights, gPathTraceReGIR, gPathTracePunctualPdf), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
+            PunctualLightSample light = samplePunctualLight(gPathTraceLights, punctualLightIndex, hit.position);
             float3 bsdf = punctualStandardBsdf(hit.normal, -ray.direction, light.direction,
                 baseColor, f0, metallic, roughness, max(transmission, diffuseTransmission));
             if (luminanceMax(bsdf * light.illuminance) > 0.0) {
@@ -1930,7 +2009,9 @@ float3 pathTrace(
 PathTraceCacheContext makeCacheContext()
 {
     PathTraceCacheContext cache;
+#if METALLIC_PT_SHARC || METALLIC_PT_NRC
     ScenePathTraceCacheParams params = gCacheParams[0];
+#endif
 #if METALLIC_PT_SHARC
     cache.sharc.hashGridParameters.cameraPosition = params.sharcCameraPosition.xyz;
     cache.sharc.hashGridParameters.logarithmBase = SHARC_GRID_LOGARITHM_BASE;
@@ -1957,11 +2038,12 @@ PathTraceCacheContext makeCacheContext()
     return cache;
 }
 
+#if !METALLIC_OPENPBR_TYPED
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    ScenePathTracePush push = getConstants<ScenePathTracePush>();
+    ScenePathTracePush push = scenePathTraceSettings();
     uint2 pixel = dispatchThreadId.xy;
     uint samples = clamp(push.samples, 1u, 16u);
     uint2 outputPixel = pixel;
@@ -2065,7 +2147,7 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 #endif
 
     if (push.outputLinear == 0u) {
-        color *= lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50));
+        color *= lightingExposure(gPathTraceLights);
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
         color = saturate(color);
@@ -2082,3 +2164,5 @@ void scenePathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     gOutput[pixel] = float4(color, 1.0);
 }
+
+#endif // Standard entry point uses the legacy cache permutations.

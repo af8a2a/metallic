@@ -38,6 +38,36 @@ Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source
     return {};
 }
 
+Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source,
+    const ComputeKernelDesc& layout, ComputeKernel& program,
+    std::shared_ptr<const MaterialExecutableArtifact>& artifact, std::string& log)
+{
+    auto compiled = compileSlangShaderToSpirv(source, log);
+    if (!compiled) { return makeError(compiled.error()); }
+    auto candidate = std::make_shared<MaterialExecutableArtifact>();
+    candidate->shader = std::move(*compiled);
+    candidate->parameterABI = layout.parameters.id;
+    candidate->constantsSize = layout.parameters.size;
+    auto description = layout;
+    description.spirv = candidate->shader.spirv;
+    ComputeKernel executable;
+    auto result = executable.initialize(device, description, log);
+    if (!result) { return result; }
+    uint64_t key = 14695981039346656037ull;
+    const auto hash = [&](uint64_t value) {
+        for (uint32_t byte = 0; byte < 8; ++byte) {
+            key = (key ^ ((value >> (byte * 8)) & 255u)) * 1099511628211ull;
+        }
+    };
+    hash(layout.parameters.id); hash(layout.parameters.size); hash(layout.parameters.alignment);
+    hash(uint64_t(layout.parameters.transport));
+    for (auto word : candidate->shader.spirv) { hash(word); }
+    candidate->key = key;
+    program = std::move(executable);
+    artifact = std::move(candidate);
+    return {};
+}
+
 Result<> initializeMaterialErrorProgram(Device& device, ComputeProgram& program, std::string& log)
 {
     const ComputeProgramBindingDesc output{.binding = 0, .kind = ComputeResourceBindingKind::StorageImage};

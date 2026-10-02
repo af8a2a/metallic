@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/OpenPBRPathTraceParameters.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -947,7 +948,8 @@ public:
             log += "Deferred material classification requires native wave32; disable materialBinning on this device\n";
             return makeError(Error::Unsupported);
         }
-        const bool baseReady = programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
+        const bool typedOpenPBR = useOpenPBR && !realtime_ && !visibilityDeferred_;
+        const bool baseReady = (typedOpenPBR ? openPBRProgram_.valid() : programs_[static_cast<size_t>(PathTracePermutation::Base)].valid()) &&
             (!classified || std::all_of(classifiedPrograms_.begin(), classifiedPrograms_.end(),
                 [](const ComputeProgram& program) { return program.valid(); }));
         const bool sharcReady = cacheMode_ != kScenePathTraceCacheModeSharc ||
@@ -981,182 +983,184 @@ public:
             capabilities.push_back("spvCooperativeVectorNV");
         }
 
-        // Keep the conventional binding table stable; append NTC descriptors only when active.
-        std::vector<ComputeProgramBindingDesc> baseBindings{
-            ComputeProgramBindingDesc{.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
-            ComputeProgramBindingDesc{
-                .binding = 0,
-                .kind = ComputeResourceBindingKind::AccelerationStructure,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 1,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 2,
-                .kind = ComputeResourceBindingKind::DataBuffer,
-                .dataStride = 16, .dataAlignment = 8,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 3,
-                .kind = ComputeResourceBindingKind::DataBuffer,
-                .dataStride = 4, .dataAlignment = 4,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 4,
-                .kind = ComputeResourceBindingKind::DataBuffer,
-                .dataStride = 32, .dataAlignment = 4,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 5,
-                .kind = ComputeResourceBindingKind::DataBuffer,
-                .dataStride = 16, .dataAlignment = 4,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 6,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 7,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 8,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            },
-            ComputeProgramBindingDesc{
-                .binding = 9,
-                .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = sceneResources_.materialTextureCount(),
-            },
-            ComputeProgramBindingDesc{
-                .binding = 10,
-                .kind = ComputeResourceBindingKind::SampledImage,
-            },
-            ComputeProgramBindingDesc{
-                .binding = kEnvironmentImportancePdfBinding,
-                .kind = ComputeResourceBindingKind::SampledImage,
-            },
-        };
-        if (!positionFetch && !streamMaterials_) {
-            baseBindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 12, .dataAlignment = 4});
-        }
-        if (realtime_) {
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-        }
-        if (supplementaryPathTracing || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
-            baseBindings.push_back({.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer});
-            baseBindings.push_back({.binding = 53, .kind = ComputeResourceBindingKind::SampledImage});
-        }
-        if (visibilityDeferred_) {
-            for (uint32_t binding = 75; binding <= 79; ++binding) {
-                baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
+        std::vector<ComputeProgramBindingDesc> baseBindings;
+        if (!typedOpenPBR) {
+            baseBindings = {
+                ComputeProgramBindingDesc{.binding = 50, .kind = ComputeResourceBindingKind::StorageBuffer},
+                ComputeProgramBindingDesc{
+                    .binding = 0,
+                    .kind = ComputeResourceBindingKind::AccelerationStructure,
+                },
+                ComputeProgramBindingDesc{
+                    .binding = 1,
+                    .kind = ComputeResourceBindingKind::StorageImage,
+                },
+                ComputeProgramBindingDesc{
+                    .binding = 2,
+                    .kind = ComputeResourceBindingKind::DataBuffer,
+                    .dataStride = 16, .dataAlignment = 8,
+                },
+                ComputeProgramBindingDesc{
+                    .binding = 3,
+                    .kind = ComputeResourceBindingKind::DataBuffer,
+                    .dataStride = 4, .dataAlignment = 4,
+                },
+                ComputeProgramBindingDesc{
+                    .binding = 4,
+                    .kind = ComputeResourceBindingKind::DataBuffer,
+                    .dataStride = 32, .dataAlignment = 4,
+                },
+                ComputeProgramBindingDesc{
+                    .binding = 5,
+                    .kind = ComputeResourceBindingKind::DataBuffer,
+                    .dataStride = 16, .dataAlignment = 4,
+                },
+                ComputeProgramBindingDesc{
+                    .binding = 6,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
+                },
+                ComputeProgramBindingDesc{
+                    .binding = 7,
+                    .kind = ComputeResourceBindingKind::StorageImage,
+                },
+                ComputeProgramBindingDesc{
+                    .binding = 8,
+                    .kind = ComputeResourceBindingKind::StorageImage,
+                },
+                ComputeProgramBindingDesc{
+                    .binding = 9,
+                    .kind = ComputeResourceBindingKind::SampledImage,
+                    .descriptorCount = sceneResources_.materialTextureCount(),
+                },
+                ComputeProgramBindingDesc{
+                    .binding = 10,
+                    .kind = ComputeResourceBindingKind::SampledImage,
+                },
+                ComputeProgramBindingDesc{
+                    .binding = kEnvironmentImportancePdfBinding,
+                    .kind = ComputeResourceBindingKind::SampledImage,
+                },
+            };
+            if (!positionFetch && !streamMaterials_) {
+                baseBindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 12, .dataAlignment = 4});
             }
-            if (globalView) { baseBindings.push_back({.binding = 80, .kind = ComputeResourceBindingKind::StorageBuffer}); }
-            if (properties().value("lightingMode", "reference") == "realtime") {
-                baseBindings.push_back({.binding = 74, .kind = ComputeResourceBindingKind::StorageBuffer});
-                baseBindings.push_back({.binding = 81, .kind = ComputeResourceBindingKind::SampledImage});
-                baseBindings.push_back({.binding = 82, .kind = ComputeResourceBindingKind::StorageBuffer});
+            if (realtime_) {
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
+                });
             }
-            if (boolProperty(properties(), "exportUpscalerGuides", false)) {
-                baseBindings.push_back({.binding = 72, .kind = ComputeResourceBindingKind::StorageImage});
-                baseBindings.push_back({.binding = 73, .kind = ComputeResourceBindingKind::StorageImage});
+            if (supplementaryPathTracing || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
+                baseBindings.push_back({.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer});
+                baseBindings.push_back({.binding = 53, .kind = ComputeResourceBindingKind::SampledImage});
             }
-            baseBindings.push_back({.binding = 60, .kind = ComputeResourceBindingKind::SampledImage});
-            baseBindings.push_back({.binding = 61, .kind = ComputeResourceBindingKind::SampledImage});
-            baseBindings.push_back({.binding = 88, .kind = ComputeResourceBindingKind::SampledImage});
-            for (uint32_t binding = 62; binding <= 69; ++binding) {
-                baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
+            if (visibilityDeferred_) {
+                for (uint32_t binding = 75; binding <= 79; ++binding) {
+                    baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
+                }
+                if (globalView) { baseBindings.push_back({.binding = 80, .kind = ComputeResourceBindingKind::StorageBuffer}); }
+                if (properties().value("lightingMode", "reference") == "realtime") {
+                    baseBindings.push_back({.binding = 74, .kind = ComputeResourceBindingKind::StorageBuffer});
+                    baseBindings.push_back({.binding = 81, .kind = ComputeResourceBindingKind::SampledImage});
+                    baseBindings.push_back({.binding = 82, .kind = ComputeResourceBindingKind::StorageBuffer});
+                }
+                if (boolProperty(properties(), "exportUpscalerGuides", false)) {
+                    baseBindings.push_back({.binding = 72, .kind = ComputeResourceBindingKind::StorageImage});
+                    baseBindings.push_back({.binding = 73, .kind = ComputeResourceBindingKind::StorageImage});
+                }
+                baseBindings.push_back({.binding = 60, .kind = ComputeResourceBindingKind::SampledImage});
+                baseBindings.push_back({.binding = 61, .kind = ComputeResourceBindingKind::SampledImage});
+                baseBindings.push_back({.binding = 88, .kind = ComputeResourceBindingKind::SampledImage});
+                for (uint32_t binding = 62; binding <= 69; ++binding) {
+                    baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
+                }
+                baseBindings.push_back({.binding = 94, .kind = ComputeResourceBindingKind::StorageBuffer});
+                baseBindings.push_back({.binding = 95, .kind = ComputeResourceBindingKind::StorageBuffer});
+                baseBindings.push_back({.binding = 96, .kind = ComputeResourceBindingKind::Sampler});
+                for (uint32_t binding = 83; binding <= 87; ++binding) {
+                    baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
+                }
+                if (materialBinningEnabled(properties())) {
+                    baseBindings.push_back({.binding = 70, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
+                    baseBindings.push_back({.binding = 71, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
+                }
             }
-            baseBindings.push_back({.binding = 94, .kind = ComputeResourceBindingKind::StorageBuffer});
-            baseBindings.push_back({.binding = 95, .kind = ComputeResourceBindingKind::StorageBuffer});
-            baseBindings.push_back({.binding = 96, .kind = ComputeResourceBindingKind::Sampler});
-            for (uint32_t binding = 83; binding <= 87; ++binding) {
-                baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
+            if (useOpenPBR) {
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kOpenPBRLut2DBinding,
+                    .kind = ComputeResourceBindingKind::SampledImage,
+                    .descriptorCount = kOpenPBRLut2DCount,
+                });
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kOpenPBRLut3DBinding,
+                    .kind = ComputeResourceBindingKind::SampledImage,
+                    .descriptorCount = kOpenPBRLut3DCount,
+                });
             }
-            if (materialBinningEnabled(properties())) {
-                baseBindings.push_back({.binding = 70, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
-                baseBindings.push_back({.binding = 71, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 8, .dataAlignment = 8});
+            if (exportGuides) {
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kDLSSRRAlbedoBinding,
+                    .kind = ComputeResourceBindingKind::StorageImage,
+                });
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kDLSSRRSpecularAlbedoBinding,
+                    .kind = ComputeResourceBindingKind::StorageImage,
+                });
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kDLSSRRNormalRoughnessBinding,
+                    .kind = ComputeResourceBindingKind::StorageImage,
+                });
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kDLSSRRMotionVectorsBinding,
+                    .kind = ComputeResourceBindingKind::StorageImage,
+                });
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kDLSSRRLinearDepthBinding,
+                    .kind = ComputeResourceBindingKind::StorageImage,
+                });
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kDLSSRRSpecularHitDistanceBinding,
+                    .kind = ComputeResourceBindingKind::StorageImage,
+                });
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kDLSSDepthBinding,
+                    .kind = ComputeResourceBindingKind::StorageImage,
+                });
             }
-        }
-        if (useOpenPBR) {
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kOpenPBRLut2DBinding,
-                .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kOpenPBRLut2DCount,
-            });
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kOpenPBRLut3DBinding,
-                .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kOpenPBRLut3DCount,
-            });
-        }
-        if (exportGuides) {
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDLSSRRAlbedoBinding,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            });
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDLSSRRSpecularAlbedoBinding,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            });
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDLSSRRNormalRoughnessBinding,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            });
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDLSSRRMotionVectorsBinding,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            });
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDLSSRRLinearDepthBinding,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            });
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDLSSRRSpecularHitDistanceBinding,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            });
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kDLSSDepthBinding,
-                .kind = ComputeResourceBindingKind::StorageImage,
-            });
-        }
-        if (ntcActive) {
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kNeuralTextureLatentsBinding,
-                .kind = ComputeResourceBindingKind::SampledImage,
-                .descriptorCount = kMaxNeuralTextureSets,
-            });
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kNeuralTextureConstantsBinding,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kNeuralTextureWeightsBinding,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kNeuralTextureSetInfoBinding,
-                .kind = ComputeResourceBindingKind::StorageBuffer,
-            });
-            baseBindings.push_back(ComputeProgramBindingDesc{
-                .binding = kNeuralTextureSamplerBinding,
-                .kind = ComputeResourceBindingKind::Sampler,
-            });
-        }
+            if (ntcActive) {
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kNeuralTextureLatentsBinding,
+                    .kind = ComputeResourceBindingKind::SampledImage,
+                    .descriptorCount = kMaxNeuralTextureSets,
+                });
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kNeuralTextureConstantsBinding,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
+                });
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kNeuralTextureWeightsBinding,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
+                });
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kNeuralTextureSetInfoBinding,
+                    .kind = ComputeResourceBindingKind::StorageBuffer,
+                });
+                baseBindings.push_back(ComputeProgramBindingDesc{
+                    .binding = kNeuralTextureSamplerBinding,
+                    .kind = ComputeResourceBindingKind::Sampler,
+                });
+            }
 
-        if (streamMaterials_) {
-            std::erase_if(baseBindings, [this](const auto& binding) {
-                return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
-            });
-        }
-        if (streamRayQueries_) {
-            for (uint32_t i = 90; i <= 93; ++i) { baseBindings.push_back({.binding = i}); }
-        }
-        if (hasValuePrograms()) {
-            baseBindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
+            if (streamMaterials_) {
+                std::erase_if(baseBindings, [this](const auto& binding) {
+                    return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
+                });
+            }
+            if (streamRayQueries_) {
+                for (uint32_t i = 90; i <= 93; ++i) { baseBindings.push_back({.binding = i}); }
+            }
+            if (hasValuePrograms()) {
+                baseBindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
+            }
         }
         auto compilePermutation =
             [&](PathTracePermutation permutation,
@@ -1164,6 +1168,7 @@ public:
                 const std::vector<ComputeProgramBindingDesc>& permutationBindings,
                 ComputeProgram& outProgram) -> Result<> {
             std::vector<SlangMacroDefine> defines{
+                {.name = "METALLIC_OPENPBR_TYPED", .value = typedOpenPBR ? "1" : "0"},
                 {.name = "METALLIC_CUSTOM_MATERIALS", .value = hasValuePrograms() ? "1" : "0"},
                 {.name = "METALLIC_STREAM_MATERIALS", .value = streamMaterials_ ? "1" : "0"},
                 {.name = "METALLIC_STREAM_RAY_QUERIES", .value = streamRayQueries_ ? "1" : "0"},
@@ -1207,18 +1212,22 @@ public:
             std::shared_ptr<const MaterialExecutableArtifact> artifact;
             const std::string debugName = std::string("ScenePathTracePass.") + toString(permutation);
             std::string diagnostics;
-            auto compiled = compileMaterialExecutable(*context.device,
-                {.moduleName = moduleName, .entryPointName = entryPointName,
-                    .searchPath = kTriangleShaderSearchPath, .additionalSearchPaths = additionalSearchPaths,
-                    .capabilities = capabilities, .macroDefines = defines},
-                {.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
-                    .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get()},
-                outProgram, artifact, diagnostics);
+            const SlangShaderDesc source{.moduleName = moduleName, .entryPointName = entryPointName,
+                .searchPath = kTriangleShaderSearchPath, .additionalSearchPaths = additionalSearchPaths,
+                .capabilities = capabilities, .macroDefines = defines};
+            auto compiled = typedOpenPBR
+                ? compileMaterialExecutable(*context.device, source,
+                    ComputeKernelDesc{.parameters = parameterAbi<OpenPBRPathTraceParameters>(kOpenPBRPathTraceABI),
+                        .debugName = debugName.c_str()}, openPBRProgram_, artifact, diagnostics)
+                : compileMaterialExecutable(*context.device, source,
+                    ComputeProgramDesc{.pushConstantSize = sizeof(ScenePathTracePush), .bindings = permutationBindings,
+                        .debugName = debugName.c_str(), .pipelineCache = deferredPipelineCache_.get()},
+                    outProgram, artifact, diagnostics);
             if (!diagnostics.empty()) { log += diagnostics + '\n'; }
             if (!compiled) {
                 // Reload creates replacement passes. Reject the entire transaction
                 // so a failure can never replace a previously successful graph.
-                if (context.shaderReload || outProgram.valid()) { return compiled; }
+                if (context.shaderReload || outProgram.valid() || openPBRProgram_.valid()) { return compiled; }
                 log += "Initial material compilation failed; displaying the error material.\n";
                 std::string errorLog;
                 auto fallback = initializeMaterialErrorProgram(*context.device, errorProgram_, errorLog);
@@ -1238,7 +1247,7 @@ public:
             return bindings;
         }();
 
-        if (!programs_[static_cast<size_t>(PathTracePermutation::Base)].valid()) {
+        if (!(typedOpenPBR ? openPBRProgram_.valid() : programs_[static_cast<size_t>(PathTracePermutation::Base)].valid())) {
             const SlangMacroDefine transmissionClass[] = {{"MATERIAL_CLASS", "4"}};
             result = compilePermutation(
                 PathTracePermutation::Base,
@@ -1634,7 +1643,7 @@ public:
         if (!color.valid() ||
             color.view() == nullptr ||
             renderProgram == nullptr ||
-            !renderProgram->valid() ||
+            (!renderProgram->valid() && !openPBRProgram_.valid()) ||
             !sceneResources_.valid() ||
             materialTextureViews[0] == nullptr ||
             environmentTextureView == nullptr ||
@@ -1816,265 +1825,269 @@ public:
         }
 
         profile.next("Prepare dispatch bindings");
-        std::vector<ComputeDispatchBinding> bindings{
-            ComputeDispatchBinding{.binding = 50, .buffer = lights_.buffer()},
-            ComputeDispatchBinding{
-                .binding = 0,
-                .accelerationStructure =
-                    context.inputAccelerationStructure("accelerationStructure")
-                        ? context.inputAccelerationStructure("accelerationStructure")
-                        : sceneResources_.accelerationStructure().accelerationStructure(),
-            },
-            ComputeDispatchBinding{
-                .binding = 1,
-                .textureView = color.view(),
-            },
-            ComputeDispatchBinding{
-                .binding = 2,
-                .buffer = sceneResources_.shadingVertexBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = 3,
-                .buffer = sceneResources_.indexBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = 4,
-                .buffer = sceneResources_.primitiveBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = 5,
-                .buffer = sceneResources_.instanceBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = 6,
-                .buffer = sceneResources_.materialBuffer(),
-            },
-            ComputeDispatchBinding{
-                .binding = 7,
-                .textureView = historyCurrentView,
-            },
-            ComputeDispatchBinding{
-                .binding = 8,
-                .textureView = historyPreviousView,
-            },
-            ComputeDispatchBinding{
-                .binding = 9,
-                .textureViews = materialTextureViews,
-                // Streaming publishes a new immutable snapshot after mip changes;
-                // completed descriptor tables reuse unchanged image bindings.
-                .sampledImages = visibilityDeferred_ ? sceneResources_.materialTextureSnapshot() : nullptr,
-            },
-            ComputeDispatchBinding{
-                .binding = 10,
-                .textureViews = {environmentTextureViews, static_cast<uint32_t>(std::size(environmentTextureViews))},
-            },
-            ComputeDispatchBinding{
-                .binding = kEnvironmentImportancePdfBinding,
-                .textureViews = {environmentImportancePdfViews, static_cast<uint32_t>(std::size(environmentImportancePdfViews))},
-            },
-        };
-        if (sceneResources_.fallbackPositionBuffer() != nullptr) {
-            bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
-        }
-        if (hasValuePrograms()) {
-            bindings.push_back({.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()});
-        }
-        if (streamMaterials_) {
-            std::erase_if(bindings, [this](const auto& binding) {
-                return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
-            });
-        }
-        if (realtime_) {
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,
-            });
-        }
-        if (compiledSupplementaryPathTracing_ || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
-            bindings.push_back({.binding = 52, .buffer = lights_.reGIRBuffer()});
-            bindings.push_back({.binding = 53, .textureViews = {punctualPdfViews, 1}});
-        }
         MaterialBinningResult materialBins;
         ScreenSpaceShadowResult shadow;
-        if (visibilityDeferred_) {
-            if (context.viewConstantsBuffer() != nullptr) {
-                bindings.push_back({.binding = 80, .buffer = context.viewConstantsBuffer()});
+        std::vector<ComputeDispatchBinding> bindings;
+        if (!openPBRProgram_.valid()) {
+            bindings = {
+                ComputeDispatchBinding{.binding = 50, .buffer = lights_.buffer()},
+                ComputeDispatchBinding{
+                    .binding = 0,
+                    .accelerationStructure =
+                        context.inputAccelerationStructure("accelerationStructure")
+                            ? context.inputAccelerationStructure("accelerationStructure")
+                            : sceneResources_.accelerationStructure().accelerationStructure(),
+                },
+                ComputeDispatchBinding{
+                    .binding = 1,
+                    .textureView = color.view(),
+                },
+                ComputeDispatchBinding{
+                    .binding = 2,
+                    .buffer = sceneResources_.shadingVertexBuffer(),
+                },
+                ComputeDispatchBinding{
+                    .binding = 3,
+                    .buffer = sceneResources_.indexBuffer(),
+                },
+                ComputeDispatchBinding{
+                    .binding = 4,
+                    .buffer = sceneResources_.primitiveBuffer(),
+                },
+                ComputeDispatchBinding{
+                    .binding = 5,
+                    .buffer = sceneResources_.instanceBuffer(),
+                },
+                ComputeDispatchBinding{
+                    .binding = 6,
+                    .buffer = sceneResources_.materialBuffer(),
+                },
+                ComputeDispatchBinding{
+                    .binding = 7,
+                    .textureView = historyCurrentView,
+                },
+                ComputeDispatchBinding{
+                    .binding = 8,
+                    .textureView = historyPreviousView,
+                },
+                ComputeDispatchBinding{
+                    .binding = 9,
+                    .textureViews = materialTextureViews,
+                    // Streaming publishes a new immutable snapshot after mip changes;
+                    // completed descriptor tables reuse unchanged image bindings.
+                    .sampledImages = visibilityDeferred_ ? sceneResources_.materialTextureSnapshot() : nullptr,
+                },
+                ComputeDispatchBinding{
+                    .binding = 10,
+                    .textureViews = {environmentTextureViews, static_cast<uint32_t>(std::size(environmentTextureViews))},
+                },
+                ComputeDispatchBinding{
+                    .binding = kEnvironmentImportancePdfBinding,
+                    .textureViews = {environmentImportancePdfViews, static_cast<uint32_t>(std::size(environmentImportancePdfViews))},
+                },
+            };
+            if (sceneResources_.fallbackPositionBuffer() != nullptr) {
+                bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
             }
-            const std::array<Buffer*, 5> gridBuffers{deferredGrid->parameters, deferredGrid->lights,
-                deferredGrid->candidates, deferredGrid->cells, deferredGrid->lightIndices};
-            for (uint32_t i = 0; i < gridBuffers.size(); ++i) {
-                bindings.push_back({.binding = 75 + i, .buffer = gridBuffers[i]});
+            if (hasValuePrograms()) {
+                bindings.push_back({.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()});
             }
-            if (context.properties().value("lightingMode", "reference") == "realtime") {
-                bindings.push_back({.binding = 74, .buffer = environment.prefilteredSpecularBuffer});
-                const auto externalShadow = context.inputTexture("shadow");
-                const auto externalParameters = context.inputBuffer("shadowParameters");
-                if (externalShadow.valid() != externalParameters.valid()) {
-                    spdlog::error("Deferred shadows require both shadow and shadowParameters inputs");
-                    return makeError(Error::InvalidArgument);
-                }
-                if (externalShadow.valid()) {
-                    if (externalShadow.desc().width != context.width() || externalShadow.desc().height != context.height() ||
-                        externalParameters.desc().size != sizeof(ScreenSpaceShadowParameters)) {
-                        return makeError(Error::InvalidArgument);
-                    }
-                    shadow = {.texture = externalShadow.texture(), .shadow = externalShadow.view(),
-                        .parameters = externalParameters.buffer()};
-                } else {
-                    CPUProfileScope shadowProfile(profiler, "Record inline shadows");
-                    // Preserve realtime graphs authored before the explicit shadow stage.
-                    if (context.streamer() == nullptr) { return makeError(Error::InvalidArgument); }
-                    ViewConstants shadowView{};
-                    if (const auto* view = context.viewConstants()) {
-                        shadowView = *view;
-                    } else {
-                        std::memcpy(&shadowView.current, push.eye, sizeof(ViewCameraConstants));
-                        std::memcpy(&shadowView.previous, push.previousEye, sizeof(ViewCameraConstants));
-                        shadowView.jitter[0] = push.jitterOffsetX;
-                        shadowView.jitter[1] = push.jitterOffsetY;
-                        shadowView.jitter[2] = previousShadowJitter_[0];
-                        shadowView.jitter[3] = previousShadowJitter_[1];
-                        shadowView.frame[0] = push.sampleFrame;
-                        shadowView.frame[1] = push.previousCameraValid;
-                        shadowView.frame[2] = push.temporalJitter;
-                    }
-                    const auto settings = screenSpaceShadowSettings(context.properties());
-                    const auto lightRecords = buildScreenSpaceShadowLightRecords(lightScene, resolvedLighting);
-                    std::string shadowLog;
-                    result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(), *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(), lightScene->transformRevision(), settings, shadowLog, &sceneResources_, streamMaterials_ ? deferredStream : nullptr, profiler, context.inputAccelerationStructure("accelerationStructure")).transform([&](auto value) { shadow = std::move(value); });
-                    if (!result) { spdlog::error("Ray-traced shadows: {} ({})", shadowLog, resultToString(result)); return result; }
-                    previousShadowJitter_ = {shadowView.jitter[0], shadowView.jitter[1]};
-                }
-                bindings.push_back({.binding = 81, .textureViews = {&shadow.shadow, 1}});
-                bindings.push_back({.binding = 82, .buffer = shadow.parameters});
-            }
-            if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
-                bindings.push_back({.binding = 72, .textureView = context.outputTexture("motionVectors").view()});
-                bindings.push_back({.binding = 73, .textureView = context.outputTexture("deviceDepth").view()});
-            }
-            bindings.push_back({.binding = 60, .textureViews = {&visibilityView, 1}});
-            bindings.push_back({.binding = 61, .textureViews = {&visibilityDepthView, 1}});
-            bindings.push_back({.binding = 88, .textureViews = {&domainView, 1}});
-            const GPUSceneBufferView* views[] = {&deferredViews->vertices, &deferredViews->meshlets,
-                &deferredViews->meshletDraws, &deferredViews->meshletVertices, &deferredViews->meshletTriangleWords,
-                &deferredViews->geometries, &deferredViews->instances, &deferredViews->materials};
-            for (uint32_t i = 0; i < std::size(views); ++i) {
-                const auto& view = views[i]->buffer ? *views[i] : deferredViews->geometries;
-                bindings.push_back({
-                    .binding = 62 + i,
-                    .buffer = view.buffer,
-                    .range = {.offset = view.offset, .size = view.size},
+            if (streamMaterials_) {
+                std::erase_if(bindings, [this](const auto& binding) {
+                    return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
                 });
             }
-            if (streamRayQueries_) {
-                if (deferredStream == nullptr || deferredStream->accelerationStructure == nullptr) {
-                    spdlog::error("Stream BLEND/transmission requires enableClusterRtx=true and a ready stream TLAS");
-                    return makeError(Error::InvalidArgument);
+            if (realtime_) {
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,
+                });
+            }
+            if (compiledSupplementaryPathTracing_ || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
+                bindings.push_back({.binding = 52, .buffer = lights_.reGIRBuffer()});
+                bindings.push_back({.binding = 53, .textureViews = {punctualPdfViews, 1}});
+            }
+            if (visibilityDeferred_) {
+                if (context.viewConstantsBuffer() != nullptr) {
+                    bindings.push_back({.binding = 80, .buffer = context.viewConstantsBuffer()});
                 }
-                auto* graphAcceleration = context.inputAccelerationStructure("accelerationStructure");
-                for (auto& binding : bindings) {
-                    if (binding.binding == 0) { binding.accelerationStructure = graphAcceleration
-                        ? graphAcceleration : deferredStream->accelerationStructure; }
+                const std::array<Buffer*, 5> gridBuffers{deferredGrid->parameters, deferredGrid->lights,
+                    deferredGrid->candidates, deferredGrid->cells, deferredGrid->lightIndices};
+                for (uint32_t i = 0; i < gridBuffers.size(); ++i) {
+                    bindings.push_back({.binding = 75 + i, .buffer = gridBuffers[i]});
                 }
-                bindings.push_back({.binding = 90, .buffer = deferredStream->pageBuffer});
-                bindings.push_back({.binding = 91, .buffer = deferredStream->pageTableBuffer});
-                bindings.push_back({.binding = 92, .buffer = deferredStream->instanceBuffer});
-                bindings.push_back({.binding = 93, .buffer = deferredStream->activeHeaderBuffer});
+                if (context.properties().value("lightingMode", "reference") == "realtime") {
+                    bindings.push_back({.binding = 74, .buffer = environment.prefilteredSpecularBuffer});
+                    const auto externalShadow = context.inputTexture("shadow");
+                    const auto externalParameters = context.inputBuffer("shadowParameters");
+                    if (externalShadow.valid() != externalParameters.valid()) {
+                        spdlog::error("Deferred shadows require both shadow and shadowParameters inputs");
+                        return makeError(Error::InvalidArgument);
+                    }
+                    if (externalShadow.valid()) {
+                        if (externalShadow.desc().width != context.width() || externalShadow.desc().height != context.height() ||
+                            externalParameters.desc().size != sizeof(ScreenSpaceShadowParameters)) {
+                            return makeError(Error::InvalidArgument);
+                        }
+                        shadow = {.texture = externalShadow.texture(), .shadow = externalShadow.view(),
+                            .parameters = externalParameters.buffer()};
+                    } else {
+                        CPUProfileScope shadowProfile(profiler, "Record inline shadows");
+                        // Preserve realtime graphs authored before the explicit shadow stage.
+                        if (context.streamer() == nullptr) { return makeError(Error::InvalidArgument); }
+                        ViewConstants shadowView{};
+                        if (const auto* view = context.viewConstants()) {
+                            shadowView = *view;
+                        } else {
+                            std::memcpy(&shadowView.current, push.eye, sizeof(ViewCameraConstants));
+                            std::memcpy(&shadowView.previous, push.previousEye, sizeof(ViewCameraConstants));
+                            shadowView.jitter[0] = push.jitterOffsetX;
+                            shadowView.jitter[1] = push.jitterOffsetY;
+                            shadowView.jitter[2] = previousShadowJitter_[0];
+                            shadowView.jitter[3] = previousShadowJitter_[1];
+                            shadowView.frame[0] = push.sampleFrame;
+                            shadowView.frame[1] = push.previousCameraValid;
+                            shadowView.frame[2] = push.temporalJitter;
+                        }
+                        const auto settings = screenSpaceShadowSettings(context.properties());
+                        const auto lightRecords = buildScreenSpaceShadowLightRecords(lightScene, resolvedLighting);
+                        std::string shadowLog;
+                        result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(), *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(), lightScene->transformRevision(), settings, shadowLog, &sceneResources_, streamMaterials_ ? deferredStream : nullptr, profiler, context.inputAccelerationStructure("accelerationStructure")).transform([&](auto value) { shadow = std::move(value); });
+                        if (!result) { spdlog::error("Ray-traced shadows: {} ({})", shadowLog, resultToString(result)); return result; }
+                        previousShadowJitter_ = {shadowView.jitter[0], shadowView.jitter[1]};
+                    }
+                    bindings.push_back({.binding = 81, .textureViews = {&shadow.shadow, 1}});
+                    bindings.push_back({.binding = 82, .buffer = shadow.parameters});
+                }
+                if (boolProperty(context.properties(), "exportUpscalerGuides", false)) {
+                    bindings.push_back({.binding = 72, .textureView = context.outputTexture("motionVectors").view()});
+                    bindings.push_back({.binding = 73, .textureView = context.outputTexture("deviceDepth").view()});
+                }
+                bindings.push_back({.binding = 60, .textureViews = {&visibilityView, 1}});
+                bindings.push_back({.binding = 61, .textureViews = {&visibilityDepthView, 1}});
+                bindings.push_back({.binding = 88, .textureViews = {&domainView, 1}});
+                const GPUSceneBufferView* views[] = {&deferredViews->vertices, &deferredViews->meshlets,
+                    &deferredViews->meshletDraws, &deferredViews->meshletVertices, &deferredViews->meshletTriangleWords,
+                    &deferredViews->geometries, &deferredViews->instances, &deferredViews->materials};
+                for (uint32_t i = 0; i < std::size(views); ++i) {
+                    const auto& view = views[i]->buffer ? *views[i] : deferredViews->geometries;
+                    bindings.push_back({
+                        .binding = 62 + i,
+                        .buffer = view.buffer,
+                        .range = {.offset = view.offset, .size = view.size},
+                    });
+                }
+                if (streamRayQueries_) {
+                    if (deferredStream == nullptr || deferredStream->accelerationStructure == nullptr) {
+                        spdlog::error("Stream BLEND/transmission requires enableClusterRtx=true and a ready stream TLAS");
+                        return makeError(Error::InvalidArgument);
+                    }
+                    auto* graphAcceleration = context.inputAccelerationStructure("accelerationStructure");
+                    for (auto& binding : bindings) {
+                        if (binding.binding == 0) { binding.accelerationStructure = graphAcceleration
+                            ? graphAcceleration : deferredStream->accelerationStructure; }
+                    }
+                    bindings.push_back({.binding = 90, .buffer = deferredStream->pageBuffer});
+                    bindings.push_back({.binding = 91, .buffer = deferredStream->pageTableBuffer});
+                    bindings.push_back({.binding = 92, .buffer = deferredStream->instanceBuffer});
+                    bindings.push_back({.binding = 93, .buffer = deferredStream->activeHeaderBuffer});
+                }
+                Buffer* fallback = deferredViews->geometries.buffer;
+                bindings.push_back({.binding = 94, .buffer = deferredStream ? deferredStream->paramsBuffer : fallback});
+                bindings.push_back({.binding = 95, .buffer = textureFeedback});
+                bindings.push_back({.binding = 96, .sampler = &materialSampler_});
+                const std::array streamBuffers{
+                    deferredStream ? deferredStream->visibleClusterBuffer : fallback,
+                    deferredStream ? deferredStream->activeGroupBuffer : fallback,
+                    deferredStream ? deferredStream->pageBuffer : fallback,
+                    deferredStream ? deferredStream->pageTableBuffer : fallback, deferredFrameInfo};
+                for (uint32_t i = 0; i < streamBuffers.size(); ++i) {
+                    bindings.push_back({.binding = 83 + i, .buffer = streamBuffers[i]});
+                }
+                if (materialBinningEnabled(context.properties())) {
+                    CPUProfileScope binningProfile(profiler, "Record material binning");
+                    std::string binningLog;
+                    result = materialBinning_.record(*device_, context.commandBuffer(), {
+                        .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer
+                            ? deferredViews->meshletDraws.buffer : fallback,
+                        .instances = deferredViews->instances.buffer, .materials = deferredViews->materials.buffer,
+                        .shadingMaterials = sceneResources_.materialBuffer(),
+                        .width = push.width, .height = push.height,
+                        .streamRecords = deferredStream ? deferredStream->visibleClusterBuffer : nullptr,
+                        .streamGroups = deferredStream ? deferredStream->activeGroupBuffer : nullptr,
+                        .residentRecordCount = info.residentRecordCount}, binningLog).transform([&](auto value) { materialBins = std::move(value); });
+                    if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
+                    bindings.push_back({.binding = 70, .buffer = materialBins.bins});
+                    bindings.push_back({.binding = 71, .buffer = materialBins.tiles});
+                }
             }
-            Buffer* fallback = deferredViews->geometries.buffer;
-            bindings.push_back({.binding = 94, .buffer = deferredStream ? deferredStream->paramsBuffer : fallback});
-            bindings.push_back({.binding = 95, .buffer = textureFeedback});
-            bindings.push_back({.binding = 96, .sampler = &materialSampler_});
-            const std::array streamBuffers{
-                deferredStream ? deferredStream->visibleClusterBuffer : fallback,
-                deferredStream ? deferredStream->activeGroupBuffer : fallback,
-                deferredStream ? deferredStream->pageBuffer : fallback,
-                deferredStream ? deferredStream->pageTableBuffer : fallback, deferredFrameInfo};
-            for (uint32_t i = 0; i < streamBuffers.size(); ++i) {
-                bindings.push_back({.binding = 83 + i, .buffer = streamBuffers[i]});
+            if (useOpenPBR) {
+                const auto& lut2DViews = openPBRLuts_.lut2DViews();
+                const auto& lut3DViews = openPBRLuts_.lut3DViews();
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kOpenPBRLut2DBinding,
+                    .textureViews = lut2DViews,
+                });
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kOpenPBRLut3DBinding,
+                    .textureViews = lut3DViews,
+                });
             }
-            if (materialBinningEnabled(context.properties())) {
-                CPUProfileScope binningProfile(profiler, "Record material binning");
-                std::string binningLog;
-                result = materialBinning_.record(*device_, context.commandBuffer(), {
-                    .visibility = visibilityView, .records = deferredViews->meshletDraws.buffer
-                        ? deferredViews->meshletDraws.buffer : fallback,
-                    .instances = deferredViews->instances.buffer, .materials = deferredViews->materials.buffer,
-                    .shadingMaterials = sceneResources_.materialBuffer(),
-                    .width = push.width, .height = push.height,
-                    .streamRecords = deferredStream ? deferredStream->visibleClusterBuffer : nullptr,
-                    .streamGroups = deferredStream ? deferredStream->activeGroupBuffer : nullptr,
-                    .residentRecordCount = info.residentRecordCount}, binningLog).transform([&](auto value) { materialBins = std::move(value); });
-                if (!result) { spdlog::error("Material binning: {}", binningLog); return result; }
-                bindings.push_back({.binding = 70, .buffer = materialBins.bins});
-                bindings.push_back({.binding = 71, .buffer = materialBins.tiles});
+            if (exportGuides) {
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kDLSSRRAlbedoBinding,
+                    .textureView = albedo.view(),
+                });
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kDLSSRRSpecularAlbedoBinding,
+                    .textureView = specularAlbedo.view(),
+                });
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kDLSSRRNormalRoughnessBinding,
+                    .textureView = normalRoughness.view(),
+                });
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kDLSSRRMotionVectorsBinding,
+                    .textureView = motionVectors.view(),
+                });
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kDLSSRRLinearDepthBinding,
+                    .textureView = linearDepth.view(),
+                });
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kDLSSRRSpecularHitDistanceBinding,
+                    .textureView = specularHitDistance.view(),
+                });
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kDLSSDepthBinding,
+                    .textureView = depth.view(),
+                });
             }
-        }
-        if (useOpenPBR) {
-            const auto& lut2DViews = openPBRLuts_.lut2DViews();
-            const auto& lut3DViews = openPBRLuts_.lut3DViews();
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kOpenPBRLut2DBinding,
-                .textureViews = lut2DViews,
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kOpenPBRLut3DBinding,
-                .textureViews = lut3DViews,
-            });
-        }
-        if (exportGuides) {
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRAlbedoBinding,
-                .textureView = albedo.view(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRSpecularAlbedoBinding,
-                .textureView = specularAlbedo.view(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRNormalRoughnessBinding,
-                .textureView = normalRoughness.view(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRMotionVectorsBinding,
-                .textureView = motionVectors.view(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRLinearDepthBinding,
-                .textureView = linearDepth.view(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSRRSpecularHitDistanceBinding,
-                .textureView = specularHitDistance.view(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kDLSSDepthBinding,
-                .textureView = depth.view(),
-            });
-        }
-        const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
-        if (neuralTextures.active()) {
-            const auto& latentViews = neuralTextures.latentTextureViews();
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureLatentsBinding,
-                .textureViews = latentViews,
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureConstantsBinding,
-                .buffer = neuralTextures.constantsBuffer(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureWeightsBinding,
-                .buffer = neuralTextures.weightsBuffer(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureSetInfoBinding,
-                .buffer = neuralTextures.setInfoBuffer(),
-            });
-            bindings.push_back(ComputeDispatchBinding{
-                .binding = kNeuralTextureSamplerBinding,
-                .sampler = &neuralTextures.latentSampler(),
-            });
-        }
+            const NeuralTextureResources& neuralTextures = sceneResources_.neuralTextures();
+            if (neuralTextures.active()) {
+                const auto& latentViews = neuralTextures.latentTextureViews();
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kNeuralTextureLatentsBinding,
+                    .textureViews = latentViews,
+                });
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kNeuralTextureConstantsBinding,
+                    .buffer = neuralTextures.constantsBuffer(),
+                });
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kNeuralTextureWeightsBinding,
+                    .buffer = neuralTextures.weightsBuffer(),
+                });
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kNeuralTextureSetInfoBinding,
+                    .buffer = neuralTextures.setInfoBuffer(),
+                });
+                bindings.push_back(ComputeDispatchBinding{
+                    .binding = kNeuralTextureSamplerBinding,
+                    .sampler = &neuralTextures.latentSampler(),
+                });
+            }
+
+        } // Legacy shared realtime/deferred/standard resource table.
 
         profile.next("Prepare radiance cache parameters");
         if (cacheMode != kScenePathTraceCacheModeOff) {
@@ -2123,6 +2136,57 @@ public:
             }
             const std::array stages{RenderGraphStage{visibilityDeferred_ ? "Deferred shading" : "Path trace shading", resources.uses,
                 [&](CommandBuffer& commands) -> Result<> {
+                    if (openPBRProgram_.valid()) {
+                        auto registry = device_->resourceRegistry();
+                        if (!registry) { return makeError(registry.error()); }
+                        ParameterWriter writer(*device_, **registry, commands.frameContext());
+                        OpenPBRPathTraceParameters params{};
+                        params.settings = writer.data(&push, sizeof(push));
+                        params.scene = writer.accelerationStructure(context.inputAccelerationStructure("accelerationStructure")
+                            ? context.inputAccelerationStructure("accelerationStructure")
+                            : sceneResources_.accelerationStructure().accelerationStructure());
+                        params.output = writer.storageImage(color.view());
+                        params.vertices = writer.dataBuffer(sceneResources_.shadingVertexBuffer(), 16, 8);
+                        params.indices = writer.dataBuffer(sceneResources_.indexBuffer(), 4, 4);
+                        params.primitives = writer.dataBuffer(sceneResources_.primitiveBuffer(), 32, 4);
+                        params.instances = writer.dataBuffer(sceneResources_.instanceBuffer(), 16, 4);
+                        if (sceneResources_.fallbackPositionBuffer()) {
+                            params.positions = writer.dataBuffer(sceneResources_.fallbackPositionBuffer(), 12, 4);
+                        }
+                        params.materials = writer.buffer(sceneResources_.materialBuffer());
+                        params.historyCurrent = writer.storageImage(historyCurrentView);
+                        params.historyPrevious = writer.storageImage(historyPreviousView);
+                        params.materialTextures = writer.sampledImages(materialTextureViews);
+                        params.environment = writer.sampledImage(environmentTextureView);
+                        params.environmentPdf = writer.sampledImage(environmentImportancePdfView);
+                        params.lut2D = writer.sampledImages(openPBRLuts_.lut2DViews());
+                        params.lut3D = writer.sampledImages(openPBRLuts_.lut3DViews());
+                        params.lights = writer.buffer(lights_.buffer());
+                        params.reGIR = writer.buffer(lights_.reGIRBuffer());
+                        params.punctualPdf = writer.sampledImage(lights_.lightPdfView());
+                        if (exportGuides) {
+                            params.albedo = writer.storageImage(albedo.view());
+                            params.specularAlbedo = writer.storageImage(specularAlbedo.view());
+                            params.normalRoughness = writer.storageImage(normalRoughness.view());
+                            params.motionVectors = writer.storageImage(motionVectors.view());
+                            params.linearDepth = writer.storageImage(linearDepth.view());
+                            params.specularHitDistance = writer.storageImage(specularHitDistance.view());
+                            params.depth = writer.storageImage(depth.view());
+                        }
+                        if (hasValuePrograms()) { params.materialValues = writer.buffer(sceneResources_.materialBinding()->valueBuffer()); }
+                        const auto& neural = sceneResources_.neuralTextures();
+                        if (neural.active()) {
+                            params.ntcLatents = writer.sampledImages(neural.latentTextureViews());
+                            params.ntcConstants = writer.buffer(neural.constantsBuffer());
+                            params.ntcWeights = writer.buffer(neural.weightsBuffer());
+                            params.ntcInfo = writer.buffer(neural.setInfoBuffer());
+                            params.ntcSampler = writer.sampler(neural.latentSampler());
+                        }
+                        auto encoded = writer.encode(params, kOpenPBRPathTraceABI);
+                        if (!encoded) { return makeError(encoded.error()); }
+                        return openPBRProgram_.dispatch(commands, *encoded,
+                            (context.width() + 7) / 8, (context.height() + 7) / 8);
+                    }
                     if (materialBins.arguments != nullptr) {
                         // Mixed tiles carry disjoint masks. Permutations share one immutable
                         // descriptor table, avoiding repeated scene texture writes per class.
@@ -2330,6 +2394,7 @@ private:
     void clearPrograms()
     {
         errorProgram_.clear();
+        openPBRProgram_.clear();
         materialArtifacts_.clear();
         for (ComputeProgram& program : classifiedPrograms_) { program.clear(); }
         for (ComputeProgram& program : programs_) {
@@ -3264,6 +3329,7 @@ private:
     Queue* graphicsQueue_ = nullptr;
     OpenPBRLutResources openPBRLuts_;
     std::array<ComputeProgram, static_cast<size_t>(PathTracePermutation::Count)> programs_;
+    ComputeKernel openPBRProgram_;
     ComputeKernel sharcClearProgram_;
     ComputeKernel sharcResolveProgram_;
     ComputeKernel tonemapProgram_;

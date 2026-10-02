@@ -143,14 +143,15 @@ std::shared_ptr<const MaterialValueProgramSet> MaterialValueProgramSet::create(
             sources.push_back(source);
         }
         result->source_ = "// Material Value ABI v1: generated, read-only, no coverage or texture sampling.\n"
-            "struct MaterialValueInstance { uint programId; uint reserved0; uint reserved1; uint reserved2; float4 parameters[4]; };\n";
+            "#ifndef METALLIC_MATERIAL_VALUE_INSTANCE_DEFINED\nstruct MaterialValueInstance { uint programId; uint reserved0; uint reserved1; uint reserved2; float4 parameters[4]; };\n#endif\n";
         for (auto& [source, id] : programs) {
             id = ++result->programCount_;
             result->manifests_.emplace_back();
             result->source_ += emitProgram(Json::parse(source), id, result->manifests_.back());
         }
+        result->source_ += "#ifndef METALLIC_LOAD_MATERIAL_VALUE\n#define METALLIC_LOAD_MATERIAL_VALUE(index) getResource<StructuredBuffer<MaterialValueInstance>>(97)[index]\n#endif\n";
         result->source_ += "PathTraceMaterial evaluateMaterialValue(uint materialIndex, float3 position, float3 geometryNormal, float2 uv, PathTraceMaterial material)\n{\n"
-            "    MaterialValueInstance instance = getResource<StructuredBuffer<MaterialValueInstance>>(97)[materialIndex];\n"
+            "    MaterialValueInstance instance = METALLIC_LOAD_MATERIAL_VALUE(materialIndex);\n"
             "    switch (instance.programId) {\n";
         for (const auto& [source, id] : programs) {
             const auto name = std::to_string(id);

@@ -1,4 +1,15 @@
+#ifndef METALLIC_OPENPBR_TYPED
+#define METALLIC_OPENPBR_TYPED 1
+#endif
+#if METALLIC_OPENPBR_TYPED
+#include "../../../Source/Runtime/Render/Core/OpenPBRPathTraceParameters.h"
+import ParameterRoot;
+#define gOpenPBRParameters getParameters<OpenPBRPathTraceParameters>()
+#define METALLIC_LOAD_MATERIAL_VALUE(index) resolveDescriptor(gOpenPBRParameters.materialValues)[index]
+#else
 import Core;
+#endif
+
 using Metallic;
 
 #define OPENPBR_LANGUAGE_TARGET_SLANG 1
@@ -10,9 +21,13 @@ using Metallic;
 #define OPENPBR_FEATURE_EnableMetallic true
 #define OPENPBR_GET_SPECIALIZATION_CONSTANT(name) OPENPBR_FEATURE_##name
 
+#if METALLIC_OPENPBR_TYPED
+#define gOpenPBRLut2D(index) resolveDescriptor(nonuniform(gOpenPBRParameters.lut2D[index]))
+#define gOpenPBRLut3D(index) resolveDescriptor(nonuniform(gOpenPBRParameters.lut3D[index]))
+#else
 #define gOpenPBRLut2D(index) getResourceArray<Texture2D<float4>>(11, index)
-
 #define gOpenPBRLut3D(index) getResourceArray<Texture3D<float4>>(12, index)
+#endif
 
 uint openPBRLut2DSlot(int lutId)
 {
@@ -672,8 +687,8 @@ float3 pathTraceOpenPBRWithPrimaryHit(
         if (!openPbrDebugFlag(push, kOpenPBRDebugDisableDirectLighting)) {
             uint punctualLightIndex;
             float punctualInverseSourcePdf;
-            if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
-                PunctualLightSample light = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), punctualLightIndex, hit.position);
+            if (selectPunctualLight(PunctualSamplingResources(gPathTraceLights, gPathTraceReGIR, gPathTracePunctualPdf), hit.position, seed, punctualLightIndex, punctualInverseSourcePdf)) {
+                PunctualLightSample light = samplePunctualLight(gPathTraceLights, punctualLightIndex, hit.position);
                 float3 weight = max(openpbr_get_sum_of_diffuse_specular(
                     evalOpenPBRMaterialProjected(prepared, light.direction)), float3(0.0));
                 if (luminanceMax(weight * light.illuminance) > 0.0) {
@@ -816,7 +831,7 @@ float3 pathTraceOpenPBR(Ray ray, RayCone rayCone, ScenePathTracePush push,
 [numthreads(8, 8, 1)]
 void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    ScenePathTracePush push = getConstants<ScenePathTracePush>();
+    ScenePathTracePush push = scenePathTraceSettings();
     uint2 pixel = dispatchThreadId.xy;
     if (pixel.x >= push.width || pixel.y >= push.height) {
         return;
@@ -849,7 +864,7 @@ void openPbrRayQueryPathTraceMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     if (debugViewEnabled) {
         color = saturate(color);
     } else if (push.outputLinear == 0u) {
-        color *= lightingExposure(getResource<StructuredBuffer<GPUPunctualLight>>(50));
+        color *= lightingExposure(gPathTraceLights);
         color = color / (color + float3(1.0, 1.0, 1.0));
         color = pow(max(color, float3(0.0, 0.0, 0.0)), 1.0 / 2.2);
         color = saturate(color);

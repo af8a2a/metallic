@@ -15,6 +15,7 @@ import NRDEncoding;
 using Metallic.Interop.NRDEncoding;
 import NeuralTextures;
 using Metallic.Interop.NeuralTextures;
+#include "../../Interop/NeuralTextureBindings.hlsli"
 
 #define gScene getResource<RaytracingAccelerationStructure>(0)
 
@@ -573,7 +574,8 @@ float4 loadMaterialTexture(
         uint2 dimensions;
         uint mipCount;
         if (!metallicNeuralTextureDimensions(
-                textureInfo.ntcTextureSetIndex,
+            sceneNeuralTextures(),
+            textureInfo.ntcTextureSetIndex,
                 push.ntcTextureSetCount,
                 0u,
                 dimensions,
@@ -585,6 +587,7 @@ float4 loadMaterialTexture(
             uint2(wrappedUv * float2(dimensions)),
             dimensions - uint2(1u, 1u)));
         return metallicSampleNeuralTexture(
+            sceneNeuralTextures(),
             textureInfo.ntcTextureSetIndex,
             push.ntcTextureSetCount,
             textureInfo.ntcChannelMapping,

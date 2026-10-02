@@ -5,8 +5,8 @@
 
 namespace metallic::render {
 
-// Compiled built-in target. These resource declarations are consumed by the
-// checked ComputeProgram encoder, not merely advisory compiler metadata.
+// Compiled built-in target. Legacy resources are consumed by ComputeProgram;
+// typed targets carry their parameter ABI and leave the legacy resource list empty.
 struct MaterialExecutableArtifact
 {
     uint64_t key = 0;
@@ -20,6 +20,9 @@ struct MaterialExecutableArtifact
 // retain old executables/parameters through the existing frame completion.
 Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source,
     const ComputeProgramDesc& layout, ComputeProgram& program,
+    std::shared_ptr<const MaterialExecutableArtifact>& artifact, std::string& log);
+Result<> compileMaterialExecutable(Device& device, const SlangShaderDesc& source,
+    const ComputeKernelDesc& layout, ComputeKernel& program,
     std::shared_ptr<const MaterialExecutableArtifact>& artifact, std::string& log);
 Result<> initializeMaterialErrorProgram(Device& device, ComputeProgram& program, std::string& log);
 

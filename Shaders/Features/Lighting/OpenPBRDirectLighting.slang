@@ -3,6 +3,7 @@ using Metallic;
 import Lighting;
 using Metallic.Lighting;
 
+#define METALLIC_OPENPBR_TYPED 0
 #include "../PathTracing/OpenPBRRayQueryPathTrace.slang"
 
 #define gEnvironmentIrradianceSH getResource<StructuredBuffer<float4>>(51)
