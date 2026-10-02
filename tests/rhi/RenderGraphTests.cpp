@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/StreamActiveBuildParameters.h"
+#include "Runtime/Render/Core/StreamTraversalParameters.h"
 #include "RHITest.h"
 #include "Editor/StreamSceneOpen.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -4871,11 +4873,6 @@ public:
         if (!testResult.passed) {
             return testResult;
         }
-        render::BindlessHandle residentPageHandle;
-        testResult = allocateStorageBuffer(*residentPageBuffer, "resident pages", residentPageHandle);
-        if (!testResult.passed) {
-            return testResult;
-        }
         render::BindlessHandle pageHandle;
         testResult = allocateStorageBuffer(*pageBuffer, "stream pages", pageHandle);
         if (!testResult.passed) {
@@ -4940,23 +4937,12 @@ public:
                 ": " +
                 compileResult.diagnostics);
         }
-        std::unique_ptr<render::ShaderModule> traversalShader;
-        result = device->createShaderModule(render::ShaderModuleDesc{
-            .spirv = compileResult.spirv,
-        }).transform([&](auto rhiValue) { traversalShader = std::move(rhiValue); });
-        if (!result || traversalShader == nullptr) {
-            return RHITestResult::fail(std::string("createShaderModule(traversal) returned ") + toString(result));
-        }
-
-        std::unique_ptr<render::ComputePipeline> pipeline;
-        result = device->createComputePipeline(render::ComputePipelineDesc{
-            .computeShader = {traversalShader.get(), "main"},
-            .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
-        }).transform([&](auto rhiValue) { pipeline = std::move(rhiValue); });
-        if (!result || pipeline == nullptr) {
-            return RHITestResult::fail(std::string("createComputePipeline(traversal) returned ") + toString(result));
-        }
+        render::ComputeKernel traversalKernel;
+        std::string traversalLog;
+        result = traversalKernel.initialize(*device, {.spirv = compileResult.spirv,
+            .parameters = render::parameterAbi<render::StreamTraversalParameters>(render::kStreamTraversalABI,
+                render::ParameterTransport::InlinePush)}, traversalLog);
+        if (!result) { return RHITestResult::fail(traversalLog); }
 
         render::ShaderCompileResult activeBuildCompileResult;
         result = render::compileSlangShaderToSpirv(render::SlangShaderDesc{
@@ -4971,23 +4957,11 @@ public:
                 ": " +
                 activeBuildCompileResult.diagnostics);
         }
-        std::unique_ptr<render::ShaderModule> activeBuildShader;
-        result = device->createShaderModule(render::ShaderModuleDesc{
-            .spirv = activeBuildCompileResult.spirv,
-        }).transform([&](auto rhiValue) { activeBuildShader = std::move(rhiValue); });
-        if (!result || activeBuildShader == nullptr) {
-            return RHITestResult::fail(std::string("createShaderModule(active build) returned ") + toString(result));
-        }
-
-        std::unique_ptr<render::ComputePipeline> activeBuildPipeline;
-        result = device->createComputePipeline(render::ComputePipelineDesc{
-            .computeShader = {activeBuildShader.get(), "main"},
-            .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = sizeof(render::MeshletStreamUserPush),
-        }).transform([&](auto rhiValue) { activeBuildPipeline = std::move(rhiValue); });
-        if (!result || activeBuildPipeline == nullptr) {
-            return RHITestResult::fail(std::string("createComputePipeline(active build) returned ") + toString(result));
-        }
+        render::ComputeKernel activeBuildKernel;
+        result = activeBuildKernel.initialize(*device, {.spirv = activeBuildCompileResult.spirv,
+            .parameters = render::parameterAbi<render::StreamActiveBuildParameters>(render::kStreamActiveBuildABI,
+                render::ParameterTransport::InlinePush)}, traversalLog);
+        if (!result) { return RHITestResult::fail(traversalLog); }
 
         std::unique_ptr<render::CommandPool> commandPool;
         result = device->createCommandPool(*queue).transform([&](auto rhiValue) { commandPool = std::move(rhiValue); });
@@ -5059,23 +5033,33 @@ public:
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
         commandBuffer->bindBindlessHeap(*bindlessHeap);
-        render::MeshletStreamUserPush push{
-            .pageBuffer = pageHandle.shaderIndex,
-            .activeGroupBuffer = activeGroupHandle.shaderIndex,
-            .pageTableBuffer = pageTableHandle.shaderIndex,
-            .paramsBuffer = paramsHandle.shaderIndex,
-            .requestBuffer = requestHandle.shaderIndex,
-            .residentPageBuffer = residentPageHandle.shaderIndex,
-            .activeHeaderBuffer = activeHeaderHandle.shaderIndex,
-            .instanceBuffer = instanceHandle.shaderIndex,
-            .primitiveBuffer = primitiveHandle.shaderIndex,
-            .lodLevelBuffer = lodLevelHandle.shaderIndex,
-            .groupBuffer = groupHandle.shaderIndex,
-            .nodeBuffer = nodeHandle.shaderIndex,
-            .drawIndirectBuffer = drawIndirectHandle.shaderIndex,
-            .traversalHeaderBuffer = traversalHeaderHandle.shaderIndex,
-            .traversalWorkBuffer = traversalWorkHandle.shaderIndex,
-            .traversalPhase = render::kMeshletStreamTraversalLoadPhase,
+        auto activeRegistry = device->resourceRegistry();
+        if (!activeRegistry) { return RHITestResult::fail("Missing active registry"); }
+        render::ParameterWriter activeWriter(*device, **activeRegistry);
+        render::StreamActiveBuildParameters activeParams{
+            .settings = activeWriter.dataBuffer(paramsBuffer.get(), sizeof(render::MeshletStreamGPUParams), 16),
+            .activeGroupBuffer = activeWriter.buffer(activeGroupBuffer.get()),
+            .activeHeaderBuffer = activeWriter.buffer(activeHeaderBuffer.get()),
+            .drawIndirectBuffer = activeWriter.buffer(drawIndirectBuffer.get()),
+            .groupBuffer = activeWriter.buffer(groupBuffer.get()),
+            .instanceBuffer = activeWriter.buffer(instanceBuffer.get()),
+            .lodLevelBuffer = activeWriter.buffer(lodLevelBuffer.get()),
+            .nodeBuffer = activeWriter.buffer(nodeBuffer.get()),
+            .pageBuffer = activeWriter.buffer(pageBuffer.get()),
+            .pageTableBuffer = activeWriter.buffer(pageTableBuffer.get()),
+            .primitiveBuffer = activeWriter.buffer(primitiveBuffer.get()),
+            .requestBuffer = activeWriter.buffer(requestBuffer.get()),
+            .traversalHeaderBuffer = activeWriter.buffer(traversalHeaderBuffer.get()),
+            .traversalWorkBuffer = activeWriter.buffer(traversalWorkBuffer.get()),
+        };
+        // No frame context in this low-level fixture: keep all packets until the fence completes.
+        std::vector<render::EncodedParameters> activePackets;
+        const auto recordActive = [&](uint32_t phase) -> render::Result<> {
+            activeParams.activeBuildPhase = phase;
+            auto encoded = activeWriter.encode(activeParams, render::kStreamActiveBuildABI, render::ParameterTransport::InlinePush);
+            if (!encoded) { return render::makeError(encoded.error()); }
+            activePackets.push_back(std::move(*encoded));
+            return activeBuildKernel.dispatch(*commandBuffer, activePackets.back(), 1);
         };
 
         std::array<render::BufferBarrierDesc, 7> activeBuildBarriers = {{
@@ -5126,10 +5110,7 @@ public:
             .buffers = activeBuildBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
-        if (auto commandResult = commandBuffer->bindExecution((activeBuildPipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-        push.activeBuildPhase = render::kMeshletStreamActiveBuildResetPhase;
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
+        if (auto recorded = recordActive(render::kMeshletStreamActiveBuildResetPhase); !recorded) { return RHITestResult::fail(render::resultToString(recorded)); }
 
         std::array<render::BufferBarrierDesc, 7> activePhaseBarriers = {{
             render::BufferBarrierDesc{
@@ -5179,32 +5160,38 @@ public:
             .buffers = activePhaseBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
 
-        push.activeBuildPhase = render::kMeshletStreamActiveBuildSeedPhase;
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
+        if (auto recorded = recordActive(render::kMeshletStreamActiveBuildSeedPhase); !recorded) { return RHITestResult::fail(render::resultToString(recorded)); }
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        push.activeBuildPhase = render::kMeshletStreamActiveBuildRunPhase;
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
+        if (auto recorded = recordActive(render::kMeshletStreamActiveBuildRunPhase); !recorded) { return RHITestResult::fail(render::resultToString(recorded)); }
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        push.activeBuildPhase = render::kMeshletStreamActiveBuildFinalizePhase;
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
+        if (auto recorded = recordActive(render::kMeshletStreamActiveBuildFinalizePhase); !recorded) { return RHITestResult::fail(render::resultToString(recorded)); }
 
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .buffers = activePhaseBarriers,
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->bindExecution((pipeline)->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-        push.traversalPhase = render::kMeshletStreamTraversalUnloadPhase;
-        push.activeBuildPhase = static_cast<uint32_t>(residentPageIds.size());
-        commandBuffer->pushBindlessData(&push, sizeof(push));
-        commandBuffer->dispatch(1, 1, 1);
+        auto traversalRegistry = device->resourceRegistry();
+        if (!traversalRegistry) { return RHITestResult::fail("Missing traversal registry"); }
+        render::ParameterWriter traversalWriter(*device, **traversalRegistry);
+        const render::StreamTraversalParameters traversalParams{
+            .settings = traversalWriter.dataBuffer(paramsBuffer.get(), sizeof(render::MeshletStreamGPUParams), 16),
+            .instances = traversalWriter.dataBuffer(instanceBuffer.get(), sizeof(render::MeshletStreamGPUInstance), 16),
+            .residentPages = traversalWriter.dataBuffer(residentPageBuffer.get(), 4, 4),
+            .primitives = traversalWriter.buffer(primitiveBuffer.get()), .groups = traversalWriter.buffer(groupBuffer.get()),
+            .nodes = traversalWriter.buffer(nodeBuffer.get()), .pageTable = traversalWriter.buffer(pageTableBuffer.get()),
+            .requests = traversalWriter.buffer(requestBuffer.get()), .phase = render::kMeshletStreamTraversalUnloadPhase,
+            .threadCount = static_cast<uint32_t>(residentPageIds.size()),
+        };
+        auto traversalEncoded = traversalWriter.encode(traversalParams, render::kStreamTraversalABI, render::ParameterTransport::InlinePush);
+        if (!traversalEncoded) { return RHITestResult::fail("Traversal parameter encoding failed"); }
+        if (auto dispatched = traversalKernel.dispatch(*commandBuffer, *traversalEncoded, 1); !dispatched) {
+            return RHITestResult::fail(render::resultToString(dispatched));
+        }
 
         std::array<render::BufferBarrierDesc, 6> readbackBarriers = {{
             render::BufferBarrierDesc{

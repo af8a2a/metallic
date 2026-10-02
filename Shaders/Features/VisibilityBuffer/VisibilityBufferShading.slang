@@ -218,8 +218,8 @@ struct GPUDrivenStreamDeferredParams
     float4 previousViewport;
     float4 previousClipOrtho;
     float lodPixelError;
-    uint lodTopologyBuffer;
-    uint lodStateBuffer;
+    uint reservedLODTopology;
+    uint reservedLODState;
     uint lodInstanceOffsetsOffset;
     float4 renderEye;
     float4 renderCenter;

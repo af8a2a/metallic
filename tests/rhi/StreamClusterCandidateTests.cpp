@@ -58,6 +58,7 @@ public:
             inputs[index]->unmap();
             return true;
         };
+        ComputeKernel candidateKernel;
         std::array<std::unique_ptr<ShaderModule>, 2> shaders;
         std::array<std::unique_ptr<ComputePipeline>, 2> pipelines;
         for (size_t i = 0; i < shaders.size(); ++i) {
@@ -68,6 +69,11 @@ public:
                 .searchPath = i == 0 ? PROJECT_SOURCE_DIR "/Shaders" : PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
             log = compiled.diagnostics;
             CANDIDATE_REQUIRE(result);
+            if (i == 0) {
+                CANDIDATE_REQUIRE(candidateKernel.initialize(*device, {.spirv = compiled.spirv,
+                    .parameters = parameterAbi<StreamCandidateParameters>(kStreamCandidateABI, ParameterTransport::InlinePush)}, log));
+                continue;
+            }
             CANDIDATE_REQUIRE(device->createShaderModule({
                 .spirv = compiled.spirv,
             }).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
@@ -149,10 +155,16 @@ public:
                 .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
             };
             if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            MeshletStreamUserPush push{.activeGroupBuffer = handles[1].shaderIndex, .activeHeaderBuffer = handles[0].shaderIndex,
-                .traversalPhase = test.phase, .rasterBindingsBuffer = handles[2].shaderIndex,
-                .hybridQueueBuffer = handles[6].shaderIndex, .hybridClusterBuffer = handles[5].shaderIndex};
-            CANDIDATE_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, *pipelines[0], push));
+            auto candidateRegistry = device->resourceRegistry();
+            if (!candidateRegistry) { return RHITestResult::fail("Missing candidate registry"); }
+            ParameterWriter candidateWriter(*device, **candidateRegistry, commands->frameContext());
+            const StreamCandidateParameters candidateParams{
+                .headers = candidateWriter.dataBuffer(inputs[0].get(), sizeof(MeshletStreamGPUActiveHeader), 16),
+                .groups = candidateWriter.dataBuffer(inputs[1].get(), sizeof(MeshletStreamGPUActiveGroup), 16),
+                .visibility = candidateWriter.buffer(inputs[3].get()), .late = test.phase,
+            };
+            CANDIDATE_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, candidateKernel, candidateWriter, candidateParams));
+            commands->bindBindlessHeap(*heap);
             const BufferBarrierDesc copies[] = {
                 {
                     .buffer = &rasterizer.clusterBuffer(),

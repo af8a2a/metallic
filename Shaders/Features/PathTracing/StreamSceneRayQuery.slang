@@ -24,12 +24,10 @@ bool streamRaySurface(uint instanceIndex, uint clusterId, uint triangle, float2 
     uint count, stride;
     gMaterials.GetDimensions(count, stride);
     if (instance.materialIndex >= count) { return false; }
-    uint pageIndex, cluster;
     float3 a, b, c;
-    if (!decodeStreamRayTriangle(scene, clusterId, triangle, pageIndex, cluster, a, b, c)) { return false; }
     float3 n[3]; float2 uv[3]; float4 tangents[3];
-    uint attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle,
-        StreamDataBuffer<uint>(scene.pages), StreamDataBuffer<uint2>(scene.pageTable), n, uv, tangents);
+    uint attributes;
+    if (!decodeStreamRaySurface(scene, clusterId, triangle, a, b, c, n, uv, tangents, attributes)) { return false; }
     float3 weights = float3(1.0 - bary.x - bary.y, bary);
     float3 localGeometry = safeTriangleNormal(b - a, c - a, float3(0, 1, 0));
     float3 localNormal = safeNormalize(n[0] * weights.x + n[1] * weights.y + n[2] * weights.z, localGeometry);

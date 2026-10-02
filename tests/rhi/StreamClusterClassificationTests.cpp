@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/StreamClassifyParameters.h"
 #include <limits>
 #include "RHITest.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
@@ -77,6 +78,8 @@ public:
             inputs[index]->flush(); inputs[index]->unmap();
             return {};
         };
+        ComputeKernel candidateKernel;
+        std::array<ComputeKernel, 2> classifyKernels;
         std::array<std::unique_ptr<ShaderModule>, 9> shaders;
         std::array<std::unique_ptr<ComputePipeline>, 9> pipelines;
         const char* entries[] = {"streamClusterPrepareMain", "streamClusterCullMain", "streamClusterBinMain", "referenceStreamClusterBinMain", "verifyStreamSoftwareLoadMain", "streamWorkloadResetMain", "streamWorkloadMain", "streamClusterBinP0Main", "streamClusterCullP0Main"};
@@ -91,6 +94,16 @@ public:
             }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });
             log = compiled.diagnostics;
             CLASSIFY_REQUIRE(result);
+            if (i == 0) {
+                CLASSIFY_REQUIRE(candidateKernel.initialize(*device, {.spirv = compiled.spirv,
+                    .parameters = parameterAbi<StreamCandidateParameters>(kStreamCandidateABI, ParameterTransport::InlinePush)}, log));
+                continue;
+            }
+            if (i == 2 || i == 7) {
+                CLASSIFY_REQUIRE(classifyKernels[i == 7 ? 1 : 0].initialize(*device, {.spirv = compiled.spirv,
+                    .parameters = parameterAbi<StreamClassifyParameters>(kStreamClassifyABI, ParameterTransport::InlinePush)}, log));
+                continue;
+            }
             CLASSIFY_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { shaders[i] = std::move(rhiValue); }));
             CLASSIFY_REQUIRE(device->createComputePipeline({
                 .computeShader = {shaders[i].get()},
@@ -120,6 +133,12 @@ public:
                         .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders",
                         .additionalSearchPaths = {additionalStatsPaths, 1},
                     }, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); }));
+                    if (std::strcmp(entry, "streamClusterBinMain") == 0 || std::strcmp(entry, "streamClusterBinP0Main") == 0) {
+                        ComputeKernel kernel;
+                        CLASSIFY_REQUIRE(kernel.initialize(*device, {.spirv = compiled.spirv,
+                            .parameters = parameterAbi<StreamClassifyParameters>(kStreamClassifyABI, ParameterTransport::InlinePush)}, log));
+                        continue;
+                    }
                     std::unique_ptr<ShaderModule> shader;
                     std::unique_ptr<ComputePipeline> pipeline;
                     CLASSIFY_REQUIRE(device->createShaderModule({.spirv = compiled.spirv}).transform([&](auto rhiValue) { shader = std::move(rhiValue); }));
@@ -302,7 +321,16 @@ public:
                         .requestBuffer = handles[Requests].shaderIndex, .activeHeaderBuffer = handles[Header].shaderIndex,
                         .traversalPhase = phase, .rasterBindingsBuffer = handles[Bindings].shaderIndex,
                         .hybridQueueBuffer = handles[13 + bufferSet * 2].shaderIndex, .hybridClusterBuffer = handles[12 + bufferSet * 2].shaderIndex};
-                    CLASSIFY_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, *pipelines[0], push));
+                    auto candidateRegistry = device->resourceRegistry();
+                    if (!candidateRegistry) { return RHITestResult::fail("Missing candidate registry"); }
+                    ParameterWriter candidateWriter(*device, **candidateRegistry, commands->frameContext());
+                    const StreamCandidateParameters candidateParams{
+                        .headers = candidateWriter.dataBuffer(inputs[Header].get(), sizeof(MeshletStreamGPUActiveHeader), 16),
+                        .groups = candidateWriter.dataBuffer(inputs[Groups].get(), sizeof(MeshletStreamGPUActiveGroup), 16),
+                        .visibility = candidateWriter.buffer(inputs[Visibility].get()), .late = phase,
+                    };
+                    CLASSIFY_REQUIRE(rasterizer.prepareStreamClusterCandidates(*commands, candidateKernel, candidateWriter, candidateParams));
+                    commands->bindBindlessHeap(*heap);
                     if (schedule != 0) {
                         if (auto commandResult = commands->bindExecution((pipelines[4])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                         commands->pushBindlessData(&push, sizeof(push));
@@ -331,6 +359,17 @@ public:
                         std::swap(queueCopy.before, queueCopy.after);
                         if (auto commandResult = commands->synchronize({.buffers = {&queueCopy, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     }
+                    ParameterWriter classifyWriter(*device, **candidateRegistry, commands->frameContext());
+                    const StreamClassifyParameters classifyParams{
+                        .settings = {classifyWriter.data(&params, sizeof(params), 16), 1, sizeof(params)},
+                        .groups = classifyWriter.dataBuffer(inputs[Groups].get(), sizeof(MeshletStreamGPUActiveGroup), 16),
+                        .pages = classifyWriter.dataBuffer(inputs[Pages].get(), 4, 4),
+                        .instances = classifyWriter.dataBuffer(inputs[Instances].get(), sizeof(GPUSceneGPUInstanceRecord), 16),
+                        .bins = classifyWriter.buffer(&rasterizer.clusterBuffer()),
+                        .tessellationEnabled = test.tessellation ? 1u : 0u,
+                    };
+                    auto classifyParameters = classifyWriter.encode(classifyParams, kStreamClassifyABI, ParameterTransport::InlinePush);
+                    if (!classifyParameters) { return RHITestResult::fail("Cannot encode classifier parameters"); }
                     if (measure) {
                         CLASSIFY_REQUIRE(commands->resetTimestampQueries(*timing, 0, timedDispatches * 2));
                         const BufferBarrierDesc tagsReady{
@@ -342,19 +381,21 @@ public:
                             // Swap AB/BA each pair to balance cache and clock drift.
                             const bool legacy = ((dispatch / 2 + dispatch % 2) & 1u) == 0u;
                             if (auto commandResult = commands->synchronize({.buffers = {&tagsReady, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                            if (auto commandResult = commands->bindExecution((pipelines[legacy ? 7 : 2])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                            commands->pushBindlessData(&push, sizeof(push));
                             CLASSIFY_REQUIRE(commands->writeTimestamp(*timing, dispatch * 2, PipelineStageBits::TopOfPipe));
-                            CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
+                            CLASSIFY_REQUIRE(classifyKernels[legacy ? 1 : 0].dispatchIndirect(*commands, *classifyParameters, rasterizer.candidateArguments()));
                             CLASSIFY_REQUIRE(commands->writeTimestamp(*timing, dispatch * 2 + 1, PipelineStageBits::BottomOfPipe));
                         }
                         if (auto commandResult = commands->synchronize({.buffers = {&tagsReady, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     }
-                    if (schedule == 0 || test.maxPixels != 0) {
-                        if (auto commandResult = commands->bindExecution((pipelines[schedule == 0 ? 3 : schedule == 1 ? 2 : 7])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
+                    if (schedule == 0) {
+                        CLASSIFY_REQUIRE(commands->bindExecution(pipelines[3]->execution()));
                         commands->pushBindlessData(&push, sizeof(push));
                         CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
+                    } else if (test.maxPixels != 0) {
+                        CLASSIFY_REQUIRE(classifyKernels[schedule == 1 ? 0 : 1].dispatchIndirect(
+                            *commands, *classifyParameters, rasterizer.candidateArguments()));
                     }
+                    commands->bindBindlessHeap(*heap);
                     if (schedule != 0) {
                         BufferBarrierDesc counterCopy{
                             .buffer = &rasterizer.clusterBuffer(),

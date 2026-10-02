@@ -30,4 +30,17 @@ bool decodeStreamRayTriangle(StreamSceneParameters scene, uint clusterId, uint t
         StreamDataBuffer<uint>(scene.pages), StreamDataBuffer<uint2>(scene.pageTable),
         scene.pages.length(), a, b, c);
 }
+// Keep optional attribute reads behind validation of the same triangle.
+bool decodeStreamRaySurface(StreamSceneParameters scene, uint clusterId, uint triangle,
+    out float3 a, out float3 b, out float3 c,
+    out float3 normals[3], out float2 uvs[3], out float4 tangents[3], out uint attributes)
+{
+    attributes = 0;
+    for (uint i = 0; i < 3; ++i) { normals[i] = float3(0); uvs[i] = float2(0); tangents[i] = float4(0); }
+    uint pageIndex, cluster;
+    if (!decodeStreamRayTriangle(scene, clusterId, triangle, pageIndex, cluster, a, b, c)) { return false; }
+    attributes = decodeStreamAttributesAtPage(pageIndex, cluster, triangle,
+        StreamDataBuffer<uint>(scene.pages), StreamDataBuffer<uint2>(scene.pageTable), normals, uvs, tangents);
+    return true;
+}
 #endif

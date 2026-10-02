@@ -321,14 +321,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
             auto registry = device.resourceRegistry();
             if (!registry) { return makeError(registry.error()); }
             ParameterWriter writer(device, **registry, commands.frameContext());
-            const StreamSceneParameters streamParams{
-                .pages = writer.dataBuffer(streamGeometry->pageBuffer, 4, 4),
-                .pageTable = writer.dataBuffer(streamGeometry->pageTableBuffer, 8, 8),
-                .instances = writer.dataBuffer(streamGeometry->instanceBuffer,
-                    sizeof(MeshletStreamGPUInstance), alignof(MeshletStreamGPUInstance)),
-                .header = writer.dataBuffer(streamGeometry->activeHeaderBuffer, 4, 4),
-            };
-            auto encoded = writer.encode(streamParams, kStreamSceneABI);
+            auto encoded = streamGeometry->encodeRayQueryParameters(writer);
             if (!encoded) { return makeError(encoded.error()); }
             result = encoded->bindResources(commands);
             if (!result) { return makeError(result.error()); }

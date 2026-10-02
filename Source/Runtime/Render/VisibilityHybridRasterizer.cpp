@@ -302,19 +302,22 @@ Result<> VisibilityHybridRasterizer::prepareClusterCandidates(CommandBuffer& com
 }
 
 Result<> VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffer& commands,
-    ComputePipeline& pipeline, MeshletStreamUserPush push)
+    const ComputeKernel& kernel, ParameterWriter& writer, StreamCandidateParameters params)
 {
-    if (auto commandResult = commands.bindExecution((pipeline).execution()); !commandResult) { return commandResult; }
-    // The prepare entry uses activeBuildPhase for setup/count/prefix/scatter.
+    params.bins = writer.buffer(clusterBuffer_.get());
+    params.arguments = writer.dataBuffer(candidateArguments_.get(), 4, 4);
+    // Each stage owns its inline setup/count/prefix/scatter parameters.
     // Only the small block-count prefix stays on a single workgroup.
     for (uint32_t phase = 0; phase < 4; ++phase) {
-        push.activeBuildPhase = phase;
-        commands.pushBindlessData(&push, sizeof(push));
+        params.stage = phase;
+        auto encoded = writer.encode(params, kStreamCandidateABI, ParameterTransport::InlinePush);
+        if (!encoded) { return makeError(encoded.error()); }
         if (phase == 0 || phase == 2) {
-            commands.dispatch(1);
+            auto result = kernel.dispatch(commands, *encoded, 1);
+            if (!result) { return result; }
             if (auto commandResult = prepareClusterCandidates(commands); !commandResult) { return commandResult; }
         } else {
-            const Result<> result = commands.dispatchIndirect(*candidateArguments_, kCandidateBuildArgumentsOffset);
+            const Result<> result = kernel.dispatchIndirect(commands, *encoded, *candidateArguments_, kCandidateBuildArgumentsOffset);
             if (!result) { return result; }
             const BufferBarrierDesc barriers[] = {
                 {

@@ -152,6 +152,11 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 `loadPathTraceTriangle` 在解引用前检查完整索引链，并用减法检查避免偏移溢出；fallback position 另查范围。
 无 guides 的 Standard/realtime/deferred 仍通过 ComputeProgram 的 DataBuffer 兼容表传递 span。
 
+[ResidentLODParameters.h](../Source/Runtime/Render/Core/ResidentLODParameters.h) 为 resident LOD 的
+reset/select/arguments/scatter 共用 184 字节 inline 参数，所有输入、输出及 scratch 使用有界 BDA span。
+CPU 直接消费 GPUScene buffer views，编码四个 prepared dispatch，保留阶段访问计划及 indirect consumer 同步；
+LOD 计算不注册 buffer descriptor，raster consumer 仍按自身接口保留 selection/arguments 句柄。
+
 [InstanceCullParameters.h](../Source/Runtime/Render/Core/InstanceCullParameters.h) 定义 resident 实例剔除/reset 的
 104 字节 inline 参数。settings 使用不可变 BDA 快照，instances、visibility、visible IDs 与 stream owner mask
 使用带范围的 span，counter/HZB 使用 canonical typed handle。CPU 按 early/late 选择 HZB，先准备 reset/cull
@@ -177,9 +182,10 @@ streaming deferred 外层保留 `ComputeProgram` 兼容入口；四个 span 已�
 ScreenSpaceShadows 的 CLAS alpha-mask 查询复用同一声明，通过 16 字节 `ShadowGeometryPush` 传递根地址，
 同步移除旧 90–94 绑定。主追踪 settings 为 272 字节 BDA 数据，不是原生 push constant。
 续射页容量直接来自 span，不再读取 slot 94 的参数块。共享 stream 解码通过静态泛型 reader 同时支持 descriptor 和 BDA；
-属性解码必须在相同三角形的范围校验成功后调用。
+CLAS surface 通过 `decodeStreamRaySurface` 统一执行三角形校验和属性解码，避免未校验的属性读取。
 `StreamSceneDecode.slang` 显式接收 `StreamSceneParameters`，供 CLAS ray-query 与 GPU 边界测试共用；
 实例读取检查地址、stride 和索引，三角形解码检查 header、cluster stride、页表及页数据范围。
+CPU 的 deferred 与 alpha shadow 共用 `encodeRayQueryParameters`，保持 span 布局、编码及资源保留一致。
 `StreamSceneRayQuery` 不再以宏捕获局部 push；法线和 TBN 仍保持 authored/world-space 语义。
 
 [PathTraceParameters.h](../Source/Runtime/Render/Core/PathTraceParameters.h) 为
@@ -239,3 +245,38 @@ session 内的重复导入由 Slang 去重；磁盘 SPIR-V 缓存仍按请求和
 
 参考：[Slang 模块与访问控制](https://shader-slang.org/slang/user-guide/modules.html)、
 [Slang 编译 API](https://shader-slang.org/docs/compilation-api/)。
+
+Streaming 页表初始化/更新使用共享 `StreamPageTableParameters`（32 字节 inline push）：
+`pages` 与 `patches` 均为有界 BDA span。每次更新由 `ParameterWriter` 保存独立 patch 快照，
+替代按 frame slot 复用的可变 upload buffer；提交前多次录制不会覆盖前一次数据。
+更新只修改 residency word，保留 `lastRequestFrame`；初始化清零两个 word。
+旧 update descriptor/header 已移除，legacy raster push 的对应字段暂保留为 reserved，保持其他入口偏移。
+
+Streaming traversal 使用共享 `StreamTraversalParameters`（96 字节 inline push），由 `ComputeKernel` 录制。
+设置与 resident page 列表为每次录制保留的 BDA 快照，instances 为有界 BDA；
+primitives/groups/nodes 及含原子操作的 page table/requests 通过 canonical typed handles
+传给现有共享遍历 helper。旧 resident-page upload ring 和 descriptor 已移除；
+该入口不再读取 `MeshletStreamUserPush`，其他尚未迁移的入口保持其 reserved 字段偏移。
+
+Streaming active build、cooperative LOD 与 distributed demand 共用 168 字节
+`StreamActiveBuildParameters` inline ABI。设置由 BDA 快照保留，资源统一为 canonical
+typed handles；阶段与 demand/统计/栅格裁剪启用标志显式传入。旧设置里的四个资源索引
+已变为 reserved，LOD topology/state/demand 的独立租约已移除，由参数包保留资源。
+三个入口使用 `ComputeKernel`，保留原阶段顺序、group barrier 与跨阶段同步。
+
+Streaming TLAS 输入使用 `StreamTLASParameters`（80 字节 inline push）：settings、
+instances、BLAS records、fallback addresses 与 output 全部为有界 BDA span。
+设置快照与输入/输出 allocation 由参数包保留；入口无需 buffer descriptor。
+旧 fallback-address/TLAS-output descriptor 已移除，原加速结构构建同步保持不变。
+Dynamic BLAS 地址表仍由尚未迁移的 BLAS 输入阶段写入，不属于该入口的读取资源。
+
+Streaming BLAS 输入构建使用 `StreamBLASParameters`（112 字节 inline push）与
+`ComputeKernel`。设置为 BDA 快照，所有缓冲使用 canonical typed handles，header
+和 uint4 扫描区共享同一资源；各阶段保留独立参数、缓存重置状态和 CLAS 发布版本。
+旧 BLAS/CLAS 专用租约与裸索引已移除，原生构建缓冲仍保留到提交完成。
+
+Streaming raster 候选压缩的 setup/count/prefix/scatter 共用
+`StreamCandidateParameters`（72 字节 inline push）。active header、groups 与间接参数
+使用 BDA span，bin 和 visibility 使用 typed handles；不再读取 raster bindings 中的
+visibility 裸索引。四个阶段通过 `ComputeKernel` 直接/间接录制，保留稳定顺序、
+容量溢出时整体硬件回退及早/晚重试语义。后续 cull/classify 入口仍待迁移。

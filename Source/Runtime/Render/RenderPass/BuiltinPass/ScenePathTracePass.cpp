@@ -1983,14 +1983,7 @@ public:
                     auto registry = device_->resourceRegistry();
                     if (!registry) { return makeError(registry.error()); }
                     ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
-                    const StreamSceneParameters streamParams{
-                        .pages = writer.dataBuffer(deferredStream->pageBuffer, 4, 4),
-                        .pageTable = writer.dataBuffer(deferredStream->pageTableBuffer, 8, 8),
-                        .instances = writer.dataBuffer(deferredStream->instanceBuffer,
-                            sizeof(MeshletStreamGPUInstance), alignof(MeshletStreamGPUInstance)),
-                        .header = writer.dataBuffer(deferredStream->activeHeaderBuffer, 4, 4),
-                    };
-                    auto encoded = writer.encode(streamParams, kStreamSceneABI);
+                    auto encoded = deferredStream->encodeRayQueryParameters(writer);
                     if (!encoded) { return makeError(encoded.error()); }
                     result = encoded->bindResources(context.commandBuffer());
                     if (!result) { return result; }

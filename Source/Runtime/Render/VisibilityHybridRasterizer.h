@@ -1,4 +1,6 @@
 #pragma once
+#include "Runtime/Render/Core/StreamCandidateParameters.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 
 #include "Runtime/Render/GAPI/RHI.h"
 #include <array>
@@ -23,9 +25,9 @@ public:
         Texture& depthTexture, TextureView& depth, bool softwareRasterized = false);
     Result<> beginClusters(CommandBuffer& commands, float maxPixels, bool reversedZ,
         uint32_t producerPixelBuffer, uint32_t inputCount, bool stream, bool compact = false, bool tessellation = false);
-    // beginClusters and the producer heap/bindings must be ready first.
-    Result<> prepareStreamClusterCandidates(CommandBuffer& commands, ComputePipeline& pipeline,
-        MeshletStreamUserPush push);
+    // beginClusters must publish the bin header before candidate preparation.
+    Result<> prepareStreamClusterCandidates(CommandBuffer& commands, const ComputeKernel& kernel,
+        ParameterWriter& writer, StreamCandidateParameters params);
     // Batch metadata culling, then dispatch geometry classification only for
     // survivors. Both kernels share the producer's bindless heap.
     Result<> cullStreamClusters(CommandBuffer& commands, ComputePipeline& pipeline,

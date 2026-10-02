@@ -27,12 +27,14 @@ void streamDataDecodeMain(uint3 id : SV_DispatchThreadID)
         if (id.x == 21) { p.stream.pageTable.stride = 4; }
         if (id.x == 22) { p.stream.header.data = &p.stream.header.data[1]; } // Padded fourth word is zero cluster stride.
         StreamRayInstance instance;
-        uint pageIndex = 0, localCluster = 0;
+        float3 normals[3]; float2 uvs[3]; float4 tangents[3];
+        uint attributes = 0;
         float3 a, b, c;
         bool valid = loadStreamRayInstance(p.stream, instanceIndex, instance);
-        if (valid) { valid = decodeStreamRayTriangle(p.stream, id.x == 23 ? 0xffffffffu : 0u, 0u,
-            pageIndex, localCluster, a, b, c); }
-        p.output.data[id.x] = valid && instance.materialIndex == 17u && pageIndex == 0u && localCluster == 0u &&
+        if (valid) { valid = decodeStreamRaySurface(p.stream, id.x == 23 ? 0xffffffffu : 0u, 0u,
+            a, b, c, normals, uvs, tangents, attributes); }
+        p.output.data[id.x] = valid && instance.materialIndex == 17u && attributes == 0u && all(normals[0] == float3(0)) && all(uvs[0] == float2(0)) &&
+            all(tangents[0] == float4(0)) &&
             all(a == float3(0)) && all(b == float3(1,0,0)) && all(c == float3(0,1,0)) ? 1u : 0u;
         return;
     }

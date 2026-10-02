@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/StreamClassifyParameters.h"
 #include "Runtime/Render/Core/StreamInstanceCullParameters.h"
 #include "Runtime/Render/Core/InstanceCullParameters.h"
 #include "Runtime/Render/Core/HZBParameters.h"
@@ -130,7 +131,6 @@ struct GPUDrivenPreviewFrameSlotResources {
     ResourceLease paramsHandle;
     ResourceLease lodSelectionHandle;
     ResourceLease lodArgumentsHandle;
-    ResourceLease lodScratchHandle;
     ResourceLease instanceVisibilityHandle;
     ResourceLease visibleInstanceIdsHandle;
     ResourceLease visibleInstanceCounterHandle;
@@ -142,7 +142,6 @@ struct GPUDrivenPreviewFrameSlotBindings {
     ResourceLease paramsHandle;
     ResourceLease lodSelectionHandle;
     ResourceLease lodArgumentsHandle;
-    ResourceLease lodScratchHandle;
     ResourceLease instanceVisibilityHandle;
     ResourceLease visibleInstanceIdsHandle;
     ResourceLease visibleInstanceCounterHandle;
@@ -939,7 +938,7 @@ public:
         }
         const auto& slot = frameSlotResources_[activeFrameSlot_];
         for (const auto& lease : {slot.paramsHandle, slot.lodSelectionHandle, slot.lodArgumentsHandle,
-             slot.lodScratchHandle, slot.instanceVisibilityHandle, slot.visibleInstanceIdsHandle,
+             slot.instanceVisibilityHandle, slot.visibleInstanceIdsHandle,
              slot.visibleInstanceCounterHandle, slot.visibleMeshletHandles[0], slot.visibleMeshletHandles[1],
              slot.indirectHandles[0], slot.indirectHandles[1]}) {
             retain(lease);
@@ -1007,8 +1006,7 @@ public:
         }});
         stages.push_back({"Resident LOD", {}, [&](CommandBuffer& commands) -> Result<> {
             auto lodResult = residentLods_[activeFrameSlot_]->record(commands, *registry_,
-                gpuSceneBindings_, lodView, adaptiveMeshletRange_, instanceCount_, lodGroupCount_,
-                slot.lodSelectionHandle, slot.lodArgumentsHandle, slot.lodScratchHandle,
+                gpuSceneSubsystem_->globalBufferViews(), lodView, adaptiveMeshletRange_, instanceCount_, lodGroupCount_,
                 autoLodFromProperties(properties()) ? UINT32_MAX : lodLevelFromProperties(properties()));
             if (!lodResult) { return lodResult; }
             if (context.debugEnabled()) {
@@ -1264,15 +1262,12 @@ private:
         for (auto& shader : streamWorkloadShaders_) { shader.reset(); }
         streamHybridPixelHandle_ = {};
         streamCandidateArgumentsHandle_ = {};
-        streamClusterPrepareShader_.reset();
-        streamClusterPreparePipeline_.reset();
-        streamClusterBinShader_.reset();
-        streamClusterBinP0Shader_.reset();
+        streamClusterPrepareKernel_.clear();
         streamClusterCullShader_.reset();
         streamClusterCullP0Shader_.reset();
         for (auto& shader : streamClusterRasterShaders_) { shader.reset(); }
-        streamClusterBinPipeline_.reset();
-        streamClusterBinP0Pipeline_.reset();
+        streamClusterBinKernel_.clear();
+        streamClusterBinP0Kernel_.clear();
         streamClusterCullPipeline_.reset();
         streamClusterCullP0Pipeline_.reset();
         for (auto& pipeline : streamClusterRasterPipelines_) { pipeline.reset(); }
@@ -1655,23 +1650,30 @@ private:
             return {};
         };
         if (hybridRasterizer_) {
-            result = createShader(device, kMeshletStreamShaderModuleName,
-                "streamClusterPrepareMain", false, streamClusterPrepareShader_, log);
-            if (result) { result = createStreamCompute(*streamClusterPrepareShader_, streamClusterPreparePipeline_, "cluster candidates"); }
+            auto candidateShader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
+                .entryPointName = "streamClusterPrepareMain", .searchPath = kMeshletStreamShaderSearchPath}, log);
+            if (!candidateShader) { return makeError(candidateShader.error()); }
+            result = streamClusterPrepareKernel_.initialize(device, {.spirv = candidateShader->spirv,
+                .parameters = parameterAbi<StreamCandidateParameters>(kStreamCandidateABI, ParameterTransport::InlinePush),
+                .pipelineCache = pipelineCache_.get()}, log);
             if (!result) { return result; }
             result = createShader(device, kMeshletStreamShaderModuleName,
                 "streamClusterCullMain", false, streamClusterCullShader_, log);
             if (result) { result = createStreamCompute(*streamClusterCullShader_, streamClusterCullPipeline_, "cluster cull"); }
             if (!result) { return result; }
             result = createShader(device, kMeshletStreamShaderModuleName,
-                "streamClusterBinMain", false, streamClusterBinShader_, log);
-            if (result) { result = createStreamCompute(*streamClusterBinShader_, streamClusterBinPipeline_, "cluster bin"); }
-            if (result) { result = createShader(device, kMeshletStreamShaderModuleName,
-                "streamClusterCullP0Main", false, streamClusterCullP0Shader_, log); }
+                "streamClusterCullP0Main", false, streamClusterCullP0Shader_, log);
             if (result) { result = createStreamCompute(*streamClusterCullP0Shader_, streamClusterCullP0Pipeline_, "P0 cluster cull"); }
-            if (result) { result = createShader(device, kMeshletStreamShaderModuleName,
-                "streamClusterBinP0Main", false, streamClusterBinP0Shader_, log); }
-            if (result) { result = createStreamCompute(*streamClusterBinP0Shader_, streamClusterBinP0Pipeline_, "P0 cluster bin"); }
+            for (auto [entry, kernel] : {std::pair{"streamClusterBinMain", &streamClusterBinKernel_},
+                     std::pair{"streamClusterBinP0Main", &streamClusterBinP0Kernel_}}) {
+                if (!result) { return result; }
+                auto shader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
+                    .entryPointName = entry, .searchPath = kMeshletStreamShaderSearchPath}, log);
+                if (!shader) { return makeError(shader.error()); }
+                result = kernel->initialize(device, {.spirv = shader->spirv,
+                    .parameters = parameterAbi<StreamClassifyParameters>(kStreamClassifyABI, ParameterTransport::InlinePush),
+                    .pipelineCache = pipelineCache_.get()}, log);
+            }
             const char* rasterEntries[] = {"streamClusterRasterMain", "streamClusterRasterLegacyMain", "streamClusterRasterPlaneMain", "streamClusterRasterCooperativeMain", "streamClusterRasterWorkBinsMain", "streamClusterRasterWorkControlMain", "streamClusterRasterGroup32Main", "streamClusterRasterGroup64Main", "streamClusterRasterGroup128Main"};
             for (size_t i=0; result && i<streamClusterRasterShaders_.size(); ++i) {
                 if (i >= 6) {
@@ -2881,10 +2883,15 @@ private:
             if (!result) { return result; }
             commandBuffer.bindBindlessHeap(*streamRuntime_->bindlessHeap());
             commandBuffer.beginDebugLabel({.name = "Hybrid raster: compact stream candidates"});
-            // The prepare entry uses this otherwise unused handle for its
-            // indirect dispatches; raster entries retain the queue contract.
-            push.hybridQueueBuffer = streamCandidateArgumentsHandle_.shaderIndex();
-            result = hybridRasterizer_->prepareStreamClusterCandidates(commandBuffer, *streamClusterPreparePipeline_, push);
+            ParameterWriter candidateWriter(*device_, *registry_, commandBuffer.frameContext());
+            const auto streamResources = streamRuntime_->deferredGpuResources();
+            const StreamCandidateParameters candidates{
+                .headers = candidateWriter.dataBuffer(streamResources.activeHeaderBuffer, sizeof(MeshletStreamGPUActiveHeader), 16),
+                .groups = candidateWriter.dataBuffer(streamResources.activeGroupBuffer, sizeof(MeshletStreamGPUActiveGroup), 16),
+                .visibility = candidateWriter.buffer(activeFrameResources().instanceVisibilityBuffer),
+                .late = push.traversalPhase,
+            };
+            result = hybridRasterizer_->prepareStreamClusterCandidates(commandBuffer, streamClusterPrepareKernel_, candidateWriter, candidates);
             commandBuffer.endDebugLabel();
             if (!result) { return result; }
             context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyCandidates" : "AfterStreamLateCandidates");
@@ -2894,6 +2901,7 @@ private:
             // depends on the cull stage removing all semantically forced HW.
             // Experimental until full-pass gains are established in scene profiles.
             const bool divertHardware = boolProperty(&properties(), "cullHardwareClassification", false);
+            push.hybridQueueBuffer = streamCandidateArgumentsHandle_.shaderIndex();
             result = hybridRasterizer_->cullStreamClusters(commandBuffer,
                 divertHardware ? *streamClusterCullPipeline_ : *streamClusterCullP0Pipeline_, push);
             push.hybridQueueBuffer = UINT32_MAX;
@@ -2903,9 +2911,15 @@ private:
             if (!forceHardware) {
                 binProfile.next("Soft/hard classification");
                 commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify stream clusters"});
-                if (auto commandResult = commandBuffer.bindExecution((divertHardware ? *streamClusterBinPipeline_ : *streamClusterBinP0Pipeline_).execution()); !commandResult) { return commandResult; }
-                commandBuffer.pushBindlessData(&push, sizeof(push));
-                result = commandBuffer.dispatchIndirect(hybridRasterizer_->candidateArguments());
+                ParameterWriter classifyWriter(*device_, *registry_, commandBuffer.frameContext());
+                const auto& instanceView = gpuSceneSubsystem_->globalBufferViews().instances;
+                auto instances = instanceView.buffer->slice({instanceView.offset, instanceView.size});
+                if (!instances) { return makeError(instances.error()); }
+                auto parameters = streamRuntime_->encodeClusterClassify(classifyWriter, &hybridRasterizer_->clusterBuffer(),
+                    classifyWriter.dataBuffer(*instances, sizeof(GPUSceneGPUInstanceRecord), 16), tessellationEnabled());
+                if (!parameters) { return makeError(parameters.error()); }
+                result = (divertHardware ? streamClusterBinKernel_ : streamClusterBinP0Kernel_).dispatchIndirect(
+                    commandBuffer, *parameters, hybridRasterizer_->candidateArguments());
                 commandBuffer.endDebugLabel();
                 if (!result) { return result; }
                 context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClassify" : "AfterStreamLateClassify");
@@ -3230,7 +3244,6 @@ private:
             }
             result = bindBuffer(bundle.residentLods[frameSlot]->selections(), bindings.lodSelectionHandle, "resident LOD selections");
             if (result) { result = bindBuffer(bundle.residentLods[frameSlot]->arguments(), bindings.lodArgumentsHandle, "resident LOD arguments"); }
-            if (result) { result = bindBuffer(bundle.residentLods[frameSlot]->scratch(), bindings.lodScratchHandle, "resident LOD scratch"); }
             if (!result) { return result; }
             if (resources.paramsBuffer == nullptr ||
                 resources.instanceVisibilityBuffer == nullptr ||
@@ -3510,7 +3523,6 @@ private:
             resources.paramsHandle = bindings.paramsHandle;
             resources.lodSelectionHandle = bindings.lodSelectionHandle;
             resources.lodArgumentsHandle = bindings.lodArgumentsHandle;
-            resources.lodScratchHandle = bindings.lodScratchHandle;
             resources.instanceVisibilityHandle = bindings.instanceVisibilityHandle;
             resources.visibleInstanceIdsHandle = bindings.visibleInstanceIdsHandle;
             resources.visibleInstanceCounterHandle = bindings.visibleInstanceCounterHandle;
@@ -4478,21 +4490,18 @@ private:
     ResourceLease streamHybridClusterHandle_;
     ResourceLease streamHybridPixelHandle_;
     ResourceLease streamCandidateArgumentsHandle_;
-    std::unique_ptr<ShaderModule> streamClusterPrepareShader_;
-    std::unique_ptr<ComputePipeline> streamClusterPreparePipeline_;
+    ComputeKernel streamClusterPrepareKernel_;
     std::unique_ptr<ShaderModule> clusterBinShader_;
     std::unique_ptr<ShaderModule> clusterCountShader_;
     std::unique_ptr<ShaderModule> clusterRasterShader_;
-    std::unique_ptr<ShaderModule> streamClusterBinShader_;
-    std::unique_ptr<ShaderModule> streamClusterBinP0Shader_;
     std::unique_ptr<ShaderModule> streamClusterCullShader_;
     std::unique_ptr<ShaderModule> streamClusterCullP0Shader_;
     std::array<std::unique_ptr<ShaderModule>, 9> streamClusterRasterShaders_;
     std::unique_ptr<ComputePipeline> clusterBinPipeline_;
     std::unique_ptr<ComputePipeline> clusterCountPipeline_;
     std::unique_ptr<ComputePipeline> clusterRasterPipeline_;
-    std::unique_ptr<ComputePipeline> streamClusterBinPipeline_;
-    std::unique_ptr<ComputePipeline> streamClusterBinP0Pipeline_;
+    ComputeKernel streamClusterBinKernel_;
+    ComputeKernel streamClusterBinP0Kernel_;
     std::unique_ptr<ComputePipeline> streamClusterCullPipeline_;
     std::unique_ptr<ComputePipeline> streamClusterCullP0Pipeline_;
     std::array<std::unique_ptr<ComputePipeline>, 9> streamClusterRasterPipelines_;

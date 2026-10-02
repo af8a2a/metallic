@@ -1,3 +1,12 @@
+#include "Runtime/Render/Core/StreamClassifyParameters.h"
+#include "Runtime/Render/Core/StreamCandidateParameters.h"
+#include "Runtime/Render/Core/StreamBLASParameters.h"
+#include "Runtime/Render/Core/StreamTLASParameters.h"
+#include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
+#include "Runtime/Render/Core/StreamActiveBuildParameters.h"
+#include "Runtime/Render/Core/StreamTraversalParameters.h"
+#include "Runtime/Render/Core/StreamPageTableParameters.h"
+#include "Runtime/Render/Core/ResidentLODParameters.h"
 #include "Runtime/Render/Core/StreamInstanceCullParameters.h"
 #include "Runtime/Render/Core/InstanceCullParameters.h"
 #include "Runtime/Render/Core/MaterialVisualizationParameters.h"
@@ -197,6 +206,14 @@ public:
             {"Metallic.SceneMaterialVisualizationPush", {FIELD(SceneMaterialVisualizationPush, eye), FIELD(SceneMaterialVisualizationPush, center), FIELD(SceneMaterialVisualizationPush, upProjection), FIELD(SceneMaterialVisualizationPush, viewport), FIELD(SceneMaterialVisualizationPush, clipOrtho), FIELD(SceneMaterialVisualizationPush, width), FIELD(SceneMaterialVisualizationPush, height), FIELD(SceneMaterialVisualizationPush, mode), FIELD(SceneMaterialVisualizationPush, materialTextureCount), FIELD(SceneMaterialVisualizationPush, bitangentFlip), FIELD(SceneMaterialVisualizationPush, ntcTextureSetCount), FIELD(SceneMaterialVisualizationPush, padding1), FIELD(SceneMaterialVisualizationPush, padding2)}},
             {"Metallic.InstanceCullParameters", {FIELD(InstanceCullParameters, settings), FIELD(InstanceCullParameters, instances), FIELD(InstanceCullParameters, visibility), FIELD(InstanceCullParameters, visibleIds), FIELD(InstanceCullParameters, streamOwners), FIELD(InstanceCullParameters, counter), FIELD(InstanceCullParameters, hzb), FIELD(InstanceCullParameters, phase), FIELD(InstanceCullParameters, padding)}},
             {"Metallic.StreamInstanceCullParameters", {FIELD(StreamInstanceCullParameters, settings), FIELD(StreamInstanceCullParameters, instances), FIELD(StreamInstanceCullParameters, visibility), FIELD(StreamInstanceCullParameters, visibleIds), FIELD(StreamInstanceCullParameters, counter), FIELD(StreamInstanceCullParameters, hzb), FIELD(StreamInstanceCullParameters, phase), FIELD(StreamInstanceCullParameters, width), FIELD(StreamInstanceCullParameters, height), FIELD(StreamInstanceCullParameters, mipCount), FIELD(StreamInstanceCullParameters, hzbValid), FIELD(StreamInstanceCullParameters, cullingFlags), FIELD(StreamInstanceCullParameters, displacementBound), FIELD(StreamInstanceCullParameters, padding)}},
+            {"Metallic.ResidentLODParameters", {FIELD(ResidentLODParameters, eye), FIELD(ResidentLODParameters, forward), FIELD(ResidentLODParameters, projection), FIELD(ResidentLODParameters, clusters), FIELD(ResidentLODParameters, records), FIELD(ResidentLODParameters, instances), FIELD(ResidentLODParameters, groups), FIELD(ResidentLODParameters, output), FIELD(ResidentLODParameters, arguments), FIELD(ResidentLODParameters, scratch), FIELD(ResidentLODParameters, offset), FIELD(ResidentLODParameters, count), FIELD(ResidentLODParameters, capacity), FIELD(ResidentLODParameters, instanceCount), FIELD(ResidentLODParameters, groupCount), FIELD(ResidentLODParameters, manualLevel)}},
+            {"Metallic.StreamPageTableParameters", {FIELD(StreamPageTableParameters, pages), FIELD(StreamPageTableParameters, patches)}},
+            {"Metallic.StreamTraversalParameters", {FIELD(StreamTraversalParameters, settings), FIELD(StreamTraversalParameters, instances), FIELD(StreamTraversalParameters, residentPages), FIELD(StreamTraversalParameters, primitives), FIELD(StreamTraversalParameters, groups), FIELD(StreamTraversalParameters, nodes), FIELD(StreamTraversalParameters, pageTable), FIELD(StreamTraversalParameters, requests), FIELD(StreamTraversalParameters, phase), FIELD(StreamTraversalParameters, threadCount)}},
+            {"Metallic.StreamActiveBuildParameters", {FIELD(StreamActiveBuildParameters, settings), FIELD(StreamActiveBuildParameters, activeGroupBuffer), FIELD(StreamActiveBuildParameters, activeHeaderBuffer), FIELD(StreamActiveBuildParameters, demandBuffer), FIELD(StreamActiveBuildParameters, demandStatsBuffer), FIELD(StreamActiveBuildParameters, drawIndirectBuffer), FIELD(StreamActiveBuildParameters, groupBuffer), FIELD(StreamActiveBuildParameters, instanceBuffer), FIELD(StreamActiveBuildParameters, lodLevelBuffer), FIELD(StreamActiveBuildParameters, lodStateBuffer), FIELD(StreamActiveBuildParameters, lodTopologyBuffer), FIELD(StreamActiveBuildParameters, nodeBuffer), FIELD(StreamActiveBuildParameters, pageBuffer), FIELD(StreamActiveBuildParameters, pageTableBuffer), FIELD(StreamActiveBuildParameters, primitiveBuffer), FIELD(StreamActiveBuildParameters, rasterBindingsBuffer), FIELD(StreamActiveBuildParameters, requestBuffer), FIELD(StreamActiveBuildParameters, traversalHeaderBuffer), FIELD(StreamActiveBuildParameters, traversalWorkBuffer), FIELD(StreamActiveBuildParameters, activeBuildPhase), FIELD(StreamActiveBuildParameters, flags)}},
+            {"Metallic.StreamTLASParameters", {FIELD(StreamTLASParameters, settings), FIELD(StreamTLASParameters, instances), FIELD(StreamTLASParameters, blasRecords), FIELD(StreamTLASParameters, fallbackAddresses), FIELD(StreamTLASParameters, output)}},
+            {"Metallic.StreamBLASParameters", {FIELD(StreamBLASParameters, settings), FIELD(StreamBLASParameters, activeGroupBuffer), FIELD(StreamBLASParameters, activeHeaderBuffer), FIELD(StreamBLASParameters, blasBuildInfoBuffer), FIELD(StreamBLASParameters, blasClusterReferenceBuffer), FIELD(StreamBLASParameters, blasHeaderBuffer), FIELD(StreamBLASParameters, clasAddressBuffer), FIELD(StreamBLASParameters, clasPageTableBuffer), FIELD(StreamBLASParameters, dynamicBlasAddressBuffer), FIELD(StreamBLASParameters, instanceBlasBuffer), FIELD(StreamBLASParameters, scratch), FIELD(StreamBLASParameters, activeBuildPhase), FIELD(StreamBLASParameters, traversalPhase), FIELD(StreamBLASParameters, clasPublicationRevision), FIELD(StreamBLASParameters, padding)}},
+            {"Metallic.StreamCandidateParameters", {FIELD(StreamCandidateParameters, headers), FIELD(StreamCandidateParameters, groups), FIELD(StreamCandidateParameters, arguments), FIELD(StreamCandidateParameters, bins), FIELD(StreamCandidateParameters, visibility), FIELD(StreamCandidateParameters, stage), FIELD(StreamCandidateParameters, late)}},
+            {"Metallic.StreamClassifyParameters", {FIELD(StreamClassifyParameters, settings), FIELD(StreamClassifyParameters, groups), FIELD(StreamClassifyParameters, pages), FIELD(StreamClassifyParameters, instances), FIELD(StreamClassifyParameters, bins), FIELD(StreamClassifyParameters, tessellationEnabled), FIELD(StreamClassifyParameters, padding)}},
         };
 #undef FIELD
         struct Program { const char* module; const char* entry; uint32_t layout; };
@@ -249,10 +266,26 @@ public:
             {"Features/GPUDriven/GPUDrivenCulling", "gpuDrivenPreviewInstanceCullMain", 31},
             {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetCullResetMain", 32},
             {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetInstanceCullMain", 32},
+            {"Features/GPUDriven/ResidentMeshletLOD", "residentLodResetMain", 33},
+            {"Features/GPUDriven/ResidentMeshletLOD", "residentLodSelectMain", 33},
+            {"Features/GPUDriven/ResidentMeshletLOD", "residentLodArgumentsMain", 33},
+            {"Features/GPUDriven/ResidentMeshletLOD", "residentLodScatterMain", 33},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetInitializePageTableMain", 34},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetApplyUpdatesMain", 34},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetTraversalMain", 35},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetBuildActiveMain", 36},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamCooperativeLodMain", 36},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamDistributedDemandMain", 36},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetBuildTlasInputMain", 37},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "gpuDrivenStreamAssetBuildBlasInputMain", 38},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterPrepareMain", 39},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterBinMain", 40},
+            {"Features/GPUDriven/GPUDrivenStreamAsset", "streamClusterBinP0Main", 40},
+
         };
         for (auto mode : {SlangDescriptorHeapMode::Mapped, SlangDescriptorHeapMode::Native}) {
             for (const auto& program : programs) {
-                if ((program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
+                if ((program.layout == 40 ? 26u : program.layout == 39 ? 25u : program.layout == 38 ? 24u : program.layout == 37 ? 23u : program.layout == 36 ? 22u : program.layout == 35 ? 21u : program.layout == 34 ? 20u : program.layout == 33 ? 19u : program.layout == 32 ? 18u : program.layout == 31 ? 17u : program.layout >= 29 ? 16u : program.layout == 28 ? 15u : program.layout == 27 ? 14u : program.layout == 26 ? 13u : program.layout >= 24 ? 12u : program.layout == 23 ? 11u : program.layout == 22 ? 10u : program.layout == 21 ? 9u : program.layout == 20 ? 8u : program.layout == 19 ? 7u : program.layout == 18 ? 6u : program.layout >= 16 ? 5u : program.layout >= 14 ? 0u : program.layout >= 13 ? 4u : program.layout >= 11 ? 3u : program.layout >= 9 ? 2u : program.layout >= 4 ? 1u : 0u) != category) { continue; }
                 const SlangMacroDefine defines[] = {{"FINAL_USE_LUT", "1"}};
                 const char* capabilities[] = {"spvRayQueryKHR"};
                 std::span<const char* const> extraPaths;
@@ -299,7 +332,7 @@ public:
                 if (!matched) { return RHITestResult::fail(std::string(program.entry) + ": C++/SPIR-V parameter offsets disagree"); }
                 bool sharedHeader = false;
                 for (const auto& dependency : shader->dependencies) {
-                    sharedHeader |= dependency.ends_with(category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
+                    sharedHeader |= dependency.ends_with(category == 26 ? "StreamClassifyParameters.h" : category == 25 ? "StreamCandidateParameters.h" : category == 24 ? "StreamBLASParameters.h" : category == 23 ? "StreamTLASParameters.h" : category == 22 ? "StreamActiveBuildParameters.h" : category == 21 ? "StreamTraversalParameters.h" : category == 20 ? "StreamPageTableParameters.h" : category == 19 ? "ResidentLODParameters.h" : category == 18 ? "StreamInstanceCullParameters.h" : category == 17 ? "InstanceCullParameters.h" : category == 16 ? "MaterialVisualizationParameters.h" : category == 15 ? "StreamDeferredParameters.h" : category == 14 ? "StreamCompositeParameters.h" : category == 13 ? "MaterialRasterParameters.h" : category == 12 ? "BunnyWireframeParameters.h" : category == 11 ? "RenderGraphBufferParameters.h" : category == 10 ? "ImageSampleParameters.h" : category == 9 ? "DebugProbeParameters.h" : category == 8 ? "MaterialErrorParameters.h" : category == 7 ? "VisibilityMaterialParameters.h" : category == 6 ? "MaterialSampleParameters.h" : category == 5 ? "DebugVisualizationParameters.h" : category == 4 ? "PathTraceParameters.h" : category == 3 ? "PathTraceStageParameters.h" : category == 2 ? "RTXDIPostProcessParameters.h" : category == 1 ? "LightingKernelParameters.h" : "PostProcessParameters.h");
                 }
                 REG_CHECK(sharedHeader); // Layout edits must invalidate the shader cache.
             }
@@ -418,6 +451,13 @@ public:
     StreamInstanceCullParameterLayoutTest() { category = 18; name = "stream_instance_cull_parameter_spirv_layout"; }
 };
 METALLIC_REGISTER_RHI_TEST(StreamInstanceCullParameterLayoutTest);
+
+class ResidentLODParameterLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    ResidentLODParameterLayoutTest() { category = 19; name = "resident_lod_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(ResidentLODParameterLayoutTest);
+
 
 
 
@@ -1326,6 +1366,238 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(UpscalerGuideInlineTest);
+
+class StreamCandidateLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamCandidateLayoutTest() { category = 25; name = "stream_candidate_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamCandidateLayoutTest);
+
+class StreamClassifyLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamClassifyLayoutTest() { category = 26; name = "stream_classify_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamClassifyLayoutTest);
+
+
+class StreamBLASLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamBLASLayoutTest() { category = 24; name = "stream_blas_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamBLASLayoutTest);
+
+class StreamTLASLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamTLASLayoutTest() { category = 23; name = "stream_tlas_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamTLASLayoutTest);
+
+class StreamTLASInputTest final : public RHITest {
+public:
+    StreamTLASInputTest() { type = RHITestType::Resource; name = "stream_tlas_inline_inputs"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Stream TLAS inputs",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { device = std::move(value); }));
+        auto& queue = *device->getQueue(QueueType::Graphics);
+        auto registry = device->resourceRegistry();
+        REG_CHECK(registry);
+        ComputeKernel kernel;
+        std::string log;
+        auto shader = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,
+            .entryPointName = kMeshletStreamTLASInputEntryPoint, .searchPath = kMeshletStreamShaderSearchPath}, log);
+        if (!shader) { return RHITestResult::fail(log); }
+        REG_REQUIRE(kernel.initialize(*device, {.spirv = shader->spirv,
+            .parameters = parameterAbi<StreamTLASParameters>(kStreamTLASABI, ParameterTransport::InlinePush)}, log));
+        std::unique_ptr<Buffer> output;
+        REG_REQUIRE(device->createBuffer({.size = 8 * 64, .structureStride = 64,
+            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostReadback})
+            .transform([&](auto value) { output = std::move(value); }));
+        auto* initial = output->map();
+        REG_CHECK(initial);
+        std::memset(initial, 0xcd, 8 * 64);
+        output->flush(); output->unmap();
+        QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(*device, queue));
+        Commands recording;
+        REG_REQUIRE(recording.initialize(*device, queue));
+        REG_REQUIRE(recording.begin(0));
+        {
+            MeshletStreamGPUParams settings{};
+            settings.sceneInstanceCount = 7; settings.scenePrimitiveCount = 1;
+            settings.blasStorageAddressLow = 0xfffffff0u; settings.blasStorageAddressHigh = 4;
+            std::array<MeshletStreamGPUInstance, 7> instances{};
+            for (auto& instance : instances) {
+                instance.visible = 1;
+                for (uint32_t component = 0; component < 4; ++component) {
+                    instance.world0[component] = float(component + 1);
+                    instance.world1[component] = float(component + 5);
+                    instance.world2[component] = float(component + 9);
+                    instance.world3[component] = float(component + 13);
+                }
+            }
+            instances[2].visible = 0;
+            instances[4].primitiveIndex = 99;
+            std::array<MeshletStreamGPUInstanceBLAS, 6> records{};
+            for (auto& record : records) {
+                record.flags = 2; record.selectedClusterCount = record.insertedClusterCount = 1;
+                record.cachedValid = 1; record.storageCapacity = 256; record.storageOffset = 32;
+            }
+            records[1].flags = 1; // Explicit fallback.
+            records[3].flags = 6; // Overflow invalidates an otherwise ready dynamic BLAS.
+            records[4].flags = 0; // Invalid primitive must not read fallback memory.
+            records[5].insertedClusterCount = 0; // Incomplete dynamic build uses fallback.
+            const uint64_t fallback = 0x1122334455667788ull;
+            ParameterWriter writer(*device, **registry, &recording.frame);
+            StreamTLASParameters params{
+                .settings = {writer.data(&settings, sizeof(settings), 16), 1, sizeof(settings)},
+                .instances = {writer.data(instances.data(), sizeof(instances), 16), 7, sizeof(instances[0])},
+                .blasRecords = {writer.data(records.data(), sizeof(records), 16), 6, sizeof(records[0])},
+                .fallbackAddresses = {writer.data(&fallback, sizeof(fallback), 8), 1, 8},
+                .output = writer.dataBuffer(output.get(), 64, 16),
+            };
+            auto encoded = writer.encode(params, kStreamTLASABI, ParameterTransport::InlinePush);
+            REG_CHECK(encoded);
+            REG_REQUIRE(kernel.dispatch(*recording.commands, *encoded, 1));
+        }
+        const MemoryBarrierDesc hostRead{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            {PipelineStageBits::Host, AccessBits::HostRead}};
+        REG_REQUIRE(recording.commands->synchronize({.memory = {&hostRead, 1}}));
+        std::unique_ptr<Semaphore> gate;
+        REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+        Drain drain{queue, *gate};
+        REG_REQUIRE(recording.submit(tracker, *gate));
+        REG_REQUIRE(gate->signal(1));
+        REG_REQUIRE(recording.frame.wait(5'000'000'000ull));
+        output->invalidate();
+        const auto* mapped = static_cast<const uint32_t*>(output->map());
+        REG_CHECK(mapped);
+        std::array<uint32_t, 128> actual;
+        std::memcpy(actual.data(), mapped, sizeof(actual)); output->unmap();
+        for (uint32_t i = 0; i < 6; ++i) {
+            for (uint32_t row = 0; row < 3; ++row) {
+                for (uint32_t column = 0; column < 4; ++column) {
+                    const float expected = float(row + column * 4 + 1);
+                    uint32_t bits; std::memcpy(&bits, &expected, sizeof(bits));
+                    REG_CHECK(actual[i * 16 + row * 4 + column] == bits);
+                }
+            }
+            REG_CHECK(actual[i * 16 + 12] == (i | ((i == 2 || i == 4) ? 0u : 0xff000000u)));
+            REG_CHECK(actual[i * 16 + 13] == 0);
+            REG_CHECK(actual[i * 16 + 14] == (i == 0 || i == 2 ? 16u : i == 4 ? 0u : 0x55667788u));
+            REG_CHECK(actual[i * 16 + 15] == (i == 0 || i == 2 ? 5u : i == 4 ? 0u : 0x11223344u));
+        }
+        for (uint32_t i = 6 * 16; i < actual.size(); ++i) { REG_CHECK(actual[i] == 0xcdcdcdcdu); }
+        REG_CHECK((*registry)->stats().descriptorWrites == 0);
+        return RHITestResult::pass("TLAS transforms, address carry, dynamic/fallback/hidden/overflow/incomplete cases, BDA bounds and submission lifetime; zero descriptors");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamTLASInputTest);
+
+class StreamActiveBuildLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamActiveBuildLayoutTest() { category = 22; name = "stream_active_build_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamActiveBuildLayoutTest);
+
+class StreamTraversalLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamTraversalLayoutTest() { category = 21; name = "stream_traversal_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamTraversalLayoutTest);
+
+class StreamPageTableLayoutTest final : public PostProcessParameterLayoutTest {
+public:
+    StreamPageTableLayoutTest() { category = 20; name = "stream_page_table_parameter_spirv_layout"; }
+};
+METALLIC_REGISTER_RHI_TEST(StreamPageTableLayoutTest);
+
+class StreamPageTableInlineTest final : public RHITest {
+public:
+    StreamPageTableInlineTest() { type = RHITestType::Resource; name = "stream_page_table_inline_snapshots"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        bench::TestDevice device;
+        REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Stream page snapshots",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
+            .transform([&](auto value) { device = std::move(value); }));
+        auto& queue = *device->getQueue(QueueType::Graphics);
+        auto registry = device->resourceRegistry();
+        REG_CHECK(registry);
+        std::array<ComputeKernel, 2> kernels;
+        const char* entries[] = {"gpuDrivenStreamAssetInitializePageTableMain", "gpuDrivenStreamAssetApplyUpdatesMain"};
+        std::string log;
+        for (size_t i = 0; i < kernels.size(); ++i) {
+            auto shader = compileSlangShaderToSpirv({.moduleName = "Features/GPUDriven/GPUDrivenStreamAsset",
+                .entryPointName = entries[i], .searchPath = PROJECT_SOURCE_DIR "/Shaders"}, log);
+            if (!shader) { return RHITestResult::fail(log); }
+            REG_REQUIRE(kernels[i].initialize(*device, {.spirv = shader->spirv,
+                .parameters = parameterAbi<StreamPageTableParameters>(kStreamPageTableABI, ParameterTransport::InlinePush)}, log));
+        }
+        std::array<std::unique_ptr<Buffer>, 2> outputs;
+        for (size_t i = 0; i < outputs.size(); ++i) {
+            REG_REQUIRE(makeBuffer(*device, outputs[i]));
+            auto* words = static_cast<uint32_t*>(outputs[i]->map());
+            REG_CHECK(words);
+            for (uint32_t page = 0; page < 8; ++page) {
+                words[page * 2] = 0xffffffffu;
+                words[page * 2 + 1] = 73u + page;
+            }
+            outputs[i]->flush();
+            outputs[i]->unmap();
+        }
+        QueueSubmissionTracker tracker;
+        REG_REQUIRE(tracker.initialize(*device, queue));
+        Commands recording;
+        REG_REQUIRE(recording.initialize(*device, queue));
+        REG_REQUIRE(recording.begin(0));
+        const MemoryBarrierDesc compute{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            {PipelineStageBits::ComputeShader, AccessBits::ShaderRead | AccessBits::ShaderWrite}};
+        for (uint32_t stage = 0; stage < 4; ++stage) {
+            ParameterWriter writer(*device, **registry, &recording.frame);
+            // Reuse and overwrite host storage after encoding; each packet must own its bytes.
+            std::array<std::array<uint32_t, 2>, 3> patches{{{2u, stage == 1 ? 17u : 0u}, {5u, 29u}, {99u, 91u}}};
+            StreamPageTableParameters params{.pages = writer.dataBuffer(outputs[stage == 0 ? 0 : 1].get(), 8, 8)};
+            if (stage != 0) {
+                params.patches = {writer.data(patches.data(), sizeof(patches), 8), stage == 2 ? 1u : 3u, 8};
+                if (stage == 3) { params.patches.count = 0; }
+            }
+            auto encoded = writer.encode(params, kStreamPageTableABI, ParameterTransport::InlinePush);
+            REG_CHECK(encoded);
+            patches = {};
+            REG_REQUIRE(kernels[stage == 0 ? 0 : 1].dispatch(*recording.commands, *encoded, 1));
+            REG_REQUIRE(recording.commands->synchronize({.memory = {&compute, 1}}));
+        }
+        const MemoryBarrierDesc hostRead{{PipelineStageBits::ComputeShader, AccessBits::ShaderWrite},
+            {PipelineStageBits::Host, AccessBits::HostRead}};
+        REG_REQUIRE(recording.commands->synchronize({.memory = {&hostRead, 1}}));
+        std::unique_ptr<Semaphore> gate;
+        REG_REQUIRE(device->createSemaphore().transform([&](auto value) { gate = std::move(value); }));
+        Drain drain{queue, *gate};
+        REG_REQUIRE(recording.submit(tracker, *gate));
+        REG_REQUIRE(gate->signal(1));
+        REG_REQUIRE(recording.frame.wait(5'000'000'000ull));
+        for (size_t i = 0; i < outputs.size(); ++i) {
+            outputs[i]->invalidate();
+            const auto* mapped = static_cast<const uint32_t*>(outputs[i]->map());
+            REG_CHECK(mapped);
+            std::array<uint32_t, 16> actual;
+            std::memcpy(actual.data(), mapped, sizeof(actual));
+            outputs[i]->unmap();
+            for (uint32_t page = 0; page < 8; ++page) {
+                REG_CHECK(actual[page * 2] == (i == 0 || page == 2 ? 0u : page == 5 ? 29u : 0xffffffffu));
+                REG_CHECK(actual[page * 2 + 1] == (i == 0 ? 0u : 73u + page));
+            }
+        }
+        REG_CHECK((*registry)->stats().descriptorWrites == 0);
+        return RHITestResult::pass("Inline page initialization, independent patch snapshots, unload, empty and invalid patches, preserved request frames; zero descriptor writes");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(StreamPageTableInlineTest);
 
 class StreamDataDecodeTest final : public RHITest {
 public:

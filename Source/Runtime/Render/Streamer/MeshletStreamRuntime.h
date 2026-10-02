@@ -336,8 +336,8 @@ struct MeshletStreamGPUParams {
     float previousViewport[4] = {};
     float previousClipOrtho[4] = {};
     float lodPixelError = 1.5f; // Resolved internal render-pixel threshold (GPU ABI).
-    uint32_t lodTopologyBuffer = UINT32_MAX;
-    uint32_t lodStateBuffer = UINT32_MAX;
+    uint32_t reservedLODTopology = 0;
+    uint32_t reservedLODState = 0;
     uint32_t lodInstanceOffsetsOffset = 0;
     float renderEye[4] = {};
     float renderCenter[4] = {};
@@ -345,12 +345,12 @@ struct MeshletStreamGPUParams {
     float renderViewport[4] = {};
     float renderClipOrtho[4] = {};
     float prefetchParams[4] = {}; // Frustum expansion, LOD error scale, enabled, forecast pose valid.
-    uint32_t demandBuffer = UINT32_MAX;
+    uint32_t reservedDemand = 0;
     uint32_t demandTaskOffset = 0; // Tile root indices in LOD topology, grouped by instance.
     uint32_t demandTaskCount = 0;
     uint32_t splitFrontier = 0;
     uint32_t demandInstanceOffsetsOffset = 0; // Group/tile bit bases and task start/count per instance.
-    uint32_t demandStatsBuffer = UINT32_MAX;
+    uint32_t reservedDemandStats = 0;
     uint32_t maxBlasClustersPerBuild = 0;
     uint32_t blasStorageBytes = 0;
     uint32_t blasStorageAddressLow = 0;
@@ -410,6 +410,8 @@ struct MeshletStreamDeferredGPUResourcesView {
     uint32_t visibleRecordCapacity = 0;
     RayTracingAccelerationStructure* accelerationStructure = nullptr;
 
+    Result<EncodedParameters> encodeRayQueryParameters(ParameterWriter& writer) const;
+
     bool valid() const
     {
         return pageBuffer != nullptr &&
@@ -428,8 +430,8 @@ struct MeshletStreamUserPush {
     uint32_t pageTableBuffer = 0;
     uint32_t paramsBuffer = 0;
     uint32_t requestBuffer = 0;
-    uint32_t residentPageBuffer = 0;
-    uint32_t updateBuffer = 0;
+    uint32_t reservedResidentPages = 0;
+    uint32_t reservedUpdate = 0;
     uint32_t activeHeaderBuffer = 0;
     uint32_t instanceBuffer = 0;
     uint32_t primitiveBuffer = 0;
@@ -439,21 +441,21 @@ struct MeshletStreamUserPush {
     uint32_t drawIndirectBuffer = 0;
     uint32_t traversalHeaderBuffer = 0;
     uint32_t traversalWorkBuffer = 0;
-    uint32_t clasAddressBuffer = 0;
-    uint32_t clasPageTableBuffer = 0;
-    uint32_t blasHeaderBuffer = 0;
-    uint32_t instanceBlasBuffer = 0;
-    uint32_t blasBuildInfoBuffer = 0;
-    uint32_t blasClusterReferenceBuffer = 0;
-    uint32_t fallbackBlasAddressBuffer = 0;
-    uint32_t dynamicBlasAddressBuffer = 0;
-    uint32_t tlasInstanceBuffer = 0;
+    uint32_t reservedClasAddressBuffer = 0;
+    uint32_t reservedClasPageTableBuffer = 0;
+    uint32_t reservedBlasHeaderBuffer = 0;
+    uint32_t reservedInstanceBlasBuffer = 0;
+    uint32_t reservedBlasBuildInfoBuffer = 0;
+    uint32_t reservedBlasClusterReferenceBuffer = 0;
+    uint32_t reservedFallbackBLASAddresses = 0;
+    uint32_t reservedDynamicBlasAddressBuffer = 0;
+    uint32_t reservedTLASInstances = 0;
     uint32_t traversalPhase = kMeshletStreamTraversalLoadPhase;
     uint32_t activeBuildPhase = kMeshletStreamActiveBuildBuildPhase;
     uint32_t rasterBindingsBuffer = UINT32_MAX;
     uint32_t hybridQueueBuffer = UINT32_MAX;
     uint32_t hybridClusterBuffer = UINT32_MAX;
-    uint32_t clasPublicationRevision = 0;
+    uint32_t reservedCLASPublicationRevision = 0;
     float tessellationEdgePixels = 8.0f;
     uint32_t tessellationMaxFactor = 4;
     uint32_t tessellationMaxSplitDepth = 2;
@@ -630,6 +632,8 @@ public:
     BindlessHeap* bindlessHeap() const { return registry_ ? registry_->heap() : nullptr; }
     MeshletStreamUserPush userPush() const;
     Result<> updateRasterBindings(const MeshletStreamGPURasterBindings& bindings);
+    Result<EncodedParameters> encodeClusterClassify(ParameterWriter& writer, Buffer* bins,
+        ShaderDataSpan instances, bool tessellation) const;
     Result<EncodedParameters> encodeInstanceCull(ParameterWriter& writer, Buffer* visibility,
         Buffer* visibleIds, Buffer* counter, Buffer* hzb, uint32_t phase) const;
     Result<> cmdPrepareVisibility(CommandBuffer& commandBuffer);
@@ -684,11 +688,6 @@ private:
         bool submitted() const { return recorded() && buildTransaction->resolved(); }
     };
 
-    struct ResidentPageFrame {
-        std::unique_ptr<Buffer> buffer;
-        ResourceLease handle;
-    };
-
     class UpdatePass;
     class TraversalPass;
     class ActiveBuildPass;
@@ -716,6 +715,7 @@ private:
     Result<> transitionPageBufferForTraversal(CommandBuffer& commandBuffer);
     void consumeGpuRequestReadback(CPUProfileRecorder* profiler, bool allowLegacyReadback);
 
+    Device* device_ = nullptr;
     scene::MeshletStreamAsset asset_;
     MeshletStreamResidencyManager residency_;
     scene::Bounds drawBounds_;
@@ -742,7 +742,6 @@ private:
     std::unique_ptr<Buffer> paramsBuffer_;
     std::unique_ptr<Buffer> visibleClusterBuffer_;
     std::unique_ptr<Buffer> rasterBindingsBuffer_;
-    std::vector<ResidentPageFrame> residentPageFrames_;
     std::unique_ptr<Buffer> instanceBuffer_;
     std::unique_ptr<Buffer> primitiveBuffer_;
     std::unique_ptr<Buffer> lodLevelBuffer_;
@@ -816,9 +815,6 @@ private:
     ResourceLease primitiveHandle_;
     ResourceLease lodLevelHandle_;
     ResourceLease groupHandle_;
-    ResourceLease lodTopologyHandle_;
-    ResourceLease lodStateHandle_;
-    ResourceLease demandHandle_;
     uint32_t demandTaskOffset_ = 0;
     uint32_t demandTaskCount_ = 0;
     uint32_t demandInstanceOffsetsOffset_ = 0;
@@ -829,15 +825,6 @@ private:
     ResourceLease drawIndirectHandle_;
     ResourceLease traversalHeaderHandle_;
     ResourceLease traversalWorkHandle_;
-    ResourceLease clasAddressHandle_;
-    ResourceLease clasPageTableHandle_;
-    ResourceLease blasHeaderHandle_;
-    ResourceLease instanceBlasHandle_;
-    ResourceLease blasBuildInfoHandle_;
-    ResourceLease blasClusterReferenceHandle_;
-    ResourceLease fallbackBlasAddressHandle_;
-    ResourceLease dynamicBlasAddressHandle_;
-    ResourceLease tlasInstanceHandle_;
     ResourceState pageBufferState_ = ResourceState::Undefined;
     ResourceState activeGroupBufferState_ = ResourceState::Undefined;
     ResourceState activeHeaderBufferState_ = ResourceState::Undefined;
