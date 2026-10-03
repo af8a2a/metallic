@@ -382,6 +382,16 @@ RHI 只发布队列接受/取消状态，GPU 完成由 Core 的 timeline 与 `GP
 
 命令接口覆盖动态渲染、barrier、buffer/texture copy、传统 draw、Mesh Task indirect draw 和 compute dispatch。能力以 `DeviceCapabilities` 暴露，调用方通过软请求创建设备，再对实际 capability 做降级处理。
 
+21 个 RHI 包装与 Streamer 层的 `Streamer`（共 22 个公共 PImpl 包装）统一使用
+[`RHIHandle.h`](../Source/Runtime/Render/GAPI/RHIHandle.h)
+中的 `METALLIC_RHI_HANDLE` 声明 move-only 生命周期、私有 Impl 接收构造和存储；每类显式选择
+`unique_ptr` / `shared_ptr` 并列出原有 friend。宏不增加继承、虚表或额外字段。
+默认构造、析构和移动定义在 Impl 完整的各自实现文件中，通过
+`METALLIC_RHI_HANDLE_DEFINITIONS` 生成；仅包含公共头的调用方也能构造、移动和销毁空包装。
+普通资源的原生释放由 Impl 析构承担，因此对存活对象移动赋值也会释放旧所有者；
+Buffer/Texture/Pipeline 等共享存储继续支持提交保活。`CommandBuffer` 只复用构造宏，
+保留取消提交、迁移 submission owner 及回收原生命令缓冲的自定义析构/移动逻辑。
+
 命令同步统一使用返回 `Result<>` 的 `synchronize()`；pipeline 与 shader object 通过 `execution()` 快照交给 `bindExecution()`；buffer copy 使用两个经过范围校验的 `BufferSlice`。这些入口的失败必须传回调用方，禁止用忽略结果的兼容包装。`Streamer::copyStreamedData()` 和上传 flush 同样返回结果；失败会取消对应上传发布事务，调用方必须放弃失败的录制。
 
 同步优先由 RenderGraph 的资源访问声明驱动：跨 pass 使用 reflection，pass 内多阶段使用 `executeStages()`；私有 helper 使用同一个 `GraphAccessPlan` 声明每个阶段的读、写、间接参数或传输访问。stage/access、RAW/WAR/WAW、layout 和跨队列前置依赖由规划器推导。材质分桶、Resident LOD、GPUScene HZB 的内部阶段也走该规划器，不再各自维护 barrier 数组。图外上传、调试读回及未纳入图的历史资源仍需在边界明确同步，不能依靠 CPU 等待代替 GPU 依赖。

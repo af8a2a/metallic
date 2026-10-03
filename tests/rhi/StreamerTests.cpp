@@ -570,10 +570,16 @@ public:
             result = runtime.initialize(*device, desc, log, cache.get());
             if (!result || !runtime.ready()) { return RHITestResult::fail("LOD initialization failed: " + log); }
             const auto stats = cache->stats();
-            // Page-table init/update, traversal, active build, cooperative LOD.
-            if (stats.sessionPsoCount != 5 || stats.hitCount != (pass == 0 ? 0 : 5) ||
-                stats.missCount != (pass == 0 ? 5 : 0)) {
-                return RHITestResult::fail("An internal streaming/LOD pipeline bypassed the persistent cache");
+            // Page-table init/update, traversal, active build, cooperative LOD,
+            // and distributed demand each contribute one persistent PSO.
+            constexpr uint32_t kExpectedPsoCount = 6;
+            if (stats.sessionPsoCount != kExpectedPsoCount ||
+                stats.hitCount != (pass == 0 ? 0 : kExpectedPsoCount) ||
+                stats.missCount != (pass == 0 ? kExpectedPsoCount : 0)) {
+                return RHITestResult::fail("Streaming/LOD cache coverage mismatch: pass=" + std::to_string(pass) +
+                    " expected=" + std::to_string(kExpectedPsoCount) +
+                    " PSOs=" + std::to_string(stats.sessionPsoCount) +
+                    " hits=" + std::to_string(stats.hitCount) + " misses=" + std::to_string(stats.missCount));
             }
             result = cache->save();
             if (!result || cache->stats().backendDataSize == 0) {

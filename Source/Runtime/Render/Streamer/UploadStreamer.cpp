@@ -845,14 +845,7 @@ struct StreamerImpl {
 
 } // namespace detail
 
-Streamer::Streamer(std::unique_ptr<detail::StreamerImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-Streamer::~Streamer() = default;
-Streamer::Streamer(Streamer&&) noexcept = default;
-Streamer& Streamer::operator=(Streamer&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(Streamer)
 
 const StreamerDesc& Streamer::desc() const
 {

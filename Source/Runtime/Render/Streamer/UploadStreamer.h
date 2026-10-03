@@ -103,14 +103,9 @@ struct StreamTextureDataDesc {
 };
 
 class Streamer {
-public:
-    Streamer() = default;
-    ~Streamer();
-    Streamer(Streamer&&) noexcept;
-    Streamer& operator=(Streamer&&) noexcept;
-
-    Streamer(const Streamer&) = delete;
-    Streamer& operator=(const Streamer&) = delete;
+    METALLIC_RHI_HANDLE(Streamer, unique_ptr,
+        friend Result<std::unique_ptr<Streamer>> createStreamer(Device&, const StreamerDesc&);
+    )
 
     const StreamerDesc& desc() const;
     StreamerStats stats() const;
@@ -127,12 +122,6 @@ public:
     [[nodiscard]] Result<> copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase = {});
     void endFrame();
 
-private:
-    explicit Streamer(std::unique_ptr<detail::StreamerImpl> impl);
-
-    std::unique_ptr<detail::StreamerImpl> impl_;
-
-    friend Result<std::unique_ptr<Streamer>> createStreamer(Device&, const StreamerDesc&);
 };
 
 [[nodiscard]] Result<std::unique_ptr<Streamer>> createStreamer(Device& device, const StreamerDesc& desc);

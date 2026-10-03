@@ -3420,14 +3420,7 @@ Result<> SwapchainImpl::initialize(const SwapchainDesc& desc)
 
 } // namespace detail
 
-Queue::Queue(std::unique_ptr<detail::QueueImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-Queue::~Queue() = default;
-Queue::Queue(Queue&&) noexcept = default;
-Queue& Queue::operator=(Queue&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(Queue)
 
 Result<> Queue::submit(const QueueSubmitDesc& desc)
 {
@@ -3650,15 +3643,7 @@ Result<GPUClockCalibration> Queue::calibrateTimestamps() const
     return calibration;
 }
 
-Fence::Fence(std::unique_ptr<detail::FenceImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-Fence::~Fence() = default;
-
-Fence::Fence(Fence&&) noexcept = default;
-Fence& Fence::operator=(Fence&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(Fence)
 
 Result<> Fence::wait(uint64_t timeoutNanoseconds)
 {
@@ -3699,15 +3684,7 @@ bool Fence::isSignaled() const
         impl_->device->functions.vkGetFenceStatus(impl_->device->device, impl_->fence) == VK_SUCCESS;
 }
 
-TimestampQueryPool::TimestampQueryPool(std::unique_ptr<detail::TimestampQueryPoolImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-TimestampQueryPool::~TimestampQueryPool() = default;
-
-TimestampQueryPool::TimestampQueryPool(TimestampQueryPool&&) noexcept = default;
-TimestampQueryPool& TimestampQueryPool::operator=(TimestampQueryPool&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(TimestampQueryPool)
 
 const TimestampQueryPoolDesc& TimestampQueryPool::desc() const
 {
@@ -3784,21 +3761,7 @@ double TimestampQueryPool::durationMilliseconds(
     return static_cast<double>(delta) * impl_->timestampPeriodNanoseconds / 1'000'000.0;
 }
 
-RayTracingAccelerationStructureCompactionQueryPool::
-    RayTracingAccelerationStructureCompactionQueryPool(
-        std::unique_ptr<detail::RayTracingAccelerationStructureCompactionQueryPoolImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-RayTracingAccelerationStructureCompactionQueryPool::~RayTracingAccelerationStructureCompactionQueryPool() = default;
-
-RayTracingAccelerationStructureCompactionQueryPool::
-    RayTracingAccelerationStructureCompactionQueryPool(
-        RayTracingAccelerationStructureCompactionQueryPool&&) noexcept = default;
-RayTracingAccelerationStructureCompactionQueryPool&
-RayTracingAccelerationStructureCompactionQueryPool::operator=(
-    RayTracingAccelerationStructureCompactionQueryPool&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(RayTracingAccelerationStructureCompactionQueryPool)
 
 const RayTracingAccelerationStructureCompactionQueryPoolDesc&
 RayTracingAccelerationStructureCompactionQueryPool::desc() const
@@ -3830,15 +3793,7 @@ Result<> RayTracingAccelerationStructureCompactionQueryPool::readResults(
         VK_QUERY_RESULT_64_BIT));
 }
 
-Semaphore::Semaphore(std::unique_ptr<detail::SemaphoreImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-Semaphore::~Semaphore() = default;
-
-Semaphore::Semaphore(Semaphore&&) noexcept = default;
-Semaphore& Semaphore::operator=(Semaphore&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(Semaphore)
 
 Result<> Semaphore::wait(uint64_t value, uint64_t timeoutNanoseconds)
 {
@@ -3894,22 +3849,9 @@ uint64_t Semaphore::currentValue() const
     return value;
 }
 
-SwapchainSemaphore::SwapchainSemaphore(std::unique_ptr<detail::SwapchainSemaphoreImpl> impl)
-    : impl_(std::move(impl))
-{
-}
+METALLIC_RHI_HANDLE_DEFINITIONS(SwapchainSemaphore)
 
-SwapchainSemaphore::~SwapchainSemaphore() = default;
-
-SwapchainSemaphore::SwapchainSemaphore(SwapchainSemaphore&&) noexcept = default;
-SwapchainSemaphore& SwapchainSemaphore::operator=(SwapchainSemaphore&&) noexcept = default;
-
-Buffer::Buffer(std::unique_ptr<detail::BufferImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-Buffer::~Buffer() = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(Buffer)
 
 std::shared_ptr<void> Buffer::retainAllocation() const
 {
@@ -3930,9 +3872,6 @@ const void* RayTracingAccelerationStructure::deviceIdentity() const
 {
     return impl_ ? impl_->device : nullptr;
 }
-
-Buffer::Buffer(Buffer&&) noexcept = default;
-Buffer& Buffer::operator=(Buffer&&) noexcept = default;
 
 const BufferDesc& Buffer::desc() const
 {
@@ -4025,17 +3964,7 @@ Result<> BufferSlice::validateData(const void* device, uint32_t stride, uint32_t
     return {};
 }
 
-RayTracingAccelerationStructure::RayTracingAccelerationStructure(
-    std::unique_ptr<detail::RayTracingAccelerationStructureImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-RayTracingAccelerationStructure::~RayTracingAccelerationStructure() = default;
-RayTracingAccelerationStructure::RayTracingAccelerationStructure(
-    RayTracingAccelerationStructure&&) noexcept = default;
-RayTracingAccelerationStructure& RayTracingAccelerationStructure::operator=(
-    RayTracingAccelerationStructure&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(RayTracingAccelerationStructure)
 
 const RayTracingAccelerationStructureDesc& RayTracingAccelerationStructure::desc() const
 {
@@ -4126,14 +4055,7 @@ void Buffer::invalidate(BufferRange range)
     vmaInvalidateAllocation(impl_->device->allocator, impl_->allocation, range.offset, vkSize);
 }
 
-BufferView::BufferView(std::unique_ptr<detail::BufferViewImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-BufferView::~BufferView() = default;
-BufferView::BufferView(BufferView&&) noexcept = default;
-BufferView& BufferView::operator=(BufferView&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(BufferView)
 
 const BufferViewDesc& BufferView::desc() const
 {
@@ -4141,15 +4063,7 @@ const BufferViewDesc& BufferView::desc() const
     return impl_ != nullptr ? impl_->desc : emptyDesc;
 }
 
-Texture::Texture(std::unique_ptr<detail::TextureImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-Texture::~Texture() = default;
-
-Texture::Texture(Texture&&) noexcept = default;
-Texture& Texture::operator=(Texture&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(Texture)
 
 const TextureDesc& Texture::desc() const
 {
@@ -4177,10 +4091,7 @@ const void* Texture::deviceIdentity() const
     return impl_ ? impl_->device : nullptr;
 }
 
-TextureView::TextureView(std::unique_ptr<detail::TextureViewImpl> impl)
-    : impl_(std::move(impl))
-{
-}
+METALLIC_RHI_HANDLE_DEFINITIONS(TextureView)
 
 Result<> TextureView::prepareNative()
 {
@@ -4193,8 +4104,6 @@ bool TextureView::hasNativeView() const
     std::lock_guard lock(impl_->mutex);
     return impl_->view != VK_NULL_HANDLE;
 }
-
-TextureView::~TextureView() = default;
 
 const TextureViewDesc& TextureView::desc() const
 {
@@ -4217,32 +4126,14 @@ const void* CommandBuffer::deviceIdentity() const
     return impl_ ? impl_->device : nullptr;
 }
 
-TextureView::TextureView(TextureView&&) noexcept = default;
-TextureView& TextureView::operator=(TextureView&&) noexcept = default;
-
-ShaderModule::ShaderModule(std::unique_ptr<detail::ShaderModuleImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-ShaderModule::~ShaderModule() = default;
-
-ShaderModule::ShaderModule(ShaderModule&&) noexcept = default;
-ShaderModule& ShaderModule::operator=(ShaderModule&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(ShaderModule)
 
 uint64_t ShaderModule::contentHash() const
 {
     return impl_ != nullptr ? impl_->contentHash : 0;
 }
 
-PipelineCache::PipelineCache(std::unique_ptr<detail::PipelineCacheImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-PipelineCache::~PipelineCache() = default;
-PipelineCache::PipelineCache(PipelineCache&&) noexcept = default;
-PipelineCache& PipelineCache::operator=(PipelineCache&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(PipelineCache)
 
 const char* PipelineCache::filePath() const
 {
@@ -4287,10 +4178,7 @@ PreparedExecution GraphicsShaderObjectProgram::execution(const RasterExecutionSt
     PreparedExecution result; result.shaders_ = impl_; result.raster_ = state; return result;
 }
 
-GraphicsPipeline::GraphicsPipeline(std::unique_ptr<detail::GraphicsPipelineImpl> impl)
-    : impl_(std::move(impl))
-{
-}
+METALLIC_RHI_HANDLE_DEFINITIONS(GraphicsPipeline)
 
 namespace detail {
 GraphicsPipelineImpl::~GraphicsPipelineImpl()
@@ -4308,11 +4196,6 @@ GraphicsPipelineImpl::~GraphicsPipelineImpl()
 }
 } // namespace detail
 
-GraphicsPipeline::~GraphicsPipeline() = default;
-
-GraphicsPipeline::GraphicsPipeline(GraphicsPipeline&&) noexcept = default;
-GraphicsPipeline& GraphicsPipeline::operator=(GraphicsPipeline&&) noexcept = default;
-
 uint64_t GraphicsPipeline::psoHash() const
 {
     return impl_ != nullptr ? impl_->psoHash : 0;
@@ -4323,10 +4206,7 @@ bool GraphicsPipeline::pipelineCacheHit() const
     return impl_ != nullptr && impl_->pipelineCacheHit;
 }
 
-ComputePipeline::ComputePipeline(std::unique_ptr<detail::ComputePipelineImpl> impl)
-    : impl_(std::move(impl))
-{
-}
+METALLIC_RHI_HANDLE_DEFINITIONS(ComputePipeline)
 
 namespace detail {
 ComputePipelineImpl::~ComputePipelineImpl()
@@ -4344,11 +4224,6 @@ ComputePipelineImpl::~ComputePipelineImpl()
 }
 } // namespace detail
 
-ComputePipeline::~ComputePipeline() = default;
-
-ComputePipeline::ComputePipeline(ComputePipeline&&) noexcept = default;
-ComputePipeline& ComputePipeline::operator=(ComputePipeline&&) noexcept = default;
-
 uint64_t ComputePipeline::psoHash() const
 {
     return impl_ != nullptr ? impl_->psoHash : 0;
@@ -4359,11 +4234,7 @@ bool ComputePipeline::pipelineCacheHit() const
     return impl_ != nullptr && impl_->pipelineCacheHit;
 }
 
-GraphicsShaderObjectProgram::GraphicsShaderObjectProgram(
-    std::unique_ptr<detail::GraphicsShaderObjectProgramImpl> impl)
-    : impl_(std::move(impl))
-{
-}
+METALLIC_RHI_HANDLE_DEFINITIONS(GraphicsShaderObjectProgram)
 
 namespace detail {
 GraphicsShaderObjectProgramImpl::~GraphicsShaderObjectProgramImpl()
@@ -4381,19 +4252,7 @@ GraphicsShaderObjectProgramImpl::~GraphicsShaderObjectProgramImpl()
 }
 } // namespace detail
 
-GraphicsShaderObjectProgram::~GraphicsShaderObjectProgram() = default;
-
-GraphicsShaderObjectProgram::GraphicsShaderObjectProgram(GraphicsShaderObjectProgram&&) noexcept = default;
-GraphicsShaderObjectProgram& GraphicsShaderObjectProgram::operator=(GraphicsShaderObjectProgram&&) noexcept = default;
-
-BindlessHeap::BindlessHeap(std::unique_ptr<detail::BindlessHeapImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-BindlessHeap::~BindlessHeap() = default;
-BindlessHeap::BindlessHeap(BindlessHeap&&) noexcept = default;
-BindlessHeap& BindlessHeap::operator=(BindlessHeap&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(BindlessHeap)
 
 const BindlessHeapDesc& BindlessHeap::desc() const
 {
@@ -4694,12 +4553,7 @@ Result<> BindlessHeap::writeAccelerationStructure(
     return {};
 }
 
-CommandBuffer::CommandBuffer() = default;
-
-CommandBuffer::CommandBuffer(std::unique_ptr<detail::CommandBufferImpl> impl)
-    : impl_(std::move(impl))
-{
-}
+METALLIC_RHI_HANDLE_CONSTRUCTORS(CommandBuffer)
 
 CommandBuffer::~CommandBuffer()
 {
@@ -7123,15 +6977,7 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
 #endif
 }
 
-CommandPool::CommandPool(std::unique_ptr<detail::CommandPoolImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-CommandPool::~CommandPool() = default;
-
-CommandPool::CommandPool(CommandPool&&) noexcept = default;
-CommandPool& CommandPool::operator=(CommandPool&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(CommandPool)
 
 Result<> CommandPool::reset()
 {
@@ -7178,14 +7024,7 @@ Result<std::unique_ptr<CommandBuffer>> CommandPool::createCommandBuffer()
     return std::unique_ptr<CommandBuffer>(new CommandBuffer(std::move(commandBufferImpl)));
 }
 
-Swapchain::Swapchain(std::unique_ptr<detail::SwapchainImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-Swapchain::~Swapchain() = default;
-Swapchain::Swapchain(Swapchain&&) noexcept = default;
-Swapchain& Swapchain::operator=(Swapchain&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(Swapchain)
 
 uint32_t Swapchain::imageCount() const
 {
@@ -7273,16 +7112,7 @@ Result<> Swapchain::present(Queue& queue, uint32_t imageIndex, SwapchainSemaphor
     return resultFromVk(result);
 }
 
-Device::Device() = default;
-
-Device::Device(std::unique_ptr<detail::DeviceImpl> impl)
-    : impl_(std::move(impl))
-{
-}
-
-Device::~Device() = default;
-Device::Device(Device&&) noexcept = default;
-Device& Device::operator=(Device&&) noexcept = default;
+METALLIC_RHI_HANDLE_DEFINITIONS(Device)
 
 const void* Device::identity() const
 {

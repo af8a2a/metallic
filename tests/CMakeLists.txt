@@ -273,6 +273,7 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/rhi/harness/HtmlReport.html" METALLIC_REP
 configure_file(rhi/harness/HtmlReportTemplate.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/HtmlReportTemplate.h" @ONLY)
 
 add_executable(MetallicRHITests
+    rhi/RHIHandleTests.cpp
     rhi/GeneratedCommandsTests.cpp
     rhi/DebugControlTests.cpp
     rhi/Main.cpp
