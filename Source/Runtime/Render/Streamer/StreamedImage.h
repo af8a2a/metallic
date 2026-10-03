@@ -103,9 +103,9 @@ struct StreamedImage : std::enable_shared_from_this<StreamedImage> {
             }); !commandResult) { return commandResult; }
             imageState_ = ResourceState::TransferDestination;
 
-            commands.copyBufferToTexture(BufferTextureCopyDesc{
-                .buffer = uploadBuffer_.get(),
+            commands.copyBufferToTexture(BufferTextureRegion{
                 .texture = imageTexture_.get(),
+                .buffer = uploadBuffer_.get(),
                 .width = imageWidth_,
                 .height = imageHeight_,
                 .depth = 1,

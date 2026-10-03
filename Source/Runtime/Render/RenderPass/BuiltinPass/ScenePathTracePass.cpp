@@ -504,9 +504,9 @@ private:
         result = recordGraphAccessBarriers(commandBuffer, plan->passes[0], bindings);
         if (!result) { return result; }
 
-        commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
-            .buffer = texture.uploadBuffer.get(),
+        commandBuffer.copyBufferToTexture(BufferTextureRegion{
             .texture = texture.texture.get(),
+            .buffer = texture.uploadBuffer.get(),
             .width = texture.width,
             .height = texture.height,
             .depth = texture.depth,

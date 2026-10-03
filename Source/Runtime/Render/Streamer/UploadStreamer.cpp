@@ -96,7 +96,7 @@ uint32_t formatTexelByteSize(Format format)
     return 0;
 }
 
-uint64_t textureCopyByteSize(const BufferTextureCopyDesc& copy)
+uint64_t textureCopyByteSize(const BufferTextureRegion& copy)
 {
     return static_cast<uint64_t>(copy.bufferSlicePitch) *
         static_cast<uint64_t>(copy.depth) *
@@ -117,7 +117,7 @@ struct StreamerImpl {
     };
 
     struct TextureCopyRequest {
-        BufferTextureCopyDesc copy;
+        BufferTextureRegion copy;
     };
 
     struct BufferGarbage {
@@ -475,9 +475,9 @@ struct StreamerImpl {
             activeFrame->retain(dynamicBuffer);
         }
         textureRequests.push_back(TextureCopyRequest{
-            .copy = BufferTextureCopyDesc{
-                .buffer = dynamicBuffer.get(),
+            .copy = BufferTextureRegion{
                 .texture = streamDesc.dstTexture,
+                .buffer = dynamicBuffer.get(),
                 .bufferOffset = bufferOffset,
                 .bufferRowPitch = static_cast<uint32_t>(rowPitch),
                 .bufferSlicePitch = static_cast<uint32_t>(slicePitch),

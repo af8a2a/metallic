@@ -279,7 +279,7 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
         .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
     };
     if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return commandResult; }
-    commandBuffer->copyTextureToBuffer(TextureBufferCopyDesc{
+    commandBuffer->copyTextureToBuffer(BufferTextureRegion{
         .texture = colorTexture.get(),
         .buffer = readbackBuffer.get(),
         .width = width,
@@ -706,7 +706,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
                     };
                     if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = {&outputToTransfer, 1}}); !commandResult) { return 1; }
-                    commandBuffer->copyTextureToBuffer(TextureBufferCopyDesc{
+                    commandBuffer->copyTextureToBuffer(BufferTextureRegion{
                         .texture = outputTexture.get(),
                         .buffer = readbackBuffer.get(),
                         .width = kWidth,

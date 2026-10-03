@@ -152,7 +152,7 @@ public:
                         .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                     };
                     if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                    commands->copyBufferToTexture({.buffer = uploads[i].get(), .texture = textures[i].get(), .width = width, .height = 1});
+                    commands->copyBufferToTexture({.texture = textures[i].get(), .buffer = uploads[i].get(), .width = width, .height = 1});
                     barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite}; barrier.newLayout = TextureLayout::ShaderRead; barrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
                     if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }

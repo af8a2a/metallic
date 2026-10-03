@@ -4751,7 +4751,7 @@ Result<> RenderGraphPreviewRenderer::render(
     if (!result) {
         return result;
     }
-    impl_->commandBuffer->copyTextureToBuffer(TextureBufferCopyDesc{
+    impl_->commandBuffer->copyTextureToBuffer(BufferTextureRegion{
         .texture = output->texture,
         .buffer = impl_->readbackBuffer.get(),
         .width = outputWidth,

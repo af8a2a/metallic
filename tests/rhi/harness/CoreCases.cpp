@@ -117,14 +117,14 @@ public:
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}, .range = {0, 3, 0, layers}};
             CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
             for (const auto& r : regions) {
-                commands.copyBufferToTexture({.buffer = upload->get(), .texture = texture->get(), .bufferOffset = r.offset,
+                commands.copyBufferToTexture({.texture = texture->get(), .buffer = upload->get(), .bufferOffset = r.offset,
                     .bufferRowPitch = r.row, .bufferSlicePitch = r.slice, .width = r.width, .height = r.height,
                     .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer});
             }
             barrier.oldLayout = TextureLayout::TransferDestination;
             barrier.before = barrier.after;
             CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-            commands.copyBufferToTexture({.buffer = upload->get(), .texture = texture->get(), .bufferOffset = size,
+            commands.copyBufferToTexture({.texture = texture->get(), .buffer = upload->get(), .bufferOffset = size,
                 .textureOffsetX = 1, .textureOffsetY = 1, .textureOffsetZ = int32_t(targetZ),
                 .width = 3, .height = 2, .depth = 1, .mipLevel = target.mip, .baseLayer = target.layer});
             barrier.newLayout = TextureLayout::TransferSource;

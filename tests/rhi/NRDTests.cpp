@@ -659,7 +659,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
         };
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
-        command->copyBufferToTexture({.buffer = upload.get(), .texture = depth.get(), .width = w, .height = h});
+        command->copyBufferToTexture({.texture = depth.get(), .buffer = upload.get(), .width = w, .height = h});
         barrier.oldLayout = render::TextureLayout::TransferDestination; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
         barrier.newLayout = render::TextureLayout::ShaderRead; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }

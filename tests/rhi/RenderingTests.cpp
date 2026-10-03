@@ -279,7 +279,7 @@ public:
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(
-            render::TextureBufferCopyDesc{
+            render::BufferTextureRegion{
                 .texture = colorTexture.get(),
                 .buffer = readbackBuffer.get(),
                 .width = kWidth,
@@ -591,7 +591,7 @@ public:
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(
-            render::TextureBufferCopyDesc{
+            render::BufferTextureRegion{
                 .texture = colorTexture.get(),
                 .buffer = readbackBuffer.get(),
                 .width = kWidth,
@@ -967,7 +967,7 @@ public:
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
         commandBuffer->copyTextureToBuffer(
-            render::TextureBufferCopyDesc{
+            render::BufferTextureRegion{
                 .texture = colorTexture.get(),
                 .buffer = readbackBuffer.get(),
                 .width = kWidth,

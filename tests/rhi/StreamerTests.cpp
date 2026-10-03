@@ -1590,7 +1590,7 @@ public:
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .textures = {&textureToSource, 1},
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
+        commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
             .texture = texture.get(),
             .buffer = readbackBuffer.get(),
             .width = kWidth,

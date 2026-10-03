@@ -7295,7 +7295,7 @@ public:
         if (!result) {
             return RHITestResult::fail(std::string("transitionOutput returned ") + toString(result));
         }
-        commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
+        commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
             .texture = output->texture,
             .buffer = readbackBuffer.get(),
             .width = kWidth,
@@ -8081,7 +8081,7 @@ public:
         if (!result) {
             return RHITestResult::fail(std::string("transitionOutput returned ") + toString(result));
         }
-        commandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
+        commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
             .texture = output->texture,
             .buffer = readbackBuffer.get(),
             .width = kWidth,
@@ -8256,7 +8256,7 @@ public:
                 std::string("transitionOutput(raster readback) returned ") +
                 toString(result));
         }
-        const render::TextureBufferCopyDesc colorCopy{
+        const render::BufferTextureRegion colorCopy{
             .texture = rasterColor->texture,
             .buffer = rasterColorReadback.get(),
             .width = kWidth,
@@ -8265,7 +8265,7 @@ public:
             .mipLevel = 0,
             .baseLayer = 0,
         };
-        render::TextureBufferCopyDesc visibilityCopy = colorCopy;
+        render::BufferTextureRegion visibilityCopy = colorCopy;
         visibilityCopy.texture = rasterVisibility->texture;
         visibilityCopy.buffer = rasterVisibilityReadback.get();
         rasterCommandBuffer->copyTextureToBuffer(colorCopy);
@@ -8382,7 +8382,7 @@ public:
                     render::ResourceState::TransferSource);
             }
             if (result) {
-                captureCommandBuffer->copyTextureToBuffer(render::TextureBufferCopyDesc{
+                captureCommandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
                     .texture = captureOutput->texture,
                     .buffer = captureReadback.get(),
                     .width = width,
@@ -9045,7 +9045,7 @@ public:
                 toString(result));
         }
 
-        const render::TextureBufferCopyDesc colorCopy{
+        const render::BufferTextureRegion colorCopy{
             .texture = color->texture,
             .buffer = colorReadback.get(),
             .width = kWidth,
@@ -9054,10 +9054,10 @@ public:
             .mipLevel = 0,
             .baseLayer = 0,
         };
-        render::TextureBufferCopyDesc visibilityCopy = colorCopy;
+        render::BufferTextureRegion visibilityCopy = colorCopy;
         visibilityCopy.texture = visibility->texture;
         visibilityCopy.buffer = visibilityReadback.get();
-        render::TextureBufferCopyDesc depthCopy = colorCopy;
+        render::BufferTextureRegion depthCopy = colorCopy;
         depthCopy.texture = depth->texture;
         depthCopy.buffer = depthReadback.get();
         commandBuffer->copyTextureToBuffer(colorCopy);

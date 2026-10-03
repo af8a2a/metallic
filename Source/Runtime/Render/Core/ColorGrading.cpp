@@ -251,8 +251,8 @@ Result<> ColorGradingResources::initialize(Device& device, const RenderGraphProp
         if (!result) {
             return result;
         }
-        command->copyBufferToTexture({.buffer = uploads[i].get(),
-                                      .texture = textures_[i].get(),
+        command->copyBufferToTexture({.texture = textures_[i].get(),
+                                      .buffer = uploads[i].get(),
                                       .bufferRowPitch = widths[i] * 4,
                                       .bufferSlicePitch = widths[i] * heights[i] * 4,
                                       .width = widths[i],

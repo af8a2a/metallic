@@ -2620,9 +2620,9 @@ struct ScenePathTraceResources::Impl {
                 return makeError(Error::InvalidArgument);
             }
 
-            commandBuffer.copyBufferToTexture(BufferTextureCopyDesc{
-                .buffer = texture.uploadBuffer.get(),
+            commandBuffer.copyBufferToTexture(BufferTextureRegion{
                 .texture = texture.texture.get(),
+                .buffer = texture.uploadBuffer.get(),
                 .bufferOffset = texture.uploadBufferOffset + upload.bufferOffset,
                 .width = upload.width,
                 .height = upload.height,

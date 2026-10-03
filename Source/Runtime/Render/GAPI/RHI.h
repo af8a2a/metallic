@@ -1244,26 +1244,9 @@ struct GraphicsShaderObjectProgramDesc {
     bool indirectBindable = false;
 };
 
-struct TextureBufferCopyDesc {
+struct BufferTextureRegion {
     class Texture* texture = nullptr;
     class Buffer* buffer = nullptr;
-    uint64_t bufferOffset = 0;
-    uint32_t bufferRowPitch = 0;
-    uint32_t bufferSlicePitch = 0;
-    int32_t textureOffsetX = 0;
-    int32_t textureOffsetY = 0;
-    int32_t textureOffsetZ = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t depth = 1;
-    uint32_t mipLevel = 0;
-    uint32_t baseLayer = 0;
-    uint32_t layerCount = 1;
-};
-
-struct BufferTextureCopyDesc {
-    class Buffer* buffer = nullptr;
-    class Texture* texture = nullptr;
     uint64_t bufferOffset = 0;
     uint32_t bufferRowPitch = 0;
     uint32_t bufferSlicePitch = 0;
@@ -1789,8 +1772,8 @@ class CommandBuffer {
     Result<> decompressBuffers(std::span<const BufferDecompressionDesc> regions);
     Result<> validateDecompressionBuffers(std::span<const BufferDecompressionDesc> regions) const;
     void copyTexture(const TextureCopyDesc& desc);
-    void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
-    void copyBufferToTexture(const BufferTextureCopyDesc& desc);
+    void copyTextureToBuffer(const BufferTextureRegion& desc);
+    void copyBufferToTexture(const BufferTextureRegion& desc);
     void clearColorTexture(Texture& texture, TextureLayout layout, const ColorValue& color = {});
     Result<> beginRendering(const RenderingDesc& desc);
     // Native SDK consumers retain the view itself as well as its image.
@@ -1829,6 +1812,8 @@ class CommandBuffer {
         RayTracingAccelerationStructure& destination);
 
 private:
+    enum class BufferTextureCopyDirection { ToBuffer, ToTexture };
+    void copyBufferTexture(const BufferTextureRegion& region, BufferTextureCopyDirection direction);
     void setGraphicsShaderObjectState();
     Result<> bindExecutionImpl(const PreparedExecution& execution, const void* data, uint32_t byteSize, bool replaceData);
 

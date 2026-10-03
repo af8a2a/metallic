@@ -4940,67 +4940,23 @@ void CommandBuffer::copyTexture(const TextureCopyDesc& desc)
         &copyRegion);
 }
 
-void CommandBuffer::copyTextureToBuffer(const TextureBufferCopyDesc& desc)
+void CommandBuffer::copyTextureToBuffer(const BufferTextureRegion& region)
 {
-    if (impl_ == nullptr ||
-        desc.texture == nullptr ||
-        desc.texture->impl_ == nullptr ||
-        desc.buffer == nullptr ||
-        desc.buffer->impl_ == nullptr ||
-        desc.width == 0 ||
-        desc.height == 0 ||
-        desc.depth == 0 ||
-        desc.layerCount == 0 || desc.bufferOffset >= desc.buffer->desc().size) {
-        return;
-    }
-
-    uint32_t bufferRowLength = 0;
-    uint32_t bufferImageHeight = 0;
-    if (!fillBufferImageLayout(
-            desc.texture->impl_->desc.format,
-            desc.width,
-            desc.height,
-            desc.bufferRowPitch,
-            desc.bufferSlicePitch,
-            bufferRowLength,
-            bufferImageHeight)) {
-        return;
-    }
-
-    const VkDeviceMemoryImageCopyKHR copyRegion{
-        .sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_IMAGE_COPY_KHR,
-        .addressRange = {desc.buffer->deviceAddress() + desc.bufferOffset,
-            desc.buffer->desc().size - desc.bufferOffset},
-        .addressFlags = detail::BufferAddressCommandAccess::flags(*desc.buffer),
-        .addressRowLength = bufferRowLength,
-        .addressImageHeight = bufferImageHeight,
-        .imageSubresource = {
-            .aspectMask = aspectForFormat(desc.texture->impl_->desc.format),
-            .mipLevel = desc.mipLevel,
-            .baseArrayLayer = desc.baseLayer,
-            .layerCount = desc.layerCount,
-        },
-        .imageLayout = imageLayout(TextureLayout::TransferSource, impl_->device->vulkanCapabilities.unifiedImageLayouts),
-        .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
-        .imageExtent = {desc.width, desc.height, desc.depth},
-    };
-
-    const VkCopyDeviceMemoryImageInfoKHR copyInfo{
-        .sType = VK_STRUCTURE_TYPE_COPY_DEVICE_MEMORY_IMAGE_INFO_KHR,
-        .image = desc.texture->impl_->image,
-        .regionCount = 1,
-        .pRegions = &copyRegion,
-    };
-    impl_->device->functions.vkCmdCopyImageToMemoryKHR(impl_->commandBuffer, &copyInfo);
+    copyBufferTexture(region, BufferTextureCopyDirection::ToBuffer);
 }
 
-void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
+void CommandBuffer::copyBufferToTexture(const BufferTextureRegion& region)
+{
+    copyBufferTexture(region, BufferTextureCopyDirection::ToTexture);
+}
+
+void CommandBuffer::copyBufferTexture(const BufferTextureRegion& desc, BufferTextureCopyDirection direction)
 {
     if (impl_ == nullptr ||
-        desc.buffer == nullptr ||
-        desc.buffer->impl_ == nullptr ||
         desc.texture == nullptr ||
         desc.texture->impl_ == nullptr ||
+        desc.buffer == nullptr ||
+        desc.buffer->impl_ == nullptr ||
         desc.width == 0 ||
         desc.height == 0 ||
         desc.depth == 0 ||
@@ -5034,7 +4990,9 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
             .baseArrayLayer = desc.baseLayer,
             .layerCount = desc.layerCount,
         },
-        .imageLayout = imageLayout(TextureLayout::TransferDestination, impl_->device->vulkanCapabilities.unifiedImageLayouts),
+        .imageLayout = imageLayout(direction == BufferTextureCopyDirection::ToTexture
+            ? TextureLayout::TransferDestination : TextureLayout::TransferSource,
+            impl_->device->vulkanCapabilities.unifiedImageLayouts),
         .imageOffset = {desc.textureOffsetX, desc.textureOffsetY, desc.textureOffsetZ},
         .imageExtent = {desc.width, desc.height, desc.depth},
     };
@@ -5045,7 +5003,11 @@ void CommandBuffer::copyBufferToTexture(const BufferTextureCopyDesc& desc)
         .regionCount = 1,
         .pRegions = &copyRegion,
     };
-    impl_->device->functions.vkCmdCopyMemoryToImageKHR(impl_->commandBuffer, &copyInfo);
+    if (direction == BufferTextureCopyDirection::ToTexture) {
+        impl_->device->functions.vkCmdCopyMemoryToImageKHR(impl_->commandBuffer, &copyInfo);
+    } else {
+        impl_->device->functions.vkCmdCopyImageToMemoryKHR(impl_->commandBuffer, &copyInfo);
+    }
 }
 
 void CommandBuffer::hostWriteBarrier()
