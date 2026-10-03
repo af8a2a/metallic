@@ -1,4 +1,7 @@
 #include "RHITest.h"
+#include "Runtime/Render/GAPI/QueueSubmissionIsolation.h"
+#include <future>
+#include <stdexcept>
 #include "harness/Evidence.h"
 
 #include <array>
@@ -7,6 +10,59 @@
 
 namespace metallic::tests {
 namespace {
+
+class QueueSubmissionIsolationTest final : public RHITest {
+public:
+    QueueSubmissionIsolationTest() { type = RHITestType::Command; name = "queue_submission_isolation"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        using namespace std::chrono_literals;
+        std::future<Result<>> pending;
+        bool sharedProgress = false;
+        bool upgradeRejected = false;
+        {
+            const detail::QueueSubmissionAccess reader;
+            pending = std::async(std::launch::async, [&] { return context.graphicsQueue.submit({}); });
+            sharedProgress = pending.wait_for(2s) == std::future_status::ready;
+            try { const QueueSubmissionIsolation invalidUpgrade; }
+            catch (const std::logic_error&) { upgradeRejected = true; }
+        }
+        if (!pending.get() || !sharedProgress || !upgradeRejected) {
+            return RHITestResult::fail("Ordinary submissions did not share access or isolation upgrade was accepted");
+        }
+        bool excluded = false, nestedExcluded = false;
+        Result<> ownerResult;
+        std::promise<void> attempted;
+        auto started = attempted.get_future();
+        {
+            const QueueSubmissionIsolation isolation;
+            pending = std::async(std::launch::async, [&] {
+                attempted.set_value();
+                return context.graphicsQueue.submit({});
+            });
+            started.wait();
+            excluded = pending.wait_for(50ms) == std::future_status::timeout;
+            {
+                const QueueSubmissionIsolation nested;
+                ownerResult = context.graphicsQueue.submit({});
+            }
+            nestedExcluded = pending.wait_for(50ms) == std::future_status::timeout;
+            // Validation failure must also release its access scope.
+            Queue invalid;
+            if (!hasError(invalid.submit({}), Error::InvalidArgument)) {
+                ownerResult = makeError(Error::Failure);
+            }
+        }
+        const auto resumed = pending.get();
+        const auto idle = context.graphicsQueue.waitIdle();
+        if (!excluded || !nestedExcluded || !ownerResult || !resumed || !idle) {
+            return RHITestResult::fail("Isolation failed to exclude other threads, permit owner submission or release access");
+        }
+        return RHITestResult::pass("Shared ordinary access, exclusive/nested owner submission, upgrade rejection and release");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(QueueSubmissionIsolationTest);
 
 class SubmitEmptyCommandBufferTest : public RHITest {
 public:

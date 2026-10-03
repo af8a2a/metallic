@@ -1,9 +1,48 @@
 #include "Runtime/Render/GAPI/CommandSubmission.h"
+#include "Runtime/Render/GAPI/QueueSubmissionIsolation.h"
+#include <stdexcept>
 
 #include <algorithm>
 #include <utility>
 
 namespace metallic::render {
+
+namespace {
+std::shared_mutex& submissionGate()
+{
+    static std::shared_mutex gate;
+    return gate;
+}
+thread_local uint32_t submissionAccessDepth = 0;
+thread_local uint32_t submissionIsolationDepth = 0;
+} // namespace
+
+QueueSubmissionIsolation::QueueSubmissionIsolation()
+    : lock_(submissionGate(), std::defer_lock)
+{
+    if (!submissionIsolationDepth) {
+        if (submissionAccessDepth) { throw std::logic_error("Cannot acquire queue isolation during submission"); }
+        lock_.lock();
+    }
+    ++submissionIsolationDepth;
+}
+
+QueueSubmissionIsolation::~QueueSubmissionIsolation()
+{
+    --submissionIsolationDepth;
+}
+
+detail::QueueSubmissionAccess::QueueSubmissionAccess()
+    : lock_(submissionGate(), std::defer_lock)
+{
+    if (!submissionIsolationDepth && !submissionAccessDepth) { lock_.lock(); }
+    ++submissionAccessDepth;
+}
+
+detail::QueueSubmissionAccess::~QueueSubmissionAccess()
+{
+    --submissionAccessDepth;
+}
 
 SubmissionTransaction::SubmissionTransaction(std::function<void()> submitted, std::function<void()> cancelled)
     : submitted_(std::move(submitted)), cancelled_(std::move(cancelled))

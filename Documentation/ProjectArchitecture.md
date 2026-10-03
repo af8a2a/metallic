@@ -394,6 +394,9 @@ Buffer/Texture/Pipeline 等共享存储继续支持提交保活。`CommandBuffer
 
 命令同步统一使用返回 `Result<>` 的 `synchronize()`；pipeline 与 shader object 通过 `execution()` 快照交给 `bindExecution()`；buffer copy 使用两个经过范围校验的 `BufferSlice`。这些入口的失败必须传回调用方，禁止用忽略结果的兼容包装。`Streamer::copyStreamedData()` 和上传 flush 同样返回结果；失败会取消对应上传发布事务，调用方必须放弃失败的录制。
 
+需要隔离提交的上层操作使用 GAPI 的 `QueueSubmissionIsolation`：它排除其他线程的所有 RHI queue submit，允许持有线程提交及同线程嵌套。普通提交共享访问，不因启用 replay 配置而互相串行化；RHI 提交入口不读取 replay 环境变量，也不调用 profiling 层的锁。隔离只协调 CPU 提交，不等待 GPU 完成，调用方仍需自行 drain，且不能从提交/发布回调中升级为独占。WorkControlReplay 在回放期间持有此作用域。
+
+
 纹理拷贝（含 buffer/texture 双向拷贝）、`clearColorTexture()`、`setViewport()` 和 `draw*()` 也返回 `[[nodiscard]] Result<>`。入口检查发现参数、资源归属或录制状态非法时返回 `InvalidArgument`，mesh draw 所需能力或设备入口不可用时返回 `Unsupported`，不会静默跳过命令。上层 pass、上传和读回辅助函数必须传播错误；成功表示命令已录制，不代表 GPU 已完成，也不替代 Vulkan validation 对完整命令合法性的检查。
 
 `GraphicsPipelineDesc` 用自持有的 `colorFormats[8]` 和 `colorAttachmentCount` 描述颜色附件，仅有效前缀参与 Vulkan 创建和 pipeline 哈希；计数为 0 可用于 depth-only pipeline。有效前缀禁止 `Unknown` 或深度格式，并受设备的 `maxColorAttachments` 限制。`TextureCopyDesc::layerCount` 默认 1，可一次复制连续多层；源、目标各自使用 mip/base layer，录制前检查层范围及对应 mip 的 extent。

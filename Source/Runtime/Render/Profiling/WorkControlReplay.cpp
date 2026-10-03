@@ -1,4 +1,5 @@
 #include "WorkControlReplay.h"
+#include "Runtime/Render/GAPI/QueueSubmissionIsolation.h"
 #include "NvPerf.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include <cstdlib>
@@ -62,12 +63,6 @@ bool workControlReplayRequested()
 {
     const char* value = std::getenv("METALLIC_WORK_CONTROL_REPLAY");
     return value && std::strcmp(value, "1") == 0;
-}
-
-std::recursive_mutex& workControlReplaySubmissionMutex()
-{
-    static std::recursive_mutex mutex;
-    return mutex;
 }
 
 struct WorkControlReplay::Impl {
@@ -293,7 +288,7 @@ void WorkControlReplay::after(CommandBuffer& commands)
 Json WorkControlReplay::run(Queue& queue, const Json& frozenIdentity)
 {
     auto& s = *impl_;
-    std::unique_lock submissionLease(workControlReplaySubmissionMutex());
+    const QueueSubmissionIsolation submissionLease;
     try {
         require(bool(s.device.waitIdle()), "replay_initial_device_drain_failed");
         s.evidence["submissionIsolation"] = "all-RHI-queues-owner-lease";

@@ -4,13 +4,10 @@
 #include <filesystem>
 #include <json.hpp>
 #include <span>
-#include <mutex>
 
 namespace metallic::render::profiling {
 
 bool workControlReplayRequested();
-// Diagnostic-only serialization of all RHI submissions, including other queues.
-std::recursive_mutex& workControlReplaySubmissionMutex();
 
 struct WorkControlReplayBinding {
     std::string name;

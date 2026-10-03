@@ -3,7 +3,7 @@
 #include "VulkanResult.h"
 #include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/GAPI/RHI.h"
-#include "Runtime/Render/Profiling/WorkControlReplay.h"
+#include "Runtime/Render/GAPI/QueueSubmissionIsolation.h"
 #include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/PipelineCacheFile.h"
 #include "Runtime/Render/GAPI/PipelineStateHash.h"
@@ -3262,8 +3262,7 @@ Result<> Queue::submitTracked(const QueueSubmitDesc& desc)
 
 Result<> Queue::submitImpl(const QueueSubmitDesc& desc, bool tracked)
 {
-    std::unique_lock replayLease(profiling::workControlReplaySubmissionMutex(), std::defer_lock);
-    if (profiling::workControlReplayRequested()) { replayLease.lock(); }
+    const detail::QueueSubmissionAccess submissionAccess;
     METALLIC_TRACY_CPU_SCOPE("Queue Submit");
     if (impl_ == nullptr || impl_->queue == VK_NULL_HANDLE) {
         return makeError(Error::InvalidArgument);
