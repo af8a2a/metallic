@@ -83,7 +83,6 @@ struct MeshletStreamCLASPool::Impl {
     std::vector<RetiredPage> retiredPages;
     MeshletStreamCLASPoolStats stats;
     uint64_t frameIndex = 0;
-    uint64_t storageAddress = 0;
     uint64_t scratchOffset = 0;
     uint64_t clusterStride = 0;
     uint32_t pageCount = 0;
@@ -408,7 +407,6 @@ Result<> MeshletStreamCLASPool::initialize(
 
     impl_->asset = desc.asset;
     impl_->pages.reserve(std::min(desc.maxBuildClusters, desc.asset->pageCount()));
-    impl_->storageAddress = storageAddress;
     impl_->scratchOffset = scratchOffset;
     impl_->clusterStride = clusterStride;
     impl_->pageCount = desc.asset->pageCount();
@@ -486,7 +484,8 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
         uint32_t pageIndex = UINT32_MAX;
         uint32_t addressOffset = UINT32_MAX;
         MeshletStreamStorageAllocation allocation;
-        std::vector<uint64_t> addresses;
+        size_t firstBuildInfo = 0;
+        uint32_t clusterCount = 0;
     };
     std::vector<PendingPage> pendingPages;
     std::vector<ClusterAccelerationStructureTriangleBuildInfo> buildInfos;
@@ -578,7 +577,8 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
         pending.pageIndex = request.pageIndex;
         pending.addressOffset = static_cast<uint32_t>(allocation.offset / impl_->clusterStride);
         pending.allocation = allocation;
-        pending.addresses.reserve(plan.clusters.size());
+        pending.firstBuildInfo = buildInfos.size();
+        pending.clusterCount = static_cast<uint32_t>(plan.clusters.size());
 
         for (uint32_t clusterIndex = 0; clusterIndex < plan.clusters.size(); ++clusterIndex) {
             const MeshletStreamCLASClusterInput& cluster = plan.clusters[clusterIndex];
@@ -608,7 +608,6 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
                 .destinationBuffer = *destination,
                 .opaque = true,
             });
-            pending.addresses.push_back(impl_->storageAddress + destinationOffset);
         }
         pendingPages.push_back(std::move(pending));
     }
@@ -624,11 +623,12 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
         return makeError(Error::Failure);
     }
     for (const PendingPage& pending : pendingPages) {
-        std::memcpy(
-            static_cast<uint8_t*>(mappedAddresses) +
-                static_cast<uint64_t>(pending.addressOffset) * sizeof(uint64_t),
-            pending.addresses.data(),
-            pending.addresses.size() * sizeof(uint64_t));
+        for (uint32_t index = 0; index < pending.clusterCount; ++index) {
+            const uint64_t address = buildInfos[pending.firstBuildInfo + index].destinationBuffer.deviceAddress();
+            std::memcpy(static_cast<uint8_t*>(mappedAddresses) +
+                (static_cast<uint64_t>(pending.addressOffset) + index) * sizeof(uint64_t),
+                &address, sizeof(address));
+        }
     }
     impl_->addressBuffer->flush();
     impl_->addressBuffer->unmap();
@@ -668,7 +668,7 @@ Result<> MeshletStreamCLASPool::cmdBuildPages(
         Impl::PageEntry& page = impl_->pages.try_emplace(pending.pageIndex).first->second;
         page.allocation = pending.allocation;
         page.addressOffset = pending.addressOffset;
-        page.clusterCount = static_cast<uint32_t>(pending.addresses.size());
+        page.clusterCount = pending.clusterCount;
         ++page.generation;
         page.state = Impl::PageState::Built;
         impl_->writePageEntry(pending.pageIndex);
@@ -757,7 +757,7 @@ uint64_t MeshletStreamCLASPool::clusterAddress(uint32_t pageIndex, uint32_t clus
     if (clusterIndex >= page.clusterCount) {
         return 0;
     }
-    return impl_->storageAddress + page.allocation.offset +
+    return impl_->storageBuffer->deviceAddress() + page.allocation.offset +
         static_cast<uint64_t>(clusterIndex) * impl_->clusterStride;
 }
 
