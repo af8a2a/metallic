@@ -89,8 +89,8 @@ public:
         auto input = context.inputTexture("color");
         auto output = context.outputBuffer("data");
         if (!input.valid() || !output.valid()) { return makeError(Error::InvalidArgument); }
-        if (auto commandResult = context.commandBuffer().copyTextureToBuffer({.texture = input.texture(), .buffer = output.buffer(),
-            .width = input.desc().width, .height = input.desc().height}); !commandResult) { return commandResult; }
+        if (auto commandResult = (output.buffer())->slice().and_then([&](const auto& bufferSlice) { return context.commandBuffer().copyTextureToBuffer({.texture = input.texture(), .buffer = bufferSlice,
+            .width = input.desc().width, .height = input.desc().height}); }); !commandResult) { return commandResult; }
         const BufferBarrierDesc host{.buffer = output.buffer(),
             .before = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
             .after = {PipelineStageBits::Host, AccessBits::HostRead}};

@@ -1552,7 +1552,7 @@ public:
                 barrier.oldLayout = render::TextureLayout::ColorAttachment; barrier.before = {render::PipelineStageBits::ColorAttachment, render::AccessBits::ColorRead | render::AccessBits::ColorWrite};
                 barrier.newLayout = render::TextureLayout::TransferSource; barrier.after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
                 REG_REQUIRE(command.synchronize({.textures = {&barrier, 1}}));
-                REG_REQUIRE(command.copyTextureToBuffer({.texture = texture.get(), .buffer = readbacks[i].get(), .width = extent, .height = extent}));
+                REG_REQUIRE((readbacks[i].get())->slice().and_then([&](const auto& bufferSlice) { return command.copyTextureToBuffer({.texture = texture.get(), .buffer = bufferSlice, .width = extent, .height = extent}); }));
                 view.reset(); texture.reset();
                 REG_CHECK(!allocations[i].expired());
             }

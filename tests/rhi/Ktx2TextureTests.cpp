@@ -1165,8 +1165,7 @@ class BCTextureUploadTest final : public RHITest {
                 barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite};
                 barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                 if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                if (auto commandResult = commands->copyTextureToBuffer(
-                    {.texture = texture.get(), .buffer = readback.get(), .width = width, .height = height}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = texture.get(), .buffer = bufferSlice, .width = width, .height = height}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
                 require(commands->end(), "BC end");
                 CommandBuffer* command = commands.get();
                 require(

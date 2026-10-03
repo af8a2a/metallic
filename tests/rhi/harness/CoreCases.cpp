@@ -46,6 +46,70 @@ RHITestResult compare(RHITestContext& context, Buffer& buffer, std::span<const s
     return equal ? RHITestResult::pass() : RHITestResult::fail(prefix + " readback mismatch");
 }
 
+class TextureSliceLifetimeTest final : public RHITest {
+public:
+    TextureSliceLifetimeTest() { type = RHITestType::Command; name = "texture_slice_bounds_and_lifetime"; }
+    RHITestResult run(RHITestContext& context) override
+    {
+        auto texture = context.device.createTexture({
+            .usage = TextureUsageBits::TransferSource | TextureUsageBits::TransferDestination,
+            .format = Format::RGBA8Unorm, .width = 8, .height = 2});
+        auto readback = context.device.createBuffer({.size = 256, .usage = BufferUsageBits::TransferDestination,
+            .memoryLocation = MemoryLocation::HostReadback});
+        CASE_REQUIRE(texture); CASE_REQUIRE(readback);
+        std::vector<std::byte> expected(256, std::byte{0xa7});
+        if (!writeBuffer(**readback, expected)) { return RHITestResult::fail("readback initialization failed"); }
+        bench::GPUCommands recording(context.graphicsQueue);
+        CASE_REQUIRE(recording.initialize(context.device));
+        auto& commands = *recording.commands;
+        TextureBarrierDesc barrier{.texture = texture->get(), .oldLayout = TextureLayout::Undefined,
+            .newLayout = TextureLayout::TransferDestination,
+            .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}};
+        CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
+        std::weak_ptr<void> uploadAllocation;
+        {
+            auto upload = context.device.createBuffer({.size = 256, .usage = BufferUsageBits::TransferSource,
+                .memoryLocation = MemoryLocation::HostUpload});
+            CASE_REQUIRE(upload);
+            std::vector<std::byte> source(256, std::byte{0x33});
+            for (uint32_t i = 0; i < 64; ++i) { source[128 + i] = expected[64 + i] = std::byte(i); }
+            if (!writeBuffer(**upload, source)) { return RHITestResult::fail("upload initialization failed"); }
+            auto slice = (*upload)->slice({128, 64});
+            CASE_REQUIRE(slice);
+            auto shortSlice = slice->subslice({0, 32});
+            CASE_REQUIRE(shortSlice);
+            if (!hasError(commands.copyBufferToTexture({.texture = texture->get(), .buffer = *shortSlice,
+                    .width = 8, .height = 2}), Error::InvalidArgument) ||
+                !hasError(commands.copyTextureToBuffer({.texture = texture->get(), .buffer = *slice,
+                    .width = 8, .height = 2}), Error::InvalidArgument)) {
+                return RHITestResult::fail("copy ignored slice bounds or transfer usage");
+            }
+            uploadAllocation = slice->retainAllocation();
+            CASE_REQUIRE(commands.copyBufferToTexture({.texture = texture->get(), .buffer = *slice,
+                .width = 8, .height = 2}));
+        }
+        if (uploadAllocation.expired()) { return RHITestResult::fail("recording did not retain upload allocation"); }
+        barrier.oldLayout = TextureLayout::TransferDestination;
+        barrier.newLayout = TextureLayout::TransferSource;
+        barrier.before = barrier.after;
+        barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
+        CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
+        auto slice = (*readback)->slice({64, 64});
+        CASE_REQUIRE(slice);
+        auto shortSlice = slice->subslice({0, 32});
+        CASE_REQUIRE(shortSlice);
+        if (!hasError(commands.copyTextureToBuffer({.texture = texture->get(), .buffer = *shortSlice,
+                .width = 8, .height = 2}), Error::InvalidArgument)) {
+            return RHITestResult::fail("readback used backing size instead of slice size");
+        }
+        CASE_REQUIRE(commands.copyTextureToBuffer({.texture = texture->get(), .buffer = *slice,
+            .width = 8, .height = 2}));
+        CASE_REQUIRE(recording.submitAndWait());
+        return compare(context, **readback, expected, "texture-slice");
+    }
+};
+METALLIC_REGISTER_RHI_TEST(TextureSliceLifetimeTest);
+
 class TextureSubresourceCopyTest final : public RHITest {
 public:
     TextureSubresourceCopyTest() { type = RHITestType::Command; name = "texture_odd_mips_layers_volume_readback"; }
@@ -117,23 +181,23 @@ public:
                 .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite}, .range = {0, 3, 0, layers}};
             CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
             for (const auto& r : regions) {
-                CASE_REQUIRE(commands.copyBufferToTexture({.texture = texture->get(), .buffer = upload->get(), .bufferOffset = r.offset,
+                CASE_REQUIRE((upload->get())->slice({r.offset}).and_then([&](const auto& bufferSlice) { return commands.copyBufferToTexture({.texture = texture->get(), .buffer = bufferSlice,
                     .bufferRowPitch = r.row, .bufferSlicePitch = r.slice, .width = r.width, .height = r.height,
-                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer}));
+                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer}); }));
             }
             barrier.oldLayout = TextureLayout::TransferDestination;
             barrier.before = barrier.after;
             CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-            CASE_REQUIRE(commands.copyBufferToTexture({.texture = texture->get(), .buffer = upload->get(), .bufferOffset = size,
+            CASE_REQUIRE((upload->get())->slice({size}).and_then([&](const auto& bufferSlice) { return commands.copyBufferToTexture({.texture = texture->get(), .buffer = bufferSlice,
                 .textureOffsetX = 1, .textureOffsetY = 1, .textureOffsetZ = int32_t(targetZ),
-                .width = 3, .height = 2, .depth = 1, .mipLevel = target.mip, .baseLayer = target.layer}));
+                .width = 3, .height = 2, .depth = 1, .mipLevel = target.mip, .baseLayer = target.layer}); }));
             barrier.newLayout = TextureLayout::TransferSource;
             barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
             CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
             for (const auto& r : regions) {
-                CASE_REQUIRE(commands.copyTextureToBuffer({.texture = texture->get(), .buffer = readback->get(), .bufferOffset = r.offset,
+                CASE_REQUIRE((readback->get())->slice({r.offset}).and_then([&](const auto& bufferSlice) { return commands.copyTextureToBuffer({.texture = texture->get(), .buffer = bufferSlice,
                     .bufferRowPitch = r.row, .bufferSlicePitch = r.slice, .width = r.width, .height = r.height,
-                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer}));
+                    .depth = r.depth, .mipLevel = r.mip, .baseLayer = r.layer}); }));
             }
             CASE_REQUIRE(recording.submitAndWait());
             const std::string prefix = volume ? "volume" : "array";
@@ -251,7 +315,7 @@ public:
         barrier.oldLayout = TextureLayout::ColorAttachment; barrier.newLayout = TextureLayout::TransferSource;
         barrier.before = barrier.after; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
         CASE_REQUIRE(commands.synchronize({.textures = {&barrier, 1}}));
-        CASE_REQUIRE(commands.copyTextureToBuffer({.texture = texture->get(), .buffer = readback->get(), .width = width, .height = height}));
+        CASE_REQUIRE((readback->get())->slice().and_then([&](const auto& bufferSlice) { return commands.copyTextureToBuffer({.texture = texture->get(), .buffer = bufferSlice, .width = width, .height = height}); }));
         CASE_REQUIRE(recording.submitAndWait());
         std::vector<std::byte> expected(width * height * 4);
         for (uint32_t y = 0; y < height; ++y) {

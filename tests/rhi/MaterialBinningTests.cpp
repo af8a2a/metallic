@@ -142,11 +142,11 @@ public:
         if (typed_) { return executeTyped(context, bins, push, readbackGroups); }
         // Invalid inputs must fail before recording vkCmdDispatchIndirect2KHR.
         for (uint64_t offset : {uint64_t(1), bins.arguments->desc().size - 4, UINT64_MAX}) {
-            if (!render::hasError(commands.dispatchIndirect(*bins.arguments, offset), render::Error::InvalidArgument)) {
+            if (!render::hasError((*bins.arguments).slice({offset, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); }), render::Error::InvalidArgument)) {
                 return render::makeError(render::Error::Failure);
             }
         }
-        if (!render::hasError(commands.dispatchIndirect(*bins.bins), render::Error::InvalidArgument)) {
+        if (!render::hasError((*bins.bins).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); }), render::Error::InvalidArgument)) {
             return render::makeError(render::Error::Failure);
         }
         // Read argument bytes as shader data, then restore their indirect state.
@@ -234,13 +234,13 @@ private:
         std::swap(argumentBarrier.before, argumentBarrier.after);
         if (auto commandResult = commands.synchronize({.buffers = {&argumentBarrier, 1}}); !commandResult) { return commandResult; }
         for (uint64_t offset : {uint64_t(1), bins.arguments->desc().size - 4, UINT64_MAX}) {
-            if (!render::hasError(kernels_[1].dispatchIndirect(commands, encoded, *bins.arguments, offset),
+            if (!render::hasError((*bins.arguments).slice({offset, 12}).and_then([&](const auto& bufferSlice) { return kernels_[1].dispatchIndirect(commands, encoded, bufferSlice); }),
                 render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
         }
         render::EncodedParameters wrongAbi;
         result = writer.encode(params, kProbeABI + 1).transform([&](auto value) { wrongAbi = std::move(value); });
         if (!result) { return result; }
-        if (!render::hasError(kernels_[1].dispatchIndirect(commands, wrongAbi, *bins.arguments),
+        if (!render::hasError((*bins.arguments).slice({0, 12}).and_then([&](const auto& bufferSlice) { return kernels_[1].dispatchIndirect(commands, wrongAbi, bufferSlice); }),
             render::Error::InvalidArgument)) { return render::makeError(render::Error::Failure); }
         render::BufferBarrierDesc outputBarrier{
             .buffer = context.outputBuffer("data").buffer(),
@@ -253,7 +253,7 @@ private:
             if (!result) { return result; }
             if (auto commandResult = commands.synchronize({.buffers = {&outputBarrier, 1}}); !commandResult) { return commandResult; }
             const size_t permutation = (context.frameIndex() & 1u) && (bin & 1u) ? 2 : 1;
-            result = kernels_[permutation].dispatchIndirect(commands, encoded, *bins.arguments, uint64_t(bin) * 12);
+            result = (*bins.arguments).slice({uint64_t(bin) * 12, 12}).and_then([&](const auto& bufferSlice) { return kernels_[permutation].dispatchIndirect(commands, encoded, bufferSlice); });
             if (!result) { return result; }
         }
         return {};

@@ -1590,13 +1590,13 @@ public:
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{
             .textures = {&textureToSource, 1},
         }); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
+        if (auto commandResult = (readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
             .texture = texture.get(),
-            .buffer = readbackBuffer.get(),
+            .buffer = bufferSlice,
             .width = kWidth,
             .height = kHeight,
             .depth = 1,
-        }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+        }); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         result = commandBuffer->end();
         if (!result) {
             return RHITestResult::fail(std::string("CommandBuffer::end returned ") + toString(result));

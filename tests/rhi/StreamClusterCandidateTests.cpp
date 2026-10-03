@@ -47,10 +47,10 @@ public:
         for (size_t i = 0; i < inputs.size(); ++i) {
             CANDIDATE_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[i] = std::move(rhiValue); }));
-            CANDIDATE_REQUIRE(heap->writeStorageBuffer(handles[i], *inputs[i]));
+            CANDIDATE_REQUIRE((*inputs[i]).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[i], bufferSlice); }));
         }
-        CANDIDATE_REQUIRE(heap->writeStorageBuffer(handles[5], rasterizer.clusterBuffer()));
-        CANDIDATE_REQUIRE(heap->writeStorageBuffer(handles[6], rasterizer.candidateArguments()));
+        CANDIDATE_REQUIRE((rasterizer.clusterBuffer()).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[5], bufferSlice); }));
+        CANDIDATE_REQUIRE((rasterizer.candidateArguments()).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[6], bufferSlice); }));
         const auto upload = [&](size_t index, const void* data, size_t size) {
             void* mapped = inputs[index]->map();
             if (!mapped) { return false; }

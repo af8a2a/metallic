@@ -504,15 +504,15 @@ private:
         result = recordGraphAccessBarriers(commandBuffer, plan->passes[0], bindings);
         if (!result) { return result; }
 
-        if (auto commandResult = commandBuffer.copyBufferToTexture(BufferTextureRegion{
+        if (auto commandResult = (texture.uploadBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer.copyBufferToTexture(BufferTextureRegion{
             .texture = texture.texture.get(),
-            .buffer = texture.uploadBuffer.get(),
+            .buffer = bufferSlice,
             .width = texture.width,
             .height = texture.height,
             .depth = texture.depth,
             .mipLevel = 0,
             .baseLayer = 0,
-        }); !commandResult) { return commandResult; }
+        }); }); !commandResult) { return commandResult; }
 
         result = recordGraphAccessBarriers(commandBuffer, plan->passes[1], bindings);
         if (!result) { return result; }

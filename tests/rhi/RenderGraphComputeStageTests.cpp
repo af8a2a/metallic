@@ -529,7 +529,7 @@ public:
                 }, Kind::Unsafe},
                 {"Readback", readbackUses, [&](render::CommandBuffer& commands) -> render::Result<> {
                     ++probe.callbacks;
-                    if (auto commandResult = commands.copyTextureToBuffer({.texture = texture, .buffer = data.buffer(), .width = 4, .height = 4}); !commandResult) { return commandResult; }
+                    if (auto commandResult = (data.buffer())->slice().and_then([&](const auto& bufferSlice) { return commands.copyTextureToBuffer({.texture = texture, .buffer = bufferSlice, .width = 4, .height = 4}); }); !commandResult) { return commandResult; }
                     return {};
                 }, Kind::Unsafe},
             };
@@ -549,7 +549,7 @@ public:
             }, Kind::Unsafe},
             {"Readback", copyUses, [&](render::CommandBuffer& commands) -> render::Result<> {
                 ++probe.callbacks;
-                if (auto commandResult = commands.copyTextureToBuffer({.texture = texture, .buffer = data.buffer(), .width = 4, .height = 4}); !commandResult) { return commandResult; }
+                if (auto commandResult = (data.buffer())->slice().and_then([&](const auto& bufferSlice) { return commands.copyTextureToBuffer({.texture = texture, .buffer = bufferSlice, .width = 4, .height = 4}); }); !commandResult) { return commandResult; }
                 return {};
             }, Kind::Unsafe},
         };

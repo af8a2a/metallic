@@ -47,7 +47,7 @@ public:
                 require(bool(device->createBuffer({.size = sizes[i], .structureStride = strides[i],
                     .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                     .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto v) { buffers[i] = std::move(v); })), "buffer");
-                require(bool(heap->writeStorageBuffer(handles[i], *buffers[i])), "binding");
+                require(bool((*buffers[i]).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[i], bufferSlice); })), "binding");
             }
             ShaderCompileResult compiled;
             auto result = compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,

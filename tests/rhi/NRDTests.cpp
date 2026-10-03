@@ -333,14 +333,13 @@ protected:
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
             };
             if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
-            if (auto commandResult = command->copyTextureToBuffer({.texture = output.texture,
-                                          .buffer = readback.get(),
-                                          .bufferOffset = i * 16,
+            if (auto commandResult = (readback.get())->slice({i * 16}).and_then([&](const auto& bufferSlice) { return command->copyTextureToBuffer({.texture = output.texture,
+                                          .buffer = bufferSlice,
                                           .textureOffsetX = w / 2,
                                           .textureOffsetY = h / 2,
                                           .width = 1,
                                           .height = 1,
-                                          .depth = 1}); !commandResult) { throw std::runtime_error(std::string("copyTextureToBuffer failed: ") + metallic::render::resultToString(commandResult)); }
+                                          .depth = 1}); }); !commandResult) { throw std::runtime_error(std::string("copyTextureToBuffer failed: ") + metallic::render::resultToString(commandResult)); }
             barrier.oldLayout = render::TextureLayout::TransferSource; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
             barrier.newLayout = render::TextureLayout::General; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite};
             if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
@@ -659,7 +658,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
         };
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
-        if (auto commandResult = command->copyBufferToTexture({.texture = depth.get(), .buffer = upload.get(), .width = w, .height = h}); !commandResult) { throw std::runtime_error(std::string("copyBufferToTexture failed: ") + metallic::render::resultToString(commandResult)); }
+        if (auto commandResult = (upload.get())->slice().and_then([&](const auto& bufferSlice) { return command->copyBufferToTexture({.texture = depth.get(), .buffer = bufferSlice, .width = w, .height = h}); }); !commandResult) { throw std::runtime_error(std::string("copyBufferToTexture failed: ") + metallic::render::resultToString(commandResult)); }
         barrier.oldLayout = render::TextureLayout::TransferDestination; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite};
         barrier.newLayout = render::TextureLayout::ShaderRead; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
@@ -671,7 +670,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         barrier.oldLayout = render::TextureLayout::ShaderRead; barrier.before = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
         barrier.newLayout = render::TextureLayout::TransferSource; barrier.after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }
-        if (auto commandResult = command->copyTextureToBuffer({.texture = output.texture, .buffer = readback.get(), .width = w, .height = h}); !commandResult) { throw std::runtime_error(std::string("copyTextureToBuffer failed: ") + metallic::render::resultToString(commandResult)); }
+        if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return command->copyTextureToBuffer({.texture = output.texture, .buffer = bufferSlice, .width = w, .height = h}); }); !commandResult) { throw std::runtime_error(std::string("copyTextureToBuffer failed: ") + metallic::render::resultToString(commandResult)); }
         barrier.oldLayout = render::TextureLayout::TransferSource; barrier.before = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead};
         barrier.newLayout = render::TextureLayout::ShaderRead; barrier.after = {render::PipelineStageBits::AllCommands, render::AccessBits::ShaderRead};
         if (auto commandResult = command->synchronize({.textures = {&barrier, 1}}); !commandResult) { throw std::runtime_error(std::string("synchronize failed: ") + metallic::render::resultToString(commandResult)); }

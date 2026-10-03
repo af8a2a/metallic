@@ -204,8 +204,8 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
             .memoryLocation = render::MemoryLocation::HostUpload}), "createInput");
         output = require(device->createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
             .memoryLocation = render::MemoryLocation::HostReadback}), "createOutput");
-        require(heap->writeStorageBuffer(inputHandle, *input), "writeInputDescriptor");
-        require(heap->writeStorageBuffer(outputHandle, *output), "writeOutputDescriptor");
+        require((*input).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(inputHandle, bufferSlice); }), "writeInputDescriptor");
+        require((*output).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(outputHandle, bufferSlice); }), "writeOutputDescriptor");
         const std::array<uint32_t, 4> values{outputHandle.shaderIndex, 73, 0, 0};
         void* mapped = input->map();
         if (!mapped) { throw std::runtime_error("Input map failed"); }

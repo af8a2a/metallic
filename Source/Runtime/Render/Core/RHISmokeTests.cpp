@@ -279,15 +279,15 @@ Result<> TrianglePreviewRendererImpl::render(uint32_t newWidth, uint32_t newHeig
         .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
     };
     if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return commandResult; }
-    if (auto commandResult = commandBuffer->copyTextureToBuffer(BufferTextureRegion{
+    if (auto commandResult = (readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer->copyTextureToBuffer(BufferTextureRegion{
         .texture = colorTexture.get(),
-        .buffer = readbackBuffer.get(),
+        .buffer = bufferSlice,
         .width = width,
         .height = height,
         .depth = 1,
         .mipLevel = 0,
         .baseLayer = 0,
-    }); !commandResult) { return commandResult; }
+    }); }); !commandResult) { return commandResult; }
 
     result = commandBuffer->end();
     if (!result) {
@@ -706,15 +706,15 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
                         .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
                     };
                     if (auto commandResult = commandBuffer->synchronize(BarrierDesc{.textures = {&outputToTransfer, 1}}); !commandResult) { return 1; }
-                    if (auto commandResult = commandBuffer->copyTextureToBuffer(BufferTextureRegion{
+                    if (auto commandResult = (readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer->copyTextureToBuffer(BufferTextureRegion{
                         .texture = outputTexture.get(),
-                        .buffer = readbackBuffer.get(),
+                        .buffer = bufferSlice,
                         .width = kWidth,
                         .height = kHeight,
                         .depth = 1,
                         .mipLevel = 0,
                         .baseLayer = 0,
-                    }); !commandResult) { return 1; }
+                    }); }); !commandResult) { return 1; }
 
                     result = commandBuffer->end();
                     if (!checkResult(result, "commandBuffer end")) {

@@ -38,7 +38,7 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
         if (!result) { return result; }
         BindlessHandle handle;
         result = heap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
-        if (result) { result = heap_->writeStorageBuffer(handle, *buffers_[i]); }
+        if (result) { result = (*buffers_[i]).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(handle, bufferSlice); }); }
         if (!result) { return result; }
         if (i == 0) { push_.queueBuffer = handle.shaderIndex; }
         if (i == 1) { push_.pixelBuffer = handle.shaderIndex; }
@@ -54,7 +54,7 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
         if (!result) { return result; }
         BindlessHandle handle;
         result = heap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
-        if (result) { result = heap_->writeStorageBuffer(handle, *buffer); }
+        if (result) { result = (*buffer).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(handle, bufferSlice); }); }
         if (!result) { return result; }
         if (i == 0) { push_.clusterBuffer = handle.shaderIndex; } else { push_.clusterArgumentsBuffer = handle.shaderIndex; }
     }
@@ -182,7 +182,7 @@ Result<> VisibilityHybridRasterizer::resolve(CommandBuffer& commands, Texture& v
         if (auto commandResult = commands.synchronize({.buffers = {&barrier, 1}}); !commandResult) { return commandResult; }
         if (auto commandResult = commands.bindExecution((compute_[2])->execution()); !commandResult) { return commandResult; }
         commands.pushBindlessData(&push_, sizeof(push_));
-        auto result = commands.dispatchIndirect(*buffers_[2]);
+        auto result = (*buffers_[2]).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
         if (!result) { commands.endDebugLabel(); return result; }
     } else {
         barrier = {
@@ -315,7 +315,7 @@ Result<> VisibilityHybridRasterizer::prepareStreamClusterCandidates(CommandBuffe
             commands.dispatch(1);
             if (auto commandResult = prepareClusterCandidates(commands); !commandResult) { return commandResult; }
         } else {
-            const Result<> result = commands.dispatchIndirect(*candidateArguments_, kCandidateBuildArgumentsOffset);
+            const Result<> result = (*candidateArguments_).slice({kCandidateBuildArgumentsOffset, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
             if (!result) { return result; }
             const BufferBarrierDesc barriers[] = {
                 {
@@ -342,7 +342,7 @@ Result<> VisibilityHybridRasterizer::cullStreamClusters(CommandBuffer& commands,
     if (auto commandResult = commands.bindExecution((pipeline).execution()); !commandResult) { return commandResult; }
     push.activeBuildPhase = 0;
     commands.pushBindlessData(&push, sizeof(push));
-    const Result<> result = commands.dispatchIndirect(*candidateArguments_, 12);
+    const Result<> result = (*candidateArguments_).slice({12, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
     if (!result) { return result; }
     const BufferBarrierDesc barriers[] = {
         {
@@ -379,7 +379,7 @@ Result<> VisibilityHybridRasterizer::finishClusterBins(CommandBuffer& commands)
         commands.pushBindlessData(&push_, sizeof(push_));
         if (i == 2) { commands.dispatch(5); }
         else if (compactCandidates_) {
-            const Result<> result = commands.dispatchIndirect(*candidateArguments_, 12);
+            const Result<> result = (*candidateArguments_).slice({12, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
             if (!result) { commands.endDebugLabel(); return result; }
         }
         else if (blocks != 0) { commands.dispatch(std::min(blocks, kDispatchWidth), (blocks + kDispatchWidth - 1u) / kDispatchWidth); }

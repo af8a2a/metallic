@@ -129,7 +129,7 @@ return kernel.dispatch(commands, *packet, groupCount);
 
 Slang 的 `.data` 是普通 GPU 指针，`.length()` 在 stride 与 `sizeof(T)` 不一致时返回零；消费端先检查 `.contains(index)` 或完整的派生范围，再访问内存。CPU 范围校验与 shader 索引校验缺一不可；BDA 指针访问不自动继承 SSBO robust bounds。参见 [Vulkan BDA 示例](https://docs.vulkan.org/samples/latest/samples/extensions/buffer_device_address/README.html) 和 [BDA 对齐说明](https://docs.vulkan.org/guide/latest/buffer_device_address_alignment.html)。这不是强制检查所有指针解引用的语言包装，也不是自动推断 C++/Slang ABI 的反射系统。
 
-`CommandBuffer::copyBuffer(sourceSlice, destinationSlice)` 返回 Result，要求等长非空范围、正确设备/transfer usage，拒绝同一分配内重叠复制。`dispatchIndirect(slice)` 要求 Indirect usage、4 字节对齐及至少 12 字节；只读取开头三个 dispatch 计数。`ComputeKernel` 同样提供 slice 间接入口。旧 Buffer+offset 入口转交给这些校验，保留原签名。复制和间接命令在录制时保留实际分配，typed packet 和 Core 数据槽也保留同一分配，延续 frame 完成/取消/部分提交回收契约。Device 仍须晚于所有 slice、packet、command 和 GPU 工作销毁。保留解决存活期，不负责 barrier、队列依赖或阻止 CPU 提前覆盖正在使用的字节。
+`CommandBuffer::copyBuffer(sourceSlice, destinationSlice)` 返回 Result，要求等长非空范围、正确设备/transfer usage，拒绝同一分配内重叠复制。`dispatchIndirect(slice)` 与 `drawMeshTasksIndirect(slice)` 要求 Indirect usage、4 字节对齐及至少 12 字节；只读取开头三个 group 计数。`ComputeKernel` 同样只提供 slice 间接入口，旧 Buffer+offset 重载已删除。`BufferTextureRegion::buffer` 也直接持有 slice，以其地址为拷贝起点、长度为容量上限，并按拷贝方向校验 transfer usage。复制和间接命令在录制时保留实际分配，typed packet 和 Core 数据槽也保留同一分配，延续 frame 完成/取消/部分提交回收契约。Device 仍须晚于所有 slice、packet、command 和 GPU 工作销毁。保留解决存活期，不负责 barrier、队列依赖或阻止 CPU 提前覆盖正在使用的字节。
 
 原生 BDA 在分配创建时查询一次；当前 VMA 路径不重定位存活的 buffer。CPU slice 不承担长期资产身份。Streaming 的 ResourceId/PageId、generation、resident 映射仍保留，解析到当前分配后再形成 slice，避免把可迁移页永久表示为裸地址。slice 保留的是原生 allocation，页内范围的复用与 residency pinning 仍由 streaming 原有协议负责。
 

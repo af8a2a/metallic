@@ -4751,15 +4751,15 @@ Result<> RenderGraphPreviewRenderer::render(
     if (!result) {
         return result;
     }
-    if (auto commandResult = impl_->commandBuffer->copyTextureToBuffer(BufferTextureRegion{
+    if (auto commandResult = (impl_->readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return impl_->commandBuffer->copyTextureToBuffer(BufferTextureRegion{
         .texture = output->texture,
-        .buffer = impl_->readbackBuffer.get(),
+        .buffer = bufferSlice,
         .width = outputWidth,
         .height = outputHeight,
         .depth = 1,
         .mipLevel = 0,
         .baseLayer = 0,
-    }); !commandResult) { return commandResult; }
+    }); }); !commandResult) { return commandResult; }
 
     result = impl_->commandBuffer->end();
     if (!result) {

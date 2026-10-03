@@ -787,10 +787,10 @@ public:
             // so the graph also exercises a same-state write-after-write barrier.
             if (index % 2 == 0 || index == 5) {
                 FRAME_REQUIRE(executor.transitionOutput(*commands.buffer, "Triangle.color", render::ResourceState::TransferSource));
-                if (auto commandResult = commands.buffer->copyTextureToBuffer({
+                if (auto commandResult = (imageReadbacks[index].get())->slice().and_then([&](const auto& bufferSlice) { return commands.buffer->copyTextureToBuffer({
                     .texture = executor.outputResource("Triangle.color")->texture,
-                    .buffer = imageReadbacks[index].get(), .width = kWidth, .height = kWidth,
-                }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+                    .buffer = bufferSlice, .width = kWidth, .height = kWidth,
+                }); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
             }
             FRAME_REQUIRE(commands.submit(tracker, index == 0 ? gate.get() : index == 5 ? rebuildGate.get() : nullptr));
             if (index == 0) { firstPoint = commands.frame.completion(); }
@@ -1549,8 +1549,8 @@ public:
             .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { pixels = std::move(rhiValue); }));
         FRAME_REQUIRE(readback.begin(6));
         FRAME_REQUIRE(executor.transitionOutput(*readback.buffer, "TextureCopy.color", render::ResourceState::TransferSource));
-        if (auto commandResult = readback.buffer->copyTextureToBuffer({.texture = executor.outputResource("TextureCopy.color")->texture,
-            .buffer = pixels.get(), .width = 16, .height = 16}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = (pixels.get())->slice().and_then([&](const auto& bufferSlice) { return readback.buffer->copyTextureToBuffer({.texture = executor.outputResource("TextureCopy.color")->texture,
+            .buffer = bufferSlice, .width = 16, .height = 16}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         FRAME_REQUIRE(readback.submit(tracker));
         FRAME_REQUIRE(readback.frame.wait(kWaitTimeout));
         std::array<uint32_t, 256> image{};

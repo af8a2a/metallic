@@ -49,8 +49,6 @@ public:
     Result<> dispatch(CommandBuffer& commands, const EncodedParameters& params,
         uint32_t x, uint32_t y = 1, uint32_t z = 1) const;
     Result<> dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params, const BufferSlice& arguments) const;
-    Result<> dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
-        Buffer& arguments, uint64_t offset = 0) const;
 private:
     struct Impl;
     std::shared_ptr<Impl> impl_;

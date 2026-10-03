@@ -126,7 +126,7 @@ public:
             .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferRead},
         };
         if (auto commandResult = commands->synchronize({.textures = {&toReadback, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commands->copyTextureToBuffer({.texture = output.get(), .buffer = readback.get(), .width = 32, .height = 32}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = output.get(), .buffer = bufferSlice, .width = 32, .height = 32}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         render::CommandBuffer* command = commands.get();
         if (!commands->end() || !context.graphicsQueue.submit({
             .commandBuffers = {&command, 1},
@@ -177,7 +177,7 @@ public:
         commands->endRendering();
         toReadback.texture = pq.get();
         if (!commands->synchronize({.textures = {&toReadback, 1}})) { return RHITestResult::fail("PQ readback barrier failed"); }
-        if (auto commandResult = commands->copyTextureToBuffer({.texture = pq.get(), .buffer = readback.get(), .width = 32, .height = 32}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = pq.get(), .buffer = bufferSlice, .width = 32, .height = 32}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         if (!commands->end() || !context.graphicsQueue.submit({.commandBuffers = {&command, 1},
                 .signalFence = fence.get()}) || !fence->wait()) { return RHITestResult::fail("PQ submit failed"); }
         readback->invalidate();

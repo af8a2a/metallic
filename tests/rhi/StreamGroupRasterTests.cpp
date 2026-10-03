@@ -42,7 +42,7 @@ public:
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                 .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto v) { buffers[i] = std::move(v); }));
             GROUP_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto v) { handles[i] = v; }));
-            GROUP_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
+            GROUP_REQUIRE((*buffers[i]).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[i], bufferSlice); }));
         }
         const auto upload = [&](size_t index, const void* data, size_t bytes) -> Result<> {
             void* mapped = buffers[index]->map();

@@ -64,12 +64,12 @@ public:
             CLASSIFY_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                 .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[i] = std::move(rhiValue); }));
-            CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[i], *inputs[i]));
+            CLASSIFY_REQUIRE((*inputs[i]).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[i], bufferSlice); }));
         }
         for (size_t i = 0; i < 2; ++i) {
-            CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[12 + i * 2], rasterizers[i].clusterBuffer()));
-            CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[13 + i * 2], rasterizers[i].candidateArguments()));
-            CLASSIFY_REQUIRE(heap->writeStorageBuffer(handles[16 + i], rasterizers[i].workloadBuffer()));
+            CLASSIFY_REQUIRE((rasterizers[i].clusterBuffer()).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[12 + i * 2], bufferSlice); }));
+            CLASSIFY_REQUIRE((rasterizers[i].candidateArguments()).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[13 + i * 2], bufferSlice); }));
+            CLASSIFY_REQUIRE((rasterizers[i].workloadBuffer()).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[16 + i], bufferSlice); }));
         }
         const auto upload = [&](size_t index, const void* data, size_t size) -> Result<> {
             void* mapped = inputs[index]->map();
@@ -307,7 +307,7 @@ public:
                     if (schedule != 0) {
                         if (auto commandResult = commands->bindExecution((pipelines[4])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                         commands->pushBindlessData(&push, sizeof(push));
-                        CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
+                        CLASSIFY_REQUIRE((rasterizer.candidateArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands->dispatchIndirect(bufferSlice); }));
                         BufferBarrierDesc verifyBarrier{
                             .buffer = &rasterizer.clusterBuffer(),
                             .before = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
@@ -346,7 +346,7 @@ public:
                             if (auto commandResult = commands->bindExecution((pipelines[legacy ? 7 : 2])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                             commands->pushBindlessData(&push, sizeof(push));
                             CLASSIFY_REQUIRE(commands->writeTimestamp(*timing, dispatch * 2, PipelineStageBits::TopOfPipe));
-                            CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
+                            CLASSIFY_REQUIRE((rasterizer.candidateArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands->dispatchIndirect(bufferSlice); }));
                             CLASSIFY_REQUIRE(commands->writeTimestamp(*timing, dispatch * 2 + 1, PipelineStageBits::BottomOfPipe));
                         }
                         if (auto commandResult = commands->synchronize({.buffers = {&tagsReady, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
@@ -354,7 +354,7 @@ public:
                     if (schedule == 0 || test.maxPixels != 0) {
                         if (auto commandResult = commands->bindExecution((pipelines[schedule == 0 ? 3 : schedule == 1 ? 2 : 7])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
                         commands->pushBindlessData(&push, sizeof(push));
-                        CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.candidateArguments()));
+                        CLASSIFY_REQUIRE((rasterizer.candidateArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands->dispatchIndirect(bufferSlice); }));
                     }
                     if (schedule != 0) {
                         BufferBarrierDesc counterCopy{
@@ -389,7 +389,7 @@ public:
                         commands->dispatch(1);
                         if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         if (auto commandResult = commands->bindExecution((pipelines[6])->execution()); !commandResult) { return RHITestResult::fail(std::string("bindExecution failed: ") + render::resultToString(commandResult)); }
-                        CLASSIFY_REQUIRE(commands->dispatchIndirect(rasterizer.clusterArguments(), 4 * 3 * sizeof(uint32_t)));
+                        CLASSIFY_REQUIRE((rasterizer.clusterArguments()).slice({4 * 3 * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands->dispatchIndirect(bufferSlice); }));
                         ready.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                         if (auto commandResult = commands->synchronize({.buffers = {&ready, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                         {

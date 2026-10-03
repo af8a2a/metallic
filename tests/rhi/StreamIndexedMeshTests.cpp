@@ -48,7 +48,7 @@ public:
         for (size_t i = 0; i < inputs.size(); ++i) {
             MESH_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[i] = std::move(rhiValue); }));
-            MESH_REQUIRE(heap->writeStorageBuffer(handles[i], *inputs[i]));
+            MESH_REQUIRE((*inputs[i]).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[i], bufferSlice); }));
         }
         const auto upload = [&](size_t index, const void* data, size_t size) -> Result<> {
             void* mapped = inputs[index]->map();
@@ -57,7 +57,7 @@ public:
         };
         VisibilityHybridRasterizer rasterizer;
         MESH_REQUIRE(rasterizer.initialize(*device, width, height, log));
-        MESH_REQUIRE(heap->writeStorageBuffer(handles[Queue], rasterizer.queueBuffer()));
+        MESH_REQUIRE((rasterizer.queueBuffer()).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[Queue], bufferSlice); }));
         std::array<std::unique_ptr<ShaderModule>, 4> shaders;
         const char* entries[] = {"referenceStreamMeshMain", "referenceStreamFragmentMain",
             "gpuDrivenStreamAssetMeshMain", "gpuDrivenStreamAssetFragmentMain"};
@@ -259,7 +259,7 @@ public:
                             .after = {PipelineStageBits::Transfer, AccessBits::TransferRead},
                         };
                         if (auto commandResult = commands->synchronize({.textures = {&copy, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                        if (auto commandResult = commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = readbacks[i].get(), .width = width, .height = height}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+                        if (auto commandResult = (readbacks[i].get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = bufferSlice, .width = width, .height = height}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
                     }
                     MESH_REQUIRE(commands->end());
                     CommandBuffer* list[] = {commands.get()};

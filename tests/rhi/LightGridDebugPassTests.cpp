@@ -467,8 +467,8 @@ public:
                 .after = {render::PipelineStageBits::Transfer, render::AccessBits::TransferWrite},
             };
             if (auto commandResult = commands->synchronize({.buffers = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            if (auto commandResult = commands->copyTextureToBuffer({.texture = output->texture, .buffer = readback.get(),
-                .width = kExtent, .height = kExtent, .depth = 1}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+            if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = output->texture, .buffer = bufferSlice,
+                .width = kExtent, .height = kExtent, .depth = 1}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
             LIGHT_DEBUG_CHECK(commands->end());
             render::CommandBuffer* submission[] = {commands.get()};
             LIGHT_DEBUG_CHECK(queue->submit({.commandBuffers = {submission, 1}}));

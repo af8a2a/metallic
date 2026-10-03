@@ -3361,8 +3361,8 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        if (auto commandResult = context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
-            .buffer = context.outputBuffer("data").buffer(), .width = context.width(), .height = context.height()}); !commandResult) { return commandResult; }
+        if (auto commandResult = (context.outputBuffer("data").buffer())->slice().and_then([&](const auto& bufferSlice) { return context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("color").texture(),
+            .buffer = bufferSlice, .width = context.width(), .height = context.height()}); }); !commandResult) { return commandResult; }
         return {};
     }
 };
@@ -4825,7 +4825,7 @@ public:
             if (!bindlessResult || !outHandle.valid()) {
                 return RHITestResult::fail(std::string("allocateBuffer(") + label + ") returned " + toString(bindlessResult));
             }
-            bindlessResult = bindlessHeap->writeStorageBuffer(outHandle, buffer);
+            bindlessResult = (buffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap->writeStorageBuffer(outHandle, bufferSlice); });
             if (!bindlessResult) {
                 return RHITestResult::fail(std::string("writeStorageBuffer(") + label + ") returned " + toString(bindlessResult));
             }
@@ -7298,15 +7298,15 @@ public:
         if (!result) {
             return RHITestResult::fail(std::string("transitionOutput returned ") + toString(result));
         }
-        if (auto commandResult = commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
+        if (auto commandResult = (readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
             .texture = output->texture,
-            .buffer = readbackBuffer.get(),
+            .buffer = bufferSlice,
             .width = kWidth,
             .height = kHeight,
             .depth = 1,
             .mipLevel = 0,
             .baseLayer = 0,
-        }); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
+        }); }); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -8084,15 +8084,15 @@ public:
         if (!result) {
             return RHITestResult::fail(std::string("transitionOutput returned ") + toString(result));
         }
-        if (auto commandResult = commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
+        if (auto commandResult = (readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
             .texture = output->texture,
-            .buffer = readbackBuffer.get(),
+            .buffer = bufferSlice,
             .width = kWidth,
             .height = kHeight,
             .depth = 1,
             .mipLevel = 0,
             .baseLayer = 0,
-        }); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
+        }); }); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -8259,9 +8259,13 @@ public:
                 std::string("transitionOutput(raster readback) returned ") +
                 toString(result));
         }
+        auto rasterColorReadbackSlice = rasterColorReadback->slice();
+        if (!rasterColorReadbackSlice) { return RHITestResult::fail(render::resultToString(rasterColorReadbackSlice)); }
+        auto rasterVisibilityReadbackSlice = rasterVisibilityReadback->slice();
+        if (!rasterVisibilityReadbackSlice) { return RHITestResult::fail(render::resultToString(rasterVisibilityReadbackSlice)); }
         const render::BufferTextureRegion colorCopy{
             .texture = rasterColor->texture,
-            .buffer = rasterColorReadback.get(),
+            .buffer = *rasterColorReadbackSlice,
             .width = kWidth,
             .height = kHeight,
             .depth = 1,
@@ -8270,7 +8274,7 @@ public:
         };
         render::BufferTextureRegion visibilityCopy = colorCopy;
         visibilityCopy.texture = rasterVisibility->texture;
-        visibilityCopy.buffer = rasterVisibilityReadback.get();
+        visibilityCopy.buffer = *rasterVisibilityReadbackSlice;
         if (auto commandResult = rasterCommandBuffer->copyTextureToBuffer(colorCopy); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
         if (auto commandResult = rasterCommandBuffer->copyTextureToBuffer(visibilityCopy); !commandResult) { return RHITestResult::fail(render::resultToString(commandResult)); }
         result = rasterCommandBuffer->end();
@@ -8385,15 +8389,15 @@ public:
                     render::ResourceState::TransferSource);
             }
             if (result) {
-                if (auto commandResult = captureCommandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
+                if (auto commandResult = (captureReadback.get())->slice().and_then([&](const auto& bufferSlice) { return captureCommandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
                     .texture = captureOutput->texture,
-                    .buffer = captureReadback.get(),
+                    .buffer = bufferSlice,
                     .width = width,
                     .height = height,
                     .depth = 1,
                     .mipLevel = 0,
                     .baseLayer = 0,
-                }); !commandResult) { error = render::resultToString(commandResult); return false; }
+                }); }); !commandResult) { error = render::resultToString(commandResult); return false; }
                 result = captureCommandBuffer->end();
             }
             if (!result) {
@@ -9048,9 +9052,15 @@ public:
                 toString(result));
         }
 
+        auto colorReadbackSlice = colorReadback->slice();
+        if (!colorReadbackSlice) { return RHITestResult::fail(render::resultToString(colorReadbackSlice)); }
+        auto visibilityReadbackSlice = visibilityReadback->slice();
+        if (!visibilityReadbackSlice) { return RHITestResult::fail(render::resultToString(visibilityReadbackSlice)); }
+        auto depthReadbackSlice = depthReadback->slice();
+        if (!depthReadbackSlice) { return RHITestResult::fail(render::resultToString(depthReadbackSlice)); }
         const render::BufferTextureRegion colorCopy{
             .texture = color->texture,
-            .buffer = colorReadback.get(),
+            .buffer = *colorReadbackSlice,
             .width = kWidth,
             .height = kHeight,
             .depth = 1,
@@ -9059,10 +9069,10 @@ public:
         };
         render::BufferTextureRegion visibilityCopy = colorCopy;
         visibilityCopy.texture = visibility->texture;
-        visibilityCopy.buffer = visibilityReadback.get();
+        visibilityCopy.buffer = *visibilityReadbackSlice;
         render::BufferTextureRegion depthCopy = colorCopy;
         depthCopy.texture = depth->texture;
-        depthCopy.buffer = depthReadback.get();
+        depthCopy.buffer = *depthReadbackSlice;
         if (auto commandResult = commandBuffer->copyTextureToBuffer(colorCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->copyTextureToBuffer(visibilityCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
         if (auto commandResult = commandBuffer->copyTextureToBuffer(depthCopy); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }

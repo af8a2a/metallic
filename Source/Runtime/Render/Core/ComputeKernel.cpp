@@ -140,13 +140,6 @@ Result<> ComputeKernel::dispatch(CommandBuffer& commands, const EncodedParameter
 }
 
 Result<> ComputeKernel::dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
-    Buffer& arguments, uint64_t offset) const
-{
-    auto slice = arguments.slice({offset, 12});
-    return slice ? dispatchIndirect(commands, params, *slice) : makeError(slice.error());
-}
-
-Result<> ComputeKernel::dispatchIndirect(CommandBuffer& commands, const EncodedParameters& params,
     const BufferSlice& arguments) const
 {
     const ComputeIndirectParameters dispatch{params, arguments};

@@ -2620,16 +2620,15 @@ struct ScenePathTraceResources::Impl {
                 return makeError(Error::InvalidArgument);
             }
 
-            if (auto commandResult = commandBuffer.copyBufferToTexture(BufferTextureRegion{
+            if (auto commandResult = (texture.uploadBuffer.get())->slice({texture.uploadBufferOffset + upload.bufferOffset}).and_then([&](const auto& bufferSlice) { return commandBuffer.copyBufferToTexture(BufferTextureRegion{
                 .texture = texture.texture.get(),
-                .buffer = texture.uploadBuffer.get(),
-                .bufferOffset = texture.uploadBufferOffset + upload.bufferOffset,
+                .buffer = bufferSlice,
                 .width = upload.width,
                 .height = upload.height,
                 .depth = 1,
                 .mipLevel = mipIndex,
                 .baseLayer = 0,
-            }); !commandResult) { return commandResult; }
+            }); }); !commandResult) { return commandResult; }
         }
 
         texture.uploaded = true;

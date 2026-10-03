@@ -488,16 +488,16 @@ public:
         auto storageView = (*device)->createBufferView(**storage, {.type = BufferViewType::Raw});
         if (!constantView || !storageView) { return RHITestResult::fail("local view creation failed"); }
         if (!hasError(heap.writeConstantBuffer(*handle, **storage), Error::InvalidArgument) ||
-            !hasError(heap.writeStorageBuffer(*handle, **constant), Error::InvalidArgument) ||
+            !hasError((**constant).slice().and_then([&](const auto& bufferSlice) { return heap.writeStorageBuffer(*handle, bufferSlice); }), Error::InvalidArgument) ||
             !hasError(heap.writeConstantBuffer(*handle, **foreignBuffer), Error::InvalidArgument) ||
-            !hasError(heap.writeStorageBuffer(*handle, **foreignBuffer), Error::InvalidArgument) ||
+            !hasError((**foreignBuffer).slice().and_then([&](const auto& bufferSlice) { return heap.writeStorageBuffer(*handle, bufferSlice); }), Error::InvalidArgument) ||
             !hasError(heap.writeBufferView(*handle, **foreignView), Error::InvalidArgument) ||
             !hasError((*device)->createBufferView(**storage, {.type = BufferViewType::Constant}), Error::InvalidArgument) ||
             !hasError((*device)->createBufferView(**constant, {.type = BufferViewType::Raw}), Error::InvalidArgument)) {
             return RHITestResult::fail("buffer descriptor accepted foreign ownership or incompatible usage");
         }
         for (uint32_t i = 0; i < 3; ++i) {
-            if (!heap.writeConstantBuffer(*handle, **constant) || !heap.writeStorageBuffer(*handle, **storage) ||
+            if (!heap.writeConstantBuffer(*handle, **constant) || !(**storage).slice().and_then([&](const auto& bufferSlice) { return heap.writeStorageBuffer(*handle, bufferSlice); }) ||
                 !heap.writeBufferView(*handle, **constantView) || !heap.writeBufferView(*handle, **storageView)) {
                 return RHITestResult::fail("valid buffer descriptor write failed");
             }
@@ -541,7 +541,7 @@ public:
             !hasError(empty.setViewport(viewport), Error::InvalidArgument) ||
             !hasError(empty.draw(3), Error::InvalidArgument) ||
             !hasError(empty.drawMeshTasks(1), Error::InvalidArgument) ||
-            !hasError(empty.drawMeshTasksIndirect(emptyBuffer), Error::InvalidArgument)) {
+            !hasError(empty.drawMeshTasksIndirect({}), Error::InvalidArgument)) {
             return RHITestResult::fail("empty command objects did not report InvalidArgument");
         }
         auto device = createDevice({.applicationName = "Command recording results",
@@ -556,7 +556,15 @@ public:
             .usage = BufferUsageBits::TransferSource | BufferUsageBits::TransferDestination | BufferUsageBits::Indirect});
         if (!commands || !texture || !buffer) { return RHITestResult::fail("command test resource setup failed"); }
         auto& command = **commands;
-        const BufferTextureRegion valid{.texture = texture->get(), .buffer = buffer->get(), .width = 16, .height = 16};
+        auto full = (*buffer)->slice();
+        auto emptyRange = (*buffer)->slice({1024, 0});
+        auto shortRange = (*buffer)->slice({0, 1020});
+        auto unaligned = (*buffer)->slice({1, 12});
+        auto shortIndirect = (*buffer)->slice({0, 8});
+        if (!full || !emptyRange || !shortRange || !unaligned || !shortIndirect) {
+            return RHITestResult::fail("slice setup failed");
+        }
+        const BufferTextureRegion valid{.texture = texture->get(), .buffer = *full, .width = 16, .height = 16};
         if (!hasError(command.copyBufferToTexture(valid), Error::InvalidArgument) ||
             !hasError(command.setViewport(viewport), Error::InvalidArgument) ||
             !hasError(command.draw(3), Error::InvalidArgument)) {
@@ -564,9 +572,9 @@ public:
         }
         if (!command.begin()) { return RHITestResult::fail("begin failed"); }
         auto zeroExtent = valid; zeroExtent.width = 0;
-        auto badOffset = valid; badOffset.bufferOffset = 1024;
+        auto badOffset = valid; badOffset.buffer = *emptyRange;
         auto badPitch = valid; badPitch.bufferRowPitch = 1;
-        auto tooSmall = valid; tooSmall.bufferOffset = 4;
+        auto tooSmall = valid; tooSmall.buffer = *shortRange;
         auto padded = valid; padded.bufferRowPitch = 80;
         auto overflow = valid; overflow.depth = overflow.layerCount = std::numeric_limits<uint32_t>::max();
         for (const auto& region : {zeroExtent, badOffset, badPitch, tooSmall, padded, overflow}) {
@@ -587,9 +595,9 @@ public:
         }
         if (!hasError(command.drawMeshTasks(0), Error::InvalidArgument) ||
             !hasError(command.drawMeshTasks(1), Error::Unsupported) ||
-            !hasError(command.drawMeshTasksIndirect(**buffer, 1), Error::InvalidArgument) ||
-            !hasError(command.drawMeshTasksIndirect(**buffer, 1024), Error::InvalidArgument) ||
-            !hasError(command.drawMeshTasksIndirect(**buffer), Error::Unsupported)) {
+            !hasError(command.drawMeshTasksIndirect(*unaligned), Error::InvalidArgument) ||
+            !hasError(command.drawMeshTasksIndirect(*shortIndirect), Error::InvalidArgument) ||
+            !hasError(command.drawMeshTasksIndirect(*full), Error::Unsupported)) {
             return RHITestResult::fail("mesh draw argument and capability errors were not distinguished");
         }
         auto foreignTexture = context.device.createTexture({.usage = TextureUsageBits::TransferSource | TextureUsageBits::TransferDestination,

@@ -126,19 +126,19 @@ public:
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
-        result = bindlessHeap_->writeStorageBuffer(paramsHandle_, *paramsBuffer_);
+        result = (*paramsBuffer_).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(paramsHandle_, bufferSlice); });
         if (!result) {
             log += resultMessage("writeStorageBuffer(BunnyWireframePass params)", result);
             log += '\n';
             return result;
         }
-        result = bindlessHeap_->writeStorageBuffer(positionHandle_, *positionBuffer_);
+        result = (*positionBuffer_).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(positionHandle_, bufferSlice); });
         if (!result) {
             log += resultMessage("writeStorageBuffer(BunnyWireframePass positions)", result);
             log += '\n';
             return result;
         }
-        result = bindlessHeap_->writeStorageBuffer(transformHandle_, *transformBuffer_);
+        result = (*transformBuffer_).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(transformHandle_, bufferSlice); });
         if (!result) {
             log += resultMessage("writeStorageBuffer(BunnyWireframePass transforms)", result);
             log += '\n';
@@ -386,11 +386,11 @@ private:
         if (!result) {
             return result;
         }
-        result = bindlessHeap_->writeStorageBuffer(positionHandle_, *positionBuffer);
+        result = (*positionBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(positionHandle_, bufferSlice); });
         if (!result) {
             return result;
         }
-        result = bindlessHeap_->writeStorageBuffer(transformHandle_, *transformBuffer);
+        result = (*transformBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(transformHandle_, bufferSlice); });
         if (!result) {
             return result;
         }

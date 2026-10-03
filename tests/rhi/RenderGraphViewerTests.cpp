@@ -83,8 +83,8 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        if (auto commandResult = context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("source").texture(),
-            .buffer = context.outputBuffer("data").buffer(), .width = context.width(), .height = context.height()}); !commandResult) { return commandResult; }
+        if (auto commandResult = (context.outputBuffer("data").buffer())->slice().and_then([&](const auto& bufferSlice) { return context.commandBuffer().copyTextureToBuffer({.texture = context.inputTexture("source").texture(),
+            .buffer = bufferSlice, .width = context.width(), .height = context.height()}); }); !commandResult) { return commandResult; }
         return {};
     }
 };

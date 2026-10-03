@@ -907,7 +907,7 @@ bool fillBufferImageLayout(
     // The last row needs only its texels, not its trailing row/slice padding.
     // Divide before multiplying to reject oversized regions without overflow.
     const uint64_t lastSliceBytes = rowPitch * (rows - 1) + tightRowPitch;
-    const uint64_t availableBytes = desc.buffer->desc().size - desc.bufferOffset;
+    const uint64_t availableBytes = desc.buffer.size();
     const uint64_t slices = uint64_t(desc.depth) * desc.layerCount;
     return lastSliceBytes <= availableBytes && slices - 1 <= (availableBytes - lastSliceBytes) / slicePitch;
 }
@@ -4395,12 +4395,6 @@ Result<> BindlessHeap::writeConstantBuffer(BindlessHandle handle, Buffer& buffer
     return {};
 }
 
-Result<> BindlessHeap::writeStorageBuffer(BindlessHandle handle, Buffer& buffer)
-{
-    auto slice = buffer.slice();
-    return slice ? writeStorageBuffer(handle, *slice) : makeError(slice.error());
-}
-
 Result<> BindlessHeap::writeStorageBuffer(BindlessHandle handle, const BufferSlice& buffer)
 {
     if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || !buffer.allocation_ ||
@@ -4962,13 +4956,12 @@ Result<> CommandBuffer::copyBufferTexture(const BufferTextureRegion& desc, Buffe
     if (impl_ == nullptr || !recording_ ||
         desc.texture == nullptr ||
         desc.texture->impl_ == nullptr ||
-        desc.buffer == nullptr ||
-        desc.buffer->impl_ == nullptr ||
         desc.width == 0 ||
         desc.height == 0 ||
         desc.depth == 0 ||
-        desc.layerCount == 0 || desc.bufferOffset >= desc.buffer->desc().size ||
-        desc.texture->impl_->device != impl_->device || desc.buffer->impl_->device != impl_->device) {
+        desc.layerCount == 0 || desc.texture->impl_->device != impl_->device ||
+        !desc.buffer.validate(deviceIdentity(), direction == BufferTextureCopyDirection::ToTexture
+            ? BufferUsageBits::TransferSource : BufferUsageBits::TransferDestination)) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -4978,11 +4971,12 @@ Result<> CommandBuffer::copyBufferTexture(const BufferTextureRegion& desc, Buffe
         return makeError(Error::InvalidArgument);
     }
 
+    auto retained = retainResource(desc.buffer.retainAllocation());
+    if (!retained) { return retained; }
     const VkDeviceMemoryImageCopyKHR copyRegion{
         .sType = VK_STRUCTURE_TYPE_DEVICE_MEMORY_IMAGE_COPY_KHR,
-        .addressRange = {desc.buffer->deviceAddress() + desc.bufferOffset,
-            desc.buffer->desc().size - desc.bufferOffset},
-        .addressFlags = detail::BufferAddressCommandAccess::flags(*desc.buffer),
+        .addressRange = {desc.buffer.deviceAddress(), desc.buffer.size()},
+        .addressFlags = detail::BufferAddressCommandAccess::flags(desc.buffer),
         .addressRowLength = bufferRowLength,
         .addressImageHeight = bufferImageHeight,
         .imageSubresource = {
@@ -5581,26 +5575,22 @@ Result<> CommandBuffer::drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY
     return {};
 }
 
-Result<> CommandBuffer::drawMeshTasksIndirect(Buffer& buffer, uint64_t offset)
+Result<> CommandBuffer::drawMeshTasksIndirect(const BufferSlice& arguments)
 {
-    if (impl_ == nullptr || !recording_ ||
-        buffer.impl_ == nullptr ||
-        buffer.impl_->device != impl_->device ||
-        (impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0 ||
-        !hasFlag(buffer.impl_->desc.usage, BufferUsageBits::Indirect) ||
-        (offset & 3u) != 0 ||
-        offset > buffer.impl_->desc.size ||
-        sizeof(VkDrawMeshTasksIndirectCommandEXT) > buffer.impl_->desc.size - offset) {
+    if (!impl_ || !recording_ || !(impl_->queueFlags & VK_QUEUE_GRAPHICS_BIT) ||
+        !arguments.validate(deviceIdentity(), BufferUsageBits::Indirect, 4, sizeof(VkDrawMeshTasksIndirectCommandEXT))) {
         return makeError(Error::InvalidArgument);
     }
 #ifdef VK_EXT_mesh_shader
     if (!impl_->device->capabilities.meshShader || impl_->device->functions.vkCmdDrawMeshTasksIndirect2EXT == nullptr) {
         return makeError(Error::Unsupported);
     }
+    auto retained = retainResource(arguments.retainAllocation());
+    if (!retained) { return retained; }
     const VkDrawIndirect2InfoKHR info{
         .sType = VK_STRUCTURE_TYPE_DRAW_INDIRECT_2_INFO_KHR,
-        .addressRange = {buffer.deviceAddress() + offset, sizeof(VkDrawMeshTasksIndirectCommandEXT), 0},
-        .addressFlags = detail::BufferAddressCommandAccess::flags(buffer),
+        .addressRange = {arguments.deviceAddress(), sizeof(VkDrawMeshTasksIndirectCommandEXT), 0},
+        .addressFlags = detail::BufferAddressCommandAccess::flags(arguments),
         .drawCount = 1,
     };
     impl_->device->functions.vkCmdDrawMeshTasksIndirect2EXT(impl_->commandBuffer, &info);
@@ -5617,13 +5607,6 @@ void CommandBuffer::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_
         impl_->device->functions.vkCmdDispatch(impl_->commandBuffer, groupCountX, groupCountY, groupCountZ);
         if (auto* capture = profiling::SchedulingCapture::active) { ++capture->metrics->dispatchCalls; }
     }
-}
-
-Result<> CommandBuffer::dispatchIndirect(Buffer& buffer, uint64_t offset)
-{
-    BufferSlice arguments;
-    auto result = buffer.slice({offset, sizeof(VkDispatchIndirectCommand)}).transform([&](auto rhiValue) { arguments = std::move(rhiValue); });
-    return result ? dispatchIndirect(arguments) : result;
 }
 
 Result<> CommandBuffer::dispatchIndirect(const BufferSlice& arguments)

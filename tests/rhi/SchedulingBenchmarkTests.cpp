@@ -28,8 +28,8 @@ Result<> verifyRed(RenderGraphExecutor& executor, RHITestContext& context, const
     if (result) { result = recording.prepare(frame).transform([&](auto value) { commands = value; }); }
     if (result) { result = executor.transitionOutput(*commands, output, ResourceState::TransferSource); }
     if (result) {
-        if (auto commandResult = commands->copyTextureToBuffer({.texture = executor.outputResource(output)->texture, .buffer = readback.get(),
-            .width = 32, .height = 32}); !commandResult) { return commandResult; }
+        if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = executor.outputResource(output)->texture, .buffer = bufferSlice,
+            .width = 32, .height = 32}); }); !commandResult) { return commandResult; }
         result = commands->end();
     }
     if (result) { result = tracker.submit({.commandBuffers = {&commands, 1}}, frame); }

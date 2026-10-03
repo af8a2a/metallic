@@ -121,8 +121,8 @@ public:
         };
         if (auto commandResult = context.commandBuffer().synchronize({.textures = {&depthBarrier, 1}, .buffers = {&counterBarrier, 1}}); !commandResult) { return commandResult; }
         result = heap_->writeSampledImage(depth_, *depth.view(), render::TextureLayout::ShaderRead);
-        if (result) { result = heap_->writeStorageBuffer(data_, *data); }
-        if (result) { result = heap_->writeStorageBuffer(counter_, *counter); }
+        if (result) { result = (*data).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(data_, bufferSlice); }); }
+        if (result) { result = (*counter).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(counter_, bufferSlice); }); }
         if (!result) { return result; }
         uint32_t mips = 0;
         hzbElements(context.width(), context.height(), mips);

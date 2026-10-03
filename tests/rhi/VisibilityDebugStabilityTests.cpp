@@ -44,7 +44,7 @@ public:
             DEBUG_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
             DEBUG_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
-            DEBUG_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
+            DEBUG_REQUIRE((*buffers[i]).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[i], bufferSlice); }));
         }
         const auto upload = [](Buffer& buffer, const void* data, size_t size) -> Result<> {
             void* mapped = buffer.map();
@@ -152,7 +152,7 @@ public:
                         .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                     };
                     if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                    if (auto commandResult = commands->copyBufferToTexture({.texture = textures[i].get(), .buffer = uploads[i].get(), .width = width, .height = 1}); !commandResult) { return RHITestResult::fail(std::string("copyBufferToTexture failed: ") + render::resultToString(commandResult)); }
+                    if (auto commandResult = (uploads[i].get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyBufferToTexture({.texture = textures[i].get(), .buffer = bufferSlice, .width = width, .height = 1}); }); !commandResult) { return RHITestResult::fail(std::string("copyBufferToTexture failed: ") + render::resultToString(commandResult)); }
                     barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite}; barrier.newLayout = TextureLayout::ShaderRead; barrier.after = {PipelineStageBits::AllCommands, AccessBits::ShaderRead};
                     if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                 }
@@ -176,7 +176,7 @@ public:
                 commands->pushBindlessData(&push, sizeof(push)); if (auto commandResult = commands->draw(3); !commandResult) { return RHITestResult::fail(std::string("draw failed: ") + render::resultToString(commandResult)); } commands->endRendering();
                 barrier.oldLayout = TextureLayout::ColorAttachment; barrier.before = {PipelineStageBits::ColorAttachment, AccessBits::ColorRead | AccessBits::ColorWrite}; barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                 if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                if (auto commandResult = commands->copyTextureToBuffer({.texture = textures[2].get(), .buffer = readback.get(), .width = width, .height = 1}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = (readback.get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = textures[2].get(), .buffer = bufferSlice, .width = width, .height = 1}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
                 DEBUG_REQUIRE(commands->end());
                 CommandBuffer* list[] = {commands.get()};
                 DEBUG_REQUIRE(queue->submit({.commandBuffers = {list, 1}, .signalFence = fence.get()}));

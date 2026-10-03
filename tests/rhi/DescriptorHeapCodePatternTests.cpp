@@ -164,8 +164,8 @@ public:
         render::Buffer& input, render::Buffer& output, const PatternValues& values, uint32_t groups)
     {
         auto result = heap_->writeSampledImage(image_, image);
-        if (result) { result = heap_->writeStorageBuffer(input_, input); }
-        if (result) { result = heap_->writeStorageBuffer(output_, output); }
+        if (result) { result = (input).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(input_, bufferSlice); }); }
+        if (result) { result = (output).slice().and_then([&](const auto& bufferSlice) { return heap_->writeStorageBuffer(output_, bufferSlice); }); }
         if (!result) { return result; }
         struct Push { PatternValues values; uint32_t imageBase, bufferBase; };
         const Push push{values, image_.shaderIndex, input_.shaderIndex};
@@ -410,7 +410,7 @@ public:
                 .after = {render::PipelineStageBits::AllCommands, render::AccessBits::MemoryRead | render::AccessBits::MemoryWrite},
             }};
         if (auto commandResult = commands.buffer->synchronize({.textures = {&toTransfer, 1}, .buffers = {toGeneral, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commands.buffer->copyBufferToTexture({.texture = texture.get(), .buffer = upload.get(), .width = 1, .height = 1}); !commandResult) { return RHITestResult::fail(std::string("copyBufferToTexture failed: ") + render::resultToString(commandResult)); }
+        if (auto commandResult = (upload.get())->slice().and_then([&](const auto& bufferSlice) { return commands.buffer->copyBufferToTexture({.texture = texture.get(), .buffer = bufferSlice, .width = 1, .height = 1}); }); !commandResult) { return RHITestResult::fail(std::string("copyBufferToTexture failed: ") + render::resultToString(commandResult)); }
         const render::TextureBarrierDesc toRead{
             .texture = texture.get(),
             .oldLayout = render::TextureLayout::TransferDestination,

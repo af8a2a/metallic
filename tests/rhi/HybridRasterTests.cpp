@@ -79,7 +79,7 @@ public:
         HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         BindlessHandle inputHandle, queueHandle;
         HYBRID_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); })); HYBRID_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { queueHandle = std::move(rhiValue); }));
-        HYBRID_REQUIRE(heap->writeStorageBuffer(inputHandle, *input));
+        HYBRID_REQUIRE((*input).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(inputHandle, bufferSlice); }));
         // Compare the new shared-vertex/integer-step SW kernel to the legacy
         // kernel before testing either against HW. Include both subpixel grids.
         {
@@ -124,14 +124,14 @@ public:
             HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers=3}).transform([&](auto rhiValue) { compareHeap = std::move(rhiValue); }));
             BindlessHandle vertexHandle;
             HYBRID_REQUIRE(compareHeap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { vertexHandle = std::move(rhiValue); }));
-            HYBRID_REQUIRE(compareHeap->writeStorageBuffer(vertexHandle,*input));
+            HYBRID_REQUIRE((*input).slice().and_then([&](const auto& bufferSlice) { return compareHeap->writeStorageBuffer(vertexHandle, bufferSlice); }));
             std::array<std::unique_ptr<Buffer>,2> pixels;
             std::array<BindlessHandle,2> handles;
             for (size_t i=0;i<2;++i) {
                 HYBRID_REQUIRE(device->createBuffer({.size=pixelCount*8,.structureStride=8,.usage=BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                     .memoryLocation=MemoryLocation::HostUpload}).transform([&](auto rhiValue) { pixels[i] = std::move(rhiValue); }));
                 HYBRID_REQUIRE(compareHeap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
-                HYBRID_REQUIRE(compareHeap->writeStorageBuffer(handles[i],*pixels[i]));
+                HYBRID_REQUIRE((*pixels[i]).slice().and_then([&](const auto& bufferSlice) { return compareHeap->writeStorageBuffer(handles[i], bufferSlice); }));
             }
             auto* queue=device->getQueue(QueueType::Graphics);
             std::unique_ptr<CommandPool> pool;
@@ -247,7 +247,7 @@ public:
                         &rasterizer.pixelBuffer() != pixelAllocation || &rasterizer.clusterBuffer() != clusters) {
                         return RHITestResult::fail("Hybrid extent reuse changed resources or accepted an invalid extent");
                     }
-                    HYBRID_REQUIRE(heap->writeStorageBuffer(queueHandle, rasterizer.queueBuffer()));
+                    HYBRID_REQUIRE((rasterizer.queueBuffer()).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(queueHandle, bufferSlice); }));
                     if (submitted) { HYBRID_REQUIRE(fence->reset()); HYBRID_REQUIRE(pool->reset()); }
                     HYBRID_REQUIRE(commands->begin());
                     const TextureBarrierDesc transitions[] = {
@@ -324,7 +324,7 @@ public:
                     }
                     if (auto commandResult = commands->synchronize({.textures = {outputTransitions, 2}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
                     for (size_t i = 0; i < 2; ++i) {
-                        if (auto commandResult = commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = readback[i].get(), .width = width, .height = height}); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+                        if (auto commandResult = (readback[i].get())->slice().and_then([&](const auto& bufferSlice) { return commands->copyTextureToBuffer({.texture = textures[i].get(), .buffer = bufferSlice, .width = width, .height = height}); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
                     }
                     HYBRID_REQUIRE(commands->end());
                     CommandBuffer* list[] = {commands.get()};
@@ -424,8 +424,8 @@ public:
             void* mapped = input->map();
             if (!mapped) { return RHITestResult::fail("Cluster input map failed"); }
             std::memcpy(mapped, candidates.data(), candidates.size() * 8); input->flush(); input->unmap();
-            HYBRID_REQUIRE(heap->writeStorageBuffer(inputHandle, *input));
-            HYBRID_REQUIRE(heap->writeStorageBuffer(binHandle, rasterizer.clusterBuffer()));
+            HYBRID_REQUIRE((*input).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(inputHandle, bufferSlice); }));
+            HYBRID_REQUIRE((rasterizer.clusterBuffer()).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(binHandle, bufferSlice); }));
             const uint64_t readbackBytes = (16ull + 5ull * capacity) * 4u;
             HYBRID_REQUIRE(device->createBuffer({.size = readbackBytes, .usage = BufferUsageBits::TransferDestination,
                 .memoryLocation = MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));

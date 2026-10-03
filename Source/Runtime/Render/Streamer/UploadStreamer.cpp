@@ -474,11 +474,12 @@ struct StreamerImpl {
         if (activeFrame != nullptr) {
             activeFrame->retain(dynamicBuffer);
         }
+        auto copySlice = dynamicBuffer->slice({bufferOffset, dataSize});
+        if (!copySlice) { return {}; }
         textureRequests.push_back(TextureCopyRequest{
             .copy = BufferTextureRegion{
                 .texture = streamDesc.dstTexture,
-                .buffer = dynamicBuffer.get(),
-                .bufferOffset = bufferOffset,
+                .buffer = *copySlice,
                 .bufferRowPitch = static_cast<uint32_t>(rowPitch),
                 .bufferSlicePitch = static_cast<uint32_t>(slicePitch),
                 .textureOffsetX = streamDesc.dstOffsetX,

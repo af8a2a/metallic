@@ -549,7 +549,7 @@ private:
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                 .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[index] = std::move(rhiValue); }));
             STREAM_LOD_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[index] = std::move(rhiValue); }));
-            STREAM_LOD_REQUIRE(heap->writeStorageBuffer(handles[index], *buffers[index]));
+            STREAM_LOD_REQUIRE((*buffers[index]).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[index], bufferSlice); }));
         }
         const auto upload = [&](BufferIndex index, const void* source, size_t size) {
             void* mapped = buffers[index]->map();
@@ -1190,7 +1190,7 @@ public:
             STREAM_LOD_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
             STREAM_LOD_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
-            STREAM_LOD_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
+            STREAM_LOD_REQUIRE((*buffers[i]).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[i], bufferSlice); }));
         }
         ShaderCompileResult compiled;
         STREAM_LOD_REQUIRE(compileSlangShaderToSpirv({.moduleName = kMeshletStreamShaderModuleName,

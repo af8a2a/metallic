@@ -3189,7 +3189,7 @@ Result<> MeshletStreamRuntime::cmdDrawMeshTasks(CommandBuffer& commandBuffer, bo
 {
     if (!ready() || drawTaskCount() == 0) { return {}; }
     auto result = prepareImmutableMetadataRead(commandBuffer);
-    return result ? commandBuffer.drawMeshTasksIndirect(*drawIndirectBuffer_, tessellation ? sizeof(MeshletStreamGPUDrawIndirect) : 0u)
+    return result ? (*drawIndirectBuffer_).slice({tessellation ? sizeof(MeshletStreamGPUDrawIndirect) : 0u, 12}).and_then([&](const auto& bufferSlice) { return commandBuffer.drawMeshTasksIndirect(bufferSlice); })
                   : result;
 }
 

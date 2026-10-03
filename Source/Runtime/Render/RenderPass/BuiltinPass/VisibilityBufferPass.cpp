@@ -2241,7 +2241,7 @@ private:
                 {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
                     if (auto commandResult = commandBuffer.bindExecution((clusterBinPipeline_)->execution()); !commandResult) { return commandResult; }
                     commandBuffer.pushBindlessData(&push, sizeof(push));
-                    return commandBuffer.dispatchIndirect(residentLods_[activeFrameSlot_]->arguments());
+                    return (residentLods_[activeFrameSlot_]->arguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commandBuffer.dispatchIndirect(bufferSlice); });
                 }},
             };
             result = recordPrivateBufferComputeStages(commandBuffer, hybridRasterizer_->clusterBuffer(), classification);
@@ -2268,8 +2268,7 @@ private:
             if (auto commandResult = commands.bindExecution((clusterRasterPipeline_)->execution()); !commandResult) { return commandResult; }
             const auto push = makePush(passIndex, 0, projectWithCullingCamera);
             commands.pushBindlessData(&push, sizeof(push));
-            const Result<> result = commands.dispatchIndirect(hybridRasterizer_->clusterArguments(),
-                VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
+            const Result<> result = (hybridRasterizer_->clusterArguments()).slice({VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
             commands.endDebugLabel();
             return result;
         };
@@ -2302,9 +2301,9 @@ private:
                     makePush(passIndex, bucketIndex, projectWithCullingCamera);
                 commands.pushBindlessData(&push, sizeof(push));
                 if (prebin) {
-                    if (auto commandResult = commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments(), bucketIndex * 3u * sizeof(uint32_t)); !commandResult) { return commandResult; }
+                    if (auto commandResult = (hybridRasterizer_->clusterArguments()).slice({bucketIndex * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands.drawMeshTasksIndirect(bufferSlice); }); !commandResult) { return commandResult; }
                 } else {
-                    if (auto commandResult = commands.drawMeshTasksIndirect(residentLods_[activeFrameSlot_]->arguments(), tessellationEnabled() ? 24u : 12u); !commandResult) { return commandResult; }
+                    if (auto commandResult = (residentLods_[activeFrameSlot_]->arguments()).slice({tessellationEnabled() ? 24u : 12u, 12}).and_then([&](const auto& bufferSlice) { return commands.drawMeshTasksIndirect(bufferSlice); }); !commandResult) { return commandResult; }
                 }
             }
             commands.endRendering();
@@ -2902,7 +2901,7 @@ private:
                 commandBuffer.beginDebugLabel({.name = "Hybrid raster: classify stream clusters"});
                 if (auto commandResult = commandBuffer.bindExecution((divertHardware ? *streamClusterBinPipeline_ : *streamClusterBinP0Pipeline_).execution()); !commandResult) { return commandResult; }
                 commandBuffer.pushBindlessData(&push, sizeof(push));
-                result = commandBuffer.dispatchIndirect(hybridRasterizer_->candidateArguments());
+                result = (hybridRasterizer_->candidateArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commandBuffer.dispatchIndirect(bufferSlice); });
                 commandBuffer.endDebugLabel();
                 if (!result) { return result; }
                 context.debugCheckpoint(phase == GPUSceneCullPhase::Early ? "AfterStreamEarlyClassify" : "AfterStreamLateClassify");
@@ -2925,8 +2924,7 @@ private:
                     }},
                     {RenderGraphResourceAccess::BufferStorageReadWrite, [&]() {
                         if (auto commandResult = commandBuffer.bindExecution((streamWorkloadPipelines_[1])->execution()); !commandResult) { return commandResult; }
-                        return commandBuffer.dispatchIndirect(hybridRasterizer_->clusterArguments(),
-                            VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
+                        return (hybridRasterizer_->clusterArguments()).slice({VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commandBuffer.dispatchIndirect(bufferSlice); });
                     }},
                 };
                 result = recordPrivateBufferComputeStages(commandBuffer, hybridRasterizer_->workloadBuffer(), workload);
@@ -2996,8 +2994,7 @@ private:
             }
             {
                 profiling::NvPerfRange range(commands, phase == GPUSceneCullPhase::Early ? "WorkControl/early" : "WorkControl/late");
-                result = commands.dispatchIndirect(hybridRasterizer_->clusterArguments(),
-                    VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t));
+                result = (hybridRasterizer_->clusterArguments()).slice({VisibilityHybridRasterizer::kSoftwareBin * 3u * sizeof(uint32_t), 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); });
             }
             if (replay && result) { replay->after(commands); }
             commands.endDebugLabel();
@@ -3024,7 +3021,7 @@ private:
             if (auto commandResult = commands.bindExecution(((reversedZ ? streamVisibilityPipeline_ : standardZStreamVisibilityPipeline_))->execution()); !commandResult) { return commandResult; }
             commands.pushBindlessData(&push, sizeof(push));
             if (prebin) {
-                if (auto commandResult = commands.drawMeshTasksIndirect(hybridRasterizer_->clusterArguments()); !commandResult) { return commandResult; }
+                if (auto commandResult = (hybridRasterizer_->clusterArguments()).slice({0, 12}).and_then([&](const auto& bufferSlice) { return commands.drawMeshTasksIndirect(bufferSlice); }); !commandResult) { return commandResult; }
             } else {
                 if (auto commandResult = streamRuntime_->cmdDrawMeshTasks(commands, tessellationEnabled()); !commandResult) { return commandResult; }
             }

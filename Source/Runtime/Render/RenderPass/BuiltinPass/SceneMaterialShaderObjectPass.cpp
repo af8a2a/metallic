@@ -422,19 +422,19 @@ private:
             return result;
         }
 
-        result = bindlessHeap_->writeStorageBuffer(positionHandle_, *positionBuffer);
+        result = (*positionBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(positionHandle_, bufferSlice); });
         if (!result) {
             return result;
         }
-        result = bindlessHeap_->writeStorageBuffer(transformHandle_, *transformBuffer);
+        result = (*transformBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(transformHandle_, bufferSlice); });
         if (!result) {
             return result;
         }
-        result = bindlessHeap_->writeStorageBuffer(materialIndexHandle_, *materialIndexBuffer);
+        result = (*materialIndexBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(materialIndexHandle_, bufferSlice); });
         if (!result) {
             return result;
         }
-        result = bindlessHeap_->writeStorageBuffer(materialHandle_, *materialBuffer);
+        result = (*materialBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap_->writeStorageBuffer(materialHandle_, bufferSlice); });
         if (!result) {
             return result;
         }
@@ -503,7 +503,7 @@ private:
             return result ? makeError(Error::Failure) : result;
         }
 
-        result = heap.writeStorageBuffer(outHandle, buffer);
+        result = (buffer).slice().and_then([&](const auto& bufferSlice) { return heap.writeStorageBuffer(outHandle, bufferSlice); });
         if (!result) {
             log += resultMessage(std::string("writeStorageBuffer(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
             log += '\n';

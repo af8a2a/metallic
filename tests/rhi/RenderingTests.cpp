@@ -278,16 +278,15 @@ public:
             .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->copyTextureToBuffer(
-            render::BufferTextureRegion{
+        if (auto commandResult = (readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
                 .texture = colorTexture.get(),
-                .buffer = readbackBuffer.get(),
+                .buffer = bufferSlice,
                 .width = kWidth,
                 .height = kHeight,
                 .depth = 1,
                 .mipLevel = 0,
                 .baseLayer = 0,
-            }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+            }); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -590,16 +589,15 @@ public:
             .range = {.baseMip = 0, .mipCount = 1, .baseLayer = 0, .layerCount = 1},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->copyTextureToBuffer(
-            render::BufferTextureRegion{
+        if (auto commandResult = (readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
                 .texture = colorTexture.get(),
-                .buffer = readbackBuffer.get(),
+                .buffer = bufferSlice,
                 .width = kWidth,
                 .height = kHeight,
                 .depth = 1,
                 .mipLevel = 0,
                 .baseLayer = 0,
-            }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+            }); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {
@@ -840,19 +838,19 @@ public:
             return RHITestResult::fail(std::string("allocateBuffer(params) returned ") + toString(result));
         }
 
-        result = bindlessHeap->writeStorageBuffer(positionHandle, *positionBuffer);
+        result = (*positionBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap->writeStorageBuffer(positionHandle, bufferSlice); });
         if (!result) {
             return RHITestResult::fail(std::string("writeStorageBuffer(position) returned ") + toString(result));
         }
-        result = bindlessHeap->writeStorageBuffer(materialIndexHandle, *materialIndexBuffer);
+        result = (*materialIndexBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap->writeStorageBuffer(materialIndexHandle, bufferSlice); });
         if (!result) {
             return RHITestResult::fail(std::string("writeStorageBuffer(materialIndex) returned ") + toString(result));
         }
-        result = bindlessHeap->writeStorageBuffer(materialHandle, *materialBuffer);
+        result = (*materialBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap->writeStorageBuffer(materialHandle, bufferSlice); });
         if (!result) {
             return RHITestResult::fail(std::string("writeStorageBuffer(material) returned ") + toString(result));
         }
-        result = bindlessHeap->writeStorageBuffer(paramsHandle, *paramsBuffer);
+        result = (*paramsBuffer).slice().and_then([&](const auto& bufferSlice) { return bindlessHeap->writeStorageBuffer(paramsHandle, bufferSlice); });
         if (!result) {
             return RHITestResult::fail(std::string("writeStorageBuffer(params) returned ") + toString(result));
         }
@@ -966,14 +964,13 @@ public:
             .range = {.mipCount = 1, .layerCount = 1},
         };
         if (auto commandResult = commandBuffer->synchronize(render::BarrierDesc{.textures = {&toTransfer, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-        if (auto commandResult = commandBuffer->copyTextureToBuffer(
-            render::BufferTextureRegion{
+        if (auto commandResult = (readbackBuffer.get())->slice().and_then([&](const auto& bufferSlice) { return commandBuffer->copyTextureToBuffer(render::BufferTextureRegion{
                 .texture = colorTexture.get(),
-                .buffer = readbackBuffer.get(),
+                .buffer = bufferSlice,
                 .width = kWidth,
                 .height = kHeight,
                 .depth = 1,
-            }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
+            }); }); !commandResult) { return RHITestResult::fail(std::string("copyTextureToBuffer failed: ") + render::resultToString(commandResult)); }
 
         result = commandBuffer->end();
         if (!result) {

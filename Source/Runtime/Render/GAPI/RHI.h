@@ -1244,22 +1244,6 @@ struct GraphicsShaderObjectProgramDesc {
     bool indirectBindable = false;
 };
 
-struct BufferTextureRegion {
-    class Texture* texture = nullptr;
-    class Buffer* buffer = nullptr;
-    uint64_t bufferOffset = 0;
-    uint32_t bufferRowPitch = 0;
-    uint32_t bufferSlicePitch = 0;
-    int32_t textureOffsetX = 0;
-    int32_t textureOffsetY = 0;
-    int32_t textureOffsetZ = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t depth = 1;
-    uint32_t mipLevel = 0;
-    uint32_t baseLayer = 0;
-    uint32_t layerCount = 1;
-};
 
 struct TextureCopyDesc {
     class Texture* source = nullptr;
@@ -1479,6 +1463,22 @@ private:
     friend class Buffer;
     friend class BindlessHeap;
     friend struct detail::BufferAddressCommandAccess;
+};
+
+struct BufferTextureRegion {
+    class Texture* texture = nullptr;
+    BufferSlice buffer;
+    uint32_t bufferRowPitch = 0;
+    uint32_t bufferSlicePitch = 0;
+    int32_t textureOffsetX = 0;
+    int32_t textureOffsetY = 0;
+    int32_t textureOffsetZ = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    uint32_t depth = 1;
+    uint32_t mipLevel = 0;
+    uint32_t baseLayer = 0;
+    uint32_t layerCount = 1;
 };
 
 class Buffer {
@@ -1710,7 +1710,6 @@ class BindlessHeap {
     Result<> writeImages(std::span<const BindlessImageWrite> writes);
     Result<> writeBufferView(BindlessHandle handle, BufferView& view);
     Result<> writeConstantBuffer(BindlessHandle handle, Buffer& buffer);
-    Result<> writeStorageBuffer(BindlessHandle handle, Buffer& buffer);
     // Writes the complete backing allocation, even when only a slice owner remains.
     Result<> writeStorageBuffer(BindlessHandle handle, const BufferSlice& buffer);
     Result<> writeAccelerationStructure(
@@ -1793,10 +1792,9 @@ class CommandBuffer {
     Result<> recordIsolatedCompute(const std::function<Result<>()>& record);
     [[nodiscard]] Result<> draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0);
     [[nodiscard]] Result<> drawMeshTasks(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
-    [[nodiscard]] Result<> drawMeshTasksIndirect(Buffer& buffer, uint64_t offset = 0);
+    [[nodiscard]] Result<> drawMeshTasksIndirect(const BufferSlice& arguments);
     void dispatch(uint32_t groupCountX, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
     // Three GPU-written uint32 group counts; offset is 4-byte aligned.
-    Result<> dispatchIndirect(Buffer& buffer, uint64_t offset = 0);
     Result<> dispatchIndirect(const BufferSlice& arguments);
     Result<> buildClusterAccelerationStructureTriangles(
         const ClusterAccelerationStructureTriangleBuildDesc& desc);

@@ -198,8 +198,8 @@ public:
                     .memoryLocation = render::MemoryLocation::HostUpload}).transform([&](auto rhiValue) { inputs[i] = std::move(rhiValue); }));
                 NATIVE_REQUIRE(device->createBuffer({.size = 16, .usage = render::BufferUsageBits::Storage,
                     .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { outputs[i] = std::move(rhiValue); }));
-                NATIVE_REQUIRE(heaps[i]->writeStorageBuffer(inputHandles[i], *inputs[i]));
-                NATIVE_REQUIRE(heaps[i]->writeStorageBuffer(outputHandles[i], *outputs[i]));
+                NATIVE_REQUIRE((*inputs[i]).slice().and_then([&](const auto& bufferSlice) { return heaps[i]->writeStorageBuffer(inputHandles[i], bufferSlice); }));
+                NATIVE_REQUIRE((*outputs[i]).slice().and_then([&](const auto& bufferSlice) { return heaps[i]->writeStorageBuffer(outputHandles[i], bufferSlice); }));
                 const std::array<uint32_t, 4> data{outputHandles[i].shaderIndex, 17u + i * 13u, 0, 0};
                 void* mapped = inputs[i]->map();
                 if (mapped == nullptr) { return RHITestResult::fail("input map failed"); }
@@ -327,7 +327,7 @@ public:
                 NATIVE_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = strides[i],
                     .usage = render::BufferUsageBits::Storage,
                     .memoryLocation = i == 2 ? render::MemoryLocation::HostUpload : render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
-                NATIVE_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
+                NATIVE_REQUIRE((*buffers[i]).slice().and_then([&](const auto& bufferSlice) { return heap->writeStorageBuffer(handles[i], bufferSlice); }));
                 if (handles[i].index == 0 || handles[i].index == handles[i].shaderIndex) {
                     return RHITestResult::fail("atomic test requires nonzero final descriptor indices");
                 }

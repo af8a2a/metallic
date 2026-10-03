@@ -49,10 +49,10 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        if (auto commandResult = context.commandBuffer().copyTextureToBuffer({
-            .texture = context.inputTexture("color").texture(), .buffer = context.outputBuffer("pixels").buffer(),
+        if (auto commandResult = (context.outputBuffer("pixels").buffer())->slice().and_then([&](const auto& bufferSlice) { return context.commandBuffer().copyTextureToBuffer({
+            .texture = context.inputTexture("color").texture(), .buffer = bufferSlice,
             .bufferRowPitch = context.width() * 4, .bufferSlicePitch = context.width() * context.height() * 4,
-            .width = context.width(), .height = context.height()}); !commandResult) { return commandResult; }
+            .width = context.width(), .height = context.height()}); }); !commandResult) { return commandResult; }
         return {};
     }
 };

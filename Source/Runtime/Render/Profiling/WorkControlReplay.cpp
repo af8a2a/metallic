@@ -259,7 +259,7 @@ void WorkControlReplay::before(CommandBuffer& commands, ComputePipeline& pipelin
         resource.readback = s.buffer(binding.buffer->desc(), true);
         copy(commands, *binding.buffer, *resource.initial);
         if (binding.shaderIndex != UINT32_MAX) {
-            require(bool(s.heap->writeStorageBuffer(handles.at(binding.shaderIndex), *resource.working)), "replay_descriptor_write_failed");
+            require(bool((*resource.working).slice().and_then([&](const auto& bufferSlice) { return s.heap->writeStorageBuffer(handles.at(binding.shaderIndex), bufferSlice); })), "replay_descriptor_write_failed");
         }
         if (binding.name == "pixels") { s.pixel = s.resources.size(); }
         if (binding.name == "arguments") { s.arguments = s.resources.size(); }
@@ -390,7 +390,7 @@ Json WorkControlReplay::run(Queue& queue, const Json& frozenIdentity)
                 require(bool(commands.bindExecution(s.execution, s.push.data(), uint32_t(s.push.size()))), "replay_pipeline_bind_failed");
                 const std::string rangeName = "WorkControl/isolated/" + s.phase;
                 NvPerfRange range(commands, rangeName.c_str());
-                require(bool(commands.dispatchIndirect(*s.resources[s.arguments].working, 48)), "replay_dispatch_record_failed");
+                require(bool((*s.resources[s.arguments].working).slice({48, 12}).and_then([&](const auto& bufferSlice) { return commands.dispatchIndirect(bufferSlice); })), "replay_dispatch_record_failed");
             });
             s.submit(queue, "compare-output", [&](auto& commands) {
                 barrier(commands);
