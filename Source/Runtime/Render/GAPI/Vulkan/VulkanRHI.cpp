@@ -9,6 +9,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanShaderPrintf.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanDeviceExtensions.h"
+#include "VulkanDeviceFeatures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanSurfaceFormat.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanOpacityMicromap.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
@@ -1478,1072 +1479,45 @@ private:
     VkDeviceSize maxPushDataSize_ = 0;
 };
 
-template <typename T>
-void appendPNext(void**& tail, T& value)
+using vulkan::negotiation::VulkanExtensionSet;
+using vulkan::negotiation::VulkanDeviceFeatureRequest;
+using vulkan::negotiation::VulkanDeviceFeatureProbe;
+using vulkan::negotiation::VulkanDeviceFeatureSelection;
+using vulkan::negotiation::VulkanEnabledFeatureChain;
+using vulkan::negotiation::enabledDeviceExtensions;
+
+VulkanExtensionSet queryDeviceExtensions(VkPhysicalDevice physicalDevice)
 {
-    value.pNext = nullptr;
-    *tail = &value;
-    tail = &value.pNext;
+    return VulkanExtensionSet::from(enumerateDeviceExtensions(physicalDevice),
+        profiling::NsightGraphicsCapture::vulkanInjectionActive());
 }
 
-struct VulkanExtensionSet {
-    bool memoryDecompression = false;
-    std::vector<VkExtensionProperties> properties;
-    bool swapchain = false;
-    bool deviceAddressCommands = false;
-    bool deviceGeneratedCommands = false;
-    bool descriptorHeap = false;
-    bool unifiedImageLayouts = false;
-    bool shaderUntypedPointers = false;
-    bool shaderObject = false;
-    bool accelerationStructure = false;
-    bool deferredHostOperations = false;
-    bool rayQuery = false;
-    bool rayTracingPositionFetch = false;
-    bool opacityMicromap = false;
-    bool opacityMicromapExt = false;
-    bool rayTracingPipeline = false;
-    bool pipelineLibrary = false;
-    bool pushDescriptor = false;
-    bool aftermathDiagnosticCheckpoints = false;
-    bool aftermathDiagnosticsConfig = false;
-    bool streamlineBinaryImport = false;
-    bool streamlineImageViewHandle = false;
-#ifdef VK_EXT_mesh_shader
-    bool meshShader = false;
-#endif
-#ifdef VK_NV_cluster_acceleration_structure
-    bool clusterAccelerationStructure = false;
-#endif
-#ifdef VK_NV_partitioned_acceleration_structure
-    bool partitionedAccelerationStructure = false;
-#endif
-#ifdef VK_NV_cooperative_vector
-    bool cooperativeVector = false;
-#endif
-
-    static VulkanExtensionSet query(VkPhysicalDevice physicalDevice)
-    {
-        VulkanExtensionSet result;
-        result.properties = enumerateDeviceExtensions(physicalDevice);
-        result.memoryDecompression = result.has(VK_EXT_MEMORY_DECOMPRESSION_EXTENSION_NAME);
-        result.swapchain = result.has(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-        result.deviceAddressCommands = result.has(VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME);
-        result.deviceGeneratedCommands = result.has(VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME);
-        result.descriptorHeap = result.has(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
-        result.shaderUntypedPointers = result.has(VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME);
-        result.shaderObject = result.has(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
-        result.unifiedImageLayouts = result.has(VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME);
-        result.accelerationStructure = result.has(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
-        result.deferredHostOperations = result.has(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
-        result.rayQuery = result.has(VK_KHR_RAY_QUERY_EXTENSION_NAME);
-        result.rayTracingPositionFetch = result.has(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME);
-        // TODO(Nsight KHR OMM): Remove this EXT workaround once Nsight Graphics supports
-        // VK_KHR_opacity_micromap and injected build, capture, and replay regressions pass.
-        // See Documentation/NsightKhrOpacityMicromapInvestigation.md for removal criteria.
-        result.opacityMicromapExt = profiling::NsightGraphicsCapture::vulkanInjectionActive();
-        result.opacityMicromap = result.opacityMicromapExt
-            ? result.has(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME)
-            : result.has(VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME) &&
-                result.has(VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME);
-        result.rayTracingPipeline = result.has(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
-        result.pipelineLibrary = result.has(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
-        result.pushDescriptor = result.has(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
-#if defined(VK_NV_device_diagnostic_checkpoints)
-        result.aftermathDiagnosticCheckpoints = result.has(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
-#endif
-#if defined(VK_NV_device_diagnostics_config)
-        result.aftermathDiagnosticsConfig = result.has(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
-#endif
-#ifdef VK_NVX_binary_import
-        result.streamlineBinaryImport = result.has(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
-#endif
-#ifdef VK_NVX_image_view_handle
-        result.streamlineImageViewHandle = result.has(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME);
-#endif
-#ifdef VK_EXT_mesh_shader
-        result.meshShader = result.has(VK_EXT_MESH_SHADER_EXTENSION_NAME);
-#endif
-#ifdef VK_NV_cluster_acceleration_structure
-        result.clusterAccelerationStructure = result.has(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME);
-#endif
-#ifdef VK_NV_partitioned_acceleration_structure
-        result.partitionedAccelerationStructure =
-            result.has(VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME);
-#endif
-#ifdef VK_NV_cooperative_vector
-        result.cooperativeVector = result.has(VK_NV_COOPERATIVE_VECTOR_EXTENSION_NAME);
-#endif
-        return result;
-    }
-
-    bool has(const char* extensionName) const
-    {
-        return hasName(properties, extensionName);
-    }
-};
-
-struct VulkanDeviceFeatureRequest {
-    bool deviceGeneratedCommands = false;
-    bool bindlessDescriptorHeap = false;
-    bool shaderObject = false;
-    bool meshShader = false;
-    bool taskShader = false;
-    bool taskShaderSubgroupBallot = false;
-    bool preferUnifiedImageLayouts = true;
-    bool geometryShader = false;
-    bool subgroupSizeControl = false;
-    bool computeFullSubgroups = false;
-    uint32_t preferredTaskSubgroupSize = 0;
-    bool rayTracingAccelerationStructure = false;
-    bool rayQuery = false;
-    bool rayTracingPositionFetch = false;
-    bool opacityMicromap = false;
-    bool pushDescriptor = false;
-    bool clusterAccelerationStructure = false;
-    bool partitionedAccelerationStructure = false;
-    bool streamline = false;
-    bool aftermath = false;
-
-    static VulkanDeviceFeatureRequest from(const DeviceDesc& desc, const vulkan::VulkanDeviceExtensions& vulkanOptions)
-    {
-        return VulkanDeviceFeatureRequest{
-            .deviceGeneratedCommands = desc.enableDeviceGeneratedCommands,
-            .bindlessDescriptorHeap = desc.enableBindlessDescriptorHeap,
-            .shaderObject = desc.enableShaderObject,
-            .meshShader = desc.enableMeshShader,
-            .taskShader = desc.enableTaskShader ||
-                desc.enableTaskShaderSubgroupBallot ||
-                desc.preferredTaskSubgroupSize != 0,
-            .taskShaderSubgroupBallot = desc.enableTaskShaderSubgroupBallot,
-            .preferUnifiedImageLayouts = vulkanOptions.preferUnifiedImageLayouts,
-            .geometryShader = desc.enableGeometryShader,
-            .subgroupSizeControl = desc.enableSubgroupSizeControl ||
-                desc.preferredTaskSubgroupSize != 0,
-            .computeFullSubgroups = desc.enableComputeFullSubgroups,
-            .preferredTaskSubgroupSize = desc.preferredTaskSubgroupSize,
-            .rayTracingAccelerationStructure = desc.enableRayTracingAccelerationStructure,
-            .rayQuery = desc.enableRayQuery,
-            .rayTracingPositionFetch = desc.enableRayTracingPositionFetch,
-            .opacityMicromap = desc.enableOpacityMicromap,
-            .pushDescriptor = vulkanOptions.enablePushDescriptor,
-            .clusterAccelerationStructure = desc.enableClusterAccelerationStructure,
-            .partitionedAccelerationStructure = desc.enablePartitionedAccelerationStructure,
-            .streamline = vulkanOptions.enableStreamline,
-            .aftermath = vulkanOptions.enableAftermath && profiling::nsightAftermathInitialized(),
-        };
-    }
-};
-
-struct VulkanDeviceFeatureProbe {
-    VkPhysicalDeviceVulkan11Features vulkan11Features{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-    };
-    VkPhysicalDeviceVulkan12Features vulkan12Features{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-    };
-    VkPhysicalDeviceVulkan13Features vulkan13Features{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-    };
-    VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeapFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
-    };
-    VkPhysicalDeviceShaderUntypedPointersFeaturesKHR untypedPointerFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_UNTYPED_POINTERS_FEATURES_KHR,
-    };
-    VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR unifiedImageLayoutsFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR,
-    };
-    VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
-    };
-    VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
-    };
-    VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
-    };
-    VkPhysicalDeviceOpacityMicromapFeaturesKHR opacityMicromapFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_KHR,
-    };
-    VkPhysicalDeviceOpacityMicromapFeaturesEXT opacityMicromapExtFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT,
-    };
-    VkPhysicalDeviceMemoryDecompressionFeaturesEXT memoryDecompressionFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_FEATURES_EXT,
-    };
-    VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT deviceGeneratedCommandsFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT,
-    };
-    VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR deviceAddressCommandsFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR,
-    };
-    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rayTracingPositionFetchFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR,
-    };
-    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
-    };
-#if defined(VK_NV_device_diagnostics_config)
-    VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnosticsConfigFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV,
-    };
-#endif
-#ifdef VK_EXT_mesh_shader
-    VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
-    };
-#endif
-#ifdef VK_NV_cluster_acceleration_structure
-    VkPhysicalDeviceClusterAccelerationStructureFeaturesNV clusterAccelerationStructureFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV,
-    };
-#endif
-#ifdef VK_NV_partitioned_acceleration_structure
-    VkPhysicalDevicePartitionedAccelerationStructureFeaturesNV partitionedAccelerationStructureFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV,
-    };
-#endif
-#ifdef VK_NV_cooperative_vector
-    VkPhysicalDeviceCooperativeVectorFeaturesNV cooperativeVectorFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_VECTOR_FEATURES_NV,
-    };
-#endif
-    VkPhysicalDeviceMemoryDecompressionPropertiesEXT decompressionProperties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_PROPERTIES_EXT,
-    };
-    VkPhysicalDeviceSubgroupProperties subgroupProperties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES,
-    };
-    VkPhysicalDeviceSubgroupSizeControlProperties subgroupSizeControlProperties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES,
-    };
-    VkPhysicalDeviceProperties2 properties{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-    };
-    VkPhysicalDeviceFeatures2 features{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-    };
-
-    void query(VkPhysicalDevice physicalDevice, const VulkanExtensionSet& extensions)
-    {
-        features.pNext = &vulkan11Features;
-        void** featureTail = &vulkan11Features.pNext;
-        appendPNext(featureTail, vulkan12Features);
-        appendPNext(featureTail, vulkan13Features);
-        if (extensions.descriptorHeap) {
-            appendPNext(featureTail, descriptorHeapFeatures);
-        }
-        if (extensions.shaderUntypedPointers) {
-            appendPNext(featureTail, untypedPointerFeatures);
-        }
-        if (extensions.unifiedImageLayouts) { appendPNext(featureTail, unifiedImageLayoutsFeatures); }
-        if (extensions.shaderObject) {
-            appendPNext(featureTail, shaderObjectFeatures);
-        }
-        if (extensions.accelerationStructure) {
-            appendPNext(featureTail, accelerationStructureFeatures);
-        }
-        if (extensions.rayQuery) {
-            appendPNext(featureTail, rayQueryFeatures);
-        }
-        if (extensions.opacityMicromap) {
-            if (extensions.opacityMicromapExt) {
-                appendPNext(featureTail, opacityMicromapExtFeatures);
-            } else {
-                appendPNext(featureTail, opacityMicromapFeatures);
-            }
-        }
-        if (extensions.memoryDecompression) { appendPNext(featureTail, memoryDecompressionFeatures); }
-        if (extensions.deviceGeneratedCommands) {
-            appendPNext(featureTail, deviceGeneratedCommandsFeatures);
-        }
-        if (extensions.deviceAddressCommands) {
-            appendPNext(featureTail, deviceAddressCommandsFeatures);
-        }
-        if (extensions.rayTracingPositionFetch) {
-            appendPNext(featureTail, rayTracingPositionFetchFeatures);
-        }
-        if (extensions.rayTracingPipeline) {
-            appendPNext(featureTail, rayTracingPipelineFeatures);
-        }
-#if defined(VK_NV_device_diagnostics_config)
-        if (extensions.aftermathDiagnosticsConfig) {
-            appendPNext(featureTail, diagnosticsConfigFeatures);
-        }
-#endif
-#ifdef VK_EXT_mesh_shader
-        if (extensions.meshShader) {
-            appendPNext(featureTail, meshShaderFeatures);
-        }
-#endif
-#ifdef VK_NV_cluster_acceleration_structure
-        if (extensions.clusterAccelerationStructure) {
-            appendPNext(featureTail, clusterAccelerationStructureFeatures);
-        }
-#endif
-#ifdef VK_NV_partitioned_acceleration_structure
-        if (extensions.partitionedAccelerationStructure) {
-            appendPNext(featureTail, partitionedAccelerationStructureFeatures);
-        }
-#endif
-#ifdef VK_NV_cooperative_vector
-        if (extensions.cooperativeVector) {
-            appendPNext(featureTail, cooperativeVectorFeatures);
-        }
-#endif
-        vkGetPhysicalDeviceFeatures2(physicalDevice, &features);
-
-        properties.pNext = &subgroupProperties;
-        subgroupProperties.pNext = &subgroupSizeControlProperties;
-        if (extensions.memoryDecompression) { subgroupSizeControlProperties.pNext = &decompressionProperties; }
-        vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
-    }
-
-    bool supportsRequiredCoreFeatures() const
-    {
-        return vulkan11Features.shaderDrawParameters == VK_TRUE &&
-            vulkan12Features.timelineSemaphore == VK_TRUE &&
-            vulkan12Features.hostQueryReset == VK_TRUE &&
-            vulkan13Features.dynamicRendering == VK_TRUE &&
-            vulkan13Features.synchronization2 == VK_TRUE;
-    }
-
-    bool supportsAccelerationStructure(const VulkanExtensionSet& extensions) const
-    {
-        return extensions.accelerationStructure &&
-            extensions.deferredHostOperations &&
-            accelerationStructureFeatures.accelerationStructure == VK_TRUE &&
-            vulkan12Features.bufferDeviceAddress == VK_TRUE;
-    }
-
-    bool supportsClusterAccelerationStructure(
-        const VulkanExtensionSet& extensions,
-        bool accelerationStructureSupported) const
-    {
-#ifdef VK_NV_cluster_acceleration_structure
-        return accelerationStructureSupported &&
-            extensions.clusterAccelerationStructure &&
-            clusterAccelerationStructureFeatures.clusterAccelerationStructure == VK_TRUE;
-#else
-        (void)extensions;
-        (void)accelerationStructureSupported;
-        return false;
-#endif
-    }
-
-    bool supportsPartitionedAccelerationStructure(
-        const VulkanExtensionSet& extensions,
-        bool accelerationStructureSupported) const
-    {
-#ifdef VK_NV_partitioned_acceleration_structure
-        return accelerationStructureSupported &&
-            extensions.partitionedAccelerationStructure &&
-            partitionedAccelerationStructureFeatures.partitionedAccelerationStructure == VK_TRUE;
-#else
-        (void)extensions;
-        (void)accelerationStructureSupported;
-        return false;
-#endif
-    }
-
-    bool supportsStreamline(const VulkanExtensionSet& extensions, bool accelerationStructureSupported) const
-    {
-        return accelerationStructureSupported &&
-            vulkan13Features.privateData == VK_TRUE &&
-            extensions.rayQuery &&
-            rayQueryFeatures.rayQuery == VK_TRUE &&
-            extensions.rayTracingPipeline &&
-            rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE &&
-            extensions.pipelineLibrary &&
-            extensions.pushDescriptor &&
-            extensions.streamlineBinaryImport &&
-            extensions.streamlineImageViewHandle;
-    }
-
-    bool supportsAftermath(const VulkanExtensionSet& extensions) const
-    {
-#if defined(VK_NV_device_diagnostic_checkpoints) && defined(VK_NV_device_diagnostics_config)
-        return profiling::nsightAftermathInitialized() &&
-            extensions.aftermathDiagnosticCheckpoints &&
-            extensions.aftermathDiagnosticsConfig &&
-            diagnosticsConfigFeatures.diagnosticsConfig == VK_TRUE;
-#else
-        (void)extensions;
-        return false;
-#endif
-    }
-
-    bool supportsMeshShader(const VulkanExtensionSet& extensions) const
-    {
-#ifdef VK_EXT_mesh_shader
-        return extensions.meshShader && meshShaderFeatures.meshShader == VK_TRUE;
-#else
-        (void)extensions;
-        return false;
-#endif
-    }
-
-    bool supportsTaskShader(const VulkanExtensionSet& extensions) const
-    {
-#ifdef VK_EXT_mesh_shader
-        return extensions.meshShader && meshShaderFeatures.taskShader == VK_TRUE;
-#else
-        (void)extensions;
-        return false;
-#endif
-    }
-
-    bool supportsSubgroupSizeControl() const
-    {
-        return vulkan13Features.subgroupSizeControl == VK_TRUE &&
-            subgroupSizeControlProperties.minSubgroupSize > 0 &&
-            subgroupSizeControlProperties.maxSubgroupSize >=
-                subgroupSizeControlProperties.minSubgroupSize;
-    }
-
-    bool supportsTaskShaderSubgroupBallot() const
-    {
-#ifdef VK_EXT_mesh_shader
-        constexpr VkSubgroupFeatureFlags kRequiredOperations =
-            VK_SUBGROUP_FEATURE_BASIC_BIT |
-            VK_SUBGROUP_FEATURE_BALLOT_BIT;
-        return (subgroupProperties.supportedStages &
-                   VK_SHADER_STAGE_TASK_BIT_EXT) != 0 &&
-            (subgroupProperties.supportedOperations & kRequiredOperations) ==
-                kRequiredOperations;
-#else
-        return false;
-#endif
-    }
-
-    bool supportsTaskShaderSubgroupSizeControl() const
-    {
-#ifdef VK_EXT_mesh_shader
-        return supportsSubgroupSizeControl() &&
-            (subgroupSizeControlProperties.requiredSubgroupSizeStages &
-                VK_SHADER_STAGE_TASK_BIT_EXT) != 0;
-#else
-        return false;
-#endif
-    }
-};
-
-struct VulkanDeviceFeatureSelection {
-    bool memoryDecompression = false;
-    bool deviceGeneratedCommands = false;
-    bool dynamicGeneratedPipelineLayout = false;
-    bool privateData = false;
-    bool shaderDemoteToHelperInvocation = false;
-    bool shaderIntegerDotProduct = false;
-    bool cooperativeVector = false;
-    bool bindlessDescriptorHeap = false;
-    bool unifiedImageLayouts = false;
-    bool shaderUntypedPointers = false;
-    bool shaderObject = false;
-    bool meshShader = false;
-    bool taskShader = false;
-    bool geometryShader = false;
-    bool subgroupSizeControl = false;
-    bool computeFullSubgroups = false;
-    bool computeSubgroupBallotArithmetic = false;
-    bool computeSubgroupShuffle = false;
-    bool taskShaderSubgroupBallot = false;
-    bool taskShaderSubgroupSizeControl = false;
-    uint32_t subgroupSize = 0;
-    uint32_t minSubgroupSize = 0;
-    uint32_t maxSubgroupSize = 0;
-    uint32_t maxComputeWorkgroupSubgroups = 0;
-    bool rayTracingAccelerationStructure = false;
-    bool rayQuery = false;
-    bool rayTracingPositionFetch = false;
-    bool opacityMicromap = false;
-    bool opacityMicromapExt = false;
-    bool pushDescriptor = false;
-    bool clusterAccelerationStructure = false;
-    bool partitionedAccelerationStructure = false;
-    bool streamline = false;
-    bool aftermath = false;
-    // Vulkan 1.2 core features required by the NRC SDK (scalar/standard layouts,
-    // fp16/int16 shader capabilities) and by SHaRC's 64-bit hash-grid atomics.
-    // Enabled opportunistically.
-    bool scalarBlockLayout = false;
-    bool shaderImageGatherExtended = false;
-    bool uniformBufferStandardLayout = false;
-    bool shaderBufferInt64Atomics = false;
-    bool shaderInt64 = false;
-    bool textureCompressionBC = false;
-    bool nrcRayTracingPipeline = false;
-    bool shaderFloat16 = false;
-    bool shaderInt16 = false;
-    // Extension availability used by enabledDeviceExtensions().
-    bool nvxBinaryImport = false;
-    bool nvxImageViewHandle = false;
-
-    static VulkanDeviceFeatureSelection select(
-        const VulkanDeviceFeatureRequest& request,
-        VkPhysicalDevice physicalDevice,
-        const VulkanExtensionSet& extensions,
-        const VulkanDeviceFeatureProbe& probe)
-    {
-        const bool accelerationStructureSupported = probe.supportsAccelerationStructure(extensions);
-        const bool clusterAccelerationStructureSupported =
-            probe.supportsClusterAccelerationStructure(extensions, accelerationStructureSupported);
-        const bool partitionedAccelerationStructureSupported =
-            probe.supportsPartitionedAccelerationStructure(extensions, accelerationStructureSupported);
-        const bool streamlineSupported = probe.supportsStreamline(extensions, accelerationStructureSupported);
-        const bool aftermathSupported = probe.supportsAftermath(extensions);
-        const bool meshShaderSupported = probe.supportsMeshShader(extensions);
-        const bool taskShaderSupported = probe.supportsTaskShader(extensions);
-        const bool subgroupSizeControlSupported =
-            probe.supportsSubgroupSizeControl();
-
-        VulkanDeviceFeatureSelection result;
-        result.memoryDecompression = extensions.memoryDecompression &&
-            probe.memoryDecompressionFeatures.memoryDecompression == VK_TRUE &&
-            probe.vulkan12Features.bufferDeviceAddress == VK_TRUE &&
-            (probe.decompressionProperties.decompressionMethods & VK_MEMORY_DECOMPRESSION_METHOD_GDEFLATE_1_0_BIT_EXT);
-        result.deviceGeneratedCommands = request.deviceGeneratedCommands && extensions.deviceGeneratedCommands &&
-            probe.deviceGeneratedCommandsFeatures.deviceGeneratedCommands == VK_TRUE;
-        result.dynamicGeneratedPipelineLayout = result.deviceGeneratedCommands &&
-            probe.deviceGeneratedCommandsFeatures.dynamicGeneratedPipelineLayout == VK_TRUE;
-        result.privateData = request.streamline && probe.vulkan13Features.privateData == VK_TRUE;
-        result.shaderDemoteToHelperInvocation =
-            probe.vulkan13Features.shaderDemoteToHelperInvocation == VK_TRUE;
-        result.shaderIntegerDotProduct =
-            probe.vulkan13Features.shaderIntegerDotProduct == VK_TRUE;
-#ifdef VK_NV_cooperative_vector
-        result.cooperativeVector =
-            extensions.cooperativeVector &&
-            probe.cooperativeVectorFeatures.cooperativeVector == VK_TRUE &&
-            probe.vulkan12Features.bufferDeviceAddress == VK_TRUE;
-#endif
-        result.bindlessDescriptorHeap =
-            request.bindlessDescriptorHeap &&
-            extensions.descriptorHeap &&
-            probe.descriptorHeapFeatures.descriptorHeap == VK_TRUE &&
-            probe.vulkan12Features.descriptorIndexing == VK_TRUE &&
-            probe.vulkan12Features.runtimeDescriptorArray == VK_TRUE &&
-            probe.vulkan12Features.shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
-            probe.vulkan12Features.shaderStorageImageArrayNonUniformIndexing == VK_TRUE &&
-            probe.vulkan12Features.shaderStorageBufferArrayNonUniformIndexing == VK_TRUE &&
-            probe.vulkan12Features.bufferDeviceAddress == VK_TRUE &&
-            DescriptorHeapWriter::hasUsableProperties(physicalDevice);
-        result.shaderUntypedPointers = result.bindlessDescriptorHeap && extensions.shaderUntypedPointers &&
-            probe.untypedPointerFeatures.shaderUntypedPointers == VK_TRUE;
-        result.unifiedImageLayouts = request.preferUnifiedImageLayouts && extensions.unifiedImageLayouts &&
-            probe.unifiedImageLayoutsFeatures.unifiedImageLayouts == VK_TRUE;
-        result.shaderObject =
-            request.shaderObject &&
-            extensions.shaderObject &&
-            probe.shaderObjectFeatures.shaderObject == VK_TRUE;
-        result.meshShader = request.meshShader && meshShaderSupported;
-        result.taskShader = request.taskShader && taskShaderSupported;
-        result.geometryShader =
-            request.geometryShader && probe.features.features.geometryShader == VK_TRUE;
-        result.subgroupSizeControl =
-            (request.subgroupSizeControl ||
-                request.computeFullSubgroups ||
-                request.preferredTaskSubgroupSize != 0) &&
-            subgroupSizeControlSupported;
-        result.computeFullSubgroups =
-            request.computeFullSubgroups &&
-            result.subgroupSizeControl &&
-            probe.vulkan13Features.computeFullSubgroups == VK_TRUE;
-        result.taskShaderSubgroupBallot =
-            result.taskShader &&
-            probe.supportsTaskShaderSubgroupBallot();
-        result.taskShaderSubgroupSizeControl =
-            result.taskShader &&
-            result.subgroupSizeControl &&
-            probe.supportsTaskShaderSubgroupSizeControl();
-        result.subgroupSize = probe.subgroupProperties.subgroupSize;
-        constexpr VkSubgroupFeatureFlags kMaterialBinningOperations = VK_SUBGROUP_FEATURE_BASIC_BIT |
-            VK_SUBGROUP_FEATURE_BALLOT_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
-        result.computeSubgroupBallotArithmetic =
-            (probe.subgroupProperties.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
-            (probe.subgroupProperties.supportedOperations & kMaterialBinningOperations) == kMaterialBinningOperations;
-        constexpr VkSubgroupFeatureFlags kShuffleOperations = VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_SHUFFLE_BIT;
-        result.computeSubgroupShuffle =
-            (probe.subgroupProperties.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0 &&
-            (probe.subgroupProperties.supportedOperations & kShuffleOperations) == kShuffleOperations;
-        result.minSubgroupSize =
-            probe.subgroupSizeControlProperties.minSubgroupSize;
-        result.maxSubgroupSize =
-            probe.subgroupSizeControlProperties.maxSubgroupSize;
-        result.maxComputeWorkgroupSubgroups =
-            probe.subgroupSizeControlProperties.maxComputeWorkgroupSubgroups;
-        result.rayTracingAccelerationStructure =
-            (request.rayTracingAccelerationStructure ||
-                request.rayQuery ||
-                request.clusterAccelerationStructure ||
-                request.partitionedAccelerationStructure ||
-                request.streamline) &&
-            accelerationStructureSupported;
-        result.rayQuery =
-            (request.rayQuery || request.streamline) &&
-            accelerationStructureSupported &&
-            extensions.rayQuery &&
-            probe.rayQueryFeatures.rayQuery == VK_TRUE;
-        result.pushDescriptor = (request.pushDescriptor || request.streamline) && extensions.pushDescriptor;
-        result.opacityMicromap = request.opacityMicromap &&
-            result.rayTracingAccelerationStructure && extensions.opacityMicromap &&
-            (extensions.opacityMicromapExt
-                ? probe.opacityMicromapExtFeatures.micromap == VK_TRUE
-                : probe.opacityMicromapFeatures.micromap == VK_TRUE &&
-                    probe.deviceAddressCommandsFeatures.deviceAddressCommands == VK_TRUE);
-        result.opacityMicromapExt = result.opacityMicromap && extensions.opacityMicromapExt;
-        result.rayTracingPositionFetch = request.rayTracingPositionFetch &&
-            result.rayTracingAccelerationStructure && extensions.rayTracingPositionFetch &&
-            probe.rayTracingPositionFetchFeatures.rayTracingPositionFetch == VK_TRUE;
-        result.clusterAccelerationStructure =
-            request.clusterAccelerationStructure &&
-            clusterAccelerationStructureSupported &&
-            result.rayTracingAccelerationStructure;
-        result.partitionedAccelerationStructure =
-            request.partitionedAccelerationStructure &&
-            partitionedAccelerationStructureSupported &&
-            result.rayTracingAccelerationStructure;
-        result.streamline =
-            request.streamline &&
-            streamlineSupported &&
-            result.rayTracingAccelerationStructure &&
-            result.rayQuery &&
-            result.pushDescriptor;
-        result.aftermath = request.aftermath && aftermathSupported;
-        result.scalarBlockLayout = probe.vulkan12Features.scalarBlockLayout == VK_TRUE;
-        result.shaderImageGatherExtended = probe.features.features.shaderImageGatherExtended == VK_TRUE;
-        result.uniformBufferStandardLayout = probe.vulkan12Features.uniformBufferStandardLayout == VK_TRUE;
-        result.shaderBufferInt64Atomics = probe.vulkan12Features.shaderBufferInt64Atomics == VK_TRUE;
-        result.shaderInt64 = probe.features.features.shaderInt64 == VK_TRUE;
-        result.textureCompressionBC = probe.features.features.textureCompressionBC == VK_TRUE;
-        // NRC's native barriers include the ray-tracing shader stage even when
-        // the application's path tracer uses compute ray queries.
-        result.nrcRayTracingPipeline = result.rayQuery && extensions.rayTracingPipeline &&
-            probe.rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE;
-        result.shaderFloat16 = probe.vulkan12Features.shaderFloat16 == VK_TRUE;
-        result.shaderInt16 = probe.features.features.shaderInt16 == VK_TRUE;
-        result.nvxBinaryImport = extensions.streamlineBinaryImport;
-        result.nvxImageViewHandle = extensions.streamlineImageViewHandle;
-        return result;
-    }
-
-    bool usesBufferDeviceAddress() const
-    {
-        // Device-address commands are required by the Vulkan backend.
-        return true;
-    }
-
-    bool matches(const VulkanDeviceFeatureRequest& request) const
-    {
-        return (!request.bindlessDescriptorHeap || bindlessDescriptorHeap) &&
-            (!request.shaderObject || shaderObject) &&
-            (!request.meshShader || meshShader) &&
-            (!request.taskShader || taskShader) &&
-            (!request.taskShaderSubgroupBallot ||
-                taskShaderSubgroupBallot) &&
-            (!request.geometryShader || geometryShader) &&
-            (!request.subgroupSizeControl || subgroupSizeControl) &&
-            (!request.computeFullSubgroups || computeFullSubgroups) &&
-            (request.preferredTaskSubgroupSize == 0 ||
-                supportsTaskSubgroupSize(
-                    request.preferredTaskSubgroupSize)) &&
-            (!request.rayTracingAccelerationStructure || rayTracingAccelerationStructure) &&
-            (!request.rayQuery || rayQuery) &&
-            (!request.pushDescriptor || pushDescriptor) &&
-            (!request.clusterAccelerationStructure || clusterAccelerationStructure) &&
-            (!request.partitionedAccelerationStructure || partitionedAccelerationStructure);
-    }
-
-    bool supportsTaskSubgroupSize(uint32_t size) const
-    {
-        return size != 0 &&
-            (size & (size - 1u)) == 0 &&
-            taskShaderSubgroupSizeControl &&
-            minSubgroupSize <= size &&
-            maxSubgroupSize >= size;
-    }
-
-    int32_t score(const VulkanDeviceFeatureRequest& request) const
-    {
-        return (bindlessDescriptorHeap ? 16 : 0) +
-            (cooperativeVector ? 16 : 0) +
-            (partitionedAccelerationStructure ? 128 : 0) +
-            (clusterAccelerationStructure ? 64 : 0) +
-            (streamline ? 32 : 0) +
-            (shaderObject ? 8 : 0) +
-            (meshShader ? 8 : 0) +
-            (taskShader ? 8 : 0) +
-            (taskShaderSubgroupBallot ? 4 : 0) +
-            (taskShaderSubgroupSizeControl ? 4 : 0) +
-            (supportsTaskSubgroupSize(request.preferredTaskSubgroupSize)
-                ? 8
-                : 0) +
-            (subgroupSizeControl ? 8 : 0) +
-            (computeFullSubgroups ? 4 : 0) +
-            (rayTracingAccelerationStructure ? 4 : 0) +
-            (rayQuery ? 2 : 0) +
-            (pushDescriptor ? 1 : 0);
-    }
-};
-
-struct VulkanEnabledFeatureChain {
-    VkPhysicalDeviceVulkan11Features vulkan11Features{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-    };
-    VkPhysicalDeviceVulkan12Features vulkan12Features{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-    };
-    VkPhysicalDeviceVulkan13Features vulkan13Features{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-    };
-    VkPhysicalDeviceDescriptorHeapFeaturesEXT descriptorHeapFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_FEATURES_EXT,
-    };
-    VkPhysicalDeviceShaderUntypedPointersFeaturesKHR untypedPointerFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_UNTYPED_POINTERS_FEATURES_KHR,
-    };
-    VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR unifiedImageLayoutsFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR,
-    };
-    VkPhysicalDeviceShaderObjectFeaturesEXT shaderObjectFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
-    };
-    VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR,
-    };
-    VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR,
-    };
-    VkPhysicalDeviceOpacityMicromapFeaturesKHR opacityMicromapFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_KHR,
-    };
-    VkPhysicalDeviceOpacityMicromapFeaturesEXT opacityMicromapExtFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT,
-    };
-    VkPhysicalDeviceMemoryDecompressionFeaturesEXT memoryDecompressionFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_FEATURES_EXT,
-    };
-    VkPhysicalDeviceDeviceGeneratedCommandsFeaturesEXT deviceGeneratedCommandsFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_GENERATED_COMMANDS_FEATURES_EXT,
-    };
-    VkPhysicalDeviceDeviceAddressCommandsFeaturesKHR deviceAddressCommandsFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_ADDRESS_COMMANDS_FEATURES_KHR,
-    };
-    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR rayTracingPositionFetchFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR,
-    };
-    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR,
-    };
-#ifdef VK_EXT_mesh_shader
-    VkPhysicalDeviceMeshShaderFeaturesEXT meshShaderFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT,
-    };
-#endif
-#ifdef VK_NV_cluster_acceleration_structure
-    VkPhysicalDeviceClusterAccelerationStructureFeaturesNV clusterAccelerationStructureFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV,
-    };
-#endif
-#ifdef VK_NV_partitioned_acceleration_structure
-    VkPhysicalDevicePartitionedAccelerationStructureFeaturesNV partitionedAccelerationStructureFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PARTITIONED_ACCELERATION_STRUCTURE_FEATURES_NV,
-    };
-#endif
-#ifdef VK_NV_cooperative_vector
-    VkPhysicalDeviceCooperativeVectorFeaturesNV cooperativeVectorFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_VECTOR_FEATURES_NV,
-    };
-#endif
-#if defined(VK_NV_device_diagnostics_config)
-    VkPhysicalDeviceDiagnosticsConfigFeaturesNV diagnosticsConfigFeatures{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV,
-    };
-    VkDeviceDiagnosticsConfigCreateInfoNV diagnosticsConfigCreateInfo{
-        .sType = VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV,
-        .flags =
-            VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV |
-            VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_RESOURCE_TRACKING_BIT_NV |
-            VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV,
-    };
-#endif
-    VkPhysicalDeviceFeatures2 features{
-        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-    };
-
-    explicit VulkanEnabledFeatureChain(const VulkanDeviceFeatureSelection& selection)
-    {
-#if defined(VK_NV_device_diagnostics_config)
-        if (const char* shaderDebugInfo = std::getenv("METALLIC_AFTERMATH_SHADER_DEBUG_INFO");
-            shaderDebugInfo != nullptr && std::strcmp(shaderDebugInfo, "0") == 0) {
-            diagnosticsConfigCreateInfo.flags &= ~VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV;
-        }
-        const bool nsightAftermath = selection.aftermath && profiling::NsightGraphicsCapture::vulkanInjectionActive();
-        // TODO(Nsight Aftermath): Restore automatic checkpoints after an updated
-        // capture runtime passes the injected Sponza OMM/BLAS compaction test.
-        // Nsight 2026.3.1 + driver 616.64 faults with Error_DMA_PageFault here;
-        // shader debug info and resource tracking remain enabled. See
-        // Documentation/NsightKhrOpacityMicromapInvestigation.md.
-        bool automaticCheckpoints = !nsightAftermath;
-        if (const char* checkpoints = std::getenv("METALLIC_AFTERMATH_AUTOMATIC_CHECKPOINTS")) {
-            if (std::strcmp(checkpoints, "0") == 0) { automaticCheckpoints = false; }
-            if (std::strcmp(checkpoints, "1") == 0) { automaticCheckpoints = true; }
-        }
-        if (!automaticCheckpoints) {
-            diagnosticsConfigCreateInfo.flags &= ~VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV;
-        }
-        if (nsightAftermath && !automaticCheckpoints) {
-            spdlog::warn("[Vulkan] Aftermath automatic checkpoints disabled during Nsight Graphics injection "
-                "to avoid the RTAS GPU page fault; crash dumps, resource tracking and shader debug info remain available");
-        }
-#endif
-        vulkan11Features.shaderDrawParameters = VK_TRUE;
-        vulkan12Features.descriptorIndexing = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
-        vulkan12Features.shaderSampledImageArrayNonUniformIndexing =
-            selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
-        vulkan12Features.shaderStorageImageArrayNonUniformIndexing =
-            selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
-        vulkan12Features.shaderStorageBufferArrayNonUniformIndexing =
-            selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
-        vulkan12Features.runtimeDescriptorArray = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
-        vulkan12Features.bufferDeviceAddress = selection.usesBufferDeviceAddress() ? VK_TRUE : VK_FALSE;
-        vulkan12Features.timelineSemaphore = VK_TRUE;
-        vulkan12Features.hostQueryReset = VK_TRUE;
-        vulkan12Features.scalarBlockLayout = selection.scalarBlockLayout ? VK_TRUE : VK_FALSE;
-        vulkan12Features.uniformBufferStandardLayout = selection.uniformBufferStandardLayout ? VK_TRUE : VK_FALSE;
-        vulkan12Features.shaderBufferInt64Atomics = selection.shaderBufferInt64Atomics ? VK_TRUE : VK_FALSE;
-        vulkan12Features.shaderFloat16 = selection.shaderFloat16 ? VK_TRUE : VK_FALSE;
-        features.features.shaderInt16 = selection.shaderInt16 ? VK_TRUE : VK_FALSE;
-        features.features.shaderInt64 = selection.shaderInt64 ? VK_TRUE : VK_FALSE;
-        features.features.textureCompressionBC = selection.textureCompressionBC ? VK_TRUE : VK_FALSE;
-        features.features.shaderImageGatherExtended = selection.shaderImageGatherExtended ? VK_TRUE : VK_FALSE;
-        features.features.geometryShader = selection.geometryShader ? VK_TRUE : VK_FALSE;
-        vulkan13Features.subgroupSizeControl =
-            selection.subgroupSizeControl ? VK_TRUE : VK_FALSE;
-        vulkan13Features.computeFullSubgroups =
-            selection.computeFullSubgroups ? VK_TRUE : VK_FALSE;
-        vulkan13Features.synchronization2 = VK_TRUE;
-        // Streamline's Vulkan platform layer creates a private-data slot at startup.
-        vulkan13Features.privateData = selection.privateData ? VK_TRUE : VK_FALSE;
-        vulkan13Features.dynamicRendering = VK_TRUE;
-        vulkan13Features.shaderDemoteToHelperInvocation =
-            selection.shaderDemoteToHelperInvocation ? VK_TRUE : VK_FALSE;
-        vulkan13Features.shaderIntegerDotProduct =
-            selection.shaderIntegerDotProduct ? VK_TRUE : VK_FALSE;
-#ifdef VK_NV_cooperative_vector
-        cooperativeVectorFeatures.cooperativeVector =
-            selection.cooperativeVector ? VK_TRUE : VK_FALSE;
-#endif
-        descriptorHeapFeatures.descriptorHeap = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
-        untypedPointerFeatures.shaderUntypedPointers = selection.shaderUntypedPointers ? VK_TRUE : VK_FALSE;
-        shaderObjectFeatures.shaderObject = selection.shaderObject ? VK_TRUE : VK_FALSE;
-#ifdef VK_EXT_mesh_shader
-        meshShaderFeatures.meshShader = selection.meshShader ? VK_TRUE : VK_FALSE;
-        meshShaderFeatures.taskShader = selection.taskShader ? VK_TRUE : VK_FALSE;
-#endif
-        accelerationStructureFeatures.accelerationStructure =
-            selection.rayTracingAccelerationStructure ? VK_TRUE : VK_FALSE;
-        rayQueryFeatures.rayQuery = selection.rayQuery ? VK_TRUE : VK_FALSE;
-        opacityMicromapFeatures.micromap = selection.opacityMicromap ? VK_TRUE : VK_FALSE;
-        opacityMicromapExtFeatures.micromap = selection.opacityMicromapExt ? VK_TRUE : VK_FALSE;
-        deviceGeneratedCommandsFeatures.deviceGeneratedCommands = selection.deviceGeneratedCommands;
-        deviceGeneratedCommandsFeatures.dynamicGeneratedPipelineLayout = selection.dynamicGeneratedPipelineLayout;
-        deviceAddressCommandsFeatures.deviceAddressCommands = VK_TRUE;
-        rayTracingPositionFetchFeatures.rayTracingPositionFetch =
-            selection.rayTracingPositionFetch ? VK_TRUE : VK_FALSE;
-        rayTracingPipelineFeatures.rayTracingPipeline =
-            selection.streamline || selection.nrcRayTracingPipeline ? VK_TRUE : VK_FALSE;
-#ifdef VK_NV_cluster_acceleration_structure
-        clusterAccelerationStructureFeatures.clusterAccelerationStructure =
-            selection.clusterAccelerationStructure ? VK_TRUE : VK_FALSE;
-#endif
-#ifdef VK_NV_partitioned_acceleration_structure
-        partitionedAccelerationStructureFeatures.partitionedAccelerationStructure =
-            selection.partitionedAccelerationStructure ? VK_TRUE : VK_FALSE;
-#endif
-#if defined(VK_NV_device_diagnostics_config)
-        diagnosticsConfigFeatures.diagnosticsConfig = selection.aftermath ? VK_TRUE : VK_FALSE;
-#endif
-
-        features.pNext = &vulkan11Features;
-        void** featureTail = &vulkan11Features.pNext;
-        appendPNext(featureTail, vulkan12Features);
-        appendPNext(featureTail, vulkan13Features);
-        if (selection.bindlessDescriptorHeap) {
-            appendPNext(featureTail, descriptorHeapFeatures);
-        }
-        if (selection.shaderUntypedPointers) {
-            appendPNext(featureTail, untypedPointerFeatures);
-        }
-        if (selection.unifiedImageLayouts) {
-            unifiedImageLayoutsFeatures.unifiedImageLayouts = VK_TRUE;
-            appendPNext(featureTail, unifiedImageLayoutsFeatures);
-        }
-        if (selection.shaderObject) {
-            appendPNext(featureTail, shaderObjectFeatures);
-        }
-#ifdef VK_EXT_mesh_shader
-        if (selection.meshShader || selection.taskShader) {
-            appendPNext(featureTail, meshShaderFeatures);
-        }
-#endif
-        if (selection.rayTracingAccelerationStructure) {
-            appendPNext(featureTail, accelerationStructureFeatures);
-        }
-        if (selection.rayQuery) {
-            appendPNext(featureTail, rayQueryFeatures);
-        }
-        if (selection.opacityMicromap) {
-            if (selection.opacityMicromapExt) {
-                appendPNext(featureTail, opacityMicromapExtFeatures);
-            } else {
-                appendPNext(featureTail, opacityMicromapFeatures);
-            }
-        }
-        appendPNext(featureTail, deviceAddressCommandsFeatures);
-        if (selection.memoryDecompression) {
-            memoryDecompressionFeatures.memoryDecompression = VK_TRUE;
-            appendPNext(featureTail, memoryDecompressionFeatures);
-        }
-        if (selection.deviceGeneratedCommands) {
-            appendPNext(featureTail, deviceGeneratedCommandsFeatures);
-        }
-        if (selection.rayTracingPositionFetch) {
-            appendPNext(featureTail, rayTracingPositionFetchFeatures);
-        }
-        if (selection.streamline || selection.nrcRayTracingPipeline) {
-            appendPNext(featureTail, rayTracingPipelineFeatures);
-        }
-#ifdef VK_NV_cluster_acceleration_structure
-        if (selection.clusterAccelerationStructure) {
-            appendPNext(featureTail, clusterAccelerationStructureFeatures);
-        }
-#endif
-#ifdef VK_NV_partitioned_acceleration_structure
-        if (selection.partitionedAccelerationStructure) {
-            appendPNext(featureTail, partitionedAccelerationStructureFeatures);
-        }
-#endif
-#ifdef VK_NV_cooperative_vector
-        if (selection.cooperativeVector) {
-            appendPNext(featureTail, cooperativeVectorFeatures);
-        }
-#endif
-#if defined(VK_NV_device_diagnostics_config)
-        if (selection.aftermath) {
-            appendPNext(featureTail, diagnosticsConfigFeatures);
-            diagnosticsConfigCreateInfo.pNext = nullptr;
-            *featureTail = &diagnosticsConfigCreateInfo;
-        }
-#endif
-    }
-};
-
-std::vector<const char*> enabledDeviceExtensions(const VulkanDeviceFeatureSelection& selection)
+void configureAftermathDiagnostics(VulkanEnabledFeatureChain& chain, const VulkanDeviceFeatureSelection& selection)
 {
-    std::vector<const char*> extensions = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-        VK_KHR_DEVICE_ADDRESS_COMMANDS_EXTENSION_NAME,
-    };
-    if (selection.memoryDecompression) { extensions.push_back(VK_EXT_MEMORY_DECOMPRESSION_EXTENSION_NAME); }
-    if (selection.deviceGeneratedCommands) {
-        extensions.push_back(VK_EXT_DEVICE_GENERATED_COMMANDS_EXTENSION_NAME);
-    }
-    if (selection.bindlessDescriptorHeap) {
-        extensions.push_back(VK_EXT_DESCRIPTOR_HEAP_EXTENSION_NAME);
-    }
-    if (selection.shaderUntypedPointers) {
-        extensions.push_back(VK_KHR_SHADER_UNTYPED_POINTERS_EXTENSION_NAME);
-    }
-    if (selection.unifiedImageLayouts) { extensions.push_back(VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME); }
-    if (selection.shaderObject) {
-        extensions.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
-    }
-#ifdef VK_EXT_mesh_shader
-    if (selection.meshShader || selection.taskShader) {
-        extensions.push_back(VK_EXT_MESH_SHADER_EXTENSION_NAME);
-    }
-#endif
-    if (selection.rayTracingAccelerationStructure) {
-        extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
-        extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
-    }
-    if (selection.rayQuery) {
-        extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
-    }
-    if (selection.opacityMicromap) {
-        if (selection.opacityMicromapExt) {
-            extensions.push_back(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
-        } else {
-            extensions.push_back(VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME);
-        }
-    }
-    if (selection.rayTracingPositionFetch) {
-        extensions.push_back(VK_KHR_RAY_TRACING_POSITION_FETCH_EXTENSION_NAME);
-    }
-    if (selection.pushDescriptor) {
-        extensions.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
-    }
-#ifdef VK_NV_cluster_acceleration_structure
-    if (selection.clusterAccelerationStructure) {
-        extensions.push_back(VK_NV_CLUSTER_ACCELERATION_STRUCTURE_EXTENSION_NAME);
-    }
-#endif
-#ifdef VK_NV_partitioned_acceleration_structure
-    if (selection.partitionedAccelerationStructure) {
-        extensions.push_back(VK_NV_PARTITIONED_ACCELERATION_STRUCTURE_EXTENSION_NAME);
-    }
-#endif
-#ifdef VK_NV_cooperative_vector
-    if (selection.cooperativeVector) {
-        extensions.push_back(VK_NV_COOPERATIVE_VECTOR_EXTENSION_NAME);
-    }
-#endif
-    if (selection.streamline || selection.nrcRayTracingPipeline) {
-        extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
-    }
-    if (selection.streamline) {
-        extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
-#ifdef VK_NVX_binary_import
-        extensions.push_back(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
-#endif
-#ifdef VK_NVX_image_view_handle
-        extensions.push_back(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME);
-#endif
-    }
-    if (selection.aftermath) {
-#if defined(VK_NV_device_diagnostic_checkpoints)
-        extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
-#endif
 #if defined(VK_NV_device_diagnostics_config)
-        extensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
-#endif
+    if (const char* shaderDebugInfo = std::getenv("METALLIC_AFTERMATH_SHADER_DEBUG_INFO");
+        shaderDebugInfo != nullptr && std::strcmp(shaderDebugInfo, "0") == 0) {
+        chain.diagnosticsConfigCreateInfo.flags &= ~VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_SHADER_DEBUG_INFO_BIT_NV;
     }
-    if (selection.scalarBlockLayout) {
-        // The NRC SDK requires these extension names to be enabled even where
-        // the functionality is core in Vulkan 1.2.
-        extensions.push_back(VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME);
-        extensions.push_back(VK_KHR_UNIFORM_BUFFER_STANDARD_LAYOUT_EXTENSION_NAME);
+    const bool nsightAftermath = selection.aftermath && profiling::NsightGraphicsCapture::vulkanInjectionActive();
+    // TODO(Nsight Aftermath): Restore automatic checkpoints after an updated
+    // capture runtime passes the injected Sponza OMM/BLAS compaction test.
+    // Nsight 2026.3.1 + driver 616.64 faults with Error_DMA_PageFault here;
+    // shader debug info and resource tracking remain enabled. See
+    // Documentation/NsightKhrOpacityMicromapInvestigation.md.
+    bool automaticCheckpoints = !nsightAftermath;
+    if (const char* checkpoints = std::getenv("METALLIC_AFTERMATH_AUTOMATIC_CHECKPOINTS")) {
+        if (std::strcmp(checkpoints, "0") == 0) { automaticCheckpoints = false; }
+        if (std::strcmp(checkpoints, "1") == 0) { automaticCheckpoints = true; }
     }
-    if (selection.usesBufferDeviceAddress()) {
-        // The NRC SDK checks for the pre-promotion extension name as well.
-        extensions.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
-        extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
-        // NRC's device setup expects these NVIDIA kernel-launch extensions to
-        // be enabled; they are inert unless explicitly used.
-#ifdef VK_NVX_binary_import
-        if (selection.nvxBinaryImport) {
-            extensions.push_back(VK_NVX_BINARY_IMPORT_EXTENSION_NAME);
-        }
-#endif
-#ifdef VK_NVX_image_view_handle
-        if (selection.nvxImageViewHandle) {
-            extensions.push_back(VK_NVX_IMAGE_VIEW_HANDLE_EXTENSION_NAME);
-        }
-#endif
+    if (!automaticCheckpoints) {
+        chain.diagnosticsConfigCreateInfo.flags &= ~VK_DEVICE_DIAGNOSTICS_CONFIG_ENABLE_AUTOMATIC_CHECKPOINTS_BIT_NV;
     }
-    return extensions;
+    if (nsightAftermath && !automaticCheckpoints) {
+        spdlog::warn("[Vulkan] Aftermath automatic checkpoints disabled during Nsight Graphics injection "
+            "to avoid the RTAS GPU page fault; crash dumps, resource tracking and shader debug info remain available");
+    }
+#endif
 }
 
 struct VulkanPhysicalDeviceCandidate {
@@ -3412,17 +2386,11 @@ struct DeviceImpl {
     bool debugUtilsEnabled = false;
     bool bindlessDescriptorHeapEnabled = false;
     bool shaderUntypedPointersEnabled = false;
-    bool shaderObjectEnabled = false;
     bool pipelineExecutableStatistics = false;
     bool logPipelineKeys = false;
     bool bufferDeviceAddressEnabled = false;
-    bool rayTracingAccelerationStructureEnabled = false;
-    bool rayQueryEnabled = false;
     bool rayTracingPipelineEnabled = false;
     bool opacityMicromapExt = false;
-    bool pushDescriptorEnabled = false;
-    bool clusterAccelerationStructureEnabled = false;
-    bool partitionedAccelerationStructureEnabled = false;
     bool streamlineInitialized = false;
     PFN_vkSetDebugUtilsObjectNameEXT setDebugUtilsObjectName = nullptr;
     PFN_vkCmdBeginDebugUtilsLabelEXT cmdBeginDebugUtilsLabel = nullptr;
@@ -5930,7 +4898,7 @@ Result<> CommandBuffer::resetRayTracingAccelerationStructureCompactionQueries(
         queryCount > queryPool.impl_->desc.queryCount - firstQuery) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->device->rayTracingAccelerationStructureEnabled ||
+    if (!impl_->device->capabilities.rayTracingAccelerationStructure ||
         !impl_->device->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
@@ -5962,7 +4930,7 @@ Result<> CommandBuffer::writeRayTracingAccelerationStructureCompactedSize(
             RayTracingAccelerationStructureBuildFlags::AllowCompaction)) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->device->rayTracingAccelerationStructureEnabled ||
+    if (!impl_->device->capabilities.rayTracingAccelerationStructure ||
         !impl_->device->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
@@ -6568,7 +5536,7 @@ void clearGraphicsShaderObjects(detail::CommandBufferImpl& commandBuffer)
 {
     if (!commandBuffer.currentGraphicsShaderObjectBound ||
         commandBuffer.device == nullptr ||
-        !commandBuffer.device->shaderObjectEnabled ||
+        !commandBuffer.device->capabilities.shaderObject ||
         commandBuffer.device->functions.vkCmdBindShadersEXT == nullptr) {
         commandBuffer.currentGraphicsShaderObjectBound = false;
         commandBuffer.currentGraphicsShaderObjectUsesBindlessHeap = false;
@@ -6653,7 +5621,7 @@ Result<> CommandBuffer::bindExecutionImpl(
         impl_->currentGraphicsPipelineLayout = pipeline.layout;
         impl_->currentGraphicsPipelineUsesBindlessHeap = pipeline.usesBindlessHeap;
     } else {
-        if (!impl_->device->shaderObjectEnabled || !impl_->device->functions.vkCmdBindShadersEXT) { return makeError(Error::Unsupported); }
+        if (!impl_->device->capabilities.shaderObject || !impl_->device->functions.vkCmdBindShadersEXT) { return makeError(Error::Unsupported); }
         auto result = retainResource(execution.shaders_);
         if (!result) { return result; }
         const auto& program = *execution.shaders_;
@@ -6698,7 +5666,7 @@ void CommandBuffer::setGraphicsShaderObjectState()
 {
     if (impl_ == nullptr ||
         impl_->device == nullptr ||
-        !impl_->device->shaderObjectEnabled) {
+        !impl_->device->capabilities.shaderObject) {
         return;
     }
 
@@ -6964,7 +5932,7 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         !hasFlag(desc.scratchBuffer->desc().usage, BufferUsageBits::Storage)) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->device->rayTracingAccelerationStructureEnabled ||
+    if (!impl_->device->capabilities.rayTracingAccelerationStructure ||
         !impl_->device->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
@@ -7291,10 +6259,10 @@ Result<> CommandBuffer::buildRayTracingAccelerationStructure(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            (impl_->device->rayQueryEnabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
             VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
-            (impl_->device->rayQueryEnabled ? VK_ACCESS_2_SHADER_READ_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo dependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -7324,7 +6292,7 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
             RayTracingAccelerationStructureBuildFlags::AllowCompaction)) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->device->rayTracingAccelerationStructureEnabled ||
+    if (!impl_->device->capabilities.rayTracingAccelerationStructure ||
         !impl_->device->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
@@ -7356,9 +6324,9 @@ Result<> CommandBuffer::compactRayTracingAccelerationStructure(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            (impl_->device->rayQueryEnabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            (impl_->device->rayQueryEnabled ? VK_ACCESS_2_SHADER_READ_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo afterCopyDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -7378,7 +6346,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
 #else
     if (impl_ == nullptr ||
         impl_->device == nullptr ||
-        !impl_->device->clusterAccelerationStructureEnabled ||
+        !impl_->device->capabilities.clusterAccelerationStructure ||
         impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
         return makeError(Error::Unsupported);
     }
@@ -7624,9 +6592,9 @@ Result<> CommandBuffer::buildClusterAccelerationStructureTriangles(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            (impl_->device->rayQueryEnabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
         .dstAccessMask = VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            (impl_->device->rayQueryEnabled ? VK_ACCESS_2_SHADER_READ_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo outputDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -7646,7 +6614,7 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
 #ifndef VK_NV_cluster_acceleration_structure
     return makeError(Error::Unsupported);
 #else
-    if (!impl_ || !impl_->clusterAccelerationStructureEnabled) { return makeError(Error::Unsupported); }
+    if (!impl_ || !impl_->capabilities.clusterAccelerationStructure) { return makeError(Error::Unsupported); }
     if (!maxCount || !maxBytes) { return makeError(Error::InvalidArgument); }
 
     VkClusterAccelerationStructureMoveObjectsInputNV move{
@@ -7671,7 +6639,7 @@ Result<> CommandBuffer::moveClusterAccelerationStructures(const ClusterAccelerat
 #ifndef VK_NV_cluster_acceleration_structure
     return makeError(Error::Unsupported);
 #else
-    if (!impl_ || !impl_->device || !impl_->device->clusterAccelerationStructureEnabled) {
+    if (!impl_ || !impl_->device || !impl_->device->capabilities.clusterAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
     const auto validBuffer = [&](Buffer* buffer, BufferUsageBits usage, uint64_t bytes) {
@@ -7789,7 +6757,7 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
     return makeError(Error::Unsupported);
 #else
     if (impl_ == nullptr || impl_->device == nullptr ||
-        !impl_->device->clusterAccelerationStructureEnabled ||
+        !impl_->device->capabilities.clusterAccelerationStructure ||
         impl_->device->functions.vkCmdBuildClusterAccelerationStructureIndirectNV == nullptr) {
         return makeError(Error::Unsupported);
     }
@@ -7982,10 +6950,10 @@ Result<> CommandBuffer::buildClusterAccelerationStructureBottomLevels(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            (impl_->device->rayQueryEnabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
             VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR |
-            (impl_->device->rayQueryEnabled ? VK_ACCESS_2_SHADER_READ_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo outputDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -8005,7 +6973,7 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
     return makeError(Error::Unsupported);
 #else
     if (impl_ == nullptr || impl_->device == nullptr ||
-        !impl_->device->partitionedAccelerationStructureEnabled ||
+        !impl_->device->capabilities.partitionedAccelerationStructure ||
         impl_->device->functions.vkCmdBuildPartitionedAccelerationStructuresNV == nullptr) {
         return makeError(Error::Unsupported);
     }
@@ -8141,9 +7109,9 @@ Result<> CommandBuffer::buildPartitionedAccelerationStructure(
         .srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
-            (impl_->device->rayQueryEnabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : 0),
         .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
-            (impl_->device->rayQueryEnabled ? VK_ACCESS_2_SHADER_READ_BIT : 0),
+            (impl_->device->capabilities.rayQuery ? VK_ACCESS_2_SHADER_READ_BIT : 0),
     };
     const VkDependencyInfo outputDependency{
         .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
@@ -8420,8 +7388,7 @@ Result<RayTracingAccelerationStructureProperties> Device::queryRayTracingAcceler
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->rayTracingAccelerationStructureEnabled ||
-        !impl_->capabilities.rayTracingAccelerationStructure) {
+    if (!impl_->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
 
@@ -8456,8 +7423,7 @@ Result<RayTracingAccelerationStructureBuildSizes> Device::queryRayTracingAcceler
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->rayTracingAccelerationStructureEnabled ||
-        !impl_->capabilities.rayTracingAccelerationStructure) {
+    if (!impl_->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
     if (hasFlag(inputs.flags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess) &&
@@ -8638,8 +7604,7 @@ Result<std::unique_ptr<RayTracingAccelerationStructure>> Device::createRayTracin
         desc.topLevelBackend != RayTracingTopLevelBackend::Standard) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->rayTracingAccelerationStructureEnabled ||
-        !impl_->capabilities.rayTracingAccelerationStructure) {
+    if (!impl_->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
     if (hasFlag(desc.buildFlags, RayTracingAccelerationStructureBuildFlags::AllowDataAccess) &&
@@ -8820,8 +7785,7 @@ Result<ClusterAccelerationStructureProperties> Device::queryClusterAccelerationS
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->clusterAccelerationStructureEnabled ||
-        !impl_->capabilities.clusterAccelerationStructure) {
+    if (!impl_->capabilities.clusterAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
 #ifndef VK_NV_cluster_acceleration_structure
@@ -8859,8 +7823,7 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
     if (impl_ == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->clusterAccelerationStructureEnabled ||
-        !impl_->capabilities.clusterAccelerationStructure) {
+    if (!impl_->capabilities.clusterAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
     if (desc.maxClusterTriangleCount == 0 ||
@@ -8925,8 +7888,7 @@ Result<ClusterAccelerationStructureBuildSizes> Device::queryClusterAccelerationS
         desc.maxAccelerationStructureCount == 0) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->clusterAccelerationStructureEnabled ||
-        !impl_->capabilities.clusterAccelerationStructure) {
+    if (!impl_->capabilities.clusterAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
 #ifndef VK_NV_cluster_acceleration_structure
@@ -8975,8 +7937,7 @@ Result<PartitionedAccelerationStructureBuildSizes> Device::queryPartitionedAccel
         inputs.maxOperationCount == 0) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->partitionedAccelerationStructureEnabled ||
-        !impl_->capabilities.partitionedAccelerationStructure) {
+    if (!impl_->capabilities.partitionedAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
 #ifndef VK_NV_partitioned_acceleration_structure
@@ -9285,8 +8246,7 @@ Result<std::unique_ptr<RayTracingAccelerationStructureCompactionQueryPool>> Devi
     if (impl_ == nullptr || desc.queryCount == 0) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->rayTracingAccelerationStructureEnabled ||
-        !impl_->capabilities.rayTracingAccelerationStructure) {
+    if (!impl_->capabilities.rayTracingAccelerationStructure) {
         return makeError(Error::Unsupported);
     }
 
@@ -10769,7 +9729,7 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
             return text;
         };
         spdlog::info("Vulkan pipeline keys: SPIRV=0x{:016x}, PSO=0x{:016x}, SO={}, global={}, pipeline={}.",
-            desc.computeShader.module->impl_->contentHash, psoHash, impl_->shaderObjectEnabled,
+            desc.computeShader.module->impl_->contentHash, psoHash, impl_->capabilities.shaderObject,
             keyHex(globalKey), keyHex(pipelineKey));
     }
 #endif
@@ -10869,7 +9829,7 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
             return makeError(Error::Unsupported);
         }
     }
-    if (!impl_->capabilities.shaderObject || !impl_->shaderObjectEnabled) {
+    if (!impl_->capabilities.shaderObject) {
         return makeError(Error::Unsupported);
     }
     if (desc.usesBindlessHeap) {
@@ -11251,7 +10211,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
     vkEnumeratePhysicalDevices(deviceImpl->instance, &physicalDeviceCount, physicalDevices.data());
 
-    const VulkanDeviceFeatureRequest requestedFeatures = VulkanDeviceFeatureRequest::from(desc, vulkanOptions);
+    const VulkanDeviceFeatureRequest requestedFeatures = VulkanDeviceFeatureRequest::from(desc, vulkanOptions, profiling::nsightAftermathInitialized());
     bool validationSupportsOpacityMicromap = true;
     if (deviceImpl->validationEnabled && !profiling::NsightGraphicsCapture::vulkanInjectionActive()) {
         for (const auto& layer : availableLayers) {
@@ -11276,7 +10236,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
             continue;
         }
 
-        VulkanExtensionSet extensions = VulkanExtensionSet::query(physicalDevice);
+        VulkanExtensionSet extensions = queryDeviceExtensions(physicalDevice);
         if (!extensions.opacityMicromapExt) {
             extensions.opacityMicromap &= validationSupportsOpacityMicromap;
         }
@@ -11290,7 +10250,9 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         }
 
         VulkanDeviceFeatureProbe probe;
-        probe.query(physicalDevice, extensions);
+        probe.buildChain(extensions);
+        vkGetPhysicalDeviceFeatures2(physicalDevice, &probe.features);
+        vkGetPhysicalDeviceProperties2(physicalDevice, &probe.properties);
         if (vulkanOptions.shaderPrintf && (!probe.features.features.fragmentStoresAndAtomics ||
             !probe.features.features.vertexPipelineStoresAndAtomics ||
             !probe.vulkan12Features.vulkanMemoryModel || !probe.vulkan12Features.vulkanMemoryModelDeviceScope ||
@@ -11378,10 +10340,10 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         }
 
         const VulkanDeviceFeatureSelection featureSelection = VulkanDeviceFeatureSelection::select(
-            requestedFeatures,
-            physicalDevice,
-            extensions,
-            probe);
+            requestedFeatures, extensions, probe,
+            requestedFeatures.bindlessDescriptorHeap && extensions.descriptorHeap &&
+                probe.descriptorHeapFeatures.descriptorHeap == VK_TRUE &&
+                DescriptorHeapWriter::hasUsableProperties(physicalDevice));
         const int32_t featureScore =
             featureSelection.score(requestedFeatures);
         if (featureScore > bestCandidate.featureScore) {
@@ -11484,6 +10446,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
     }
 
     VulkanEnabledFeatureChain enabledFeatureChain(selectedFeatures);
+    configureAftermathDiagnostics(enabledFeatureChain, selectedFeatures);
     if (vulkanOptions.shaderPrintf) {
         enabledFeatureChain.features.features.fragmentStoresAndAtomics = VK_TRUE;
         enabledFeatureChain.features.features.vertexPipelineStoresAndAtomics = VK_TRUE;
@@ -11494,7 +10457,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         enabledFeatureChain.vulkan11Features.storageBuffer16BitAccess = VK_TRUE;
     }
     std::vector<const char*> deviceExtensions = enabledDeviceExtensions(selectedFeatures);
-    const VulkanExtensionSet selectedDeviceExtensions = VulkanExtensionSet::query(deviceImpl->physicalDevice);
+    const VulkanExtensionSet selectedDeviceExtensions = queryDeviceExtensions(deviceImpl->physicalDevice);
     deviceImpl->hdrMetadataExtension = selectedDeviceExtensions.has(VK_EXT_HDR_METADATA_EXTENSION_NAME);
     if (deviceImpl->hdrMetadataExtension) { deviceExtensions.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME); }
     deviceImpl->memoryBudgetExtension = selectedDeviceExtensions.has(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
@@ -11533,7 +10496,7 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
         .sType = VK_STRUCTURE_TYPE_DEVICE_PIPELINE_BINARY_INTERNAL_CACHE_CONTROL_KHR,
     };
     if (diagnoseInternalPipelineCache) {
-        const VulkanExtensionSet extensions = VulkanExtensionSet::query(deviceImpl->physicalDevice);
+        const VulkanExtensionSet extensions = queryDeviceExtensions(deviceImpl->physicalDevice);
         if (!extensions.has(VK_KHR_PIPELINE_BINARY_EXTENSION_NAME)) {
             spdlog::error("Internal pipeline cache diagnostic requires VK_KHR_pipeline_binary.");
             return makeError(Error::Unsupported);
@@ -11712,65 +10675,20 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
             deviceImpl->descriptorHeapWriter.resourceDescriptorStride());
         deviceImpl->bindlessDescriptorHeapEnabled = true;
     }
+    selectedFeatures.publish(deviceImpl->capabilities, deviceImpl->vulkanCapabilities);
     deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && deviceImpl->functions.vkCmdDecompressMemoryEXT != nullptr;
-    deviceImpl->capabilities.deviceGeneratedCommands = selectedFeatures.deviceGeneratedCommands;
-    deviceImpl->capabilities.dynamicGeneratedPipelineLayout = selectedFeatures.dynamicGeneratedPipelineLayout;
-    deviceImpl->vulkanCapabilities.unifiedImageLayouts = selectedFeatures.unifiedImageLayouts;
-    deviceImpl->capabilities.shaderObject = selectedFeatures.shaderObject;
-    deviceImpl->shaderObjectEnabled = selectedFeatures.shaderObject;
     deviceImpl->shaderUntypedPointersEnabled = selectedFeatures.shaderUntypedPointers;
-    deviceImpl->capabilities.meshShader = selectedFeatures.meshShader;
-    deviceImpl->capabilities.taskShader = selectedFeatures.taskShader;
-    deviceImpl->capabilities.geometryShader = selectedFeatures.geometryShader;
-    deviceImpl->capabilities.subgroupSizeControl =
-        selectedFeatures.subgroupSizeControl;
-    deviceImpl->capabilities.computeFullSubgroups =
-        selectedFeatures.computeFullSubgroups;
-    deviceImpl->capabilities.computeSubgroupBallotArithmetic = selectedFeatures.computeSubgroupBallotArithmetic;
-    deviceImpl->capabilities.computeSubgroupShuffle = selectedFeatures.computeSubgroupShuffle;
-    deviceImpl->capabilities.taskShaderSubgroupBallot =
-        selectedFeatures.taskShaderSubgroupBallot;
-    deviceImpl->capabilities.taskShaderSubgroupSizeControl =
-        selectedFeatures.taskShaderSubgroupSizeControl;
-    deviceImpl->capabilities.subgroupSize = selectedFeatures.subgroupSize;
-    deviceImpl->capabilities.minSubgroupSize =
-        selectedFeatures.minSubgroupSize;
-    deviceImpl->capabilities.maxSubgroupSize =
-        selectedFeatures.maxSubgroupSize;
-    deviceImpl->capabilities.maxComputeWorkgroupSubgroups =
-        selectedFeatures.maxComputeWorkgroupSubgroups;
-    deviceImpl->capabilities.rayTracingAccelerationStructure = selectedFeatures.rayTracingAccelerationStructure;
-    deviceImpl->rayTracingAccelerationStructureEnabled = selectedFeatures.rayTracingAccelerationStructure;
-    deviceImpl->capabilities.rayQuery = selectedFeatures.rayQuery;
-    deviceImpl->rayQueryEnabled = selectedFeatures.rayQuery;
     deviceImpl->rayTracingPipelineEnabled = selectedFeatures.streamline || selectedFeatures.nrcRayTracingPipeline;
-    deviceImpl->capabilities.opacityMicromap = selectedFeatures.opacityMicromap;
     deviceImpl->opacityMicromapExt = selectedFeatures.opacityMicromapExt;
     if (selectedFeatures.opacityMicromap) {
         spdlog::info("[Vulkan] {} enabled{}",
             selectedFeatures.opacityMicromapExt ? VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME : VK_KHR_OPACITY_MICROMAP_EXTENSION_NAME,
             selectedFeatures.opacityMicromapExt ? " (Nsight Graphics workaround)" : "");
     }
-    deviceImpl->capabilities.rayTracingPositionFetch = selectedFeatures.rayTracingPositionFetch;
     if (selectedFeatures.rayTracingPositionFetch) {
         spdlog::info("[Vulkan] VK_KHR_ray_tracing_position_fetch enabled");
     }
-    deviceImpl->vulkanCapabilities.pushDescriptor = selectedFeatures.pushDescriptor;
-    deviceImpl->pushDescriptorEnabled = selectedFeatures.pushDescriptor;
-    deviceImpl->capabilities.clusterAccelerationStructure = selectedFeatures.clusterAccelerationStructure;
-    deviceImpl->clusterAccelerationStructureEnabled = selectedFeatures.clusterAccelerationStructure;
-    deviceImpl->capabilities.partitionedAccelerationStructure =
-        selectedFeatures.partitionedAccelerationStructure;
-    deviceImpl->partitionedAccelerationStructureEnabled =
-        selectedFeatures.partitionedAccelerationStructure;
-    deviceImpl->vulkanCapabilities.aftermath = selectedFeatures.aftermath;
-    deviceImpl->capabilities.shaderBufferInt64Atomics =
-        selectedFeatures.shaderInt64 && selectedFeatures.shaderBufferInt64Atomics;
     deviceImpl->capabilities.subPixelPrecisionBits = selectedProperties.limits.subPixelPrecisionBits;
-    deviceImpl->capabilities.shaderIntegerDotProduct =
-        selectedFeatures.shaderIntegerDotProduct;
-    deviceImpl->capabilities.cooperativeVector = selectedFeatures.cooperativeVector;
-    deviceImpl->capabilities.shaderImageGatherExtended = selectedFeatures.shaderImageGatherExtended;
     deviceImpl->bufferDeviceAddressEnabled = selectedFeatures.usesBufferDeviceAddress();
 
     if (deviceImpl->debugUtilsEnabled) {

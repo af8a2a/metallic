@@ -437,7 +437,32 @@ Streamline/DLSS-SR/DLSS-RR 和 Aftermath 的实际启用状态通过
 配置请求与实际启用能力是两个独立概念；缺少可选 SDK/设备能力时保留已有回退规则。
 测试 profile 同时携带通用和后端能力，避免将 Vulkan 能力重新塞回公共能力结构。
 
-2026-10-03 验证：现有 MSVC Release/NRD 配置下，renderer、RHI/NRD 测试、
+设备特性协商由后端内部的
+[`VulkanDeviceFeatureCatalog.inl`](../Source/Runtime/Render/GAPI/Vulkan/VulkanDeviceFeatureCatalog.inl)
+集中描述；[`VulkanDeviceFeatures.h`](../Source/Runtime/Render/GAPI/Vulkan/VulkanDeviceFeatures.h)
+据此生成扩展查询、请求映射、支持条件、候选匹配/评分、探测与启用 pNext 链和能力发布。
+普通单 bit 扩展使用 `MT_VK_SIMPLE`；cluster / partitioned AS 使用 `MT_VK_AS_FEATURE`，
+同一条记录还声明隐含的 AS 请求。共享多 bit 结构（如 mesh/task、DGC）用 `MT_VK_NODE`
+与 `MT_VK_FEATURE` 分别描述结构和逻辑特性，避免同一结构重复挂链。
+新增通用功能仍需显式声明公共 Desc/Capabilities；公共头不导入 Vulkan 特性清单。
+
+清单中的特性按依赖顺序求值；请求依赖先展开，再判断扩展、探测位和前置能力。
+`preferred` 只影响候选匹配，不把软请求升级成创建失败条件；设备选择的评分回退保持原规则。
+OMM 的 KHR/EXT 互斥、验证层兼容性限制、Streamline 组合要求和 Aftermath 环境策略继续保留。
+驱动调用、descriptor heap 属性查询、SDK 初始化和日志留在 `VulkanRHI.cpp`；协商模型可独立做 CPU 测试。
+持有内部 pNext 指针的 probe/enable storage 禁止复制和移动；运行时直接读取已发布能力，
+不再为 shader object、ray query、AS、cluster/partitioned AS、push descriptor 维护第二份 enabled 标志。
+`MetallicVulkanDeviceFeaturesTests` 覆盖缺失扩展/探测位/依赖、软回退、共享链、OMM 路由和能力发布，
+无需创建 Vulkan 设备；实际设备能力仍由 RHI/GPU 回归验证。
+
+2026-10-03 协商重构验证：CPU 测试 12/12；与重构前实现比较 10,000 组确定性模拟输入，
+选择、评分、匹配、扩展集合、pNext 节点和所有启用位一致。mapped/native 各 90 项 RHI 回归中
+87 通过、3 跳过，无 VUID；两项 OMM GPU 路径因当前配置不可用而跳过（回退通过），另一个为
+MiniZorah 大场景显式 opt-in。NRD 双模式各 11/11，editor smoke 均完成呈现。
+这些检查不替代完整场景视觉/时序验证，也未验证关闭构建的 Streamline SDK 运行路径。
+本轮日志和 XML 位于 `.cache/device-features-*`。
+
+2026-10-03 后端配置拆分验证：现有 MSVC Release/NRD 配置下，renderer、RHI/NRD 测试、
 ShaderPrintf 工具和单元测试均构建成功；只添加 `Source` include 路径即可独立编译
 公共 RHI 与扩展配置头。mapped/native 各 75 项 RHI 回归中 71 通过、4 跳过；
 跳过项为未启用的 DLSS 运行路径及 MiniZorah 大场景。框架自测 10/10，
