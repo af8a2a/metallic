@@ -3092,6 +3092,7 @@ struct QueueImpl {
 struct FenceImpl {
     DeviceImpl* device = nullptr;
     VkFence fence = VK_NULL_HANDLE;
+    ~FenceImpl();
 };
 
 struct TimestampQueryPoolImpl {
@@ -3101,22 +3102,26 @@ struct TimestampQueryPoolImpl {
     uint32_t queueFamilyIndex = 0;
     uint32_t timestampValidBits = 0;
     double timestampPeriodNanoseconds = 0.0;
+    ~TimestampQueryPoolImpl();
 };
 
 struct RayTracingAccelerationStructureCompactionQueryPoolImpl {
     DeviceImpl* device = nullptr;
     RayTracingAccelerationStructureCompactionQueryPoolDesc desc;
     VkQueryPool queryPool = VK_NULL_HANDLE;
+    ~RayTracingAccelerationStructureCompactionQueryPoolImpl();
 };
 
 struct SemaphoreImpl {
     DeviceImpl* device = nullptr;
     VkSemaphore semaphore = VK_NULL_HANDLE;
+    ~SemaphoreImpl();
 };
 
 struct SwapchainSemaphoreImpl {
     DeviceImpl* device = nullptr;
     VkSemaphore semaphore = VK_NULL_HANDLE;
+    ~SwapchainSemaphoreImpl();
 };
 
 struct MemoryBudgetState {
@@ -3268,6 +3273,7 @@ struct ShaderModuleImpl {
     uint64_t deviceSpirvFnv1a64 = 0;
     std::vector<uint8_t> replayInputSpirv, replayDeviceSpirv;
     std::string diagnosticName;
+    ~ShaderModuleImpl();
 };
 
 struct PipelineCacheImpl {
@@ -3332,6 +3338,7 @@ struct CommandPoolImpl {
     VkQueueFlags queueFlags = 0;
     bool recycleForCapture = false;
     std::vector<VkCommandBuffer> availableBuffers;
+    ~CommandPoolImpl();
 };
 
 struct CommandBufferImpl {
@@ -3566,6 +3573,81 @@ Result<> DeviceImpl::prepareBufferAllocationLocked(
     allocationInfo.memoryTypeBits = 1u << memoryType;
     if (memoryBudgetState->policy.enabled) { allocationInfo.flags |= VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT; }
     return {};
+}
+
+// Keep native ownership in Impl so unique_ptr replacement and wrapper
+// destruction perform the same cleanup.
+FenceImpl::~FenceImpl()
+{
+    if (fence != VK_NULL_HANDLE) {
+        activateVolkDevice(device->device);
+        vkDestroyFence(device->device, fence, nullptr);
+        fence = VK_NULL_HANDLE;
+    }
+}
+
+TimestampQueryPoolImpl::~TimestampQueryPoolImpl()
+{
+    if (queryPool != VK_NULL_HANDLE) {
+        activateVolkDevice(device->device);
+        vkDestroyQueryPool(device->device, queryPool, nullptr);
+        queryPool = VK_NULL_HANDLE;
+    }
+}
+
+RayTracingAccelerationStructureCompactionQueryPoolImpl::~RayTracingAccelerationStructureCompactionQueryPoolImpl()
+{
+    if (queryPool != VK_NULL_HANDLE) {
+        activateVolkDevice(device->device);
+        vkDestroyQueryPool(device->device, queryPool, nullptr);
+        queryPool = VK_NULL_HANDLE;
+    }
+}
+
+SemaphoreImpl::~SemaphoreImpl()
+{
+    if (semaphore != VK_NULL_HANDLE) {
+        activateVolkDevice(device->device);
+        vulkan::forgetTraceObject(device->device, VK_OBJECT_TYPE_SEMAPHORE, uint64_t(semaphore));
+        vkDestroySemaphore(device->device, semaphore, nullptr);
+        semaphore = VK_NULL_HANDLE;
+    }
+}
+
+SwapchainSemaphoreImpl::~SwapchainSemaphoreImpl()
+{
+    if (semaphore != VK_NULL_HANDLE) {
+        activateVolkDevice(device->device);
+        vulkan::forgetTraceObject(device->device, VK_OBJECT_TYPE_SEMAPHORE, uint64_t(semaphore));
+        vkDestroySemaphore(device->device, semaphore, nullptr);
+        semaphore = VK_NULL_HANDLE;
+    }
+}
+
+ShaderModuleImpl::~ShaderModuleImpl()
+{
+    if (module != VK_NULL_HANDLE) {
+        activateVolkDevice(device->device);
+        vkDestroyShaderModule(device->device, module, nullptr);
+        module = VK_NULL_HANDLE;
+    }
+}
+
+CommandPoolImpl::~CommandPoolImpl()
+{
+    if (pool != VK_NULL_HANDLE) {
+        activateVolkDevice(device->device);
+        if (recycleForCapture) {
+            (void)vkResetCommandPool(device->device, pool, 0);
+            std::lock_guard lock(device->captureCommandPoolMutex);
+            device->captureCommandPools.push_back({
+                pool, queueFamilyIndex, std::move(availableBuffers)});
+        } else {
+            vkDestroyCommandPool(device->device, pool, nullptr);
+        }
+        pool = VK_NULL_HANDLE;
+        submissions->cancel();
+    }
 }
 
 MicromapIdentityIndexBuffer::~MicromapIdentityIndexBuffer()
@@ -4636,13 +4718,7 @@ Fence::Fence(std::unique_ptr<detail::FenceImpl> impl)
 {
 }
 
-Fence::~Fence()
-{
-    if (impl_ != nullptr && impl_->fence != VK_NULL_HANDLE) {
-        vkDestroyFence(impl_->device->device, impl_->fence, nullptr);
-        impl_->fence = VK_NULL_HANDLE;
-    }
-}
+Fence::~Fence() = default;
 
 Fence::Fence(Fence&&) noexcept = default;
 Fence& Fence::operator=(Fence&&) noexcept = default;
@@ -4691,14 +4767,7 @@ TimestampQueryPool::TimestampQueryPool(std::unique_ptr<detail::TimestampQueryPoo
 {
 }
 
-TimestampQueryPool::~TimestampQueryPool()
-{
-    if (impl_ != nullptr && impl_->queryPool != VK_NULL_HANDLE) {
-        activateVolkDevice(impl_->device->device);
-        vkDestroyQueryPool(impl_->device->device, impl_->queryPool, nullptr);
-        impl_->queryPool = VK_NULL_HANDLE;
-    }
-}
+TimestampQueryPool::~TimestampQueryPool() = default;
 
 TimestampQueryPool::TimestampQueryPool(TimestampQueryPool&&) noexcept = default;
 TimestampQueryPool& TimestampQueryPool::operator=(TimestampQueryPool&&) noexcept = default;
@@ -4785,15 +4854,7 @@ RayTracingAccelerationStructureCompactionQueryPool::
 {
 }
 
-RayTracingAccelerationStructureCompactionQueryPool::
-    ~RayTracingAccelerationStructureCompactionQueryPool()
-{
-    if (impl_ != nullptr && impl_->queryPool != VK_NULL_HANDLE) {
-        activateVolkDevice(impl_->device->device);
-        vkDestroyQueryPool(impl_->device->device, impl_->queryPool, nullptr);
-        impl_->queryPool = VK_NULL_HANDLE;
-    }
-}
+RayTracingAccelerationStructureCompactionQueryPool::~RayTracingAccelerationStructureCompactionQueryPool() = default;
 
 RayTracingAccelerationStructureCompactionQueryPool::
     RayTracingAccelerationStructureCompactionQueryPool(
@@ -4838,14 +4899,7 @@ Semaphore::Semaphore(std::unique_ptr<detail::SemaphoreImpl> impl)
 {
 }
 
-Semaphore::~Semaphore()
-{
-    if (impl_ != nullptr && impl_->semaphore != VK_NULL_HANDLE) {
-        vulkan::forgetTraceObject(impl_->device->device, VK_OBJECT_TYPE_SEMAPHORE, uint64_t(impl_->semaphore));
-        vkDestroySemaphore(impl_->device->device, impl_->semaphore, nullptr);
-        impl_->semaphore = VK_NULL_HANDLE;
-    }
-}
+Semaphore::~Semaphore() = default;
 
 Semaphore::Semaphore(Semaphore&&) noexcept = default;
 Semaphore& Semaphore::operator=(Semaphore&&) noexcept = default;
@@ -4909,14 +4963,7 @@ SwapchainSemaphore::SwapchainSemaphore(std::unique_ptr<detail::SwapchainSemaphor
 {
 }
 
-SwapchainSemaphore::~SwapchainSemaphore()
-{
-    if (impl_ != nullptr && impl_->semaphore != VK_NULL_HANDLE) {
-        vulkan::forgetTraceObject(impl_->device->device, VK_OBJECT_TYPE_SEMAPHORE, uint64_t(impl_->semaphore));
-        vkDestroySemaphore(impl_->device->device, impl_->semaphore, nullptr);
-        impl_->semaphore = VK_NULL_HANDLE;
-    }
-}
+SwapchainSemaphore::~SwapchainSemaphore() = default;
 
 SwapchainSemaphore::SwapchainSemaphore(SwapchainSemaphore&&) noexcept = default;
 SwapchainSemaphore& SwapchainSemaphore::operator=(SwapchainSemaphore&&) noexcept = default;
@@ -5242,13 +5289,7 @@ ShaderModule::ShaderModule(std::unique_ptr<detail::ShaderModuleImpl> impl)
 {
 }
 
-ShaderModule::~ShaderModule()
-{
-    if (impl_ != nullptr && impl_->module != VK_NULL_HANDLE) {
-        vkDestroyShaderModule(impl_->device->device, impl_->module, nullptr);
-        impl_->module = VK_NULL_HANDLE;
-    }
-}
+ShaderModule::~ShaderModule() = default;
 
 ShaderModule::ShaderModule(ShaderModule&&) noexcept = default;
 ShaderModule& ShaderModule::operator=(ShaderModule&&) noexcept = default;
@@ -8153,21 +8194,7 @@ CommandPool::CommandPool(std::unique_ptr<detail::CommandPoolImpl> impl)
 {
 }
 
-CommandPool::~CommandPool()
-{
-    if (impl_ != nullptr && impl_->pool != VK_NULL_HANDLE) {
-        if (impl_->recycleForCapture) {
-            (void)vkResetCommandPool(impl_->device->device, impl_->pool, 0);
-            std::lock_guard lock(impl_->device->captureCommandPoolMutex);
-            impl_->device->captureCommandPools.push_back({
-                impl_->pool, impl_->queueFamilyIndex, std::move(impl_->availableBuffers)});
-        } else {
-            vkDestroyCommandPool(impl_->device->device, impl_->pool, nullptr);
-        }
-        impl_->pool = VK_NULL_HANDLE;
-        impl_->submissions->cancel();
-    }
-}
+CommandPool::~CommandPool() = default;
 
 CommandPool::CommandPool(CommandPool&&) noexcept = default;
 CommandPool& CommandPool::operator=(CommandPool&&) noexcept = default;
