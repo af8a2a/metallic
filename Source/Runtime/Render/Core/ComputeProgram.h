@@ -20,7 +20,7 @@ enum class ComputeResourceBindingKind : uint8_t {
 };
 
 struct ComputeProgramBindingDesc {
-    // CPU input ID. Named layouts map it to a field; legacy tests use it as a slot.
+    // CPU input ID mapped to an explicit named field; never sent to the shader.
     uint32_t binding = 0;
     ComputeResourceBindingKind kind = ComputeResourceBindingKind::StorageBuffer;
     uint32_t descriptorCount = 1;
@@ -53,7 +53,7 @@ struct ComputeProgramDesc {
     bool requiresRayQuery = true;
     // Optional cache borrowed only during pipeline creation.
     PipelineCache* pipelineCache = nullptr;
-    // Direct CPU/Slang resource struct. Empty preserves the low-level test adapter.
+    // Required direct CPU/Slang resource struct. There is no implicit slot layout.
     ComputeResourceLayout resourceParameters;
 };
 

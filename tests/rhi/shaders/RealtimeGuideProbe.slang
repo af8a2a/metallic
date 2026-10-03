@@ -1,13 +1,14 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 import Lighting;
 using Metallic.Lighting;
 
-#define gMotion getResource<Texture2D<float2>>(0)
-#define gDepth getResource<Texture2D<float>>(1)
-#define gData getResource<RWStructuredBuffer<float4>>(2)
+#define gMotion resolveUniform(getResourceParameters<RealtimeGuideProbeResources>().motion)
+#define gDepth resolveUniform(getResourceParameters<RealtimeGuideProbeResources>().depth)
+#define gData resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<RealtimeGuideProbeResources>().data)
 
-#define gPrefilter getResource<StructuredBuffer<float4>>(3)
+#define gPrefilter resolveBuffer<StructuredBuffer<float4>>(getResourceParameters<RealtimeGuideProbeResources>().prefilter)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]

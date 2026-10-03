@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
@@ -163,6 +164,7 @@ public:
             .spirv = shader.spirv,
             .bindings = {bindings, 2},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kRealtimeGuideProbeLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -254,6 +256,7 @@ public:
             .spirv = shader.spirv,
             .bindings = {bindings, 3},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kRealtimeGuideProbeLayout,
         }, log);
     }
 

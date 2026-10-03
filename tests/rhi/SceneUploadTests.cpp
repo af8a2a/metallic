@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -163,6 +164,7 @@ public:
             .pushConstantSize = 4,
             .bindings = {layout, 2},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kSceneUploadProbeLayout,
         }, log));
         std::unique_ptr<Buffer> output;
         UPLOAD_REQUIRE(device->createBuffer({.size = kTextureCount * kMipCount * 2u * 16u, .structureStride = 16,

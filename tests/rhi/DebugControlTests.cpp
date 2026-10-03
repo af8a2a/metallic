@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "RHITest.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -319,6 +320,7 @@ public:
             .pushConstantSize = 4,
             .bindings = {programBindings, 2},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kFrameCopyProbeLayout,
         }, log));
         DEBUG_REQUIRE(frame.begin(1));
         auto& commands = *frame.commands;

@@ -1,13 +1,14 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 
 struct ProbePush
 {
     uint index;
 };
 
-#define gInput getResource<StructuredBuffer<uint>>(0)
-#define gOutput getResource<RWStructuredBuffer<uint>>(1)
+#define gInput resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<FrameCopyProbeResources>().input)
+#define gOutput resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<FrameCopyProbeResources>().output)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
@@ -17,9 +18,9 @@ void copyValue(uint3 thread : SV_DispatchThreadID)
     gOutput[push.index] = gInput[0];
 }
 
-#define gPrevious getResource<RWTexture2D<float4>>(0)
-#define gCurrent getResource<RWTexture2D<float4>>(1)
-#define gHistoryResults getResource<RWStructuredBuffer<uint>>(2)
+#define gPrevious resolveUniform(getResourceParameters<FrameHistoryProbeResources>().previous)
+#define gCurrent resolveUniform(getResourceParameters<FrameHistoryProbeResources>().current)
+#define gHistoryResults resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<FrameHistoryProbeResources>().output)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]
@@ -36,7 +37,7 @@ void accumulateHistory(uint3 thread : SV_DispatchThreadID)
 void sampleImages(uint3 thread : SV_DispatchThreadID)
 {
     ProbePush push = getConstants<ProbePush>();
-    float a = getResourceArray<Texture2D<float4>>(0, 0).Load(int3(0, 0, 0)).x;
-    float b = getResourceArray<Texture2D<float4>>(0, 1).Load(int3(0, 0, 0)).x;
-    gOutput[push.index] = uint(a + b);
+    float a = resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<FrameImagesProbeResources>().images.load(0))).Load(int3(0, 0, 0)).x;
+    float b = resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<FrameImagesProbeResources>().images.load(1))).Load(int3(0, 0, 0)).x;
+    resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<FrameImagesProbeResources>().output)[push.index] = uint(a + b);
 }

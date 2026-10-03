@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutor.h"
@@ -44,6 +45,7 @@ public:
             .spirv = shader.spirv,
             .bindings = {bindings, 3},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kPhotometricProbeLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override

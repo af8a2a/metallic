@@ -1,8 +1,9 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 
-#define environmentTexture getResource<Texture2D<float4>>(0)
-#define result getResource<RWStructuredBuffer<float4>>(1)
+#define environmentTexture resolveUniform(getResourceParameters<FrameEnvironmentProbeResources>().environment)
+#define result resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<FrameEnvironmentProbeResources>().output)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

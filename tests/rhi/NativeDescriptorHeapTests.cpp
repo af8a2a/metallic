@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -73,6 +74,7 @@ public:
                 .spirv = shader.spirv,
                 .bindings = {layout, 2},
                 .requiresRayQuery = false,
+                .resourceParameters = metallic::tests::kNativeDescriptorHandlesLayout,
             }, log);
             if (mode == render::SlangDescriptorHeapMode::Native && render::hasError(initialized, render::Error::Unsupported)) {
                 return RHITestResult::skip("mapped passed; native requires KHR untyped pointers");

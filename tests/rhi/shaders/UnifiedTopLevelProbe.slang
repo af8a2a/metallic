@@ -1,5 +1,6 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 
 struct RayObservation
 {
@@ -16,7 +17,7 @@ void unifiedTopLevelMain(uint3 id : SV_DispatchThreadID)
     RayDesc ray = {float3(x, y, id.x == 5 ? 5.0 : 0), 0.001,
         float3(0, 0, id.x == 5 ? -1.0 : 1.0), id.x == 4 ? 1.0 : 10.0};
     RayQuery<RAY_FLAG_FORCE_OPAQUE> query;
-    query.TraceRayInline(getResource<RaytracingAccelerationStructure>(0), 0, id.x == 3 ? 2 : 1, ray);
+    query.TraceRayInline(resolveAccelerationStructure(getResourceParameters<UnifiedTopLevelProbeResources>().scene), 0, id.x == 3 ? 2 : 1, ray);
     while (query.Proceed()) {}
     bool hit = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
     RayObservation result = {hit ? 1u : 0u, hit ? query.CommittedInstanceID() : 0xffffffffu,
@@ -24,5 +25,5 @@ void unifiedTopLevelMain(uint3 id : SV_DispatchThreadID)
         hit && query.CommittedTriangleFrontFace() ? 1u : 0u,
         hit ? query.CommittedRayT() : 0.0, 0.0, 0.0, 0.0};
     if (hit) { float2 bary = query.CommittedTriangleBarycentrics(); result.u = bary.x; result.v = bary.y; }
-    getResource<RWStructuredBuffer<RayObservation>>(1)[id.x] = result;
+    resolveBuffer<RWStructuredBuffer<RayObservation>>(getResourceParameters<UnifiedTopLevelProbeResources>().output)[id.x] = result;
 }

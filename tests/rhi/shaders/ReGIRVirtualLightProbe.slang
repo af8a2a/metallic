@@ -1,9 +1,10 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 import Lighting;
 using Metallic.Lighting;
 
-#define gProbeOutput getResource<RWStructuredBuffer<float4>>(0)
+#define gProbeOutput resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<ReGIRVirtualLightProbeResources>().output)
 
 struct ReGIRProbePush
 {
@@ -35,28 +36,28 @@ void reGIRVirtualLightProbeMain(uint3 id : SV_DispatchThreadID)
     uint lightIndex = 0xffffffffu;
     float inverseSourcePdf = 0.0;
     float3 estimate = 0.0;
-    if (selectPunctualLight(PunctualSamplingResources(getResource<StructuredBuffer<GPUPunctualLight>>(50), getResource<StructuredBuffer<uint4>>(52), getResource<Texture2D<float>>(53)), push.position, seed, lightIndex, inverseSourcePdf)) {
-        estimate = samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), lightIndex, push.position).illuminance * inverseSourcePdf;
+    if (selectPunctualLight(PunctualSamplingResources(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<ReGIRVirtualLightProbeResources>().lights), resolveBuffer<StructuredBuffer<uint4>>(getResourceParameters<ReGIRVirtualLightProbeResources>().lightAlias), resolveUniform(getResourceParameters<ReGIRVirtualLightProbeResources>().lightsPdf)), push.position, seed, lightIndex, inverseSourcePdf)) {
+        estimate = samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<ReGIRVirtualLightProbeResources>().lights), lightIndex, push.position).illuminance * inverseSourcePdf;
     } else {
         lightIndex = 0xffffffffu;
     }
     gProbeOutput[id.x] = float4(estimate, asfloat(lightIndex));
     if (id.x == 0u) {
         float3 exact = 0.0;
-        for (uint i = 0; i < punctualLightCount(getResource<StructuredBuffer<GPUPunctualLight>>(50)); ++i) {
-            exact += samplePunctualLight(getResource<StructuredBuffer<GPUPunctualLight>>(50), i, push.position).illuminance;
+        for (uint i = 0; i < punctualLightCount(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<ReGIRVirtualLightProbeResources>().lights)); ++i) {
+            exact += samplePunctualLight(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<ReGIRVirtualLightProbeResources>().lights), i, push.position).illuminance;
         }
         gProbeOutput[push.sampleCount] = float4(exact, 0.0);
         uint width, height, mipCount;
-        getResource<Texture2D<float>>(53).GetDimensions(0u, width, height, mipCount);
+        resolveUniform(getResourceParameters<ReGIRVirtualLightProbeResources>().lightsPdf).GetDimensions(0u, width, height, mipCount);
         gProbeOutput[push.sampleCount + 1u] = float4(
-            getResource<Texture2D<float>>(53).Load(int3(0, 0, int(mipCount) - 1)), 0, 0, 0);
+            resolveUniform(getResourceParameters<ReGIRVirtualLightProbeResources>().lightsPdf).Load(int3(0, 0, int(mipCount) - 1)), 0, 0, 0);
         for (uint i = 0; i < 16; ++i) {
-            float power = i < punctualLightCount(getResource<StructuredBuffer<GPUPunctualLight>>(50))
-                ? punctualLightPower(getResource<StructuredBuffer<GPUPunctualLight>>(50)[i + 1u]) : 0.0;
+            float power = i < punctualLightCount(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<ReGIRVirtualLightProbeResources>().lights))
+                ? punctualLightPower(resolveBuffer<StructuredBuffer<GPUPunctualLight>>(getResourceParameters<ReGIRVirtualLightProbeResources>().lights)[i + 1u]) : 0.0;
             uint2 texel = probeMortonPosition(i);
             float weight = texel.x < width && texel.y < height
-                ? getResource<Texture2D<float>>(53).Load(int3(texel, 0)) : 0.0;
+                ? resolveUniform(getResourceParameters<ReGIRVirtualLightProbeResources>().lightsPdf).Load(int3(texel, 0)) : 0.0;
             gProbeOutput[push.sampleCount + 2u + i] = float4(power, weight, 0, 0);
         }
     }

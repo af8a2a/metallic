@@ -1,6 +1,7 @@
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
@@ -314,48 +315,26 @@ public:
             if (!result) { return result; }
         }
 
-        result = createSlangShaderModule(
-            device,
-            kMeshletStreamShaderModuleName,
-            kMeshletStreamPageTableInitEntryPoint,
-            pageTableInitShader_,
-            log);
-        if (!result) {
-            return result;
-        }
-        result = device.createComputePipeline(ComputePipelineDesc{
-            .computeShader = {pageTableInitShader_.get(), "main"},
-            .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-            .pipelineCache = pipelineCache,
-        }).transform([&](auto rhiValue) { pageTableInitPipeline_ = std::move(rhiValue); });
-        if (!result || pageTableInitPipeline_ == nullptr) {
-            log += resultMessage("createComputePipeline(MeshletStreamRuntime page table init)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
-
-        result = createSlangShaderModule(
-            device,
-            kMeshletStreamShaderModuleName,
-            kMeshletStreamUpdateEntryPoint,
-            updateShader_,
-            log);
-        if (!result) {
-            return result;
-        }
-
-        result = device.createComputePipeline(ComputePipelineDesc{
-            .computeShader = {updateShader_.get(), "main"},
-            .usesBindlessHeap = true,
-            .bindlessUserPushDataSize = sizeof(MeshletStreamUserPush),
-            .pipelineCache = pipelineCache,
-        }).transform([&](auto rhiValue) { updatePipeline_ = std::move(rhiValue); });
-        if (!result || updatePipeline_ == nullptr) {
-            log += resultMessage("createComputePipeline(MeshletStreamRuntime update)", result);
-            log += '\n';
-            return result ? makeError(Error::Failure) : result;
-        }
+        device_ = &device;
+        registry_ = &registry;
+        auto initializeKernel = [&](const char* entry, ComputeKernel& kernel) -> Result<> {
+            auto shader = compileSlangShaderToSpirv({
+                .moduleName = kMeshletStreamShaderModuleName,
+                .entryPointName = entry,
+                .searchPath = kMeshletStreamShaderSearchPath,
+            }, log);
+            if (!shader) { return makeError(shader.error()); }
+            return kernel.initialize(device, {
+                .spirv = shader->spirv,
+                .parameters = parameterAbi<MeshletStreamUserPush>(kPageTableABI, ParameterTransport::InlinePush),
+                .debugName = entry,
+                .pipelineCache = pipelineCache,
+            }, log);
+        };
+        result = initializeKernel(kMeshletStreamPageTableInitEntryPoint, pageTableInitKernel_);
+        if (!result) { return result; }
+        result = initializeKernel(kMeshletStreamUpdateEntryPoint, updateKernel_);
+        if (!result) { return result; }
         return {};
     }
 
@@ -363,16 +342,13 @@ public:
     {
         return !updateBuffers_.empty() && updateBuffers_.front() != nullptr &&
             updateHandles_.front().valid() &&
-            pageTableInitShader_ != nullptr &&
-            pageTableInitPipeline_ != nullptr &&
-            updatePipeline_ != nullptr;
+            pageTableInitKernel_.valid() && updateKernel_.valid();
     }
 
     ResourceLease updateHandle() const { return updateHandles_.empty() ? ResourceLease{} : updateHandles_.front(); }
 
     Result<> initializePageTable(
         CommandBuffer& commandBuffer,
-        BindlessHeap& bindlessHeap,
         MeshletStreamUserPush push,
         uint32_t pageCount,
         Buffer& pageTableBuffer,
@@ -389,17 +365,16 @@ public:
 
         push.activeBuildPhase = pageCount;
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
-        commandBuffer.bindBindlessHeap(bindlessHeap);
-        if (auto commandResult = commandBuffer.bindExecution((pageTableInitPipeline_)->execution()); !commandResult) { return commandResult; }
-        commandBuffer.pushBindlessData(&push, sizeof(push));
-        commandBuffer.dispatch(groupCountX, groupCountY, 1);
+        ParameterWriter writer(*device_, *registry_, RenderFrameContext::from(commandBuffer));
+        auto parameters = writer.encode(push, kPageTableABI, ParameterTransport::InlinePush);
+        if (!parameters) { return makeError(parameters.error()); }
+        if (auto dispatched = pageTableInitKernel_.dispatch(commandBuffer, *parameters, groupCountX, groupCountY); !dispatched) { return dispatched; }
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
         return {};
     }
 
     Result<> apply(
         CommandBuffer& commandBuffer,
-        BindlessHeap& bindlessHeap,
         MeshletStreamUserPush push,
         std::span<const StreamPageTablePatch> patches,
         uint32_t maxUpdatePatches,
@@ -456,20 +431,23 @@ public:
         updateBuffer.unmap();
 
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General); !commandResult) { return commandResult; }
-        commandBuffer.bindBindlessHeap(bindlessHeap);
-        if (auto commandResult = commandBuffer.bindExecution((updatePipeline_)->execution()); !commandResult) { return commandResult; }
-        commandBuffer.pushBindlessData(&push, sizeof(push));
-        commandBuffer.dispatch((patchCount + 63u) / 64u, 1, 1);
+        ParameterWriter writer(*device_, *registry_, RenderFrameContext::from(commandBuffer));
+        if (auto used = writer.use(updateHandles_[slot]); !used) { return used; }
+        auto parameters = writer.encode(push, kPageTableABI, ParameterTransport::InlinePush);
+        if (!parameters) { return makeError(parameters.error()); }
+        if (auto dispatched = updateKernel_.dispatch(commandBuffer, *parameters, (patchCount + 63u) / 64u, 1); !dispatched) { return dispatched; }
         if (auto commandResult = transitionBuffer(commandBuffer, pageTableBuffer, pageTableState, ResourceState::General, true); !commandResult) { return commandResult; }
         return {};
     }
 
 private:
     std::vector<std::unique_ptr<Buffer>> updateBuffers_;
-    std::unique_ptr<ShaderModule> pageTableInitShader_;
-    std::unique_ptr<ComputePipeline> pageTableInitPipeline_;
-    std::unique_ptr<ShaderModule> updateShader_;
-    std::unique_ptr<ComputePipeline> updatePipeline_;
+    // Same inline wire layout as the stream shaders; kernel packets retain executable state.
+    static constexpr uint64_t kPageTableABI = 0x4d53504754420001ull;
+    Device* device_ = nullptr;
+    ResourceRegistry* registry_ = nullptr;
+    ComputeKernel pageTableInitKernel_;
+    ComputeKernel updateKernel_;
     std::vector<ResourceLease> updateHandles_;
 };
 
@@ -3576,7 +3554,6 @@ Result<> MeshletStreamRuntime::initializePageTableIfNeeded(CommandBuffer& comman
 
     Result<> result = updatePass_->initializePageTable(
         commandBuffer,
-        *registry_->heap(),
         userPush(),
         asset_.pageCount(),
         *pageTableBuffer_,
@@ -3614,7 +3591,6 @@ Result<> MeshletStreamRuntime::applyPageTablePatches(CommandBuffer& commandBuffe
     }
     Result<> result = updatePass_->apply(
         commandBuffer,
-        *registry_->heap(),
         userPush(),
         patches,
         maxUpdatePatches_,

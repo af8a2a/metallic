@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 
@@ -148,6 +149,7 @@ public:
                 .spirv = shader.spirv,
                 .bindings = bindings,
                 .requiresRayQuery = false,
+                .resourceParameters = metallic::tests::kClusterLightGridLookupProbeLayout,
             }, log_));
         }
         std::unique_ptr<render::Buffer> probe;

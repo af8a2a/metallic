@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "harness/RayQueryFixture.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -131,6 +132,7 @@ public:
         const auto initialized = program.initialize(device, {
             .spirv = shader.spirv,
             .bindings = {layout, 2},
+            .resourceParameters = metallic::tests::kUnifiedTopLevelProbeLayout,
         }, log);
         if (native_ && hasError(initialized, Error::Unsupported)) { return RHITestResult::skip("native descriptor heap unavailable"); }
         TLAS_REQUIRE(initialized);

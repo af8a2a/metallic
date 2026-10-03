@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "Runtime/Render/Core/ResourceState.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include <stdexcept>
@@ -445,6 +446,8 @@ render::Result<> createProbe(render::Device& device, const char* entry,
         .pushConstantSize = sizeof(uint32_t),
         .bindings = bindings,
         .requiresRayQuery = false,
+        .resourceParameters = std::string_view(entry) == "accumulateHistory" ? metallic::tests::kFrameHistoryProbeLayout :
+            std::string_view(entry) == "sampleImages" ? metallic::tests::kFrameImagesProbeLayout : metallic::tests::kFrameCopyProbeLayout,
     }, log);
 }
 
@@ -1782,6 +1785,7 @@ public:
             .spirv = shader.spirv,
             .bindings = {bindings, 2},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kFrameEnvironmentProbeLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override

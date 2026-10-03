@@ -1,8 +1,9 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 
-#define gOutput getResource<RWStructuredBuffer<float4>>(0)
-#define gInput getResource<StructuredBuffer<float4>>(1)
+#define gOutput resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<SphericalHarmonicsProbeResources>().output)
+#define gInput resolveBuffer<StructuredBuffer<float4>>(getResourceParameters<SphericalHarmonicsProbeResources>().input)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

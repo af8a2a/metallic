@@ -1,6 +1,7 @@
 import Core;
 using Metallic;
-#define gOutput getResource<RWStructuredBuffer<uint>>(0)
+#include "../TestResourceParameters.h"
+#define gOutput resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<BatchBarrierProbeResources>().output)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

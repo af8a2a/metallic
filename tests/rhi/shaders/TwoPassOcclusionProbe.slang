@@ -1,5 +1,6 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
@@ -11,8 +12,8 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
 {
     // Full ceil-divided 17x9 pyramid: 153 + 45 + 15 + 6 + 2 + 1.
     for (uint i = id.x; i < 222u; i += 32u) {
-        getResource<RWStructuredBuffer<float>>(1)[i] = 0.25;
-        getResource<RWStructuredBuffer<float>>(2)[i] = 1.0;
+        resolveBuffer<RWStructuredBuffer<float>>(getResourceParameters<TwoPassOcclusionProbeResources>().previousHzb)[i] = 0.25;
+        resolveBuffer<RWStructuredBuffer<float>>(getResourceParameters<TwoPassOcclusionProbeResources>().currentHzb)[i] = 1.0;
     }
     AllMemoryBarrierWithGroupSync();
     GPUDrivenPreviewParams params = {};
@@ -27,8 +28,8 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
     params.frameIndex = 1;
     params.cullingFlags = kCullMeshletHZB;
     GPUDrivenPreviewPush push = {};
-    push.hzbBuffer0 = getComputeResources().resources[1].handle.x;
-    push.hzbBuffer1 = getComputeResources().resources[2].handle.x;
+    push.hzbBuffer0 = getResourceParameters<TwoPassOcclusionProbeResources>().previousHzb.index;
+    push.hzbBuffer1 = getResourceParameters<TwoPassOcclusionProbeResources>().currentHzb.index;
     float3 center = float3(0, 0, 5);
     float radius = 0.25;
     uint instanceState = 1;
@@ -101,6 +102,6 @@ void twoPassOcclusionProbeMain(uint3 id : SV_DispatchThreadID)
         float3 point = transformPoint(transform, float3(cos(angle), sin(angle), 0));
         depthErrors += length(point) > scale + 1e-6 ? 1u : 0u;
     }
-    getResource<RWStructuredBuffer<float4>>(0)[id.x] =
+    resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<TwoPassOcclusionProbeResources>().output)[id.x] =
         float4(early ? 1.0 : 0.0, late ? 1.0 : 0.0, float(rectErrors), float(depthErrors));
 }

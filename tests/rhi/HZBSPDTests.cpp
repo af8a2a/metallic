@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/HZBSPD.h"
@@ -55,6 +56,7 @@ public:
             .pushConstantSize = 16,
             .bindings = {bindings, 2},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kHZBSPDFixtureLayout,
         }, log);
         if (!result) { return result; }
         const render::SlangMacroDefine waveDefine{render::kHZBSPDWaveOpsDefine,

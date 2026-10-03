@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderSample.h"
@@ -32,6 +33,7 @@ public:
             .spirv = shader.spirv,
             .bindings = {bindings, 1},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kGPUDrivenConeProbeLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -104,6 +106,7 @@ public:
             .spirv = shader.spirv,
             .bindings = {bindings, 3},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kTwoPassOcclusionProbeLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override

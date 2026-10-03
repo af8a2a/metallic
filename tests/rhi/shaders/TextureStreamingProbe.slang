@@ -1,5 +1,6 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 import Material;
 using Metallic.Material;
 
@@ -10,10 +11,10 @@ struct Push { uint slot; uint visible; float nearSourceLod; float farSourceLod; 
 void main()
 {
     Push push = getConstants<Push>();
-    Texture2D<float4> texture = getResourceArray<Texture2D<float4>>(0, push.slot);
-    RWStructuredBuffer<uint> feedback = getResource<RWStructuredBuffer<uint>>(1);
-    RWStructuredBuffer<float4> output = getResource<RWStructuredBuffer<float4>>(2);
-    SamplerState sampler = getResource<SamplerState>(3);
+    Texture2D<float4> texture = resolveNonUniform(ResourceHandle<Texture2D<float4>>(getResourceParameters<TextureStreamingProbeResources>().textures.load(push.slot)));
+    RWStructuredBuffer<uint> feedback = resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<TextureStreamingProbeResources>().feedback);
+    RWStructuredBuffer<float4> output = resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<TextureStreamingProbeResources>().output);
+    SamplerState sampler = resolveUniform(getResourceParameters<TextureStreamingProbeResources>().sampler);
     uint count, stride;
     feedback.GetDimensions(count, stride);
     uint offset = push.slot * 8u;

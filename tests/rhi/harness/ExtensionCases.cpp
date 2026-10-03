@@ -1,3 +1,4 @@
+#include "../TestResourceLayouts.h"
 #include "RayQueryFixture.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -74,7 +75,7 @@ Json trace(RHITestContext& context, uint64_t blasAddress)
         .capabilities = capabilities, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log));
     const ComputeProgramBindingDesc layout[]{{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
     ComputeProgram program;
-    checked(program.initialize(device, {.spirv = shader.spirv, .bindings = layout}, log));
+    checked(program.initialize(device, {.spirv = shader.spirv, .bindings = layout, .resourceParameters = metallic::tests::kUnifiedTopLevelProbeLayout}, log));
     auto output = buffer(device, sizeof(RayObservations), MemoryLocation::HostReadback);
     auto pool = checked(device.createCommandPool(queue));
     auto commands = checked(pool->createCommandBuffer());

@@ -1,6 +1,7 @@
 import Core;
 import Material;
 using Metallic;
+#include "../TestResourceParameters.h"
 using Metallic.Material;
 
 struct TextureFootprintProbePush
@@ -20,7 +21,7 @@ struct TextureFootprintProbePush
 void textureFootprintProbeMain()
 {
     TextureFootprintProbePush push = getConstants<TextureFootprintProbePush>();
-    getResource<RWStructuredBuffer<float2>>(0)[push.index] = primaryTextureRayCone(
+    resolveBuffer<RWStructuredBuffer<float2>>(getResourceParameters<TextureFootprintProbeResources>().output)[push.index] = primaryTextureRayCone(
         uint2(push.width, push.height), push.aspect, push.verticalFovRadians,
         push.orthographicHeight, push.orthographic != 0u);
 }

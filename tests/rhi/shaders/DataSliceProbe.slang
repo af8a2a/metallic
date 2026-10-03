@@ -1,5 +1,6 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 import ParameterRoot;
 
 struct DataProbeParams
@@ -37,7 +38,10 @@ void dataIndirectMain(uint3 id : SV_DispatchThreadID)
 [numthreads(8, 1, 1)]
 void dataAdapterMain(uint3 id : SV_DispatchThreadID)
 {
-    RWBufferSpan<uint> output = getData<uint>(0);
-    if (getData<uint2>(0).length() != 0u) { output.store(id.x, 0xbadbad); return; }
+    RWBufferSpan<uint> output = typedBufferSpan<uint>(getResourceParameters<DataSliceProbeResources>().output);
+    // An incomplete element must not expose a partial typed span.
+    BufferSpan<uint> incomplete = getResourceParameters<DataSliceProbeResources>().output;
+    incomplete.count = 3;
+    if (typedBufferSpan<uint2>(incomplete).length() != 0u) { output.store(id.x, 0xbadbad); return; }
     if (output.contains(id.x)) { output.store(id.x, output.load(id.x) + (3)); }
 }

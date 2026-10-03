@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 
@@ -100,6 +101,7 @@ public:
             .pushConstantSize = sizeof(ReGIRProbePush),
             .bindings = bindings,
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kReGIRVirtualLightProbeLayout,
         }, log_));
         return RHITestResult::pass();
     }

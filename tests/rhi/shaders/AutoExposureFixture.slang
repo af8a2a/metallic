@@ -1,7 +1,8 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 
-#define gOutput getResource<RWTexture2D<float4>>(0)
+#define gOutput resolveUniform(getResourceParameters<AutoExposureFixtureResources>().output)
 struct FixturePush { uint width; uint height; float luminance; uint outliers; };
 [shader("compute")]
 [numthreads(8, 8, 1)]

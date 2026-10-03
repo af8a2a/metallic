@@ -1,7 +1,7 @@
 #language slang 2026
 module Core;
 
-// ComputeProgram named parameters and low-level slot test adapter.
+// ComputeProgram named resource and constant parameters.
 // Standalone ComputeKernel shaders import ShaderCore.
 __exported import ShaderCore;
 import ParameterRoot;

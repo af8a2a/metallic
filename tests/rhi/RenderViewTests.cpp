@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/HistoryResources.h"
@@ -31,6 +32,7 @@ public:
             .spirv = shader.spirv,
             .bindings = {bindings, 2},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kViewConstantsProbeLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override

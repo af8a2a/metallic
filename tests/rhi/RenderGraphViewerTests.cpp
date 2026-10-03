@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
 #include "Editor/EditorRenderGraphViewer.h"
@@ -40,6 +41,7 @@ public:
             .pushConstantSize = 16,
             .bindings = {&binding, 1},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kAutoExposureFixtureLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override

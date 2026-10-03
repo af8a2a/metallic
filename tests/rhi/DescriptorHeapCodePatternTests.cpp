@@ -1,5 +1,6 @@
 #include "RHITest.h"
-#include "Runtime/Render/Core/ComputeProgram.h"
+#include "Runtime/Render/Core/ComputeKernel.h"
+#include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -318,19 +319,14 @@ public:
             ", effective generator=0x" << shader.spirv[2] << ", original FNV-1a64=0x" << originalHash <<
             std::dec << ", words=" << shader.spirv.size() <<
             ", generator override=" << (generatorValue != nullptr ? "on (memory only)" : "off") << std::endl;
-        const render::ComputeProgramBindingDesc bindings[] = {
-            {.binding = 0, .kind = render::ComputeResourceBindingKind::SampledImage},
-            {.binding = 1, .kind = render::ComputeResourceBindingKind::StorageBuffer},
-            {.binding = 2, .kind = render::ComputeResourceBindingKind::StorageBuffer}};
-        render::ComputeProgram program;
+        render::ComputeKernel program;
         MappedPatternPipeline mappedProgram;
         std::string log;
         result = environment ? program.initialize(*device, {
             .spirv = shader.spirv,
-            .pushConstantSize = sizeof(PatternValues),
-            .bindings = {bindings, 3},
+            .parameters = render::parameterAbi<render::EnvironmentLightingPrecomputeParams>(
+                render::kEnvironmentLightingPrecomputeABI, render::ParameterTransport::InlinePush),
             .debugName = "DescriptorHeap Code Pattern",
-            .requiresRayQuery = false,
         }, log) : mappedProgram.initialize(*device, shader.spirv);
         if (!result) { return RHITestResult::fail(log + render::resultToString(result)); }
         if (compileOnly) {
@@ -422,18 +418,23 @@ public:
         if (prefixPdf) {
             PATTERN_REQUIRE(pdfCompute.buildEnvironment(*commands.buffer, *view, pdfTexture));
         }
-        auto* sampledView = view.get();
-        const render::ComputeDispatchBinding resources[] = {
-            {.binding = 0, .textureViews = {&sampledView, 1}},
-            {.binding = 1, .buffer = input.get()},
-            {.binding = 2, .buffer = output.get()}};
-        PATTERN_REQUIRE(environment ? program.dispatch({
-            .commandBuffer = commands.buffer.get(),
-            .bindings = {resources, 3},
-            .pushData = &push,
-            .pushDataSize = sizeof(push),
-            .groupCountX = groups,
-        }) : mappedProgram.dispatch(*commands.buffer, *view, *input, *output, push, groups));
+        auto dispatchEnvironment = [&](uint32_t mode, uint32_t groupCount) -> render::Result<> {
+            auto registry = render::ResourceRegistry::forDevice(*device);
+            if (!registry) { return render::makeError(registry.error()); }
+            render::ParameterWriter writer(*device, commands.frame, **registry);
+            render::EnvironmentLightingPrecomputeParams params{
+                .radiance = writer.sampledImage(view.get()),
+                .partials = writer.bufferSpan<std::array<float, 4>>(input.get()),
+                .coefficients = writer.bufferSpan<std::array<float, 4>>(output.get()),
+                .settings = {mode, push.b, push.c, push.d, push.e, push.f, push.g, push.h},
+            };
+            auto encoded = writer.encode(params, render::kEnvironmentLightingPrecomputeABI,
+                render::ParameterTransport::InlinePush);
+            if (!encoded) { return render::makeError(encoded.error()); }
+            return program.dispatch(*commands.buffer, *encoded, groupCount);
+        };
+        PATTERN_REQUIRE(environment ? dispatchEnvironment(0, groups) :
+            mappedProgram.dispatch(*commands.buffer, *view, *input, *output, push, groups));
         if (environment && !integrateOnly) {
             const render::BufferBarrierDesc partialsBarrier{
                 .buffer = input.get(),
@@ -442,15 +443,7 @@ public:
                 .range = {.size = inputBytes},
             };
             if (auto commandResult = commands.buffer->synchronize({.buffers = {&partialsBarrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-            PatternValues finalizePush = push;
-            finalizePush.a = 1;
-            PATTERN_REQUIRE(program.dispatch({
-                .commandBuffer = commands.buffer.get(),
-                .bindings = {resources, 3},
-                .pushData = &finalizePush,
-                .pushDataSize = sizeof(finalizePush),
-                .groupCountX = 9,
-            }));
+            PATTERN_REQUIRE(dispatchEnvironment(1, 9));
         }
         PATTERN_REQUIRE(commands.buffer->end());
         render::CommandBuffer* submitted[] = {commands.buffer.get()};

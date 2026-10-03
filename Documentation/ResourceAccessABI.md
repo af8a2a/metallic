@@ -37,11 +37,11 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
   payload is a 12-byte `GPUBufferSpan` (index, byte offset, word count).
   `ParameterRoot.getParameters<T>()` performs a raw descriptor load; neither large
   parameter blocks nor resource/constant/texture-index tables use BDA.
-- Production `ComputeProgram` shaders read named resource structs through
+- All `ComputeProgram` shaders read named resource structs through
   `getResourceParameters<T>()`, then resolve their explicit handles/spans. The
   shared `NamedResourceParameters.h` declares the CPU/Slang wire fields.
   `NamedResourceLayouts.h` maps CPU input IDs to field offsets; those IDs never
-  reach the production GPU packet. The scene block is 440 bytes, replacing the
+  reach the GPU packet. The scene block is 440 bytes, replacing the
   sparse 24-byte-per-slot table. Scalar images no longer allocate index arrays.
 - `ComputeProgramDesc.resourceParameters` validates field type, bounds, alignment,
   overlap and array representation before pipeline creation. The encoder copies
@@ -49,11 +49,13 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
   Its 24-byte root still carries resource and constant DR spans. Image arrays
   contain 32-bit indices; named data spans count words and `typedBufferSpan<T>`
   validates divisibility before exposing typed elements. AS fields remain 64-bit.
-- The slot adapter remains available for RHI test shaders, including rendering
-  fixtures that have not yet adopted named parameters. There
-  are no `getResource`, `getResourceArray` or `getData` calls in production
-  Features/Interop or generated material source. CPU input IDs remain compatible
-  with existing pass setup; they are not shader descriptor indices.
+- The numeric-slot adapter and `ComputeResourceSlot` wire table are removed.
+  `ComputeProgram` requires an explicit nonempty named layout and writes directly
+  to field offsets, without a sparse CPU slot array. CPU IDs are not limited to
+  the old 0..255 slot range; only the number of bindings remains bounded at 256.
+  `getResource`, `getResourceArray` and `getData` no longer exist in Core or its
+  callers. Test fixtures share `tests/rhi/TestResourceParameters.h` and
+  `TestResourceLayouts.h`; image arrays use bounded DR index spans.
 - `ShaderDataSpan`, `DataSpan`, `dataBuffer`, and address-returning `data` /
   `EncodedParameters::address` APIs are removed. `dataSpan` and `sampledImages`
   return descriptor spans. BufferSlice registration retains the allocation after
@@ -103,7 +105,7 @@ remain explicit and independent of descriptor resolution.
   to `ResourceHandle`. Genuine GPU-VA API operations remain physical-address
   capabilities; ordinary shader data and parameter roots no longer use them.
 - Range-specific SRV/UAV/CBV views, universal null slot, separate transient
-  descriptor arenas, and removal of the remaining CPU input/test adapter remain
+  descriptor arenas, and further simplification of the CPU binding adapter remain
   future architecture work. They are not required to make existing image/buffer accesses
   use DR. Invalid indices remain `UINT32_MAX`; zero is still allocatable.
 - Descriptors retain stable registry identity and submission leases. Parameter
@@ -112,7 +114,41 @@ remain explicit and independent of descriptor resolution.
 - No D3D12 backend or physical-pointer emulation is introduced. Both mapped and
   native Vulkan modes implement this same shader-facing ABI.
 
-## Remaining shader audit on 2026-10-03
+## Compute execution layers
+
+- `Device::createComputePipeline` is the RHI backend factory. Keep it available
+  for backend/compiler probes and code that explicitly manages execution state.
+- `ComputeKernel` owns the executable and a declared parameter ABI. Prefer it
+  for new compute passes; both inline push and descriptor-backed parameters use
+  the same prepared-dispatch execution and submission lifetime handling.
+- `ComputeProgram` is a CPU binding adapter over `ComputeKernel`, not a separate
+  executor. It maps input IDs to named fields and bundles resource leases. It has
+  no numeric-slot shader mode or implicit resource layout.
+
+`MeshletStreamRuntime::UpdatePass` now uses two `ComputeKernel` instances for page
+initialization and patch application. The 136-byte inline `MeshletStreamUserPush`,
+pipeline cache, per-frame upload selection, patch ordering and synchronization
+remain unchanged; encoded dispatches also retain executable state. The remaining
+six pipeline creations in that file cover traversal, active/cooperative/demand
+LOD, and BLAS/TLAS input generation. They are candidates for the same inline ABI,
+but their repeated multi-phase dispatches and LOD pipeline-cache-hit diagnostics
+need a separate CPU recording measurement and diagnostics API before wholesale
+replacement. This change makes no recording-performance claim.
+
+Other direct callers were assessed as follows:
+
+| Caller | Decision |
+| --- | --- |
+| `RenderGraphBufferPasses` | Simple write/copy kernels are suitable for a subsequent inline-kernel conversion. |
+| `ResidentMeshletLOD`, `VisibilityHybridRasterizer`, `GPUDrivenStreamAssetPass`, `VisibilityBufferPass` | Typed pushes already use DR. Preserve their multi-phase scheduling and graphics/compute state contracts when converting; do not introduce a new slot adapter. |
+| `StreamlineDLSSRRPass` alpha resolve | Suitable isolated kernel, but the optional SDK is disabled in the validation build. |
+| `WorkControlShaderTrace`, `ShaderPrintfProbe`, low-level RHI tests | Keep direct pipelines where fixed bindings, compiler instrumentation or backend behavior are the subject of the probe. |
+
+The optional environment branch of `DescriptorHeapCodePatternTests` now uses
+`ComputeKernel` with `EnvironmentLightingPrecomputeParams`, matching the production
+shader's inline ABI instead of passing the obsolete resource-table root.
+
+## Shader audit on 2026-10-03
 
 Static inspection covered 231 tracked shader/include files under `Shaders/`,
 45 under `tests/rhi/shaders/`, and resource expressions in `Source/`, `Tools/`
@@ -127,18 +163,19 @@ evidence of non-DR resource access.
   Migrating it requires a coordinated editor/ImGui binding change, including
   detached windows; changing the shader declarations alone is insufficient.
 - Production Features/Interop and generated material source have no legacy
-  `getResource<T>`, `getResourceArray<T>` or `getData<T>` calls. Core retains
-  their definitions. NRD's generated bindings resolve engine handles and its
+  `getResource<T>`, `getResourceArray<T>` or `getData<T>` calls. Their Core
+  definitions and all test call sites have also been removed. NRD's generated bindings resolve engine handles and its
   resource/constants tables use DR spans.
 - The only physical pointer declaration found in Metallic's shader modules is
   the explicit `PhysicalPtr<T>` capability. It has no shader call sites. The AS
   resolver retains its separate 64-bit address path; 64-bit raster atomics and
   counters are buffer contents, not physical addresses.
 
-The **24 test shaders still using the numeric-slot adapter** are listed below.
-All names are relative to `tests/rhi/shaders/` and have the `.slang` suffix.
-Their image/buffer accesses already resolve through DR in `ComputeResources`;
-the remaining migration is to named parameter fields with matching CPU layouts.
+The **24 test shaders migrated from numeric slots to named DR fields** are listed
+below. All names are relative to `tests/rhi/shaders/` and have the `.slang` suffix.
+Their CPU layouts share the same wire declarations. `FrameResourceProbe` has
+separate copy, history and image-array layouts; optional fields in the other
+multi-entry fixtures remain invalid unless explicitly supplied.
 
 | Area | Shaders |
 | --- | --- |
@@ -306,3 +343,47 @@ descriptor-set ABI and AS address boundary described above remain explicit.
 
 No performance improvement, full-scene memory stability, D3D12 support,
 partitioned-AS migration or interactive DLSS/NRC verification is claimed.
+
+
+## Compute slot removal: verification on 2026-10-03
+
+- Migrated all 24 remaining numeric-slot fixture shaders, using 26 shared named
+  wire structs (the frame probe has three distinct entry-point layouts). CPU
+  initialization now supplies the corresponding field maps, including material
+  executable reloads and test-harness ray-query probes.
+- Removed the Core numeric accessors, sparse slot staging array and implicit
+  ComputeProgram layout. The named-resource regression rejects a missing layout
+  and uses CPU IDs 7/65537 with the same 16-byte GPU block. Bounded data spans,
+  image arrays, optional fields, prepared batches, and the deliberately rejected
+  native AS dereference retain their coverage.
+- The affected RHI selection runs 113 cases in each descriptor mode: **105 pass,
+  8 skip, zero final failures**. The opt-in descriptor diagnostic is one skip in
+  that selection; separate ordinary/procedural environment-SH runs pass in both
+  modes with the internal driver pipeline cache disabled. Other skips concern
+  optional realtime/SDK settings and large-asset opt-ins that were not enabled;
+  those paths remain unvalidated. The final sparse-ID and mapped ViewConstants changes have separate
+  passing reruns. No VUIDs were observed in either final suite.
+- The first native suite exposed a repeatable access violation during
+  ViewConstants pipeline creation. Disabling the internal cache did not fix it;
+  first-chance debugging located the exception in `nvoglv64.dll + 0x10e624`.
+  The probe now copies all 13 typed fields explicitly instead of assigning the
+  entire nested aggregate. This preserves shader field-offset and history
+  readback checks. The isolated no-cache case and the final full native suite
+  pass. This is a local driver compilation workaround, not a general driver fix.
+- Renderer, RHI and NRD targets build in the existing MSVC Release tree.
+  NRD passes 11/11 in each mode. Both editor smoke runs submit and present a
+  frame; each completes 210 warmup requests with 105 existing cache hits and
+  zero failures. `git diff --check` passes. These startup checks do not establish
+  full-scene visual or temporal correctness.
+- Meshlet GPU/reference, initial-loading, metadata and residency-patch regressions
+  pass with the two page-table kernels. The generated StreamLODBunny image was
+  inspected. Full-scene temporal stability and recording performance were not
+  measured by this migration.
+
+Evidence is under `.cache/`: `compute-named-{mapped,native-final}.{xml,log}`,
+`compute-named-sparse-mapped.{xml,log}`, `compute-view-mapped-final.{xml,log}`,
+`compute-environment_sh*-{mapped,native}.{xml,log}` and
+`compute-view-driver-fault.txt`. Earlier failing logs are retained separately.
+The exact main-suite filter is saved in `compute-named-filter.txt`. NRD and
+startup logs are `compute-nrd-{mapped,native}.{xml,log}` and
+`compute-smoke-{mapped,native}.log`.

@@ -1,14 +1,15 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 import Lighting;
 using Metallic.Lighting;
 
-#define gParams getResource<StructuredBuffer<ClusterLightGridParams>>(0)
-#define gLights getResource<StructuredBuffer<ClusterLightData>>(1)
-#define gCandidates getResource<StructuredBuffer<uint>>(2)
-#define gCells getResource<StructuredBuffer<ClusterLightGridCell>>(3)
-#define gLightIndices getResource<StructuredBuffer<uint>>(4)
-#define gOutput getResource<RWStructuredBuffer<uint4>>(5)
+#define gParams resolveBuffer<StructuredBuffer<ClusterLightGridParams>>(getResourceParameters<ClusterLightGridLookupProbeResources>().parameters)
+#define gLights resolveBuffer<StructuredBuffer<ClusterLightData>>(getResourceParameters<ClusterLightGridLookupProbeResources>().lights)
+#define gCandidates resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<ClusterLightGridLookupProbeResources>().candidates)
+#define gCells resolveBuffer<StructuredBuffer<ClusterLightGridCell>>(getResourceParameters<ClusterLightGridLookupProbeResources>().cells)
+#define gLightIndices resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<ClusterLightGridLookupProbeResources>().lightIndices)
+#define gOutput resolveBuffer<RWStructuredBuffer<uint4>>(getResourceParameters<ClusterLightGridLookupProbeResources>().output)
 
 [shader("compute")]
 [numthreads(1, 1, 1)]

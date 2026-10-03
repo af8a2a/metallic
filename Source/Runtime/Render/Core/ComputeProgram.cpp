@@ -11,8 +11,8 @@
 namespace metallic::render {
 namespace {
 
-constexpr uint32_t kMaxComputeResourceSlots = 256;
-constexpr uint64_t kComputeResourceABI = 0x434f4d5055544504ull;
+constexpr uint32_t kMaxComputeResourceBindings = 256;
+constexpr uint64_t kComputeResourceABI = 0x434f4d5055544505ull;
 
 // ParameterRoot payload; matches Core.ComputeResourceParameters in Slang.
 struct ComputeResourceParameters {
@@ -62,7 +62,6 @@ struct ComputeProgram::Impl {
     ComputeKernel kernel;
     std::vector<ComputeProgramBindingDesc> bindings;
     uint32_t pushConstantSize = 0;
-    uint32_t resourceSlotCount = 0;
     uint32_t resourceParameterSize = 0;
     uint32_t resourceParameterAlignment = 4;
     std::vector<ComputeResourceField> resourceFields;
@@ -85,8 +84,8 @@ Result<> ComputeProgram::initialize(Device& device, const ComputeProgramDesc& de
     clear();
     log.clear();
     if (desc.spirv.size() < 5 || desc.spirv[0] != 0x07230203u ||
-        desc.bindings.size() > kMaxComputeResourceSlots || hasDuplicateBindings(desc.bindings)) {
-        log = "ComputeProgram requires valid SPIR-V and unique resource slots";
+        desc.bindings.size() > kMaxComputeResourceBindings || hasDuplicateBindings(desc.bindings)) {
+        log = "ComputeProgram requires valid SPIR-V and unique resource input IDs";
         return makeError(Error::InvalidArgument);
     }
     if ((desc.requiresRayQuery && (!device.capabilities().rayQuery || !device.capabilities().rayTracingAccelerationStructure)) ||
@@ -99,23 +98,23 @@ Result<> ComputeProgram::initialize(Device& device, const ComputeProgramDesc& de
     impl->pushConstantSize = desc.pushConstantSize;
     impl->debugName = desc.debugName ? desc.debugName : "ComputeProgram";
     for (const auto& binding : desc.bindings) {
-        if (binding.binding >= kMaxComputeResourceSlots || binding.descriptorCount == 0 ||
+        if (binding.descriptorCount == 0 ||
             binding.kind > ComputeResourceBindingKind::Sampler ||
             (!usesImageHeap(binding.kind) && binding.descriptorCount != 1) ||
             (binding.kind == ComputeResourceBindingKind::DataBuffer &&
                 (!binding.dataStride || !std::has_single_bit(binding.dataAlignment) ||
-                 binding.dataStride % binding.dataAlignment != 0))) {
+                 binding.dataStride % binding.dataAlignment != 0 || binding.dataStride % 4 != 0))) {
             log = "ComputeProgram has an invalid resource binding";
             return makeError(Error::InvalidArgument);
         }
-        impl->resourceSlotCount = std::max(impl->resourceSlotCount, binding.binding + 1);
         impl->bindings.push_back(binding);
     }
-    // Resource slots are independent of declaration and descriptor allocation order.
+    // CPU input IDs are independent of field offsets and descriptor allocation order.
     std::ranges::sort(impl->bindings, {}, &ComputeProgramBindingDesc::binding);
-    if (desc.resourceParameters.size || !desc.resourceParameters.fields.empty()) {
+    {
         const auto& layout = desc.resourceParameters;
         if (!layout.size || layout.size > 65536 || (layout.size & 3u) || layout.fields.empty()) {
+            log = "ComputeProgram requires an explicit named resource layout";
             return makeError(Error::InvalidArgument);
         }
         impl->resourceParameterSize = layout.size;
@@ -279,12 +278,12 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
         result = writer.status();
         return span;
     };
-    // Only AS uses both handle words. Image/buffer indices are always 32-bit;
-    // arrays and ordinary data carry descriptor-backed bounded spans.
-    struct ResourceSlot { uint64_t handle = UINT64_MAX; GPUBufferSpan payload; uint32_t dataStride = 0; };
-    static_assert(sizeof(ResourceSlot) == 24);
-    std::vector<ResourceSlot> slots(impl_->resourceSlotCount);
-    for (const auto& expected : impl_->bindings) {
+    // Absent optional fields are invalid sentinel bytes, never descriptor index zero.
+    std::vector<uint8_t> parameters(impl_->resourceParameterSize, 0xff);
+    for (size_t input = 0; input < impl_->bindings.size(); ++input) {
+        const auto& expected = impl_->bindings[input];
+        const auto& field = impl_->resourceFields[input];
+        auto* destination = parameters.data() + field.offset;
         const auto* binding = findDispatchBinding(desc, expected.binding);
         if (!binding) { return makeError(Error::InvalidArgument); }
         if (expected.kind == ComputeResourceBindingKind::DataBuffer) {
@@ -298,10 +297,14 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
                 result = binding->buffer->slice({binding->range.offset, binding->range.size}).transform([&](auto rhiValue) { slice = std::move(rhiValue); });
                 if (!result) { return makeError(result.error()); }
             }
-            slots[expected.binding].payload = writer.bufferSpan(slice, expected.dataStride, expected.dataAlignment);
-            slots[expected.binding].dataStride = expected.dataStride;
+            auto span = writer.bufferSpan(slice, expected.dataStride, expected.dataAlignment);
             result = writer.status();
             if (!result) { return makeError(result.error()); }
+            // Named spans count words; typedBufferSpan restores the authored element type.
+            const uint64_t words = uint64_t(span.count) * expected.dataStride / 4;
+            if (words > UINT32_MAX) { return makeError(Error::InvalidArgument); }
+            span.count = static_cast<uint32_t>(words);
+            std::memcpy(destination, &span, sizeof(span));
             continue;
         }
         if (binding->data.valid()) { return makeError(Error::InvalidArgument); }
@@ -356,43 +359,21 @@ Result<PreparedComputeDispatch> ComputeProgram::prepare(
             if (!result) { return makeError(result.error()); }
             handles.push_back(lease->shaderValue());
         }
-        auto& slot = slots[expected.binding];
-        slot.handle = handles.front();
-        const auto field = std::ranges::find(impl_->resourceFields, expected.binding, &ComputeResourceField::binding);
-        if (usesImageHeap(expected.kind) && (!impl_->resourceParameterSize ||
-            (field != impl_->resourceFields.end() && field->format == ComputeResourceFieldFormat::IndexSpan))) {
+        if (field.format == ComputeResourceFieldFormat::IndexSpan) {
             std::vector<uint32_t> indices;
             indices.reserve(handles.size());
             for (auto handle : handles) { indices.push_back(static_cast<uint32_t>(handle)); }
-            slot.payload = upload(indices.data(), indices.size() * sizeof(uint32_t));
+            const auto span = upload(indices.data(), indices.size() * sizeof(uint32_t));
+            std::memcpy(destination, &span, sizeof(span));
+        } else {
+            const uint32_t size = expected.kind == ComputeResourceBindingKind::AccelerationStructure ? 8u : 4u;
+            std::memcpy(destination, handles.data(), size);
         }
         if (!result) { return makeError(result.error()); }
     }
     ComputeResourceParameters push;
-    if (impl_->resourceParameterSize) {
-        // Absent optional fields are invalid sentinel bytes, never descriptor slot zero.
-        std::vector<uint8_t> parameters(impl_->resourceParameterSize, 0xff);
-        for (const auto& field : impl_->resourceFields) {
-            const auto& slot = slots[field.binding];
-            if (field.format == ComputeResourceFieldFormat::Handle) {
-                const uint32_t size = field.kind == ComputeResourceBindingKind::AccelerationStructure ? 8u : 4u;
-                std::memcpy(parameters.data() + field.offset, &slot.handle, size);
-            } else {
-                auto span = slot.payload;
-                if (field.format == ComputeResourceFieldFormat::DataSpan) {
-                    // Named raw spans count words; typedBufferSpan restores element count.
-                    const uint64_t words = uint64_t(span.count) * slot.dataStride / 4;
-                    if (words > UINT32_MAX) { return makeError(Error::InvalidArgument); }
-                    span.count = static_cast<uint32_t>(words);
-                }
-                std::memcpy(parameters.data() + field.offset, &span, sizeof(span));
-            }
-        }
-        push.resources = upload(parameters.data(), parameters.size(), impl_->resourceParameterSize, impl_->resourceParameterAlignment);
-        push.resources.count = impl_->resourceParameterSize / 4;
-    } else {
-        push.resources = upload(slots.data(), slots.size() * sizeof(ResourceSlot), sizeof(ResourceSlot), alignof(ResourceSlot));
-    }
+    push.resources = upload(parameters.data(), parameters.size(), impl_->resourceParameterSize, impl_->resourceParameterAlignment);
+    push.resources.count = impl_->resourceParameterSize / 4;
     const uint64_t stride = (uint64_t(impl_->pushConstantSize) + 15) & ~uint64_t(15);
     const size_t count = std::max<size_t>(1, dispatches.size());
     if (stride && (count > SIZE_MAX / stride || count > UINT32_MAX / stride)) { return makeError(Error::InvalidArgument); }

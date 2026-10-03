@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/Material/MaterialRuntime.h"
@@ -187,7 +188,7 @@ public:
             ComputeProgramBindingDesc{.binding = 0, .kind = ComputeResourceBindingKind::StorageBuffer},
             ComputeProgramBindingDesc{.binding = 1, .kind = ComputeResourceBindingKind::StorageBuffer}};
         return program_.initialize(*context.device, {.spirv = shader.spirv,
-            .bindings = bindings, .requiresRayQuery = false}, log);
+            .bindings = bindings, .requiresRayQuery = false, .resourceParameters = metallic::tests::kMaterialRuntimeProbeLayout}, log);
     }
 
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
@@ -393,7 +394,8 @@ public:
         const ComputeProgramBindingDesc layout[] = {{.binding = 0}, {.binding = 1}};
         SlangShaderDesc source{.moduleName = "MaterialRuntimeProbe", .entryPointName = "materialRuntimeProbeMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"};
-        const ComputeProgramDesc description{.bindings = layout, .requiresRayQuery = false};
+        const ComputeProgramDesc description{.bindings = layout, .requiresRayQuery = false,
+            .resourceParameters = kMaterialRuntimeProbeLayout};
         if (!compileMaterialExecutable(*device, source, description, program, artifact, log)) {
             return RHITestResult::fail(log);
         }
@@ -418,7 +420,8 @@ public:
         source.entryPointName = "materialRuntimeProbeMain";
         const ComputeProgramBindingDesc invalidManifest[] = {{.binding = 0}, {.binding = 0}};
         if (compileMaterialExecutable(*device, source,
-                {.bindings = invalidManifest, .requiresRayQuery = false}, program, artifact, log) ||
+                {.bindings = invalidManifest, .requiresRayQuery = false,
+                 .resourceParameters = kMaterialRuntimeProbeLayout}, program, artifact, log) ||
             artifact != originalArtifact) { return RHITestResult::fail("Invalid manifest was published"); }
         const SlangMacroDefine revision{"MATERIAL_PROBE_REVISION", "1"};
         source.macroDefines = {&revision, 1};

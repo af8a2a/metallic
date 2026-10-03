@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
@@ -89,6 +90,7 @@ public:
                 .pushConstantSize = 16,
                 .bindings = {fixture_ ? layout : layout + 5, fixture_ ? 5u : 4u},
                 .requiresRayQuery = false,
+                .resourceParameters = metallic::tests::kMaterialBinningProbeLayout,
             }, log);
             if (!result) { return result; }
             if (!fixture_ && i == 0) {
@@ -96,6 +98,7 @@ public:
                 result = incompatibleProgram_.initialize(*device_, {
                     .spirv = shader.spirv, .pushConstantSize = 20,
                     .bindings = {layout + 5, 4}, .requiresRayQuery = false,
+                    .resourceParameters = metallic::tests::kMaterialBinningProbeLayout,
                 }, log);
                 if (!result) { return result; }
             }

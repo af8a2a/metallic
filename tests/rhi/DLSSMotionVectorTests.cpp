@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -39,6 +40,7 @@ public:
             .spirv = shader.spirv,
             .bindings = {&binding, 1},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kDLSSMotionVectorProbeLayout,
         }, log);
     }
 

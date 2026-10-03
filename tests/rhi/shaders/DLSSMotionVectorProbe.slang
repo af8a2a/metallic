@@ -1,9 +1,10 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 
 #include "../../../Shaders/Features/PathTracing/ScenePathTrace.slang"
 
-#define gMotionResults getResource<RWStructuredBuffer<float4>>(63)
+#define gMotionResults resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<DLSSMotionVectorProbeResources>().motionResults)
 
 [shader("compute")]
 [numthreads(32, 1, 1)]

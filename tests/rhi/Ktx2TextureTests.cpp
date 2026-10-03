@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
@@ -845,7 +846,7 @@ public:
             {.binding = 1}, {.binding = 2}, {.binding = 3, .kind = ComputeResourceBindingKind::Sampler}};
         ComputeProgram program;
         require(program.initialize(context.device, {.spirv = shader.spirv, .pushConstantSize = 16,
-            .bindings = layout, .requiresRayQuery = false}, log), log);
+            .bindings = layout, .requiresRayQuery = false, .resourceParameters = metallic::tests::kTextureStreamingProbeLayout}, log), log);
         const SamplerDesc sampler{.mipFilter = SamplerFilter::Linear,
             .addressU = SamplerAddressMode::Repeat, .addressV = SamplerAddressMode::Repeat};
         std::unique_ptr<Buffer> output;

@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -35,6 +36,7 @@ public:
             .pushConstantSize = 16,
             .bindings = {&binding, 1},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kAutoExposureFixtureLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override

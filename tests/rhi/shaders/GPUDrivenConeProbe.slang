@@ -1,5 +1,6 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
@@ -26,7 +27,7 @@ void gpuDrivenConeProbeMain(uint3 id : SV_DispatchThreadID)
     bool front = meshletVisible(meshlet, 0, transform, params);
     params.eye = float4(-expected, 0);
     bool back = meshletVisible(meshlet, 0, transform, params);
-    getResource<RWStructuredBuffer<float4>>(0)[id.x * 2u] =
+    resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<GPUDrivenConeProbeResources>().output)[id.x * 2u] =
         float4(transformNormal(transform, float3(0, 1, 0)), front ? 1.0 : 0.0);
-    getResource<RWStructuredBuffer<float4>>(0)[id.x * 2u + 1u] = float4(expected, back ? 1.0 : 0.0);
+    resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<GPUDrivenConeProbeResources>().output)[id.x * 2u + 1u] = float4(expected, back ? 1.0 : 0.0);
 }

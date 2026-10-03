@@ -1,15 +1,16 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 import GPUDriven;
 using Metallic.GPUDriven;
 import Material;
 using Metallic.Material;
 
-#define gVisibility getResource<RWTexture2D<uint>>(0)
-#define gRecords getResource<RWStructuredBuffer<VisibleClusterRecord>>(1)
-#define gInstances getResource<RWStructuredBuffer<GPUDrivenPreviewInstance>>(2)
-#define gMaterials getResource<RWStructuredBuffer<GPUDrivenPreviewMaterial>>(3)
-#define gShadingMaterials getResource<RWStructuredBuffer<PathTraceMaterial>>(4)
+#define gVisibility resolveUniform(getResourceParameters<MaterialBinningProbeResources>().visibility)
+#define gRecords resolveBuffer<RWStructuredBuffer<VisibleClusterRecord>>(getResourceParameters<MaterialBinningProbeResources>().records)
+#define gInstances resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewInstance>>(getResourceParameters<MaterialBinningProbeResources>().instances)
+#define gMaterials resolveBuffer<RWStructuredBuffer<GPUDrivenPreviewMaterial>>(getResourceParameters<MaterialBinningProbeResources>().materials)
+#define gShadingMaterials resolveBuffer<RWStructuredBuffer<PathTraceMaterial>>(getResourceParameters<MaterialBinningProbeResources>().shadingMaterials)
 #if defined(PROBE_TYPED)
 import ParameterRoot;
 struct MaterialProbeParams {
@@ -24,10 +25,10 @@ struct MaterialProbeParams {
 #define gArguments getParameters<MaterialProbeParams>().arguments
 #define gResult getParameters<MaterialProbeParams>().output
 #else
-#define gBins getResource<StructuredBuffer<MaterialBin>>(5)
-#define gTiles getResource<StructuredBuffer<MaterialTile>>(6)
-#define gArguments getResource<StructuredBuffer<uint>>(7)
-#define gResult getResource<RWStructuredBuffer<uint>>(8)
+#define gBins resolveBuffer<StructuredBuffer<MaterialBin>>(getResourceParameters<MaterialBinningProbeResources>().bins)
+#define gTiles resolveBuffer<StructuredBuffer<MaterialTile>>(getResourceParameters<MaterialBinningProbeResources>().tiles)
+#define gArguments resolveBuffer<StructuredBuffer<uint>>(getResourceParameters<MaterialBinningProbeResources>().arguments)
+#define gResult resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<MaterialBinningProbeResources>().output)
 #endif
 
 void storeResult(uint index, uint value)

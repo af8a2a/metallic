@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "harness/RayQueryFixture.h"
@@ -61,7 +62,7 @@ public:
             .capabilities = capabilities, .descriptorHeapMode = SlangDescriptorHeapMode::Mapped}, log);
         if (!shader) { return makeError(shader.error()); }
         const ComputeProgramBindingDesc bindings[]{{0, ComputeResourceBindingKind::AccelerationStructure}, {1}};
-        return program_.initialize(*context.device, {.spirv = shader->spirv, .bindings = bindings}, log);
+        return program_.initialize(*context.device, {.spirv = shader->spirv, .bindings = bindings, .resourceParameters = metallic::tests::kUnifiedTopLevelProbeLayout}, log);
     }
     Result<> execute(RenderGraphExecutionContext& context) override
     {

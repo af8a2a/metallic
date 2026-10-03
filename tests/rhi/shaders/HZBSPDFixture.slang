@@ -1,5 +1,6 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 
 struct FixturePush { uint width; uint height; uint seed; uint reversedZ; };
 [shader("compute")]
@@ -17,9 +18,9 @@ void hzbSpdFixtureMain(uint3 id : SV_DispatchThreadID)
         depth = push.reversedZ != 0u ? 0.0 : 1.0;
     }
     if (id.x == 0u && id.y == 0u) { depth = asfloat(0x7fc00000u); }
-    getResource<RWTexture2D<float>>(0)[id.xy] = depth;
+    resolveUniform(getResourceParameters<HZBSPDFixtureResources>().depth)[id.xy] = depth;
     if (id.x == 0u && id.y == 0u) {
-        getResource<RWStructuredBuffer<uint>>(1)[0] = 0u;
-        getResource<RWStructuredBuffer<uint>>(1)[1] = push.seed;
+        resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<HZBSPDFixtureResources>().counter)[0] = 0u;
+        resolveBuffer<RWStructuredBuffer<uint>>(getResourceParameters<HZBSPDFixtureResources>().counter)[1] = push.seed;
     }
 }

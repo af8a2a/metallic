@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -89,6 +90,7 @@ public:
             .pushConstantSize = sizeof(TextureFootprintProbePush),
             .bindings = {&binding, 1},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kTextureFootprintProbeLayout,
         }, log);
     }
 

@@ -1,9 +1,10 @@
 import Core;
 using Metallic;
+#include "../TestResourceParameters.h"
 
-#define gOutput getResource<RWTexture2D<float4>>(0)
-#define gInput getResource<Texture2D<float4>>(1)
-#define gReadback getResource<RWStructuredBuffer<float4>>(2)
+#define gOutput resolveUniform(getResourceParameters<SliderDebugFixtureResources>().output)
+#define gInput resolveUniform(getResourceParameters<SliderDebugFixtureResources>().input)
+#define gReadback resolveBuffer<RWStructuredBuffer<float4>>(getResourceParameters<SliderDebugFixtureResources>().readback)
 struct FixturePush { uint path; };
 #define gPush getConstants<FixturePush>()
 

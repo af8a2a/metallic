@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
@@ -1086,6 +1087,7 @@ public:
             .spirv = shader.spirv,
             .bindings = {&layout, 1},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kDataSliceProbeLayout,
         }, log));
         std::unique_ptr<render::Buffer> source, work, output;
         REG_REQUIRE(device->createBuffer({.size = 64, .usage = render::BufferUsageBits::TransferSource,
@@ -1711,6 +1713,7 @@ public:
                     .pushConstantSize = 4,
                     .bindings = {layout, 2},
                     .requiresRayQuery = false,
+                    .resourceParameters = metallic::tests::kFrameCopyProbeLayout,
                 }, log));
                 std::swap(layout[0], layout[1]);
             }
@@ -1952,6 +1955,7 @@ public:
                 .spirv = shader.spirv,
                 .bindings = {&layout, 1},
                 .requiresRayQuery = false,
+                .resourceParameters = metallic::tests::kBatchBarrierProbeLayout,
             }, log));
             std::unique_ptr<render::Buffer> output, arguments;
             REG_REQUIRE(makeBuffer(*device, output));
@@ -2015,15 +2019,19 @@ public:
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, shader.diagnostics)
             .transform([&](auto value) { shader = std::move(value); }));
         const ComputeProgramBindingDesc bindings[] = {
-            {.binding = 213, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4},
+            {.binding = 65537, .kind = ComputeResourceBindingKind::DataBuffer, .dataStride = 4, .dataAlignment = 4},
             {.binding = 7, .kind = ComputeResourceBindingKind::StorageBuffer}};
         ComputeResourceField fields[] = {
-            {213, ComputeResourceBindingKind::DataBuffer, 4, ComputeResourceFieldFormat::DataSpan},
+            {65537, ComputeResourceBindingKind::DataBuffer, 4, ComputeResourceFieldFormat::DataSpan},
             {7, ComputeResourceBindingKind::StorageBuffer, 0}};
         ComputeProgram program;
         std::string log;
         ComputeProgramDesc description{.spirv = shader.spirv, .pushConstantSize = 4,
             .bindings = bindings, .requiresRayQuery = false, .resourceParameters = {16, fields}};
+        auto missingLayout = description;
+        missingLayout.resourceParameters = {};
+        REG_CHECK(hasError(program.initialize(device, missingLayout, log), Error::InvalidArgument));
+        REG_CHECK(log.find("explicit named resource layout") != std::string::npos);
         fields[1].offset = 4;
         REG_CHECK(hasError(program.initialize(device, description, log), Error::InvalidArgument));
         fields[1].offset = 16;
@@ -2051,7 +2059,7 @@ public:
         REG_REQUIRE(recording.initialize(device, context.graphicsQueue));
         REG_REQUIRE(recording.begin(0));
         ComputeDispatchBinding resources[] = {
-            {.binding = 7, .buffer = output.get()}, {.binding = 213, .data = *slice}};
+            {.binding = 7, .buffer = output.get()}, {.binding = 65537, .data = *slice}};
         const uint32_t add = 2;
         auto prepared = program.prepareDispatch(recording.frame, {.bindings = resources,
             .pushData = &add, .pushDataSize = sizeof(add)});

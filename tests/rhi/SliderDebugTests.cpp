@@ -1,3 +1,4 @@
+#include "TestResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
@@ -47,6 +48,7 @@ public:
             .pushConstantSize = readback_ ? 0u : 4u,
             .bindings = {readback_ ? bindings + 1 : bindings, readback_ ? 2u : 1u},
             .requiresRayQuery = false,
+            .resourceParameters = metallic::tests::kSliderDebugFixtureLayout,
         }, log);
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
