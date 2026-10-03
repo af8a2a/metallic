@@ -91,9 +91,7 @@
             "properties": {
                 "path": "Asset/LookDev/OpenPBRDefault/OpenPbrDefault.gltf",
                 "bsdf": "openpbr",
-                "outputLinear": true,
-                "environmentSamples": 64,
-                "accumulate": true
+                "outputLinear": true
             }
         },
         {

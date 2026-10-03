@@ -33,10 +33,8 @@
             },
             "properties": {
                 "path": "Asset/Tessellation/DisplacedPlane.gltf",
-                "lightingMode": "realtime",
                 "exportUpscalerGuides": true,
                 "materialBinning": true,
-                "accumulate": false,
                 "outputLinear": true,
                 "debugView": "final",
                 "debugDisableShadows": true

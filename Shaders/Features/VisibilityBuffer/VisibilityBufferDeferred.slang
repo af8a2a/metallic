@@ -9,11 +9,7 @@ using Metallic.Material;
 #define MATERIAL_CLASS -1
 #endif
 
-#ifndef METALLIC_DEFERRED_PATH_TRACING
-#define METALLIC_DEFERRED_PATH_TRACING 0
-#endif
-
-#include "../Lighting/OpenPBRDirectLighting.slang"
+#include "VisibilityBufferLighting.slang"
 
 ScenePathTracePush deferredViewPush()
 {
@@ -269,8 +265,8 @@ bool reconstructVisibilitySurface(uint2 pixel, Ray ray, ScenePathTracePush push,
     return true;
 }
 
-// Both scheduling paths share the exact per-pixel estimator and RNG seed.
-// Primary visibility stays rasterized, including for volume transmission.
+// Both schedules resolve the same raster surface. The RNG is used only by
+// optional stochastic texture filtering, never for light/path sampling.
 void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
 {
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
@@ -279,8 +275,7 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
     Ray ray;
     ray.origin = rayOriginFromPixel(rayPixel, push);
     ray.direction = rayDirectionFromPixel(rayPixel, push);
-    uint seed = hash(pixel.x + pixel.y * push.width +
-        (push.enableAccumulation != 0u ? push.accumulationFrame * 0x9e3779b9u : 0u));
+    uint seed = hash(pixel.x + pixel.y * push.width);
     HitInfo hit;
     float3 radiance;
     bool hasSurface = reconstructVisibilitySurface(pixel, ray, push, hit);
@@ -296,43 +291,15 @@ void shadeVisibilityPixel(uint2 pixel, ScenePathTracePush push)
     if (!hasSurface) {
         radiance = environmentRadiance(ray.direction, push, true);
     }
-#if METALLIC_DEFERRED_PATH_TRACING && (!METALLIC_STREAM_MATERIALS || METALLIC_STREAM_RAY_QUERIES) && (MATERIAL_CLASS < 0 || MATERIAL_CLASS == 4)
-    else if ((gMaterials[hit.materialIndex].glassParams.x > 0.0 || gMaterials[hit.materialIndex].textureParams.w > 1.5) &&
-        !openPbrDebugFlag(push, kOpenPBRDebugDisableTransmission) &&
-        push.debugView == kOpenPBRDebugViewFinal) {
-        // Ray continuation is isolated to transmissive materials. Reusing the
-        // OpenPBR reference integrator preserves refraction, exit interfaces,
-        // total internal reflection, colored shadows and Beer-Lambert absorption.
-        ScenePathTracePush transmissionPush = push;
-        transmissionPush.maxDepth = clamp((push.deferredSettings >> 21u) & 31u, 2u, 16u);
-        uint samples = clamp((push.deferredSettings >> 16u) & 31u, 1u, 16u);
-        radiance = float3(0.0);
-        for (uint sample = 0u; sample < samples; ++sample) {
-            float ignoredDistance;
-            radiance += pathTraceOpenPBRWithPrimaryHit(ray,
-                primaryRayConeFromPixel(rayPixel, push), transmissionPush,
-                seed, ignoredDistance, true, hit);
-        }
-        radiance /= float(samples);
-    }
-#endif
     else {
-        radiance = shadeOpenPBRDirectSurface(ray, hit, rayPixel, push, seed, true,
+        radiance = shadeVisibilitySurface(ray, hit, rayPixel, push, seed,
             MATERIAL_CLASS == 1 ? 0 : (MATERIAL_CLASS == 2 ? 1 : -1),
             MATERIAL_CLASS >= 1 && MATERIAL_CLASS <= 3);
     }
 #endif
-#if METALLIC_REALTIME_DEFERRED
     if (gRealtimeShadowParameters[0].control.w != 0u) {
         float encoded = gRealtimeShadow.Load(int3(pixel, 0));
         radiance = float3(encoded * encoded);
-    }
-#endif
-    if (push.enableAccumulation != 0u) {
-        if (push.hasHistory != 0u) {
-            radiance = lerp(gHistoryPrevious[pixel].rgb, radiance, 1.0 / float(push.accumulationFrame + 1u));
-        }
-        gHistoryCurrent[pixel] = float4(radiance, 1.0);
     }
     gOutput[pixel] = float4(max(radiance, float3(0.0)), 1.0);
 }

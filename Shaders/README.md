@@ -96,6 +96,12 @@ Confidence 的各滤波阶段分别编码不可变参数快照，复用已注册
 因此这三个缓存 buffer 使用具名 descriptor handle；维护阶段直接读取 settings，不再依赖 cacheParams 的公共前缀。
 主追踪及其 OpenPBR、NTC、VisibilityBuffer 使用共享的 `SceneResourceParameters` 具名 DR 字段。
 
+VisibilityBuffer Deferred 是纯光栅表面的实时 resolve，不包含 ray-query 积分器。
+`Features/PathTracing/SceneSurface.slang` 和 `OpenPBRSurface.slang` 提供共享表面求值，
+`Features/VisibilityBuffer/VisibilityBufferLighting.slang` 负责 ClusterLightGrid、显式阴影输入和 IBL。
+有界 IBL 权重默认使用 native FP16，几何与 HDR 累加保持 FP32；`halfPrecision: false`
+提供相同算法的 FP32 对照。详见 [VisibilityBufferDeferred](../Documentation/VisibilityBufferDeferred.md)。
+
 `Core` 的生产用法是 `getResourceParameters<Params>()` 加显式 resolver：buffer 使用
 `resolveBuffer<StructuredBuffer<T>>(resources.indices)`，图像和 sampler 使用 `resolveUniform`，
 纹理数组使用 `resolveNonUniform(ResourceHandle<Texture2D<float4>>(resources.materialTextures.load(index)))`。

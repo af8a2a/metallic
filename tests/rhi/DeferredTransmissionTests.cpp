@@ -40,7 +40,6 @@ public:
         }
         if (scene.materials().size() != 15 || scene.materials()[5].transmissionFactor != 1.0f ||
             scene.materials()[7].transmissionFactor != 1.0f) { return RHITestResult::fail("Unexpected ABeautifulGame materials"); }
-        const auto whiteGlass = scene.materials()[5], blackGlass = scene.materials()[7];
         render::RenderGraphPreviewRenderer preview;
         preview.bindRuntimeScene(&scene);
         auto result = preview.initialize(context.enableValidation, true, false);
@@ -58,7 +57,6 @@ public:
         sample.graph.removeNode(sample.graph.findNode("Slider")->id);
         sample.graph.addEdge("Deferred.color", "AutoExposure.source");
         sample.graph.setNodeRuntimeProperty(deferred, "accumulate", false);
-        sample.graph.setNodeRuntimeProperty(deferred, "transmissionSamples", 4);
         const auto save = [&](const char* name) {
             return saveRgba8Png(context.outputDirectory / name,
                 reinterpret_cast<const uint8_t*>(preview.pixels().data()), preview.width(), preview.height(), log);
@@ -79,68 +77,31 @@ public:
             return RHITestResult::fail("Default deferred flat/binned output differs");
         }
         if (!save("ABeautifulGameDeferredDefault.png")) { return RHITestResult::fail(log); }
-        // The omitted property must select the same compiled variant as false.
-        // Continuation settings must have no effect while that variant is off.
-        sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", false);
-        for (bool binned : {false, true}) {
-            sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", binned);
-            const auto& expected = binned ? defaultBinned : defaultFlat;
-            if (!renderFrame() || preview.pixels() != expected) {
-                return RHITestResult::fail("Default supplementary tracing differs from explicit false: " + log);
-            }
-            for (const auto settings : {std::array<int, 2>{1, 2}, {16, 16}}) {
-                sample.graph.setNodeRuntimeProperty(deferred, "transmissionSamples", settings[0]);
-                sample.graph.setNodeRuntimeProperty(deferred, "transmissionDepth", settings[1]);
-                if (!renderFrame() || preview.pixels() != expected) {
-                    return RHITestResult::fail("Disabled supplementary tracing used continuation settings: " + log);
-                }
-            }
+        // Native FP16 uses the identical raster estimator as its FP32 reference.
+        sample.graph.setNodeRuntimeProperty(deferred, "halfPrecision", false);
+        if (!renderFrame()) { return RHITestResult::fail(log); }
+        const auto fp32 = preview.pixels();
+        if (!save("ABeautifulGameFP32.png")) { return RHITestResult::fail(log); }
+        if (changedPixels(fp32, defaultBinned, 2) != 0) {
+            return RHITestResult::fail("FP16 energy weights exceeded 2/255 display error");
         }
-        sample.graph.setNodeRuntimeProperty(deferred, "transmissionSamples", 4);
-        sample.graph.setNodeRuntimeProperty(deferred, "transmissionDepth", 8);
-        // Resident realtime lighting must support the same optional continuation.
-        sample.graph.setNodeRuntimeProperty(deferred, "lightingMode", "realtime");
-        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
-        if (!renderFrame(193, 157)) { return RHITestResult::fail(log); }
-        const auto realtimeOffFlat = preview.pixels();
-        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", true);
-        if (!renderFrame(193, 157)) { return RHITestResult::fail(log); }
-        const auto realtimeOffBinned = preview.pixels();
-        if (changedPixels(realtimeOffFlat, realtimeOffBinned, 2) > realtimeOffFlat.size() / 1000) {
-            return RHITestResult::fail("Realtime default deferred flat/binned output differs");
+        sample.graph.setNodeRuntimeProperty(deferred, "halfPrecision", true);
+        if (!renderFrame() || preview.pixels() != defaultBinned) {
+            return RHITestResult::fail("FP16 toggle failed to restore the raster image: " + log);
         }
-        if (!save("ABeautifulGameRealtimeDefault.png")) { return RHITestResult::fail(log); }
+        // Old assets may contain these fields. They must never re-enable tracing.
         sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", true);
-        if (!renderFrame(193, 157)) { return RHITestResult::fail(log); }
-        const auto realtimeOnBinned = preview.pixels();
-        if (changedPixels(realtimeOffBinned, realtimeOnBinned, 4) < 20) {
-            return RHITestResult::fail("Realtime supplementary tracing had no visible effect on glass");
-        }
-        if (!save("ABeautifulGameRealtimeSupplementary.png")) { return RHITestResult::fail(log); }
-        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
-        if (!renderFrame(193, 157)) { return RHITestResult::fail(log); }
-        const auto realtimeOnFlat = preview.pixels();
-        if (changedPixels(realtimeOnFlat, realtimeOnBinned, 2) > realtimeOnFlat.size() / 1000) {
-            return RHITestResult::fail("Realtime supplementary deferred flat/binned output differs");
-        }
-        sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", false);
-        if (!renderFrame(193, 157) || preview.pixels() != realtimeOffFlat) {
-            return RHITestResult::fail("Realtime supplementary disable did not restore direct shading: " + log);
-        }
-        sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", true);
-        if (!renderFrame(193, 157) || preview.pixels() != realtimeOnFlat) {
-            return RHITestResult::fail("Realtime supplementary enable did not restore glass continuation: " + log);
+        sample.graph.setNodeRuntimeProperty(deferred, "transmissionSamples", 16);
+        sample.graph.setNodeRuntimeProperty(deferred, "transmissionDepth", 16);
+        sample.graph.setNodeRuntimeProperty(deferred, "lightingMode", "reference");
+        if (!renderFrame() || preview.pixels() != defaultBinned) {
+            return RHITestResult::fail("Legacy properties changed the raster-only path: " + log);
         }
         sample.graph.setNodeRuntimeProperty(deferred, "exportUpscalerGuides", true);
-        // Guide exports use FP16 color; allow display quantization while enabled.
-        if (!renderFrame(193, 157) || changedPixels(preview.pixels(), realtimeOnFlat, 2) > realtimeOnFlat.size() / 1000) {
-            return RHITestResult::fail("Enabling realtime upscaler guides changed supplementary shading: " + log);
+        if (!renderFrame() || changedPixels(preview.pixels(), defaultBinned, 2) != 0) {
+            return RHITestResult::fail("Upscaler guides changed raster shading: " + log);
         }
         sample.graph.setNodeRuntimeProperty(deferred, "exportUpscalerGuides", false);
-        if (!renderFrame(193, 157) || preview.pixels() != realtimeOnFlat) {
-            return RHITestResult::fail("Disabling realtime upscaler guides did not restore supplementary shading: " + log);
-        }
-        sample.graph.setNodeRuntimeProperty(deferred, "lightingMode", "reference");
         for (const char* debug : {"baseColor", "shadingNormal", "material", "final"}) {
             sample.graph.setNodeRuntimeProperty(deferred, "debugView", debug);
             sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
@@ -155,47 +116,27 @@ public:
         }
         const auto glassImage = preview.pixels();
         if (!save("ABeautifulGameDeferred.png")) { return RHITestResult::fail(log); }
-        sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", false);
-        if (!renderFrame() || preview.pixels() != defaultBinned) {
-            return RHITestResult::fail("Disabling supplementary tracing did not restore the default variant: " + log);
-        }
-        sample.graph.setNodeRuntimeProperty(deferred, "supplementaryPathTracing", true);
-        if (!renderFrame() || preview.pixels() != glassImage) {
-            return RHITestResult::fail("Re-enabling supplementary tracing did not restore glass continuation: " + log);
-        }
-        if (changedPixels(defaultBinned, glassImage, 4) < 50) {
-            return RHITestResult::fail("Supplementary tracing had no visible effect on glass");
-        }
         sample.graph.setNodeRuntimeProperty(deferred, "debugDisableTransmission", true);
         if (!renderFrame()) { return RHITestResult::fail(log); }
         const size_t transmissionPixels = changedPixels(glassImage, preview.pixels(), 4);
-        if (transmissionPixels < 50) { return RHITestResult::fail("Glass continuation had no visible effect"); }
+        if (transmissionPixels < 50) { return RHITestResult::fail("Environment transmission had no visible effect"); }
         if (!save("ABeautifulGameTransmissionDisabled.png")) { return RHITestResult::fail(log); }
         sample.graph.setNodeRuntimeProperty(deferred, "debugDisableTransmission", false);
         if (!renderFrame() || changedPixels(glassImage, preview.pixels(), 1) != 0) {
             return RHITestResult::fail("Transmission toggle did not restore the image: " + log);
         }
-        // The asset omits attenuationDistance (infinity). Set a finite distance
-        // so this test actually exercises travel inside a participating volume.
+        // Volume distance has no meaning without an interior path. Material edits
+        // still refresh bindings but must not reintroduce volume integration.
         for (uint32_t index : {5u, 7u}) {
             auto glass = scene.materials()[index];
             glass.attenuationDistance = 0.015f;
             glass.attenuationColor = float3(0.1f, 0.35f, 0.8f);
             if (!scene.setMaterialProperties(index, glass)) { return RHITestResult::fail("Volume edit failed"); }
         }
-        if (!renderFrame()) { return RHITestResult::fail(log); }
-        const auto absorbed = preview.pixels();
-        sample.graph.setNodeRuntimeProperty(deferred, "debugDisableVolumeAttenuation", true);
-        if (!renderFrame()) { return RHITestResult::fail(log); }
-        const size_t absorptionPixels = changedPixels(absorbed, preview.pixels(), 4);
-        if (absorptionPixels < 20) { return RHITestResult::fail("Finite volume attenuation had no visible effect"); }
-        sample.graph.setNodeRuntimeProperty(deferred, "debugDisableVolumeAttenuation", false);
-        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
-        if (!renderFrame() || changedPixels(absorbed, preview.pixels(), 2) > absorbed.size() / 1000) {
-            return RHITestResult::fail("Edited volume differs between scheduling paths: " + log);
+        if (!renderFrame() || preview.pixels() != glassImage) {
+            return RHITestResult::fail("Raster shading unexpectedly integrated an interior volume: " + log);
         }
-        scene.setMaterialProperties(5, whiteGlass);
-        scene.setMaterialProperties(7, blackGlass);
+        sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", false);
         // Extent changes recreate scratch allocations. Compare at an odd extent.
         if (!renderFrame(193, 157)) { return RHITestResult::fail(log); }
         const auto resized = preview.pixels();
@@ -205,7 +146,7 @@ public:
         }
         // Report end-to-end readback timing, not an inferred GPU speedup.
         std::ofstream timings(context.outputDirectory / "ABeautifulGameTiming.txt");
-        timings << "8 environment samples; 4 transmission samples; depth 8; no accumulation\n"
+        timings << "Raster OpenPBR; SH + prefiltered IBL; FP16 weights; no accumulation\n"
             << "Median preview.render wall time, including CPU submission and readback; validation=" << context.enableValidation << '\n';
         for (bool binned : {false, true}) {
             sample.graph.setNodeRuntimeProperty(deferred, "materialBinning", binned);
@@ -243,9 +184,8 @@ public:
                 }
             }
         }
-        // Explicitly opt in when retaining a reviewable glass continuation/reference comparison.
+        // Keep a reviewable raster/environment approximation versus path-traced reference.
         if (!render::loadBuiltInRenderSample("lookdev-abeautiful-game", sample, log)) { return RHITestResult::fail(log); }
-        sample.graph.setNodeRuntimeProperty(sample.graph.findNode("Deferred")->id, "supplementaryPathTracing", true);
         for (int frame = 0; frame < 32; ++frame) {
             if (!preview.render(sample.graph, 512, 384)) { return RHITestResult::fail(preview.lastLog()); }
         }
@@ -257,9 +197,8 @@ public:
                 return RHITestResult::fail(preview.lastLog() + log);
             }
         }
-        return RHITestResult::pass("15 materials: default-off/explicit false, inactive continuation settings, "
-            "reference/realtime variant restoration, flat/binned shading, glass continuation (" + std::to_string(transmissionPixels) +
-            " pixels), volume absorption (" + std::to_string(absorptionPixels) + " pixels), edits, resize and HDRI comparison");
+        return RHITestResult::pass("15 materials: raster-only legacy settings, FP16/FP32 precision, flat/binned equality, "
+            "environment transmission, no volume integration, edits, resize and HDRI comparison");
     }
 };
 

@@ -84,8 +84,7 @@ struct SceneShaderOptions {
     bool hasNTC = false;
     bool cooperativeVector = false;
     bool positionFetch = false;
-    bool realtimeDeferred = false;
-    bool supplementaryPathTracing = false;
+    bool deferredFloat16 = true;
     bool upscalerGuides = false;
     std::string materialInclude;
     std::string rtxcrInclude;
@@ -95,46 +94,34 @@ struct SceneShaderOptions {
 inline ShaderRequest makeSceneShaderRequest(SceneShaderProgram program, const SceneShaderOptions& options,
     std::span<const SlangMacroDefine> extraDefines = {})
 {
+    const bool deferred = program == SceneShaderProgram::Deferred || program == SceneShaderProgram::DeferredBinned;
     const auto identity = sceneShaderIdentity(program);
     ShaderRequest request{.module = identity.module, .entry = identity.entry,
-        .capabilities = {"spvRayQueryKHR", "spvGroupNonUniformBallot"}};
-    if (options.positionFetch) { request.capabilities.emplace_back("spvRayQueryPositionFetchKHR"); }
+        .capabilities = {"spvGroupNonUniformBallot"}};
+    if (!deferred) { request.capabilities.insert(request.capabilities.begin(), "spvRayQueryKHR"); }
+    if (!deferred && options.positionFetch) { request.capabilities.emplace_back("spvRayQueryPositionFetchKHR"); }
     if (options.cooperativeVector) { request.capabilities.emplace_back("spvCooperativeVectorNV"); }
     if (program == SceneShaderProgram::SharcClear || program == SceneShaderProgram::SharcResolve ||
         program == SceneShaderProgram::Tonemap) { return request; }
 
-    const bool deferred = program == SceneShaderProgram::Deferred || program == SceneShaderProgram::DeferredBinned;
-    bool supplementaryPathTracing = options.supplementaryPathTracing;
-    // VisibilityBufferDeferred's continuation branch exists only for the generic
-    // entry or transmission class 4, and needs rays in streamed scenes.
-    if (options.streamMaterials && !options.streamRayQueries) { supplementaryPathTracing = false; }
-    if (program == SceneShaderProgram::DeferredBinned) {
-        for (const auto& define : extraDefines) {
-            if (std::string_view(define.name) == "MATERIAL_CLASS" &&
-                (std::string_view(define.value) == "0" || std::string_view(define.value) == "1" ||
-                 std::string_view(define.value) == "2" || std::string_view(define.value) == "3")) {
-                supplementaryPathTracing = false;
-            }
-        }
-    }
     const auto flag = [](bool value) { return value ? "1" : "0"; };
     request.defines = {
         {"METALLIC_CUSTOM_MATERIALS", flag(options.customMaterials)},
         {"METALLIC_STREAM_MATERIALS", flag(options.streamMaterials)},
-        {"METALLIC_STREAM_RAY_QUERIES", flag(options.streamRayQueries)},
+        {"METALLIC_STREAM_RAY_QUERIES", flag(!deferred && options.streamRayQueries)},
         {"METALLIC_GLOBAL_VIEW", flag(options.globalView)},
-        {"METALLIC_HAS_RTXCR", flag(options.hasRTXCR)},
+        {"METALLIC_HAS_RTXCR", flag(!deferred && options.hasRTXCR)},
         {"METALLIC_HAS_NTC", flag(options.hasNTC)},
         {"METALLIC_NTC_COOPERATIVE_VECTOR", flag(options.cooperativeVector)},
-        {"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", flag(options.positionFetch)},
+        {"SCENE_RAYQUERY_ENABLE_POSITION_FETCH", flag(!deferred && options.positionFetch)},
         {"METALLIC_DEFERRED_LIGHT_GRID", flag(deferred)},
-        {"METALLIC_REALTIME_DEFERRED", flag(deferred && options.realtimeDeferred)},
+        {"METALLIC_REALTIME_DEFERRED", flag(deferred)},
     };
-    if (deferred) { request.defines.emplace_back("METALLIC_DEFERRED_PATH_TRACING", flag(supplementaryPathTracing)); }
     request.defines.emplace_back("METALLIC_DEFERRED_UPSCALER_GUIDES", flag(deferred && options.upscalerGuides));
+    if (deferred) { request.defines.emplace_back("METALLIC_DEFERRED_FP16", flag(options.deferredFloat16)); }
     for (const auto& define : extraDefines) { request.defines.emplace_back(define.name, define.value); }
     if (options.customMaterials) { request.searchPaths.push_back(options.materialInclude); }
-    if (options.hasRTXCR) { request.searchPaths.push_back(options.rtxcrInclude); }
+    if (!deferred && options.hasRTXCR) { request.searchPaths.push_back(options.rtxcrInclude); }
     if (options.hasNTC) { request.searchPaths.push_back(options.ntcInclude); }
     return request;
 }

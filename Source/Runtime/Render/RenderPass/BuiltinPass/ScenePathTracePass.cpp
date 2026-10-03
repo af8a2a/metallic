@@ -13,7 +13,7 @@
 #include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
-#include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
+#include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
@@ -540,7 +540,7 @@ class ScenePathTracePass final : public ComputePass {
 public:
     SceneStreamingRequirements sceneResourcesRequired(const RenderGraphCompileContext& context) const override
     {
-        if (context.runtimeScene && context.runtimeScene->hasStreamGeometry()) {
+        if (visibilityDeferred_ || (context.runtimeScene && context.runtimeScene->hasStreamGeometry())) {
             return {.features = SceneResourceFeatureBits::Materials | SceneResourceFeatureBits::MaterialTextures, .textureFeedback = visibilityDeferred_};
         }
         return {.features = SceneResourceFeatureBits::Geometry | SceneResourceFeatureBits::Materials |
@@ -559,8 +559,7 @@ public:
 
     bool supportsFrameOverlap() const override
     {
-        return cacheMode_ == kScenePathTraceCacheModeOff &&
-            (!METALLIC_HAS_NRD || !visibilityDeferred_ || properties().value("lightingMode", "reference") != "realtime");
+        return cacheMode_ == kScenePathTraceCacheModeOff;
     }
 
     ~ScenePathTracePass() override
@@ -592,8 +591,10 @@ public:
     {
         const bool exportGuides = exportDenoiserGuides(properties());
         RenderPassReflection reflection;
-        reflection.addAccelerationStructureInput("accelerationStructure", "Optional graph-managed scene TLAS/PTLAS")
-            .accelerationStructureRead().setOptional();
+        if (!visibilityDeferred_) {
+            reflection.addAccelerationStructureInput("accelerationStructure", "Optional graph-managed scene TLAS/PTLAS")
+                .accelerationStructureRead().setOptional();
+        }
         if (visibilityDeferred_) {
             reflection.addTextureInput("visibility", "Resident GPUScene visibility IDs").sampledRead().format = Format::R32Uint;
             reflection.addTextureInput("depth", "Depth from the same visibility raster").sampledRead().format = Format::D32Sfloat;
@@ -601,12 +602,10 @@ public:
             domain.format = Format::Unknown; // R32G32B32A32 when active, inexpensive dummy when disabled.
             reflection.addBufferInput("rasterInfo", "CPU-authored raster camera and scene identity")
                 .buffer(sizeof(VisibilityBufferFrameInfo), sizeof(VisibilityBufferFrameInfo)).shaderRead();
-            if (properties().value("lightingMode", "reference") == "realtime") {
-                reflection.addTextureInput("shadow", "SIGMA-encoded visibility from RayTracedShadowPass")
-                    .sampledRead().setOptional().format = Format::R8Unorm;
-                reflection.addBufferInput("shadowParameters", "Matching shadow light and trace metadata")
-                    .buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).shaderRead().setOptional();
-            }
+            reflection.addTextureInput("shadow", "Optional SIGMA-encoded light visibility")
+                .sampledRead().setOptional().format = Format::R8Unorm;
+            reflection.addBufferInput("shadowParameters", "Matching shadow light and visibility metadata")
+                .buffer(sizeof(ScreenSpaceShadowParameters), sizeof(ScreenSpaceShadowParameters)).shaderRead().setOptional();
         }
         auto& color = reflection.addTextureOutput("color", visibilityDeferred_ ? "OpenPBR deferred physical HDR" :
             (realtime_ ? "Real-time physical lighting and SH GI" : "Path-traced glTF scene"))
@@ -658,29 +657,17 @@ public:
             };
             if (visibilityDeferred_) {
                 settings.erase(settings.begin()); // Deferred resolve always exports physical HDR.
-                settings.push_back(runtimeEnumSetting("lightingMode", "Environment Lighting", "reference",
-                    {{"SH + Filtered HDRI", "realtime"}, {"Sampled Reference", "reference"}}, true, true));
                 auto guides = runtimeBoolSetting("exportUpscalerGuides", "Export DLSS-SR Guides", false, true);
                 guides.rebuildGraph = true;
                 settings.push_back(guides);
-                settings.push_back(runtimeIntSetting("environmentSamples", "OpenPBR Environment Samples", 64, 1, 256));
-                const auto shadowSettings = screenSpaceShadowRuntimeSettings(properties());
-                settings.insert(settings.end(), shadowSettings.begin(), shadowSettings.end());
                 auto binning = runtimeBoolSetting("materialBinning", "Wave32 Material Tile Classification", true, true);
                 binning.rebuildGraph = true;
                 settings.push_back(binning);
-                auto pathTracing = runtimeBoolSetting("supplementaryPathTracing", "Supplementary Path Tracing", false, true);
-                pathTracing.rebuildGraph = true;
-                settings.push_back(pathTracing);
-                if (boolProperty(properties(), "supplementaryPathTracing", false)) {
-                    settings.push_back(runtimeIntSetting("transmissionSamples", "Transmission Samples", 2, 1, 16, true));
-                    settings.push_back(runtimeIntSetting("transmissionDepth", "Transmission Max Depth", 8, 2, 16, true));
-                }
+                auto halfPrecision = runtimeBoolSetting("halfPrecision", "FP16 Material Weights", true, true);
+                halfPrecision.rebuildGraph = true;
+                settings.push_back(halfPrecision);
                 settings.push_back(runtimeBoolSetting("debugDisableTransmission", "Disable Transmission", false, true));
-                settings.push_back(runtimeBoolSetting("debugDisableVolumeAttenuation", "Disable Volume Absorption", false, true));
                 settings.push_back(runtimeBoolSetting("stochasticTextureFiltering", "Stochastic Texture Filtering", false, true));
-                settings.push_back(runtimeBoolSetting("debugUseOpaqueShadows", "Use Opaque Shadows", false, true));
-                settings.push_back(runtimeBoolSetting("accumulate", "Accumulate Lighting", true, true));
                 settings.push_back(runtimeEnumSetting("debugView", "Surface Debug", "final",
                     {{"Final", "final"}, {"Base Color", "baseColor"}, {"Geometry Normal", "geometryNormal"},
                         {"Shading Normal", "shadingNormal"}, {"Tangent", "tangent"}, {"Material ID", "material"}}));
@@ -806,8 +793,7 @@ public:
         // settings must rebuild their matching shader and descriptor variants.
         if (visibilityDeferred_ && programs_[static_cast<size_t>(PathTracePermutation::Base)].valid() &&
             (compiledMaterialBinning_ != boolProperty(properties(), "materialBinning", true) ||
-                compiledSupplementaryPathTracing_ != boolProperty(properties(), "supplementaryPathTracing", false) ||
-                compiledRealtimeDeferred_ != (properties().value("lightingMode", "reference") == "realtime") ||
+                compiledHalfPrecision_ != boolProperty(properties(), "halfPrecision", true) ||
                 compiledExportUpscalerGuides_ != boolProperty(properties(), "exportUpscalerGuides", false))) {
             return compile(context, log);
         }
@@ -817,22 +803,16 @@ public:
     Result<> compile(const RenderGraphCompileContext& context, std::string& log) override
     {
         streamMaterials_ = context.runtimeScene != nullptr && context.runtimeScene->hasStreamGeometry();
-        if (streamMaterials_ && (!visibilityDeferred_ || properties().value("lightingMode", "reference") != "realtime")) {
+        if (streamMaterials_ && !visibilityDeferred_) {
             log = "StreamAsset scenes require realtime visibility-buffer deferred lighting";
             return makeError(Error::Unsupported);
         }
-        const bool supplementaryPathTracing = visibilityDeferred_ &&
-            boolProperty(properties(), "supplementaryPathTracing", false);
-        streamRayQueries_ = streamMaterials_ && supplementaryPathTracing && std::any_of(context.runtimeScene->materials().begin(),
-            context.runtimeScene->materials().end(), [](const auto& material) {
-                return material.transmissionFactor > 0.0f || material.alphaMode == "BLEND";
-            });
         if (context.device == nullptr || context.graphicsQueue == nullptr) {
             log = "ScenePathTracePass requires a device and graphics queue";
             return makeError(Error::InvalidArgument);
         }
-        if (!context.device->capabilities().rayTracingAccelerationStructure ||
-            !context.device->capabilities().rayQuery) {
+        if (!visibilityDeferred_ && (!context.device->capabilities().rayTracingAccelerationStructure ||
+            !context.device->capabilities().rayQuery)) {
             log = "ScenePathTracePass requires rayTracingAccelerationStructure and rayQuery capabilities";
             return makeError(Error::Unsupported);
         }
@@ -862,7 +842,7 @@ public:
         const bool useOpenPBR = useOpenPBRBsdf(properties());
         const bool exportGuides = exportDenoiserGuides(properties());
         const bool ntcActive = sceneResources_.neuralTextures().active();
-        const bool positionFetch = !streamMaterials_ && context.device->capabilities().rayTracingPositionFetch;
+        const bool positionFetch = !visibilityDeferred_ && !streamMaterials_ && context.device->capabilities().rayTracingPositionFetch;
         const bool ntcCooperativeVector =
             sceneResources_.neuralTextures().cooperativeVectorActive();
         SceneShaderProgram shaderProgram;
@@ -911,15 +891,13 @@ public:
         const std::string shaderKey = std::string(moduleName) + "." + entryPointName +
             "|valuePrograms=" + std::to_string(hasValuePrograms() ? valuePrograms->key() : 0) +
             "|streamMaterials=" + (streamMaterials_ ? "1" : "0") +
-            "|streamRayQueries=" + (streamRayQueries_ ? "1" : "0") +
-            "|supplementaryPathTracing=" + (supplementaryPathTracing ? "1" : "0") +
             "|textureCount=" + std::to_string(sceneResources_.materialTextureCount()) +
             "|view=" + (globalView ? "1" : "0") +
             "|cache=" + std::to_string(cacheMode_) +
             "|ntc=" + (ntcActive ? "1" : "0") +
             "|coopvec=" + (ntcCooperativeVector ? "1" : "0") +
             "|positionFetch=" + (positionFetch ? "1" : "0") +
-            "|lighting=" + properties().value("lightingMode", "reference") +
+            "|halfPrecision=" + (boolProperty(properties(), "halfPrecision", true) ? "1" : "0") +
             "|upscalerGuides=" + (boolProperty(properties(), "exportUpscalerGuides", false) ? "1" : "0");
         if (useOpenPBR) {
             result = openPBRLuts_.prepare(*context.device, log);
@@ -969,14 +947,12 @@ public:
         SceneShaderOptions shaderOptions{
             .customMaterials = hasValuePrograms(),
             .streamMaterials = streamMaterials_,
-            .streamRayQueries = streamRayQueries_,
             .globalView = globalView,
             .hasRTXCR = METALLIC_HAS_RTXCR != 0,
             .hasNTC = ntcActive,
             .cooperativeVector = ntcCooperativeVector,
             .positionFetch = positionFetch,
-            .realtimeDeferred = visibilityDeferred_ && properties().value("lightingMode", "reference") == "realtime",
-            .supplementaryPathTracing = supplementaryPathTracing,
+            .deferredFloat16 = boolProperty(properties(), "halfPrecision", true),
             .upscalerGuides = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false),
             .materialInclude = valueSearchPath,
             .rtxcrInclude = METALLIC_RTXCR_SHADER_INCLUDE_DIR,
@@ -1036,7 +1012,7 @@ public:
                 .kind = ComputeResourceBindingKind::SampledImage,
             },
         };
-        if (!positionFetch && !streamMaterials_) {
+        if (!visibilityDeferred_ && !positionFetch && !streamMaterials_) {
             baseBindings.push_back({.binding = kSceneFallbackPositionsBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
         }
         if (realtime_) {
@@ -1044,7 +1020,7 @@ public:
                 .binding = 51, .kind = ComputeResourceBindingKind::StorageBuffer,
             });
         }
-        if (supplementaryPathTracing || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
+        if (!realtime_) {
             baseBindings.push_back({.binding = 52, .kind = ComputeResourceBindingKind::StorageBuffer});
             baseBindings.push_back({.binding = 53, .kind = ComputeResourceBindingKind::SampledImage});
         }
@@ -1053,11 +1029,9 @@ public:
                 baseBindings.push_back({.binding = binding, .kind = ComputeResourceBindingKind::StorageBuffer});
             }
             if (globalView) { baseBindings.push_back({.binding = 80, .kind = ComputeResourceBindingKind::StorageBuffer}); }
-            if (properties().value("lightingMode", "reference") == "realtime") {
-                baseBindings.push_back({.binding = 74, .kind = ComputeResourceBindingKind::StorageBuffer});
-                baseBindings.push_back({.binding = 81, .kind = ComputeResourceBindingKind::SampledImage});
-                baseBindings.push_back({.binding = 82, .kind = ComputeResourceBindingKind::StorageBuffer});
-            }
+            baseBindings.push_back({.binding = 74, .kind = ComputeResourceBindingKind::StorageBuffer});
+            baseBindings.push_back({.binding = 81, .kind = ComputeResourceBindingKind::SampledImage});
+            baseBindings.push_back({.binding = 82, .kind = ComputeResourceBindingKind::StorageBuffer});
             if (boolProperty(properties(), "exportUpscalerGuides", false)) {
                 baseBindings.push_back({.binding = 72, .kind = ComputeResourceBindingKind::StorageImage});
                 baseBindings.push_back({.binding = 73, .kind = ComputeResourceBindingKind::StorageImage});
@@ -1145,13 +1119,10 @@ public:
             });
         }
 
-        if (streamMaterials_) {
-            std::erase_if(baseBindings, [this](const auto& binding) {
-                return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
+        if (visibilityDeferred_) {
+            std::erase_if(baseBindings, [](const auto& binding) {
+                return binding.binding == 0 || (binding.binding >= 2 && binding.binding <= 5);
             });
-        }
-        if (streamRayQueries_) {
-            for (uint32_t i = 90; i <= 93; ++i) { baseBindings.push_back({.binding = i}); }
         }
         if (hasValuePrograms()) {
             baseBindings.push_back({.binding = kMaterialValueBinding, .kind = ComputeResourceBindingKind::StorageBuffer});
@@ -1438,9 +1409,8 @@ public:
             }
         }
         compiledShaderKey_ = shaderKey;
+        compiledHalfPrecision_ = boolProperty(properties(), "halfPrecision", true);
         compiledMaterialBinning_ = boolProperty(properties(), "materialBinning", true);
-        compiledSupplementaryPathTracing_ = supplementaryPathTracing;
-        compiledRealtimeDeferred_ = visibilityDeferred_ && properties().value("lightingMode", "reference") == "realtime";
         compiledExportUpscalerGuides_ = visibilityDeferred_ && boolProperty(properties(), "exportUpscalerGuides", false);
         return {};
     }
@@ -1514,7 +1484,7 @@ public:
             nrcSceneRevision_ = 0;
 #endif
         }
-        if (compiledSupplementaryPathTracing_ || !realtime_ || (visibilityDeferred_ && context.properties().value("lightingMode", "reference") != "realtime")) {
+        if (!realtime_) {
             const auto& bounds = sceneResources_.bounds();
             const float3 center = bounds.valid ? bounds.center() : float3(0.0f);
             ReGIRBuildParameters sampling;
@@ -1695,9 +1665,8 @@ public:
             // Jitter is metadata, not part of the unjittered camera history.
             push.eye[3] = 0.0f;
             push.center[3] = 0.0f;
-            push.samples = uintProperty(context.properties(), "environmentSamples", 64, 1, 256);
-            push.deferredSettings = (uintProperty(context.properties(), "transmissionSamples", 2, 1, 16) << 16u) |
-                (uintProperty(context.properties(), "transmissionDepth", 8, 2, 16) << 21u);
+            push.samples = 1;
+            push.deferredSettings = 0;
             visibilityView = visibility.view();
             visibilityDepthView = visibilityDepth.view();
         }
@@ -1721,17 +1690,6 @@ public:
             push.jitterOffsetY = view->jitter[1];
         }
         const ScenePathTraceCameraSnapshot currentCamera = cameraSnapshotFromPush(push);
-        const GPUSceneViewId rasterView{info.lightGridViewIndex, info.lightGridViewGeneration};
-        if (visibilityDeferred_ && (!hasPreviousCamera_ ||
-            std::memcmp(&currentCamera, &previousCamera_, sizeof(currentCamera)) != 0 ||
-            deferredHistoryView_ != rasterView ||
-            deferredRasterSettingsRevision_ != info.rasterSettingsRevision ||
-            deferredHistoryProperties_ != context.properties())) {
-            resetAccumulation_ = true;
-            deferredHistoryView_ = rasterView;
-            deferredRasterSettingsRevision_ = info.rasterSettingsRevision;
-            deferredHistoryProperties_ = context.properties();
-        }
         const bool previousCameraValid =
             hasPreviousCamera_ &&
             previousCameraWidth_ == context.width() &&
@@ -1773,10 +1731,10 @@ public:
             ComputeDispatchBinding{.binding = 50, .buffer = lights_.buffer()},
             ComputeDispatchBinding{
                 .binding = 0,
-                .accelerationStructure =
-                    context.inputAccelerationStructure("accelerationStructure")
+                .accelerationStructure = visibilityDeferred_ ? nullptr :
+                    (context.inputAccelerationStructure("accelerationStructure")
                         ? context.inputAccelerationStructure("accelerationStructure")
-                        : sceneResources_.accelerationStructure().accelerationStructure(),
+                        : sceneResources_.accelerationStructure().accelerationStructure()),
             },
             ComputeDispatchBinding{
                 .binding = 1,
@@ -1826,15 +1784,15 @@ public:
                 .textureViews = {environmentImportancePdfViews, static_cast<uint32_t>(std::size(environmentImportancePdfViews))},
             },
         };
-        if (sceneResources_.fallbackPositionBuffer() != nullptr) {
+        if (!visibilityDeferred_ && sceneResources_.fallbackPositionBuffer() != nullptr) {
             bindings.push_back({.binding = kSceneFallbackPositionsBinding, .buffer = sceneResources_.fallbackPositionBuffer()});
         }
         if (hasValuePrograms()) {
             bindings.push_back({.binding = kMaterialValueBinding, .buffer = sceneResources_.materialBinding()->valueBuffer()});
         }
-        if (streamMaterials_) {
-            std::erase_if(bindings, [this](const auto& binding) {
-                return (binding.binding == 0 && !streamRayQueries_) || (binding.binding >= 2 && binding.binding <= 5);
+        if (visibilityDeferred_) {
+            std::erase_if(bindings, [](const auto& binding) {
+                return binding.binding == 0 || (binding.binding >= 2 && binding.binding <= 5);
             });
         }
         if (realtime_) {
@@ -1842,7 +1800,7 @@ public:
                 .binding = 51, .buffer = environment.sphericalHarmonicsBuffer,
             });
         }
-        if (compiledSupplementaryPathTracing_ || !realtime_ || (visibilityDeferred_ && properties().value("lightingMode", "reference") != "realtime")) {
+        if (!realtime_) {
             bindings.push_back({.binding = 52, .buffer = lights_.reGIRBuffer()});
             bindings.push_back({.binding = 53, .textureViews = {punctualPdfViews, 1}});
         }
@@ -1857,7 +1815,7 @@ public:
             for (uint32_t i = 0; i < gridBuffers.size(); ++i) {
                 bindings.push_back({.binding = 75 + i, .buffer = gridBuffers[i]});
             }
-            if (context.properties().value("lightingMode", "reference") == "realtime") {
+            {
                 bindings.push_back({.binding = 74, .buffer = environment.prefilteredSpecularBuffer});
                 const auto externalShadow = context.inputTexture("shadow");
                 const auto externalParameters = context.inputBuffer("shadowParameters");
@@ -1873,29 +1831,22 @@ public:
                     shadow = {.texture = externalShadow.texture(), .shadow = externalShadow.view(),
                         .parameters = externalParameters.buffer()};
                 } else {
-                    CPUProfileScope shadowProfile(profiler, "Record inline shadows");
-                    // Preserve realtime graphs authored before the explicit shadow stage.
-                    if (context.streamer() == nullptr) { return makeError(Error::InvalidArgument); }
-                    ViewConstants shadowView{};
-                    if (const auto* view = context.viewConstants()) {
-                        shadowView = *view;
-                    } else {
-                        std::memcpy(&shadowView.current, push.eye, sizeof(ViewCameraConstants));
-                        std::memcpy(&shadowView.previous, push.previousEye, sizeof(ViewCameraConstants));
-                        shadowView.jitter[0] = push.jitterOffsetX;
-                        shadowView.jitter[1] = push.jitterOffsetY;
-                        shadowView.jitter[2] = previousShadowJitter_[0];
-                        shadowView.jitter[3] = previousShadowJitter_[1];
-                        shadowView.frame[0] = push.sampleFrame;
-                        shadowView.frame[1] = push.previousCameraValid;
-                        shadowView.frame[2] = push.temporalJitter;
+                    // No hidden tracing fallback. A zero control buffer disables sampling
+                    // and lets graphs without a shadow producer render unoccluded lighting.
+                    if (!unshadowedParameters_) {
+                        std::unique_ptr<Buffer> parameters;
+                        result = device_->createBuffer({.size = sizeof(ScreenSpaceShadowParameters),
+                            .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload})
+                            .transform([&](auto value) { parameters = std::move(value); });
+                        if (!result) { return result; }
+                        void* mapped = parameters->map();
+                        if (!mapped) { return makeError(Error::Failure); }
+                        std::memset(mapped, 0, sizeof(ScreenSpaceShadowParameters));
+                        parameters->flush({0, sizeof(ScreenSpaceShadowParameters)});
+                        parameters->unmap();
+                        unshadowedParameters_ = std::move(parameters);
                     }
-                    const auto settings = screenSpaceShadowSettings(context.properties());
-                    const auto lightRecords = buildScreenSpaceShadowLightRecords(lightScene, resolvedLighting);
-                    std::string shadowLog;
-                    result = shadows_.record(*device_, context.commandBuffer(), *context.streamer(), *visibilityDepthView, shadowView, lightRecords, sceneResources_.revision(), lightScene->transformRevision(), settings, shadowLog, &sceneResources_, streamMaterials_ ? deferredStream : nullptr, profiler, context.inputAccelerationStructure("accelerationStructure")).transform([&](auto value) { shadow = std::move(value); });
-                    if (!result) { spdlog::error("Ray-traced shadows: {} ({})", shadowLog, resultToString(result)); return result; }
-                    previousShadowJitter_ = {shadowView.jitter[0], shadowView.jitter[1]};
+                    shadow = {.shadow = visibilityDepthView, .parameters = unshadowedParameters_.get()};
                 }
                 bindings.push_back({.binding = 81, .textureViews = {&shadow.shadow, 1}});
                 bindings.push_back({.binding = 82, .buffer = shadow.parameters});
@@ -1917,21 +1868,6 @@ public:
                     .buffer = view.buffer,
                     .range = {.offset = view.offset, .size = view.size},
                 });
-            }
-            if (streamRayQueries_) {
-                if (deferredStream == nullptr || deferredStream->accelerationStructure == nullptr) {
-                    spdlog::error("Stream BLEND/transmission requires enableClusterRtx=true and a ready stream TLAS");
-                    return makeError(Error::InvalidArgument);
-                }
-                auto* graphAcceleration = context.inputAccelerationStructure("accelerationStructure");
-                for (auto& binding : bindings) {
-                    if (binding.binding == 0) { binding.accelerationStructure = graphAcceleration
-                        ? graphAcceleration : deferredStream->accelerationStructure; }
-                }
-                bindings.push_back({.binding = 90, .buffer = deferredStream->pageBuffer});
-                bindings.push_back({.binding = 91, .buffer = deferredStream->pageTableBuffer});
-                bindings.push_back({.binding = 92, .buffer = deferredStream->instanceBuffer});
-                bindings.push_back({.binding = 93, .buffer = deferredStream->activeHeaderBuffer});
             }
             Buffer* fallback = deferredViews->geometries.buffer;
             bindings.push_back({.binding = 94, .buffer = deferredStream ? deferredStream->paramsBuffer : fallback});
@@ -2204,9 +2140,7 @@ private:
         // resolve pass adds predicted radiance before a separate tonemap pass.
         const bool debugViewEnabled =
             useOpenPBRBsdf(context.properties()) && push.debugView != kScenePathTraceDebugViewFinal;
-        const bool accumulationEnabled = (!realtime_ || visibilityDeferred_) && !debugViewEnabled &&
-            !(visibilityDeferred_ && (context.properties().value("lightingMode", "reference") == "realtime" ||
-                boolProperty(context.properties(), "exportUpscalerGuides", false))) &&
+        const bool accumulationEnabled = !realtime_ && !debugViewEnabled &&
             (push.cacheMode == kScenePathTraceCacheModeNRC ||
                 boolProperty(context.properties(), "accumulate", true));
         push.enableAccumulation = accumulationEnabled && history != nullptr ? 1u : 0u;
@@ -2911,9 +2845,8 @@ private:
 
     bool validateMaterialTarget(std::string& log) const
     {
-        if (hasValuePrograms() && (!useOpenPBRBsdf(properties()) || streamMaterials_ ||
-                (visibilityDeferred_ && properties().value("lightingMode", "reference") == "realtime"))) {
-            log = "Custom Value programs currently require OpenPBR PT or reference VBuffer shading (no StreamAsset/realtime specialization)";
+        if (hasValuePrograms() && (!useOpenPBRBsdf(properties()) || streamMaterials_)) {
+            log = "Custom Value programs currently require OpenPBR PT or resident VBuffer shading";
             return false;
         }
         const auto generation = sceneResources_.materialGeneration();
@@ -3191,16 +3124,11 @@ private:
     bool visibilityDeferred_ = false;
     std::unique_ptr<PipelineCache> deferredPipelineCache_;
     MaterialBinning materialBinning_;
-    ScreenSpaceShadows shadows_;
-    std::array<float, 2> previousShadowJitter_{};
+    std::unique_ptr<Buffer> unshadowedParameters_;
     std::array<ComputeProgram, kMaterialClassCount - 1> classifiedPrograms_;
     bool compiledMaterialBinning_ = true;
-    bool compiledSupplementaryPathTracing_ = false;
-    bool compiledRealtimeDeferred_ = false;
+    bool compiledHalfPrecision_ = true;
     bool compiledExportUpscalerGuides_ = false;
-    RenderGraphProperties deferredHistoryProperties_;
-    GPUSceneViewId deferredHistoryView_;
-    uint64_t deferredRasterSettingsRevision_ = 0;
     SceneLightResources lights_;
     ScenePathTraceResources sceneResources_;
     SamplerDesc materialSampler_{
@@ -3212,7 +3140,6 @@ private:
         .addressW = SamplerAddressMode::Repeat,
     };
     bool streamMaterials_ = false;
-    bool streamRayQueries_ = false;
     Device* device_ = nullptr;
     Queue* graphicsQueue_ = nullptr;
     OpenPBRLutResources openPBRLuts_;
@@ -3269,8 +3196,8 @@ std::unique_ptr<RenderGraphPass> createSceneRealtimeLightingPass()
 
 std::unique_ptr<RenderGraphPass> createVisibilityBufferDeferredPass()
 {
-    // Share material textures, OpenPBR LUTs, RT shadows and lighting with the
-    // reference renderer; only the primary surface comes from raster visibility.
+    // Share material resources with the reference renderer; resolve raster
+    // surfaces with direct lights, filtered IBL and optional graph shadow inputs.
     return std::make_unique<ScenePathTracePass>(true, true);
 }
 

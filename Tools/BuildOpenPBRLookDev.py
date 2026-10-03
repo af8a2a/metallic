@@ -162,7 +162,7 @@ def main():
         {"id": 3, "name": "Deferred", "type": "VisibilityBufferDeferredPass",
             "position": {"x": 440.0, "y": 440.0},
             "properties": {"path": scene_path, "bsdf": "openpbr", "outputLinear": True,
-                "environmentSamples": 64, "accumulate": True}},
+                "halfPrecision": True}},
         {"id": 4, "name": "Slider", "type": "SliderDebugPass",
             "position": {"x": 800.0, "y": 220.0}, "properties": {"splitPosition": 0.5}},
         {"id": 5, "name": "AutoExposure", "type": "AutoExposurePass",

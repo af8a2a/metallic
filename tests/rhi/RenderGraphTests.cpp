@@ -10021,7 +10021,6 @@ public:
             if (auto* node = graph.findNode(name)) { graph.removeNode(node->id); }
         }
         graph.addEdge("Deferred.color", "FinalBlit.source");
-        graph.addEdge("VBuffer.accelerationStructure", "Deferred.accelerationStructure");
         graph.addEdge("VBuffer.accelerationStructure", "Shadows.accelerationStructure");
         graph.markOutput("FinalBlit.color");
         scene::Scene fixture;

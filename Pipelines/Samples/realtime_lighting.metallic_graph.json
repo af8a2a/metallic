@@ -45,10 +45,8 @@
             },
             "properties": {
                 "path": "Asset/meet_mat.glb",
-                "lightingMode": "realtime",
                 "exportUpscalerGuides": true,
                 "materialBinning": true,
-                "accumulate": false,
                 "outputLinear": true
             }
         },

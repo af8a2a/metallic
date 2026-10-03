@@ -51,6 +51,7 @@ public:
         const uint32_t deferred = sample.graph.findNode("Deferred")->id;
         // A ray-primary path with identical direct OpenPBR lighting isolates the
         // VBuffer reconstruction from multi-bounce/environment integration differences.
+        sample.graph.setNodeRuntimeProperty(sample.graph.findNode("Reference")->id, "debugDisableShadows", true);
         sample.graph.findNode("Reference")->type = "SceneRealtimeLightingPass";
         sample.graph.markDirty();
         for (bool orthographic : {false, true}) {

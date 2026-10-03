@@ -120,23 +120,14 @@ inline std::vector<ShaderRequest> builtinShaderWarmupRequests(const std::string&
             requests.push_back(makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&define, 1}));
         }
     }
-    for (int mode = 0; mode < 4; ++mode) {
-        for (bool realtime : {false, true}) {
-            if (mode >= 2 && !realtime) { continue; }
-            for (bool supplementaryPathTracing : {false, true}) {
-                if (mode == 3 && !supplementaryPathTracing) { continue; }
-                const SceneShaderOptions options{
-                    .streamMaterials = mode >= 2, .streamRayQueries = mode == 3, .globalView = true,
-                    .hasRTXCR = hasRtxcr, .positionFetch = mode == 1, .realtimeDeferred = realtime,
-                    .supplementaryPathTracing = supplementaryPathTracing, .upscalerGuides = realtime,
-                    .rtxcrInclude = rtxcrInclude,
-                };
-                requests.push_back(makeSceneShaderRequest(SceneShaderProgram::Deferred, options));
-                for (int materialClass = 0; materialClass < 5; ++materialClass) {
-                    const std::string value = std::to_string(materialClass);
-                    const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
-                    requests.push_back(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, options, {&define, 1}));
-                }
+    for (bool streamed : {false, true}) {
+        for (bool guides : {false, true}) {
+            const SceneShaderOptions options{.streamMaterials = streamed, .globalView = true, .upscalerGuides = guides};
+            requests.push_back(makeSceneShaderRequest(SceneShaderProgram::Deferred, options));
+            for (int materialClass = 0; materialClass < 5; ++materialClass) {
+                const std::string value = std::to_string(materialClass);
+                const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
+                requests.push_back(makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, options, {&define, 1}));
             }
         }
     }

@@ -82,23 +82,16 @@ TEST(ShaderRequests, PreservesCustomMaterialAndSDKSearchPrecedence)
     EXPECT_EQ(maintenance.capabilities, request.capabilities);
 }
 
-TEST(ShaderRequests, CanonicalizesUnreachableContinuationAndRetainsTransmissionVariants)
+TEST(ShaderRequests, DeferredDoesNotRequestRayTracingCapabilities)
 {
-    for (bool streamed : {false, true}) {
-        for (bool rays : {false, true}) {
-            SceneShaderOptions off{.streamMaterials = streamed, .streamRayQueries = rays};
-            auto on = off; on.supplementaryPathTracing = true;
-            for (int materialClass = 0; materialClass < 5; ++materialClass) {
-                const std::string value = std::to_string(materialClass);
-                const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
-                const auto a = makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, off, {&define, 1});
-                const auto b = makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, on, {&define, 1});
-                EXPECT_EQ(a == b, materialClass < 4 || (streamed && !rays));
-            }
-            const auto a = makeSceneShaderRequest(SceneShaderProgram::Deferred, off);
-            const auto b = makeSceneShaderRequest(SceneShaderProgram::Deferred, on);
-            EXPECT_EQ(a == b, streamed && !rays);
-        }
+    auto options = standardSceneOptions();
+    options.streamRayQueries = true;
+    for (auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
+        const auto request = makeSceneShaderRequest(program, options);
+        EXPECT_EQ(request.capabilities, (std::vector<std::string>{"spvGroupNonUniformBallot"}));
+        EXPECT_TRUE(request.searchPaths.empty());
+        EXPECT_NE(std::find(request.defines.begin(), request.defines.end(),
+            std::pair<std::string, std::string>{"METALLIC_STREAM_RAY_QUERIES", "0"}), request.defines.end());
     }
 }
 
@@ -110,7 +103,7 @@ TEST(ShaderRequests, CatalogCoversProductionSceneVariantsWithoutDuplicateRequest
         EXPECT_EQ(std::count(catalog.begin(), catalog.end(), catalog[i]), 1);
         if (catalog[i].module == "Features/VisibilityBuffer/VisibilityBufferDeferred") { ++deferredCount; }
     }
-    EXPECT_EQ(deferredCount, 44u);
+    EXPECT_EQ(deferredCount, 24u);
     for (bool fetch : {false, true}) {
         auto options = standardSceneOptions(); options.positionFetch = fetch;
         for (auto program : {SceneShaderProgram::PathTrace, SceneShaderProgram::PathTraceGuides,
@@ -124,22 +117,15 @@ TEST(ShaderRequests, CatalogCoversProductionSceneVariantsWithoutDuplicateRequest
             EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::PathTrace, options, {&define, 1})));
         }
     }
-    for (int mode = 0; mode < 4; ++mode) {
-        for (bool realtime : {false, true}) {
-            if (mode >= 2 && !realtime) { continue; }
-            for (bool continuation : {false, true}) {
-                if (mode == 3 && !continuation) { continue; }
-                auto options = standardSceneOptions();
-                options.positionFetch = mode == 1; options.streamMaterials = mode >= 2;
-                options.streamRayQueries = mode == 3; options.globalView = true;
-                options.realtimeDeferred = realtime; options.upscalerGuides = realtime;
-                options.supplementaryPathTracing = continuation;
-                EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::Deferred, options)));
-                for (int materialClass = 0; materialClass < 5; ++materialClass) {
-                    const std::string value = std::to_string(materialClass);
-                    const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
-                    EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, options, {&define, 1})));
-                }
+    for (bool streamed : {false, true}) {
+        for (bool guides : {false, true}) {
+            auto options = standardSceneOptions();
+            options.streamMaterials = streamed; options.globalView = true; options.upscalerGuides = guides;
+            EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::Deferred, options)));
+            for (int materialClass = 0; materialClass < 5; ++materialClass) {
+                const std::string value = std::to_string(materialClass);
+                const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
+                EXPECT_TRUE(contains(catalog, makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, options, {&define, 1})));
             }
         }
     }
@@ -184,53 +170,34 @@ TEST_F(ShaderRequestCompileTest, PrewarmedOpenPBRHitsTheRuntimeRequestCache)
     EXPECT_EQ(precompiled->spirv, reused->spirv);
 }
 
-TEST_F(ShaderRequestCompileTest, FoldedDeferredClassesProduceIdenticalSPIRV)
+TEST_F(ShaderRequestCompileTest, DeferredSPIRVIsRasterOnlyWithNativeFloat16)
 {
-    for (int materialClass = 0; materialClass < 4; ++materialClass) {
-        SCOPED_TRACE(materialClass);
-        auto options = standardSceneOptions(); options.globalView = true;
-        options.realtimeDeferred = true; options.upscalerGuides = true; options.supplementaryPathTracing = true;
-        const std::string value = std::to_string(materialClass);
-        const SlangMacroDefine define{"MATERIAL_CLASS", value.c_str()};
-        const auto normalized = makeSceneShaderRequest(SceneShaderProgram::DeferredBinned, options, {&define, 1});
-        auto original = normalized;
-        for (auto& [name, v] : original.defines) {
-            if (name == "METALLIC_DEFERRED_PATH_TRACING") { v = "1"; }
-        }
-        const ShaderRequestView a(normalized), b(original);
-        const SlangShaderCacheOptions cache{.enableDiskCache = false};
+    const auto catalog = builtinShaderWarmupRequests(METALLIC_RTXCR_SHADER_INCLUDE_DIR);
+    for (const auto& request : catalog) {
+        if (request.module != "Features/VisibilityBuffer/VisibilityBufferDeferred") { continue; }
+        SCOPED_TRACE(request.entry);
+        const ShaderRequestView source(request);
         std::string diagnostics;
-        const auto compiledA = compileSlangShaderToSpirv(a.desc(), cache, diagnostics);
-        ASSERT_TRUE(compiledA) << diagnostics;
-        const auto compiledB = compileSlangShaderToSpirv(b.desc(), cache, diagnostics);
-        ASSERT_TRUE(compiledB) << diagnostics;
-        EXPECT_TRUE(compiledA->spirv == compiledB->spirv);
-    }
-}
-
-TEST_F(ShaderRequestCompileTest, FoldedStreamedDeferredProducesIdenticalSPIRV)
-{
-    auto options = standardSceneOptions();
-    options.positionFetch = false; options.streamMaterials = true; options.globalView = true;
-    options.realtimeDeferred = true; options.upscalerGuides = true; options.supplementaryPathTracing = true;
-    const SlangMacroDefine transmission{"MATERIAL_CLASS", "4"};
-    for (auto program : {SceneShaderProgram::Deferred, SceneShaderProgram::DeferredBinned}) {
-        SCOPED_TRACE(static_cast<int>(program));
-        const auto normalized = makeSceneShaderRequest(program, options,
-            program == SceneShaderProgram::DeferredBinned ? std::span<const SlangMacroDefine>(&transmission, 1)
-                                                         : std::span<const SlangMacroDefine>{});
-        auto original = normalized;
-        for (auto& [name, value] : original.defines) {
-            if (name == "METALLIC_DEFERRED_PATH_TRACING") { value = "1"; }
+        const auto compiled = compileSlangShaderToSpirv(source.desc(), {}, diagnostics);
+        ASSERT_TRUE(compiled) << diagnostics;
+        const auto& words = compiled->spirv;
+        bool float16 = false;
+        for (size_t offset = 5; offset < words.size();) {
+            const uint32_t count = words[offset] >> 16, opcode = words[offset] & 0xffffu;
+            ASSERT_GT(count, 0u);
+            ASSERT_LE(offset + count, words.size());
+            if (opcode == 17) { // OpCapability
+                EXPECT_NE(words[offset + 1], 4472u); // RayQueryKHR
+                EXPECT_NE(words[offset + 1], 4479u); // RayTracingKHR
+            }
+            EXPECT_NE(opcode, 4472u); // OpTypeRayQueryKHR
+            EXPECT_NE(opcode, 5341u); // OpTypeAccelerationStructureKHR
+            if (opcode == 22 && words[offset + 2] == 16u) { float16 = true; }
+            offset += count;
         }
-        const ShaderRequestView a(normalized), b(original);
-        const SlangShaderCacheOptions cache{.enableDiskCache = false};
-        std::string diagnostics;
-        const auto compiledA = compileSlangShaderToSpirv(a.desc(), cache, diagnostics);
-        ASSERT_TRUE(compiledA) << diagnostics;
-        const auto compiledB = compileSlangShaderToSpirv(b.desc(), cache, diagnostics);
-        ASSERT_TRUE(compiledB) << diagnostics;
-        EXPECT_TRUE(compiledA->spirv == compiledB->spirv);
+        const bool background = std::find(request.defines.begin(), request.defines.end(),
+            std::pair<std::string, std::string>{"MATERIAL_CLASS", "0"}) != request.defines.end();
+        if (!background) { EXPECT_TRUE(float16); }
     }
 }
 

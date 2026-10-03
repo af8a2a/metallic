@@ -91,11 +91,7 @@
                 "path": "Asset/ABeautifulGame/glTF/ABeautifulGame.gltf",
                 "bsdf": "openpbr",
                 "outputLinear": true,
-                "environmentSamples": 8,
-                "accumulate": true,
-                "materialBinning": true,
-                "transmissionSamples": 2,
-                "transmissionDepth": 8
+                "materialBinning": true
             }
         },
         {

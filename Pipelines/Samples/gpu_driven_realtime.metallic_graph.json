@@ -79,10 +79,8 @@
             },
             "properties": {
                 "path": "Asset/MiniZorah/zorah_main_public.v2.gltf",
-                "lightingMode": "realtime",
                 "exportUpscalerGuides": true,
                 "materialBinning": true,
-                "accumulate": false,
                 "outputLinear": true
             }
         },
@@ -234,11 +232,6 @@
             "id": 18,
             "src": "VBuffer.accelerationStructure",
             "dst": "Shadows.accelerationStructure"
-        },
-        {
-            "id": 19,
-            "src": "VBuffer.accelerationStructure",
-            "dst": "Deferred.accelerationStructure"
         },
         {
             "id": 20,

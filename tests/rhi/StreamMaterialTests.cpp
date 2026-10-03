@@ -224,8 +224,7 @@ public:
             root["nodes"][0] = {{"mesh",0},{"translation",{0,0,-.4}},{"scale",{4,2,1}}};
             root["nodes"][1] = {{"mesh",1},{"translation",{-.55,0,0}}};
             root["nodes"][2] = {{"mesh",2},{"translation",{.55,0,0}}};
-            // A cutout behind glass is reached only through the CLAS ray path.
-            // Both red texels and the blue background must survive the query.
+            // A cutout behind glass must not be reached by raster surface shading.
             root["materials"].push_back({{"doubleSided",true},{"alphaMode","MASK"},{"alphaCutoff",.5},
                 {"extensions",{{"KHR_materials_unlit",Json::object()}}},
                 {"pbrMetallicRoughness",{{"baseColorFactor",{1,.05,.05,1}},
@@ -286,12 +285,8 @@ public:
             preview.setLighting(lighting);
             auto graph=materialGraph(path,cache,true);
             const auto raster=graph.findNode("Raster")->id, deferred=graph.findNode("Deferred")->id;
-            graph.setNodeRuntimeProperty(raster,"enableClas",true);
-            graph.setNodeRuntimeProperty(raster,"enableClusterRtx",true);
-            graph.setNodeRuntimeProperty(raster,"maxClasBytes",16777216);
+            graph.setNodeRuntimeProperty(raster,"enableClusterRtx",false);
             graph.setNodeRuntimeProperty(deferred,"debugView","final");
-            graph.setNodeRuntimeProperty(deferred,"transmissionSamples",16);
-            graph.setNodeRuntimeProperty(deferred,"transmissionDepth",8);
             // Stream deferred must render without continuation/TLAS bindings by default.
             for(uint32_t frame=0;frame<8;++frame) { require(bool(preview.render(graph,256,128)),preview.lastLog()); }
             const auto defaultOff=preview.pixels();
@@ -302,32 +297,29 @@ public:
             graph.setNodeRuntimeProperty(deferred,"supplementaryPathTracing",true);
             for(uint32_t frame=0;frame<8;++frame) { require(bool(preview.render(graph,256,128)),preview.lastLog()); }
             require(saveRgba8Png(directory/"BlendAndGlass.png",reinterpret_cast<const uint8_t*>(preview.pixels().data()),256,128,log),log);
-            uint32_t supplementaryChanged=0;
-            for(size_t i=0;i<defaultOff.size();++i) { supplementaryChanged+=defaultOff[i]!=preview.pixels()[i]; }
-            require(supplementaryChanged>100,"Stream supplementary tracing had no visible effect on BLEND/glass");
-            uint32_t blendRed=0, blendBlue=0, glassBlue=0, samples=0, cutoutRed=0, cutoutBlue=0;
+            require(preview.pixels()==defaultOff,"Legacy supplementary property re-enabled stream ray queries");
+            uint32_t visible=0;
+            for (auto pixel : defaultOff) { visible += (pixel & 0xffffffu) != 0u; }
+            require(visible>100,"Raster stream test did not render material surfaces");
+            uint32_t blendRed=0, blendBlue=0, darkGlass=0, samples=0;
             for(uint32_t y=46;y<82;++y) { for(uint32_t x=100;x<115;++x) {
-                const uint32_t blend=preview.pixels()[y*256+x],glass=preview.pixels()[y*256+(256-x)];
-                blendRed+=blend&255u; blendBlue+=(blend>>16)&255u; glassBlue+=(glass>>16)&255u; ++samples;
-                const uint32_t red=glass&255u, blue=(glass>>16)&255u;
-                cutoutRed+=red>blue+40; cutoutBlue+=blue>red+40;
+                const uint32_t blend=defaultOff[y*256+x], glass=defaultOff[y*256+(256-x)];
+                blendRed+=blend&255u; blendBlue+=(blend>>16)&255u;
+                darkGlass+=(glass&0xffffffu)==0u; ++samples;
             }}
-            require(blendRed>samples*70 && blendBlue>samples*70,"BLEND did not retain both front and background radiance");
-            require(glassBlue>samples*70 && cutoutRed>100 && cutoutBlue>100,
-                "Stream CLAS glass/MASK continuation lost cutout or background coverage: " +
-                std::to_string(cutoutRed) + "/" + std::to_string(cutoutBlue) + "\n" + preview.lastLog());
+            require(blendRed>blendBlue*2,"Raster BLEND surface unexpectedly composites the background");
+            require(darkGlass>samples*9/10,"Unlit glass without an environment unexpectedly sees geometry behind it");
             const auto unbinned=preview.pixels();
             graph.setNodeRuntimeProperty(deferred,"materialBinning",true);
             for(uint32_t frame=0;frame<8;++frame) { require(bool(preview.render(graph,256,128)),preview.lastLog()); }
             uint32_t changed=0;
             for(size_t i=0;i<unbinned.size();++i) { changed+=unbinned[i]!=preview.pixels()[i]; }
-            require(changed<16,"Material binning changed BLEND/glass continuation");
+            require(changed<16,"Material binning changed raster BLEND/glass shading");
             graph.setNodeRuntimeProperty(deferred,"materialBinning",false);
             graph.setNodeRuntimeProperty(deferred,"supplementaryPathTracing",false);
             require(bool(preview.render(graph,256,128)),preview.lastLog());
             require(preview.pixels()==defaultOff,"Disabling stream supplementary tracing did not restore default shading");
-            return RHITestResult::pass("Default-off/explicit opt-in stream shading and restoration; "
-                "shared CLAS geometry preserves instance BLEND, IOR=1 glass, MASK holes and material ID 260");
+            return RHITestResult::pass("Raster stream shading without a TLAS; legacy continuation ignored; flat/binned equality");
         } catch(const std::exception& error) { return RHITestResult::fail(error.what()); }
     }
 };
