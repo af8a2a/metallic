@@ -197,7 +197,7 @@ Result<ResourceLease> ResourceRegistry::storageBuffer(const BufferSlice& buffer)
     auto allocation = buffer.retainAllocation();
     return acquire(state_, keyFor(ShaderResourceKind::Buffer, allocation), ShaderResourceKind::Buffer,
         allocation, false, [&](auto& entry) {
-            auto result = state_->heap->allocateBuffer().transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); });
+            auto result = state_->heap->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); });
             if (!result) { return result; }
             entry.value = entry.handle.shaderIndex;
             return state_->heap->writeStorageBuffer(entry.handle, buffer);
@@ -223,8 +223,9 @@ Result<ResourceLease> ResourceRegistry::image(
     key[5] = desc.range.baseLayer; key[6] = desc.range.layerCount; key[7] = uint64_t(layout);
     for (size_t i = 0; i < 4; ++i) { key[8 + i] = uint64_t(desc.swizzle[i]); }
     return acquire(state_, key, kind, allocation, false, [&](auto& entry) {
-        auto result = kind == ShaderResourceKind::SampledImage
-            ? state_->heap->allocateSampledImage().transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); }) : state_->heap->allocateStorageImage().transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); });
+        auto result = state_->heap->allocate(kind == ShaderResourceKind::SampledImage
+            ? BindlessHandleKind::SampledImage : BindlessHandleKind::StorageImage)
+            .transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); });
         if (!result) { return result; }
         entry.value = entry.handle.shaderIndex;
         result = kind == ShaderResourceKind::SampledImage ? state_->heap->writeSampledImage(entry.handle, view, layout)
@@ -258,7 +259,7 @@ Result<ResourceLease> ResourceRegistry::sampler(const SamplerDesc& sampler)
         uint64_t(sampler.mipFilter), uint64_t(sampler.addressU), uint64_t(sampler.addressV), uint64_t(sampler.addressW),
         std::bit_cast<uint32_t>(sampler.minLod), std::bit_cast<uint32_t>(sampler.maxLod)};
     return acquire(state_, key, ShaderResourceKind::Sampler, {}, true, [&](auto& entry) {
-        auto result = state_->heap->allocateSampler().transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); });
+        auto result = state_->heap->allocate(BindlessHandleKind::Sampler).transform([&](auto rhiValue) { entry.handle = std::move(rhiValue); });
         if (!result) { return result; }
         entry.value = entry.handle.shaderIndex;
         return state_->heap->writeSampler(entry.handle, sampler);

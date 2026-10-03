@@ -235,7 +235,7 @@ void WorkControlReplay::before(CommandBuffer& commands, ComputePipeline& pipelin
     // Preserve the typed index ABI, including mapped descriptor heap offsets.
     for (uint32_t i = 0; i < productionHeap.desc().maxBuffers && handles.size() < wanted.size(); ++i) {
         BindlessHandle handle;
-        require(bool(s.heap->allocateBuffer().transform([&](auto value) { handle = value; })), "replay_descriptor_allocation_failed");
+        require(bool(s.heap->allocate(BindlessHandleKind::Buffer).transform([&](auto value) { handle = value; })), "replay_descriptor_allocation_failed");
         if (wanted.contains(handle.shaderIndex)) { handles.emplace(handle.shaderIndex, handle); }
     }
     require(handles.size() == wanted.size(), "replay_descriptor_identity_mismatch");

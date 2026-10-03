@@ -37,7 +37,7 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffers_[i] = std::move(rhiValue); });
         if (!result) { return result; }
         BindlessHandle handle;
-        result = heap_->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); });
+        result = heap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
         if (result) { result = heap_->writeStorageBuffer(handle, *buffers_[i]); }
         if (!result) { return result; }
         if (i == 0) { push_.queueBuffer = handle.shaderIndex; }
@@ -53,7 +53,7 @@ Result<> VisibilityHybridRasterizer::initialize(Device& device, uint32_t width, 
             .queueAccess = QueueAccessBits::Graphics | QueueAccessBits::Compute}).transform([&](auto rhiValue) { buffer = std::move(rhiValue); });
         if (!result) { return result; }
         BindlessHandle handle;
-        result = heap_->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); });
+        result = heap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
         if (result) { result = heap_->writeStorageBuffer(handle, *buffer); }
         if (!result) { return result; }
         if (i == 0) { push_.clusterBuffer = handle.shaderIndex; } else { push_.clusterArgumentsBuffer = handle.shaderIndex; }

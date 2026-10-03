@@ -83,9 +83,9 @@ public:
         }).transform([&](auto rhiValue) { pipeline_ = std::move(rhiValue); });
         if (!result) { return result; }
         result = context.device->createBindlessHeap({.maxSampledImages = 1, .maxBuffers = 2}).transform([&](auto rhiValue) { heap_ = std::move(rhiValue); });
-        if (result) { result = heap_->allocateSampledImage().transform([&](auto rhiValue) { depth_ = std::move(rhiValue); }); }
-        if (result) { result = heap_->allocateBuffer().transform([&](auto rhiValue) { data_ = std::move(rhiValue); }); }
-        if (result) { result = heap_->allocateBuffer().transform([&](auto rhiValue) { counter_ = std::move(rhiValue); }); }
+        if (result) { result = heap_->allocate(metallic::render::BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { depth_ = std::move(rhiValue); }); }
+        if (result) { result = heap_->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { data_ = std::move(rhiValue); }); }
+        if (result) { result = heap_->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { counter_ = std::move(rhiValue); }); }
         return result;
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override

@@ -43,7 +43,7 @@ public:
         for (uint32_t i = 0; i < InputCount; ++i) {
             DEBUG_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
-            DEBUG_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
+            DEBUG_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
             DEBUG_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
         }
         const auto upload = [](Buffer& buffer, const void* data, size_t size) -> Result<> {
@@ -80,7 +80,7 @@ public:
                 .format = format, .width = width, .height = 1}).transform([&](auto rhiValue) { textures[i] = std::move(rhiValue); }));
             DEBUG_REQUIRE(device->createTextureView(*textures[i], {.format = format}).transform([&](auto rhiValue) { views[i] = std::move(rhiValue); }));
             if (i < 2) {
-                DEBUG_REQUIRE(heap->allocateSampledImage().transform([&](auto rhiValue) { images[i] = std::move(rhiValue); }));
+                DEBUG_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { images[i] = std::move(rhiValue); }));
                 DEBUG_REQUIRE(heap->writeSampledImage(images[i], *views[i], TextureLayout::ShaderRead));
                 DEBUG_REQUIRE(device->createBuffer({.size = width * 4, .usage = BufferUsageBits::TransferSource,
                     .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { uploads[i] = std::move(rhiValue); }));

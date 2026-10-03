@@ -1588,59 +1588,28 @@ public:
         return size > 0 ? static_cast<uint32_t>(bufferRegionStartBytes_ / size) : 0;
     }
 
-    bool allocateSampler(BindlessHandle& outHandle)
+    bool allocate(BindlessHandleKind kind, BindlessHandle& outHandle)
     {
         uint32_t slot = 0;
-        if (!allocateSlot(maxSamplers_, nextSamplerSlot_, freeSamplerSlots_, slot)) {
+        uint32_t shaderIndexBase = 0;
+        switch (kind) {
+        case BindlessHandleKind::Sampler:
+            if (!allocateSlot(maxSamplers_, nextSamplerSlot_, freeSamplerSlots_, slot)) { return false; }
+            break;
+        case BindlessHandleKind::SampledImage:
+        case BindlessHandleKind::StorageImage:
+            if (!allocateSlot(maxImages_, nextImageSlot_, freeImageSlots_, slot)) { return false; }
+            shaderIndexBase = imageShaderIndexBase();
+            break;
+        case BindlessHandleKind::Buffer:
+        case BindlessHandleKind::AccelerationStructure:
+            if (!allocateSlot(maxBuffers_, nextBufferSlot_, freeBufferSlots_, slot)) { return false; }
+            shaderIndexBase = bufferShaderIndexBase();
+            break;
+        default:
             return false;
         }
-        outHandle = {
-            .kind = BindlessHandleKind::Sampler,
-            .index = slot,
-            .shaderIndex = slot,
-        };
-        return true;
-    }
-
-    bool allocateSampledImage(BindlessHandle& outHandle)
-    {
-        uint32_t slot = 0;
-        if (!allocateSlot(maxImages_, nextImageSlot_, freeImageSlots_, slot)) {
-            return false;
-        }
-        outHandle = {
-            .kind = BindlessHandleKind::SampledImage,
-            .index = slot,
-            .shaderIndex = imageShaderIndexBase() + slot,
-        };
-        return true;
-    }
-
-    bool allocateStorageImage(BindlessHandle& outHandle)
-    {
-        uint32_t slot = 0;
-        if (!allocateSlot(maxImages_, nextImageSlot_, freeImageSlots_, slot)) {
-            return false;
-        }
-        outHandle = {
-            .kind = BindlessHandleKind::StorageImage,
-            .index = slot,
-            .shaderIndex = imageShaderIndexBase() + slot,
-        };
-        return true;
-    }
-
-    bool allocateBuffer(BindlessHandle& outHandle)
-    {
-        uint32_t slot = 0;
-        if (!allocateSlot(maxBuffers_, nextBufferSlot_, freeBufferSlots_, slot)) {
-            return false;
-        }
-        outHandle = {
-            .kind = BindlessHandleKind::Buffer,
-            .index = slot,
-            .shaderIndex = bufferShaderIndexBase() + slot,
-        };
+        outHandle = {.kind = kind, .index = slot, .shaderIndex = shaderIndexBase + slot};
         return true;
     }
 
@@ -4230,51 +4199,13 @@ const BindlessHeapDesc& BindlessHeap::desc() const
 }
 
 
-Result<BindlessHandle> BindlessHeap::allocateSampler()
+Result<BindlessHandle> BindlessHeap::allocate(BindlessHandleKind kind)
 {
-    BindlessHandle handle{};
-    if (impl_ == nullptr) {
+    if (impl_ == nullptr || kind < BindlessHandleKind::Sampler || kind > BindlessHandleKind::AccelerationStructure) {
         return makeError(Error::InvalidArgument);
     }
-    if (!impl_->heap.allocateSampler(handle)) {
-        return makeError(Error::OutOfMemory);
-    }
-    return handle;
-}
-
-Result<BindlessHandle> BindlessHeap::allocateSampledImage()
-{
     BindlessHandle handle{};
-    if (impl_ == nullptr) {
-        return makeError(Error::InvalidArgument);
-    }
-    if (!impl_->heap.allocateSampledImage(handle)) {
-        return makeError(Error::OutOfMemory);
-    }
-    return handle;
-}
-
-Result<BindlessHandle> BindlessHeap::allocateStorageImage()
-{
-    BindlessHandle handle{};
-    if (impl_ == nullptr) {
-        return makeError(Error::InvalidArgument);
-    }
-    if (!impl_->heap.allocateStorageImage(handle)) {
-        return makeError(Error::OutOfMemory);
-    }
-    return handle;
-}
-
-Result<BindlessHandle> BindlessHeap::allocateBuffer()
-{
-    BindlessHandle handle{};
-    if (impl_ == nullptr) {
-        return makeError(Error::InvalidArgument);
-    }
-    if (!impl_->heap.allocateBuffer(handle)) {
-        return makeError(Error::OutOfMemory);
-    }
+    if (!impl_->heap.allocate(kind, handle)) { return makeError(Error::OutOfMemory); }
     return handle;
 }
 
@@ -4337,16 +4268,6 @@ Result<> BindlessHeap::writeSamplers(std::span<const BindlessSamplerWrite> write
     }
     impl_->flushSamplerDirty();
     return {};
-}
-
-Result<BindlessHandle> BindlessHeap::allocateAccelerationStructure()
-{
-    BindlessHandle handle{};
-    if (impl_ == nullptr || !impl_->heap.allocateBuffer(handle)) {
-        return makeError(impl_ == nullptr ? Error::InvalidArgument : Error::OutOfMemory);
-    }
-    handle.kind = BindlessHandleKind::AccelerationStructure;
-    return handle;
 }
 
 Result<> BindlessHeap::writeSampledImage(BindlessHandle handle, TextureView& view, TextureLayout layout)
@@ -4427,7 +4348,11 @@ Result<> BindlessHeap::writeImages(std::span<const BindlessImageWrite> writes)
 
 Result<> BindlessHeap::writeBufferView(BindlessHandle handle, BufferView& view)
 {
-    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || view.impl_ == nullptr) {
+    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || view.impl_ == nullptr ||
+        view.impl_->device != impl_->device || !view.impl_->buffer ||
+        view.impl_->buffer->device != impl_->device ||
+        !hasFlag(view.impl_->buffer->desc.usage, view.impl_->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+            ? BufferUsageBits::Constant : BufferUsageBits::Storage)) {
         return makeError(Error::InvalidArgument);
     }
 
@@ -4446,15 +4371,12 @@ Result<> BindlessHeap::writeBufferView(BindlessHandle handle, BufferView& view)
 
 Result<> BindlessHeap::writeConstantBuffer(BindlessHandle handle, Buffer& buffer)
 {
-    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || buffer.impl_ == nullptr) {
+    if (impl_ == nullptr || impl_->resourceHeap.mapped == nullptr || buffer.impl_ == nullptr ||
+        buffer.impl_->device != impl_->device || !hasFlag(buffer.impl_->desc.usage, BufferUsageBits::Constant)) {
         return makeError(Error::InvalidArgument);
     }
 
-    VkBufferDeviceAddressInfo addressInfo{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = buffer.impl_->buffer,
-    };
-    const VkDeviceAddress address = impl_->device->functions.vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
+    const VkDeviceAddress address = buffer.impl_->address;
     const VkResult result = impl_->heap.writeBufferDescriptor(
         handle,
         address,
@@ -4482,11 +4404,7 @@ Result<> BindlessHeap::writeStorageBuffer(BindlessHandle handle, const BufferSli
         return makeError(Error::InvalidArgument);
     }
 
-    VkBufferDeviceAddressInfo addressInfo{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = buffer.allocation_->buffer,
-    };
-    const VkDeviceAddress address = impl_->device->functions.vkGetBufferDeviceAddress(impl_->device->device, &addressInfo);
+    const VkDeviceAddress address = buffer.allocation_->address;
     const VkResult result = impl_->heap.writeBufferDescriptor(
         handle,
         address,
@@ -8463,11 +8381,7 @@ Result<std::unique_ptr<BufferView>> Device::createBufferView(Buffer& buffer,
         return makeError(Error::InvalidArgument);
     }
 
-    VkBufferDeviceAddressInfo addressInfo{
-        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = buffer.impl_->buffer,
-    };
-    const VkDeviceAddress bufferAddress = impl_->functions.vkGetBufferDeviceAddress(impl_->device, &addressInfo);
+    const VkDeviceAddress bufferAddress = buffer.impl_->address;
     if (bufferAddress == 0) {
         return makeError(Error::Failure);
     }

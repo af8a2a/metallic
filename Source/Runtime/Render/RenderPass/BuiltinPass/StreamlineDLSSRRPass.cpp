@@ -840,12 +840,12 @@ private:
                 log += '\n';
                 return result ? makeError(Error::Failure) : result;
             }
-            result = auxiliaryHeap_->allocateSampledImage().transform([&](auto rhiValue) { depthGuideHandle_ = std::move(rhiValue); });
+            result = auxiliaryHeap_->allocate(BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { depthGuideHandle_ = std::move(rhiValue); });
             if (!result || !depthGuideHandle_.valid()) {
                 log = "StreamlineDLSSSRPass failed to allocate its depth guide descriptor";
                 return result ? makeError(Error::Failure) : result;
             }
-            result = auxiliaryHeap_->allocateStorageImage().transform([&](auto rhiValue) { outputColorHandle_ = std::move(rhiValue); });
+            result = auxiliaryHeap_->allocate(BindlessHandleKind::StorageImage).transform([&](auto rhiValue) { outputColorHandle_ = std::move(rhiValue); });
             if (!result || !outputColorHandle_.valid()) {
                 log = "StreamlineDLSSSRPass failed to allocate its output descriptor";
                 return result ? makeError(Error::Failure) : result;

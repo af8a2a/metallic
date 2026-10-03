@@ -386,6 +386,31 @@ public:
     }
 };
 
+// Scoped interception of this test's private device table; forwards real driver calls.
+class BufferAddressQueryCounter {
+public:
+    explicit BufferAddressQueryCounter(render::Device& device)
+        : functions_(*const_cast<VolkDeviceTable*>(render::vulkan::nativeDevice(device).functions))
+    {
+        original_ = functions_.vkGetBufferDeviceAddress;
+        count_ = 0;
+        functions_.vkGetBufferDeviceAddress = query;
+    }
+    ~BufferAddressQueryCounter() { functions_.vkGetBufferDeviceAddress = original_; }
+    BufferAddressQueryCounter(const BufferAddressQueryCounter&) = delete;
+    BufferAddressQueryCounter& operator=(const BufferAddressQueryCounter&) = delete;
+    uint32_t count() const { return count_; }
+private:
+    static VKAPI_ATTR VkDeviceAddress VKAPI_CALL query(VkDevice device, const VkBufferDeviceAddressInfo* info)
+    {
+        ++count_;
+        return original_(device, info);
+    }
+    VolkDeviceTable& functions_;
+    inline static thread_local PFN_vkGetBufferDeviceAddress original_ = nullptr;
+    inline static thread_local uint32_t count_ = 0;
+};
+
 class ExpectedBindlessResultsTest final : public RHITest {
 public:
     ExpectedBindlessResultsTest()
@@ -406,39 +431,91 @@ public:
         if (hasError(created, Error::Unsupported)) { return RHITestResult::skip(resultToString(created)); }
         if (!created) { return RHITestResult::fail(resultToString(created)); }
         auto& heap = **created;
-        using Allocate = Result<BindlessHandle> (BindlessHeap::*)();
-        const std::pair<Allocate, BindlessHandleKind> cases[] = {
-            {&BindlessHeap::allocateSampler, BindlessHandleKind::Sampler},
-            {&BindlessHeap::allocateSampledImage, BindlessHandleKind::SampledImage},
-            {&BindlessHeap::allocateStorageImage, BindlessHandleKind::StorageImage},
-            {&BindlessHeap::allocateBuffer, BindlessHandleKind::Buffer},
-            {&BindlessHeap::allocateAccelerationStructure, BindlessHandleKind::AccelerationStructure},
-        };
-        for (const auto& [allocate, kind] : cases) {
-            const auto handle = (heap.*allocate)();
+        const BindlessHandleKind cases[] = {BindlessHandleKind::Sampler, BindlessHandleKind::SampledImage,
+            BindlessHandleKind::StorageImage, BindlessHandleKind::Buffer, BindlessHandleKind::AccelerationStructure};
+        for (const auto kind : cases) {
+            const auto handle = heap.allocate(kind);
             if (!handle || !handle->valid() || handle->kind != kind) {
                 return RHITestResult::fail("allocation did not return the requested handle kind");
             }
             // Sampled and storage images share one pool with the summed capacity.
             const bool image = kind == BindlessHandleKind::SampledImage || kind == BindlessHandleKind::StorageImage;
-            auto second = image ? (heap.*allocate)() : Result<BindlessHandle>(makeError(Error::Unsupported));
+            auto second = image ? heap.allocate(kind) : Result<BindlessHandle>(makeError(Error::Unsupported));
             if (image && (!second || second->kind != kind || second->index == handle->index)) {
                 return RHITestResult::fail("shared image pool did not expose both slots");
             }
-            if (!hasError((heap.*allocate)(), Error::OutOfMemory)) {
+            if (!hasError(heap.allocate(kind), Error::OutOfMemory)) {
                 return RHITestResult::fail("exhausted allocation did not return OutOfMemory");
             }
             heap.release(*handle);
-            const auto reused = (heap.*allocate)();
+            const auto reused = heap.allocate(kind);
             if (!reused || reused->index != handle->index) {
                 return RHITestResult::fail("released slot was not reusable");
             }
             heap.release(*reused);
             if (second) { heap.release(*second); }
         }
+        for (const auto kind : {BindlessHandleKind::Invalid, static_cast<BindlessHandleKind>(255)}) {
+            if (!hasError(heap.allocate(kind), Error::InvalidArgument)) {
+                return RHITestResult::fail("invalid handle kind did not return InvalidArgument");
+            }
+        }
+        const auto bufferSlot = heap.allocate(BindlessHandleKind::Buffer);
+        if (!bufferSlot || !hasError(heap.allocate(BindlessHandleKind::AccelerationStructure), Error::OutOfMemory)) {
+            return RHITestResult::fail("buffer and AS allocations stopped sharing capacity");
+        }
+        heap.release(*bufferSlot);
+        const auto asSlot = heap.allocate(BindlessHandleKind::AccelerationStructure);
+        if (!asSlot || asSlot->shaderIndex != bufferSlot->shaderIndex) {
+            return RHITestResult::fail("shared buffer/AS shader index changed on reuse");
+        }
+        heap.release(*asSlot);
+        auto constant = (*device)->createBuffer({.size = 256, .usage = BufferUsageBits::Constant});
+        auto storage = (*device)->createBuffer({.size = 256, .usage = BufferUsageBits::Storage});
+        auto foreign = createDevice({.applicationName = "Foreign bindless resource",
+            .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true});
+        if (!constant || !storage || !foreign) { return RHITestResult::fail("buffer validation setup failed"); }
+        auto foreignBuffer = (*foreign)->createBuffer({.size = 256,
+            .usage = BufferUsageBits::Constant | BufferUsageBits::Storage});
+        if (!foreignBuffer) { return RHITestResult::fail("foreign buffer creation failed"); }
+        auto foreignView = (*foreign)->createBufferView(**foreignBuffer, {.type = BufferViewType::Constant});
+        if (!foreignView) { return RHITestResult::fail("foreign view creation failed"); }
+        const auto handle = heap.allocate(BindlessHandleKind::Buffer);
+        if (!handle) { return RHITestResult::fail("buffer handle allocation failed"); }
+        BufferAddressQueryCounter addressQueries(**device);
+        auto constantView = (*device)->createBufferView(**constant, {.type = BufferViewType::Constant});
+        auto storageView = (*device)->createBufferView(**storage, {.type = BufferViewType::Raw});
+        if (!constantView || !storageView) { return RHITestResult::fail("local view creation failed"); }
+        if (!hasError(heap.writeConstantBuffer(*handle, **storage), Error::InvalidArgument) ||
+            !hasError(heap.writeStorageBuffer(*handle, **constant), Error::InvalidArgument) ||
+            !hasError(heap.writeConstantBuffer(*handle, **foreignBuffer), Error::InvalidArgument) ||
+            !hasError(heap.writeStorageBuffer(*handle, **foreignBuffer), Error::InvalidArgument) ||
+            !hasError(heap.writeBufferView(*handle, **foreignView), Error::InvalidArgument) ||
+            !hasError((*device)->createBufferView(**storage, {.type = BufferViewType::Constant}), Error::InvalidArgument) ||
+            !hasError((*device)->createBufferView(**constant, {.type = BufferViewType::Raw}), Error::InvalidArgument)) {
+            return RHITestResult::fail("buffer descriptor accepted foreign ownership or incompatible usage");
+        }
+        for (uint32_t i = 0; i < 3; ++i) {
+            if (!heap.writeConstantBuffer(*handle, **constant) || !heap.writeStorageBuffer(*handle, **storage) ||
+                !heap.writeBufferView(*handle, **constantView) || !heap.writeBufferView(*handle, **storageView)) {
+                return RHITestResult::fail("valid buffer descriptor write failed");
+            }
+        }
+        // Views and slices keep allocations alive after the public Buffer wrapper is gone.
+        auto slice = (*storage)->slice();
+        constant->reset();
+        storage->reset();
+        if (!slice || !heap.writeStorageBuffer(*handle, *slice) ||
+            !heap.writeBufferView(*handle, **constantView) || !heap.writeBufferView(*handle, **storageView)) {
+            return RHITestResult::fail("retained buffer allocation lost its cached address");
+        }
+        if (addressQueries.count() != 0) {
+            return RHITestResult::fail("descriptor writes or view creation re-queried buffer device address");
+        }
+        heap.release(*handle);
         BindlessHeap moved = std::move(heap);
-        for (const auto& [allocate, kind] : cases) {
-            if (!hasError((heap.*allocate)(), Error::InvalidArgument)) {
+        for (const auto kind : cases) {
+            if (!hasError(heap.allocate(kind), Error::InvalidArgument)) {
                 return RHITestResult::fail("moved-from heap did not return InvalidArgument");
             }
         }

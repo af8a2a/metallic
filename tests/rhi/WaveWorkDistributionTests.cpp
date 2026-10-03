@@ -55,7 +55,7 @@ public:
         for (uint32_t i = 0; i < 2; ++i) {
             WAVE_WORK_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = i == 0 ? 4u : 16u,
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
-            WAVE_WORK_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
+            WAVE_WORK_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
             WAVE_WORK_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
             void* mapped = buffers[i]->map();
             if (!mapped) { return RHITestResult::fail("Cannot map wave work input"); }

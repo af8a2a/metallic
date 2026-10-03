@@ -1718,11 +1718,7 @@ class BindlessHeap {
 
     const BindlessHeapDesc& desc() const;
 
-    [[nodiscard]] Result<BindlessHandle> allocateSampler();
-    [[nodiscard]] Result<BindlessHandle> allocateSampledImage();
-    [[nodiscard]] Result<BindlessHandle> allocateStorageImage();
-    [[nodiscard]] Result<BindlessHandle> allocateBuffer();
-    [[nodiscard]] Result<BindlessHandle> allocateAccelerationStructure();
+    [[nodiscard]] Result<BindlessHandle> allocate(BindlessHandleKind kind);
     void release(BindlessHandle handle);
     Result<> writeSampler(BindlessHandle handle, const SamplerDesc& sampler);
     Result<> writeSamplers(std::span<const BindlessSamplerWrite> writes);

@@ -194,9 +194,9 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     render::BindlessHandle inputHandle{}, outputHandle{};
     if (heapMode) {
         heap = require(device->createBindlessHeap({.maxSampledImages = 7, .maxBuffers = 4}), "createHeap");
-        (void)require(heap->allocateBuffer(), "reserveUnusedSlot");
-        inputHandle = require(heap->allocateBuffer(), "allocateInput");
-        outputHandle = require(heap->allocateBuffer(), "allocateOutput");
+        (void)require(heap->allocate(metallic::render::BindlessHandleKind::Buffer), "reserveUnusedSlot");
+        inputHandle = require(heap->allocate(metallic::render::BindlessHandleKind::Buffer), "allocateInput");
+        outputHandle = require(heap->allocate(metallic::render::BindlessHandleKind::Buffer), "allocateOutput");
         if (inputHandle.index == 0 || inputHandle.shaderIndex == inputHandle.index) {
             throw std::runtime_error("Probe must use nonzero slot and final descriptor indices");
         }

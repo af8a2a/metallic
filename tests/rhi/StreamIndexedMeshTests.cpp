@@ -43,7 +43,7 @@ public:
         std::unique_ptr<BindlessHeap> heap;
         MESH_REQUIRE(device->createBindlessHeap({.maxBuffers = InputCount}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<BindlessHandle, InputCount> handles;
-        for (auto& handle : handles) { MESH_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
+        for (auto& handle : handles) { MESH_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
         std::array<std::unique_ptr<Buffer>, Queue> inputs;
         for (size_t i = 0; i < inputs.size(); ++i) {
             MESH_REQUIRE(device->createBuffer({.size = uint64_t(strides[i]) * counts[i], .structureStride = strides[i],

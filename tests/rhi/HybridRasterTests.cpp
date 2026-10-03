@@ -78,7 +78,7 @@ public:
         std::unique_ptr<BindlessHeap> heap;
         HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         BindlessHandle inputHandle, queueHandle;
-        HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); })); HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { queueHandle = std::move(rhiValue); }));
+        HYBRID_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); })); HYBRID_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { queueHandle = std::move(rhiValue); }));
         HYBRID_REQUIRE(heap->writeStorageBuffer(inputHandle, *input));
         // Compare the new shared-vertex/integer-step SW kernel to the legacy
         // kernel before testing either against HW. Include both subpixel grids.
@@ -123,14 +123,14 @@ public:
             std::unique_ptr<BindlessHeap> compareHeap;
             HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers=3}).transform([&](auto rhiValue) { compareHeap = std::move(rhiValue); }));
             BindlessHandle vertexHandle;
-            HYBRID_REQUIRE(compareHeap->allocateBuffer().transform([&](auto rhiValue) { vertexHandle = std::move(rhiValue); }));
+            HYBRID_REQUIRE(compareHeap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { vertexHandle = std::move(rhiValue); }));
             HYBRID_REQUIRE(compareHeap->writeStorageBuffer(vertexHandle,*input));
             std::array<std::unique_ptr<Buffer>,2> pixels;
             std::array<BindlessHandle,2> handles;
             for (size_t i=0;i<2;++i) {
                 HYBRID_REQUIRE(device->createBuffer({.size=pixelCount*8,.structureStride=8,.usage=BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                     .memoryLocation=MemoryLocation::HostUpload}).transform([&](auto rhiValue) { pixels[i] = std::move(rhiValue); }));
-                HYBRID_REQUIRE(compareHeap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
+                HYBRID_REQUIRE(compareHeap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
                 HYBRID_REQUIRE(compareHeap->writeStorageBuffer(handles[i],*pixels[i]));
             }
             auto* queue=device->getQueue(QueueType::Graphics);
@@ -382,7 +382,7 @@ public:
         std::unique_ptr<BindlessHeap> heap;
         HYBRID_REQUIRE(device->createBindlessHeap({.maxBuffers = 2}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         BindlessHandle inputHandle, binHandle;
-        HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); })); HYBRID_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { binHandle = std::move(rhiValue); }));
+        HYBRID_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { inputHandle = std::move(rhiValue); })); HYBRID_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { binHandle = std::move(rhiValue); }));
         ShaderCompileResult compiled;
         const auto compile = compileSlangShaderToSpirv({.moduleName = "HybridClusterProbe", .entryPointName = "classifyMain",
             .searchPath = PROJECT_SOURCE_DIR "/tests/rhi/shaders"}, compiled.diagnostics).transform([&](auto value) { compiled = std::move(value); });

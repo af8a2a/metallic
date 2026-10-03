@@ -144,7 +144,7 @@ public:
         TLAS_REQUIRE(registry.initialize(device, {.maxBuffers = 1}));
         auto heap = device.createBindlessHeap({.maxBuffers = 1});
         TLAS_REQUIRE(heap);
-        auto handle = (*heap)->allocateAccelerationStructure();
+        auto handle = (*heap)->allocate(metallic::render::BindlessHandleKind::AccelerationStructure);
         TLAS_REQUIRE(handle);
         TLAS_CHECK(handle->kind == BindlessHandleKind::AccelerationStructure);
         ResourceLease lease;

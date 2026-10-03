@@ -108,19 +108,19 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
 
-        result = bindlessHeap_->allocateBuffer().transform([&](auto rhiValue) { paramsHandle_ = std::move(rhiValue); });
+        result = bindlessHeap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { paramsHandle_ = std::move(rhiValue); });
         if (!result || !paramsHandle_.valid()) {
             log += resultMessage("allocateBuffer(BunnyWireframePass params)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
-        result = bindlessHeap_->allocateBuffer().transform([&](auto rhiValue) { positionHandle_ = std::move(rhiValue); });
+        result = bindlessHeap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { positionHandle_ = std::move(rhiValue); });
         if (!result || !positionHandle_.valid()) {
             log += resultMessage("allocateBuffer(BunnyWireframePass positions)", result);
             log += '\n';
             return result ? makeError(Error::Failure) : result;
         }
-        result = bindlessHeap_->allocateBuffer().transform([&](auto rhiValue) { transformHandle_ = std::move(rhiValue); });
+        result = bindlessHeap_->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { transformHandle_ = std::move(rhiValue); });
         if (!result || !transformHandle_.valid()) {
             log += resultMessage("allocateBuffer(BunnyWireframePass transforms)", result);
             log += '\n';

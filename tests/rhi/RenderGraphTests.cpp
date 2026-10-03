@@ -4818,7 +4818,7 @@ public:
             render::Buffer& buffer,
             const char* label,
             render::BindlessHandle& outHandle) -> RHITestResult {
-            render::Result<> bindlessResult = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { outHandle = std::move(rhiValue); });
+            render::Result<> bindlessResult = bindlessHeap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { outHandle = std::move(rhiValue); });
             if (!bindlessResult || !outHandle.valid()) {
                 return RHITestResult::fail(std::string("allocateBuffer(") + label + ") returned " + toString(bindlessResult));
             }

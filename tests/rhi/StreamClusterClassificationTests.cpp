@@ -52,7 +52,7 @@ public:
         std::unique_ptr<BindlessHeap> heap;
         CLASSIFY_REQUIRE(device->createBindlessHeap({.maxBuffers = 18}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<BindlessHandle, 18> handles;
-        for (auto& handle : handles) { CLASSIFY_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
+        for (auto& handle : handles) { CLASSIFY_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
         enum Input { Header, Groups, Params, Pages, PageTable, Bindings, Visibility, Requests, Records, HZB0, HZB1, Instances, InputCount };
         const uint32_t strides[] = {sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUActiveGroup),
             sizeof(MeshletStreamGPUParams), 4, sizeof(StreamPageTableEntry), sizeof(MeshletStreamGPURasterBindings),

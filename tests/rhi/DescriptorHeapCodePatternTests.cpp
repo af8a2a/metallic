@@ -136,9 +136,9 @@ public:
         if (!result) { return result; }
         // Preserve the original two-table allocation and pushed-base mapping.
         for (uint32_t table = 0; table < 2; ++table) {
-            auto image = heap_->allocateSampledImage();
-            auto input = heap_->allocateBuffer();
-            auto output = heap_->allocateBuffer();
+            auto image = heap_->allocate(metallic::render::BindlessHandleKind::SampledImage);
+            auto input = heap_->allocate(metallic::render::BindlessHandleKind::Buffer);
+            auto output = heap_->allocate(metallic::render::BindlessHandleKind::Buffer);
             if (!image) { return render::makeError(image.error()); }
             if (!input) { return render::makeError(input.error()); }
             if (!output) { return render::makeError(output.error()); }

@@ -548,7 +548,7 @@ private:
             STREAM_LOD_REQUIRE(device->createBuffer({.size = sizes[index], .structureStride = strides[index],
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                 .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[index] = std::move(rhiValue); }));
-            STREAM_LOD_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[index] = std::move(rhiValue); }));
+            STREAM_LOD_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[index] = std::move(rhiValue); }));
             STREAM_LOD_REQUIRE(heap->writeStorageBuffer(handles[index], *buffers[index]));
         }
         const auto upload = [&](BufferIndex index, const void* source, size_t size) {
@@ -1189,7 +1189,7 @@ public:
         for (uint32_t i = 0; i < 3; ++i) {
             STREAM_LOD_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
-            STREAM_LOD_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
+            STREAM_LOD_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
             STREAM_LOD_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
         }
         ShaderCompileResult compiled;

@@ -1661,7 +1661,7 @@ struct RenderGraphExecutor::Impl {
                 }
 
                 BindlessHandle handle;
-                result = bindlessHeap->allocateSampledImage().transform([&](auto rhiValue) { handle = std::move(rhiValue); });
+                result = bindlessHeap->allocate(BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
                 if (!result) {
                     log += resultMessage(std::string("allocateSampledImage(") + fullName + ")", result);
                     log += '\n';
@@ -1689,7 +1689,7 @@ struct RenderGraphExecutor::Impl {
                 }
 
                 BindlessHandle handle;
-                result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); });
+                result = bindlessHeap->allocate(BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); });
                 if (!result) {
                     log += resultMessage(std::string("allocateBuffer(") + fullName + ")", result);
                     log += '\n';

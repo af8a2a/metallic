@@ -188,9 +188,9 @@ public:
                 // slot zero so neither a local index nor an implicit slot can pass.
                 NATIVE_REQUIRE(device->createBindlessHeap({.maxSampledImages = 3u + i * 10u, .maxBuffers = 3}).transform([&](auto rhiValue) { heaps[i] = std::move(rhiValue); }));
                 render::BindlessHandle unused;
-                NATIVE_REQUIRE(heaps[i]->allocateBuffer().transform([&](auto rhiValue) { unused = std::move(rhiValue); }));
-                NATIVE_REQUIRE(heaps[i]->allocateBuffer().transform([&](auto rhiValue) { inputHandles[i] = std::move(rhiValue); }));
-                NATIVE_REQUIRE(heaps[i]->allocateBuffer().transform([&](auto rhiValue) { outputHandles[i] = std::move(rhiValue); }));
+                NATIVE_REQUIRE(heaps[i]->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { unused = std::move(rhiValue); }));
+                NATIVE_REQUIRE(heaps[i]->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { inputHandles[i] = std::move(rhiValue); }));
+                NATIVE_REQUIRE(heaps[i]->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { outputHandles[i] = std::move(rhiValue); }));
                 if (inputHandles[i].index == 0 || inputHandles[i].shaderIndex == inputHandles[i].index) {
                     return RHITestResult::fail("test must exercise a nonzero slot and buffer partition");
                 }
@@ -317,13 +317,13 @@ public:
             std::unique_ptr<render::BindlessHeap> heap;
             NATIVE_REQUIRE(device->createBindlessHeap({.maxSampledImages = 7, .maxBuffers = 8}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
             render::BindlessHandle unused;
-            NATIVE_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { unused = std::move(rhiValue); }));
+            NATIVE_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { unused = std::move(rhiValue); }));
             std::array<render::BindlessHandle, 3> handles;
             std::array<std::unique_ptr<render::Buffer>, 3> buffers;
             const std::array<uint64_t, 3> sizes{1024 * 8, 16, count * 96};
             const std::array<uint32_t, 3> strides{8, 4, 96};
             for (uint32_t i = 0; i < buffers.size(); ++i) {
-                NATIVE_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
+                NATIVE_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
                 NATIVE_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = strides[i],
                     .usage = render::BufferUsageBits::Storage,
                     .memoryLocation = i == 2 ? render::MemoryLocation::HostUpload : render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));

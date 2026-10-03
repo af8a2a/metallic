@@ -496,7 +496,7 @@ private:
         std::string& log,
         std::string_view label)
     {
-        Result<> result = heap.allocateBuffer().transform([&](BindlessHandle handle) { outHandle = handle; });
+        Result<> result = heap.allocate(BindlessHandleKind::Buffer).transform([&](BindlessHandle handle) { outHandle = handle; });
         if (!result || !outHandle.valid()) {
             log += resultMessage(std::string("allocateBuffer(SceneMaterialShaderObjectPass ") + std::string(label) + ")", result);
             log += '\n';

@@ -58,7 +58,7 @@ public:
         for (uint32_t i = 0; i < 2; ++i) {
             TESS_REQUIRE(device->createBuffer({.size = sizes[i], .structureStride = i == 0 ? 96u : 16u,
                 .usage = BufferUsageBits::Storage, .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto rhiValue) { buffers[i] = std::move(rhiValue); }));
-            TESS_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
+            TESS_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handles[i] = std::move(rhiValue); }));
             TESS_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
             void* p = buffers[i]->map();
             if (!p) { return RHITestResult::fail("Cannot map split probe buffer"); }

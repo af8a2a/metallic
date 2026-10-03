@@ -39,7 +39,7 @@ public:
         std::unique_ptr<BindlessHeap> heap;
         CANDIDATE_REQUIRE(device->createBindlessHeap({.maxBuffers = 7}).transform([&](auto rhiValue) { heap = std::move(rhiValue); }));
         std::array<BindlessHandle, 7> handles;
-        for (auto& handle : handles) { CANDIDATE_REQUIRE(heap->allocateBuffer().transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
+        for (auto& handle : handles) { CANDIDATE_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { handle = std::move(rhiValue); })); }
         std::array<std::unique_ptr<Buffer>, 5> inputs;
         const uint32_t strides[] = {sizeof(MeshletStreamGPUActiveHeader), sizeof(MeshletStreamGPUActiveGroup),
             sizeof(MeshletStreamGPURasterBindings), 4, 8};

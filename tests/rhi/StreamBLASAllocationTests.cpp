@@ -43,7 +43,7 @@ public:
             std::array<BindlessHandle, InputCount> handles;
             std::array<std::unique_ptr<Buffer>, InputCount> buffers;
             for (uint32_t i = 0; i < InputCount; ++i) {
-                require(bool(heap->allocateBuffer().transform([&](auto v) { handles[i] = std::move(v); })), "handle");
+                require(bool(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto v) { handles[i] = std::move(v); })), "handle");
                 require(bool(device->createBuffer({.size = sizes[i], .structureStride = strides[i],
                     .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                     .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto v) { buffers[i] = std::move(v); })), "buffer");

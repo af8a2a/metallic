@@ -49,7 +49,7 @@ public:
             return result ? makeError(Error::Failure) : result;
         }
 
-        result = bindlessHeap_->allocateSampledImage().transform([&](auto rhiValue) { imageHandle_ = std::move(rhiValue); });
+        result = bindlessHeap_->allocate(BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { imageHandle_ = std::move(rhiValue); });
         if (!result || !imageHandle_.valid()) {
             log += resultMessage("allocateSampledImage(ImageSamplePass)", result);
             log += '\n';

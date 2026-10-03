@@ -549,7 +549,7 @@ int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation)
 
                 BindlessHandle sourceImageHandle;
                 if (exitCode == 0) {
-                    result = bindlessHeap->allocateSampledImage().transform([&](auto rhiValue) { sourceImageHandle = std::move(rhiValue); });
+                    result = bindlessHeap->allocate(BindlessHandleKind::SampledImage).transform([&](auto rhiValue) { sourceImageHandle = std::move(rhiValue); });
                     if (!checkResult(result, "allocateSampledImage")) {
                         exitCode = resultToExitCode(result);
                     }

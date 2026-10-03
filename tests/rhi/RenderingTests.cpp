@@ -823,19 +823,19 @@ public:
         render::BindlessHandle materialIndexHandle;
         render::BindlessHandle materialHandle;
         render::BindlessHandle paramsHandle;
-        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { positionHandle = std::move(rhiValue); });
+        result = bindlessHeap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { positionHandle = std::move(rhiValue); });
         if (!result) {
             return RHITestResult::fail(std::string("allocateBuffer(position) returned ") + toString(result));
         }
-        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { materialIndexHandle = std::move(rhiValue); });
+        result = bindlessHeap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { materialIndexHandle = std::move(rhiValue); });
         if (!result) {
             return RHITestResult::fail(std::string("allocateBuffer(materialIndex) returned ") + toString(result));
         }
-        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { materialHandle = std::move(rhiValue); });
+        result = bindlessHeap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { materialHandle = std::move(rhiValue); });
         if (!result) {
             return RHITestResult::fail(std::string("allocateBuffer(material) returned ") + toString(result));
         }
-        result = bindlessHeap->allocateBuffer().transform([&](auto rhiValue) { paramsHandle = std::move(rhiValue); });
+        result = bindlessHeap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto rhiValue) { paramsHandle = std::move(rhiValue); });
         if (!result) {
             return RHITestResult::fail(std::string("allocateBuffer(params) returned ") + toString(result));
         }

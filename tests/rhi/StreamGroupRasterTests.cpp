@@ -41,7 +41,7 @@ public:
             GROUP_REQUIRE(device->createBuffer({.size = uint64_t(strides[i])*counts[i], .structureStride = strides[i],
                 .usage = BufferUsageBits::Storage | BufferUsageBits::TransferSource,
                 .memoryLocation = MemoryLocation::HostUpload}).transform([&](auto v) { buffers[i] = std::move(v); }));
-            GROUP_REQUIRE(heap->allocateBuffer().transform([&](auto v) { handles[i] = v; }));
+            GROUP_REQUIRE(heap->allocate(metallic::render::BindlessHandleKind::Buffer).transform([&](auto v) { handles[i] = v; }));
             GROUP_REQUIRE(heap->writeStorageBuffer(handles[i], *buffers[i]));
         }
         const auto upload = [&](size_t index, const void* data, size_t bytes) -> Result<> {
