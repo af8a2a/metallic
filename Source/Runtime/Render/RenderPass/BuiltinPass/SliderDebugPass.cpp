@@ -91,9 +91,9 @@ public:
         auto& commands = context.commandBuffer();
         ParameterWriter writer(*device_, **registry, commands.frameContext());
         SliderDebugParams params{};
-        params.sourceA = writer.sampledImage(sourceA.view());
-        params.sourceB = writer.sampledImage(sourceB.view());
-        params.output = writer.storageImage(color.view());
+        params.sourceA = writer.sampledImageHandle(sourceA.view());
+        params.sourceB = writer.sampledImageHandle(sourceB.view());
+        params.output = writer.storageImageHandle(color.view());
         params.display = push;
         auto encoded = writer.encode(params, kSliderDebugABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }

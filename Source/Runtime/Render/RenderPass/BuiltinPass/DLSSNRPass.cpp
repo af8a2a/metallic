@@ -254,8 +254,8 @@ private:
         auto& commands = context.commandBuffer();
         ParameterWriter writer(*device_, **registry, commands.frameContext());
         SliderDebugParams params{};
-        params.sourceA = writer.sampledImage(input.view());
-        params.output = writer.storageImage(output.view());
+        params.sourceA = writer.sampledImageHandle(input.view());
+        params.output = writer.storageImageHandle(output.view());
         params.display = push;
         auto encoded = writer.encode(params, kSliderDebugABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }

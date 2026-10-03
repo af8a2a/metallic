@@ -13,7 +13,7 @@ float3 displayOutput(float3 color, DisplayOutputPush push)
     if ((push.inputEncoding == 1u || push.inputEncoding == 3u) && push.hasLut != 0u) {
         color = float3(isfinite(color.x) ? max(color.x, 0.0) : 0.0,
             isfinite(color.y) ? max(color.y, 0.0) : 0.0, isfinite(color.z) ? max(color.z, 0.0) : 0.0);
-        return applyGradingLut(resolveDescriptor(gParams.lut), resolveDescriptor(gParams.lutSampler), color * push.exposure);
+        return applyGradingLut(resolveUniform(gParams.lut), resolveUniform(gParams.lutSampler), color * push.exposure);
     }
 #endif
     if (push.hdr != 0u) {
@@ -33,9 +33,9 @@ float3 displayOutput(float3 color, DisplayOutputPush push)
     return push.sampledSrgb != 0u ? displayLinearToSrgb(color) : color;
 }
 
-#define gOutput resolveDescriptor(gParams.output)
+#define gOutput resolveUniform(gParams.output)
 
-#define gSource resolveDescriptor(gParams.source)
+#define gSource resolveUniform(gParams.source)
 
 [shader("compute")]
 [numthreads(8, 8, 1)]

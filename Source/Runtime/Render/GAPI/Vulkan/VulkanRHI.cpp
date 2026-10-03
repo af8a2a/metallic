@@ -11,6 +11,7 @@
 #include "Runtime/Render/GAPI/Vulkan/VulkanSurfaceFormat.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanOpacityMicromap.h"
 #include "Runtime/Render/GAPI/Vulkan/OpacityMicromapSPIRV.h"
+#include "Runtime/Render/GAPI/Vulkan/DescriptorHeapSPIRV.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNRCWrapper.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanStreamline.h"
 #include "Runtime/Render/Profiling/PacingTrace.h"
@@ -1251,6 +1252,18 @@ public:
             heapProperties.maxPushDataSize == 0) {
             return VK_ERROR_FEATURE_NOT_PRESENT;
         }
+        if (!heapProperties.imageDescriptorAlignment || !heapProperties.bufferDescriptorAlignment ||
+            !heapProperties.samplerDescriptorAlignment ||
+            heapProperties.samplerDescriptorSize % heapProperties.samplerDescriptorAlignment) {
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
+        const VkDeviceSize resourceStride = std::max(
+            alignUp(heapProperties.imageDescriptorSize, heapProperties.imageDescriptorAlignment),
+            alignUp(heapProperties.bufferDescriptorSize, heapProperties.bufferDescriptorAlignment));
+        if (resourceStride % heapProperties.imageDescriptorAlignment != 0 ||
+            resourceStride % heapProperties.bufferDescriptorAlignment != 0) {
+            return VK_ERROR_FEATURE_NOT_PRESENT;
+        }
 
         device_ = device;
         samplerDescriptorSize_ = heapProperties.samplerDescriptorSize;
@@ -1274,6 +1287,9 @@ public:
     VkDeviceSize samplerDescriptorSize() const { return samplerDescriptorSize_; }
     VkDeviceSize imageDescriptorSize() const { return imageDescriptorSize_; }
     VkDeviceSize bufferDescriptorSize() const { return bufferDescriptorSize_; }
+    VkDeviceSize imageShaderDescriptorSize() const { return alignUp(imageDescriptorSize_, imageDescriptorAlignment_); }
+    VkDeviceSize bufferShaderDescriptorSize() const { return alignUp(bufferDescriptorSize_, bufferDescriptorAlignment_); }
+    VkDeviceSize resourceDescriptorStride() const { return std::max(imageShaderDescriptorSize(), bufferShaderDescriptorSize()); }
     VkDeviceSize samplerHeapAlignment() const { return samplerHeapAlignment_; }
     VkDeviceSize resourceHeapAlignment() const { return resourceHeapAlignment_; }
     VkDeviceSize maxSamplerHeapSize() const { return maxSamplerHeapSize_; }
@@ -1283,8 +1299,8 @@ public:
     VkDeviceSize maxPushDataSize() const { return maxPushDataSize_; }
 
     VkDeviceSize samplerOffset(uint32_t index) const { return samplerDescriptorSize_ * index; }
-    VkDeviceSize imageOffset(uint32_t index) const { return imageDescriptorSize_ * index; }
-    VkDeviceSize bufferOffset(uint32_t index) const { return bufferDescriptorSize_ * index; }
+    VkDeviceSize imageOffset(uint32_t index) const { return resourceDescriptorStride() * index; }
+    VkDeviceSize bufferOffset(uint32_t index) const { return resourceDescriptorStride() * index; }
 
     VkDeviceSize appendSamplerDescriptors(VkDeviceSize& offset, uint32_t count) const
     {
@@ -1295,15 +1311,15 @@ public:
 
     VkDeviceSize appendImageDescriptors(VkDeviceSize& offset, uint32_t count) const
     {
-        const VkDeviceSize start = alignUp(offset, imageDescriptorAlignment_);
-        offset = start + imageDescriptorSize_ * count;
+        const VkDeviceSize start = offset; // Resource regions contain complete unified slots.
+        offset = start + resourceDescriptorStride() * count;
         return start;
     }
 
     VkDeviceSize appendBufferDescriptors(VkDeviceSize& offset, uint32_t count) const
     {
-        const VkDeviceSize start = alignUp(offset, bufferDescriptorAlignment_);
-        offset = start + bufferDescriptorSize_ * count;
+        const VkDeviceSize start = offset;
+        offset = start + resourceDescriptorStride() * count;
         return start;
     }
 
@@ -2047,6 +2063,7 @@ struct VulkanDeviceFeatureSelection {
             probe.vulkan12Features.runtimeDescriptorArray == VK_TRUE &&
             probe.vulkan12Features.shaderSampledImageArrayNonUniformIndexing == VK_TRUE &&
             probe.vulkan12Features.shaderStorageImageArrayNonUniformIndexing == VK_TRUE &&
+            probe.vulkan12Features.shaderStorageBufferArrayNonUniformIndexing == VK_TRUE &&
             probe.vulkan12Features.bufferDeviceAddress == VK_TRUE &&
             DescriptorHeapWriter::hasUsableProperties(physicalDevice);
         result.shaderUntypedPointers = result.bindlessDescriptorHeap && extensions.shaderUntypedPointers &&
@@ -2324,6 +2341,8 @@ struct VulkanEnabledFeatureChain {
             selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         vulkan12Features.shaderStorageImageArrayNonUniformIndexing =
             selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
+        vulkan12Features.shaderStorageBufferArrayNonUniformIndexing =
+            selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         vulkan12Features.runtimeDescriptorArray = selection.bindlessDescriptorHeap ? VK_TRUE : VK_FALSE;
         vulkan12Features.bufferDeviceAddress = selection.usesBufferDeviceAddress() ? VK_TRUE : VK_FALSE;
         vulkan12Features.timelineSemaphore = VK_TRUE;
@@ -2592,8 +2611,8 @@ public:
             ? writer_.maxResourceHeapSize() - writer_.minResourceHeapReservedRange()
             : 0;
         maxSamplerCapacity_ = capacityFromBytes(samplerAvailable, writer_.samplerDescriptorSize());
-        maxImageCapacity_ = capacityFromBytes(resourceAvailable, writer_.imageDescriptorSize());
-        maxBufferCapacity_ = capacityFromBytes(resourceAvailable, writer_.bufferDescriptorSize());
+        maxImageCapacity_ = capacityFromBytes(resourceAvailable, writer_.resourceDescriptorStride());
+        maxBufferCapacity_ = capacityFromBytes(resourceAvailable, writer_.resourceDescriptorStride());
         return VK_SUCCESS;
     }
 
@@ -2654,13 +2673,13 @@ public:
 
     uint32_t imageShaderIndexBase() const
     {
-        const VkDeviceSize size = writer_.imageDescriptorSize();
+        const VkDeviceSize size = writer_.resourceDescriptorStride();
         return size > 0 ? static_cast<uint32_t>(imageRegionStartBytes_ / size) : 0;
     }
 
     uint32_t bufferShaderIndexBase() const
     {
-        const VkDeviceSize size = writer_.bufferDescriptorSize();
+        const VkDeviceSize size = writer_.resourceDescriptorStride();
         return size > 0 ? static_cast<uint32_t>(bufferRegionStartBytes_ / size) : 0;
     }
 
@@ -10082,11 +10101,18 @@ Result<std::unique_ptr<ShaderModule>> Device::createShaderModule(const ShaderMod
     }
     activateVolkDevice(impl_->device);
 
-    std::vector<uint32_t> opacityCode;
+    std::vector<uint32_t> heapCode, opacityCode;
     ShaderModuleDesc deviceDesc = desc;
+    if (!vulkan::specializeDescriptorHeapSizes(desc.spirv, heapCode,
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.imageShaderDescriptorSize()),
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferShaderDescriptorSize()),
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.samplerDescriptorSize()))) {
+        return makeError(Error::InvalidArgument);
+    }
+    deviceDesc.spirv = heapCode;
     if (impl_->capabilities.opacityMicromap) {
         if (!vulkan::enableOpacityMicromapSpirv(
-                desc.spirv, opacityCode, impl_->opacityMicromapExt)) {
+                deviceDesc.spirv, opacityCode, impl_->opacityMicromapExt)) {
             return makeError(Error::InvalidArgument);
         }
         deviceDesc.spirv = opacityCode;
@@ -10336,13 +10362,13 @@ Result<std::unique_ptr<GraphicsPipeline>> Device::createGraphicsPipeline(const G
             VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
                 VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
                 VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize()));
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
         bindlessMappings[2] = makeHeapMapping(
             2,
             VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
                 VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
                 VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize()));
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
         bindlessMappingInfo.mappingCount = static_cast<uint32_t>(bindlessMappings.size());
         bindlessMappingInfo.pMappings = bindlessMappings.data();
         for (VkPipelineShaderStageCreateInfo& stage : stages) {
@@ -10583,13 +10609,13 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
                 VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
                     VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
                     VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
-                static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize()));
+                static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
             bindlessMappings[2] = makeHeapMapping(
                 2,
                 VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
                     VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
                     VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
-                static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize()));
+                static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
         } else {
             bindlessMappings.reserve(desc.bindingMappings.size());
             for (uint32_t index = 0; index < desc.bindingMappings.size(); ++index) {
@@ -10607,25 +10633,25 @@ Result<std::unique_ptr<ComputePipeline>> Device::createComputePipeline(const Com
                     break;
                 case ShaderBindingType::SampledImage:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT;
-                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize());
+                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride());
                     break;
                 case ShaderBindingType::StorageImage:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
                         VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT;
-                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize());
+                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride());
                     break;
                 case ShaderBindingType::ConstantBuffer:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT;
-                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize());
+                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride());
                     break;
                 case ShaderBindingType::StorageBuffer:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
                         VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT;
-                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize());
+                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride());
                     break;
                 case ShaderBindingType::AccelerationStructure:
                     resourceMask = VK_SPIRV_RESOURCE_TYPE_ACCELERATION_STRUCTURE_BIT_EXT;
-                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize());
+                    descriptorStride = static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride());
                     break;
                 }
 
@@ -10891,13 +10917,13 @@ Result<std::unique_ptr<GraphicsShaderObjectProgram>> Device::createGraphicsShade
             VK_SPIRV_RESOURCE_TYPE_SAMPLED_IMAGE_BIT_EXT |
                 VK_SPIRV_RESOURCE_TYPE_READ_ONLY_IMAGE_BIT_EXT |
                 VK_SPIRV_RESOURCE_TYPE_READ_WRITE_IMAGE_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.imageDescriptorSize()));
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
         bindlessMappings[2] = makeHeapMapping(
             2,
             VK_SPIRV_RESOURCE_TYPE_UNIFORM_BUFFER_BIT_EXT |
                 VK_SPIRV_RESOURCE_TYPE_READ_ONLY_STORAGE_BUFFER_BIT_EXT |
                 VK_SPIRV_RESOURCE_TYPE_READ_WRITE_STORAGE_BUFFER_BIT_EXT,
-            static_cast<uint32_t>(impl_->descriptorHeapWriter.bufferDescriptorSize()));
+            static_cast<uint32_t>(impl_->descriptorHeapWriter.resourceDescriptorStride()));
         bindlessMappingInfo.mappingCount = static_cast<uint32_t>(bindlessMappings.size());
         bindlessMappingInfo.pMappings = bindlessMappings.data();
     }
@@ -11673,10 +11699,10 @@ Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc)
             deviceImpl->descriptorHeapWriter.samplerDescriptorSize());
         deviceImpl->capabilities.maxBindlessSampledImages = capacityFromBytes(
             resourceCapacityBytes,
-            deviceImpl->descriptorHeapWriter.imageDescriptorSize());
+            deviceImpl->descriptorHeapWriter.resourceDescriptorStride());
         deviceImpl->capabilities.maxBindlessBuffers = capacityFromBytes(
             resourceCapacityBytes,
-            deviceImpl->descriptorHeapWriter.bufferDescriptorSize());
+            deviceImpl->descriptorHeapWriter.resourceDescriptorStride());
         deviceImpl->bindlessDescriptorHeapEnabled = true;
     }
     deviceImpl->capabilities.memoryDecompression = selectedFeatures.memoryDecompression && vkCmdDecompressMemoryEXT != nullptr;

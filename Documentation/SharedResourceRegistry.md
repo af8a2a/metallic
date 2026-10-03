@@ -1,5 +1,9 @@
 # Shared registry、typed 参数与子系统资源身份
 
+后续 DR-first 迁移见 [ResourceAccessABI.md](ResourceAccessABI.md)：已迁移的后处理路径使用
+32 位 Metallic handle 和 descriptor-relative BufferSpan。下文 64 位 handle / 普通数据 BDA
+描述保留为旧路径的历史与兼容契约，不再作为新 shader 接口的目标。
+
 ## 已接入的路径
 
 `Device::resourceRegistry()` 提供设备级共享 registry。`ComputeKernel` 只保存 shader、pipeline 与参数 ABI；没有 Program 私有 heap、binding layout 或 resource table。

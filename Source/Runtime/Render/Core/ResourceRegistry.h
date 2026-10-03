@@ -2,6 +2,7 @@
 
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ShaderResourceABI.h"
 
 #include <cstdint>
 #include <memory>
@@ -131,6 +132,19 @@ public:
     ParameterWriter(Device& device, RenderFrameContext& frame, ResourceRegistry& registry);
     ParameterWriter(Device& device, ResourceRegistry& registry, RenderFrameContext* frame = nullptr);
     ShaderBuffer buffer(Buffer* buffer);
+    GPUResourceHandle<ResourceViewKind::SampledImage> sampledImageHandle(
+        TextureView* view, ResourceState layout = ResourceState::ShaderRead);
+    GPUResourceHandle<ResourceViewKind::StorageImage> storageImageHandle(TextureView* view);
+    GPUSamplerHandle samplerHandle(const SamplerDesc& sampler);
+    // One full-allocation descriptor is shared by all subranges. Offset/count
+    // are checked before publishing the packet; its lease retains the allocation.
+    GPUBufferSpan bufferSpan(Buffer* buffer, BufferRange range, uint32_t stride, uint32_t alignment);
+    template<typename T>
+    GPUBufferSpan bufferSpan(Buffer* buffer, BufferRange range = {})
+    {
+        static_assert(std::is_trivially_copyable_v<T> && std::is_standard_layout_v<T>);
+        return bufferSpan(buffer, range, sizeof(T), alignof(T));
+    }
     ShaderDataSpan dataBuffer(const BufferSlice& slice, uint32_t stride, uint32_t alignment);
     ShaderDataSpan dataBuffer(Buffer* buffer, uint32_t stride, uint32_t alignment);
     template<typename T>

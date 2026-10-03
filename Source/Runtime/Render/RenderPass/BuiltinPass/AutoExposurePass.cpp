@@ -123,11 +123,11 @@ public:
         if (!registry) { return makeError(registry.error()); }
         ParameterWriter writer(*device_, **registry, commands.frameContext());
         AutoExposureParams params{};
-        params.source = writer.sampledImage(source.view());
-        params.output = writer.storageImage(color.view());
-        params.histogram = writer.dataBuffer(histogram.buffer(), 4, 4);
-        params.history = writer.dataBuffer(state_->history.get(), 16, 16);
-        params.exposure = writer.dataBuffer(exposure.buffer(), 16, 16);
+        params.source = writer.sampledImageHandle(source.view());
+        params.output = writer.storageImageHandle(color.view());
+        params.histogram = writer.bufferSpan(histogram.buffer(), {}, 4, 4);
+        params.history = writer.bufferSpan(state_->history.get(), {}, 16, 16);
+        params.exposure = writer.bufferSpan(exposure.buffer(), {}, 16, 16);
         params.display = push;
         auto encoded = writer.encode(params, kAutoExposureABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }

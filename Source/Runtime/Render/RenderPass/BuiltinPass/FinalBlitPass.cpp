@@ -138,12 +138,12 @@ public:
         auto& commands = context.commandBuffer();
         ParameterWriter writer(*device_, **registry, commands.frameContext());
         FinalBlitParams params{};
-        params.output = writer.storageImage(color.view());
+        params.output = writer.storageImageHandle(color.view());
         params.display = push;
-        if (sampleSource) { params.source = writer.sampledImage(source.view()); }
+        if (sampleSource) { params.source = writer.sampledImageHandle(source.view()); }
         if (hasLut && sampleSource) {
-            params.lut = writer.sampledImage(lut.view());
-            params.lutSampler = writer.sampler(SamplerDesc{});
+            params.lut = writer.sampledImageHandle(lut.view());
+            params.lutSampler = writer.samplerHandle(SamplerDesc{});
         }
         auto encoded = writer.encode(params, kFinalBlitABI, ParameterTransport::InlinePush);
         if (!encoded) { return makeError(encoded.error()); }

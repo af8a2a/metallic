@@ -340,6 +340,41 @@ ShaderBuffer ParameterWriter::buffer(Buffer* buffer)
     return {append(std::move(result))};
 }
 
+GPUResourceHandle<ResourceViewKind::SampledImage> ParameterWriter::sampledImageHandle(
+    TextureView* view, ResourceState layout)
+{
+    return {static_cast<uint32_t>(sampledImage(view, layout).value)};
+}
+
+GPUResourceHandle<ResourceViewKind::StorageImage> ParameterWriter::storageImageHandle(TextureView* view)
+{
+    return {static_cast<uint32_t>(storageImage(view).value)};
+}
+
+GPUSamplerHandle ParameterWriter::samplerHandle(const SamplerDesc& sampler)
+{
+    return {static_cast<uint32_t>(this->sampler(sampler).value)};
+}
+
+GPUBufferSpan ParameterWriter::bufferSpan(Buffer* buffer, BufferRange range, uint32_t stride, uint32_t alignment)
+{
+    if (!result_) { return {}; }
+    auto resolved = buffer ? range.resolve(buffer->desc().size) : makeError(Error::InvalidArgument);
+    // Raw buffer byte addressing is 32-bit. Validate the exclusive end without
+    // overflow, including the element size, before narrowing any value.
+    if (!resolved || !resolved->size || !stride || !std::has_single_bit(alignment) ||
+        stride % alignment || stride % 4 || resolved->offset % std::max(4u, alignment) ||
+        resolved->size % stride || resolved->offset > UINT32_MAX ||
+        resolved->size > uint64_t(UINT32_MAX) + 1 - resolved->offset) {
+        result_ = makeError(Error::InvalidArgument);
+        return {};
+    }
+    auto handle = this->buffer(buffer);
+    if (!result_) { return {}; }
+    return {{static_cast<uint32_t>(handle.value)}, static_cast<uint32_t>(resolved->offset),
+        static_cast<uint32_t>(resolved->size / stride)};
+}
+
 ShaderDataSpan ParameterWriter::dataBuffer(const BufferSlice& slice, uint32_t stride, uint32_t alignment)
 {
     if (!result_) { return {}; }

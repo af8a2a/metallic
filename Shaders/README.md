@@ -8,7 +8,7 @@ Metallic 的可复用 shader 库使用 Slang module。子系统之间用 `import
 
 | 目录 | 职责 |
 | --- | --- |
-| `Modules/ShaderCore.slang`、`Modules/Core/` | DescriptorHandle、DataSpan、相机、顶点解码、SH、显示颜色；不声明 push constant |
+| `Modules/ShaderCore.slang`、`Modules/Core/` | ResourceHandle、BufferSpan、旧资源兼容接口、相机、顶点解码、SH、显示颜色；不声明 push constant |
 | `Modules/Core.slang` | 旧 ComputeProgram 资源表兼容入口，重新导出 ShaderCore |
 | `Modules/Material.slang`、`Modules/Material/` | CPU/GPU 共用的材质与纹理数据布局 |
 | `Modules/GPUDriven.slang`、`Modules/GPUDriven/` | GPU 场景、meshlet LOD、剔除、混合光栅化、可见性编码和材质分箱 |
@@ -55,17 +55,24 @@ __include "GPUDriven/GPUDrivenCullingCommon.slang";
 实现文件声明 `implementing GPUDriven;`，公开 API 标为 `public`，辅助实现标为 `internal`。
 命名空间使用 `Metallic`、`Metallic.GPUDriven`、`Metallic.Material`、`Metallic.Lighting`。
 消费者直接导入自己使用的模块，不依赖其他模块的间接导入。
-当前固定的 Slang 2026.1.2 对结构体成员仍需显式标注 `public`，不要依赖新版本的成员默认可见性。
+当前固定的 Slang 2026.18.2 下，模块公开结构体的成员仍显式标注 `public`。
 
 新 compute pass 使用 `ComputeKernel` + `ParameterWriter`，以具名 typed 参数承载资源。
+DR-first 的新接口使用 `ResourceHandle<T>` / `SamplerHandle`（32 位）和
+`BufferSpan<T>` / `RWBufferSpan<T>`（descriptor、字节偏移、元素数）。通过
+`resolveUniform` / `resolveNonUniform` 解析资源，通过 span 的 `load` / `store` 或
+`loadNonUniform` / `storeNonUniform` 访问普通 buffer；真正物理地址用 `PhysicalPtr<T>` 明确表达。
+CPU 使用 `sampledImageHandle`、`storageImageHandle`、`samplerHandle` 和 `bufferSpan<T>`。
+已迁移的后处理入口与剩余工作见 [ResourceAccessABI](../Documentation/ResourceAccessABI.md)。
+
 `ParameterTransport::InlinePush` 将参数块直接推送到 byte 0，不上传 root、slot table 或标量图像句柄数组；
 shader 导入 `ShaderCore` 并声明 `[[vk::push_constant]] ConstantBuffer<Params>`。
 `ParameterTransport::DeviceAddress` 用于较大的参数块；shader 额外导入 `ParameterRoot`，
 通过 `getParameters<Params>()` 读取一个 64 位根地址。后端检查实际 push 数据容量，不会静默截断。
 两种传输共用 registry、资源保留、帧代次检查和 prepared dispatch；ABI 包含传输方式，不能混用。
-CPU 通过 writer 获取 `ShaderSampledImage` / `ShaderStorageImage` / `ShaderSampler`，
-shader 使用对应 `DescriptorHandle<T>` 和 `resolveDescriptor()`；普通数据使用 `ShaderDataSpan` / `DataSpan<T>`。
-不要截断 64 位 handle：AS 仍保留完整地址语义。
+尚未迁移的路径继续通过 writer 获取 `ShaderSampledImage` / `ShaderStorageImage` / `ShaderSampler`，
+shader 使用对应 `DescriptorHandle<T>` 和 `resolveDescriptor()`；旧普通数据仍为 `ShaderDataSpan` / `DataSpan<T>`。
+不要直接截断旧 64 位 handle，尤其 AS 仍保留完整地址语义。
 
 [PostProcessParameters.h](../Source/Runtime/Render/Core/PostProcessParameters.h) 共用 C++/Slang 字段声明与显式 padding：
 FinalBlit、SliderDebug（包括 DLSS-NR overlay）和 AutoExposure 使用 inline push，ColorGradingLUT 使用 BDA 参数块。

@@ -6,9 +6,9 @@ using Metallic;
 [[vk::push_constant]] ConstantBuffer<SliderDebugParams> gParams;
 
 #define gPush gParams.display
-#define gSourceA resolveDescriptor(gParams.sourceA)
-#define gSourceB resolveDescriptor(gParams.sourceB)
-#define gOutput resolveDescriptor(gParams.output)
+#define gSourceA resolveUniform(gParams.sourceA)
+#define gSourceB resolveUniform(gParams.sourceB)
+#define gOutput resolveUniform(gParams.output)
 
 bool sliderDebugUsesSourceA(uint2 pixel, uint width, uint height)
 {

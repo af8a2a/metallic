@@ -88,15 +88,15 @@ public:
         auto& commands = context.commandBuffer();
         ParameterWriter writer(*device_, **registry, commands.frameContext());
         ColorGradingLUTParams params{};
-        params.output = writer.storageImage(lut.view());
-        params.custom0 = writer.sampledImage(views[0]);
-        params.custom1 = writer.sampledImage(views[1]);
-        params.custom2 = writer.sampledImage(views[2]);
-        params.custom3 = writer.sampledImage(views[3]);
-        params.reach = writer.sampledImage(views[4]);
-        params.gamut = writer.sampledImage(views[5]);
-        params.gammaTable = writer.sampledImage(views[6]);
-        params.sampler = writer.sampler(SamplerDesc{});
+        params.output = writer.storageImageHandle(lut.view());
+        params.custom0 = writer.sampledImageHandle(views[0]);
+        params.custom1 = writer.sampledImageHandle(views[1]);
+        params.custom2 = writer.sampledImageHandle(views[2]);
+        params.custom3 = writer.sampledImageHandle(views[3]);
+        params.reach = writer.sampledImageHandle(views[4]);
+        params.gamut = writer.sampledImageHandle(views[5]);
+        params.gammaTable = writer.sampledImageHandle(views[6]);
+        params.sampler = writer.samplerHandle(SamplerDesc{});
         params.display = push;
         auto encoded = writer.encode(params, kColorGradingLUTABI);
         if (!encoded) { return makeError(encoded.error()); }

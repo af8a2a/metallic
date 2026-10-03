@@ -10,12 +10,12 @@ static const uint kHistogramWeight = 256u;
 
 [[vk::push_constant]] ConstantBuffer<AutoExposureParams> gParams;
 
-#define gSource resolveDescriptor(gParams.source)
-#define gHistogram gParams.histogram.data
-#define gHistory gParams.history.data
+#define gSource resolveUniform(gParams.source)
+#define gHistogram gParams.histogram
+#define gHistory gParams.history
 // multiplier, adapted EV100, target EV100, metered luminance (cd/m^2).
-#define gExposure gParams.exposure.data
-#define gOutput resolveDescriptor(gParams.output)
+#define gExposure gParams.exposure
+#define gOutput resolveUniform(gParams.output)
 
 groupshared uint sharedHistogram[kHistogramBins];
 groupshared float reducedHistogram[kHistogramBins];
@@ -54,7 +54,7 @@ void autoExposureHistogramMain(uint3 pixel : SV_DispatchThreadID, uint index : S
     GroupMemoryBarrierWithGroupSync();
     if (index < kHistogramBins) {
         uint tile = group.y * ((push.width + 15u) / 16u) + group.x;
-        gHistogram[tile * kHistogramBins + index] = sharedHistogram[index];
+        gHistogram.store(tile * kHistogramBins + index, sharedHistogram[index]);
     }
 }
 
@@ -83,7 +83,7 @@ void autoExposureReduceMain(uint index : SV_GroupIndex)
     AutoExposurePush push = gParams.display;
     float count = 0.0;
     for (uint tile = 0u; tile < push.tileCount; ++tile) {
-        count += float(gHistogram[tile * kHistogramBins + index]) / float(kHistogramWeight);
+        count += float(gHistogram.load(tile * kHistogramBins + index)) / float(kHistogramWeight);
     }
     reducedHistogram[index] = count;
     GroupMemoryBarrierWithGroupSync();
@@ -110,14 +110,15 @@ void autoExposureReduceMain(uint index : SV_GroupIndex)
         ? clamp(averageLog - log2(0.18), push.minEV100, push.maxEV100) : push.manualEV100;
     float adapted = target;
     if (push.automatic != 0u && push.resetHistory == 0u && push.minEV100 < push.maxEV100) {
-        float4 previous = gHistory[0];
+        float4 previous = gHistory.load(0);
         if (isfinite(previous.y) && previous.w > 0.0) { adapted = adaptEV100(previous.y, target, push); }
     }
     float4 exposure = float4(exp2(push.compensation - adapted), adapted, target, exp2(averageLog));
-    gHistory[0] = exposure;
+    float4 history = exposure;
     // An empty meter (e.g. while scene uploads finish) cannot seed adaptation.
-    if (total == 0.0) { gHistory[0].w = 0.0; }
-    gExposure[0] = exposure;
+    if (total == 0.0) { history.w = 0.0; }
+    gHistory.store(0, history);
+    gExposure.store(0, exposure);
 }
 
 [shader("compute")]
@@ -126,7 +127,7 @@ void autoExposureApplyMain(uint3 pixel : SV_DispatchThreadID)
 {
     AutoExposurePush push = gParams.display;
     if (pixel.x >= push.width || pixel.y >= push.height) { return; }
-    float3 color = physicalColor(pixel.xy, push) * gExposure[0].x * push.artisticExposure;
+    float3 color = physicalColor(pixel.xy, push) * gExposure.load(0).x * push.artisticExposure;
     color = min(color, float3(1e30));
     // Display mapping belongs exclusively to FinalBlit.
     gOutput[pixel.xy] = float4(min(color, float3(65504.0)), 1.0);

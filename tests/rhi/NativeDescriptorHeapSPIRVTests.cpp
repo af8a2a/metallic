@@ -1,4 +1,5 @@
 #include "Runtime/Render/Core/NativeDescriptorHeapSPIRV.h"
+#include "Runtime/Render/GAPI/Vulkan/DescriptorHeapSPIRV.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <initializer_list>
@@ -183,6 +184,46 @@ TEST(NativeDescriptorHeapSPIRV, MappedIsByteIdenticalAndMalformedInputIsTransact
     expectRejected(incomplete, "incomplete instruction");
     auto invalidPhi = mixedModule(); emit(invalidPhi, 245, {7, 64, 21, 202, 21});
     expectRejected(invalidPhi, "invalid phi operands");
+}
+
+TEST(DescriptorHeapSPIRV, ResolvesDifferentOpaqueSizesWithoutChangingIdsOrExpressions)
+{
+    Words code{0x07230203, 0x10600, 0, 64, 0};
+    emit(code, 21, {1, 32, 0}); emit(code, 21, {2, 64, 0});
+    emit(code, 25, {3, 1, 1, 0, 0, 0, 1, 0});
+    emit(code, 5115, {4, 12}); emit(code, 26, {5});
+    emit(code, 5129, {1, 10, 3}); emit(code, 5129, {1, 11, 4}); emit(code, 5129, {2, 12, 5});
+    emit(code, 52, {1, 13, 169, 20, 10, 11});
+    Words result;
+    ASSERT_TRUE(render::vulkan::specializeDescriptorHeapSizes(code, result, 48, 16, 8));
+    EXPECT_EQ(instruction(result, 43, 10), (Words{(4u << 16) | 43u, 1, 10, 48}));
+    EXPECT_EQ(instruction(result, 43, 11), (Words{(4u << 16) | 43u, 1, 11, 16}));
+    EXPECT_EQ(instruction(result, 43, 12), (Words{(5u << 16) | 43u, 2, 12, 8, 0}));
+    EXPECT_EQ(instruction(result, 52, 13), instruction(code, 52, 13));
+    EXPECT_EQ(result[3], code[3]);
+    auto repeated = result;
+    ASSERT_TRUE(render::vulkan::specializeDescriptorHeapSizes(repeated, repeated, 48, 16, 8));
+    EXPECT_EQ(repeated, result);
+}
+
+TEST(DescriptorHeapSPIRV, MappedUnchangedAndMalformedInputTransactional)
+{
+    Words mapped{0x07230203, 0x10600, 0, 64, 0};
+    emit(mapped, 21, {1, 32, 0}); emit(mapped, 43, {1, 2, 123});
+    Words result;
+    ASSERT_TRUE(render::vulkan::specializeDescriptorHeapSizes(mapped, result, 0, 0, 0));
+    EXPECT_EQ(result, mapped);
+    auto truncated = mapped; truncated.push_back((4u << 16) | 5129u);
+    ASSERT_FALSE(render::vulkan::specializeDescriptorHeapSizes(truncated, result, 48, 16, 8));
+    EXPECT_EQ(result, mapped);
+    Words invalidWidth{0x07230203, 0x10600, 0, 64, 0};
+    emit(invalidWidth, 21, {1, 16, 0}); emit(invalidWidth, 5115, {2, 12});
+    emit(invalidWidth, 5129, {1, 3, 2});
+    ASSERT_FALSE(render::vulkan::specializeDescriptorHeapSizes(invalidWidth, result, 48, 16, 8));
+    EXPECT_EQ(result, mapped);
+    auto missingSize = invalidWidth; missingSize[7] = 32;
+    ASSERT_FALSE(render::vulkan::specializeDescriptorHeapSizes(missingSize, result, 48, 0, 8));
+    EXPECT_EQ(result, mapped);
 }
 
 } // namespace
