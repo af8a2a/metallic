@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/Material/MaterialRuntime.h"
 #include "Runtime/Render/Material/MaterialExecutable.h"
@@ -397,7 +398,7 @@ public:
             return RHITestResult::fail(log);
         }
         const auto originalArtifact = artifact;
-        if (!frame.begin(0) || !commands->begin(&frame)) { return RHITestResult::fail("Begin failed"); }
+        if (!frame.begin(0) || !commands->begin(frame.submissionContext())) { return RHITestResult::fail("Begin failed"); }
         frame.retain(published);
         const ComputeDispatchBinding bindings[] = {
             {.binding = 0, .buffer = published->buffer()}, {.binding = 1, .buffer = output.get()}};
@@ -443,7 +444,7 @@ public:
         }
         // Submit the recovered executable and new parameters, verifying that the
         // previous output was not merely a permanently stale dispatch.
-        if (!frame.begin(1) || !commands->begin(&frame)) { return RHITestResult::fail("Recovery begin failed"); }
+        if (!frame.begin(1) || !commands->begin(frame.submissionContext())) { return RHITestResult::fail("Recovery begin failed"); }
         const ComputeDispatchBinding next[] = {
             {.binding = 0, .buffer = published->buffer()}, {.binding = 1, .buffer = output.get()}};
         if (!program.dispatch({.commandBuffer = commands.get(), .bindings = next}) || !commands->end() ||

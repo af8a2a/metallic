@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
@@ -290,7 +291,7 @@ public:
                     "fixture did not exercise multiple partitions");
                 OMM_REQUIRE(frame.begin(step));
                 OMM_REQUIRE(pool->reset());
-                OMM_REQUIRE(commands->begin(&frame));
+                OMM_REQUIRE(commands->begin(frame.submissionContext()));
                 OMM_REQUIRE(resources.uploadMaterialTextures(*commands));
                 const render::ComputeDispatchBinding bindings[] = {
                     {.binding = 0, .accelerationStructure = resources.accelerationStructure().accelerationStructure()},

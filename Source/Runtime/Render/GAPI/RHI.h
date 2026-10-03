@@ -1322,101 +1322,6 @@ struct BufferDecompressionDesc {
     uint64_t decodedBytes = 0;
 };
 
-struct StreamDecompressionTile {
-    uint32_t sourceOffset = 0;
-    uint32_t destinationOffset = 0;
-    uint32_t storedBytes = 0;
-    uint32_t decodedBytes = 0;
-    bool compressed = false;
-};
-
-// Called at recording boundaries, under the Streamer lock. Profiling callbacks
-// must not reenter the Streamer. Existing callers may omit the callback.
-using StreamUploadPhaseCallback = std::function<void(const char*)>;
-
-struct BufferOffset {
-    class Buffer* buffer = nullptr;
-    uint64_t offset = 0;
-
-    bool valid() const { return buffer != nullptr; }
-};
-
-struct StreamDataChunk {
-    const void* data = nullptr;
-    uint64_t size = 0;
-};
-
-struct StreamerDesc {
-    uint64_t constantBufferSize = 0;
-    MemoryLocation constantBufferMemoryLocation = MemoryLocation::HostUpload;
-    MemoryLocation dynamicBufferMemoryLocation = MemoryLocation::HostUpload;
-    BufferDesc dynamicBufferDesc{
-        .size = 0,
-        .structureStride = 0,
-        .usage = BufferUsageBits::TransferSource,
-        .memoryLocation = MemoryLocation::HostUpload,
-    };
-    uint64_t dynamicBufferSizePerFrame = 1024ull * 1024ull;
-    uint32_t queuedFrameCount = 2;
-    QueueAccessBits constantBufferQueueAccess = QueueAccessBits::Graphics;
-};
-
-struct StreamerPendingCopyStats {
-    uint32_t bufferCopyCount = 0;
-    uint32_t textureCopyCount = 0;
-    uint64_t bufferCopyBytes = 0;
-    uint64_t textureCopyBytes = 0;
-
-    uint32_t copyCount() const { return bufferCopyCount + textureCopyCount; }
-    uint64_t copyBytes() const { return bufferCopyBytes + textureCopyBytes; }
-};
-
-struct StreamerStats {
-    uint64_t frameIndex = 0;
-    uint32_t frameSlot = 0;
-    uint32_t queuedFrameCount = 0;
-    uint64_t dynamicBufferSizePerFrame = 0;
-    uint64_t dynamicBufferOffset = 0;
-    uint64_t constantBufferOffset = 0;
-    uint64_t currentFrameDynamicBytes = 0;
-    uint64_t lastFrameDynamicBytes = 0;
-    uint64_t peakFrameDynamicBytes = 0;
-    uint64_t totalDynamicBytes = 0;
-    uint64_t currentFrameConstantBytes = 0;
-    uint64_t lastFrameConstantBytes = 0;
-    uint64_t peakFrameConstantBytes = 0;
-    uint64_t totalConstantBytes = 0;
-    uint32_t currentFrameDynamicRequestCount = 0;
-    uint32_t lastFrameDynamicRequestCount = 0;
-    uint32_t currentFrameConstantRequestCount = 0;
-    uint32_t lastFrameConstantRequestCount = 0;
-    uint32_t garbageBufferCount = 0;
-    StreamerPendingCopyStats pendingCopies;
-};
-
-struct StreamBufferDataDesc {
-    std::span<const StreamDataChunk> dataChunks;
-    uint32_t placementAlignment = 1;
-    class Buffer* dstBuffer = nullptr;
-    uint64_t dstOffset = 0;
-};
-
-struct StreamTextureDataDesc {
-    const void* data = nullptr;
-    uint32_t dataRowPitch = 0;
-    uint32_t dataSlicePitch = 0;
-    class Texture* dstTexture = nullptr;
-    uint32_t dstMipLevel = 0;
-    uint32_t dstBaseLayer = 0;
-    uint32_t dstLayerCount = 1;
-    int32_t dstOffsetX = 0;
-    int32_t dstOffsetY = 0;
-    int32_t dstOffsetZ = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t depth = 1;
-};
-
 struct BindlessHeapDesc {
     uint32_t maxSamplers = 0;
     uint32_t maxSampledImages = 0;
@@ -1497,14 +1402,12 @@ struct BufferViewImpl;
 struct RayTracingAccelerationStructureImpl;
 struct TextureImpl;
 struct TextureViewImpl;
-struct StreamerImpl;
 struct ShaderModuleImpl;
 struct PipelineCacheImpl;
 struct GraphicsPipelineImpl;
 struct ComputePipelineImpl;
 struct GraphicsShaderObjectProgramImpl;
 struct BindlessHeapImpl;
-struct TrianglePreviewRendererImpl;
 struct VulkanNativeAccess;
 } // namespace detail
 
@@ -1519,6 +1422,8 @@ public:
     Queue& operator=(const Queue&) = delete;
 
     Result<> submit(const QueueSubmitDesc& desc);
+    // For owners that seal recordings and attach GPU completion tracking.
+    Result<> submitTracked(const QueueSubmitDesc& desc);
     Result<> waitIdle();
     QueueType type() const;
     bool sameQueue(const Queue& other) const;
@@ -1529,7 +1434,6 @@ public:
 private:
     explicit Queue(std::unique_ptr<detail::QueueImpl> impl);
     Result<> submitImpl(const QueueSubmitDesc& desc, bool tracked);
-    friend class QueueSubmissionTracker;
 
     std::unique_ptr<detail::QueueImpl> impl_;
 
@@ -2065,45 +1969,9 @@ private:
     friend struct detail::DeviceImpl;
 };
 
-class RenderFrameContext;
 class SubmissionTransaction;
-class GPUCompletionPoint;
+class CommandSubmissionContext;
 
-class StreamUploadCompletion;
-
-class Streamer {
-public:
-    Streamer() = default;
-    ~Streamer();
-    Streamer(Streamer&&) noexcept;
-    Streamer& operator=(Streamer&&) noexcept;
-
-    Streamer(const Streamer&) = delete;
-    Streamer& operator=(const Streamer&) = delete;
-
-    const StreamerDesc& desc() const;
-    StreamerStats stats() const;
-    Buffer* constantBuffer() const;
-    BufferOffset streamBufferData(const StreamBufferDataDesc& desc);
-    bool streamDecompressedBufferData(std::span<const uint8_t> stored,
-        std::span<const StreamDecompressionTile> tiles, Buffer& destination, uint64_t destinationOffset);
-    BufferOffset streamTextureData(const StreamTextureDataDesc& desc);
-    uint64_t streamConstantData(const void* data, uint64_t byteSize);
-    Result<> beginFrame(RenderFrameContext& frame);
-    // Covers copies currently queued for the next flush. Returns null without
-    // beginFrame(frame), or when no copies are pending. See StreamUploadCompletion.h.
-    std::shared_ptr<StreamUploadCompletion> pendingCopyCompletion();
-    [[nodiscard]] Result<> copyStreamedData(CommandBuffer& commandBuffer, const StreamUploadPhaseCallback& phase = {});
-    void endFrame();
-
-private:
-    explicit Streamer(std::unique_ptr<detail::StreamerImpl> impl);
-
-    std::unique_ptr<detail::StreamerImpl> impl_;
-
-    friend class Device;
-    friend class CommandBuffer;
-};
 
 class CommandBuffer {
 public:
@@ -2115,17 +1983,18 @@ public:
     CommandBuffer(const CommandBuffer&) = delete;
     CommandBuffer& operator=(const CommandBuffer&) = delete;
 
-    Result<> begin(RenderFrameContext* frameContext = nullptr);
-    RenderFrameContext* frameContext() const { return frameContext_; }
+    Result<> begin(std::shared_ptr<CommandSubmissionContext> context = {});
+    const std::shared_ptr<CommandSubmissionContext>& submissionContext() const { return submissionContext_; }
+    const std::shared_ptr<detail::CommandSubmissionState>& submissionState() const { return submission_; }
     bool recording() const { return recording_; }
     QueueAccessBits queueCapabilities() const;
     const void* deviceIdentity() const;
     // Queue::submit merges these waits and the command buffer retains their
     // timeline lifetimes until its next recording. Call while recording.
-    Result<> addDependency(const GPUCompletionPoint& completion);
+    Result<> addDependency(std::span<const SemaphoreSubmitDesc> waits, std::shared_ptr<const void> lifetime = {});
     Result<> addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction);
-    // Local while recording. Queue acceptance transfers ownership to the frame
-    // through completion; standalone callers retain until command reset.
+    // Local while recording. Queue acceptance transfers ownership to the
+    // submission context; standalone callers retain until command reset.
     Result<> retainResource(std::shared_ptr<void> resource);
     Result<> end();
     void beginDebugLabel(const DebugLabelDesc& desc);
@@ -2159,7 +2028,6 @@ public:
     void copyTextureToBuffer(const TextureBufferCopyDesc& desc);
     void copyBufferToTexture(const BufferTextureCopyDesc& desc);
     void clearColorTexture(Texture& texture, ResourceState state, const ColorValue& color = {});
-    [[nodiscard]] Result<> copyStreamedData(Streamer& streamer);
     Result<> beginRendering(const RenderingDesc& desc);
     // Native SDK consumers retain the view itself as well as its image.
     Result<> useNativeTextureView(TextureView& view);
@@ -2203,17 +2071,13 @@ private:
 
     std::unique_ptr<detail::CommandBufferImpl> impl_;
     Result<> processDecompressionBuffers(std::span<const BufferDecompressionDesc> regions, bool record) const;
-    RenderFrameContext* frameContext_ = nullptr;
+    std::shared_ptr<CommandSubmissionContext> submissionContext_;
     std::shared_ptr<detail::CommandSubmissionState> submission_;
-    std::shared_ptr<const void> frameRecording_;
     std::vector<SemaphoreSubmitDesc> dependencyWaits_;
     std::vector<std::shared_ptr<const void>> dependencyLifetimes_;
     bool recording_ = false;
 
-    friend class RecordedBatch;
-    friend class QueueSubmissionTracker;
     friend class CommandPool;
-    friend class StreamUploadCompletion;
     friend class Queue;
     friend struct detail::CommandPoolImpl;
     friend struct detail::VulkanNativeAccess;
@@ -2272,7 +2136,6 @@ private:
     friend struct detail::VulkanNativeAccess;
 };
 
-class ResourceRegistry;
 
 class Device {
 public:
@@ -2286,7 +2149,11 @@ public:
 
     const DeviceCapabilities& capabilities() const;
     const void* identity() const;
-    [[nodiscard]] Result<std::shared_ptr<ResourceRegistry>> resourceRegistry();
+    // Owner-defined per-device state. Factory runs once under a lock and must
+    // not recursively request shared state. Released before native teardown;
+    // external references and their resources must not outlive Device.
+    [[nodiscard]] Result<std::shared_ptr<void>> sharedState(
+        const void* key, const std::function<Result<std::shared_ptr<void>>()>& factory);
     DeviceMemoryBudget memoryBudget() const;
     void setMemoryBudgetPolicy(const MemoryBudgetPolicy& policy);
     [[nodiscard]] Result<MemoryBudgetReservation> reserveMemoryBudget(uint64_t bytes);
@@ -2330,7 +2197,6 @@ public:
     // the images, views, and retained commands. Failure returns no partial group.
     [[nodiscard]] Result<std::vector<std::unique_ptr<Texture>>> createAliasedTextures(std::span<const TextureDesc> descriptions);
     [[nodiscard]] Result<std::unique_ptr<TextureView>> createTextureView(Texture& texture, const TextureViewDesc& desc);
-    [[nodiscard]] Result<std::unique_ptr<Streamer>> createStreamer(const StreamerDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<ShaderModule>> createShaderModule(const ShaderModuleDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<PipelineCache>> createPipelineCache(const PipelineCacheDesc& desc);
     [[nodiscard]] Result<std::unique_ptr<GraphicsPipeline>> createGraphicsPipeline(const GraphicsPipelineDesc& desc);
@@ -2358,29 +2224,4 @@ private:
 };
 
 [[nodiscard]] Result<std::unique_ptr<Device>> createDevice(const DeviceDesc& desc);
-int runRhiSmokeTest(bool enableValidation);
-int runRhiTrianglePreviewTest(bool enableValidation);
-int runRhiBindlessDescriptorHeapSmokeTest(bool enableValidation);
-
-class TrianglePreviewRenderer {
-public:
-    TrianglePreviewRenderer();
-    ~TrianglePreviewRenderer();
-
-    TrianglePreviewRenderer(TrianglePreviewRenderer&&) noexcept;
-    TrianglePreviewRenderer& operator=(TrianglePreviewRenderer&&) noexcept;
-
-    TrianglePreviewRenderer(const TrianglePreviewRenderer&) = delete;
-    TrianglePreviewRenderer& operator=(const TrianglePreviewRenderer&) = delete;
-
-    Result<> initialize(bool enableValidation = false);
-    Result<> render(uint32_t width, uint32_t height);
-    const std::vector<uint32_t>& pixels() const;
-    uint32_t width() const;
-    uint32_t height() const;
-
-private:
-    std::unique_ptr<detail::TrianglePreviewRendererImpl> impl_;
-};
-
 } // namespace metallic::render

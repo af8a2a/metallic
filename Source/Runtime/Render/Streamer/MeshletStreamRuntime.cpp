@@ -1,3 +1,6 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
@@ -419,7 +422,7 @@ public:
             }
         }
 
-        const uint32_t slot = commandBuffer.frameContext() ? commandBuffer.frameContext()->slotIndex() :
+        const uint32_t slot = metallic::render::RenderFrameContext::from(commandBuffer) ? metallic::render::RenderFrameContext::from(commandBuffer)->slotIndex() :
             frameIndex % static_cast<uint32_t>(updateBuffers_.size());
         if (slot >= updateBuffers_.size()) { return makeError(Error::InvalidArgument); }
         auto& updateBuffer = *updateBuffers_[slot];
@@ -1885,7 +1888,7 @@ Result<> MeshletStreamRuntime::initialize(Device& device, const MeshletStreamRun
         log = "Stream raster material textures exceed the device descriptor capacity";
         return makeError(Error::Unsupported);
     }
-    result = device.resourceRegistry().transform([&](auto rhiValue) { registry_ = std::move(rhiValue); });
+    result = metallic::render::ResourceRegistry::forDevice(device).transform([&](auto rhiValue) { registry_ = std::move(rhiValue); });
     if (!result) { return result; }
     result = allocateAndWriteBuffer(*registry_, *pageBuffer_, pageHandle_, log, "meshlet stream pages");
     if (!result) {
@@ -2335,13 +2338,13 @@ Result<> MeshletStreamRuntime::prepareImmutableMetadataRead(CommandBuffer& comma
     if (!immutableMetadataUpload_) { return {}; }
     // Retain and wait the timeline even after the loader's CPU wait/reset: a
     // consumer may use a different queue from the initial upload queue.
-    return commandBuffer.addDependency(immutableMetadataUpload_->completion);
+    return addCommandDependency(commandBuffer, immutableMetadataUpload_->completion);
 }
 
 Result<> MeshletStreamRuntime::uploadImmutableMetadata(CommandBuffer& commandBuffer)
 {
     const auto upload = immutableMetadataUpload_;
-    auto* frame = commandBuffer.frameContext();
+    auto* frame = metallic::render::RenderFrameContext::from(commandBuffer);
     if (!upload || !upload->staging || !frame || !frame->recording() || !commandBuffer.recording()) {
         return makeError(Error::InvalidArgument);
     }
@@ -2561,7 +2564,7 @@ Result<> MeshletStreamRuntime::cmdBeginFrame(
 Result<> MeshletStreamRuntime::cmdLoadInitialResources(
     CommandBuffer& commandBuffer, Streamer& streamer, const std::function<Result<>()>& flushUploads)
 {
-    if (!ready() || !commandBuffer.frameContext() || !commandBuffer.frameContext()->recording()) {
+    if (!ready() || !metallic::render::RenderFrameContext::from(commandBuffer) || !metallic::render::RenderFrameContext::from(commandBuffer)->recording()) {
         return makeError(Error::InvalidArgument);
     }
     if (!immutableMetadataReady()) { return uploadImmutableMetadata(commandBuffer); }
@@ -2641,7 +2644,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         swapUpload(nextUpload);
         currentUploadSlot_ = uploadSlot;
     }
-    nextUpload.completion = commandBuffer.frameContext() ? commandBuffer.frameContext()->completion() : GPUCompletionPoint{};
+    nextUpload.completion = metallic::render::RenderFrameContext::from(commandBuffer) ? metallic::render::RenderFrameContext::from(commandBuffer)->completion() : GPUCompletionPoint{};
     if (rasterSnapshotFrozen_) {
         // Rotate host-write frame slots, but do not publish completions, consume
         // requests, reclaim pages or enqueue new geometry/CLAS work.
@@ -2699,7 +2702,7 @@ Result<> MeshletStreamRuntime::beginUploadBatch(
         profile.next("Record page copies");
         if (auto commandResult = transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::TransferDestination); !commandResult) { return commandResult; }
         if (flushUploads) { if (auto commandResult = flushUploads(); !commandResult) { return commandResult; } }
-        else { if (auto commandResult = commandBuffer.copyStreamedData(streamer); !commandResult) { return commandResult; } }
+        else { if (auto commandResult = streamer.copyStreamedData(commandBuffer); !commandResult) { return commandResult; } }
         if (auto commandResult = transitionBuffer(commandBuffer, *pageBuffer_, pageBufferState_, ResourceState::ShaderRead); !commandResult) { return commandResult; }
     }
     profile.next("Queue resident CLAS");
@@ -3657,7 +3660,7 @@ Result<> MeshletStreamRuntime::clearRequestBuffer(CommandBuffer& commandBuffer)
 Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& commandBuffer)
 {
     Buffer* readback = requestReadbackBuffer_.get();
-    if (auto* frame = commandBuffer.frameContext()) {
+    if (auto* frame = metallic::render::RenderFrameContext::from(commandBuffer)) {
         RequestReadback* slot = nullptr;
         for (auto& candidate : requestReadbacks_) {
             if (!candidate.submission || candidate.submission->cancelled() ||
@@ -3705,7 +3708,7 @@ Result<> MeshletStreamRuntime::copyRequestBufferForReadback(CommandBuffer& comma
             if (auto commandResult = commandBuffer.copyBuffer(*sourceSlice, *destinationSlice); !commandResult) { return commandResult; }
         }
     }
-    requestReadbackValid_ = commandBuffer.frameContext() == nullptr;
+    requestReadbackValid_ = metallic::render::RenderFrameContext::from(commandBuffer) == nullptr;
     return {};
 }
 

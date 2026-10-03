@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/ClusterLightGrid.h"
@@ -216,7 +218,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
     const GPUScene& scene, GPUSceneViewId view, uint32_t frameSlot,
     const ClusterLightGridDesc& desc, std::string& log)
 {
-    RenderFrameContext* frame = commands.frameContext();
+    RenderFrameContext* frame = metallic::render::RenderFrameContext::from(commands);
     if (frame != nullptr && !frame->recording()) {
         log = "ClusterLightGrid received an inactive RenderFrameContext";
         return makeError(Error::InvalidArgument);
@@ -327,7 +329,7 @@ Result<> ClusterLightGrid::record(Device& device, CommandBuffer& commands, Rende
             .after = {PipelineStageBits::AllCommands, AccessBits::MemoryRead | AccessBits::MemoryWrite},
         }}};
     if (auto commandResult = commands.synchronize({.buffers = toWrite}); !commandResult) { return commandResult; }
-    auto registry = device.resourceRegistry();
+    auto registry = metallic::render::ResourceRegistry::forDevice(device);
     if (!registry) { return makeError(registry.error()); }
     ParameterWriter writer(device, **registry, frame);
     const ClusterLightGridBuildParams arguments{

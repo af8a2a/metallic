@@ -61,6 +61,8 @@ add_library(MetallicRuntimeRender STATIC
     Runtime/Render/MaterialBinning.cpp
     Runtime/Render/ClusterLightGrid.cpp
     Runtime/Render/Core/RenderFrameContext.cpp
+    Runtime/Render/GAPI/CommandSubmission.cpp
+    Runtime/Render/Core/RHISmokeTests.cpp
     Runtime/Render/Core/HistoryResources.cpp
     Runtime/Render/ImportanceSampling.cpp
     Runtime/Render/ReGIR.cpp

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "Editor/StreamSceneOpen.h"
@@ -532,7 +533,7 @@ public:
     }
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
-        auto* frame = context.commandBuffer().frameContext();
+        auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer());
         if (!frame) { return render::makeError(render::Error::InvalidArgument); }
         frame->retain(buffer_);
         return {};
@@ -7273,7 +7274,7 @@ public:
         if (!result) {
             return RHITestResult::fail(std::string("RenderFrameContext::begin returned ") + toString(result));
         }
-        result = commandBuffer->begin(&frame);
+        result = commandBuffer->begin(frame.submissionContext());
         if (!result) {
             return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }
@@ -7680,7 +7681,7 @@ public:
                     result = frame.wait(5'000'000'000ull);
                     if (result) { result = pool->reset(); }
                     if (result) { result = frame.begin(iteration + 1); }
-                    if (result) { result = commands->begin(&frame); }
+                    if (result) { result = commands->begin(frame.submissionContext()); }
                     if (result) { result = executor.execute(*commands); }
                     if (result) { result = commands->end(); }
                     CommandBuffer* list[]{commands.get()};
@@ -8060,7 +8061,7 @@ public:
         render::QueueSubmissionTracker readbackTracker;
         result = readbackTracker.initialize(*device, *graphicsQueue);
         if (result) { result = readbackFrame.begin(kStreamingWarmupFrameCount); }
-        if (result) { result = commandBuffer->begin(&readbackFrame); }
+        if (result) { result = commandBuffer->begin(readbackFrame.submissionContext()); }
         if (!result) {
             return RHITestResult::fail(std::string("CommandBuffer::begin returned ") + toString(result));
         }

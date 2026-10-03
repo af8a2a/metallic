@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -124,7 +125,7 @@ public:
             REGIR_CHECK(samplingHost.initialize(*device_, 1, log_));
             REGIR_CHECK(samplingSubmissions.initialize(*device_, *queue_));
             REGIR_CHECK(samplingFrame.begin(frameIndex_));
-            REGIR_CHECK(commands_->begin(&samplingFrame));
+            REGIR_CHECK(commands_->begin(samplingFrame.submissionContext()));
             REGIR_CHECK(samplingHost.beginFrame(frameIndex_, 0, nullptr, log_, &samplingFrame));
         } else {
             REGIR_CHECK(commands_->begin());
@@ -172,7 +173,7 @@ public:
             REGIR_CHECK(samplingFrame.completion().isCancelled());
             REGIR_CHECK(pool_->reset());
             REGIR_CHECK(samplingFrame.begin(frameIndex_));
-            REGIR_CHECK(commands_->begin(&samplingFrame));
+            REGIR_CHECK(commands_->begin(samplingFrame.submissionContext()));
             REGIR_CHECK(samplingHost.beginFrame(frameIndex_, 0, nullptr, log_, &samplingFrame));
             if (parameters.frameIndex == 0) {
                 const render::TextureBarrierDesc retryBarrier{
@@ -191,7 +192,7 @@ public:
             REGIR_CHECK(wrappedLights.lightPdfView() != abandonedPdf);
             REGIR_CHECK(wrappedLights.reGIRBuffer() != abandonedGrid);
         } else {
-            auto registry = device_->resourceRegistry();
+            auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
             REGIR_CHECK(registry);
             const auto before = (*registry)->stats();
             REGIR_CHECK(pdf_.mipView(pdf_.mipCount()) == nullptr);

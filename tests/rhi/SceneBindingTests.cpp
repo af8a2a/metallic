@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/RenderGraph/RenderGraph.h"
 #include "Runtime/Render/RenderPass/RuntimeSceneBinding.h"
@@ -152,7 +153,7 @@ public:
                 }
                 auto status = frame.begin(frameIndex++);
                 if (status) { status = pool->reset(); }
-                if (status) { status = commands->begin(&frame); }
+                if (status) { status = commands->begin(frame.submissionContext()); }
                 if (status) { status = executor.execute(*commands); }
                 if (status) { status = commands->end(); }
                 if (status) {

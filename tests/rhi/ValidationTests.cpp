@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -336,7 +337,7 @@ public:
         Device emptyDevice;
         if (!hasError(emptyDevice.createBuffer({.size = 64}), Error::InvalidArgument) ||
             !hasError(emptyDevice.createSemaphore(), Error::InvalidArgument) ||
-            !hasError(emptyDevice.resourceRegistry(), Error::InvalidArgument) ||
+            !hasError(metallic::render::ResourceRegistry::forDevice(emptyDevice), Error::InvalidArgument) ||
             !hasError(emptyDevice.reserveMemoryBudget(64), Error::InvalidArgument) ||
             !hasError(emptyDevice.textureAllocationSize({}), Error::InvalidArgument) ||
             !hasError(emptyDevice.queryRayTracingAccelerationStructureProperties(), Error::InvalidArgument) ||

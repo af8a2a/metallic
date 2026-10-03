@@ -465,7 +465,7 @@ public:
         if (!commands->end()) { return RHITestResult::fail("Cannot finish untracked guard probe"); }
         commands.reset();
         if (!pool->reset() || !pool->createCommandBuffer().transform([&](auto value) { commands = std::move(value); }) ||
-            !frame.begin(0) || !commands->begin(&frame) || !executor.execute(*commands) || !commands->end()) {
+            !frame.begin(0) || !commands->begin(frame.submissionContext()) || !executor.execute(*commands) || !commands->end()) {
             return RHITestResult::fail("Cannot record tracked unsubmitted alias graph");
         }
         const auto recorded = executor.executionSnapshot();
@@ -475,7 +475,7 @@ public:
             return RHITestResult::fail("External alias execution did not remain recorded and unsubmitted");
         }
         if (!pool->createCommandBuffer().transform([&](auto value) { otherCommands = std::move(value); }) ||
-            !otherCommands->begin(&frame)) {
+            !otherCommands->begin(frame.submissionContext())) {
             return RHITestResult::fail("Cannot record second external guard probe");
         }
         if (!hasError(executor.execute(*otherCommands), Error::InvalidArgument) ||

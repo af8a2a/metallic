@@ -549,7 +549,7 @@ Result<> HistoryResourceManager::transitionTexture(
     if (textureSlot.texture == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (commandBuffer.frameContext() != nullptr) {
+    if (metallic::render::RenderFrameContext::from(commandBuffer) != nullptr) {
         auto retained = commandBuffer.retainResource(impl_->records.at(std::string(name)));
         if (!retained) { return retained; }
     }
@@ -590,7 +590,7 @@ Result<> HistoryResourceManager::transitionBuffer(
     if (bufferSlot.buffer == nullptr) {
         return makeError(Error::InvalidArgument);
     }
-    if (commandBuffer.frameContext() != nullptr) {
+    if (metallic::render::RenderFrameContext::from(commandBuffer) != nullptr) {
         auto retained = commandBuffer.retainResource(impl_->records.at(std::string(name)));
         if (!retained) { return retained; }
     }

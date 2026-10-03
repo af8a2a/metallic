@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/Subsystem/GPUSceneSubsystem.h"
 
@@ -923,7 +924,7 @@ Result<> GPUSceneSubsystem::ensureViewGpuResources(
         resource.byteSize = byteSize;
         resource.structureStride = structureStride;
         std::shared_ptr<ResourceRegistry> registry;
-        result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
+        result = metallic::render::ResourceRegistry::forDevice(*device_).transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (result) { result = registry->storageBuffer(*resource.buffer).transform([&](auto value) { resource.resource = std::move(value); }); }
         if (!result) { return result; }
         return {};
@@ -1458,7 +1459,7 @@ Result<> GPUSceneSubsystem::uploadFullScene(
         resource.byteSize = byteSize;
         resource.structureStride = sizeof(T);
         std::shared_ptr<ResourceRegistry> registry;
-        result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
+        result = metallic::render::ResourceRegistry::forDevice(*device_).transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (result) { result = registry->storageBuffer(*resource.buffer).transform([&](auto value) { resource.resource = std::move(value); }); }
         if (!result) { return result; }
 

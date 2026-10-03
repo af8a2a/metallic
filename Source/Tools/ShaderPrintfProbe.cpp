@@ -217,7 +217,7 @@ void run(Json& report, vk::ShaderPrintf& capture, const std::filesystem::path& d
     auto commands = require(pool->createCommandBuffer(), "createCommandBuffer");
     render::RenderFrameContext frame;
     require(frame.begin(trace ? debug::debugUnsigned(trace->plan().at("execution")) : 0), "beginFrame");
-    require(commands->begin(&frame), "beginCommands");
+    require(commands->begin(frame.submissionContext()), "beginCommands");
     if (heapMode) {
         commands->bindBindlessHeap(*heap);
         if (auto commandResult = commands->bindExecution((pipeline)->execution(), &push, sizeof(push)); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); }

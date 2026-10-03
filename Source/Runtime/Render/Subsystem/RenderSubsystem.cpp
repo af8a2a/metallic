@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Subsystem/RenderSubsystem.h"
 #include "Runtime/Render/Profiling/CPUPhaseTrace.h"
 

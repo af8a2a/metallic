@@ -80,7 +80,7 @@ flowchart TB
 | `Source/Runtime/Render/Core/` | RHI 上层通用图形封装：shader 编译、compute、资源注册与同步、帧和历史资源、视图与显示输出 |
 | `Source/Runtime/Render/RenderGraph/` | 图模型、Pass 接口、序列化、编译器、执行器和流送帧作用域 |
 | `Source/Runtime/Render/RenderPass/` | 内置 Pass 注册和实现 |
-| `Source/Runtime/Render/GAPI/` | RHI 公共接口、后端内部的 pipeline cache/hash、格式及上传完成工具 |
+| `Source/Runtime/Render/GAPI/` | RHI 公共接口、中性提交状态、后端内部的 pipeline cache/hash 与格式工具 |
 | `Source/Runtime/Render/GAPI/Vulkan/` | Vulkan RHI、场景光追、NRD、Streamline、CLAS 的具体实现 |
 | `Source/Runtime/Render/Profiling/` | Nsight/NVTX 标记与 Aftermath GPU 崩溃转储 |
 | `Shaders/` | `Libraries/` 公共库与 `Features/` 功能 Shader，见 [目录说明](../Shaders/README.md) |
@@ -257,7 +257,7 @@ Pass 通过 `executeStages()` 声明 compute、raster、transfer 或 Unsafe 内�
 
 `HistoryResourceManager` 按名字维护纹理/缓冲的 Current/Previous 双槽，负责尺寸变化后的重建、有效性、写入标记、失效和状态转换。相机、环境或带 `invalidateHistory` 的运行时参数变化时，编辑器会清空相关历史。
 
-`StreamerSubsystem`（`render.streamer`）统一拥有场景资源、流式会话及上传环；内部 `StreamingUploads` 管理 RHI `Streamer`。每帧 `beginFrame()`，每个成功 Pass 后 `flush()`，帧末 `endFrame()`，并统计 buffer/texture 传输次数和字节数。Pass 应优先使用 `RenderGraphExecutionContext::streamer()`，避免各自维护重复上传环。
+`StreamerSubsystem`（`render.streamer`）统一拥有场景资源、流式会话及上传环；内部 `StreamingUploads` 管理 `Streamer/UploadStreamer.h` 中的 `Streamer`。每帧 `beginFrame()`，每个成功 Pass 后 `flush()`，帧末 `endFrame()`，并统计 buffer/texture 传输次数和字节数。Pass 应优先使用 `RenderGraphExecutionContext::streamer()`，避免各自维护重复上传环。
 
 ## 7. 内置 Render Pass
 
@@ -317,7 +317,7 @@ flowchart LR
     Readback["Request readback"]
     Residency["ResidencyManager<br/>状态、预算、淘汰、page table patch"]
     Loader["PageLoader<br/>TaskGraph 异步读取/解压"]
-    Upload["RHI Streamer<br/>上传 page payload"]
+    Upload["Streamer<br/>上传 page payload"]
     PageBuffer["GPU page buffer<br/>page table / active groups"]
     Draw["Mesh Shader indirect draw"]
     AS["可选 CLAS/BLAS/TLAS"]
@@ -360,6 +360,15 @@ TaskSystem 是显式初始化的进程级服务。编辑器和 RHI 测试在进�
 独立 `MetallicShaderCompiler` 与运行时共享 `Core/SlangCompiler.cpp`，
 shader warmup 仍为手动目标。
 
+GAPI 不依赖 Core。Core 通过 `CommandSubmissionContext` 注册录制、提交准入与资源保活钩子；
+RHI 只发布队列接受/取消状态，GPU 完成由 Core 的 timeline 与 `GPUCompletionPoint` 表示。
+调用方使用 `commands.begin(frame.submissionContext())`，通过 `RenderFrameContext::from(commands)`
+查询所属帧，通过 `addCommandDependency(commands, completion)` 导入 GPU 完成依赖。
+`ResourceRegistry::forDevice(device)` 在 Core 创建每设备共享注册表；RHI 的 `Device::sharedState()`
+只保存不透明的所有者状态，在设备空闲后、原生 allocator/device 销毁前释放。
+`Streamer` 与 `StreamUploadCompletion` 位于 `Streamer/`，通过 `createStreamer(device, desc)` 创建；
+使用 Slang 编译器的冒烟/三角形预览工具位于 `Core/RHISmokeTests`。
+
 ### 10.1 公共 RHI
 
 [`RHI.h`](../Source/Runtime/Render/GAPI/RHI.h) 提供 move-only RAII 对象：
@@ -369,7 +378,7 @@ shader warmup 仍为手动目标。
 - `Fence`、timeline `Semaphore` 和 Swapchain binary semaphore；
 - `Buffer/BufferView`、`Texture/TextureView`；
 - graphics/compute pipeline、shader object program；
-- `BindlessHeap` 和跨帧动态 `Streamer`。
+- `BindlessHeap`。
 
 命令接口覆盖动态渲染、barrier、buffer/texture copy、传统 draw、Mesh Task indirect draw 和 compute dispatch。能力以 `DeviceCapabilities` 暴露，调用方通过软请求创建设备，再对实际 capability 做降级处理。
 

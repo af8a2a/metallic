@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/ReGIR.h"
@@ -182,7 +183,7 @@ Result<> ReGIRLightSelector::build(
         punctualLights.desc().size < (uint64_t(parameters.lightCount) + 1u) * kPunctualLightByteSize) {
         return makeError(Error::InvalidArgument);
     }
-    if (auto* frame = commandBuffer.frameContext()) {
+    if (auto* frame = metallic::render::RenderFrameContext::from(commandBuffer)) {
         if (!frame->recording()) { return makeError(Error::InvalidArgument); }
 
     }
@@ -210,9 +211,9 @@ Result<> ReGIRLightSelector::build(
     push.sceneCenterRadius[3] = parameters.sceneRadius;
     push.samplingJitter = parameters.samplingJitter;
 
-    auto registry = impl_->device->resourceRegistry();
+    auto registry = metallic::render::ResourceRegistry::forDevice(*impl_->device);
     if (!registry) { return makeError(registry.error()); }
-    ParameterWriter writer(*impl_->device, **registry, commandBuffer.frameContext());
+    ParameterWriter writer(*impl_->device, **registry, metallic::render::RenderFrameContext::from(commandBuffer));
     const BuildReGIRParams params{
         .localLightPdf = writer.sampledImage(&localLightPdf),
         .output = writer.bufferSpan(impl_->buffer.get(), 16, 16),

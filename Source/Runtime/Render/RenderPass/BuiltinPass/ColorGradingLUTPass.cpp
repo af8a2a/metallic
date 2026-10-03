@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -83,10 +85,10 @@ public:
                         isHDROutput(output_.mode) ? output_.peakNits : 100.0f, output_.paperWhiteNits,
                         colorGradingParameters(context.properties())};
         auto views = resources_.views();
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
         auto& commands = context.commandBuffer();
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        ParameterWriter writer(*device_, **registry, metallic::render::RenderFrameContext::from(commands));
         ColorGradingLUTParams params{};
         params.output = writer.storageImageHandle(lut.view());
         params.custom0 = writer.sampledImageHandle(views[0]);

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"

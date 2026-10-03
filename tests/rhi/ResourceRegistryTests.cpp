@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
 #include "Runtime/Render/GAPI/Vulkan/VulkanNative.h"
@@ -67,7 +68,7 @@ struct Commands {
     {
         auto result = frame.begin(index);
         if (result) { result = pool->reset(); }
-        return result ? commands->begin(&frame) : result;
+        return result ? commands->begin(frame.submissionContext()) : result;
     }
     render::Result<> submit(render::QueueSubmissionTracker& tracker, render::Semaphore& gate)
     {
@@ -283,7 +284,7 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
             .transform([&](auto value) { device = std::move(value); }));
         auto& queue = *device->getQueue(QueueType::Graphics);
-        auto registry = device->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device);
         REG_CHECK(registry);
         QueueSubmissionTracker tracker;
         REG_REQUIRE(tracker.initialize(*device, queue));
@@ -485,8 +486,8 @@ public:
             .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry, sameRegistry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { sameRegistry = std::move(rhiValue); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { sameRegistry = std::move(rhiValue); }));
         REG_CHECK(registry == sameRegistry);
         render::ComputeKernel firstKernel, secondKernel;
         std::string log;
@@ -730,7 +731,7 @@ public:
                 .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
             auto& queue = *device->getQueue(render::QueueType::Graphics);
             std::shared_ptr<render::ResourceRegistry> registry;
-            REG_REQUIRE(device->resourceRegistry().transform([&](auto value) { registry = std::move(value); }));
+            REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto value) { registry = std::move(value); }));
             render::ComputeKernel kernel;
             std::string log;
             REG_REQUIRE(makeKernel(*device, kernel, log, mode));
@@ -827,7 +828,7 @@ public:
         auto* copy = device->getQueue(render::QueueType::Copy);
         if (!copy) { return RHITestResult::skip("Requires a copy queue"); }
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         render::ComputeKernel kernel;
         std::string log;
         REG_REQUIRE(makeKernel(*device, kernel, log));
@@ -892,7 +893,7 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         struct Params { render::ShaderStorageImage image; render::GPUBufferSpan samples; render::ShaderBuffer output; };
         static_assert(sizeof(Params) == 20);
         const char* entries[] = {"registryTextureWriteMain", "registryTextureReadMain"};
@@ -1020,7 +1021,7 @@ public:
         REG_CHECK(!allocation.expired() && child.deviceAddress() == address);
         parent = {}; invalid = {}; empty = {};
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         render::RenderFrameContext frame;
         REG_REQUIRE(frame.begin(0));
         render::EncodedParameters packet;
@@ -1061,7 +1062,7 @@ public:
             .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true}).transform([&](auto rhiValue) { device = std::move(rhiValue); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         struct Params { render::GPUBufferSpan source, output, arguments; uint32_t add; };
         static_assert(sizeof(Params) == 40 && offsetof(Params, add) == 36);
         std::array<render::ComputeKernel, 2> kernels;
@@ -1625,7 +1626,7 @@ private:
             .enableBindlessDescriptorHeap = true}).transform([&](auto value) { device = std::move(value); }));
         auto& queue = *device->getQueue(render::QueueType::Graphics);
         std::shared_ptr<render::ResourceRegistry> registry;
-        REG_REQUIRE(device->resourceRegistry().transform([&](auto value) { registry = std::move(value); }));
+        REG_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto value) { registry = std::move(value); }));
         render::ComputeKernel kernel;
         std::string log;
         REG_REQUIRE(makeKernel(*device, kernel, log, mode));
@@ -1826,7 +1827,7 @@ public:
                 REG_REQUIRE(bench::createTestDevice(context, {.applicationName = "Kernel prepared dispatch",
                     .enableValidation = context.enableValidation, .enableBindlessDescriptorHeap = true})
                     .transform([&](auto value) { device = std::move(value); }));
-                auto registry = device->resourceRegistry();
+                auto registry = metallic::render::ResourceRegistry::forDevice(*device);
                 REG_CHECK(registry);
                 auto& queue = *device->getQueue(render::QueueType::Graphics);
                 std::unique_ptr<render::Buffer> input, output, arguments;
@@ -2076,6 +2077,58 @@ public:
     }
 };
 METALLIC_REGISTER_RHI_TEST(NamedResourceParametersTest);
+
+class RegistryDeviceLifetimeTest final : public RHITest {
+public:
+    RegistryDeviceLifetimeTest()
+    {
+        type = RHITestType::Command;
+        name = "registry_per_device_state_lifetime";
+    }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"registry.device.state.lifetime"}, bench::Layer::Core, "binding", "binding");
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        DeviceDesc desc{.applicationName = "Registry device lifetime", .enableValidation = context.enableValidation,
+            .enableBindlessDescriptorHeap = true};
+        if (context.deviceDesc) { desc = *context.deviceDesc; }
+        auto created = createDevice(desc);
+        REG_CHECK(created);
+        std::weak_ptr<ResourceRegistry> weak;
+        {
+            Device device = std::move(**created);
+            std::array<std::shared_ptr<ResourceRegistry>, 8> registries;
+            std::vector<std::jthread> workers;
+            for (size_t i = 0; i < registries.size(); ++i) {
+                workers.emplace_back([&, i] {
+                    auto registry = ResourceRegistry::forDevice(device);
+                    if (registry) { registries[i] = std::move(*registry); }
+                });
+            }
+            workers.clear();
+            REG_CHECK(registries.front());
+            for (auto& registry : registries) { REG_CHECK(registry == registries.front()); }
+            weak = registries.front();
+            registries.fill(nullptr);
+            REG_CHECK(!weak.expired()); // Device keeps the singleton even without clients.
+            Device moved = std::move(device);
+            auto registry = ResourceRegistry::forDevice(moved);
+            REG_CHECK(registry && *registry == weak.lock());
+            auto other = ResourceRegistry::forDevice(context.device);
+            REG_CHECK(other && *other != *registry);
+            registry->reset();
+            // Move assignment must release attached services before the old VkDevice.
+            moved = Device{};
+            REG_CHECK(weak.expired());
+        }
+        REG_CHECK(hasError(ResourceRegistry::forDevice(**created), Error::InvalidArgument));
+        return RHITestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(RegistryDeviceLifetimeTest);
 
 #undef REG_REQUIRE
 #undef REG_CHECK

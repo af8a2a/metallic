@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/NRDRuntime.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
@@ -259,7 +260,7 @@ Result<> NRDRuntime::initialize(Device& device, uint16_t width, uint16_t height,
         clear();
         return result;
     }
-    result = device.resourceRegistry().transform([&](auto rhiValue) { impl_->registry = std::move(rhiValue); });
+    result = metallic::render::ResourceRegistry::forDevice(device).transform([&](auto rhiValue) { impl_->registry = std::move(rhiValue); });
     if (!result) { clear(); return result; }
     impl_->pipelines.resize(impl_->plan.pipelines().size());
     return {};
@@ -340,7 +341,7 @@ Result<> NRDRuntime::denoiseReference(bool specular, CommandBuffer& commands)
 
 Result<> NRDRuntime::record(uint32_t index, CommandBuffer& commands)
 {
-    if (!commands.recording() || !commands.frameContext() || !commands.frameContext()->recording() ||
+    if (!commands.recording() || !metallic::render::RenderFrameContext::from(commands) || !metallic::render::RenderFrameContext::from(commands)->recording() ||
         !valid() || !impl_->frameReady || index >= impl_->scheduled.size() || impl_->scheduled[index])
         return makeError(Error::InvalidArgument);
     if (index == 0 && !impl_->device->capabilities().shaderImageGatherExtended)
@@ -538,7 +539,7 @@ Result<> NRDRuntime::record(uint32_t index, CommandBuffer& commands)
 Result<> NRDRuntime::dispatch(CommandBuffer& commands, const denoising::DispatchDesc& stage,
     std::span<const NRDTextureRef> textures)
 {
-    ParameterWriter writer(*impl_->device, *commands.frameContext(), *impl_->registry);
+    ParameterWriter writer(*impl_->device, *metallic::render::RenderFrameContext::from(commands), *impl_->registry);
     NRDResourceIndices indices;
     for (uint32_t i = 0; i < 2; ++i) {
         const auto filter = i == 0 ? SamplerFilter::Nearest : SamplerFilter::Linear;

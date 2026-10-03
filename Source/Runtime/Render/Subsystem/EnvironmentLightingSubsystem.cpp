@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Subsystem/EnvironmentLightingSubsystem.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
@@ -159,9 +161,9 @@ struct EnvironmentLightingSubsystem::GPUPrecompute {
         const uint32_t dispatchWidth = std::min(partialCount, kEnvironmentSHMaxDispatchWidth);
         const uint32_t dispatchHeight =
             (partialCount + dispatchWidth - 1u) / dispatchWidth;
-        auto registry = device->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device);
         if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device, **registry, commandBuffer.frameContext());
+        ParameterWriter writer(*device, **registry, metallic::render::RenderFrameContext::from(commandBuffer));
         EnvironmentLightingPrecomputeParams params{
             .radiance = writer.sampledImage(&radianceView),
             .partials = writer.bufferSpan(&partials, 16, 16),

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/RenderGraph/RenderGraphTypes.h"
 #define STB_IMAGE_STATIC

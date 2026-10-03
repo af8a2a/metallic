@@ -1,6 +1,7 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/GAPI/TextureFormat.h"
 #include "Runtime/Render/GAPI/RHI.h"
-#include "Runtime/Render/GAPI/StreamUploadCompletion.h"
+#include "Runtime/Render/Streamer/StreamUploadCompletion.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Profiling/NsightEvents.h"
 #include "Runtime/Render/Profiling/CPUPhaseTrace.h"
@@ -642,8 +643,8 @@ struct StreamerImpl {
                 if (!validated) { return validated; }
             }
             if (installation) {
-                if (!commandBuffer.frameContext() ||
-                    !installation->completion_.sameSubmission(commandBuffer.frameContext()->completion())) {
+                if (!metallic::render::RenderFrameContext::from(commandBuffer) ||
+                    !installation->completion_.sameSubmission(metallic::render::RenderFrameContext::from(commandBuffer)->completion())) {
                     return makeError(Error::InvalidArgument);
                 }
                 auto attached = commandBuffer.addSubmissionTransaction(installation->submission_);
@@ -914,18 +915,13 @@ Result<> Streamer::beginFrame(RenderFrameContext& frame)
     return impl_ != nullptr ? impl_->beginFrame(frame) : makeError(Error::InvalidArgument);
 }
 
-Result<> CommandBuffer::copyStreamedData(Streamer& streamer)
+Result<std::unique_ptr<Streamer>> createStreamer(Device& device, const StreamerDesc& desc)
 {
-    return streamer.copyStreamedData(*this);
-}
-
-Result<std::unique_ptr<Streamer>> Device::createStreamer(const StreamerDesc& desc)
-{
-    if (impl_ == nullptr) {
+    if (!device.identity()) {
         return makeError(Error::InvalidArgument);
     }
 
-    auto streamerImpl = std::make_unique<detail::StreamerImpl>(*this);
+    auto streamerImpl = std::make_unique<detail::StreamerImpl>(device);
     Result<> result = streamerImpl->create(desc);
     if (!result) {
         return std::unexpected(result.error());

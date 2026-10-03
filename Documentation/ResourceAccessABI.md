@@ -62,7 +62,7 @@ the historical ordinary-data BDA direction in `SharedResourceRegistry.md`.
   nonuniform indexing, alongside the existing image indexing features.
 
 ```cpp
-ParameterWriter writer(device, registry, commands.frameContext());
+ParameterWriter writer(device, registry, RenderFrameContext::from(commands));
 params.source = writer.sampledImageHandle(source.view());
 params.output = writer.storageImageHandle(output.view());
 params.histogram = writer.bufferSpan<uint32_t>(histogram.buffer());

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Streamer/ScenePathTraceResources.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -1593,7 +1594,7 @@ struct ScenePathTraceResources::Impl {
             !(result = migration.pool->createCommandBuffer().transform([&](auto rhiValue) { migration.commands = std::move(rhiValue); })) ||
             !(result = migration.tracker.initialize(*device, *graphicsQueue)) ||
             !(result = migration.frame.begin(streamingFrame)) ||
-            !(result = migration.commands->begin(&migration.frame))) { return result; }
+            !(result = migration.commands->begin(migration.frame.submissionContext()))) { return result; }
         if (graphicsQueue->timestampValidBits() != 0) {
             if (device->createTimestampQueryPool(*graphicsQueue, {.queryCount=2}).transform([&](auto rhiValue) { migration.timestamps = std::move(rhiValue); })) {
                 if (!(result = migration.commands->resetTimestampQueries(*migration.timestamps, 0, 2)) ||
@@ -1712,7 +1713,7 @@ struct ScenePathTraceResources::Impl {
             emptyTextureFeedback = std::move(buffer);
         }
         feedback = emptyTextureFeedback.get();
-        auto* frame = commands.frameContext();
+        auto* frame = metallic::render::RenderFrameContext::from(commands);
         if (!frame) { return {}; }
         frame->retain(emptyTextureFeedback);
         if (!textureStreaming || baseTextureMips.empty()) { return {}; }
@@ -1829,7 +1830,7 @@ struct ScenePathTraceResources::Impl {
         uint64_t frameIndex,
         CPUProfileRecorder* profiler)
     {
-        auto* frame = commands.frameContext();
+        auto* frame = metallic::render::RenderFrameContext::from(commands);
         if (!frame) { return {}; }
         const auto entry = std::find_if(textureFeedback.begin(), textureFeedback.end(), [&](const TextureFeedback& value) {
             return value.frame == frameIndex && value.completion.sameSubmission(frame->completion());
@@ -3715,7 +3716,7 @@ std::shared_ptr<const ComputeSampledImageSnapshot> ScenePathTraceResources::mate
 
 Result<> ScenePathTraceResources::uploadMaterialTextures(CommandBuffer& commandBuffer)
 {
-    if (auto* frame = commandBuffer.frameContext()) {
+    if (auto* frame = metallic::render::RenderFrameContext::from(commandBuffer)) {
         frame->retain(impl_);
         frame->retain(impl_->textureGeneration);
         if (impl_->texturePublication.valid()) {
@@ -3733,7 +3734,7 @@ Result<> ScenePathTraceResources::beginTextureStreaming(
     CPUProfileRecorder* profiler,
     bool freezePublication)
 {
-    if (auto* frame = commands.frameContext(); frame && impl_->materialBinding) {
+    if (auto* frame = metallic::render::RenderFrameContext::from(commands); frame && impl_->materialBinding) {
         frame->retain(impl_->materialBinding);
     }
     return impl_->beginTextureStreaming(commands, frameIndex, feedback, profiler, freezePublication);

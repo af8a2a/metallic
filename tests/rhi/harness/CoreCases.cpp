@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Fixtures.h"
 #include "TraceRecorder.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -357,7 +358,7 @@ public:
         if (!shader) { return RHITestResult::fail(log); }
         ComputeKernel kernel;
         CASE_REQUIRE(kernel.initialize(context.device, {.spirv = shader->spirv, .parameters = parameterAbi<Params>(abi)}, log));
-        auto registry = context.device.resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(context.device);
         CASE_REQUIRE(registry);
         std::array<std::unique_ptr<Texture>, 2> images;
         std::array<std::unique_ptr<TextureView>, 2> views;

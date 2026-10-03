@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 
@@ -150,7 +152,7 @@ Result<> ComputeProgram::initialize(Device& device, const ComputeProgramDesc& de
             impl->resourceParameterAlignment = std::max(impl->resourceParameterAlignment, alignment);
         }
     }
-    auto registry = device.resourceRegistry();
+    auto registry = metallic::render::ResourceRegistry::forDevice(device);
     if (!registry) { return makeError(registry.error()); }
     impl->registry = std::move(*registry);
     auto result = impl->kernel.initialize(device, {
@@ -234,7 +236,7 @@ Result<> ComputeProgram::dispatchImpl(const ComputeDispatchDesc& desc,
         return makeError(Error::InvalidArgument);
     }
     CPUProfileScope profile(desc.profiler, "Encode compute parameters");
-    auto prepared = prepare(desc.commandBuffer->frameContext(), desc, dispatches);
+    auto prepared = prepare(metallic::render::RenderFrameContext::from(*desc.commandBuffer), desc, dispatches);
     if (!prepared) { return makeError(prepared.error()); }
     profile.next("Record dispatch commands");
     return prepared->record(*desc.commandBuffer, betweenDispatches);

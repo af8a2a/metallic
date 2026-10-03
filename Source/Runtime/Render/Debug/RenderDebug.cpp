@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
 #include "Runtime/Render/Debug/GPUDebugProbe.h"
@@ -251,7 +252,7 @@ void RenderDebugRuntime::boundary(CommandBuffer& commands, std::string_view chec
             snapshot.evidence.provenance["streaming"].push_back({{"generation", instance.at("generation")}, {"frame", instance.at("frame")}, {"requestSourceFrame", instance.at("requestSourceFrame")}});
         }
     }
-    if (auto* frame = commands.frameContext()) {
+    if (auto* frame = metallic::render::RenderFrameContext::from(commands)) {
         current_->completion = frame->completion();
         snapshot.evidence.provenance["submissionFrame"] = frame->frameIndex();
         snapshot.evidence.frameSlot = frame->slotIndex();
@@ -286,7 +287,7 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
 {
     if (core_.cancelled(request.id)) { return; }
     auto reject = [&](std::string code, std::string message) { core_.fail(request.id, {std::move(code), std::move(message)}); };
-    if (!commands.frameContext()) { reject("Unsupported", "GPU capture requires a tracked RenderFrameContext"); return; }
+    if (!metallic::render::RenderFrameContext::from(commands)) { reject("Unsupported", "GPU capture requires a tracked RenderFrameContext"); return; }
     const bool probing = request.specification.contains("probes");
     if (probing && !(uint32_t(commands.queueCapabilities()) & uint32_t(QueueAccessBits::Compute))) {
         reject("Unsupported", "GPU Probe requires a compute-capable command queue"); return;
@@ -440,7 +441,7 @@ void RenderDebugRuntime::capture(CommandBuffer& commands, const debug::DebugCapt
     }
     auto transaction = std::make_shared<SubmissionTransaction>([readback] { readback->submission = 1; }, [readback] { readback->submission = -1; });
     if (!commands.addSubmissionTransaction(transaction)) { reject("InvalidState", "Could not track capture submission"); return; }
-    commands.frameContext()->retain(readback);
+    metallic::render::RenderFrameContext::from(commands)->retain(readback);
     current_->capturedBytes += total;
     for (const auto& probe : probes) { current_->probeScanBytes += probe.scanBytes; }
     current_->probeReadbackBytes += probeBytes;

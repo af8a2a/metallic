@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/RTXDIPostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -104,9 +106,9 @@ public:
         push.height = context.height();
         push.exposure = floatProperty(context.properties(), "exposure", 1.0f, 0.05f, 8.0f);
         push.outputLinear = 1u;
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
+        ParameterWriter writer(*device_, **registry, metallic::render::RenderFrameContext::from(context.commandBuffer()));
         RTXDICompositeParams params{
             .denoisedDiffuse = writer.storageImage(denoisedDiffuse.view()),
             .denoisedSpecular = writer.storageImage(denoisedSpecular.view()),

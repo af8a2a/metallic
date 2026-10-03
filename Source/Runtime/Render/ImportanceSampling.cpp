@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/ImportanceSampling.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
@@ -154,7 +155,7 @@ Result<> ImportancePdfTexture::beginGpuBuild(CommandBuffer& commandBuffer)
     if (!valid()) {
         return {};
     }
-    if (auto* frame = commandBuffer.frameContext()) { frame->retain(impl_); }
+    if (auto* frame = metallic::render::RenderFrameContext::from(commandBuffer)) { frame->retain(impl_); }
     TextureBarrierDesc toGeneral{
         .texture = impl_->texture.get(),
         .oldLayout = textureLayoutForResourceState(impl_->state),
@@ -339,15 +340,15 @@ Result<> ImportancePdfCompute::buildLocalLights(
         punctualLights.desc().size < (uint64_t(lightCount) + 1u) * sizeof(float) * 16u) {
         return makeError(Error::InvalidArgument);
     }
-    if (auto* frame = commandBuffer.frameContext(); frame != nullptr && !frame->recording()) {
+    if (auto* frame = metallic::render::RenderFrameContext::from(commandBuffer); frame != nullptr && !frame->recording()) {
         return makeError(Error::InvalidArgument);
     }
     commandBuffer.hostWriteBarrier();
 
-    auto registry = impl_->device->resourceRegistry();
+    auto registry = metallic::render::ResourceRegistry::forDevice(*impl_->device);
     if (!registry) { return makeError(registry.error()); }
     auto dispatch = [&](const PrepareLightsPdfPush& push) -> Result<> {
-        ParameterWriter writer(*impl_->device, **registry, commandBuffer.frameContext());
+        ParameterWriter writer(*impl_->device, **registry, metallic::render::RenderFrameContext::from(commandBuffer));
         PrepareLightsPdfParams params{.settings = push};
         const bool reduction = push.mode >= kGenerateLocalMipMode;
         if (reduction) {
@@ -401,15 +402,15 @@ Result<> ImportancePdfCompute::buildEnvironment(
     if (!valid() || !environmentPdf.valid()) {
         return makeError(Error::InvalidArgument);
     }
-    if (auto* frame = commandBuffer.frameContext()) {
+    if (auto* frame = metallic::render::RenderFrameContext::from(commandBuffer)) {
         if (!frame->recording()) { return makeError(Error::InvalidArgument); }
     }
     commandBuffer.hostWriteBarrier();
 
-    auto registry = impl_->device->resourceRegistry();
+    auto registry = metallic::render::ResourceRegistry::forDevice(*impl_->device);
     if (!registry) { return makeError(registry.error()); }
     auto dispatch = [&](const PrepareLightsPdfPush& push) -> Result<> {
-        ParameterWriter writer(*impl_->device, **registry, commandBuffer.frameContext());
+        ParameterWriter writer(*impl_->device, **registry, metallic::render::RenderFrameContext::from(commandBuffer));
         PrepareLightsPdfParams params{.settings = push};
         const bool reduction = push.mode >= kGenerateLocalMipMode;
         if (reduction) {

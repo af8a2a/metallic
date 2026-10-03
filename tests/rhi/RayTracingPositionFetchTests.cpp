@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "harness/Fixtures.h"
@@ -215,7 +216,7 @@ public:
                 }
                 FETCH_REQUIRE(frame.begin(step));
                 FETCH_REQUIRE(pool->reset());
-                FETCH_REQUIRE(commands->begin(&frame));
+                FETCH_REQUIRE(commands->begin(frame.submissionContext()));
                 FETCH_REQUIRE(resources.uploadMaterialTextures(*commands));
                 std::vector<render::ComputeDispatchBinding> bindings = {
                     {.binding = 0, .accelerationStructure = resources.accelerationStructure().accelerationStructure()},
@@ -384,7 +385,7 @@ public:
             }
         } drain{frame, *pool};
         FETCH_REQUIRE(frame.begin(0));
-        FETCH_REQUIRE(commands->begin(&frame));
+        FETCH_REQUIRE(commands->begin(frame.submissionContext()));
         const render::ComputeDispatchBinding bindings[] = {{.binding = 2, .buffer = input.get()}, {.binding = 63, .buffer = output.get()}};
         FETCH_REQUIRE(program.dispatch({
             .commandBuffer = commands.get(),

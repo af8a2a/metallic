@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include <stdexcept>
 #include <string>
 
@@ -78,7 +79,7 @@ struct Commands {
     {
         render::Result<> result = frame.begin(index);
         if (result) { result = pool->reset(); }
-        return result ? buffer->begin(&frame) : result;
+        return result ? buffer->begin(frame.submissionContext()) : result;
     }
     render::Result<> submit(render::QueueSubmissionTracker& tracker, render::Semaphore* gate = nullptr)
     {
@@ -180,7 +181,7 @@ public:
         if (tracker.submit({.commandBuffers = {staleBuffers, 1}}, commands.frame)) {
             return RHITestResult::fail("cancelled command recording was accepted by a new frame generation");
         }
-        FRAME_REQUIRE(commands.buffer->begin(&commands.frame));
+        FRAME_REQUIRE(commands.buffer->begin(commands.frame.submissionContext()));
         const render::GPUCompletionPoint point = commands.frame.completion();
         auto retained = std::make_shared<uint32_t>(17);
         std::weak_ptr<uint32_t> retainedWeak = retained;
@@ -301,7 +302,7 @@ public:
         FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
-        FRAME_REQUIRE(context.device.createStreamer(render::StreamerDesc{
+        FRAME_REQUIRE(createStreamer(context.device, render::StreamerDesc{
             .constantBufferSize = 4096,
             .dynamicBufferSizePerFrame = 64 * 1024,
             .queuedFrameCount = 1,
@@ -372,7 +373,7 @@ public:
         FRAME_REQUIRE(tracker.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
         FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
-        FRAME_REQUIRE(context.device.createStreamer({.dynamicBufferSizePerFrame = 64 * 1024,
+        FRAME_REQUIRE(createStreamer(context.device, {.dynamicBufferSizePerFrame = 64 * 1024,
             .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         constexpr uint32_t kPages = 64, kWordsPerPage = 5 * 1024;
         constexpr uint64_t kBytes = uint64_t(kPages) * kWordsPerPage * sizeof(uint32_t);
@@ -419,7 +420,7 @@ public:
         }
         // Reject capacities whose alignment or queued-frame multiplication
         // would overflow before attempting any Vulkan allocation.
-        if (context.device.createStreamer({.dynamicBufferSizePerFrame = UINT64_MAX,
+        if (createStreamer(context.device, {.dynamicBufferSizePerFrame = UINT64_MAX,
                 .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); })) {
             return RHITestResult::fail("overflowing staging capacity was accepted");
         }
@@ -737,7 +738,7 @@ public:
         for (auto& slot : slots) { FRAME_REQUIRE(slot.initialize(context.device, context.graphicsQueue)); }
         FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { gate = std::move(rhiValue); }));
         FRAME_REQUIRE(context.device.createSemaphore().transform([&](auto rhiValue) { rebuildGate = std::move(rhiValue); }));
-        FRAME_REQUIRE(context.device.createStreamer({.dynamicBufferSizePerFrame = 64 * 1024,
+        FRAME_REQUIRE(createStreamer(context.device, {.dynamicBufferSizePerFrame = 64 * 1024,
             .queuedFrameCount = 2}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         FRAME_REQUIRE(context.device.createBuffer({.size = 6 * sizeof(uint32_t),
             .usage = render::BufferUsageBits::TransferDestination,
@@ -1401,7 +1402,7 @@ public:
         // transitionOutput attaches the aggregate wait to Queue::submit.
         FRAME_REQUIRE(consumer.begin(0));
         FRAME_REQUIRE(executor.transitionOutput(*consumer.buffer, "Upload.data", render::ResourceState::TransferSource));
-        FRAME_REQUIRE(consumer.buffer->addDependency(second)); // Duplicate is coalesced.
+        FRAME_REQUIRE(addCommandDependency(*consumer.buffer, second)); // Duplicate is coalesced.
         {
             auto sourceSlice = (executor.outputResource("Upload.data")->buffer)->slice({0, 16});
             if (!sourceSlice) { return RHITestResult::fail(std::string("source slice failed: ") + render::resultToString(sourceSlice)); }
@@ -1584,6 +1585,67 @@ METALLIC_REGISTER_RHI_TEST(FrameUploadLifetimeTest);
 METALLIC_REGISTER_RHI_TEST(FrameDescriptorSnapshotTest);
 METALLIC_REGISTER_RHI_TEST(FrameHistoryDependencyTest);
 
+class FrameSubmissionContextLifetimeTest final : public RHITest {
+public:
+    FrameSubmissionContextLifetimeTest()
+    {
+        type = RHITestType::Command;
+        name = "frame_submission_context_lifetime";
+    }
+    std::optional<bench::Metadata> metadata() const override
+    {
+        return bench::gpuMetadata({"frame.submission.context.lifetime"}, bench::Layer::Core);
+    }
+    RHITestResult run(RHITestContext& context) override
+    {
+        using namespace render;
+        Commands commands;
+        FRAME_REQUIRE(commands.initialize(context.device, context.graphicsQueue));
+        std::shared_ptr<CommandSubmissionContext> stale;
+        {
+            RenderFrameContext frame;
+            if (commands.buffer->begin(frame.submissionContext())) {
+                return RHITestResult::fail("Unbegun frame silently became a standalone recording");
+            }
+            FRAME_REQUIRE(frame.begin(0));
+            stale = frame.submissionContext();
+            FRAME_REQUIRE(commands.buffer->begin(stale));
+            FRAME_REQUIRE(commands.buffer->end());
+            FRAME_REQUIRE(frame.reset());
+            if (commands.buffer->begin(frame.submissionContext())) {
+                return RHITestResult::fail("Reset frame silently became a standalone recording");
+            }
+            FRAME_REQUIRE(frame.begin(1));
+            if (stale == frame.submissionContext() || stale->recording() || stale->canSubmit(true, true) ||
+                RenderFrameContext::from(*commands.buffer) || commands.buffer->begin(stale)) {
+                return RHITestResult::fail("Old recording generation survived frame reset");
+            }
+            FRAME_REQUIRE(commands.pool->reset());
+            FRAME_REQUIRE(commands.buffer->begin(frame.submissionContext()));
+            FRAME_REQUIRE(commands.buffer->end());
+            stale = frame.submissionContext();
+        }
+        CommandBuffer* buffers[]{commands.buffer.get()};
+        if (RenderFrameContext::from(*commands.buffer) || stale->recording() || stale->canSubmit(true, true) ||
+            context.graphicsQueue.submit({.commandBuffers = buffers}) || commands.buffer->begin(stale)) {
+            return RHITestResult::fail("Destroyed frame left a usable recording context");
+        }
+        FRAME_REQUIRE(commands.pool->reset());
+        FRAME_REQUIRE(commands.buffer->begin());
+        auto semaphore = context.device.createSemaphore();
+        if (!semaphore) { return RHITestResult::fail("Cannot create dependency semaphore"); }
+        Semaphore liveSemaphore = std::move(**semaphore);
+        SemaphoreSubmitDesc invalidWait{.semaphore = semaphore->get(), .value = 1};
+        FRAME_REQUIRE(commands.buffer->addDependency({&invalidWait, 1}));
+        FRAME_REQUIRE(commands.buffer->end());
+        if (!hasError(context.graphicsQueue.submit({.commandBuffers = buffers}), Error::InvalidArgument)) {
+            return RHITestResult::fail("Neutral dependency accepted an empty semaphore wrapper");
+        }
+        return RHITestResult::pass();
+    }
+};
+METALLIC_REGISTER_RHI_TEST(FrameSubmissionContextLifetimeTest);
+
 class FrameSubmissionTransactionsTest final : public RHITest {
 public:
     std::optional<bench::Metadata> metadata() const override
@@ -1666,7 +1728,7 @@ public:
         FRAME_REQUIRE(commands.pool->createCommandBuffer().transform([&](auto rhiValue) { tail = std::move(rhiValue); }));
         FRAME_REQUIRE(registerEvent(*commands.buffer, 6));
         FRAME_REQUIRE(commands.buffer->end());
-        FRAME_REQUIRE(tail->begin(&commands.frame));
+        FRAME_REQUIRE(tail->begin(commands.frame.submissionContext()));
         FRAME_REQUIRE(registerEvent(*tail, 7));
         FRAME_REQUIRE(tail->end());
         render::GPUCompletionPoint prefix;

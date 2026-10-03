@@ -623,7 +623,7 @@ public:
         RECORD_CHECK(!batch.seal(frame, duplicates));
         RECORD_REQUIRE(batch.seal(frame, {&a, 1}));
         RECORD_CHECK(batch.valid() && frame.recording() && !frame.hasAcceptedWork());
-        RECORD_CHECK(!a->begin(&frame) && !frame.sealRecording());
+        RECORD_CHECK(!a->begin(frame.submissionContext()) && !frame.sealRecording());
         RECORD_CHECK(!context.graphicsQueue.submit({.commandBuffers = {&a, 1}}));
         render::SubmissionReceipt receipt;
         RECORD_CHECK(!tracker.submitBatch(batch, {.commandBuffers = {&a, 1}}, frame).transform([&](auto value) { receipt = std::move(value); }));

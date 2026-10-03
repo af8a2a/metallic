@@ -106,7 +106,7 @@ struct FrameCommands {
     {
         auto result = frame.begin(index);
         if (result) { result = pool->reset(); }
-        return result ? commands->begin(&frame) : result;
+        return result ? commands->begin(frame.submissionContext()) : result;
     }
     Result<> submit()
     {

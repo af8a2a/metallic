@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Render/GAPI/RHI.h"
+#include "Runtime/Render/GAPI/CommandSubmission.h"
 
 #include <functional>
 #include <atomic>
@@ -9,52 +9,8 @@
 
 namespace metallic::render {
 
-// A CPU publication made while recording. Submission means the queue accepted
-// the commands, not that the GPU finished. Callbacks must not throw or reenter
-// submission/frame lifecycle. Status reads may be concurrent; cancellation and
-// queue acceptance must be serialized by their coordinator.
-class SubmissionTransaction {
-public:
-    SubmissionTransaction(std::function<void()> submitted, std::function<void()> cancelled);
-    ~SubmissionTransaction();
-    SubmissionTransaction(const SubmissionTransaction&) = delete;
-    SubmissionTransaction& operator=(const SubmissionTransaction&) = delete;
-    bool resolved() const { return status_ != Status::Pending; }
-    bool cancelled() const { return status_ == Status::Cancelled; }
-    void cancel() noexcept;
-
-private:
-    enum class Status { Pending, Submitted, Cancelled };
-    std::atomic<Status> status_ = Status::Pending;
-    bool attached_ = false;
-    std::function<void()> submitted_;
-    std::function<void()> cancelled_;
-    void submit() noexcept;
-    friend struct detail::CommandSubmissionState;
-    friend class CommandBuffer;
-};
-
-namespace detail {
-struct CommandSubmissionState {
-    ~CommandSubmissionState();
-    bool canSubmit() const;
-    void submit() noexcept;
-    void cancel() noexcept;
-    std::atomic<bool> submitted = false;
-    std::atomic<bool> cancelled = false;
-    std::atomic<bool> finished = false;
-    bool sealed = false; // Coordinator only, after finished publication.
-    CommandBuffer* owner = nullptr; // Invalidated by wrapper destruction/move.
-    std::vector<std::shared_ptr<SubmissionTransaction>> transactions;
-    std::vector<std::shared_ptr<void>> resources;
-};
-
-struct CommandSubmissionRegistry {
-    void add(const std::shared_ptr<CommandSubmissionState>& recording);
-    void cancel() noexcept;
-    std::vector<std::weak_ptr<CommandSubmissionState>> recordings;
-};
-} // namespace detail
+class RenderFrameContext;
+namespace detail { struct FrameSubmissionContext; }
 
 // Immutable identity during recording; a published point becomes waitable.
 // A frame point is published only after its submission window closes.
@@ -76,7 +32,7 @@ private:
     std::shared_ptr<State> state_;
     friend class RenderFrameContext;
     friend class QueueSubmissionTracker;
-    friend class CommandBuffer;
+    friend Result<> addCommandDependency(CommandBuffer&, const GPUCompletionPoint&);
     friend class CommandRecordingContext;
     friend class RecordedBatch;
 };
@@ -117,7 +73,7 @@ private:
 // record. Workers retain through their CommandBuffer only.
 class RenderFrameContext {
 public:
-    explicit RenderFrameContext(uint32_t slotIndex = 0) : slotIndex_(slotIndex) {}
+    explicit RenderFrameContext(uint32_t slotIndex = 0);
     ~RenderFrameContext();
     RenderFrameContext(const RenderFrameContext&) = delete;
     RenderFrameContext& operator=(const RenderFrameContext&) = delete;
@@ -144,6 +100,8 @@ public:
     uint64_t frameIndex() const { return frameIndex_; }
     uint32_t slotIndex() const { return slotIndex_; }
     const GPUCompletionPoint& completion() const { return completion_; }
+    std::shared_ptr<CommandSubmissionContext> submissionContext() const;
+    static RenderFrameContext* from(const CommandBuffer& commands);
 
 private:
     uint32_t slotIndex_ = 0;
@@ -154,10 +112,12 @@ private:
     std::vector<std::shared_ptr<void>> resources_;
     std::vector<GPUCompletionPoint> dependencies_;
     detail::CommandSubmissionRegistry recordings_;
-    friend class CommandBuffer;
+    std::shared_ptr<detail::FrameSubmissionContext> submissionContext_;
+    friend struct detail::FrameSubmissionContext;
     friend class QueueSubmissionTracker;
-    friend class Queue;
 };
+
+Result<> addCommandDependency(CommandBuffer& commands, const GPUCompletionPoint& completion);
 
 // One pool per frame slot / queue / recording lane. The coordinator prepares
 // command buffers in graph order, then hands the entire context to one worker.

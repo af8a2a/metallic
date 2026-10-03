@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Streamer/Ktx2Texture.h"
 #include <zstd.h>
 #include <algorithm>

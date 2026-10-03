@@ -84,7 +84,7 @@ Json trace(RHITestContext& context, uint64_t blasAddress)
         RenderFrameContext& frame; CommandPool& pool;
         ~Drain() { if (frame.completion().isSubmitted()) { (void)frame.wait(); } (void)pool.reset(); (void)frame.reset(); }
     } drain{frame, *pool};
-    checked(frame.begin(0)); checked(commands->begin(&frame));
+    checked(frame.begin(0)); checked(commands->begin(frame.submissionContext()));
     const ComputeDispatchBinding bindings[]{{.binding = 0, .accelerationStructure = tlas.get()}, {.binding = 1, .buffer = output.get()}};
     checked(program.dispatch({.commandBuffer = commands.get(), .bindings = bindings}));
     checked(commands->end());

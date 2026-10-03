@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
@@ -58,9 +60,9 @@ public:
     render::Result<> execute(render::RenderGraphExecutionContext& context) override
     {
         using namespace render;
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device_, **registry, context.commandBuffer().frameContext());
+        ParameterWriter writer(*device_, **registry, metallic::render::RenderFrameContext::from(context.commandBuffer()));
         const PathTraceTonemapParams params{
             .source = writer.storageImage(context.inputTexture("source").view()),
             .output = writer.storageImage(context.outputTexture("color").view()),

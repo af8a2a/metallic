@@ -1,3 +1,5 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -3183,7 +3185,7 @@ private:
                 if (!hybridResult) { return hybridResult; }
             }
         }
-        Result<> result = device_->resourceRegistry().transform([&](auto rhiValue) { bundle.registry = std::move(rhiValue); });
+        Result<> result = metallic::render::ResourceRegistry::forDevice(*device_).transform([&](auto rhiValue) { bundle.registry = std::move(rhiValue); });
         if (!result) { return result; }
 
         auto bindBuffer = [&](Buffer& buffer, ResourceLease& handle,

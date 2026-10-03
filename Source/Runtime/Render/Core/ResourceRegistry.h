@@ -82,6 +82,7 @@ struct ResourceRegistryStats {
 // Device must outlive the registry, all leases and all submitted parameter packets.
 class ResourceRegistry {
 public:
+    [[nodiscard]] static Result<std::shared_ptr<ResourceRegistry>> forDevice(Device& device);
     ResourceRegistry() = default;
     Result<> initialize(Device& device, const BindlessHeapDesc& capacity = {
         .maxSamplers = 64, .maxSampledImages = 8192, .maxStorageImages = 1024, .maxBuffers = 8192});

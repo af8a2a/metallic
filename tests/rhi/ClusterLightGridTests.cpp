@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 
 #include "Runtime/Render/ClusterLightGrid.h"
@@ -106,9 +107,9 @@ public:
         GRID_CHECK(scene.prepareView(view, slot, {.width = desc.width, .height = desc.height}));
         GRID_CHECK(frames_[slot]->begin(nextFrame_++));
         GRID_CHECK(pool_->reset());
-        GRID_CHECK(commands_->begin(frames_[slot].get()));
+        GRID_CHECK(commands_->begin(frames_[slot]->submissionContext()));
         GRID_CHECK(host_.beginFrame(nextFrame_ - 1, slot, nullptr, log_, frames_[slot].get()));
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         GRID_CHECK(registry);
         const auto before = (*registry)->stats();
         const auto result = grid.record(*device_, *commands_, host_, scene, view, slot, desc, log_);

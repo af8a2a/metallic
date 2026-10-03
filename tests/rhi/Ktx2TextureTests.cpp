@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -596,7 +597,7 @@ public:
             require(frame.wait(),"feedback wait");
             require(pool->reset(),"feedback reset");
             require(frame.begin(index++),"feedback frame");
-            require(commands->begin(&frame),"feedback begin");
+            require(commands->begin(frame.submissionContext()),"feedback begin");
             Buffer* feedback = nullptr;
             textureProfile.reset();
             require(resources.beginTextureStreaming(*commands,index,feedback,&textureProfile,frozen),"streaming tick");
@@ -743,7 +744,7 @@ public:
             require(frame.wait(), "feedback contract wait");
             require(pool->reset(), "feedback contract reset");
             require(frame.begin(++frameIndex), "feedback contract frame");
-            require(commands[0]->begin(&frame), "feedback first consumer begin");
+            require(commands[0]->begin(frame.submissionContext()), "feedback first consumer begin");
             Buffer* first = nullptr;
             require(resources.beginTextureStreaming(*commands[0], frameIndex, first), "feedback first consumer metadata");
             require(first != nullptr && first->desc().memoryLocation == MemoryLocation::Device,
@@ -754,13 +755,13 @@ public:
             // is cancelled. Frame completion alone must not publish that sample.
             dispatch(*commands[0], *first, cancelReadback ? 0u : baseMip, 1000);
             require(commands[0]->end(), "feedback first consumer end");
-            require(commands[1]->begin(&frame), "feedback second consumer begin");
+            require(commands[1]->begin(frame.submissionContext()), "feedback second consumer begin");
             Buffer* second = nullptr;
             require(resources.beginTextureStreaming(*commands[1], frameIndex, second), "feedback second consumer metadata");
             require(second == first, "Consumers in one frame must share accumulated texture feedback");
             dispatch(*commands[1], *second, 0, fineDemand ? 1000u : 0u);
             require(commands[1]->end(), "feedback second consumer end");
-            require(commands[2]->begin(&frame), "feedback readback tail begin");
+            require(commands[2]->begin(frame.submissionContext()), "feedback readback tail begin");
             require(resources.endTextureStreaming(*commands[2], frameIndex), "feedback graph-end readback");
             require(commands[2]->end(), "feedback readback tail end");
             if (cancelReadback) {
@@ -869,7 +870,7 @@ public:
             require(frame.wait(), "stability feedback wait");
             require(pool->reset(), "stability pool reset");
             require(frame.begin(frameIndex++), "stability frame");
-            require(commands->begin(&frame), "stability begin");
+            require(commands->begin(frame.submissionContext()), "stability begin");
             Buffer* feedback = nullptr;
             require(resources.beginTextureStreaming(*commands, frameIndex, feedback, nullptr, frozen), "stability stream tick");
             require(resources.uploadMaterialTextures(*commands), "retain stability texture generation");
@@ -1104,7 +1105,7 @@ class BCTextureUploadTest final : public RHITest {
                     }
                 }
                 std::unique_ptr<Streamer> streamer;
-                require(context.device.createStreamer({.constantBufferSize = 4096, .dynamicBufferSizePerFrame = 1024}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }),
+                require(createStreamer(context.device, {.constantBufferSize = 4096, .dynamicBufferSizePerFrame = 1024}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }),
                         "BC streamer");
                 std::unique_ptr<Texture> texture;
                 require(context.device.createTexture({.usage = TextureUsageBits::TransferDestination |
@@ -1159,7 +1160,7 @@ class BCTextureUploadTest final : public RHITest {
                     .after = {PipelineStageBits::Transfer, AccessBits::TransferWrite},
                 };
                 if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }
-                if (auto commandResult = commands->copyStreamedData(*streamer); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
+                if (auto commandResult = streamer->copyStreamedData(*commands); !commandResult) { return RHITestResult::fail(std::string("copyStreamedData failed: ") + render::resultToString(commandResult)); }
                 barrier.oldLayout = TextureLayout::TransferDestination; barrier.before = {PipelineStageBits::Transfer, AccessBits::TransferWrite};
                 barrier.newLayout = TextureLayout::TransferSource; barrier.after = {PipelineStageBits::Transfer, AccessBits::TransferRead};
                 if (auto commandResult = commands->synchronize({.textures = {&barrier, 1}}); !commandResult) { return RHITestResult::fail(std::string("synchronize failed: ") + render::resultToString(commandResult)); }

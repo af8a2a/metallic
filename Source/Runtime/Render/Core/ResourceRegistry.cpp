@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/ResourceRegistry.h"
 
 #include <algorithm>
@@ -9,6 +10,19 @@
 #include <mutex>
 
 namespace metallic::render {
+
+Result<std::shared_ptr<ResourceRegistry>> ResourceRegistry::forDevice(Device& device)
+{
+    static const char key = 0;
+    auto state = device.sharedState(&key, [&]() -> Result<std::shared_ptr<void>> {
+        auto registry = std::make_shared<ResourceRegistry>();
+        auto result = registry->initialize(device);
+        if (!result) { return makeError(result.error()); }
+        return registry;
+    });
+    if (!state) { return makeError(state.error()); }
+    return std::static_pointer_cast<ResourceRegistry>(*state);
+}
 namespace detail {
 
 struct RegistryEntry {
@@ -141,7 +155,7 @@ const void* EncodedParameters::deviceIdentity() const
 
 bool EncodedParameters::compatible(const CommandBuffer& commands, ParameterABI abi) const
 {
-    auto* frame = commands.frameContext();
+    auto* frame = metallic::render::RenderFrameContext::from(commands);
     return packet_ && packet_->abi == abi && commands.recording() &&
         packet_->registry->device == commands.deviceIdentity() &&
         (!packet_->completion.valid() || (frame && frame->recording() &&

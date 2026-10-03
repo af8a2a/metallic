@@ -1,3 +1,5 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "WorkControlShaderTrace.h"
 #include "Runtime/Debug/DebugHash.h"
 #include "Runtime/Render/Core/SlangCompiler.h"
@@ -104,7 +106,7 @@ void WorkControlShaderTrace::qualify(Device& device, Queue& queue, const std::fi
     auto commands = (*pool)->createCommandBuffer(); require(bool(commands),"Echo commands failed");
     QueueSubmissionTracker tracker; require(bool(tracker.initialize(device,queue)),"Echo tracker failed");
     RenderFrameContext frame; require(bool(frame.begin(0)),"Echo frame failed");
-    require(bool((*commands)->begin(&frame)),"Echo recording failed");
+    require(bool((*commands)->begin(frame.submissionContext())),"Echo recording failed");
     if (auto commandResult = (*commands)->bindExecution((*pipeline)->execution()); !commandResult) { throw std::runtime_error(std::string("bindExecution failed: ") + metallic::render::resultToString(commandResult)); } (*commands)->dispatch(1,1,1);
     require(bool((*commands)->end()),"Echo recording end failed");
     CommandBuffer* submitted[]{commands->get()};
@@ -257,10 +259,10 @@ bool WorkControlShaderTrace::bind(CommandBuffer& commands, std::string_view pass
         production.at("entryPoint") == "streamClusterRasterWorkControlMain","Unsupported production shader branch");
     validateSources(evidence_.at("variant").at("dependencyHashes"));
     if (!runtime_.maySubmit()) { armed_=false; return false; }
-    require(commands.frameContext()!=nullptr,"Untracked shader dispatch");
+    require(metallic::render::RenderFrameContext::from(commands)!=nullptr,"Untracked shader dispatch");
     runtime_.recorded({{"execution",execution_.execution},{"frameSlot",execution_.frameSlot},
-        {"commandBufferRecording",commands.frameContext()->frameIndex()}});
-    completion_ = commands.frameContext()->completion();
+        {"commandBufferRecording",metallic::render::RenderFrameContext::from(commands)->frameIndex()}});
+    completion_ = metallic::render::RenderFrameContext::from(commands)->completion();
     auto lease = lease_;
     require(bool(commands.retainResource(lease)),"Cannot retain diagnostic pipeline");
     require(bool(commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/Streamer/MeshletStreamCompactCLASPool.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -317,7 +318,7 @@ class CompactCLASLifecycleTest final : public RHITest {
             uint32_t gpuPageEntry = 0;
             std::span<const MeshletStreamCLASPageBuild> activeRequests(&build, 1);
             auto record = [&](bool request, bool cancel = false) {
-                require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)),
+                require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(frame.submissionContext())),
                         "Begin failed");
                 require(bool(pool.cmdBuildPages(
                             *cmd, *pageBuffer,
@@ -484,7 +485,7 @@ class CompactCLASLifecycleTest final : public RHITest {
             const uint64_t secondAddress = pool.clusterAddress(secondPage, 0);
             const uint64_t bothBytes = pool.stats().storageBytes;
             require(bothBytes <= pool.stats().storageBudgetBytes, "Physical growth exceeded budget");
-            require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Begin pending frame");
+            require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(frame.submissionContext())), "Begin pending frame");
             require(bool(pool.cmdBuildPages(*cmd, *pageBuffer, {}, log)) && bool(cmd->end()), "Record pending frame");
             pool.retirePages(std::span(&pageIndex, 1));
             for (uint32_t i = 0; i < 4; ++i) { pool.beginFrame(); }
@@ -535,7 +536,7 @@ class CompactCLASLifecycleTest final : public RHITest {
                     .startStorageBytes = capacity, .growStorageBytes = 256, .emptyChunkRetentionFrames = 60}, log)), log);
                 for (uint32_t i = 0; i < 5 && !pressure.pageHasClas(pageIndex); ++i) {
                     pressure.beginFrame();
-                    require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Pressure begin");
+                    require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(frame.submissionContext())), "Pressure begin");
                     require(bool(pressure.cmdBuildPages(*cmd, *pageBuffer, std::span(&build, 1), log)) && bool(cmd->end()), log);
                     CommandBuffer* list[] = {cmd.get()};
                     require(bool(tracker.submit({.commandBuffers = {list, 1}}, frame)) && bool(frame.wait(5000000000ull)), "Pressure submit");
@@ -551,7 +552,7 @@ class CompactCLASLifecycleTest final : public RHITest {
                     .persistentPages = std::span(&pageIndex, 1)}, log)), log);
                 auto tick = [&](std::span<const MeshletStreamCLASPageBuild> requests) {
                     segregated.beginFrame();
-                    require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Segregated begin");
+                    require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(frame.submissionContext())), "Segregated begin");
                     require(bool(segregated.cmdBuildPages(*cmd, *pageBuffer, requests, log)) && bool(cmd->end()), log);
                     CommandBuffer* list[] = {cmd.get()};
                     require(bool(tracker.submit({.commandBuffers = {list, 1}}, frame)) && bool(frame.wait(5000000000ull)), "Segregated submit");
@@ -579,7 +580,7 @@ class CompactCLASLifecycleTest final : public RHITest {
                 .maxBuildClusters = asset.maxPageClusters(), .queuedFrameCount = 2, .growStorageBytes = 256}, log)), log);
             for (uint32_t i = 0; i < 3; ++i) {
                 constrained.beginFrame();
-                require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(&frame)), "Budget test begin");
+                require(bool(frame.begin(++frameId)) && bool(commandPool->reset()) && bool(cmd->begin(frame.submissionContext())), "Budget test begin");
                 require(bool(constrained.cmdBuildPages(*cmd, *pageBuffer, std::span(&build, 1), log)) && bool(cmd->end()), log);
                 CommandBuffer* list[] = {cmd.get()};
                 require(bool(tracker.submit({.commandBuffers = {list, 1}}, frame)) && bool(frame.wait(5000000000ull)), "Budget test submit");

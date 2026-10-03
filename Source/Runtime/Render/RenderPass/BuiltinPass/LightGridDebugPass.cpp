@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/LightingKernelParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPassCommon.h"
@@ -183,7 +185,7 @@ public:
             gpuScene_.syncLights(scene != nullptr ? std::span<const scene::RenderLight>(scene->lights())
                 : std::span<const scene::RenderLight>{}, resolvedLighting.lights);
         }
-        RenderFrameContext* frame = context.commandBuffer().frameContext();
+        RenderFrameContext* frame = metallic::render::RenderFrameContext::from(context.commandBuffer());
         const uint32_t slot = frame != nullptr ? frame->slotIndex() : 0u;
         if (slot >= grids_.size() || !gpuScene_.prepareView(view_, slot, {
             .width = desc.width, .height = desc.height,
@@ -212,7 +214,7 @@ public:
                 (boolProperty(&props, "includeGlobalLights", false) ? 4u : 0u) |
                 (boolProperty(&props, "showCounts", false) ? 8u : 0u),
         };
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
         ParameterWriter writer(*device_, **registry, frame);
         const LightGridDebugParams params{

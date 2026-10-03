@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -179,7 +180,7 @@ public:
             ~FrameDrain() { if (frame.completion().isSubmitted()) { (void)frame.wait(); } (void)pool.reset(); (void)frame.reset(); }
         } frameDrain{frame, *pool};
         UPLOAD_REQUIRE(frame.begin(0));
-        UPLOAD_REQUIRE(commands->begin(&frame));
+        UPLOAD_REQUIRE(commands->begin(frame.submissionContext()));
         for (uint32_t index = 0; index < kTextureCount; ++index) {
             const ComputeDispatchBinding bindings[] = {
                 {.binding = 0, .textureViews = {resources.materialTextureViews().data() + index + 1, 1}},

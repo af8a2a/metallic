@@ -1,3 +1,5 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/Streamer/StreamerSubsystem.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -728,7 +730,7 @@ public:
     Result<> prepareExecution(RenderGraphExecutionContext& context) override
     {
         if (streamRuntime_) {
-            if (auto* frame = context.commandBuffer().frameContext()) { frame->retain(streamRuntime_); }
+            if (auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer())) { frame->retain(streamRuntime_); }
         }
         GPUSceneSubsystem* gpuSceneSubsystem = context.subsystem<GPUSceneSubsystem>();
         if (gpuSceneSubsystem == nullptr ||

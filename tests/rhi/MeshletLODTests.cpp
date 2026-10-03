@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "Runtime/Render/ResidentMeshletLOD.h"
 #include "Runtime/Render/Debug/RenderDebug.h"
@@ -223,7 +224,7 @@ public:
         if (hasError(created, Error::Unsupported)) { return RHITestResult::skip("Requires bindless compute"); }
         LOD_REQUIRE(created);
         std::shared_ptr<ResourceRegistry> registry;
-        LOD_REQUIRE(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+        LOD_REQUIRE(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
         std::array<std::unique_ptr<Buffer>, 4> buffers;
         GPUSceneConsumerBindings bindings;
         const GPUSceneGlobalBufferKind kinds[] = {GPUSceneGlobalBufferKind::LODGroups, GPUSceneGlobalBufferKind::Meshlets,

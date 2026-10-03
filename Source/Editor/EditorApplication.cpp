@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ShaderWarmup.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Editor/EditorApplication.h"
@@ -7096,7 +7097,7 @@ bool EditorApplication::renderVulkanFrame(bool renderMainViewport)
             spdlog::error("commandPool reset failed with Result {}", render::resultToString(result));
             return false;
         }
-        result = frame.commandBuffer->begin(&frame.context);
+        result = frame.commandBuffer->begin(frame.context.submissionContext());
         if (!result) {
             spdlog::error("commandBuffer begin failed with Result {}", render::resultToString(result));
             return false;

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/RenderGraph/NRDRuntime.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
@@ -213,7 +214,7 @@ protected:
         queue = device->getQueue(render::QueueType::Graphics);
         require(device->createCommandPool(*queue).transform([&](auto rhiValue) { commands = std::move(rhiValue); }));
         require(commands->createCommandBuffer().transform([&](auto rhiValue) { command = std::move(rhiValue); }));
-        require(device->createStreamer({.constantBufferSize = 1024 * 1024}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
+        require(createStreamer(*device, {.constantBufferSize = 1024 * 1024}).transform([&](auto rhiValue) { streamer = std::move(rhiValue); }));
         require(device->createBuffer({.size = 63 * 37 * 16,
                                       .usage = render::BufferUsageBits::TransferDestination,
                                       .memoryLocation = render::MemoryLocation::HostReadback}).transform([&](auto rhiValue) { readback = std::move(rhiValue); }));
@@ -267,7 +268,7 @@ protected:
                                bool confidence = true, bool discard = false, bool retireRuntime = false)
     {
         require(recording.begin(frameIndex));
-        require(command->begin(&recording));
+        require(command->begin(recording.submissionContext()));
         for (size_t i = 0; i < textures.size(); ++i) {
             render::TextureBarrierDesc barrier{
                 .texture = textures[i].get(),
@@ -419,7 +420,7 @@ TEST_F(NRDGPU, ReferencePreflightFailureRestartsHistory)
     ASSERT_FLOAT_EQ(first[1], 10);
 
     require(recording.begin(frameIndex));
-    require(command->begin(&recording));
+    require(command->begin(recording.submissionContext()));
     auto settings = commonSettings(w, h);
     settings.frameIndex = frameIndex++;
     require(runtime.setCommonSettings(settings));
@@ -459,7 +460,7 @@ TEST_F(NRDGPU, SharedRegistryAndRetiredRuntimeSubmission)
     EXPECT_FLOAT_EQ(first[0], 2);
     EXPECT_FLOAT_EQ(first[1], 10);
     std::shared_ptr<render::ResourceRegistry> registry;
-    require(device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
+    require(metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); }));
     const auto before = registry->stats().descriptorWrites;
     render::ResourceLease output;
     require(registry->storageImage(*pool[static_cast<size_t>(rd::ResourceType::OUT_DIFF_RADIANCE_HITDIST)].view).transform([&](auto value) { output = std::move(value); }));
@@ -648,7 +649,7 @@ TEST_F(NRDRayTracingGPU, RayTracedShadowOcclusionAndHistory)
         upload->flush({0, uint64_t(w) * h * 4});
         upload->unmap();
         require(recording.begin(frameIndex));
-        require(command->begin(&recording));
+        require(command->begin(recording.submissionContext()));
         command->hostWriteBarrier();
         render::TextureBarrierDesc barrier{
             .texture = depth.get(),

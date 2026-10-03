@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
 #include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/MaterialBinningParams.h"
@@ -32,7 +34,7 @@ Result<MaterialBinningResult> MaterialBinning::record(
         log = "Material classification requires native wave32 with subgroup ballot/arithmetic; disable materialBinning on this device";
         return makeError(Error::Unsupported);
     }
-    auto* frame = commands.frameContext();
+    auto* frame = metallic::render::RenderFrameContext::from(commands);
     const uint64_t columns = (uint64_t(desc.width) + kMaterialTileWidth - 1) / kMaterialTileWidth;
     const uint64_t rows = (uint64_t(desc.height) + kMaterialTileHeight - 1) / kMaterialTileHeight;
     const uint64_t tileCount = columns * rows;
@@ -115,7 +117,7 @@ Result<MaterialBinningResult> MaterialBinning::record(
     auto plan = buildGraphAccessPlan(resources, phases);
     if (!plan) { return makeError(plan.error()); }
     std::shared_ptr<ResourceRegistry> registry;
-    auto result = device.resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
+    auto result = metallic::render::ResourceRegistry::forDevice(device).transform([&](auto rhiValue) { registry = std::move(rhiValue); });
     if (!result) { return makeError(result.error()); }
     ParameterWriter writer(device, *frame, *registry);
     const MaterialBinningParams params{

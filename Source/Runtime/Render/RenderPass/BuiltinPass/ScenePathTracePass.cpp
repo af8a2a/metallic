@@ -1,3 +1,5 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PathTraceStageParameters.h"
@@ -1692,7 +1694,7 @@ public:
             }
             domainView = domain.valid() ? domain.view() : visibilityDepth.view();
             deferredFrameInfo = rasterInfo.buffer();
-            if (auto* frame = context.commandBuffer().frameContext()) {
+            if (auto* frame = metallic::render::RenderFrameContext::from(context.commandBuffer())) {
                 // rasterInfo is also CPU metadata for downstream passes. Bind an
                 // immutable snapshot so the next recording cannot overwrite it
                 // while this frame's material classification/decode reads it.
@@ -2366,7 +2368,7 @@ private:
         if (cacheParamsBuffer_ == nullptr) {
             return makeError(Error::Failure);
         }
-        if (RenderFrameContext* frame = commandBuffer.frameContext(); frame && acquireAllocation) {
+        if (RenderFrameContext* frame = metallic::render::RenderFrameContext::from(commandBuffer); frame && acquireAllocation) {
             auto allocation = std::find_if(cacheParamsAllocations_.begin(), cacheParamsAllocations_.end(),
                 [](const auto& candidate) { return candidate.completion.isComplete(); });
             if (allocation == cacheParamsAllocations_.end()) {
@@ -2580,9 +2582,9 @@ private:
         const SceneSharcMaintenancePush& maintenancePush,
         uint32_t groupCount)
     {
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device_, **registry, commandBuffer.frameContext());
+        ParameterWriter writer(*device_, **registry, metallic::render::RenderFrameContext::from(commandBuffer));
         const SharcMaintenanceParams params{
             .hashEntries = writer.buffer(sharcHashEntriesBuffer_.get()),
             .accumulation = writer.buffer(sharcAccumulationBuffer_.get()),
@@ -2786,9 +2788,9 @@ private:
             .hasHistory = push.hasHistory,
             .accumulationFrame = push.accumulationFrame,
         };
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
-        ParameterWriter tonemapWriter(*device_, **registry, commandBuffer.frameContext());
+        ParameterWriter tonemapWriter(*device_, **registry, metallic::render::RenderFrameContext::from(commandBuffer));
         const PathTraceTonemapParams tonemapParams{
             .source = tonemapWriter.storageImage(historyCurrentView),
             .output = tonemapWriter.storageImage(context.outputTexture("color").view()),

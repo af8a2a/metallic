@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/ResourceSynchronization.h"
 #include "Runtime/Render/Profiling/NvPerf.h"
 #include "Runtime/Render/Profiling/WorkControlReplay.h"

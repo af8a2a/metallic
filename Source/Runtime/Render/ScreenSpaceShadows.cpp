@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/ScreenSpaceShadows.h"
 #include "Runtime/Render/RenderGraph/RenderGraphAccessPlan.h"
@@ -141,7 +142,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     const auto traceIndex = streamed ? (streamTlas ? 3 : 4) : (ntc ? (coop ? 2 : 1) : 0);
     const uint32_t textureCount = streamed && !streamTlas ? 0 : geometry->materialTextureCount();
     if (trace.valid() && traceTextureCounts_[traceIndex] != textureCount) {
-        if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ComputeProgram>(std::move(trace))); }
+        if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ComputeProgram>(std::move(trace))); }
         else { (void)device.waitIdle(); trace.clear(); }
     }
     traceTextureCounts_[traceIndex] = textureCount;
@@ -223,7 +224,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         state_ = std::move(next);
     }
     auto state = state_;
-    if (auto* frame = commands.frameContext()) { frame->retain(state); }
+    if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(state); }
     profile.next("Prepare shadow parameters");
     state->parameters.reset();
     for (auto& candidate : state->parameterPool) {
@@ -238,7 +239,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         state->parameters = std::move(buffer);
         state->parameterPool.push_back(state->parameters);
     }
-    if (auto* frame = commands.frameContext()) { frame->retain(state->parameters); }
+    if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(state->parameters); }
     auto result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>([] {},
         [state] { state->cancelled = true; }));
     if (!result) { return makeError(result.error()); }
@@ -311,7 +312,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
     if (streamed) {
         if (streamTlas) {
             CPUProfileScope resources(profiler, "Prepare material textures");
-            if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
+            if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
             bindings.push_back({.binding = 0, .accelerationStructure = accelerationStructure
                 ? accelerationStructure : streamGeometry->accelerationStructure});
             bindings.push_back({.binding = 6, .buffer = geometry->materialBuffer()});
@@ -325,7 +326,7 @@ Result<ScreenSpaceShadowResult> ScreenSpaceShadows::record(
         }
     } else {
         CPUProfileScope resources(profiler, "Prepare material textures");
-        if (auto* frame = commands.frameContext()) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
+        if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(std::make_shared<ScenePathTraceResources>(*geometry)); }
         bindings.push_back({.binding = 0, .accelerationStructure = accelerationStructure
             ? accelerationStructure : geometry->accelerationStructure().accelerationStructure()});
         bindings.push_back({.binding = 2, .buffer = geometry->shadingVertexBuffer()});

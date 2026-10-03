@@ -390,7 +390,7 @@ public:
         PATTERN_REQUIRE(device->createCommandPool(*queue).transform([&](auto rhiValue) { commands.pool = std::move(rhiValue); }));
         PATTERN_REQUIRE(commands.pool->createCommandBuffer().transform([&](auto rhiValue) { commands.buffer = std::move(rhiValue); }));
         PATTERN_REQUIRE(commands.frame.begin(0));
-        PATTERN_REQUIRE(commands.buffer->begin(&commands.frame));
+        PATTERN_REQUIRE(commands.buffer->begin(commands.frame.submissionContext()));
         const render::TextureBarrierDesc toTransfer{
             .texture = texture.get(),
             .oldLayout = render::TextureLayout::Undefined,

@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 
 #include "Runtime/Render/Subsystem/BuiltinRenderSubsystems.h"
@@ -918,7 +919,7 @@ public:
         }
 
         std::shared_ptr<render::ResourceRegistry> registry;
-        result = device->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
+        result = metallic::render::ResourceRegistry::forDevice(*device).transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (!result) { return RHITestResult::fail("Device registry unavailable"); }
 
         std::vector<scene::RenderPrimitive> primitives{
@@ -1943,7 +1944,7 @@ public:
             }
             SUBMISSION_CHECK(frame.begin(index + 1));
             SUBMISSION_CHECK(pool->reset());
-            SUBMISSION_CHECK(commands->begin(&frame));
+            SUBMISSION_CHECK(commands->begin(frame.submissionContext()));
             SUBMISSION_CHECK(host.beginFrame(index + 1, 0, nullptr, log, &frame));
             const auto previousStats = subsystem->gpuUploadStats();
             SUBMISSION_CHECK(host.recordPreGraph(*commands, nullptr, required, log));

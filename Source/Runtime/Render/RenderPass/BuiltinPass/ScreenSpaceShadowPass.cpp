@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/ScreenSpaceShadowPassCommon.h"
 #include "Runtime/Render/GPUDrivenRaster.h"
@@ -179,7 +180,7 @@ public:
         });
         shadow.parameters->unmap();
         if (!uploaded.valid()) { return makeError(Error::OutOfMemory); }
-        if (auto commandResult = commands.copyStreamedData(*context.streamer()); !commandResult) { return commandResult; }
+        if (auto commandResult = context.streamer()->copyStreamedData(commands); !commandResult) { return commandResult; }
         profile.next("Publish camera history");
         history_->view = view;
         history_->sceneIdentity = info.sceneIdentity;

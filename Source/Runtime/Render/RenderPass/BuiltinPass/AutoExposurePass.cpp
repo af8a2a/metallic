@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "Runtime/Render/Core/ComputeKernel.h"
 #include "Runtime/Render/Core/PostProcessParameters.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
@@ -115,13 +116,13 @@ public:
             finiteProperty(context.properties(), "artisticExposure", 1.0f, 0.001f, 16.0f),
         };
         auto& commands = context.commandBuffer();
-        if (auto* frame = commands.frameContext()) { frame->retain(state_); }
+        if (auto* frame = metallic::render::RenderFrameContext::from(commands)) { frame->retain(state_); }
         Result<> result = commands.addSubmissionTransaction(std::make_shared<SubmissionTransaction>(
             [] {}, [state = state_] { state->valid = false; }));
         if (!result) { return result; }
-        auto registry = device_->resourceRegistry();
+        auto registry = metallic::render::ResourceRegistry::forDevice(*device_);
         if (!registry) { return makeError(registry.error()); }
-        ParameterWriter writer(*device_, **registry, commands.frameContext());
+        ParameterWriter writer(*device_, **registry, metallic::render::RenderFrameContext::from(commands));
         AutoExposureParams params{};
         params.source = writer.sampledImageHandle(source.view());
         params.output = writer.storageImageHandle(color.view());

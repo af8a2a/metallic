@@ -1,5 +1,6 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Streamer/MeshletStreamResidency.h"
-#include "Runtime/Render/GAPI/StreamUploadCompletion.h"
+#include "Runtime/Render/Streamer/StreamUploadCompletion.h"
 #include "Runtime/Render/Profiling/CPUProfile.h"
 
 #include <algorithm>

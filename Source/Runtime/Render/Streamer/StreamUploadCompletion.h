@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 
 #include <utility>
 #include <algorithm>
@@ -27,11 +28,11 @@ public:
     // sharing a frame context alone is insufficient (including cancelled tails).
     bool isRecordedBefore(const CommandBuffer& commands) const
     {
-        return !isCancelled() && commands.recording_ && commands.submission_ &&
-            commands.submission_->canSubmit() && commands.frameContext_ &&
-            completion_.sameSubmission(commands.frameContext_->completion()) &&
-            std::find(commands.submission_->transactions.begin(), commands.submission_->transactions.end(),
-                submission_) != commands.submission_->transactions.end();
+        auto* frame = RenderFrameContext::from(commands);
+        const auto& state = commands.submissionState();
+        return !isCancelled() && commands.recording() && state &&
+            state->canSubmit() && frame && completion_.sameSubmission(frame->completion()) &&
+            std::find(state->transactions.begin(), state->transactions.end(), submission_) != state->transactions.end();
     }
 
 private:

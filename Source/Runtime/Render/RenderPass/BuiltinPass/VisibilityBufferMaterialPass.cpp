@@ -1,3 +1,4 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Core/NamedResourceLayouts.h"
 #include "Runtime/Render/RenderPass/BuiltinPass/BuiltinPasses.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -76,12 +77,12 @@ public:
     Result<> prepareExecution(RenderGraphExecutionContext& context) override
     {
         prepared_ = {};
-        return context.commandBuffer().frameContext() ? prepareMaterial(context, true) : Result<>{};
+        return metallic::render::RenderFrameContext::from(context.commandBuffer()) ? prepareMaterial(context, true) : Result<>{};
     }
 
     Result<> execute(RenderGraphExecutionContext& context) override
     {
-        return context.commandBuffer().frameContext() ? prepared_.record(context.commandBuffer()) : prepareMaterial(context, false);
+        return metallic::render::RenderFrameContext::from(context.commandBuffer()) ? prepared_.record(context.commandBuffer()) : prepareMaterial(context, false);
     }
 
 private:
@@ -142,7 +143,7 @@ private:
             .groupCountX = (info.width + 7) / 8,
             .groupCountY = (info.height + 7) / 8,
         };
-        if (prepare) { return program_.prepareDispatch(*context.commandBuffer().frameContext(), desc).transform([&](auto value) { prepared_ = std::move(value); }); }
+        if (prepare) { return program_.prepareDispatch(*metallic::render::RenderFrameContext::from(context.commandBuffer()), desc).transform([&](auto value) { prepared_ = std::move(value); }); }
         desc.commandBuffer = &context.commandBuffer();
         return program_.dispatch(desc);
     }

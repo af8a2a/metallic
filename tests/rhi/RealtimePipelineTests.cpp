@@ -1,3 +1,4 @@
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "RHITest.h"
 #include "RenderGraphViewerTestUI.h"
 #include "Runtime/Render/Core/ComputeProgram.h"

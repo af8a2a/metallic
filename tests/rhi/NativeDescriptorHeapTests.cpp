@@ -101,7 +101,7 @@ public:
                 }
             } drain{frame, *pool};
             NATIVE_REQUIRE(frame.begin(0));
-            NATIVE_REQUIRE(commands->begin(&frame));
+            NATIVE_REQUIRE(commands->begin(frame.submissionContext()));
             const render::ComputeDispatchBinding bindings[] = {{.binding = 0, .buffer = records.get()}, {.binding = 1, .buffer = output.get()}};
             NATIVE_REQUIRE(program.dispatch({.commandBuffer = commands.get(), .bindings = {bindings, 2}}));
             NATIVE_REQUIRE(commands->end());
@@ -226,7 +226,7 @@ public:
                 }
             } drain{frame, *pool};
             NATIVE_REQUIRE(frame.begin(0));
-            NATIVE_REQUIRE(commands->begin(&frame));
+            NATIVE_REQUIRE(commands->begin(frame.submissionContext()));
             for (uint32_t i = 0; i < heaps.size(); ++i) {
                 const Push push{inputHandles[i].shaderIndex, 0x12340000u + i};
                 if (i == 0) {
@@ -363,7 +363,7 @@ public:
                 }
             } drain{frame, *pool};
             NATIVE_REQUIRE(frame.begin(0));
-            NATIVE_REQUIRE(commands->begin(&frame));
+            NATIVE_REQUIRE(commands->begin(frame.submissionContext()));
             const render::BufferBarrierDesc barriers[] = {
                 {
                     .buffer = buffers[0].get(),

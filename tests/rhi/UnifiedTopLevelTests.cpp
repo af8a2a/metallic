@@ -168,7 +168,7 @@ public:
             }
         } drain{frame, **pool};
         TLAS_REQUIRE(frame.begin(0));
-        TLAS_REQUIRE((*commands)->begin(&frame));
+        TLAS_REQUIRE((*commands)->begin(frame.submissionContext()));
         TLAS_REQUIRE((*commands)->buildRayTracingAccelerationStructure({
             .destination = blas->get(),
             .geometries = {&geometry, 1},
@@ -208,7 +208,7 @@ public:
                 const float translationX = step ? 0.4f : 0.0f;
                 if (step) {
                     TLAS_REQUIRE(frame.begin(step));
-                    TLAS_REQUIRE((*commands)->begin(&frame));
+                    TLAS_REQUIRE((*commands)->begin(frame.submissionContext()));
                     if (backend == 0) {
                         auto changed = instance; changed.transform[0][3] = translationX;
                         TLAS_REQUIRE(device.createRayTracingInstanceBuffer({&changed, 1}).transform([&](auto value) { *instances = std::move(value); }));
@@ -252,7 +252,7 @@ public:
             TLAS_CHECK(allocation.expired());
             if (usePartitioned && backend == 0) {
                 TLAS_REQUIRE(frame.begin(1));
-                TLAS_REQUIRE((*commands)->begin(&frame));
+                TLAS_REQUIRE((*commands)->begin(frame.submissionContext()));
             }
         }
         (*heap)->release(*handle);

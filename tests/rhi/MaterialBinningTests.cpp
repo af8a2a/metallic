@@ -1,3 +1,5 @@
+#include "Runtime/Render/Core/RenderFrameContext.h"
+#include "Runtime/Render/Core/ResourceRegistry.h"
 #include "RHITest.h"
 #include "Runtime/Render/MaterialBinning.h"
 #include "Runtime/Render/Core/ComputeProgram.h"
@@ -204,10 +206,10 @@ private:
     {
         auto& commands = context.commandBuffer();
         std::shared_ptr<render::ResourceRegistry> registry;
-        auto result = device_->resourceRegistry().transform([&](auto rhiValue) { registry = std::move(rhiValue); });
+        auto result = metallic::render::ResourceRegistry::forDevice(*device_).transform([&](auto rhiValue) { registry = std::move(rhiValue); });
         if (!result) { return result; }
         const auto before = registry->stats();
-        render::ParameterWriter writer(*device_, *commands.frameContext(), *registry);
+        render::ParameterWriter writer(*device_, *metallic::render::RenderFrameContext::from(commands), *registry);
         MaterialProbeParams params{writer.bufferSpan(bins.bins, 8, 8), writer.bufferSpan(bins.tiles, 8, 8),
             writer.bufferSpan(bins.arguments, 4, 4), writer.bufferSpan(context.outputBuffer("data").buffer(), 4, 4),
             push[0], push[1], push[2], push[3]};

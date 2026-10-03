@@ -19,98 +19,6 @@ struct RecordingOwnership {
 };
 } // namespace
 
-SubmissionTransaction::SubmissionTransaction(std::function<void()> submitted, std::function<void()> cancelled)
-    : submitted_(std::move(submitted)), cancelled_(std::move(cancelled))
-{
-}
-
-SubmissionTransaction::~SubmissionTransaction()
-{
-    cancel();
-}
-
-void SubmissionTransaction::submit() noexcept
-{
-    auto pending = Status::Pending;
-    if (!status_.compare_exchange_strong(pending, Status::Submitted)) { return; }
-    auto callback = std::move(submitted_);
-    cancelled_ = {};
-    if (callback) { callback(); }
-}
-
-void SubmissionTransaction::cancel() noexcept
-{
-    auto pending = Status::Pending;
-    if (!status_.compare_exchange_strong(pending, Status::Cancelled)) { return; }
-    auto callback = std::move(cancelled_);
-    submitted_ = {};
-    if (callback) { callback(); }
-}
-
-detail::CommandSubmissionState::~CommandSubmissionState()
-{
-    cancel();
-}
-
-bool detail::CommandSubmissionState::canSubmit() const
-{
-    return !submitted && !cancelled && std::none_of(transactions.begin(), transactions.end(),
-        [](const auto& transaction) { return transaction->cancelled(); });
-}
-
-void detail::CommandSubmissionState::submit() noexcept
-{
-    submitted = true;
-    for (const auto& transaction : transactions) { transaction->submit(); }
-}
-
-void detail::CommandSubmissionState::cancel() noexcept
-{
-    if (submitted || cancelled) { return; }
-    cancelled = true;
-    for (auto iter = transactions.rbegin(); iter != transactions.rend(); ++iter) { (*iter)->cancel(); }
-    resources.clear();
-    finished.store(true, std::memory_order_release);
-}
-
-void detail::CommandSubmissionRegistry::add(const std::shared_ptr<CommandSubmissionState>& recording)
-{
-    std::erase_if(recordings, [](const auto& entry) {
-        const auto state = entry.lock();
-        return state == nullptr || state->submitted || state->cancelled;
-    });
-    recordings.push_back(recording);
-}
-
-void detail::CommandSubmissionRegistry::cancel() noexcept
-{
-    for (auto iter = recordings.rbegin(); iter != recordings.rend(); ++iter) {
-        if (auto recording = iter->lock()) { recording->cancel(); }
-    }
-    recordings.clear();
-}
-
-Result<> CommandBuffer::addSubmissionTransaction(std::shared_ptr<SubmissionTransaction> transaction)
-{
-    if (!recording_ || submission_ == nullptr || !submission_->canSubmit() ||
-        transaction == nullptr || transaction->resolved() || transaction->attached_) {
-        return makeError(Error::InvalidArgument);
-    }
-    transaction->attached_ = true;
-    submission_->transactions.push_back(std::move(transaction));
-    return {};
-}
-
-Result<> CommandBuffer::retainResource(std::shared_ptr<void> resource)
-{
-    if (!recording_ || !submission_ || submission_->submitted || submission_->cancelled ||
-        (frameContext_ && !frameContext_->recording()) || !resource) {
-        return makeError(Error::InvalidArgument);
-    }
-    submission_->resources.push_back(std::move(resource));
-    return {};
-}
-
 struct GPUCompletionPoint::State {
     enum class Status { Recording, Submitted, Cancelled };
     // Signals are coordinator-owned until release publication. Readers never
@@ -185,20 +93,61 @@ Result<> GPUCompletionPoint::appendWaits(std::vector<SemaphoreSubmitDesc>& waits
     return {};
 }
 
-Result<> CommandBuffer::addDependency(const GPUCompletionPoint& completion)
+Result<> addCommandDependency(CommandBuffer& commands, const GPUCompletionPoint& completion)
 {
-    if (!recording_) { return makeError(Error::InvalidArgument); }
-    Result<> result = completion.appendWaits(dependencyWaits_);
-    if (result && completion.valid() &&
-        std::find(dependencyLifetimes_.begin(), dependencyLifetimes_.end(), completion.state_) == dependencyLifetimes_.end()) {
-        dependencyLifetimes_.push_back(completion.state_);
+    std::vector<SemaphoreSubmitDesc> waits;
+    auto result = completion.appendWaits(waits);
+    if (!result) { return result; }
+    return commands.addDependency(waits, completion.state_);
+}
+
+namespace detail {
+struct FrameSubmissionContext final : CommandSubmissionContext {
+    RenderFrameContext* frame = nullptr;
+    explicit FrameSubmissionContext(RenderFrameContext& owner) : frame(&owner) {}
+    bool recording() const override { return frame && frame->recording(); }
+    bool canSubmit(bool tracked, bool sealed) const override
+    {
+        if (!frame || !frame->completion().valid() || frame->completion().isCancelled() || frame->completion().isSubmitted()) { return false; }
+        return frame->submissionMode() == FrameSubmissionMode::Pipelined
+            ? tracked && sealed : frame->recordingsFinished();
     }
-    return result;
+    void registerRecording(const std::shared_ptr<CommandSubmissionState>& state) override
+    {
+        frame->recordings_.add(state);
+    }
+    void reserveResources(size_t count) override
+    {
+        frame->resources_.reserve(frame->resources_.size() + count);
+    }
+    void acceptResources(std::vector<std::shared_ptr<void>>& resources) noexcept override
+    {
+        for (auto& resource : resources) { frame->resources_.push_back(std::move(resource)); }
+        resources.clear();
+    }
+};
+} // namespace detail
+
+RenderFrameContext::RenderFrameContext(uint32_t slotIndex)
+    : slotIndex_(slotIndex), submissionContext_(std::make_shared<detail::FrameSubmissionContext>(*this))
+{
+}
+
+std::shared_ptr<CommandSubmissionContext> RenderFrameContext::submissionContext() const
+{
+    return submissionContext_;
+}
+
+RenderFrameContext* RenderFrameContext::from(const CommandBuffer& commands)
+{
+    const auto* context = dynamic_cast<const detail::FrameSubmissionContext*>(commands.submissionContext().get());
+    return context ? context->frame : nullptr;
 }
 
 RenderFrameContext::~RenderFrameContext()
 {
     (void)reset();
+    if (submissionContext_) { submissionContext_->frame = nullptr; }
 }
 
 Result<> RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanoseconds, FrameSubmissionMode mode)
@@ -216,6 +165,8 @@ Result<> RenderFrameContext::begin(uint64_t frameIndex, uint64_t timeoutNanoseco
     phase.next("frame.releaseDependencies", dependencies_.size());
     dependencies_.clear();
     phase.next("frame.newState");
+    if (submissionContext_) { submissionContext_->frame = nullptr; }
+    submissionContext_ = std::make_shared<detail::FrameSubmissionContext>(*this);
     completion_.state_ = std::make_shared<GPUCompletionPoint::State>();
     frameIndex_ = frameIndex;
     submissionMode_ = mode;
@@ -287,7 +238,7 @@ Result<CommandBuffer*> CommandRecordingContext::prepare(RenderFrameContext& fram
     }
     auto created = pool_->createCommandBuffer();
     if (!created) { return std::unexpected(created.error()); }
-    auto result = (*created)->begin(&frame);
+    auto result = (*created)->begin(frame.submissionContext());
     if (!result) { return std::unexpected(result.error()); }
     completion_ = frame.completion();
     commands_.push_back(std::move(*created));
@@ -363,6 +314,7 @@ Result<> RenderFrameContext::reset()
     dependencies_.clear();
     phase.next("frame.newState");
     completion_ = {};
+    if (submissionContext_) { submissionContext_->frame = nullptr; }
     return result;
 }
 
@@ -436,13 +388,13 @@ Result<> RecordedBatch::seal(RenderFrameContext& frame, std::span<CommandBuffer*
     std::vector<std::shared_ptr<detail::CommandSubmissionState>> states;
     states.reserve(commands.size());
     for (auto* command : commands) {
-        if (!command || !command->submission_ || !command->submission_->finished.load(std::memory_order_acquire) ||
-            command->submission_->submitted || command->submission_->cancelled || command->submission_->sealed || command->recording_ ||
-            command->frameContext_ != &frame || command->frameRecording_ != frame.completion().state_ ||
-            std::find(states.begin(), states.end(), command->submission_) != states.end()) {
+        if (!command || !command->submissionState() || !command->submissionState()->finished.load(std::memory_order_acquire) ||
+            command->submissionState()->submitted || command->submissionState()->cancelled || command->submissionState()->sealed || command->recording() ||
+            command->submissionContext() != frame.submissionContext() ||
+            std::find(states.begin(), states.end(), command->submissionState()) != states.end()) {
             return makeError(Error::InvalidArgument);
         }
-        states.push_back(command->submission_);
+        states.push_back(command->submissionState());
     }
     commands_.assign(commands.begin(), commands.end());
     states_ = std::move(states);
@@ -482,8 +434,7 @@ Result<SubmissionReceipt> QueueSubmissionTracker::submitBatch(
         return makeError(Error::InvalidArgument);
     }
     for (uint32_t index = 0; index < desc.commandBuffers.size(); ++index) {
-        if (desc.commandBuffers[index] == nullptr || desc.commandBuffers[index]->frameContext() != &frame ||
-            desc.commandBuffers[index]->frameRecording_ != frame.completion_.state_) {
+        if (desc.commandBuffers[index] == nullptr || desc.commandBuffers[index]->submissionContext() != frame.submissionContext()) {
             return makeError(Error::InvalidArgument);
         }
     }
@@ -511,7 +462,7 @@ Result<SubmissionReceipt> QueueSubmissionTracker::submitBatch(
     segment->signals.push_back({timeline_, nextValue_});
     auto& state = *frame.completion_.state_;
     state.signals.reserve(state.signals.size() + 1);
-    Result<> result = queue_->submitImpl(submission, true);
+    Result<> result = queue_->submitTracked(submission);
     if (!result) {
         return makeError(result.error());
     }

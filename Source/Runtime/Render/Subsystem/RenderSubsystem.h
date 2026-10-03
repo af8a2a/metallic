@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/GAPI/RHI.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"
 #include "Runtime/Render/Subsystem/RenderWorld.h"

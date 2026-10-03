@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/RenderGraph/RenderGraphNode.h"
 #include "Runtime/Render/RenderGraph/RenderGraphExecutionSnapshot.h"
 #include "Runtime/Render/Core/RenderFrameContext.h"

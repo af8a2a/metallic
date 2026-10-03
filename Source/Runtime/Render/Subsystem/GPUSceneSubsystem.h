@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Render/Streamer/UploadStreamer.h"
 #include "Runtime/Render/Subsystem/GPUScene.h"
 #include "Runtime/Render/ClusterLightGrid.h"
 #include "Runtime/Render/Streamer/MeshletStreamRuntime.h"
